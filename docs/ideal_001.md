@@ -484,8 +484,8 @@ Using `def-struct` automatically generates `is-XXXX?` for that struct name, whic
 in `with-template-type`.  See the discussion of type constraints in `with-template-type` for more information.
 
 
-### member access: XXXX~
-Functions to access members are autmatically generated. The function name is the member name follow by "~".
+### member access: `XXXX~`
+Functions to access members are autmatically generated. The function name is the member name follow by `~`.
 
 This function can be used to get a value, and in conjunction with `set!` it can be used to change it.
 
@@ -506,8 +506,8 @@ y~ #'(point => float)
 
 ```
 
-#### Non Overrideable Member Access: ~XXXX~
-Addiitonally, a non-overridable function to access members is also automatically generated. That function name is "~" followed by the member name, followed by "~" again.   This function can be used to get a value directly
+#### Non Overrideable Member Access: `~XXXX~`
+Addiitonally, a non-overridable function to access members is also automatically generated. That function name is `~` followed by the member name, followed by `~` again.   This function can be used to get a value directly
 from a struct bypassing any custom overload of the access, and can be passed to `set!` as well. 
 
 These are mostly used by the overloaded member access functions, but are occasionally useful when dealing with
@@ -1377,7 +1377,7 @@ Each of those properties can be accessed by the .<prop> function.
 e.g. `(length~ someTensorView)` , `(parent~ someTensorView)`
 
 
-### Element Access.  Use ~ 
+### Element Access.  Use `~` 
 As in vectors `~` is the primary access function for getting and setting elements of a `tensor-view`.
 It is also the safe and correct access function because it correctly navigates to the underlying data
 using strides. 
