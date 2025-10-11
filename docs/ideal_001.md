@@ -16,7 +16,7 @@ Focus
 -----
 
 The focus is on performance, compiliation speed, safety and correctness.
-GPU idioms like tensors, shuffles, memory addressing, grid strides and more are directly exposed by the Crisp language.
+GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-arrays, and more are directly exposed by the Crisp language.
 
 
 Major Features of the Crisp language and tools
@@ -1179,15 +1179,16 @@ Its primary purpose is to pass a single, contiguous stream of data to another hi
 ### Element Access
 
 The struct properties (see above) with index arguments are the primary way of accessing `soa-vector` data.
-If you want a particular struct as singular construct, it can be gotten with `get`.  Note that this requires
+If you want a particular struct as singular construct, it can be gotten with `get-struct`.  Note that this requires
 creation of a new structure to hold the value.
-`(let ((some-point (get sv 3))))`   
+`(let ((some-point (get-struct sv 3))))`   
 
 `soa-vector` and `soa-view` do NOT support the `~` or `~ref~` element access functions like regular `vector` and `vector-view`.
 
 ### Helper Functions
 
 Like `vector`, `soa-vector` and `soa-view` support `element-type` and `bytes` helpers.
+`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding.
 
 ### Member Data Rules
 
@@ -1195,7 +1196,8 @@ Like `vector`, `soa-vector` and `soa-view` support `element-type` and `bytes` he
  - Scalar types (`int`, `float`, etc)
  - Small vector types ( `float4` etc)
 
- Unlike regular structs, they cannot include other structs or views 
+ Unlike regular structs, they cannot include other structs or views.
+ This rule is in place to prevent overly complex nested SoA layouts and to ensure a simple, predictable memory model that maps efficiently to the hardware.
 
  ### Defining 
  
