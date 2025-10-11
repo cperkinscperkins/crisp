@@ -38,7 +38,7 @@ Major Features of the Crisp language and tools
   It features a C and Python API that operates on in-memory source code strings via a virtual file system, completely avoiding disk I/O for the fastest possible Just-in-Time (JIT) compilation.
 - Pragmatic Error Handling. Crisp has  optional debug logging that is turned on with a compiler flag.
   It also has a simple `maybe` type to streamline code past errors and with a minimum of thread divergence.
-- Common GPU practices like strides, shuffles, reductions across workgroups and warps are all
+- Common GPU practices like strides, structs-of-array (AoS and SoA), shuffles, reductions across workgroups and warps are all
   expressed as top level language features. 
 - "Side Channels" give the programmer the illusion of on-demand memory allocation. Crisp already 
   has side channel support for scratch memory or return results. 
@@ -302,7 +302,8 @@ Function Overloading
 --------------------
 
 Crisp support function overloading for functions defined with `def-function` as well as property access functions on 
-some of the other types.
+some of the other types. Note that property access via a `soa-vector` requires an additional overload. The compiler
+will warn if it detects `soa-vector` property access with an asymmetric overload.
 
 Overloaded functions can have the same name, but different type signatures. The compiler will use the 
 types of the given parameters to determine which overload should be called. 
@@ -539,6 +540,27 @@ by returning the negatiion of the x value.
        
 ```
 
+#### AoS and SoA
+
+Crisp supports vectors of structs. The standard Crisp `vector` can be used for an "Array of Structs" (AoS) layout, but there is also
+`soa-vector` which can be used for "Struct of Arrays" (SoA) layout. See `soa-vector` below.
+
+#### Overload member access and soa-vector
+
+The overload member access functions (like `x~` in the previous section) will NOT WORK for structs in a `soa-vector`. 
+If you want to overload access there too, an additional overload function must be defined:
+
+```
+;; (x~ sv) returns the vector of ALL x values, we are adjusting the one at idx
+(def-function x~ (sv:(soa-vector-type point) idx:ulong)
+    (declare (return-type float))
+    (- (~ (x~ sv) idx)))
+```
+
+The compiler will emit a warning if it encounters access on a soa-vector for a struct that has asymmetric property accessor overloads.
+
+In the future, Crisp may handle this automatically. 
+
 
 
 def-setter
@@ -558,8 +580,15 @@ If the setter parameters are typed, there is no need for an additonal declare.
 (set! (x~ somePoint) 14) ;; <-- the x of somePoint is actually stored as -14 
 ```
 
-
-  
+If overloading the setting of a struct property and you wish to use that struct
+consistently and correctly in a `soa-vector`, then an additional overload
+for that is recommended as well. The compiler will warn if it detects the absence.
+In the future, Crisp may handle this automatically. 
+```
+;; additional overload if we are using soa-vectors.
+(def-setter x~ (sv:(soa-vector-type point) idx:ulong newVal:float)
+    (set! (~ (x~ sv) idx) newVal))
+```
 
 
 
@@ -841,7 +870,8 @@ Vectors cannot have their capacity resized.
 All vectors have their data allocated either by the host or the compiler, 
 they cannot be dynamically allocated by the runtime. 
 
-A `vector-view` is a vector that is a view into a parent `vector`. 
+A `vector-view` is a vector that is a view into a parent `vector`. `vector-view` is a sub-type of `vector` and it can be
+ used as an argument nearly every place a `vector` is usable.
 
 ### Alignment
 
@@ -1084,6 +1114,11 @@ need an accompanying `declare` or similar to determine.
 
 ```
 
+Note that `make-vector-view` CAN take another `vector-view` as the parent argument. But
+there is no nesting. Instead the resulting view will have the original `vector` as a parent, 
+not the `vector-view` argument.  Similarly, expect that is `offset` property will be the 
+net offset.
+
 #### address space concerns for kernel instantiated vectors
 
 Inside `def-kernel` or `def-function` the only address spaces that can be used when 
@@ -1122,7 +1157,8 @@ struct Points {
 };
 ```
 
-A `soa-view` is a `soa-vector` that is a view into a parent `soa-vector`.
+A `soa-view` is a `soa-vector` that is a view into a parent `soa-vector`.  It subtypes `soa-vector` like
+`vector-view` does `vector`.
 
 ### Alignment
 
@@ -1159,7 +1195,7 @@ Example
 
 (let* ((sv      (make-soa-vector point :local :read_write :std140 20))
        (y       (y~ sv 9))
-       (x-vec-v (x~ sv)))
+       (x-vec   (x~ sv)))
     ...)
 ```
 
@@ -1255,7 +1291,7 @@ come in from the compiler when it is invoked.   `def-parameter` is very similar 
 that it also defines an immutable expression in global file scope.
 `(def-parameter <parameter-name>:<type> &optional <default-value>)`
 
-Like in C++, the `-D` flag is used to specify a parameter and is immediately followed by the parameter name, equal sign and a value without spaces.
+Like in C++, the `-D` flag is used to specify a parameter and is followed by the parameter name, equal sign and a value without spaces.
 e.g. `-DMAX_INDEX=40` 
 
 Paramter names should follow the C standard identifying rules. (ie use underscores, not dashes)
@@ -1384,6 +1420,8 @@ This is most relevant when using `vector-type` and friends, because that type ex
 The invocations also support `:name` and `:comment` keys. If using `def-kernel-exact` then `:name` is REQUIRED, 
 as it will need to match a marshalling invocation.  The `:comment` key will output a comment into the hoisting code (Neat!).
 
+Lastly, note that `<VectorExpression>` can include `soa-vector` vector type specifiers.
+
 
 ### make-result-vector
 
@@ -1397,6 +1435,7 @@ be hoisted, plus a pointer to a unsigned long array.  The first one would be the
 The second one's length would be the multiple of the other arguments.  Both the first and the second result
 would have their access set as `:writeable` despite the original `A` vectors `:read_only` access.
 The third result would be hoisted as a `ulong` array ptr. 
+
 
 ```
 (def-type float-vec (vector-type float :global :read_only :std140))
@@ -1460,7 +1499,6 @@ Tensors can have their exact size determined at runtime, but the number of their
 must be known at compile time.
 
 ### tensor-view-type
-
 
 Tensors are typed completely by dimensions and the complete vector-type of a parent. 
 Tensors are incompletely typed if the parent vector-type is incomplete, or absent.
@@ -1651,7 +1689,7 @@ Derived Types
 `def-derived-type` defines a NEW type derived from a stated type. The purpose for this
 is to allow custom overload of functions and properties.
 
-Additionally, with `set-derived` the compiler can be instructed to create a type heirarchy
+Additionally, with `set-derived` the compiler can be instructed to create a type hierarchy
 between two types. 
 
 ### def-derived-type
@@ -1661,7 +1699,7 @@ between two types.
 
 (def-derived-type <new-name> <type-expr> &key (subst :no))
 ```
-The `type-expr` is any type that supports a `make-` function (`vector`, `vector-view`, `tensor-view` and things created from `def-struct` )  
+The `type-expr` is any type that supports a `make-` function (`vector`, `vector-view`, `soa-vector`, `soa-view`, `tensor-view` and things created from `def-struct` )  
 <!-- what about numeric types? bool, or nil ?  Definitely NOT functions or kernels, right?-->
 
 
@@ -1676,7 +1714,7 @@ The `subst` key should be from the `derived-subst` enumeration
 
 It's very important to remember that no matter what the substitution behavior is set to, that Crisp will choose the closest
 overloaded function (and emit a compilation error if that cannot be clearly determined).
-So even if using :equal, if function `foo` takes a single argument and is overloaded for types `A` and  `B` ,  `foo #'(A=>...)` will 
+So even if using `:equal`, if function `foo` takes a single argument and is overloaded for types `A` and  `B` ,  `foo #'(A=>...)` will 
 NEVER be called with a value of type `B`  unless `as-A ` were used.
 
 `def-derived-type` is one of the `def-` constructs that CANNOT be wrapped by `with-template-type`. 
@@ -2670,7 +2708,7 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 
 - loop-grid-stride / grid-stride-target   ( see Looping -- Grid Stride above ) 
 - loop-grid-stride-linear
-- loop-vector-stride / loop-tensor-stride
+- loop-vector-stride / loop-soa-stride / loop-tensor-stride
 - dotimes / dotimes+ / dotimes*
 - dec-times / dec-times+ / dec-times*
 - dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
@@ -3888,6 +3926,7 @@ Word Count With Exclusive Scan
 -------
 ```
   (filter input-vec predicateF result-vec)
+  (filter-soa input-soa-vec propertyExpression predicateF result-soa-vec)
 ```
 
 The `filter` macro takes an input vector of type T, and a predicate function `#(T => bool)`, as
@@ -3903,7 +3942,12 @@ the return count is correct.
   ; and result could be something like #(6 8 2 4 0 0 0 0 0 0)
 ```
 
-### possible implementation
+The variant `filter-soa` has an additional `propertyExpression` symbol argument. That particular property
+of the struct `element-type` will be passed to the predicate function. Note that the type `T` of
+the predicate function `#(T => bool`) must match the type of the struct property and both be
+determinable at compile time. (ie the exact property being referenced can't be a runtime variable).
+
+### possible implementation of filter
 ```
 (defmacro filter (input-vec predicateF result-vec)
   (c-t-assert (is-type-of predicateF (predicate-type (element-type input-vec))) "type mismatch between predicateF and input-vec")
@@ -4017,17 +4061,37 @@ while j <= data_size:
 ### `bitonic-sort-workgroup`
 
 ```
-(bitonic-sort-workgroup data-in data-out)
-(bitonic-sort-workgroup! data)
+(bitonic-sort-workgroup data-in data-out &key keyF)
+(bitonic-sort-workgroup! data &key keyF)
+(bitonic-sort-soa-workgroup <property> soa-data-in soa-data-out)
+(bitonic-sort-soa-workgroup! <property> soa-data)
 
-(gen-bitonic_sort_workgroup  elementT alignment kernelName)
-(gen-bitonic_sort_workgroup_in_place elementT alignment kernelName)
+(gen-bitonic_sort_workgroup  elementT alignment kernelName &key keyF)
+(gen-bitonic_sort_workgroup_in_place elementT alignment kernelName &key keyF)
+(gen-bitonic_sort_soa_workgroup structT property alignment kernelName)
+(gen-bitonic_sort_soa_workgroup_in_place structT property alignment kernelName)
 ```
 
-There are two variants of bitonic sorting for workgroups. One takes an input vector and an output vector, and the
-other performs the sort in place and takes just one vector argument.
+For both `vector` and `soa-vector` there are two variants of bitonic sorting for workgroups. One takes both input and output data, and the
+other performs the sort in place and takes just one data argument.
 
-For both variant, the `local_work_size` MUST be a power of 2. 
+For all variants, the `local_work_size` MUST be a power of 2. 
+
+The `soa-vector` variants key the sorting off a property. The property named must be an `is-orderable?` type.
+If the property access has an overload for `soa-vector` then that overload will be used.
+
+The `vector` variants support an optional `keyF` function `#(T => U) (type-is U #:is-orderable?)`.  Typically
+a `keyF` would be used if the `vector` was one of some struct (like `point`) and `keyF` would then 
+be a property retrieval function (like `x~`). But technically, the `keyF` can be anything so long as it 
+returns an orderable value (for example, it could add the `x` and `y` values of the point and return their sum).
+The astute reader will observe that could be done with an overload property function as well. 
+
+Lastly, note for `vector` of structs, that the Crisp developer can choose between overloading `>` and `<` 
+for some struct, using a custom `keyF` function, using a property access function `~x`, or and overloaded property
+access function, to influence or intercept the ordering. 
+
+But for the `soa-vector` variant, beyond simply specifying the property to key off, the only 
+intercept is via an overload that includes `soa-vector`.
 
 
 The core operation in Bitonic Sort is a simple compare-and-swap. The entire algorithm is just a series of 
@@ -4118,9 +4182,13 @@ A possible implementation might be
 ### `bitonic_merge_pass`
 
 ```
-(gen-bintonic_merge_pass elementT alignment kernelName)
+(gen-bintonic_merge_pass elementT alignment kernelName &key keyF)
+(gen-bintonic_soa_merge_pass structT property alignment kernelName)
 ```
 The merge pass is provided as a kernel template that can be generated. 
+It will generate a kernel that takes a data, j and k arguments. 
+The generated hoisting code will demonstrate how to manipulate j and k
+on each subsequent call.
 
 ```
    ;; generate the kernel we need
@@ -4164,15 +4232,19 @@ Possible Implementation
 ### Don't Make Me Think `bitonic-sort-vector!`
 
 ```
-(bitonic-sort-vector! vec merge-stage-name:string)
+(bitonic-sort-vector! vec merge-stage-name:string &key keyF)
+(bitonic-sort-soa-vector! soa-vec property merge-stage-name:string)
 ;or
-(gen-bitonic_sort_vector! elementT alignment sort-stage-name:string merge-stage-name:string)
+(gen-bitonic_sort_vector! elementT alignment sort-stage-name:string merge-stage-name:string &key keyF)
+(gen-bitonic_sort_soa_vector! structT property alignment sort-stage-name:string merge-stage-name:string)
 ```
 
 If you don't want a toolkit, `bitonic-sort-vector!` will sort the vector AND generate the correct `bitonic_merge_pass` kernel .  The hoisting example code will correctly show
 how to calculate `j` and `k` and enqueue the merge pass until done.  
 
 Or, even simpler, `gen-bitonic_sort_vector!` just needs some type info and names for the two kernels. It also generates the correct hoisting example code. 
+
+`soa-vector` variants of these two functions are provided as well. 
 
 
 
@@ -5270,6 +5342,7 @@ control flow
 - grid-stride-target [DP]          [3D]
 - loop-grid-stride-linear
 - loop-vector-stride
+- loop-soa-stride
 - loop-tensor-stride                  [ND]
 - uniform            [DP]
 - dotimes / dotimes+ / dotimes*
@@ -5371,6 +5444,10 @@ other
 - vector-base-type     [KO]
 - make-vector          [KO]
 - make-vector-view     [KO]
+- soa-vector-type      [KO]
+- soa-view-type        [KO]
+- make-soa-vector      [KO]
+- make-soa-view        [KO]
 - make-scratch-vector
 - make-result-vector
 - make-implicit-vector
