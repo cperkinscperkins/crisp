@@ -1094,6 +1094,135 @@ NOT be used unless you have good reason.
 you'll need to use `def-const-vec` which is covered below, or a direct instance ( `#(1 2 3)`).
 
 
+soa-vector and soa-view
+-----------------------
+
+`soa-vector` is a special type of vector, with a special memory layout. They are used for vectors of structs (only).
+
+`soa-vector` are templated over `S` where `S` is some struct type. But rather than a contiguous block of 
+memmory consisting of repeating structs, `soa-vector`s are "Structs of Arrays". 
+
+For example, using our `point` type from before, `(vector-type :element-type point :length 4)` would layout in memory
+like this:
+`|x0|y0|x1|y1|x2|y2|x3|y3|`.
+Or in C++ we can think of it like this:
+```
+struct Point { float x, y; };
+Point points[4];
+```
+
+
+But a `(soa-vector :element-type point :lenth 4)` lays out like this:
+`|x0|x1|x2|x3|y0|y1|y2|y3|`.
+In C++ with can think of it like this:
+```
+struct Points {
+    float x[4];
+    float y[4];
+};
+```
+
+A `soa-view` is a `soa-vector` that is a view into a parent `soa-vector`.
+
+### Alignment
+
+Crisp supports two alignments schemes for `soa-vector`: `:std140` and `:compact`.  Note that these
+alignments are applied to the inner vectors.  The outer `struct` is always `:std140`.
+
+### Base Properties
+
+A `soa-vector` has the following immutable properties:
+
+| Property     | Type         | Description      |
+|--------------|--------------|------------------|
+| length       | ulong        | the number of elements in the `soa-vector`. This is immutable. |
+| address-space|address-space | one of `:global`, `:local`, `:constant`   |
+| access       | access       | `:read_only`, `:write_only`, `:read_write`, `:readable` , `:writeable` |
+| align        | align        | one of `:std140` or `:compact` |
+
+A `soa-view` has these properties:
+
+| Property     | Type         | Description      |
+|--------------|--------------|------------------|
+| length       | ulong        | the number of elements in the `soa-view`. It cannot be greater than `(length~ (parent~ soa-view))` |
+| parent       | soa-view     | address of "parent" soa-view |
+| offset       | ulong        | offset into parent. |
+
+### Struct Properties
+
+Additionally,  `soa-vector` and `soa-view` also inherit the properties of their struct element type. 
+
+
+Example
+```
+(def-struct point (x:long) (y:long))
+
+(let* ((sv      (make-soa-vector point :local :read_write :std140 20))
+       (y       (y~ sv 9))
+       (x-vec-v (x~ sv)))
+    ...)
+```
+
+#### `XXXX~` with index.
+
+In the example above, `y` is gotten via `(y~ sv 9)` which means it is the value of the y vector at index 9.
+
+Owning to memory coalesence, when the index is a thread id from parallel threads,  this will be very high-performance access. 
+
+#### `XXXX~` without index
+
+Whereas constrastingly, in the example above `(x~ sv)` returns the ENTIRE VECTOR of X from the `soa-vector`.
+ `x-vec` would be `(vector-type :element-type long :length 20)`.  <!-- or should it be a vector-view-type ? -->
+
+Its primary purpose is to pass a single, contiguous stream of data to another high-performance primitive, like `reduce-vec`
+
+### Element Access
+
+The struct properties (see above) with index arguments are the primary way of accessing `soa-vector` data.
+If you want a particular struct as singular construct, it can be gotten with `get`.  Note that this requires
+creation of a new structure to hold the value.
+`(let ((some-point (get sv 3))))`   
+
+`soa-vector` and `soa-view` do NOT support the `~` or `~ref~` element access functions like regular `vector` and `vector-view`.
+
+### Helper Functions
+
+Like `vector`, `soa-vector` and `soa-view` support `element-type` and `bytes` helpers.
+
+### Member Data Rules
+
+`soa-vector` are ONLY defined over structs (see `def-struct` above). And any candidate struct type can only consist of either
+ - Scalar types (`int`, `float`, etc)
+ - Small vector types ( `float4` etc)
+
+ Unlike regular structs, they cannot include other structs or views 
+
+ ### Defining 
+ 
+ ```
+ (soa-vector-type <element-type> &optional address-space access align length)
+ (soa-view-type <element-type> &optional address-space access align length)
+
+ (soa-vector-type &key element-type address-space access align length)
+ (soa-view-type &key element-type address-space access align length)
+ ```
+
+ ### Creating
+
+ `soa-vector` have parallel creation routines to `vector` and abide by the same requirements (ie length must be known at compile time).
+
+ - `(make-soa-vector soaVectorType)`
+ - `(make-soa-vector soaVectorType length)`
+ - `(make-soa-vector &key element-type address-space access align length)`
+ - `(make-soa-view parent length &optional offset)`
+
+ ### C++ / Python interop
+
+ The hoisting code that the compiler generates includes helper functions that give the same property-to-vector and property-index-to-element 
+ access that Crisp enjoys, making it easy to initialize or inspect data and interoperate with Crisp kernels.
+
+
+
 
 def-const
 ---------
@@ -2353,6 +2482,9 @@ Where N = Size-of-Problem / Number-of-Threads-Launched.
 
 A grid-stride loop is a common pattern for processing large datasets that are bigger than the number of threads launched. It ensures that each thread processes multiple data elements while maintaining full occupancy and avoiding divergence.
 
+The Crisp grid stride primitives are designed to encourage coalesced memory access patterns by default, helping the
+programmer achieve maximum performance.
+
 ### `loop-grid-stride` 
 
 `loop-grid-stride` let's a kernel elect the Grid Stride strategy and set up a grid stride loop,
@@ -2443,6 +2575,13 @@ This makes it simpler, clearer and less error prone.   With it our vector_add ex
 #### work_dims 
 In Crisp, vectors are always 1D, but a kernel can be enqueued with a work_dims of 2 or 3. 
 In that case, `loop-vector-stride` will stride using `get_global_linear_id/size` just like `loop-grid-stride-linear`.
+
+### loop-soa-stride
+`(loop-soa-stride soaVec (i) ...)`
+
+`loop-soa-stride` iterates over a `soa-vector` using the Grid Stride strategy.  There is no need to declare a grid stride target.
+
+As with `loop-vector-stride`, if the kernel is enqueued with a work_dims of 2 or 3 this routine will stride with `get_global_linear_id`.
 
 
 ### loop-tensor-stride
@@ -5201,7 +5340,7 @@ Type Constraints
 
 other
 -----
-- Swizzles   xyyy~ etc.
+- Swizzles   `xyyy~` etc.
 - ##(3 4 5 6) 
 - return-type         [DP]
 - type                [DP]
@@ -5211,8 +5350,8 @@ other
 - is-type-of
 - type-of
 - set!
-- XXXX~
-- ~XXXX~
+- `XXXX~`
+- `~XXXX~`
 - make-XXXX
 - is-XXXX?
 - with-template-type   [KO] [D]
@@ -5220,11 +5359,11 @@ other
 - gen-XXXX
 - vector
 - vector-view
-- length~ / parent~ / offset~   [O]
+- `length~ / parent~ / offset~`   [O]
 - element-type
 - bytes  
-- ~                             [O]
-- ~ref~
+- `~`                             [O]
+- `~ref~`
 - vector-type          [KO]
 - vector-view-type     [KO]
 - vector-base-type     [KO]
@@ -5244,8 +5383,8 @@ other
 - tensor-view-type
 - make-tensor-view     [KO]
 - num-dims-of
-- dims~
-- strides~
+- `dims~`
+- `strides~`
 - const-vec-type
 - maybe                 
 - result               [KO]
@@ -5298,12 +5437,14 @@ lisp
 
 
 ### Keys
+```
 [KO]   => arg list supports &key &optional
 [D]    => progn supports inclusion of (declare ...)
 [DP]   => can appear IN a (declare ...) list, in the function position
 [T]    => can be wrapped by with-template-type
 [O]    => can be overloaded
 [3D]   => has 1D, 2D and 3D variant
+```
 
 
 
