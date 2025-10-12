@@ -1602,7 +1602,7 @@ In the example below, let's look at a 3x4 matrix `A`, with elements labeled
 `A[row][column]` (C++ notation) or `(~ A row column)` (Crisp notation)
 
 <details>
-<summary>C++ notation</symmary>
+<summary>C++ notation</summary>
 <pre>
 ```
          Col 0    Col 1    Col 2    Col 3
@@ -1618,7 +1618,7 @@ Row 2  | A[2][0] | A[2][1] | A[2][2] | A[2][3] |
 </details>
 
 <details open>
-<summary>Crisp notation</symmary>
+<summary>Crisp notation</summary>
 <pre>
 ```
         Col 0      Col 1      Col 2      Col 3
