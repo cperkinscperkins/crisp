@@ -426,12 +426,6 @@ Struct Types
 It also generates functions to create instances of struct (`make-XXXX`), and to access its members.
 Additionally, the type constraint function `is-XXXX?` is also generated.
 
-<!-- 
-NOTE: the type name is just the name of the struct (ie 'point').
-
-Only if _templated_ is point-type defined, which is a type constructor (point-type int)
-
--->
 
 
 <!-- NOTES:  The compiler will treat these custom "functions"  as direct data offsets.  
@@ -483,6 +477,11 @@ https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#interfaces-res
 
 Using `def-struct` automatically generates `is-XXXX?` for that struct name, which can be used as a type constraint function
 in `with-template-type`.  See the discussion of type constraints in `with-template-type` for more information.
+
+### type names vs. type constructors
+When a struct is defined with `def-struct`, its name becomes a new type name (e.g., `point`).
+
+If a struct is defined within a `with-template-type` block, the system also generates a type constructor (e.g., `point-type`). This constructor must be used with its type arguments to create a concrete type, like `(point-type int)`.
 
 
 ### member access: `XXXX~`
@@ -560,6 +559,24 @@ If you want to overload access there too, an additional overload function must b
 The compiler will emit a warning if it encounters access on a soa-vector for a struct that has asymmetric property accessor overloads.
 
 In the future, Crisp may handle this automatically. 
+
+#### `with-struct-accessors`  - ADVANCED 
+
+In Crisp, like in C++, the struct type itself is not runtime inspectable. But unlike C++, Crisp has compile time affordances
+that help you write macros that generically walk all the properties. One of those affordance is `with-struct-accessors`.
+
+```
+(defmacro with-struct-accessors (struct-type (aos-var &optional soa-var) &key (access :public) &body body) ...)
+```
+This is an iterate-and-bind macro that loops over all the properties of `struct-type`. The return
+values of the `body` are gathered up and can be expanded (via `,@`) where needed.  
+Each time through the loop `aos-var` will be bound to some  accessor (e.g. `x~` then `y~` for the `point` type) that can take a struct argument.  If provided, `soa-var` will be the soa accessor variant that takes a `soa-vector` and an index `ulong`.  
+
+The `:access` key determines which class of accessor is enumerated. If `:public` it 
+enumerates the main public accessors (`x~` etc).  If `:raw` it enumerates the non overrideable
+accessors (`~x~`).
+
+See the "possible implementation" of  `convert-aos-to-soa` below for a usage example.
 
 
 
@@ -1254,6 +1271,47 @@ Like `vector`, `soa-vector` and `soa-view` support `element-type` and `bytes` he
  - `(make-soa-vector &key element-type address-space access align length)`
  - `(make-soa-view parent length &optional offset)`
 
+### Converting between SoA and AoS vectors.
+
+If you put yourself in a situation where you need to convert an AoS `vector` to an SoA `soa-vector`, 
+or vice versa, then it might be time to reflect on the decisions in your life that have
+brought you to this point. 
+Fortunately, this is something that the GPU can do fairly well. Not optimized with perfect memory
+coalescing, but well enough. Crisp provides routines that can help you out.
+
+```
+(convert-soa-to-aos input-soa-vector output-vector)
+(convert-aos-to-soa input-vector output-soa-vector)
+```
+
+Possible Implementation
+```
+;; NOTE: convert-soa-to-aos should be implemented as a macro like convert-aos-to-soa below.
+;; The will take the "temporary struct" creation out of runtime, making it marginally faster.
+(with-template-type (T)
+    (def-function convert-soa-to-aos (input-soa-vector output-vector)
+        (declare #((soa-vector-type T) (vector T) => nil))
+        (loop-soa-stride input-soa-vector (i)
+            (let ((temp-struct:T (get-struct input-soa-vector i)))
+                (set! (~ output-vector i) temp-struct)))))
+
+(defmacro convert-aos-to-soa (input-vector output-soa-vector)
+    (c-t-assert (type-equal (element-type input-vector) (element-type output-soa-vector)))
+    (let* ((T (element-type input-vector))
+           (set-forms (with-struct-accessors T (aos-accF soa-accF)
+                       ;; body generates one form for each member
+                       ;; "i" and "temp-struct" TBD below.
+                       `(set! (,soa-accF ,output-soa-vector i (,aos-accF temp-struct))))))
+        `(def-function convert-aos-to-soa (input-vector output-soa-vector)
+            (declare #((vector-type ,T) (soa-vector-type ,T)))
+            (loop-vector-stride ,input-vector (i)
+                (let ((temp-struct (~ ,input-vector i)))
+                    ;; expand the forms we gathered
+                    ,@set-forms)))))
+```
+
+
+
  ### C++ / Python interop
 
  The hoisting code that the compiler generates includes helper functions that give the same property-to-vector and property-index-to-element 
@@ -1517,17 +1575,55 @@ Tensors are incompletely typed if the parent vector-type is incomplete, or absen
 
 ### Creating Tensors
 
-We need to store the strides for a tensor somewhere.  
+There are four routines for creating `tensor-view`s. Two for `tensor-view` of any dimension,
+and two for creating matrices, which are 2D `tensor-views`. 
+```
+(make-tensor-view parent len ... lenN  &key (offset 0))
+(make-tensor-view strideVec parentVec len ... lenN &key (offset 0))
 
-`(make-tensor-view parent len ... lenN  &key offset)`  ; the vector for stride data will be created by compiler (registers or :local address space)
-`(make-tensor-view strideVec parentVec len ... lenN &key offset)`  ; user can optionally provide their own stride vector.
+(make-matrix parent len0 len1 &key (major :row) (offset 0))
+(make-matrix parent strideVec len0 len1 &key (offset 0))
+```
+For the 2D `matrix`, one of the declarations supports a `:major` key which can be `:row` or `:col`.
+Alternately, the `strideVec` can set the strides. Setting the strides directly is how to get "row major" vs "col major" (versus "plane major" etc) tensor-view in higher dimensions. 
 
-<!-- NOTES 
-Is this getting awkward for hoisting? Maybe.  So host might need to malloc ( elementSz *  width*height*...*N   + sizeof(stride-vec) ) 
-where stride-vec is (size_t * NUMDIMS).  Assuming they care providing/capturing the strides. 
 
-I doubt anyone will ever use that second variant that takes a stride vector arg. 
--->
+In the example below, let's look at a 3x4 matrix `A`, with elements labeled 
+`A[row][column]`
+```
+         Col 0    Col 1    Col 2    Col 3
+       +---------+---------+---------+---------+
+Row 0  | A[0][0] | A[0][1] | A[0][2] | A[0][3] |
+       +---------+---------+---------+---------+
+Row 1  | A[1][0] | A[1][1] | A[1][2] | A[1][3] |
+       +---------+---------+---------+---------+
+Row 2  | A[2][0] | A[2][1] | A[2][2] | A[2][3] |
+       +---------+---------+---------+---------+
+```
+
+Next, here is two different ways this matrix could be created.
+In both methods, the coordinates above are exactly the same.
+```
+;; Create a row-major view of a 3x4 matrix
+(make-tensor-view #(4 1) my-data-vec 3 4)
+
+;; Create a column-major view of a 3x4 matrix
+(make-tensor-view #(1 3) my-data-vec 3 4)
+```
+
+But, when laid out linearly, these two tensors are not the same. 
+The first four entries of the data vector behind the row-major
+matrix would contain the four elements of `Row 0`. 
+But, for the col-major matrix, the first four elements of the data 
+vector would contain the three elements of `Col 0`, plus the first 
+element of `Col 1`.
+
+Due to memory coalescing, multiplying a row-major matrix by a col-major matrix is
+the MOST PERFORMANT choice. 
+
+Lastly, the variants of these declarations that support `strideVec` should be used carefully. It's 
+generally far simpler to use one of the other versions and let Crisp set up the stride vector for you.
+
 
 ### Properties
 
@@ -5429,6 +5525,7 @@ other
 - `~XXXX~`
 - make-XXXX
 - is-XXXX?
+- with-struct-accessors
 - with-template-type   [KO] [D]
 - XXXX-type
 - gen-XXXX
@@ -5448,6 +5545,8 @@ other
 - soa-view-type        [KO]
 - make-soa-vector      [KO]
 - make-soa-view        [KO]
+- convert-soa-to-aos
+- convert-aos-to-soa
 - make-scratch-vector
 - make-result-vector
 - make-implicit-vector
