@@ -81,6 +81,13 @@ results memory. To be discussed later.
 
 As already mentioned, Crisp is statically typed.  There is no runtime typing of any sort.
 
+### 0 is false
+
+Crisp follows Python and C++ and treats 0 as false.  In Common Lisp, which supports
+dynamic typing, there are strong reasons for having 0 be true, but given that Crisp
+doesn't support dynamic typing and its intended audience is likely more familiar
+with CUDA, C++, Python and OpenCL C, Crisp follows their practice and 0 is false.
+
 ### no recursion
 
 Crisp does not support recursive functions, nor mutual recursion. 
@@ -206,20 +213,23 @@ Furthermore, Crisp supports "swizzles" (like `xyyy~`)
 Other Basic Types
 -----------------
 
-<!-- NEEDS WORK -->
+NOTE: this section needs work
 
-bool    ?? this should be a "type" so that predicate functions can be declared.
-           is NIL of type bool? It seems NIL should be.  
-           I would prefer that "bool" not be instantiable. 
-           But if it is, it should be 32 bits. 
+### bool    
+- `bool` is a type
+- its values are `true` and `false`
+- any zero number value puns as `false`
+- any non-zero number value puns as `true`
+- `nil` is a compile-time expression (not runtime). It also puns as `false`.
+- an instance of any other Crisp type (struct, vector, etc) puns as `true`.
+
+Currently under debate whether `bool` is an instantiable value.
 
 keyword (e.g. :some-key) -- is a type of symbol. compiler converts this to unique byte value. 
                             
 
 function (#'someFunction)
 
-Enumerations.  
-`(def-enumeration address-space (:global 1) :local :private :constant)`  ; check these values
 
 
 Declaring Types - Functions
@@ -1589,7 +1599,11 @@ Alternately, the `strideVec` can set the strides. Setting the strides directly i
 
 
 In the example below, let's look at a 3x4 matrix `A`, with elements labeled 
-`A[row][column]`
+`A[row][column]` (C++ notation) or `(~ A row column)` (Crisp notation)
+
+<details>
+<summary>C++ notation</symmary>
+<pre>
 ```
          Col 0    Col 1    Col 2    Col 3
        +---------+---------+---------+---------+
@@ -1600,6 +1614,24 @@ Row 1  | A[1][0] | A[1][1] | A[1][2] | A[1][3] |
 Row 2  | A[2][0] | A[2][1] | A[2][2] | A[2][3] |
        +---------+---------+---------+---------+
 ```
+</pre>
+</details>
+
+<details open>
+<summary>Crisp notation</symmary>
+<pre>
+```
+        Col 0      Col 1      Col 2      Col 3
+       +-----------+-----------+-----------+-----------+
+Row 0  | (~ A 0 0) | (~ A 0 1) | (~ A 0 2) | (~ A 0 3) |
+       +-----------+-----------+-----------+-----------+
+Row 1  | (~ A 1 0) | (~ A 1 1) | (~ A 1 2) | (~ A 1 3) |
+       +-----------+-----------+-----------+-----------+
+Row 2  | (~ A 2 0) | (~ A 2 1) | (~ A 2 2) | (~ A 2 3) |
+       +-----------+-----------+-----------+-----------+
+```
+</pre>
+</details>
 
 Next, here is two different ways this matrix could be created.
 In both methods, the coordinates above are exactly the same.
@@ -4935,15 +4967,13 @@ Example.
 ```
 In the above example, `A` would be defined because `full_ride` was `T`.
 But `B` would NOT be defined, because `sleigh_ride` was `nil`
-And `C` WOULD be defined, because, unlike C, `0` does NOT pun as false/nil.
+And `C` would also NOT be defined, because  `0` does puns as false.
 
 And, the following compilation line would reverse those completely:
 ```
-crisp.exe -Dfull_ride=nil -Dsleigh_ride=T -Dover_ride=nil  ... etc
+crisp.exe -Dfull_ride=nil -Dsleigh_ride=T -Dover_ride=1  ... etc
 ```
 
-### Remember 0 != false
-using `-Dsome_flag=0` will likely NOT work the same as in C.
 
 ### another example
 
@@ -5749,7 +5779,7 @@ DATA-POOL   - could be a real value add here. Kernels can't really dynamically a
 
 [ ] fused softmax ( whatever T F that is.)
 
-[ ] Am not totally loving the macros. with-template-type wrapped over function seems better?  Or maybe defmacro should be   
+[ ] Am not totally loving the reduction macros. with-template-type wrapped over function seems better?  Or maybe defmacro should be   
     statically typed.  Having it slip through the cracks seems weird, and dangerous.
 
 [ ] REVISIT / CLEAN UP MEMORY / SUMMARYIZE and COMPARE .  a) make-vector with compile-time known size: fully supported.  
@@ -5761,7 +5791,8 @@ DATA-POOL   - could be a real value add here. Kernels can't really dynamically a
 [x] Pretend we introduce 'while' or something. If a kernel does run infinitely, how can it be stopped?
     presumably some 'terminate()' call from within kernel. But what about from host? A: Not easily from host. Requires reset. 
 
-[ ] Mojo    ( https://www.modular.com/mojo )  One language, any hardware.  Bare metal performance. Pythonic Code.  
+[ ] OTHERS
+   Mojo    ( https://www.modular.com/mojo )  One language, any hardware.  Bare metal performance. Pythonic Code.  
     Triton  ( https://openai.com/index/triton ) open source gpu programming for neural networks. 
     Cutlass  ( https://github.com/NVIDIA/cutlass ) CUDA Templates and Python DSLs for High-Performance Linear Algebra
     Hillisp ( https://github.com/michelp/hillisp )   tiny Lisp implementation written in CUDA.  Drives the GPU.  Queues up "fill" kernels, "+" kernels, etc. 
@@ -5772,7 +5803,7 @@ DATA-POOL   - could be a real value add here. Kernels can't really dynamically a
 
 [ ] Generate Crisp from Python. 
 
-[ ] FFT ?
+[ ] FFT 
 
 [ ] warp scheduling and memory coalescing
 
