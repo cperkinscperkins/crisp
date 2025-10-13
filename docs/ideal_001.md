@@ -1679,9 +1679,16 @@ As in vectors `~` is the primary access function for getting and setting element
 It is also the safe and correct access function because it correctly navigates to the underlying data
 using strides. 
 
-The `~ref~` function is NOT supported for tensors. 
+Like C++ and Python (but unlike Fortran), Crisp uses "odometer" ordering of terms.
+And the order of these terms are unaffected by the strides or whether "row major" or "col major" was elected
+for the internal layout.
 
-Also, it is very likely that if more abstract tensors are supported in the future (symmetrical, sparse, etc)
+```
+(~ some-3D-tensor z y x)
+```
+
+The `~ref~` function is NOT supported for tensors. Also, it is very likely that if more abstract 
+tensors are supported in the future (symmetrical, sparse, etc)
 that they may have completely different affordances for access. 
 
 
@@ -1748,7 +1755,13 @@ Matrices
 
 Matrices are simply 2D tensor views. The type alias `matrix` is defined to make coding easier, but any 2D `tensor-view` can automatically be considered a matrix. It is not a "derived" type.
 
-There are special functions specifically for matrices.
+In [Creating Tensors](#creating-tensors) above, two routines for creating matrices are discussed:
+```
+(make-matrix parent len0 len1 &key (major :row) (offset 0))
+(make-matrix parent strideVec len0 len1 &key (offset 0))
+```
+
+Additionally, there are special functions specifically for matrices.
 
 ### col
 
@@ -1769,7 +1782,120 @@ Given an index `y` and a 2D `tensor-view` matrix `A`   this returns a 1D `tensor
 
 These utility functions return the number of columns or rows of the matrix.
 
+### get-layout
+```
+`(get-layout M:matrix) => :row-major or :col-major or :other-layout
+```
 
+`get-layout` analyses the strides of some 2D matrix and returns a value from the
+`matrix-layout` enumeration. This can be `:row-major`, `:col-major` or `:other-layout`
+
+### transpose
+
+```
+(transpose M) ; returns a new tensor-view, leaving M alone.
+(transpose! M) ; M is transposed, strides updated in place
+```
+
+The `transpose` operations swap the logical "shape" of the matrix. For example, starting with a 3x4 matrix
+and ending with a 4x3 matrix. This is done simply by updating the strides. It is instant and zero cost.
+
+Note that the while data is not moved it does mean that a "row major" matrix will now be "col major", and vice versa.
+
+Here is a quick example with a 2x3 matrix:
+```
+        Col 0   Col 1   Col 2
+       +-------+-------+-------+
+Row 0  |   1   |   2   |   3   |
+       +-------+-------+-------+
+Row 1  |   4   |   5   |   6   |
+       +-------+-------+-------+
+
+Transposed:
+        Col 0   Col 1
+       +-------+-------+
+Row 0  |   1   |   4   |
+       +-------+-------+
+Row 1  |   2   |   5   |
+       +-------+-------+
+Row 2  |   3   |   6   |
+       +-------+-------+
+```
+
+Remember, NO DATA IS MOVED.
+
+Possible Implemenation
+```
+(def-function transpose! (M:matrix)
+  (declare #((matrix) => nil))
+
+  (let* ((dims-vec (dims~ M))
+         (strides-vec (strides~ M)))
+         (temp-dim0 (~ dims-vec 0))
+         (temp-stride0 (~ strides-vec 0))
+    ;; Swap the dimensions: (num_rows, num_cols) -> (num_cols, num_rows)
+    (set! (~ dims-vec 0) (~ dims-vec 1))
+    (set! (~ dims-vec 1) temp-dim0)
+
+    ;; Swap the strides: (row_stride, col_stride) -> (col_stride, row_stride)
+    (set! (~ strides-vec 0) (~ strides-vec 1))
+    (set! (~ strides-vec 1) temp-stride0)))
+
+```
+
+### convert-layout
+
+```
+(convert-layout M choice target-vector) ; returns new tensor-view leaving M alone.
+(convert-layout! M choice) ; data behind M modified in place.
+```
+Crisp provides two layout conversion routines which can be used to convert a matrix into a specific layout choice.
+If you are having to do this a lot, then some suboptimal decisions might have been made and should
+be revisited. But, we live in the real world where we often have to deal with things as they are, and 
+not necessarily like we want them to be.  
+
+```
+;; this routine assumes a 2D global_work_size
+
+(def-const TILE_DIM:ulong +warp-size+)
+
+(def-function convert-layout! (M choice &optional (scratch (make-local-matrix-conversion-scratch (element-type M))))
+  ;; scratch is 32x32 (+warp-size+ x +warp-size+)
+  (declare #(matrix matrix-layout &optional (vector-type (element-type M)) => nil))
+  (c-t-assert (!= choice :other-layout) "dude")
+  (r-t-assert-0 (!= choice :other-layout) "??")
+
+  (unless (= (get-layout M) choice)
+    (let ((temp-tile (make-matrix scratch TILE_DIM (+ TILE_DIM 1)))) ; Padded tile sometimes increases performance
+
+      ;; Calculate the dimensions of the grid of workgroups that was launched
+      (let ((grid-dim-x (get-num-groups 0))
+            (grid-dim-y (get-num-groups 1)))
+
+        ;; This loop makes each workgroup process multiple tiles.
+        (loop-tile-stride M TILE_DIM (tile-idx-y tile-idx-x) 
+
+          ;; calculate the top-left corner of the CURRENT tile
+          (let ((tile-start-x tile-idx-x)
+                (tile-start-y tile-idx-y))
+
+            (let ((local-id-x (get-local-id 0)) (local-id-y (get-local-id 1)))
+
+              ;; load tile  - coalesced read
+              (let ((source-x (+ tile-start-x local-id-x))
+                    (source-y (+ tile-start-y local-id-y)))
+                (when (and (< source-x (num-cols M)) (< source-y (num-rows M)))
+                  (set! (~ temp-tile local-id-y local-id-x) (~ M source-y source-x))))
+              
+              (local-barrier)
+
+              ;; store transposed tile coalesced write
+              (let ((dest-x (+ tile-start-y local-id-x))
+                    (dest-y (+ tile-start-x local-id-y)))
+                (let ((val (~ temp-tile local-id-x local-id-y)))
+                  (when (and (< dest-x (num-cols M)) (< dest-y (num-rows M)))
+                    (set! (~ M dest-y dest-x) val))))))))))
+```
 
 
 
@@ -2766,7 +2892,34 @@ If the arity of the tensor matches the arity of the enqueue (`work_dim`) then th
 correctly, rolling them over at the limits of the tensor in those dimensions.
 
 
+### loop-group-stride
 
+All the `loop-XXX-stride` forms we've seen so far have been thread oriented. For example a thread is given one 
+index in a vector, which it uses, and then on the next entry to the loop it's assigned index is very far away.
+The "jump" is determined by the global work size. 
+
+But `loop-group-stride` is workgroup oriented. A target (like a `vector` or `tensor-view`) is provided, along with a work
+size and then a group of threads each get the SAME index each time through the loop. 
+
+You can think of a small cleaning crew (a workgroup) is assigned to a very long hallway (a vector). They clean one section of the hallway (a chunk), then skip ahead to the next section assigned to them, continuing until the whole hallway is clean.
+
+```
+(loop-group-stride Vector chunk-sz:ulong (chunk-start-idx) ...)  1D 
+
+(loop-group-stride Matrix tile-dims:ulong2 (tile-idx-y tile-idx-x) ... )
+
+(loop-group-stride 3D-Tensor-View block-dims:ulong3 (block-z block-y block-x) ...)
+```
+
+Note that as the arity of `loop-grid-stride` goes up, so does arity of the dimensions argument (`ulong`, `ulong2` and `ulong3`).
+
+#### loop-tile-stride 
+
+he most common use of a 2D group stride is to process a matrix using square tiles. For this, the `loop-tile-stride` macro is provided as a simpler shorthand. It simply takes a `ulong` for `tile-dim` because it assumes a square tile.
+
+```
+(loop-tile-stride Matrix tile-dim:ulong (tile-idx-y tile-idx-x) ... )
+```
 
 
 
@@ -5470,6 +5623,8 @@ control flow
 - loop-vector-stride
 - loop-soa-stride
 - loop-tensor-stride                  [ND]
+- loop-group-stride                [3D]
+- loop-tile-stride                [2D]
 - uniform            [DP]
 - dotimes / dotimes+ / dotimes*
 - dec-times / dec-times+ / dec-times*
@@ -5590,9 +5745,19 @@ other
 - use                   [DP]
 - tensor-view-type
 - make-tensor-view     [KO]
+- make-matrix          [KO]
 - num-dims-of
 - `dims~`
 - `strides~`
+- `~` for tensors
+- matrix
+- col
+- row
+- num-cols
+- num-rows
+- get-layout
+- transpose
+- convert-layout
 - const-vec-type
 - maybe                 
 - result               [KO]
@@ -5642,6 +5807,7 @@ lisp
 - lognot
 - ash
 - as-bits
+- unless
 
 
 ### Keys
