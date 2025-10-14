@@ -1,6 +1,10 @@
 CRISP - Lisp for developing GPU Kernels
 =======================================
 
+> In C you use C to solve a problem. In Lisp you make the language fit the problem, then you solve it.
+>
+> — *Popular Lisp Adage*
+
 
 Overview
 --------
@@ -2906,16 +2910,16 @@ You can think of a small cleaning crew (a workgroup) is assigned to a very long 
 ```
 (loop-group-stride Vector chunk-sz:ulong (chunk-start-idx) ...)  1D 
 
-(loop-group-stride Matrix tile-dims:ulong2 (tile-idx-y tile-idx-x) ... )
+(loop-group-stride Matrix tile-dims:ulong2 (tile-idx-y tile-idx-x) ... ) 2D
 
-(loop-group-stride 3D-Tensor-View block-dims:ulong3 (block-z block-y block-x) ...)
+(loop-group-stride 3D-Tensor-View block-dims:ulong3 (block-z block-y block-x) ...) 3D
 ```
 
 Note that as the arity of `loop-grid-stride` goes up, so does arity of the dimensions argument (`ulong`, `ulong2` and `ulong3`).
 
 #### loop-tile-stride 
 
-he most common use of a 2D group stride is to process a matrix using square tiles. For this, the `loop-tile-stride` macro is provided as a simpler shorthand. It simply takes a `ulong` for `tile-dim` because it assumes a square tile.
+The most common use of a 2D group stride is to process a matrix using square tiles. For this, the `loop-tile-stride` macro is provided as a simpler shorthand. It simply takes a `ulong` for `tile-dim` because it assumes a square tile.
 
 ```
 (loop-tile-stride Matrix tile-dim:ulong (tile-idx-y tile-idx-x) ... )
@@ -2990,6 +2994,7 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 - loop-grid-stride / grid-stride-target   ( see Looping -- Grid Stride above ) 
 - loop-grid-stride-linear
 - loop-vector-stride / loop-soa-stride / loop-tensor-stride
+- loop-group-stride / loop-tile-stride
 - dotimes / dotimes+ / dotimes*
 - dec-times / dec-times+ / dec-times*
 - dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
@@ -4132,7 +4137,7 @@ This is a possible implementation of `exclusive-scan` realized via a Belloch Sca
   `(let ((local-id (get-local-id))
          (wg-size (get-local-linear-size)))
      
-     ;; --- PASS 1: THE UP-SWEEP (Reduction Tree) ---
+     ;; first pass - the up-sweep (reduction tree)
      ;; In each step, we add the value from 2^d elements away.
      (do-power-stride (stride wg-size)
       (when (>= local-id stride)
@@ -4148,7 +4153,7 @@ This is a possible implementation of `exclusive-scan` realized via a Belloch Sca
          (set! (~ ,local-vec local-id) 0))
        (local-barrier)
 
-       ;; --- PASS 2: THE DOWN-SWEEP ---
+       ;; second pass - down sweep
        ;; Now we work back down the tree, distributing the sums.
        (dec-power-stride (stride wg-size)
         (when (>= local-id stride)
@@ -4411,13 +4416,13 @@ A possible implementation might be
         (global-id (get-global-id))
         (local-id (get-local-id)))
     (r-t-assert-0 (is-power-of-2 N) "local_work_size should be a power of 2")
-    ;; --- 1. Load data from global to shared memory ---
+    ;; load data from global to shared memory 
     ;; Each thread loads one element. For simplicity, assume N = global_size
     (when (< global-id N) ;; Boundary check for global data
       (set! (~ shared-array local-id) (~ data-in global-id)))
     (local-barrier)
 
-    ;; --- 2. Perform Bitonic Sort ---
+    ;; perform Bitonic Sort
     ;; Outer loop: Builds increasingly large bitonic sequences
     ;; 'j' represents the size of the bitonic sequence being formed (1, 2, 4, ... N/2)
     (do-power-stride (j N) ; Iterates j = 1, 2, 4, ... N/2
@@ -4433,7 +4438,7 @@ A possible implementation might be
             (bitonic-compare-and-swap shared-array local-id partner-id direction)))
         (local-barrier)))
     
-    ;; --- 3. Store sorted data from shared to global memory ---
+    ;; store sorted data from shared to global memory
     (when (< global-id N) ;; Boundary check for global data
       (set! (~ data-out global-id) (~ shared-array local-id)))
     (local-barrier))))
@@ -4595,17 +4600,17 @@ Possible Implementation
     (declare #((vector-type T :global :readable A) (vector-type uint :global :read_write A 256) uint => nil)
               (local-work-size :set-to 256 :msg "local_work_size must be 256 for histogram kernel"))
 
-    ;; --- 1. SETUP ---
+    ;; setup
     (let ((local-id (get-local-id))
           (local-size (get-local-size)))
 
-      ;; --- 2. INITIALIZE LOCAL HISTOGRAM ---
+      ;; initialize local histogram
       ;; The workgroup must zero-out its local histogram. This is done in parallel.
       ;; Each thread clears a portion of the 256-element array.
       (set! (~ local-histogram local-id) 0)
       (local-barrier)
 
-      ;; --- 3. BUILD THE LOCAL HISTOGRAM ---
+      ;; build local histogram
       ;; Each thread processes its slice of the large input vector.
       ;; note we have to handle floats and unsigned digits special to make sure 
       ;; they are bit-wise evaluable. 
@@ -4628,7 +4633,7 @@ Possible Implementation
             (atomic-add! (~ local-histogram digit) 1))))
       (local-barrier)
 
-      ;; --- 4. COMBINE INTO GLOBAL HISTOGRAM ---
+      ;; combine into local histogram
       ;; Now that the local histogram is complete, the workgroup adds its results
       ;; to the final global histogram.
       ;; Each thread is responsible for one bin of the local histogram.
@@ -5972,6 +5977,9 @@ DATA-POOL   - could be a real value add here. Kernels can't really dynamically a
 [ ] FFT 
 
 [ ] warp scheduling and memory coalescing
+
+[ ] def-orchestration / calls kernels and some prebuilt affordances: cuBLAS, possibly oneMKL?.  "soft description". basic vector declarations, data passing, looping.
+    probably need a (TBD ...) and (hoist-comment ...) macro.   Templates?  Gen?  
 
 <!-- PUT THIS LITTLE SUMMARY ON MEMORY SOMEPLACE -->
 Memory
