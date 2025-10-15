@@ -1587,6 +1587,8 @@ Tensors are incompletely typed if the parent vector-type is incomplete, or absen
 `num-dims-of` is a compile-time expression that returns the dimensions used to define the `tensor-view-type` .
  It triggers a compile-time error if the `tensor-view-type` doesn't contain that (it does NOT return nil).
 
+ In Crisp, a 1D `tensor-view` can be used nearly anywhere a `vector-view` can be used (which is nearly anywhere a `vector` can be used.)
+
 ### Creating Tensors
 
 There are four routines for creating `tensor-view`s. Two for `tensor-view` of any dimension,
@@ -2580,8 +2582,8 @@ Crisp has a number of `declare` directives that allow the host and the kernel to
 
 ### global-size / local-size
 ```
-(global-size &key set-to VALS derive-from EXPR msg:string)
-(local-size &key set-to VALS derive-from EXPR msg:string)
+(global-size &key set-to VALS derive-from EXPR dims:ulong msg:string)
+(local-size &key set-to VALS derive-from EXPR dims:ulong msg:string)
 ```
 These directives tells the hoisting code about how the kernel expects the global_work_size or local_work_size to be set.  
 If both are used, then their arity must agree. And, the `work_dim` value the hoisting code sets will also match their arity.
@@ -2594,6 +2596,20 @@ A single directive CANNOT use both the `:set-to` and `:derive-from` keys.
 
 #### :msg
 The `:msg` key takes a string that will be output into the comment at the place where the hoisting code is setting the particular value. 
+
+
+#### :dims
+The `:dims` key just takes the number `1` , `2` or `3` to express the required arity.  If using `:set-to` or `:derive-from` then
+`:dims` is not usually needed.  But there will be times when a kernel doesn't have particular size requirements but DOES
+have arity expectations.  Communicate them with `:dims`
+
+If the `:dims` declaration does not match the arity of `:set-to` or `:derived-from`, or the arity differs between `global-size` and `local-size` then the compiler will error.
+
+```
+(def-kernel operate_2D ()
+   (declare (global-size :dims 2))
+   ...)
+```
 
 #### :set-to
 The `:set-to` key instructs the hoisting code to use a specific value, (or values if multi-dimensional).
@@ -4862,15 +4878,15 @@ NESTED map-stride.     What if a #'someFunction that is passed to map-stride als
 -->
 
 ```
-(def-type 1D-tensor (tensor-view-type 1))                        ; <-- 1D tensors need to pun as vectors
+(def-type 1D-tensor (tensor-view-type 1))                        
 (def-function 1D-dot-prod (A B)
   (declare #(1D-tensor 1D-tensor => (element-type A)))  
-  (c-t-assert (= (element-type A) (element-type B)) "element types must match")    ; element-type on tensor helper
+  (c-t-assert (= (element-type A) (element-type B)) "element types must match") 
   (when-thread-is 0
     (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
   (let ((C-scratch (make-scratch-vector A :name "dot product")))
     (map-stride #'* (A B) C-scratch)
-    (reduce-vec #'+ C-scratch)))                                         ; reduce-vec 
+    (reduce-vec-atomic #'+ C-scratch 0)))                         ; reduce-vec-atomic needs RETURN vector
        
 (def-type 2D-matrix (tensor-view-type 2))
 (def-function matrix-dot-prod (A B)
@@ -4885,7 +4901,7 @@ NESTED map-stride.     What if a #'someFunction that is passed to map-stride als
     
     (let* ((vec (make-result-vector A (* outer-A outer-B)))
            (res (make-tensor-view vec outer-A outer-B ))) ;; <-- is this right or should it be outer inner
-              (loop-grid-stride (x y)                              ; <-- does this mean we need a 2D enqueue ?
+              (loop-grid-stride (x y)                              ; <-- does this mean we need a 2D enqueue ? ; yes
                 (declare (grid-stride-target outer-A outer-B))
                 (set! (~ res x y) (1D-dot-prod (row x A) (col y B))))   ; row  and col helpers
               (return res))))       
@@ -5184,6 +5200,170 @@ coordination with the hoisting code.
 
 ```
 
+Static Analysys
+===============
+
+If you were ever wondering why Crisp is intentionally not Turing-complete, this section is the answer. 
+Because every kernel is guaranteed to terminate, its control flow is finite and can be completely analyzed by the compiler. 
+This allows Crisp to sidestep the Halting Problem, unlocking a suite of deep static analysis tools 
+that would be impossible to implement reliably in a general-purpose language.
+
+To help programmers reach full GPU performance and avoid errors, Crisp includes some static analysis ability. 
+It makes little sense to apply these globally, as that would result in a lot of false positive warnings. 
+Therefore the Crisp static analysis is "opt-in".
+
+These opt-in analysis will slow down the compilation. Use the `--no-static-analysis` compiler flag to skip them.
+
+Note, also, that the static analysis usually requires two pass compilation. If you elect `--single-pass` they are likely
+skipped. The compiler will warn you if it is skipping any.  Don't rely on `--single-pass` to skip them. 
+If you have static analysis opt-ins within your file, 
+and you don't want that analysis performed, use `--no-static-analysis`. 
+
+declaim
+-------
+
+We've already seen `declare` introduced earlier. Whereas `declare` must appear in the context of some `progn`, 
+`declaim` is done at the top-level of your .crisp file, usually at its beginning.
+Like `declare`, `declaim` is enforced at compile-time and is erased from the runtime execution.
+
+Example:
+```
+(declaim (check-coalesce #'my_kernel #'my_2D_memcpy))
+```
+In the example above, the "coalescence check" (see below) would be run on #'my_kernel and #'my_2D_memcpy, but not on any 
+other functions or kernels.
+
+If you want a check conducted on EVERY function and kernel in the .crisp file, simply `declaim` it directly.
+Note that except for possibly `check-barriers`, running checks like this on EVERY function is probably a bad idea.
+It's slow, and you'll likely trip a bunch of warnings that shouldn't really be applied to a particular function.
+(Full Disclosure: `check-barriers` is slow too).
+
+```
+(declaim (check-barriers))
+```
+In the example above the "barrier check"  (see below) would be run on every function and kernel.
+
+check-coalesce
+--------------
+
+```
+;; in a kernel or function progn:
+(declare (check-coalesce))  
+
+;; top level of a file.
+(declaim (check-coalesce #'some-function))
+```
+
+Coalesced memory access is faster than just random memory access. But it requires
+- warp-level operation: access to be performed by threads in a single warp
+- uniform: all threads execute the same load or the same store instruction at the same time
+- contiguous and linear access - the threads' memory addresses should be adjacent and follow
+  the same order as the thread id.
+
+The compiler can check for this.  If you put a `check-coalesce` in a kernel or functions `declare` block,
+or specify the kernel/function in a top level `declaim`, then this check will be performed
+and a warning emitted if the function in question is not using coalesced access and a note if it is ok.
+
+
+check-bank-conflicts
+--------------------
+
+```
+;; in a kernel or function progn:
+(declare (check-bank-conflicts))
+
+;; top level of file
+(declaim (check-bank-conflicts #'some-function))
+```
+
+Local/shared memory is divided into a number of parallel memory banks (typically 32). 
+Performance is highest when threads in a warp access different banks. If multiple threads
+in a warp access the same bank simultaneously, it's a bank conflict, and the
+accesses are serialized, killing performance.
+
+When this check is enabled, the compiler analyzes all access to `:local` vectors. 
+It looks at the index calculation for each thread within a warp. If it can prove that multiple
+threads are accessing memory with a stride that is a multiple of the bank count 
+(e.g., thread i accesses local_array[i * 32]), it issues a warning.  It will emit a note if it 
+the analysis completes and no conflicts are found.
+
+
+check-divergence
+----------------
+
+```
+;; in a kernel or function progn:
+(declare (check-divergence))
+
+;; top level of file
+(declaim (check-divergence #'some-function #'other-function))
+```
+
+While some divergence is unavoidable, sometimes you may write a function that you believe
+should be completely uniform for all threads in a warp.
+
+BUT, it is easy to overlook that some Crisp macros (for example, 'when-thread-id-is`) or
+other behaviors may introduce divergence.
+
+This check looks specifically for warp level divergence.
+When this check is enabled,  the compiler analyzes all conditional branches (if, cond) inside the function. 
+If it finds any branch whose condition is not a uniform value 
+(i.e., the condition depends on something like get_lane_id or a non-uniform memory load), 
+it will emit a warning.  It will emit a congratulatory note if it is ok.
+
+
+max-registers / warn-max-registers
+----------------------------------
+
+```
+;; in a kernel or function progn:
+(declare (max-registers 64))
+(declare (warn-max-registers 64))
+```
+
+This analysis cannot be elected in `declaim`. It is function or kernel specific.
+
+`max-registers` and `warn-max-registers` are advanced checks. These checks are slightly 
+easier to use if you have performed compilations already
+and are looking at the register usage enumerated in the metadata file. 
+
+These check set a "performance budget" that sets an upper bound on how many registers a function or kernel requires.
+The compiler can estimate how many registers a function will require. If its estimate exceeds
+the declared budget, a warning is issued.
+
+For example:
+
+> WARNING: Register pressure for 'my_kernel' is estimated at 72, exceeding the declared budget of 64. 
+> This may lead to reduced occupancy.
+
+
+For `warn-max-registers`, there is only the warning emitted, no other change occurs.
+
+`max-registers`, on the other hand, is NORMATIVE. In addition to the warning, 
+the compiler will TRY TO FIT the kernel 
+to `max-registers`, which may mean that other variables will experience "register spill"
+and be moved to local memory. Only use `max-registers` if you know what you are about.
+
+
+check-barriers
+--------------
+
+```
+;; in a kernel or function progn:
+(declare (check-barriers))
+
+;; top level of file
+(declaim (check-barriers #'some-function #'other-function))
+```
+
+If a `(local-barrier)` is placed inside a conditional branch that not all threads in a workgroup will execute, the kernel will deadlock.
+Crisp performs this check automatically for any use of `when-thread-in-group-is`, whether this check has been elected or not.
+But with this check declared, Crisp will try to analyze other thread divergences and barriers looking for deadlock potential.
+
+`check-barriers` will examine the Crisp branching control flow constructs (like `if` and `cond` etc) to 
+see if perhaps a barrier is performed in one branch but not another, and warn about it.  
+
+
 
 
 Compiler Invocation and Options
@@ -5310,10 +5490,14 @@ This flag is passed a directory. The .crisp files that are being compiled will b
 be modified in two ways: 
  - any types that were inferred by the compiler will now be explicitly declared in the updated .crisp file.
  - the file will be output in dependency order, compatible with single pass compilation. 
+ - any static analysis "opt-in"s will be removed. 
 
 
 ### `--no-inference`
 Type inference is turned off. The compiler will output an error for missing types.
+
+### `--no-static-analysis`
+Any opt-in static analysis (see above) will be skipped. 
 
 ### `--single-pass`
 By default, the Crisp compiler performs "multi-pass" compilation, which means that the compiler first reads the .crisp files, gets an understanding
@@ -5383,6 +5567,10 @@ do to maximize compilation performance.
 ### Single Pass
 
 `--single-pass` compilation is faster than multi-pass. Use `--re-output-crisp` if necessary to prepare for this.
+
+### No Static Analysis
+
+Static analysis is slow. If you have opt-in static analysis in your .crisp file, use `--no-static-analysis` to skip them.
 
 ###  No Type Inference
 
