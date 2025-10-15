@@ -56,6 +56,8 @@ Major Features of the Crisp language and tools
 declared more or less critical in the event of register "spill" when there are not enough. 
 - Kernels and functions can declare how/what they depend on or expect the enqueing code to configure
  global and local work sizes.  These expectations are output into the hoisting example code that is output.
+- Opt-in static analysis is available. Different checks are requested individually per-function or per-kernel. When
+  activated the Crisp compiler can check for memory coalescence, bank conflicts, thread divergence, barrier deadlocks and more.
 
 Differences From Lisp
 ---------------------
@@ -784,7 +786,8 @@ Here is another example.
 ```
 
 Crisp has several built-in type constraint functions:
-- `is-numeric?`
+- `is-numeric?` / `is-scalar?`
+- `is-hardware-vector?`
 - `is-integer?`
 - `is-floating-point?`
 - `is-orderable?`  => returns T if the type supports both `<` and `>` 
@@ -1849,13 +1852,61 @@ Possible Implemenation
 
 ```
 
+### load-tile / store-tile
+
+```
+(load-tile source-M dest-tile tile-y tile-x &key transpose)
+(store-tile source-tile dest-M tile-y tile-x &key transpose)
+```
+When working with matrices, we often want coalesced memory access, but that is limited
+to the `:row-major` / `:col-major` choice.  For this reason, a very common
+usage pattern when working with matrices is to use local memory tiles.
+These are typically `32x32` (ie `+warp-size+` squared ).
+
+The `load-tile` and `store-tile` macros can help with that. They presume the kernel
+has been enqueued with 2D arity and just use the local-id x and y for the target IN the tile.  
+
+The tile will simply lift the data right out of the source-M, whether it is
+`:col-major` or `:row-major`, and so have the same layout, just smaller.  
+
+But the `:transpose` argument can be used to change that. If `true` then
+the `x` and `y` coordinates will be swapped. 
+
+Remember dest-tile should be `:local` memory.
+
+Here are possible implementations
+```
+(defmacro load-tile (source-M dest-tile tile-y tile-x &key transpose)
+  `(let ((tile-dim (num-cols ,dest-tile))
+         (local-id-x (get-local-id 0))
+         (local-id-y (get-local-id 1)))
+
+     ;; Calculate Source Coords for a COALESCED READ 
+     ;; This pattern is always the same: threads in a warp read adjacent columns.
+     (let ((source-x (+ (* ,tile-x tile-dim) local-id-x))
+           (source-y (+ (* ,tile-y tile-dim) local-id-y)))
+
+       ;; Read from Global Memory
+       (when (and (< source-y (num-rows ,source-M)) (< source-x (num-cols ,source-M)))
+         (let ((val (~ ,source-M source-y source-x)))
+
+           ;; Write to Local Memory (Transposed or Direct)
+           (if ,transpose
+               ;; If transposing, write to the swapped local coordinates.
+               (set! (~ ,dest-tile local-id-x local-id-y) val)
+               ;; Otherwise, do a direct copy.
+               (set! (~ ,dest-tile local-id-y local-id-x) val)))))))
+```
+
+
+
 ### convert-layout
 
 ```
-(convert-layout M choice target-vector) ; returns new tensor-view leaving M alone.
-(convert-layout! M choice) ; data behind M modified in place.
+(convert-layout source-M dest-M choice) ; conversion is loaded into dest-M, leaving source-M alone
+
 ```
-Crisp provides two layout conversion routines which can be used to convert a matrix into a specific layout choice.
+Crisp provides a layout conversion routine which can be used to convert a matrix into a specific layout choice.
 If you are having to do this a lot, then some suboptimal decisions might have been made and should
 be revisited. But, we live in the real world where we often have to deal with things as they are, and 
 not necessarily like we want them to be.  
@@ -1865,42 +1916,25 @@ not necessarily like we want them to be.
 
 (def-const TILE_DIM:ulong +warp-size+)
 
-(def-function convert-layout! (M choice &optional (scratch (make-local-matrix-conversion-scratch (element-type M))))
+(def-function convert-layout (source-M dest-M choice &optional (scratch (make-local-matrix-conversion-scratch (element-type source-M))))
   ;; scratch is 32x32 (+warp-size+ x +warp-size+)
-  (declare #(matrix matrix-layout &optional (vector-type (element-type M)) => nil))
+  (declare #(matrix matrix matrix-layout &optional (vector-type (element-type source-M)) => nil))
   (c-t-assert (!= choice :other-layout) "dude")
   (r-t-assert-0 (!= choice :other-layout) "??")
 
-  (unless (= (get-layout M) choice)
+  (unless (= (get-layout source-M) choice)
     (let ((temp-tile (make-matrix scratch TILE_DIM (+ TILE_DIM 1)))) ; Padded tile sometimes increases performance
 
-      ;; Calculate the dimensions of the grid of workgroups that was launched
-      (let ((grid-dim-x (get-num-groups 0))
-            (grid-dim-y (get-num-groups 1)))
+      ;; This loop makes each workgroup process multiple tiles.
+      (loop-tile-stride M TILE_DIM (tile-idx-y tile-idx-x) 
 
-        ;; This loop makes each workgroup process multiple tiles.
-        (loop-tile-stride M TILE_DIM (tile-idx-y tile-idx-x) 
+        ;; load tile  - coalesced read
+        (load-tile M temp-tile tile-idx-y tile-idx-x :transpose (= (get-layout M) :col-major))
+        
+        (local-barrier)
 
-          ;; calculate the top-left corner of the CURRENT tile
-          (let ((tile-start-x tile-idx-x)
-                (tile-start-y tile-idx-y))
-
-            (let ((local-id-x (get-local-id 0)) (local-id-y (get-local-id 1)))
-
-              ;; load tile  - coalesced read
-              (let ((source-x (+ tile-start-x local-id-x))
-                    (source-y (+ tile-start-y local-id-y)))
-                (when (and (< source-x (num-cols M)) (< source-y (num-rows M)))
-                  (set! (~ temp-tile local-id-y local-id-x) (~ M source-y source-x))))
-              
-              (local-barrier)
-
-              ;; store transposed tile coalesced write
-              (let ((dest-x (+ tile-start-y local-id-x))
-                    (dest-y (+ tile-start-x local-id-y)))
-                (let ((val (~ temp-tile local-id-x local-id-y)))
-                  (when (and (< dest-x (num-cols M)) (< dest-y (num-rows M)))
-                    (set! (~ M dest-y dest-x) val))))))))))
+        ;; store transposed tile coalesced write
+        (store-tile temp-tile dest-M tile-idx-y tile-idx-x :transpose (= (get-layout dest-M) :row-major))))))
 ```
 
 
@@ -4832,79 +4866,134 @@ workgroup will add its sum to the first element of the result vector.
 Vector and Tensor Operations
 ============================
 
-<!-- 
-The code below unearths a number of issues and questions.
+dot product
+-----------
 
+The "dot product" is an operation that takes two vectors of the same length
+and returns a single scalar number. It's the sum of the products of the corresponding
+entries of the two sequences of number. 
+Mathematically, for two vectors A and B, the dot product is:
+<!-- latex -->
+$$A \cdot B = \sum_{i=1}^{n} A_i B_i = A_1B_1 + A_2B_2 + \cdots + A_nB_n$$
 
-1D-tensor   - should/could that type also be a vector? 
+I can be thought of as a measure of how much one vector "points in the direction" of another. 
+If two vectors are perpendicular, their dot product is zero. If they point in the same direction, their dot product is maximized.
 
-vector-view that CHANGES element-type. Need.
+### dot-prod
 
+`(dot-prod A B)`
 
+Crisp provides the `dot-prod` function. It takes two arguments. They can
+be a `vector`, `vector-view` or a 1D `tensor-view`.  Note that `dot-prod` should be
+coalesced automatically for `vector` and `vector-view` arguments. But not
+necessarily for `tensor-view`.  A row of a row-major `matrix` would be fine, but
+the col or a row-major `matrix` would not be able to have coalesced memory copy.
 
-map-stride  over a small N.   if we have 1000 threads, and we do map-stride 4, that means 996 threads are doing nothing.  How better ?
-                              BUT, this is STILL better than a regular dotimes.
+There is a possible implementation below, with the implementation of `matmul`
 
-NESTED map-stride.     What if a #'someFunction that is passed to map-stride also CALLS map-stride.  That'll nest.  Is that good or bad?  It's Bad. Is it?
-                       So the loop-grid-stride of 2D-matrix calling map-stride of 1D-dot-prod means we need to inline. 
+matrix multiplication (matmul)
+-------------------------------
 
-                       x = my_thread_id()
-                       while (x < OUTER_TARGET ) {
-                          do_something(x);
-                          x += get_total_threads();
-                       }
+Matrix multiplication (`matmul`) is an operation that takes two matrices and produces a new matrix.
+Each element in the resulting matrix is the dot product of a row from the first matrix and a column from the second matrix. 
+It's the fundamental operation for transforming data in linear algebra, used for tasks like 
+rotating and scaling vectors in 3D graphics or applying weights in a neural network.
 
+### matmul
 
-                       x = my_thread_id()
-                       while (x < OUTER_TARGET){
+`(matmul A B)`
 
-                         //do_something(x)
-                         y= my_thread_id()
-                         while (y < INNER_TARGET){
+Crisp provides a `matmul` function. It takes two arguments, they are both matrices,
+which are just 2D `tensor-view`. Note using `matmul` requires that the calling kernel
+is enqueued with an arity of 2.
 
-                          // do_other_thing(y)
-                          z = my_thread_id()
-                          while (z < INNERMOST_TARGET)
-                            do_thing(z)
-                            z += get_total_threads();
+Note also that the inner dimensions must match.  For example multipling
+a `2x3` matrix by a `3x4` is allowed, because the "inner" number is `3`.
+But conversely, multiplying a `3x4` by a `2x3` matrix is NOT allowed because
+the inner dimension (`4` and `2`) are not equal.
 
-                          y += get_total_threads()
-                         }
-                    
-                         x += get_total_threads()
-                       }
-                       
+Below are possible implementation of `dot-prod` and `matmul`
 
--->
-
-```
-(def-type 1D-tensor (tensor-view-type 1))                        
-(def-function 1D-dot-prod (A B)
-  (declare #(1D-tensor 1D-tensor => (element-type A)))  
-  (c-t-assert (= (element-type A) (element-type B)) "element types must match") 
-  (when-thread-is 0
-    (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
-  (let ((C-scratch (make-scratch-vector A :name "dot product")))
-    (map-stride #'* (A B) C-scratch)
-    (reduce-vec-atomic #'+ C-scratch 0)))                         ; reduce-vec-atomic needs RETURN vector
-       
-(def-type 2D-matrix (tensor-view-type 2))
-(def-function matrix-dot-prod (A B)
-  (declare #(2D-matrix 2D-matrix => 2D-matrix))
-  (c-t-check (= (element-type A) (element-type B)) "element types must match")
-  (let ((inner-A (num-cols A))
-        (inner-B (num-rows B))
-        (outer-A (num-rows A))
-        (outer-B (num-cols B)))
+``` 
+(with-template-type (T)
+  (type-is T #'is-scalar? T)                      
+  (def-function dot-prod (A B)
+    (declare #(vector-type T) (vector-type T) => T)  
     (when-thread-is 0
-       (r-t-assert (= inner-A inner-B) "inner dimensions must match!"))
-    
-    (let* ((vec (make-result-vector A (* outer-A outer-B)))
-           (res (make-tensor-view vec outer-A outer-B ))) ;; <-- is this right or should it be outer inner
-              (loop-grid-stride (x y)                              ; <-- does this mean we need a 2D enqueue ? ; yes
-                (declare (grid-stride-target outer-A outer-B))
-                (set! (~ res x y) (1D-dot-prod (row x A) (col y B))))   ; row  and col helpers
-              (return res))))       
+      (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
+    (let ((C-scratch (make-scratch-vector A :name "dot product"))
+          (temp-result (make-vector (element-type A) :local :read_write 1)))
+      (map-stride #'* (A B) C-scratch)
+      (reduce-vec-atomic #'+ C-scratch 0 temp-result)
+      (return (~ temp-result 0)))))
+
+#|
+  matmul-naive
+  This is a very simple, easy to read version of matmul that uses
+  loop-grid-stride and dot-prod to easily multiply two matrices.
+  But it won't coalece unless A is row-major and B is col-major.
+|#
+(with-template-type (T)
+  (type-is T #'is-scalar? T)       
+  (def-function matmul-naive (A B)
+    (declare #(matrix matrix => matrix) (global-size :dims 2))
+    (let ((inner-A (num-cols A))
+          (inner-B (num-rows B))
+          (outer-A (num-rows A))
+          (outer-B (num-cols B)))
+      (when-thread-is 0
+        (r-t-assert (= inner-A inner-B) "inner dimensions must match!"))
+      
+      (let* ((vec (make-result-vector A (* outer-A outer-B)))
+            (res (make-tensor-view vec outer-A outer-B )))
+                (loop-grid-stride (x y)   
+                  (declare (grid-stride-target outer-A outer-B))
+                  (set! (~ res x y) (1D-dot-prod (row x A) (col y B))))
+                (return res)))))       
+
+; coalesced - s.b. performant
+(with-template-type (T)
+  (declare (type-is T #'is-scalar?))
+  (def-function matmul (A B C)
+    (declare #(matrix matrix matrix => nil) (global-size :dims 2))
+
+    ;; --- 1. SETUP ---
+    (def-const TILE_DIM 32)
+    (def-local-mem tile-A (matrix T TILE_DIM TILE_DIM))
+    (def-local-mem tile-B (matrix T TILE_DIM (+ TILE_DIM 1))) ; Padded for performance
+
+    (let ((local-idx (get-local-id 0)) (local-idy (get-local-id 1))
+          (group-idx (get-group-id 0)) (group-idy (get-group-id 1))
+          (acc 0.0)) ; Per-thread accumulator register
+
+      ;; --- 2. MAIN LOOP OVER TILES OF THE INNER DIMENSION ---
+      (dotimes (tile-num (ceil (num-cols A) TILE_DIM))
+
+        ;; --- 3. ADAPTIVE, COALESCED LOADING ---
+        ;; Use the 'load-tile' macro to handle the complexity.
+        (load-tile A tile-A group-idy tile-num
+                   :transpose (= (get-layout A) :col-major))
+
+        (load-tile B tile-B tile-num group-idx
+                   :transpose (= (get-layout B) :row-major))
+        
+        ;; --- 4. SYNCHRONIZE WORKGROUP ---
+        (local-barrier)
+
+        ;; --- 5. COMPUTE ON FAST LOCAL TILES ---
+        ;; This part is now simple and fast, as both local tiles are row-major.
+        (dotimes (k TILE_DIM)
+          (set! acc (+ acc (* (~ tile-A local-idy k)
+                              (~ tile-B local-idx k)))))
+
+        ;; --- 6. SYNCHRONIZE BEFORE NEXT LOAD ---
+        (local-barrier))
+
+      ;; --- 7. STORE FINAL RESULT (COALESCED) ---
+      (let ((c-row (+ (* group-idy TILE_DIM) local-idy))
+            (c-col (+ (* group-idx TILE_DIM) local-idx)))
+        (when (and (< c-row (num-rows C)) (< c-col (num-cols C)))
+          (set! (~ C c-row c-col) acc))))))
                            
 ```
 
@@ -5230,7 +5319,7 @@ Example:
 ```
 (declaim (check-coalesce #'my_kernel #'my_2D_memcpy))
 ```
-In the example above, the "coalescence check" (see below) would be run on #'my_kernel and #'my_2D_memcpy, but not on any 
+In the example above, the "coalescence check" (see below) would be run on `#'my_kernel` and `#'my_2D_memcpy`, but not on any 
 other functions or kernels.
 
 If you want a check conducted on EVERY function and kernel in the .crisp file, simply `declaim` it directly.
@@ -5487,7 +5576,7 @@ kernel.
 
 ### `--re-output-crisp=<DIRECTORY>`
 This flag is passed a directory. The .crisp files that are being compiled will be copied into that directory. But they will 
-be modified in two ways: 
+be modified in three ways: 
  - any types that were inferred by the compiler will now be explicitly declared in the updated .crisp file.
  - the file will be output in dependency order, compatible with single pass compilation. 
  - any static analysis "opt-in"s will be removed. 
@@ -5768,6 +5857,7 @@ The only flags it respects are
 - `--single-pass`
 - `--no-inference`
 - `--skip-c-t-checks`
+- `--no-static-analysis`
 - `-D`
 - math accuracy flags
 - flags governing errors and warnings (TBD)
@@ -5879,7 +5969,8 @@ Type Constraints
 - value-is              [DP]
 - is-address-space?   
 - is-floating-point?
-- is-numeric?
+- is-numeric? <--  replace with is-scalar?  ?
+- is-hardware-vector?  (long4 float3 etc)
 - is-integer?
 - is-orderable?
 - is-signed?
@@ -5950,7 +6041,11 @@ other
 - num-rows
 - get-layout
 - transpose
+- load-tile
+- store-tile
 - convert-layout
+- dot-prod
+- matmul
 - const-vec-type
 - maybe                 
 - result               [KO]
@@ -5983,6 +6078,16 @@ logging and debugging
 - r-t-assert
 - line
 - file
+
+static analysis
+---------------
+- declaim
+- check-coalesce
+- check-bank-conflicts
+- check-divergence
+- max-registers
+- warn-max-registers
+- check-barriers
 
 
 lisp
@@ -6111,6 +6216,8 @@ OVERLOAD REVISIT - how will overloaded functions, especially getters/setters, be
                       QUESTION:  how do THEY get vectors over then? void* data and size_t bytecount / versus / double* data and size_t count.
                       A1:  special declare?
                       A2:  marshall-vector call and voidp type.
+
+[ ] vector-view that changes element type. (like casting a vector of double to long) "reinterpret"
 
 DATA-POOL   - could be a real value add here. Kernels can't really dynamically allocate memory, so a pool system would be handy.
               Also very handy if we can calculate how much scratch will be needed and communicate that back in the hoisting code.
