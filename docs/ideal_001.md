@@ -115,6 +115,139 @@ The Common Lisp Object System is likely the most powerful object system ever des
 Crisp has nothing comparable, but instead offers modest structs, derived types, and function overloading. 
 These are simple and should be flexible enough to get things done.
 
+Thread Level / Grid Level / Orchestration
+=========================================
+
+In most Lisp languages, `progn` is a term used to desribe a set of code that is grouped together and bound 
+by parentheses. In C++ we might say "the body of a function" or the "body of a closure". In C++ a `progn` is
+typically surrounded by curly braces `{ ... }`  .
+
+In Crisp, the `progn` that appear in function bodies implicitly have one of three "contexts" that
+inform the compiler on the type of and scope of actions that might be taking place in that `progn`.
+These three contexts are
+
+- thread level
+- grid level
+- orchestration
+
+A thread level context is one where the action taking place within it is independent of what
+is occurring in other threads. Typically this means there is no expection that it work with 
+a particular piece of global memory or perform atomic operations on global memory. Thread level
+contexts are the default in functions defined by `def-function`. Importantly, inside a thread
+level `progn` it is illegal to make grid level or orchestration level operations/calls.   
+
+In contrast in a grid level context there is an expectation that thread with such-and-such id is
+accessing global memory at such-and-such index, or performing atomic operations on global memory.
+Grid level contexts most often come from macros like `loop-grid-stride`. Inside a grid level
+`progn` making  thread level operations is perfectly fine. But calling OTHER grid level operations
+is forbidden. 
+
+An orchestration context is a context where we can call either thread level or grid level 
+operations freely. But note, that if a grid level `progn` is opened that inside its body the
+restriction on calling other grid level operations still applies. Orchestration contexts are 
+associated with `def-kernel` and `def-grid-function`. 
+
+This author likes the analogy of a garment factory, where there are long tables with sewing machines
+running along them. As a worker finishes their task (sewing buttons perhaps), they pass the garment on to the next
+machine on the table (which sews seams).  In this analogy, a single GPU thread is like the long table.
+The call stack of functions calling one another on that thread is the individual machines sewing then passing the work to the next.
+A thread level `progn` can contain the actions that can be performed by a person sitting at one machine.
+The long tables are grouped together into small workgroups. If there is some coordination that must 
+occur within a workgroup, (via local memory and local barriers perhaps), that's fine. A worker can do that 
+("Hey, look at what Jim is doing").
+But if you need to coordinate multiple workgroups, or all the tables in the factory, well that's a
+a grid level operation. That requires management. A single worker sitting at a sewing machine cannot
+ "call" a grid level operation. 
+
+
+Why This is Different from C++/CUDA
+-----------------------------------
+
+In C++/CUDA, there is no formal distinction between a "dress pattern" and an "assembly line blueprint" A programmer can accidentally write code that has a single thread try to launch a new, grid-wide operation. The C++ compiler won't prevent this. This code compiles but results in a silent, catastrophic bug: either the logic is fundamentally incorrect, or the performance is thousands of times slower than expected. The developer is left to debug a complex runtime issue with no help from the compiler.
+
+Crisp's context system provides guardrails. By separating `def-function` and `def-grid-function`, the compiler understands the intent of your code. If you try to call a grid-level function from a thread-level context, you get an immediate, clear compile-time error, not a mysterious runtime bug.
+
+In short, this system provides:
+
+ - Safety: It makes a whole class of parallel programming errors impossible to write.
+ - Clarity: It makes the code self-documenting. A `def-grid-function` is unambiguously a parallel operation.
+ - Readability: It separates the high-level orchestration of a kernel from the low-level, per-thread implementation details, making complex algorithms easier to reason about.
+ 
+
+
+Top Level Execution Constructs
+==============================
+
+In Crisp, nearly everything that can be put at the "top level" of a code file begins with "`def-`".  
+There are a handful of exceptions (*), but that is the general rule. And every other Crisp expression
+is then inside one of these definitions and cannot appear, unchaperoned, at the top level.
+Of these "`def-`" expressions, there are three primary ones that serve as execution constructs:
+ `def-kernel`, `def-function` and `def-grid-function`.
+
+`def-kernel`
+------------
+
+```
+(def-kernel do_something (i val VEC)
+   ;; <type-declaration-here>
+   (set! (~ VEC i) val) ;; store val into index i of VEC
+ )
+```
+We'll discuss type declarations and type signatures later. For now, just understand that
+`def-kernel` is how you define a kernel function that can be enqueued and invoked by some
+host application.  The host application can only invoke kernels that you define, no other
+functions.
+Kernel functions
+- take arguments like a regular function
+- do not return values
+- are not callable by other Crisp functions (see "continuation kernels" for exceptions)
+- the body `progn` of the kernel function is an orchestration context
+- can call both "thread level" functions and "grid level" functions.
+- kernel function names (like "do_something" above) are restricted to C-style naming rules (ie "do_something" with an underscore is valid, but "do-something" with a dash is not.)
+
+`def-function`
+-------------
+```
+(def-function do-add (x y)
+   ;; <type-declaration-here>
+   (+ x y)) ; return the sum of x and y
+```
+`def-function` defines a function, just like you would do in nearly every other programming
+language. Functions take arguments and return values, they have mandatory type declarations (see below).
+The functions that are defined are "thread level" functions, meaning they are expected to operate in the context
+of a single thread and not orchestrating the operation of all threads generally.
+
+Thread level functions
+- accept arguments
+- CAN return values
+- the body of these functions are a "thread level context" (more about this later)
+- can call other thread level functions
+- but CANNOT call "grid level" functions or use grid level macros
+- can use Lisp-style naming rules. (dashes ok in function names)
+
+`def-grid-function`
+------------------
+
+```
+(def-grid-function vector-add (A B C)
+  ;; <type-declaration-here>
+  (loop-vector-stride A (i)
+     (set! (~ C i) (do-add (~ A i) (~ B i))))) ;
+```
+
+`def-grid-function` also defines a function, much like `def-function` above. 
+Grid functions have an "orchestration context" at their top level. They
+are called "grid functions" because the CAN invoke grid level operations 
+(as opposed to thread level functions which cannot).
+
+Grid functions
+- accept arguments
+- CANNOT return values
+- have an "orchestration context" in the top level
+- can call thread level functinos
+- can call grid level functions
+- can use Lisp-style naming rules (dashes ok).
+
 
 
 
@@ -3224,9 +3357,12 @@ So `i` would be bound to 128, 64, 32, 16, 8, 4, 2, and 1.
 Grid Level Operations
 ---------------------
 
-Grid-level operations are primitives that orchestrate work across the entire grid of threads. A fundamental rule in Crisp is that grid-level operations CANNOT be nested. Attempting to do so is a semantic error that leads to incorrect calculations, massively redundant work, and incomplete coverage of the problem space.
+Grid-level operations are primitives that orchestrate work across the entire grid of threads. A fundamental rule in Crisp is that 
+a `progn` with a grid-level context CANNOT contain other grid level operations. (ie no nesting). Attempting to do so is a semantic error that leads to incorrect calculations, massively redundant work, and incomplete coverage of the problem space.
 
-The following Crisp functions and macros are grid level operations, and cannot nest in one another. 
+The following Crisp functions and macros are grid level operations, the either open grid level contexts or take
+higher order function arguments that must be thread level (only) operations. 
+
 - all `-stride` functions
 - all grid-wide reduction variants ( `reduce-to-1-*`, `reduce-vec-*`)
 - `filter`
@@ -3234,22 +3370,27 @@ The following Crisp functions and macros are grid level operations, and cannot n
 - `bitonic-sort-vector!` 
 - `when-is-last-workgroup`
 
-Most importantly, this property is TRANSITIVE: if your function calls any grid-level operation, it becomes a grid-level operation itself and must be declared as such.
+
 
 ### `(declare (grid-level))`
 
-`grid-level` is a declaration that tells the compiler (and other users) that a particular function is a grid level
-operation. If you call any Crisp grid level function, you'll be required to include this declaration in your function 
-or macro.  Note that `def-kernel` is exempt and does not need this declaration.
+`grid-level` is a declaration that tells the compiler (and other users) that a particular `progn` is a grid level
+context. If you are writing a `defmacro` that is doing grid level coordination, then be sure to include
+this declaration in its expansion.
 
-But this declaration isn't just busywork. If you are implementing your own ersatz stride operation or reduction
-then you should make this declaration to prevent your operation from being nested, which would result in its 
-incorrect operation.  
+Look for these patterns in your macros:
+- calls to `get_global_id()` or `get_global_linear_id()`
+- using atomic operations on `:global` memory.
+- calling OTHER grid level operations 
+
+This declaration isn't just busywork. With it in place, the compiler will check your macros usage and ensure
+that it isn't incorrectly nested or invoked by thread level functions. Otherwise it will almost certainly 
+result in incorrect calculations and/or slow performance.
 
 ### atomic ops
 
-Atomic operations (see below) performed on `:global` memory are, by fiat, grid level operations. If you 
-use any atomic operation on `:global` memory, be sure to `(declare (grid-level))`.  
+Atomic operations (see below) performed on `:global` memory are, by fiat, grid level operations. If your
+`defmacro` uses any atomic operation on `:global` memory, be sure to `(declare (grid-level))`.  
 Atomic operations on `:local` memory have no such requirement.
 
 
@@ -4701,11 +4842,10 @@ Possible Implementation
 
 (with-template-type (T A)
   (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
-  (def-function histogram-pass (input-vec global-histogram bit-offset &optional (local-histogram (make-scratch-vector uint :local A 256))
+  (def-grid-function histogram-pass (input-vec global-histogram bit-offset &optional (local-histogram (make-scratch-vector uint :local A 256))
     (declare #((vector-type T :global :readable A) (vector-type uint :global :read_write A 256) uint => nil)
-              (local-work-size :set-to 256 :msg "local_work_size must be 256 for histogram kernel")
-              (grid-level))
-
+              (local-work-size :set-to 256 :msg "local_work_size must be 256 for histogram kernel"))
+              
     ;; setup
     (let ((local-id (get-local-id))
           (local-size (get-local-size)))
@@ -4866,9 +5006,11 @@ Example: `(let ((old-value (atomic-op! (~ global-counter 0) #'plus-ten))) ...)`
 ### atomics and grid level operations
 
 Using any atomic operation on `:global` memory makes the containing function or macro into a 
-grid level operation and it must declare . `(declare (grid-level))`
+grid level operation.  The compiler will emit an error if attempted in the thread level context
+of a `def-function`. Use `def-grid-function` instead. 
+ If writing a `defmacro`, be sure to include `(declare (grid-level))` in its `progn` 
+expansion. 
 
-Grid level operations cannot be nested inside other grid level operations. 
 
 
 <!--
