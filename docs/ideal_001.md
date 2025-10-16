@@ -184,6 +184,8 @@ is then inside one of these definitions and cannot appear, unchaperoned, at the 
 Of these "`def-`" expressions, there are three primary ones that serve as execution constructs:
  `def-kernel`, `def-function` and `def-grid-function`.
 
+ (* Exceptions: `declaim`, `with-template-type` )
+
 `def-kernel`
 ------------
 
@@ -229,7 +231,7 @@ Thread level functions
 ------------------
 
 ```
-(def-grid-function vector-add (A B C)
+(def-grid-function vector-add (A B &out C)
   ;; <type-declaration-here>
   (loop-vector-stride A (i)
      (set! (~ C i) (do-add (~ A i) (~ B i))))) ;
@@ -249,6 +251,65 @@ Grid functions
 - can use Lisp-style naming rules (dashes ok).
 
 
+Return Vector Pattern &out
+==========================
+
+Because kernel and grid functions cannot return values, the accepted
+pattern is to pass memory to them where you want results to be recorded.
+This is very common in GPU-land.
+
+But there are caveats that if not well managed can lead to bugs.
+It may be tempting to use a grid operation to calculate something, and 
+then, afterward, "peek" at the solution.  
+
+Like so
+```
+;; --- INCORRECT ---
+(def-kernel calc (A B)
+ ;; <type-declaration-here>
+ 
+ ;; use grid level operation to square every element of A,
+ ;; storing it in B
+  (loop-vector-stride A (i)
+    (set! (~ i B) (square (~ i A))))
+  
+ ;; check for lucky number in (~ B 7)  ie B[7]
+ ;; this "peek" is a race condition. The thread executing here
+ ;; has no guarantee that thread 7 has completed yet.
+ (let ((lucky-num (~ B 7)))
+   ;; do-something
+  ...))
+```
+
+But this won't work. B[7] WILL hold the right value, someday. 
+But at the time the thread the kernel is runnign on has finished its part 
+of the `loop-vector-stride` there is no guarantee that the B[7] is done.
+The odds are high that reading B[7] will result in garbage. This is a
+classic race condition.
+
+This is a very easy mistake to make, in all languages. For this reason, Crisp
+has the `&out` parameter list specifier.  
+Any variables after `&out` must
+
+- be a `:global` vector ( or an acceptable `vector` proxy, or `soa-vector` and its proxies ) 
+- be `:write_only`
+
+Within the functions scope, the compiler enforces a write-only contract. Any attempt
+to read from an `&out` parameter will result in compile-time error. 
+
+```
+;; --- CORRECT ---
+(def-kernel calc (A &out B)
+ ;; <type-declaration-here>
+ 
+ ;; use grid level operation to square every element of A,
+ ;; storing it in B
+  (loop-vector-stride A (i)
+    (set! (~ i B) (square (~ i A)))))
+```
+
+If you are implementing the "return-data-via-vector-parameter" pattern,
+then use `&out` and enlist the compilers help in enforcing usage boundaries.
 
 
 
@@ -374,9 +435,12 @@ function (#'someFunction)
 Declaring Types - Functions
 ---------------------------
 
-Types MUST be declared for parameters to functions and the function return type.  This is true for the top kernel function as well.
+Types MUST be declared for parameters to functions and the function return type.  
 
-There are various mechanisms for doing so.  Easiest to illustrate them with code.
+Grid functions and kernel functions ( `def-grid-function`, `def-kernel` ) also need their paramters to be typed.
+They both have no return value and can either specify that, or elide it from the type signature.
+
+There are various mechanisms for declaring parameter and return types.  Easiest to illustrate them with code.
 
 ```
 ;; A -- use a declare block. (return-type <type>) for the containing function, (type <varName> <type>) for each variable.
@@ -445,7 +509,25 @@ There are various mechanisms for doing so.  Easiest to illustrate them with code
 (def-function addSome (x &optional (y 30))
   (declare #'(int &optional int => NIL))
   ...)
+
+;; I -- skip return type in kernels and grid functions
+(def-grid-function bury (meters:float)
+   ;types declared in paramter list, no need to declare anything else
+   ...)
+
+(def-grid-function sharpen (edge)
+  (declare #'(float => nil))   ; nil is return type
+  ; OR
+  (declare #'(float))          ; no need for return type
+
+;; J - &out -- write-only-vectors
+(def-grid-function vector-add (A B &out C)
+   (declare #( v-type v-type &out (v-type :write_only)))
+    ...)
 ```
+
+
+
 
 Function Overloading
 --------------------
@@ -4175,7 +4257,7 @@ This is what an implementation of `reduce-vec-small` might look like
 
 ### reduce-vec-atomic
 
-`(reduce-vec-atomic  someFunction vec identity return-vec &optional localScratchVec)`
+`(reduce-vec-atomic  someFunction vec identity return-vec-global &optional localScratchVec)`
 
 The `reduce-vec-atomic` variant has the same limitations as `reduce-to-1-atomic`: 
 `someFunction` must be one of three commutative operations: `+`, `min` or `max`
@@ -4195,7 +4277,7 @@ Its size should be the number of warps in a single workgroup (ie `sz = local_wor
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 
 - `reduce-vec-atomic` returns nil.
-- `result-vec` will hold the value of the reduction.
+- `result-vec` will hold the value of the reduction. It must be `:global` memory.
 
 
 Possible Implementation
@@ -4229,7 +4311,7 @@ of the vector reductions, it might not always be the most performant solution.
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 
 - `reduce-vec-cas` returns nil.
-- `result-vec` will hold the value of the reduction.
+- `result-vec` will hold the value of the reduction. It must be `:global` memory.
 
 Possible Implementation
 ```
@@ -5085,7 +5167,7 @@ If two vectors are perpendicular, their dot product is zero. If they point in th
 ### dot-prod-grid / dot-prod-seq
 
 ```
-(dot-prod-grid A B)
+(dot-prod-grid A B RESULT)
 (dot-prod-seq A B)
 ```
 
@@ -5095,11 +5177,14 @@ all available threads simultaneously.
 
 `dot-prod-seq` is a thread level sequential function that simply loops in the current thread.
 
-Both accept two arguments. They can
+Both accept two matrix arguments. They can
 be a `vector`, `vector-view` or a 1D `tensor-view`.  Note that `dot-prod-grid` should be
 coalesced automatically for `vector` and `vector-view` arguments. But not
 necessarily for `tensor-view`.  A row of a row-major `matrix` would be fine, but
 the col or a row-major `matrix` would not be able to have coalesced memory copy.
+
+The `RESULT` argument for `dot-prod-grid` should be a `:global` writeable vector. The
+result will be written to index 0.
 
 There are possible implementations below, with the implementations of `matmul`
 
@@ -5140,15 +5225,13 @@ its value.
 ``` 
 (with-template-type (T)
   (declare (type-is T #'is-scalar? T))                      
-  (def-function dot-prod-grid (A B)
-    (declare #((vector-type T) (vector-type T) => T) (grid-level)) 
+  (def-grid-function dot-prod-grid (A B RESULT)
+    (declare #((vector-type T) (vector-type T) (vector-type T :global :writeable) => nil)) 
     (when-thread-is 0
       (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
-    (let ((C-scratch (make-scratch-vector A :name "dot product"))
-          (temp-result (make-vector (element-type A) :local :read_write 1)))
+    (let ((C-scratch (make-scratch-vector A :name "dot product")))  
       (map-stride #'* (A B) C-scratch)
-      (reduce-vec-atomic #'+ C-scratch 0 temp-result)
-      (return (~ temp-result 0)))))
+      (reduce-vec-atomic #'+ C-scratch 0 RESULT)
 
 (with-template-type (T)
   (declare (type-is T #'is-scalar?))
