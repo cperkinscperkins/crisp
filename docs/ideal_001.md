@@ -1914,9 +1914,13 @@ not necessarily like we want them to be.
 ```
 ;; this routine assumes a 2D global_work_size
 
+;; helpers (not fully defined yet)
+;; (make-tile-scratch-vector T)
+;; (make-tile dim T)
+
 (def-const TILE_DIM:ulong +warp-size+)
 
-(def-function convert-layout (source-M dest-M choice &optional (scratch (make-local-matrix-conversion-scratch (element-type source-M))))
+(def-function convert-layout (source-M dest-M choice &optional (scratch (make-tile-scratch (element-type source-M))))
   ;; scratch is 32x32 (+warp-size+ x +warp-size+)
   (declare #(matrix matrix matrix-layout &optional (vector-type (element-type source-M)) => nil))
   (c-t-assert (!= choice :other-layout) "dude")
@@ -2158,7 +2162,7 @@ distribution of local and global work sizes, and then to complete that calculati
 that is typically enqueued with a set of local and global work sizes tailored to it. 
 
 This occurs because there is no way to marshall which workgroups execute in which order, and there are
-no "global barriers" with which to enforce it. Atomics can be used as ersatz barriers, but overuse often leads to unused GPU capacity and stalled threads. The "last man standing" strategy (see `when-in-last-workgroup`)
+no "global barriers" with which to enforce it. Atomics can be used as ersatz barriers, but overuse often leads to unused GPU capacity and stalled threads. The "last man standing" strategy (see `when-is-last-workgroup`)
 is an example of working around these limitations. 
 
 When an algorithm has clearly defined stages, and those stages might benefit from a separate enqueue, then 
@@ -2580,6 +2584,7 @@ Implementation Notes
 ```
 ;; initialize *internal-global-counter* to (get-num-groups).  MUST BE :GLOBAL memory
 ;; initialize old-count to 0 .  MUST BE :local MEMORY
+;; (declare (grid-level))
 
 ; start when-is-last-workgroup
 ;; Executed by thread 0 of each workgroup
@@ -2833,6 +2838,15 @@ A grid-stride loop is a common pattern for processing large datasets that are bi
 The Crisp grid stride primitives are designed to encourage coalesced memory access patterns by default, helping the
 programmer achieve maximum performance.
 
+### IMPORTANT - NO NESTING
+
+All the `-stride` operations are "grid level" operations. That is discussed below. Essentially,
+`-stride` operations cannot nest inside one another. The compiler will error if you attempt to do so.
+
+Also th body of the  `-stride` operations cannot call other "grid level" operations like the variants
+on `reduce-`, `filter-` and others. You are welcome to use multiple grid level operations, they just
+cannot be nested.
+
 ### `loop-grid-stride` 
 
 `loop-grid-stride` let's a kernel elect the Grid Stride strategy and set up a grid stride loop,
@@ -3049,8 +3063,8 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 - dec-times / dec-times+ / dec-times*
 - dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
 - dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
-- do-power-stride
-- dec-power-stride
+- do-power-step
+- dec-power-step
 
 ### Immutable Index
 All of the above bind a loop index. Unlike in a C++ `for` loop, that index value is immutable in the 
@@ -3139,7 +3153,7 @@ Example: If `N` is 100: i => 100, 50, 25, 12, 6, 3, 1
 This is very useful for reductions where we have all 64 threads in a warp perform a calculation, then 32, down to the last thread which has 
 the full value.  See the example for `sum_vector` with barriers below. 
 
-If your algorithm always needs powers of two, make sure `N` is a power of 2 itself, or consider using `dec-power-stride` instead ( below ).
+If your algorithm always needs powers of two, make sure `N` is a power of 2 itself, or consider using `dec-power-step` instead ( below ).
 
 ### dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
 ```
@@ -3158,53 +3172,85 @@ Example #1:  `N` is 64 and the `factor` is 4:  i => 64, 16, 4, 1
 Example #2:  `N` is 24 and the `factor` is 5:  i => 24, 4
 
 
-### do-power-stride
+### do-power-step
 
 ```
-  (do-power-stride (stride-var:ulong limit:ulong) 
+  (do-power-step (step-var:ulong limit:ulong) 
      ...)
 ```
-`do-power-stride` binds `stride-var` to the powers of 2 up to `limit` (or the next power of 2 if it is not itself a power of 2).
-The highest value `stride-var` will have is half the "padded" limit.
-For example, in `(do-power-stride (i 100) ..)`, the limit of 100 gets rounded up to the next power of 2 which is 128.
+`do-power-step` binds `step-var` to the powers of 2 up to `limit` (or the next power of 2 if it is not itself a power of 2).
+The highest value `step-var` will have is half the "padded" limit.
+For example, in `(do-power-step (i 100) ..)`, the limit of 100 gets rounded up to the next power of 2 which is 128.
 This would then have seven steps, binding `i` in turn to 1, 2, 4, 8, 16, 32, and 64
 The number of steps taken is `(log2 padded_limit)` ( aka `(log padded_limit 2)`)
 
 #### possible implementation
 ```
-(defmacro do-power-stride ((stride-var limit) &body body)
+(defmacro do-power-step ((step-var limit) &body body)
   "Loops log2(padded_limit) times, where padded_limit is the next
-   highest power of two from limit. Binds stride-var to 1, 2, 4, 8..."
+   highest power of two from limit. Binds step-var to 1, 2, 4, 8..."
   (let ((d (gensym))
         (padded-limit (gensym)))
     `(let ((,padded-limit (next-power-of-2 ,limit)))
        (dotimes (,d (log2 ,padded-limit))
-         (let ((,stride-var (expt 2 ,d)))
+         (let ((,step-var (expt 2 ,d)))
            ,@body)))))
 ```
 
 
-### dec-power-stride
+### dec-power-step
 
 ```
-  (dec-power-stride (stride-var:ulong limit:ulong) 
+  (dec-power-step (step-var:ulong limit:ulong) 
      ...)
 ```
-The reverse of `do-power-stride`, `dec-power-stride` starts with `stride-var` bound to half the padded limit and decremented until it is 1.
-E.G. In `(dec-power-stride (i 230) ...)` the limit of 230 would be raised to the next power of two, which is 256.
+The reverse of `do-power-step`, `dec-power-step` starts with `step-var` bound to half the padded limit and decremented until it is 1.
+E.G. In `(dec-power-step (i 230) ...)` the limit of 230 would be raised to the next power of two, which is 256.
 So `i` would be bound to 128, 64, 32, 16, 8, 4, 2, and 1. 
 
 #### possible implementation
 ```
-(defmacro dec-power-stride ((stride-var limit) &body body)
-  "Loops log2(padded_limit) times, binding stride-var to ..., 8, 4, 2, 1."
+(defmacro dec-power-step ((step-var limit) &body body)
+  "Loops log2(padded_limit) times, binding step-var to ..., 8, 4, 2, 1."
   (let ((d (gensym))
         (padded-limit (gensym)))
     `(let ((,padded-limit (next-power-of-2 ,limit)))
        (dec-times (,d (log2 ,padded-limit))
-         (let ((,stride-var (expt 2 ,d)))
+         (let ((,step-var (expt 2 ,d)))
            ,@body)))))
 ```
+
+
+Grid Level Operations
+---------------------
+
+Grid-level operations are primitives that orchestrate work across the entire grid of threads. A fundamental rule in Crisp is that grid-level operations CANNOT be nested. Attempting to do so is a semantic error that leads to incorrect calculations, massively redundant work, and incomplete coverage of the problem space.
+
+The following Crisp functions and macros are grid level operations, and cannot nest in one another. 
+- all `-stride` functions
+- all grid-wide reduction variants ( `reduce-to-1-*`, `reduce-vec-*`)
+- `filter`
+- `convert-layout` 
+- `bitonic-sort-vector!` 
+- `when-is-last-workgroup`
+
+Most importantly, this property is TRANSITIVE: if your function calls any grid-level operation, it becomes a grid-level operation itself and must be declared as such.
+
+### `(declare (grid-level))`
+
+`grid-level` is a declaration that tells the compiler (and other users) that a particular function is a grid level
+operation. If you call any Crisp grid level function, you'll be required to include this declaration in your function 
+or macro.  Note that `def-kernel` is exempt and does not need this declaration.
+
+But this declaration isn't just busywork. If you are implementing your own ersatz stride operation or reduction
+then you should make this declaration to prevent your operation from being nested, which would result in its 
+incorrect operation.  
+
+### atomic ops
+
+Atomic operations (see below) performed on `:global` memory are, by fiat, grid level operations. If you 
+use any atomic operation on `:global` memory, be sure to `(declare (grid-level))`.  
+Atomic operations on `:local` memory have no such requirement.
 
 
 Barriers and Fences
@@ -3722,6 +3768,7 @@ Possible Implementation
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
   `(progn
+    (declare (grid-level))
     (when-thread-is 0
       (r-t-assert (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for reduce-to-1-small"))
 
@@ -3798,6 +3845,7 @@ Possible Implementation
   (c-t-assert (or (= someFunction #'+) (= someFunction #'min) (= someFunction #'max)) "only #'+, #'min or #'max are accepted operations for reduce-to-1-atomic")
 
   `(let ((atomic-op (get-atomic-equivalent ,someFunction)))
+     (declare (grid-level))
     ; after this the globalScratchVec will one value per group.
     (reduce-to-workgroup ,someFunction ,someVar ,identity ,localScratchVec)
 
@@ -3841,6 +3889,7 @@ Possible Implementation
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
   (c-t-assert (is-type-of someVar (element-type return-vec)) "type mismatch between someVar and return-vec")
   `(progn
+    (declare (grid-level))
     ; after this the globalScratchVec will one value per group.
     (reduce-to-workgroup ,someFunction ,someVar ,identity ,localScratchVec)
 
@@ -3902,6 +3951,7 @@ Possible Implementation
                                       (~ g-s-v local-id)
                                       ,identity)))
                         
+                        (declare (grid-level))
                         ;; Perform a standard workgroup reduction on the partial results.
                         (reduce-to-workgroup ,someFunction val ,identity l-s-v)
                         
@@ -3927,6 +3977,8 @@ reduce vector
 
 The previous reductions are general purpose tools that let you create algorithms that reduce over warps, workgroups, or all the threads.  
 The `reduce-vec-XXXX` variants are different in that they are respondent to a `vector` (or `vector-view` or a 1D `tensor-view`). 
+
+All the vector reductions are "grid level" operations, meaning they cannot be nested in other grid level ops.
 
 ### reduce-vec-small
 
@@ -3963,6 +4015,7 @@ This is what an implementation of `reduce-vec-small` might look like
   (c-t-assert (is-type-of someFunction (binop-type (element-type vec))) "type mismatch between someFunction and vec")
   (c-t-assert (is-type-of (element-type vec) (type-of identity)) "type mismatch between vec and identity")
   `(progn
+    (declare (grid-level))
     (when-thread-is 0
      (r-t-assert (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for reduce-vec-small"))
     (let ((sum ,identity)
@@ -4015,7 +4068,7 @@ Possible Implementation
   (c-t-assert (or (= someFunction #'+) (= someFunction #'min) (= someFunction #'max)) "only #'+, #'min or #'max are accepted operations for reduce-to-1-atomic")
   `(let ((sum ,identity)
           (len (length~ ,vec)))
-      (declare (uniform len))
+      (declare (uniform len) (grid-level))
       (loop-grid-stride (x)
         (declare (grid-stride-target ,vec))
         (when (< x len)
@@ -4047,7 +4100,7 @@ Possible Implementation
   (c-t-assert (is-type-of (element-type vec) (element-type return-vec)) "type mismatch between vec and return-vec")
   `(let ((sum ,identity)
           (len (length~ ,vec)))
-      (declare (uniform len))
+      (declare (uniform len) (grid-level))
       (loop-grid-stride (x)
         (declare (grid-stride-target ,vec))
         (when (< x len)
@@ -4073,7 +4126,7 @@ Possible Implementation
   (c-t-assert (is-type-of (element-type vec) (type-of identity)) "type mismatch between vec and identity")
   `(let ((sum ,identity)
           (len (length~ ,vec)))
-      (declare (uniform len))
+      (declare (uniform len) (grid-level))
       (loop-grid-stride (x)
         (declare (grid-stride-target ,vec))
         (when (< x len)
@@ -4189,7 +4242,7 @@ This is a possible implementation of `exclusive-scan` realized via a Belloch Sca
      
      ;; first pass - the up-sweep (reduction tree)
      ;; In each step, we add the value from 2^d elements away.
-     (do-power-stride (stride wg-size)
+     (do-power-step (stride wg-size)
       (when (>= local-id stride)
         (set! (~ ,local-vec local-id)
               (+ (~ ,local-vec local-id)
@@ -4205,7 +4258,7 @@ This is a possible implementation of `exclusive-scan` realized via a Belloch Sca
 
        ;; second pass - down sweep
        ;; Now we work back down the tree, distributing the sums.
-       (dec-power-stride (stride wg-size)
+       (dec-power-step (stride wg-size)
         (when (>= local-id stride)
           ;; Swap and add values between a thread and its partner
           (let ((partner-idx (- local-id stride)))
@@ -4293,7 +4346,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
         (global-counter 0)
         (wg-offset 0)
         (is-a-match nil))
-     (declare (global-mem global-counter) (local wg-offset)) ;;
+     (declare (global-mem global-counter) (local wg-offset) (grid-level))
      (with-global-linear-id (i)
       ;; STEP 1: local match detection
       (set! is-a-match (when (< i (length~ ,input-vec)) (funcall predicateF (~ ,input-vec i)))
@@ -4475,7 +4528,7 @@ A possible implementation might be
     ;; perform Bitonic Sort
     ;; Outer loop: Builds increasingly large bitonic sequences
     ;; 'j' represents the size of the bitonic sequence being formed (1, 2, 4, ... N/2)
-    (do-power-stride (j N) ; Iterates j = 1, 2, 4, ... N/2
+    (do-power-step (j N) ; Iterates j = 1, 2, 4, ... N/2
       ;; Inner loop: Merges bitonic sequences of size 'j'
       ;; 'k' represents the sub-sequence length to compare (j/2, j/4, ... 1)
       (dec-times-by-half (k (/ j 2)) ; Iterates k = j/2, j/4, ... 1
@@ -4582,6 +4635,8 @@ Or, even simpler, `gen-bitonic_sort_vector!` just needs some type info and names
 
 `soa-vector` variants of these two functions are provided as well. 
 
+These four variations are all grid level operations. 
+
 
 
 Radix Sort
@@ -4648,7 +4703,8 @@ Possible Implementation
   (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
   (def-function histogram-pass (input-vec global-histogram bit-offset &optional (local-histogram (make-scratch-vector uint :local A 256))
     (declare #((vector-type T :global :readable A) (vector-type uint :global :read_write A 256) uint => nil)
-              (local-work-size :set-to 256 :msg "local_work_size must be 256 for histogram kernel"))
+              (local-work-size :set-to 256 :msg "local_work_size must be 256 for histogram kernel")
+              (grid-level))
 
     ;; setup
     (let ((local-id (get-local-id))
@@ -4807,7 +4863,12 @@ Returns the value there previously.
 
 Example: `(let ((old-value (atomic-op! (~ global-counter 0) #'plus-ten))) ...)`
 
+### atomics and grid level operations
 
+Using any atomic operation on `:global` memory makes the containing function or macro into a 
+grid level operation and it must declare . `(declare (grid-level))`
+
+Grid level operations cannot be nested inside other grid level operations. 
 
 
 <!--
@@ -4842,7 +4903,7 @@ workgroup will add its sum to the first element of the result vector.
 (def-type result-vec (vector-type long :global :writeable :length 1)) 
 
 (def-function calculate-this-thread-sum (A:source-vec)
-  (declare #(source-vec -> long))
+  (declare #(source-vec -> long) (grid-level))
   (let ((sum:long 0))
     (loop-vector-stride A (i)
       (inc! sum (~ A i))))) ; <-- inc! implicity returns final sum
@@ -4879,17 +4940,26 @@ $$A \cdot B = \sum_{i=1}^{n} A_i B_i = A_1B_1 + A_2B_2 + \cdots + A_nB_n$$
 I can be thought of as a measure of how much one vector "points in the direction" of another. 
 If two vectors are perpendicular, their dot product is zero. If they point in the same direction, their dot product is maximized.
 
-### dot-prod
+### dot-prod-grid / dot-prod-seq
 
-`(dot-prod A B)`
+```
+(dot-prod-grid A B)
+(dot-prod-seq A B)
+```
 
-Crisp provides the `dot-prod` function. It takes two arguments. They can
-be a `vector`, `vector-view` or a 1D `tensor-view`.  Note that `dot-prod` should be
+Crisp provides two variants of the dot product function. `dot-prod-grid` is a grid level
+function that uses a grid stride and a reduction to quickly calculate the dot product using
+all available threads simultaneously. 
+
+`dot-prod-seq` is a thread level sequential function that simply loops in the current thread.
+
+Both accept two arguments. They can
+be a `vector`, `vector-view` or a 1D `tensor-view`.  Note that `dot-prod-grid` should be
 coalesced automatically for `vector` and `vector-view` arguments. But not
 necessarily for `tensor-view`.  A row of a row-major `matrix` would be fine, but
 the col or a row-major `matrix` would not be able to have coalesced memory copy.
 
-There is a possible implementation below, with the implementation of `matmul`
+There are possible implementations below, with the implementations of `matmul`
 
 matrix multiplication (matmul)
 -------------------------------
@@ -4912,13 +4982,24 @@ a `2x3` matrix by a `3x4` is allowed, because the "inner" number is `3`.
 But conversely, multiplying a `3x4` by a `2x3` matrix is NOT allowed because
 the inner dimension (`4` and `2`) are not equal.
 
-Below are possible implementation of `dot-prod` and `matmul`
+
+### OPTIMIZING DEMONSTRATION
+
+Below are possible implementations of dot product and `matmul`
+
+Note that the `matmul-naive` implementation is easy to write and understand
+but is not maximally performant. It may not always use coalesced access
+and it makes too many "small" writes to global memory.
+
+But the `matmul` implementation below it solves both of those problems
+simply by using tiles.  The `load-tile` macro is, once again, demonstrating
+its value.
 
 ``` 
 (with-template-type (T)
-  (type-is T #'is-scalar? T)                      
-  (def-function dot-prod (A B)
-    (declare #(vector-type T) (vector-type T) => T)  
+  (declare (type-is T #'is-scalar? T))                      
+  (def-function dot-prod-grid (A B)
+    (declare #((vector-type T) (vector-type T) => T) (grid-level)) 
     (when-thread-is 0
       (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
     (let ((C-scratch (make-scratch-vector A :name "dot product"))
@@ -4927,14 +5008,31 @@ Below are possible implementation of `dot-prod` and `matmul`
       (reduce-vec-atomic #'+ C-scratch 0 temp-result)
       (return (~ temp-result 0)))))
 
+(with-template-type (T)
+  (declare (type-is T #'is-scalar?))
+  (def-function dot-prod-seq (A B)
+    (declare #((vector-type T) (vector-type T) => T))
+
+    (let ((sum:T 0))
+      (dotimes (i (length~ A))
+        (set! sum (+ sum (* (~ A i) (~ B i)))))
+      (return sum))))
+
 #|
   matmul-naive
   This is a very simple, easy to read version of matmul that uses
-  loop-grid-stride and dot-prod to easily multiply two matrices.
+  loop-grid-stride and dot-prod-seq to easily multiply two matrices.
   But it won't coalece unless A is row-major and B is col-major.
+  And, even then, it will still be slow, because A and B
+  are most likely using :global memory, so this routine has many
+  individual accesses, which will be slow. 
+
+  Using tiles (below) both guarantees coalesced access
+  and also means access to global memory is done in larger passes
+  which is more performant.
 |#
 (with-template-type (T)
-  (type-is T #'is-scalar? T)       
+  (declare (type-is T #'is-scalar? T))       
   (def-function matmul-naive (A B)
     (declare #(matrix matrix => matrix) (global-size :dims 2))
     (let ((inner-A (num-cols A))
@@ -4948,50 +5046,56 @@ Below are possible implementation of `dot-prod` and `matmul`
             (res (make-tensor-view vec outer-A outer-B )))
                 (loop-grid-stride (x y)   
                   (declare (grid-stride-target outer-A outer-B))
-                  (set! (~ res x y) (1D-dot-prod (row x A) (col y B))))
+                  (set! (~ res x y) (dot-prod-seq (row x A) (col y B)))) ;; <-- CANT CALL DOT PROD
                 (return res)))))       
 
-; coalesced - s.b. performant
+#|
+  matmul - performant.
+|#
+
+;; same TILE_DIM as used by convert-layout 
+(def-const TILE_DIM:ulong +warp-size+)
+
+;; helpers (not fully defined yet)
+;;   make-tile variants will call make-tile-scratch-vector themselves.
+;; (make-tile-scratch-vector T)
+;; (make-tile dim T) ;; <-- will do performance padding? Unsure.
+;; (make-tile dim-y dim-x T) 
+
 (with-template-type (T)
   (declare (type-is T #'is-scalar?))
   (def-function matmul (A B C)
     (declare #(matrix matrix matrix => nil) (global-size :dims 2))
 
-    ;; --- 1. SETUP ---
-    (def-const TILE_DIM 32)
-    (def-local-mem tile-A (matrix T TILE_DIM TILE_DIM))
-    (def-local-mem tile-B (matrix T TILE_DIM (+ TILE_DIM 1))) ; Padded for performance
+    (let ((tile-A (make-tile TILE_DIM T))
+          (tile-B (make-tile TILE_DIM T))
+          (local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
+          (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1))
+          (acc:T 0.0)) ; Per-thread accumulator register
 
-    (let ((local-idx (get-local-id 0)) (local-idy (get-local-id 1))
-          (group-idx (get-group-id 0)) (group-idy (get-group-id 1))
-          (acc 0.0)) ; Per-thread accumulator register
-
-      ;; --- 2. MAIN LOOP OVER TILES OF THE INNER DIMENSION ---
+      ;; main loop over the tiles in the inner dimension
       (dotimes (tile-num (ceil (num-cols A) TILE_DIM))
 
-        ;; --- 3. ADAPTIVE, COALESCED LOADING ---
+        ;; adaptive, coalesced loading
         ;; Use the 'load-tile' macro to handle the complexity.
-        (load-tile A tile-A group-idy tile-num
+        (load-tile A tile-A group-id-y tile-num
                    :transpose (= (get-layout A) :col-major))
 
-        (load-tile B tile-B tile-num group-idx
+        (load-tile B tile-B tile-num group-id-x
                    :transpose (= (get-layout B) :row-major))
         
-        ;; --- 4. SYNCHRONIZE WORKGROUP ---
         (local-barrier)
 
-        ;; --- 5. COMPUTE ON FAST LOCAL TILES ---
-        ;; This part is now simple and fast, as both local tiles are row-major.
+        ;; This part is now simple and fast, both local tiles are row-major.
         (dotimes (k TILE_DIM)
-          (set! acc (+ acc (* (~ tile-A local-idy k)
-                              (~ tile-B local-idx k)))))
+          (set! acc (+ acc (* (~ tile-A local-id-y k)
+                              (~ tile-B local-id-x k)))))
 
-        ;; --- 6. SYNCHRONIZE BEFORE NEXT LOAD ---
         (local-barrier))
 
-      ;; --- 7. STORE FINAL RESULT (COALESCED) ---
-      (let ((c-row (+ (* group-idy TILE_DIM) local-idy))
-            (c-col (+ (* group-idx TILE_DIM) local-idx)))
+      ;; store final result. coalesced access
+      (let ((c-row (+ (* group-id-y TILE_DIM) local-id-y))
+            (c-col (+ (* group-id-x TILE_DIM) local-id-x)))
         (when (and (< c-row (num-rows C)) (< c-col (num-cols C)))
           (set! (~ C c-row c-col) acc))))))
                            
@@ -5893,7 +5997,7 @@ control flow
 - when-group-is                    [3D]
 - when-global-linear-id-is
 - when-local-linear-is-id
-- when-in-last-workgroup           [3D]
+- when-is-last-workgroup           [3D]
 - global-size       [DP] [KO]      [3D]
 - local-size        [DP] [KO]      [3D]
 - check-thread-bounds              [3D]
@@ -5908,13 +6012,14 @@ control flow
 - loop-tensor-stride                  [ND]
 - loop-group-stride                [3D]
 - loop-tile-stride                [2D]
+- grid-level         [DP]
 - uniform            [DP]
 - dotimes / dotimes+ / dotimes*
 - dec-times / dec-times+ / dec-times*
 - dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
 - dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
-- do-power-stride
-- dec-power-stride
+- do-power-step
+- dec-power-step
 - in-warp
 - shuffle
 - shuffle-up
