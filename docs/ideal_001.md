@@ -2992,9 +2992,9 @@ There are three variants for 1D, 2D and 3D .
 
 ```
 ;; 1D Vector Add
-(def-type source-vec (vector-type float :global :readable))     ;; let's revisit that :read_only requirement for kernels?
-(def-type result-vec (vector-type float :global :writeable))    ;;  ibid
-(def-kernel vector_add (A B C)
+(def-type source-vec (vector-type float :global :readable))     
+(def-type result-vec (vector-type float :global :write_only))    
+(def-kernel vector_add (A B &out C)
   (declare (type A B source-vec) (type C result-vec) 
            (global-size :derive-from A :msg "no bounds checking. global_work_size MUST match vector lengths" ))
   (in-each-thread (i)                        ; 'i' will be bound to the thread index / global-id
@@ -3097,8 +3097,8 @@ inside the `loop-grid-stride`. It can be a number, an expression that evaluates 
 ```
 ;; 1D Vector Add
 (def-type source-vec (vector-type float :global :readable))     ;; let's revisit that :read_only requirement for kernels?
-(def-type result-vec (vector-type float :global :writeable))    ;;  ibid
-(def-kernel vector_add (A B C)
+(def-type result-vec (vector-type float :global :write_only))    ;;  ibid
+(def-kernel vector_add (A B &out C)
   (declare (type A B source-vec) (type C result-vec) 
      (global-size :derive-from A))     
   (loop-grid-stride (i)                       ; 'i' will be bound to the thread index / global-id
@@ -3143,7 +3143,7 @@ This is much like `loop-grid-stride` except that it always has just one thread i
 `loop-vector-stride` iterates over a vector  using the Grid Stride strategy. With it, there is no need to declare a grid stride target.
 This makes it simpler, clearer and less error prone.   With it our vector_add example from the previous section becomes even simpler.
 ```
-(def-kernel vector_add (A B C)
+(def-kernel vector_add (A B &out C)
   (declare (type A B source-vec) (type C result-vec)
      (global-size :derive-from A))      
   (loop-vector-stride A (i)                   
@@ -3549,7 +3549,7 @@ going to agree on a convention that the local_work_size is 64.
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 (def-type result-vec (vector-type long :global :writeable))  
 
-(def-kernel sum_vector (A:source-vec Res:result-vec)
+(def-kernel sum_vector (A:source-vec &out Res:result-vec)
     (declare (local-size :set-to +wg-size+) (global-size :derive-from A))
                                      
    (let ((sum:long 0))
@@ -6455,38 +6455,39 @@ To Do
 -----
 - implementation notes for each, esp vector and def-const-vec, def-function, def-kernel
 - [x] is our "hoist" code going to include reading the compiled kernel from disk? Seems like it should.
-- multiple kernel invocation
-- multiple kernels in a single .crisp file.  what does that mean for binary reading and hoist code and compilation?
-- tension between vector-type declarations with and without length.  Possible solutions: (user-vector-t-wo-length 20)  or (add-length #'user-vector-t-wo-length 20) ? 
+- [x] multiple kernel invocation
+- [x] multiple kernels in a single .crisp file.  what does that mean for binary reading and hoist code and compilation?
+- [x] tension between vector-type declarations with and without length.  Possible solutions: (user-vector-t-wo-length 20)  or (add-length #'user-vector-t-wo-length 20) ? 
      The "twist" of using the type in the function position is very Clojure, but, honestly, too much of it makes things confusing. 
-- SBCL vs C++ ?
-- type "narrowing" suggested in with-template-type examples.
-- dependent types ( we've introduced them somewhat with tensor-view-type which takes both a number (dims) and a whole other type)
+- [x] SBCL vs C++ ?
+- [x] type "narrowing" suggested in with-template-type examples.
+- [x] dependent types ( we've introduced them somewhat with tensor-view-type which takes both a number (dims) and a whole other type)
 - [x] maybe type.  on-error-continue   <-- not sure we need on-error-continue.  (or-else <someexpr> <proxy-expr>) should work everywhere, right?
 - [x] string formatting? ->  NO.  Just output things with spaces between. Default. 
 + [x] "side channel" implementation notes
 - 'safe' types : numeric with overflow notifications/strategies. vector with boundary notifications. User elected? Automatic? I like compiler flag (or possibly `proclaim` )
-- lambda and types => DECISION: lambdas and labels are NOT supported
+- [x] lambda and types => DECISION: lambdas and labels are NOT supported
 - index of Common Lisp/Scheme things we WILL be taking. defmacro, inc! 
 - consider abbreviations: -type => -t    vector => vec  function => func , workgroup => wg
 - [x] nd-vector-view and image-view for 2D and 3D ( and ND?) traversal.  convolution  .  image means multi-channel pixel. Defer image.
-+ vector functions: copy, fill, iota. 
-+ tensor functions: transpose , is-abelian? .gather() / .contiguous() 
++ [ ] vector functions: copy, fill, iota. 
++ [ ] tensor functions: transpose , is-abelian? .gather() / .contiguous() 
                     "transpose" operation can often be done without moving any data. Just change the strides of the tensor.
-  tensor-views handle most slicing/shaping needs.  also "broadcasting" which is setting one of the strides to 0. So the "next row" calculation goes nowhere. It's a simple way of taking a [1 2 3 ] and making into [[1 2 3] [1 2 3] [1 2 3]...]
-- is-symmetric?  symmetric tensors only need to store upper triangle ( which may be more than half ).  How to map that to/from a linear vector? 
-  would it have to be immutable?    Might need custom  `aref`/`.` than knows how to "mirror" indeces.  
-- make-identity/is-identity   <-- square matrix with 0 everywhere but 1 on diagonal.  Once again, a fle
-- ROW MAJOR / COL MAJOR - should we borrow?
-- 1D tensor needs to pun for a vector.  Can our sub-type system handle or does it need special support?
+      tensor-views handle most slicing/shaping needs.  also "broadcasting" which is setting one of the strides to 0. So the "next row" calculation goes nowhere. It's a simple way of taking a [1 2 3 ] and making into [[1 2 3] [1 2 3] [1 2 3]...]
+- [ ] is-symmetric?  symmetric tensors only need to store upper triangle ( which may be more than half ).  How to map that to/from a linear vector? 
+    would it have to be immutable?    Might need custom  `aref`/`.` than knows how to "mirror" indeces.  
+- [ ] make-identity/is-identity   <-- square matrix with 0 everywhere but 1 on diagonal.  Once again, a fle
+- [x]ROW MAJOR / COL MAJOR - should we borrow?
+- [x] 1D tensor needs to pun for a vector.  Can our sub-type system handle or does it need special support?
 
-- rename def-const-vec to def-compile-const-vec OR def-device-const-vec  to further separate it from other "def-" things.
-- TILES? No.  SAMPLER? Yes, but not advised.
-- declare "side-effect-free" or maybe "function" or "procedure" ?
-- [ ] Matrix Operations: (matmul A B) (transpose A)    (m*v M v) - convenience function for matrix-vector multiplication. Very common special case of matmul
-      (make-identity-matrix N) -- square.    (make-zero-matrix rows cols)
-      (determinant A)   (inverse A)  -- slightly advanced. but common
-- sparse tensors / sparse matrix  : OUT OF SCOPE FOR NOW
+- [ ] rename def-const-vec to def-compile-const-vec OR def-device-const-vec  to further separate it from other "def-" things.
+- [ ] TILES? No.  SAMPLER? Yes, but not advised.
+- [ ] declare "side-effect-free" or maybe "function" or "procedure" ?
+- [ ] Matrix Operations: (matmul A B) (transpose A)    
+    [ ] (m*v M v) - convenience function for matrix-vector multiplication. Very common special case of matmul
+    [ ]  (make-identity-matrix N) -- square.    (make-zero-matrix rows cols)
+    [ ]  (determinant A)   (inverse A)  -- slightly advanced. but common
+- [ ] sparse tensors / sparse matrix  : OUT OF SCOPE FOR NOW
 - [x] VARIADIC!! ( how could I forget ? )  &rest ArgList  <--  uses List. Is this a good match? I have reservations.
    for defmacro it seems like this might be useful, central maybe.  But it would make def-function etc difficult to realize.
    OTOH OpenCL C does not support variadics. So it could be a win if achieved. 
@@ -6494,15 +6495,15 @@ To Do
 - [x] Might need to reexamine variadics anyway. Is + going to be variadic like in Common Lisp? That means an implicit reduce, plus difficult to do without CONS cells,  
   which I do not want to introduce.  Maybe just overload + for 2, 3, and 4 args and call it a day?
     DECISION: defmacro is variadic, functions are not
-- C++ has "explicit" for constructors to prevent them from participating in automatic type conversion.  Do we need anything like that?
-- `identity-tensor` and `maybe` both have the risk of introducing too much "logic" code, which will not be performant
+- [ ] C++ has "explicit" for constructors to prevent them from participating in automatic type conversion.  Do we need anything like that?
+- [ ] `identity-tensor` and `maybe` both have the risk of introducing too much "logic" code, which will not be performant
    Same goes for "safe" numeric types.
-- metadata:  'bifurcation count' and 'cognitive load'.  Not sure. 
-- give more thought to "events". Not sure what CUDA does. 
-- in-warp / in-XXXXX  =>  is this really better than just (let ((lane-id (get-lane-id))) ...)  &c.  Esp consider: (let (in-warp (let ...)))  which is a lot of nesting versus ONE  (let ...)
-+ fold and friend BUT REDUCED via shuffle <-- we added `reduce-` do we need others? 
+- [ ] metadata:  'bifurcation count' and 'cognitive load'.  Not sure. 
+- [ ] give more thought to "events". Not sure what CUDA does. 
+- [x] in-warp / in-XXXXX  =>  is this really better than just (let ((lane-id (get-lane-id))) ...)  &c.  Esp consider: (let (in-warp (let ...)))  which is a lot of nesting versus ONE  (let ...)
++ [ ] fold and friend BUT REDUCED via shuffle <-- we added `reduce-` do we need others? 
 - [x] reduce-vec ?
-- pronounce "shuffle" as "shoo-FLAY"
+- [ ] pronounce "shuffle" as "shoo-FLAY"
 - = specialization constants? More of a host thing.  Host runtime access to crisp compiler seems more powerful.
 - = How will compiler work?  Multi-pass is simplest? macro-expansions. Tree shaking? Can libraries be built for faster compilation time? 
 - = Compile Time Properties?  We have `num-dims-of`  already, possibly `address-space~` , `element-type-of` 
@@ -6513,13 +6514,13 @@ If so, what does THAT look like?   Imagine libraries with many functions, not al
 - = rename . (again)?  PROPOSAL: use ~ for vector access ~x  for struct access.  And maybe ~= for Non-overideable variants or maybe ~~ or maybe ~ref and ~x~   ( though, I think double tilde might be reserved in  markdown for strikethrough).   This helps make them ALL useful for (atomic-add (~x~ somePoint) delta)
 + `+` variants should use shuffles instead of local memory
 - other things
-- - fp rounding mode
-- - general register file configurable?
-- + complex numbers
-- + group barriers
-- - prefetching
-- - marshalling / directing of workgroups.  Seems like host should do this. But perhaps I lack imagination. reduce_over_group ? 
-- - thread block clusters  ( CUDA only? )
+- - [ ] fp rounding mode
+- - [ ] general register file configurable?
+- + [ ]complex numbers
+- + [ ] group barriers
+- - [ ] prefetching
+- - [ ] marshalling / directing of workgroups.  Seems like host should do this. But perhaps I lack imagination. reduce_over_group ? 
+- - [ ] thread block clusters  ( CUDA only? )
 + - [x] atomics 
 - + [x] conditional compilation of kernel functions for device aspects.  or maybe `(when+  (device-supports-fp16?) ... )` ?  (device-has? :fp16)
 + - [ ] dot product and accumulate for matrices, and maybe all tensors?
@@ -6536,9 +6537,9 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 
 [X] C interop with structs/vectors : std140 
 
-LAMBDA REVISIT - uniform lambdas OK?  
+[ ] LAMBDA REVISIT - uniform lambdas OK?  
 
-OVERLOAD REVISIT - how will overloaded functions, especially getters/setters, be useful if there is no var capture or globals?
+[ ] OVERLOAD REVISIT - how will overloaded functions, especially getters/setters, be useful if there is no var capture or globals?
                    (def-function make-xxxx ()   (def-function overload-of-something () ...))  ?  
 
 [x] DEF-KERNEL-EXACT ?  - our def-kernel assumes someone will be using our hoisting code.  BUT for people that have hoisting code already and know
@@ -6549,7 +6550,7 @@ OVERLOAD REVISIT - how will overloaded functions, especially getters/setters, be
 
 [ ] vector-view that changes element type. (like casting a vector of double to long) "reinterpret"
 
-DATA-POOL   - could be a real value add here. Kernels can't really dynamically allocate memory, so a pool system would be handy.
+[ ] DATA-POOL   - could be a real value add here. Kernels can't really dynamically allocate memory, so a pool system would be handy.
               Also very handy if we can calculate how much scratch will be needed and communicate that back in the hoisting code.
               Could be in terms of kernel args.  DataPoolSize = sizeof(double) * vector-A.lenth * 1.7 
 
@@ -6562,7 +6563,7 @@ DATA-POOL   - could be a real value add here. Kernels can't really dynamically a
 [X] MACROEXPAND - where to put this? A REPL tool? compiler flag?
 
 
-[ ] SORTING  ( radix & bitonic   - probably over warp, workgroup, global, vector)
+[ ] SORTING  ( [ ]radix & [x]bitonic   - probably over warp, workgroup, global, vector)
 
 [X] PROFILING ? yet another side channel?   advise?  -- is mostly a host side issue, correct?  
     DECISION: hoisting example code will have commented out code that enables profling. 
@@ -6601,10 +6602,45 @@ DATA-POOL   - could be a real value add here. Kernels can't really dynamically a
 
 [ ] FFT 
 
-[ ] warp scheduling and memory coalescing
+[ ] warp scheduling and [x] memory coalescing
 
 [ ] def-orchestration / calls kernels and some prebuilt affordances: cuBLAS, possibly oneMKL?.  "soft description". basic vector declarations, data passing, looping.
     probably need a (TBD ...) and (hoist-comment ...) macro.   Templates?  Gen?  
+
+
+### To Do (SHORT)
+- [ ] FFT
+- [ ] Radix Sort
+- [ ] Debugging Story
+- [ ] Compile-time introspection first-class citizen: 
+    [x] get-struct-members
+    [ ] is-grid-level? 
+    [ ] get-return-type
+    [ ] get-member-types
+- [ ] reduction macros -> templates
+- [ ] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
+- [ ] ENTRYPOINT - for libraries
+- [ ] fused softmax
+- [ ] data pool
+- [ ] vector-view that changes element-type
+- [ ] dot product and accumulate for matrices
+- [ ] / group barriers
+- [ ] complex numbers - need for FFT
+- [ ] matrix ops / vector ops
+    [ ] (m*v M v) - convenience function for matrix-vector multiplication. Very common special case of matmul
+    [ ] / (determinant M)
+    [ ] fill
+    [ ] copy
+    [ ] iota
+    [ ] gather
+    [ ] (is-contiguous? M)
+- [ ] / (declare (critical name V)) ; if fighting "spill", how important is one value vs. another.
+- [ ] / def-orchestration
+- [ ] / (hoist-comment )
+- [ ] / (declare (const var-name))
+- [ ] Kernel IPC
+
+
 
 <!-- PUT THIS LITTLE SUMMARY ON MEMORY SOMEPLACE -->
 Memory
