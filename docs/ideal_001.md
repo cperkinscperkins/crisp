@@ -1368,6 +1368,26 @@ there is no nesting. Instead the resulting view will have the original `vector` 
 not the `vector-view` argument.  Similarly, expect that is `offset` property will be the 
 net offset.
 
+#### reinterpret-view
+```
+(reinterpret-view source-vec new-type-symbol &key length offset))
+```
+
+`reinterpret-view` is a macro that takes a `vector` or `vector-view` argument and type (`float`, `int` etc)
+and returns a `vector-view`. If the optional `:length` key isn't used, then the length of the new `vector-view` will be calculated automatically.  The returned `vector-view` inherits the address-space, access permissions, and layout (`:compact` or `:std140`) from the source-vec. Only the element-type and length are changed.
+This is a casting operation and it is the callers responsibility to make sure the whole
+`vector-view` is funded with data. Give care when using the `:length` and `:offset` keys and if casting from a smaller 
+type to a larger one make sure there is enough source data even without using those keys.
+
+There are some restrictions though. They are enforced at compile time:
+
+- the source element type cannot be a struct type
+- the new type also cannot be a struct type
+- if the underlying source `vector` has `:std140` layout, then reinterpretation between
+  types requires that both have the same base alignment requirement under `std140`. 
+
+`:compact` layout is generally more amenable to reinterpretation.
+
 #### address space concerns for kernel instantiated vectors
 
 Inside `def-kernel` or `def-function` the only address spaces that can be used when 
@@ -1502,6 +1522,15 @@ Like `vector`, `soa-vector` and `soa-view` support `element-type` and `bytes` he
  - `(make-soa-vector soaVectorType length)`
  - `(make-soa-vector &key element-type address-space access align length)`
  - `(make-soa-view parent length &optional offset)`
+
+
+ ### Reinterpreting
+
+`soa-vector` and `soa-view` do not support any sort of reinterpret cast. But their underlying vectors
+do.  
+```
+  (let ((vector-view-of-ints (reinterpret-view (x~ point-soa-vec) 'int))) ...)
+```
 
 ### Converting between SoA and AoS vectors.
 
@@ -2972,8 +3001,12 @@ have the kernels work execute exactly once per thread. No other looping is requi
 For example, if we have a vector of 1024 items that need some work done on them, we schedule
 that same number of threads: 1024. Each thread works on just one element of the vector.
 
-This strategy will not work for very big kernels or very large thread work sizes. The compiler will output
-guidelines into the hoisting code for a particular kernel to help avoid mistakes. 
+This strategy is simple and flexible. While it can scale to any desired size, it 
+performs suboptimally for very big kernels or very large thread work sizes. 
+If a One Thread Per Element strategy works for your workload, then almost certainly
+a Grid Stride will also work (see below) and that will be more performant for larger 
+sized vectors. And most performant of all would be to leverage Data Interleaving (see below), 
+though that requires considerably more effort to orchestrate host side.  
 
 ### in-each-thread 
 
@@ -6639,6 +6672,14 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [ ] / (hoist-comment )
 - [ ] / (declare (const var-name))
 - [ ] Kernel IPC
+- [ ] Data interleaving. Mostly host side, but kernel needs to be able to work in chunks. 
+      Kernel typically takes an "offset" into the data. (vector-view vibes).
+      Works well with "embarassingly parallel" ops like: vector_add, convert-layout (matrix transpose), grid-strides,
+      But won't work with: reductions, filter (and prefix-sum-scan), sorting (radix/bitonic). 
+      Merge sort, however, chunks.
+      in "def-orchestration" : (pipeline my_chunk_kernel (full-data-vec) :chunks 4))  
+      There is a REAL need here. Data interleaving has a lot of reqs.  So setting up a sample might 
+      be fire.
 
 
 
