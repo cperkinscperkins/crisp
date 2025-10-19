@@ -424,6 +424,7 @@ The three "categories" are signed integers, unsigned integers and floating point
 
 Therefore these are the promotions Crisp performs automatically:
 
+| | |
 |-------------------|---------------------------------------------|
 | Unsigned Integers | `uchar` -> `ushort` -> `uint` -> `ulong`    |
 | Signed Integers   | `char` -> `short` -> `int` -> `long`        |
