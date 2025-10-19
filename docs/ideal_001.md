@@ -206,6 +206,7 @@ Kernel functions
 - the body `progn` of the kernel function is a dispatch context
 - can call both "thread level" functions and "grid level" functions.
 - kernel function names (like "do_something" above) are restricted to C-style naming rules (ie "do_something" with an underscore is valid, but "do-something" with a dash is not.)
+- kernel function names are case sensitive - unlike nearly everything else in Crisp which is case insensitive.
 
 `def-function`
 -------------
@@ -225,7 +226,7 @@ Thread level functions
 - the body of these functions are a "thread level context" (more about this later)
 - can call other thread level functions
 - but CANNOT call "grid level" functions or use grid level macros
-- can use Lisp-style naming rules. (dashes ok in function names)
+- can use Lisp-style naming rules. (dashes ok in function names, case insensitive)
 
 `def-grid-function`
 ------------------
@@ -251,8 +252,8 @@ Grid functions
 - can use Lisp-style naming rules (dashes ok).
 
 
-Return Vector Pattern &out
-==========================
+Return Vector Pattern `&out`
+============================
 
 Because kernel and grid functions cannot return values, the accepted
 pattern is to pass memory to them where you want results to be recorded.
@@ -289,13 +290,12 @@ classic race condition.
 
 This is a very easy mistake to make, in all languages. For this reason, Crisp
 has the `&out` parameter list specifier.  
-Any variables after `&out` must
+Any variables after `&out` must be a `:global` vector ( or an acceptable `vector` proxy, or `soa-vector` and its proxies ).
 
-- be a `:global` vector ( or an acceptable `vector` proxy, or `soa-vector` and its proxies ) 
-- be `:write_only`
-
-Within the functions scope, the compiler enforces a write-only contract. Any attempt
-to read from an `&out` parameter will result in compile-time error. 
+It is encouraged that the access is set to `:write_only` but this is not a strict requirement.  
+Importantly, regardless of the `:access` setting, within the functions scope the compiler enforces a write-only contract. 
+Any attempt to read from an `&out` parameter will result in a compile-time error. 
+Thus protecting you from accidentally making the race condition mistake.
 
 ```
 ;; --- CORRECT ---
@@ -408,12 +408,84 @@ Furthermore, Crisp supports "swizzles" (like `xyyy~`)
    ...  )
 ```
 
+Numeric Type Promotion, Casting, Conversion
+-------------------------------------------
+
+It should surprise no one that Python, C++, and Common Lisp all have different
+rules for type promotion. And, without naming names, no one will be surprised to 
+learn that at least one of those systems is a constant source of bugs for its users.
+
+Crisp takes a strict "hardware first" approach to automatic type promotion and 
+requires that any auto promotion is both "safe" and "correct".
+
+The rule is that implicit promotion is performed within the same category when
+going from a smaller size to a larger size, leveraging fast hardware instructions (zero extension, sign extension, or floating-point conversion).
+The three "categories" are signed integers, unsigned integers and floating point numbers.
+
+Therefore these are the promotions Crisp performs automatically:
+
+|-------------------|---------------------------------------------|
+| Unsigned Integers | `uchar` -> `ushort` -> `uint` -> `ulong`    |
+| Signed Integers   | `char` -> `short` -> `int` -> `long`        |
+| Floating Point    | `half` or `bfloat16` -> `float` -> `double` |
+
+This applies element-wise to hardware vector types as well:
+`ucharN` -> `ushortN` -> `uintN` -> `ulongN`    (etc for signed integer and floating point).
+
+All other conversions require an explicit cast.
+
+```
+;; COMPILE ERROR: No automatic promotion between int and float.
+(let ((a (some-int-returning-op)))
+  (some-float-op a))
+
+;; CORRECT: Use an explicit conversion function.
+(let ((a (some-int-returning-op)))
+  (some-float-op (to-float a)))
+```
+
+### Convert: `to-` , Cast `as-`
+
+If you need to move between numeric types, Crisp gives you two affordances: `to-XXXX` and `as-XXXX` where `XXXX` is 
+the target type name (eg. `to-float`  `as-int`)
+
+#### Value Conversion 
+`to-` converts the type "correctly" (or as correct as can be done) and will move bits to do so.  It is the equivalent
+to a "static cast" in C++.  Converting across categories, or to smaller sizes, may lead to loss of information and/or a
+accuracy.
+
+IMPORTANT:  for floating point to integer conversions, `to-int` and friends are NOT DEFINED. 
+Instead, you must explicitly choose which conversion you want:  `truncate`, `floor`, `ceil`
+or `round`.  See the section on integer division for a comparison.
+
+<!-- NOTE: maybe move that section on truncate/floor/ etc to yet another place? -->
+
+```
+(let ((f (some-float-returning-op)))
+  (some-int-op (ceil f)))
+```
+
+#### Bit Reinterpretation
+`as-` just tells the compiler to pass the value through with no action taken. No bits moved. It is inherently unsafe.
+It is the equivalent of "reinterpret cast" in C++.
+
+
+```
+;; without `to-int` below, this would not compile
+(let ((f (some-float-returning-op)))
+  (some-int-op (to-int f)))
+```
+
+
+
+
+
 
 
 Other Basic Types
 -----------------
 
-NOTE: this section needs work
+> NOTE: this section needs work
 
 ### bool    
 - `bool` is a type
@@ -1614,6 +1686,8 @@ Like in C++, the `-D` flag is used to specify a parameter and is followed by the
 e.g. `-DMAX_INDEX=40` 
 
 Paramter names should follow the C standard identifying rules. (ie use underscores, not dashes)
+
+**NOTE:** Parameter names, like kernel names, are _case sensitive_, unlike other names in Crisp.
 
 
 ```
