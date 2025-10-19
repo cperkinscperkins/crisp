@@ -115,7 +115,7 @@ The Common Lisp Object System is likely the most powerful object system ever des
 Crisp has nothing comparable, but instead offers modest structs, derived types, and function overloading. 
 These are simple and should be flexible enough to get things done.
 
-Thread Level / Grid Level / Orchestration
+Thread Level / Grid Level / Dispatch
 =========================================
 
 In most Lisp languages, `progn` is a term used to desribe a set of code that is grouped together and bound 
@@ -128,13 +128,13 @@ These three contexts are
 
 - thread level
 - grid level
-- orchestration
+- dispatch
 
 A thread level context is one where the action taking place within it is independent of what
 is occurring in other threads. Typically this means there is no expection that it work with 
 a particular piece of global memory or perform atomic operations on global memory. Thread level
 contexts are the default in functions defined by `def-function`. Importantly, inside a thread
-level `progn` it is illegal to make grid level or orchestration level operations/calls.   
+level `progn` it is illegal to make grid level or dispatch level operations/calls.   
 
 In contrast in a grid level context there is an expectation that thread with such-and-such id is
 accessing global memory at such-and-such index, or performing atomic operations on global memory.
@@ -142,9 +142,9 @@ Grid level contexts most often come from macros like `loop-grid-stride`. Inside 
 `progn` making  thread level operations is perfectly fine. But calling OTHER grid level operations
 is forbidden. 
 
-An orchestration context is a context where we can call either thread level or grid level 
+A dispatch context is a context where we can call either thread level or grid level 
 operations freely. But note, that if a grid level `progn` is opened that inside its body the
-restriction on calling other grid level operations still applies. Orchestration contexts are 
+restriction on calling other grid level operations still applies. Dispatch contexts are 
 associated with `def-kernel` and `def-grid-function`. 
 
 This author likes the analogy of a garment factory, where there are long tables with sewing machines
@@ -155,7 +155,7 @@ A thread level `progn` can contain the actions that can be performed by a person
 The long tables are grouped together into small workgroups. If there is some coordination that must 
 occur within a workgroup, (via local memory and local barriers perhaps), that's fine. A worker can do that 
 ("Hey, look at what Jim is doing").
-But if you need to coordinate multiple workgroups, or all the tables in the factory, well that's a
+But if you need to coordinate multiple workgroups, or ALL the tables in the factory, well that's a
 a grid level operation. That requires management. A single worker sitting at a sewing machine cannot
  "call" a grid level operation. 
 
@@ -203,7 +203,7 @@ Kernel functions
 - take arguments like a regular function
 - do not return values
 - are not callable by other Crisp functions (see "continuation kernels" for exceptions)
-- the body `progn` of the kernel function is an orchestration context
+- the body `progn` of the kernel function is a dispatch context
 - can call both "thread level" functions and "grid level" functions.
 - kernel function names (like "do_something" above) are restricted to C-style naming rules (ie "do_something" with an underscore is valid, but "do-something" with a dash is not.)
 
@@ -238,14 +238,14 @@ Thread level functions
 ```
 
 `def-grid-function` also defines a function, much like `def-function` above. 
-Grid functions have an "orchestration context" at their top level. They
+Grid functions have a "dispatch context" at their top level. They
 are called "grid functions" because the CAN invoke grid level operations 
 (as opposed to thread level functions which cannot).
 
 Grid functions
 - accept arguments
 - CANNOT return values
-- have an "orchestration context" in the top level
+- have a "dispatch context" in the top level
 - can call thread level functinos
 - can call grid level functions
 - can use Lisp-style naming rules (dashes ok).
@@ -2400,6 +2400,8 @@ The Common Lisp `labels` macro is similarly not supported for this same reason.
 
 Continuation Kernels
 --------------------
+
+>   This section will likely be removed, replaced by def-orchestration
 
 A common practice in GPU kernel coding is begin with with one kernel, that perhaps uses a certain
 distribution of local and global work sizes, and then to complete that calculation with second kernel, 
@@ -5813,6 +5815,195 @@ But with this check declared, Crisp will try to analyze other thread divergences
 
 `check-barriers` will examine the Crisp branching control flow constructs (like `if` and `cond` etc) to 
 see if perhaps a barrier is performed in one branch but not another, and warn about it.  
+
+
+
+Hoisting and `def-orchestration`
+================================
+
+When compiling, you can elect to have the Crisp compiler output "hoisting" example code. 
+This is example code in C++ or Python that demonstrates how to read in the binary file,
+create a program object, get a kernel, allocate memory, enqueue memory, set kernel arguments,
+enqueue and run the kernel, and retrieve any result data (`&out`) after. It is entirely
+optional, but can be a useful feature for debugging or sanity checking.
+
+By default every kernel defined in the .crisp files (or instance of `gen-KERNELNAME` if templated) will 
+have this hoisting code output for it when generating hoisting code.
+
+But oftentimes kernels aren't intended to be run in isolation. They are intended to be run in conjunction
+with other kernels. `def-orchestration` is Crisp affordance for this, it lets you communicate in a 
+simple fashion how one kernel is expected to run relative another. And with this information
+Crisp can both generate better hoisting code for you AND perform evaluations of your kernels at compile-time
+and warn or error if compatibility or use issues are detected.
+
+`def-orchestration`
+------------------
+
+Let's dive into some simple examples.
+
+### "default" orchestration
+
+```
+;; assume vector_add is defined and is not templated
+(def-orchestration just-vector_add
+  (launch-sequential #'vector_add))
+```
+The above is equivalent to the default orchestration Crisp assumes for any kernel when 
+generating hoisting code. Remember that `vector_add` usually takes three vector arguments, 
+and notice that none of them need to be mentioned in a simple orchestration like this.
+
+The compiler sees that `vector_add` is wanting to be launched, and it will go look at the arguments
+that kernel needs and the code it generates will set up and initialize some dummy values, and handle
+their enqueueing, etc.  
+
+This introductory example shows the `def-orchestration` begins with a name for the orchestration
+and is followed by a series of command for how to launch kernels. 
+
+
+### argument passing
+
+```
+; assume vector_add and vector_sum are both defined and neither is templated
+(def-orchestration my-add-and-sum
+  (launch-sequential #'vector_add (vector_sum vector_add::C _)))
+```
+
+The example above launches two kernels, first `vector_add`, and once it is done, `vector_sum`.
+The declaration for `vector_sum` might look like this: `(def-kernel vector_sum (A:some-vec-type &out Result:some-vec-type) ...` which would mean that `vector_sum` expects to be called with two vector arguments (`A` and `Result`) 
+
+In this particular orchestration, we want the result of `vector_add` to be be passed as the first argument to `vector_sum`, so to tell Crisp that we just combine the name of the kernel with the name of its argument together with `::`
+and use that.    For the second argument to `vector_sum` , we want the compiler to just use a dummy value like 
+it would have in the previous example, so we use `_` to indicate that.
+
+###  kernel template instantiation
+```
+;; assume both vector_add and vector_sum are templated for some element-type.
+(def-orchestration add-and-sum-doubles
+  (launch-sequential
+     (gen-vector_add double "v_a_double") 
+     ((gen-vector_sum double "v_s_double") v_a_double::C _)))
+
+; this orchestration will cause the kernels `v_a_double` and `v_s_double` to be created in the output.
+```
+
+Recall that when a kernel is templated, `gen-KernelName` is used to specialize it and a kernel name string is required.
+Here, that is leveraged. Note that this orchestration is effecting the compilation. It is generating
+two kernels ( `v_a_double` and `v_s_double` ) that will appear in the output.
+
+### template def-orchestration
+
+```
+(with-template-type (T)
+  (def-orchestration add-and-sum-any
+    (launch-sequential
+      (gen-vector_add T "v_a_${T}")
+      ((gen-vector_sum T "v_s_${T}") v_a_T::C _))))
+
+(gen-add-and-sum-any float)  ; kernels `v_a_float` and `v_s_float` will be created in the binary.
+
+```
+`def-orchestration` can, itself, be templated. Like kernels, nothing will be generated by the compiler 
+(not for regular output nor hoisting) UNLESS one or more `gen-Orchestration-Name` appear in the .crisp file.
+
+This is a good way for Crisp libraries to provide orchestration code, since it is ignored otherwise. 
+It is then incumbent on the user of the library to explicitly put the desired `gen-XXXX` form in
+their own .crisp file.
+
+### More notes on `def-orchestration`
+
+Hopefully those examples give you a grounding on how it can be used. It is important to remember
+that the forms inside the body of `def-orchestration` are used to just generate sample code and
+ensure that certain specializations are instantiated. 
+
+The forms that can appear inside `def-orchestration` are quite limited. It is NOT a Crisp 
+execution environment. 
+
+Presently, the following forms are the ONLY ones allowed within the body of a `def-orchestration`:
+- `launch-sequential`
+- `launch-parallel`
+- `launch-interleaved`
+- the `dotimes` and related `dec-` / `do-` macros
+- `_`  
+- `kernel_name::var-name` identifier 
+
+launch-sequential
+-----------------
+
+```
+(launch-sequential  &rest launch-specification)
+```
+`launch-sequential` takes a series of "launch-specifications" and the hoisting code that is
+generated will enqueue them all and prepare a device-side event based synchronization.
+The CPU is free to do other things while the sequence of kernels run, and it does not need to do participate during the sequence.
+
+### launch specification
+
+A "launch specification" has two possible forms: specifying only the kernel, or specifying the kernel and its arguments.
+
+For the kernel-only form, the kernel can just be named with `#'` preceding it. Or, for a templated kernel, 
+the `(gen-KernelName ...)` form is sufficient.
+
+For the kernel-with-arguments form, put the kernel name (or its generation) in the function position of the 
+s-expression and then use either an underscore (`_`) for each variable, or refer to some variable used in a previous step
+by combining another kernal name and its variable name: (e.g. `vector_add::C`). 
+ This "other" kernel name must be from a different kernel that was used earlier in the orchestration.
+
+Note that in the context of `def-orchestration` it is legal to use the `gen-XXXX` form
+on an untemplated kernel for the purposes of giving it a unique name.  ( e.g. `(gen-SomeKernelName nil "new_kernel_name")`)
+
+```
+;; assume vector_add is NOT templated.
+(launch-sequential 
+     (gen-vector_add nil "initial_v_a")
+     ((gen-vector_add nil "second_v_a") _ initial_v_a::C _)
+     ((gen-vector_add nil "third_v_a") initial_v_a::B second_v_a::C _))
+```
+
+launch parallel
+---------------
+
+```
+(launch-parallel &rest launch-specification)
+```
+
+`launch-parallel` is much like `launch-sequential` except that the kernels are all launched parallel to one
+another. Crisp will add code to divide the available thread space up between them (excepting `single-task` kernels which just get one thread).
+
+Note that kernels in this form CANNOT refer to each others variables. Dependencies between them are disallowed.
+
+launch-interleaved
+------------------
+```
+(launch-interleaved launch-specification offset-param-specifier length-param-specifier &key exclude)
+```
+
+When the compiler encounters `launch-interleaved`, the hoisting code that is generated will enqueue
+the kernels and data such that the memory copy and the kernel execution overlap. This helps hide latency
+and is often the secret to maximizing performance and throughput.  
+
+The kernel launched must have, in addition to one or more vector data arguments, a parameter that can
+accept an "offset" into the vector and a paramter that accepts a "length". 
+
+If there vector arguments to the kernel that should NOT interleaved, specify them with the `:exclude` key.
+
+Example:
+```
+;; assume input-vec-t and output-vec-t already defined.
+(def-kernel vector_add_chunked (len offset A B &out C)
+  (declare #(ulong ulong input-vec-t input-vec-t &out output-vec-t))
+  (let ((A-view (make-vector-view A len offset))
+        (B-view (make-vector-view B len offset))
+        (C-view (make-vector-view C len offset)))
+    (map-stride #'+ A-view B-view C-view)))
+
+(def-orchestration add-interleaved
+  (launch-interleaved #'vector_add_chunked vector_add_chunked::len vector_add_chunked::offset))
+```
+In the example above, Crisp will correctly conclude that ALL the vector arguments ( `A`, `B`, and `C`) 
+should be interleaved and the hoisting code will demonstrate how to allocate some memory, pin it, 
+and interatively copy it to the GPU device while executing the kernel concurrently.
+
+Neat!
 
 
 
