@@ -603,7 +603,7 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
 Function Overloading
 --------------------
 
-Crisp support function overloading for functions defined with `def-function` as well as property access functions on 
+Crisp support function overloading for functions defined with `def-function`, `def-grid-function`, as well as property access functions on 
 some of the other types. Note that property access via a `soa-vector` requires an additional overload. The compiler
 will warn if it detects `soa-vector` property access with an asymmetric overload.
 
@@ -634,6 +634,7 @@ Declaring Types - Kernels
 - `def-kernel` functions always returns NIL. It does not need to explicitly declare a return type.
 - `vector` types must be fully typed with address space, access, alignment and element type. (See Vector Types below)
 - `def-kernel` functions do NOT support `&key` or `&optional` arguments.
+- but it DOES support `&out` 
 - the function name for kernels MUST obey the C standard identifying rules.  Thus "do_something" is a valid name, but "do-something" is not.
 - unlike regular functions, kernel functions do NOT support overloading. Each kernel function must have a unique name.
 
@@ -645,7 +646,7 @@ Like `def-function` ALL the parameters to the kernel function must have their ty
 ;  the return type is assumed NIL.
 
 (def-type int-result-vector (vector-type int :global :writeable :std140 1))
-(def-kernel add_two (a:int b:int result:int-result-vector)
+(def-kernel add_two (a:int b:int &out result:int-result-vector)
    (set! (~ result 0) (+ a b)))
 ```
 
@@ -683,9 +684,11 @@ Note that nearly all the args for clEnqueueNDRangeKernel revolve around the NDRa
 
 ### def-kernel-exact
 
-`def-kernel-exact` is like `def-kernel` . It can be templated and has the same restrictions.  But kernels defined with `def-kernel-exact` do NOT
-support any implicit arguments.  Instead `def-kernel-exact` supports different marshalling functions to help create Crisp vectors, including the ones
-required for the Crisp debug, scratch and result vectors.
+`def-kernel-exact` is like `def-kernel` . It can be templated and has the same restrictions.  
+But kernels defined with `def-kernel-exact` do NOT support any implicit arguments.  
+Additionally the `&out` argument specifier is not supported in the param list for `def-kernel-exact`
+Instead `def-kernel-exact` supports different marshalling functions to help create Crisp vectors, 
+including the ones required for the Crisp debug, scratch and result vectors.
 
 `def-kernel-exact` is provided for users who have less control over how their kernel is hoisted and may have to instead adapt to some existing interface.
 
@@ -701,6 +704,10 @@ which is a function Crisp provides for making Crisp vectors from `void` pointers
         (C (marshall-vector CPtr CSz (float-vec-t :write_only))))
     (vector-add A B C)))
 ```
+
+The recommended practice is to use marshalling functionss immediately within a `def-kernel-exact` body 
+to create standard Crisp views, and then call some some inner function. That inner function will let you leverage
+the `&out` specifier and possibly other safety checks. 
 
 #### implicit vector arguments
 
@@ -5997,6 +6004,9 @@ their own .crisp file.
 Hopefully those examples give you a grounding on how it can be used. It is important to remember
 that the forms inside the body of `def-orchestration` are used to just generate sample code and
 ensure that certain specializations are instantiated. 
+
+Because `def-orchestration` focuses on high-level data flow using Crisp's typed views, 
+it is generally not used with kernels defined via `def-kernel-exact`, which operate at a lower level with raw argument types
 
 The forms that can appear inside `def-orchestration` are quite limited. It is NOT a Crisp 
 execution environment. 
