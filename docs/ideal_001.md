@@ -2474,8 +2474,6 @@ The Common Lisp `labels` macro is similarly not supported for this same reason.
 Continuation Kernels
 --------------------
 
->   This section will likely be removed, replaced by def-orchestration
-
 A common practice in GPU kernel coding is begin with with one kernel, that perhaps uses a certain
 distribution of local and global work sizes, and then to complete that calculation with second kernel, 
 that is typically enqueued with a set of local and global work sizes tailored to it. 
@@ -2485,7 +2483,17 @@ no "global barriers" with which to enforce it. Atomics can be used as ersatz bar
 is an example of working around these limitations. 
 
 When an algorithm has clearly defined stages, and those stages might benefit from a separate enqueue, then 
-Crisp "continuation kernels" may help.
+Crisp has two choices: `def-orchestration` and "continuation kernels". 
+
+`def-orchestration` is simple to use and lets you easily configure hoisting code for launching
+kernels sequentially and moving data between them, or launching them isolated in parallel, or even
+doing data interleaving with overlapping kernel-invocation/memory-copies. See the [Hoisting and def-orchestration](#hoisting-and-def-orchestration) section for more.
+
+While `def-orchestration` provides a general framework for sequencing kernels, continuation kernels 
+offer a unique advantage in specific scenarios: compile-time capture.  This superpower allows
+ a macro using `let-kernel` to capture a function arg at compile time, which means
+that BOTH kernel stages can use some same common worker function without having to "pass" that across the
+host-device barrier. 
 
 ### `let-kernel`
 
@@ -4264,94 +4272,18 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 
 Possible Implementation
 ```
-(with-template-type (T L &optional (M ""))
-  (declare (value-is L #'is-layout?)
-           (type-is M #'is-string?))
-  (let ((make-reduction-g-r-v (gen-make-reduction-global-scratch-vec T L M))
-        (make-reduction-l-s-v (gen-make-reductionl-local-scratch-vec T L M)))
-    (def-grid-function reduce-to-1-cont (someFunction someVar identity
-                                           &out (globalResultVec (make-reduction-g-r-v)) 
-                                      &optional (localScratchVec (make-reduction-l-s-v)))
-        (declare #( (binop-type T) T T  &optional (global-scratch-vec-type T L) (local-scratch-vec-type T L)))
-
-        ;; let's take a moment and define the second stage, the continuation kernel.
-        (let-kernel ((continuation-k  (l-s-v g-r-v &out result-vec)
-                  (declare (kernel-name "cont_reduce_${T}_${L}")
-                           (type l-s-v (local-scratch-vec-type T L))
-                           (type g-r-v (global-scratch-vec-type T L))
-                           (type result-vec (vector-type T :global :writeable L))
-                           (local-size :derive-from g-r-v :msg (string-concat kernel-name " requires a local_work_size at least as big as the global-scratch-vector")))
-                      (let* ((num-items (length~ g-r-v))
-                            (local-id (get-local-id))
-                            ;; Each thread in the workgroup loads one partial result.
-                            ;; If there are more threads than items, inactive threads get the identity.
-                            (val (if (< local-id num-items)
-                                      (~ g-s-v local-id)
-                                      identity)))
-                        
-                        ;; Perform a standard workgroup reduction on the partial results.
-                        (reduce-to-workgroup someFunction val identity l-s-v)
-                        
-                        ;; The final result is now in 'val' of thread 0.
-                        ;; Only thread 0 writes the final result to the output vector.
-                        (when (= local-id 0)
-                          (set! (~ result-vec 0) val))) ))
 
 
-        ; after this the value of someVar will be one value per group.
-        (reduce-to-workgroup someFunction someVar identity localScratchVec)
-        ; so we capture it in the global vec
-        (when-thread-in-group-is 0
-          (set! (~ globalResultVec (get-group-id) someVar)))
-
-        ;; this isn't a real invocation. It just demonstrates to the hoisting code 
-        ;; HOW this function expects the "continuation" kernel to be called.
-        (continuation-k globalResultVec localScratchVec (make-result-vector (type-of ,someVar) 1))))))
-      
-
-
-
-
-(with-template-type (T L &optional (M ""))
-  (declare (value-is L #'is-layout?)
-           (type-is M #'is-string?))
-  (let ((make-reduction-l-s-v (gen-make-reductionl-local-scratch-vec T L M)))
-    (def-kernel continue_reduction (someFunction identity globalVec &out resultVec &optional (localScratchVec (make-reduction-l-s-v)))
-      (declare #((binop-type T) T (global-scratch-vec-type T L) &out (vector-type T :global :writeable L) &optional (local-scratch-vec-type T L))
-                 (local-size :derive-from globalVec :msg  "continue_reduction requires a local_work_size at least as big as its globalVec parameter"))
-       (let* ((num-items (length~ globalVec))
-              (local-id (get-local-id))
-              ;; Each thread in the workgroup loads one partial result.
-              ;; If there are more threads than items, inactive threads get the identity.
-              (val (if (< local-id num-items)
-                        (~ globalVec local-id)
-                        identity)))
-          
-          ;; Perform a standard workgroup reduction on the partial results.
-          (reduce-to-workgroup someFunction val identity localScratchVec)
-          
-          ;; The final result is now in 'val' of thread 0.
-          ;; Only thread 0 writes the final result to the output vector.
-          (when (= local-id 0)
-            (set! (~ result-vec 0) val))))))
-
-(with-template-type (T L &optional (M ""))
-  (def-orchestration reduce-to-1-two-stages
-    (launch-sequential 
-        (gen-reduce-to-1-cont T L M)
-        ((gen-continue_reduction T L M "continue_reduction_of_${T}") 
-
-
-
-(defmacro reduce-to-1-cont (someFunction someVar identity continuation-kernel-name
-                                   &optional (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (type-of someVar) message)))
-                                             (localScratchVec  (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message))))  
+(defmacro reduce-to-1-cont (someFunction someVar identity continuation-kernel-name layout
+                                   &optional (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (type-of someVar) layout message)))
+                                             (localScratchVec  (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) layout message))))  
    (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
    (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
    `(let-kernel ((continuation-k  (l-s-v g-s-v result-vec)
                   (declare (kernel-name ,continuation-kernel-name)
-                           (type l-s-v (local-scratch-vec-type (type-of ,someVar)))
-                           (type g-s-v (global-scratch-vec-type (type-of ,someVar)))
+                           (type l-s-v (local-scratch-vec-type (type-of ,someVar) ,layout))
+                           (type g-s-v (global-scratch-vec-type (type-of ,someVar) ,layout))
+                           (type result-vec (vector-type (type-of ,someVar) :global :writeable ,layout))
                            (local-size :derive-from g-s-v :msg (string-concat ,continuation-kernel-name "requires a local_work_size at least as big as the global-scratch-vector")))
                       (let* ((num-items (length~ g-s-v))
                             (local-id (get-local-id))
@@ -4361,7 +4293,6 @@ Possible Implementation
                                       (~ g-s-v local-id)
                                       ,identity)))
                         
-                        (declare (grid-level))
                         ;; Perform a standard workgroup reduction on the partial results.
                         (reduce-to-workgroup ,someFunction val ,identity l-s-v)
                         
