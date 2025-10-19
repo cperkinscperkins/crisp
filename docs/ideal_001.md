@@ -452,7 +452,7 @@ the target type name (eg. `to-float`  `as-int`)
 
 #### Value Conversion 
 `to-` converts the type "correctly" (or as correct as can be done) and will move bits to do so.  It is the equivalent
-to a "static cast" in C++.  Converting across categories, or to smaller sizes, may lead to loss of information and/or a
+to a "static cast" in C++.  Converting across categories, or to smaller sizes, may lead to loss of information and/or 
 accuracy.
 
 IMPORTANT:  for floating point to integer conversions, `to-int` and friends are NOT DEFINED. 
@@ -476,8 +476,6 @@ It is the equivalent of "reinterpret cast" in C++.
 (let ((f (some-float-returning-op)))
   (some-int-op (to-int f)))
 ```
-
-
 
 
 
@@ -953,7 +951,7 @@ Example:
 ```
 
 
-
+Note that automatic numeric type promotion does not occur during template argument deduction. All arguments passed to a templated function must match the expected type exactly, or an explicit conversion function (like `to-float`) must be used.
 
 
 
@@ -4266,9 +4264,88 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 
 Possible Implementation
 ```
+(with-template-type (T L &optional (M ""))
+  (declare (value-is L #'is-layout?)
+           (type-is M #'is-string?))
+  (let ((make-reduction-g-r-v (gen-make-reduction-global-scratch-vec T L M))
+        (make-reduction-l-s-v (gen-make-reductionl-local-scratch-vec T L M)))
+    (def-grid-function reduce-to-1-cont (someFunction someVar identity
+                                           &out (globalResultVec (make-reduction-g-r-v)) 
+                                      &optional (localScratchVec (make-reduction-l-s-v)))
+        (declare #( (binop-type T) T T  &optional (global-scratch-vec-type T L) (local-scratch-vec-type T L)))
+
+        ;; let's take a moment and define the second stage, the continuation kernel.
+        (let-kernel ((continuation-k  (l-s-v g-r-v &out result-vec)
+                  (declare (kernel-name "cont_reduce_${T}_${L}")
+                           (type l-s-v (local-scratch-vec-type T L))
+                           (type g-r-v (global-scratch-vec-type T L))
+                           (type result-vec (vector-type T :global :writeable L))
+                           (local-size :derive-from g-r-v :msg (string-concat kernel-name " requires a local_work_size at least as big as the global-scratch-vector")))
+                      (let* ((num-items (length~ g-r-v))
+                            (local-id (get-local-id))
+                            ;; Each thread in the workgroup loads one partial result.
+                            ;; If there are more threads than items, inactive threads get the identity.
+                            (val (if (< local-id num-items)
+                                      (~ g-s-v local-id)
+                                      identity)))
+                        
+                        ;; Perform a standard workgroup reduction on the partial results.
+                        (reduce-to-workgroup someFunction val identity l-s-v)
+                        
+                        ;; The final result is now in 'val' of thread 0.
+                        ;; Only thread 0 writes the final result to the output vector.
+                        (when (= local-id 0)
+                          (set! (~ result-vec 0) val))) ))
+
+
+        ; after this the value of someVar will be one value per group.
+        (reduce-to-workgroup someFunction someVar identity localScratchVec)
+        ; so we capture it in the global vec
+        (when-thread-in-group-is 0
+          (set! (~ globalResultVec (get-group-id) someVar)))
+
+        ;; this isn't a real invocation. It just demonstrates to the hoisting code 
+        ;; HOW this function expects the "continuation" kernel to be called.
+        (continuation-k globalResultVec localScratchVec (make-result-vector (type-of ,someVar) 1))))))
+      
+
+
+
+
+(with-template-type (T L &optional (M ""))
+  (declare (value-is L #'is-layout?)
+           (type-is M #'is-string?))
+  (let ((make-reduction-l-s-v (gen-make-reductionl-local-scratch-vec T L M)))
+    (def-kernel continue_reduction (someFunction identity globalVec &out resultVec &optional (localScratchVec (make-reduction-l-s-v)))
+      (declare #((binop-type T) T (global-scratch-vec-type T L) &out (vector-type T :global :writeable L) &optional (local-scratch-vec-type T L))
+                 (local-size :derive-from globalVec :msg  "continue_reduction requires a local_work_size at least as big as its globalVec parameter"))
+       (let* ((num-items (length~ globalVec))
+              (local-id (get-local-id))
+              ;; Each thread in the workgroup loads one partial result.
+              ;; If there are more threads than items, inactive threads get the identity.
+              (val (if (< local-id num-items)
+                        (~ globalVec local-id)
+                        identity)))
+          
+          ;; Perform a standard workgroup reduction on the partial results.
+          (reduce-to-workgroup someFunction val identity localScratchVec)
+          
+          ;; The final result is now in 'val' of thread 0.
+          ;; Only thread 0 writes the final result to the output vector.
+          (when (= local-id 0)
+            (set! (~ result-vec 0) val))))))
+
+(with-template-type (T L &optional (M ""))
+  (def-orchestration reduce-to-1-two-stages
+    (launch-sequential 
+        (gen-reduce-to-1-cont T L M)
+        ((gen-continue_reduction T L M "continue_reduction_of_${T}") 
+
+
+
 (defmacro reduce-to-1-cont (someFunction someVar identity continuation-kernel-name
-                                   &optional globalScratchVec (funcall (get-make-reduction-global-scratch-vec (type-of someVar) message))
-                                             localScratchVec  (funcall (get-make-reduction-local-scratch-vec (type-of someVar) message)))  
+                                   &optional (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (type-of someVar) message)))
+                                             (localScratchVec  (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message))))  
    (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
    (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
    `(let-kernel ((continuation-k  (l-s-v g-s-v result-vec)
@@ -6921,7 +6998,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [ ] ENTRYPOINT - for libraries
 - [ ] fused softmax
 - [ ] data pool
-- [ ] vector-view that changes element-type
+- [x] vector-view that changes element-type
 - [ ] dot product and accumulate for matrices
 - [ ] / group barriers
 - [ ] complex numbers - need for FFT
@@ -6934,7 +7011,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     [ ] gather
     [ ] (is-contiguous? M)
 - [ ] / (declare (critical name V)) ; if fighting "spill", how important is one value vs. another.
-- [ ] / def-orchestration
+- [x] / def-orchestration
 - [ ] / (hoist-comment )
 - [ ] / (declare (const var-name))
 - [ ] Kernel IPC
