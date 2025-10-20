@@ -5396,11 +5396,26 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
 ```
 
 ### coordinating all three: histogram / san / scatter
-;; histogram_pass (input-vec bit-offset &out global-histogram  &optional local-histogram)
-;; scan_historgram (global-histogram &out bucket-offsets)
-;; scatter_pass (input-vec bucket-offsets bit-offset &out output-vec)
+
+Finally, after defining `histogram-pass`, `scan-histogram` and `scatter-pass` we
+are ready to use Radix Sort. 
+
+The most difficult part to grasp is that these three kernels are run repeatedly, 
+8 bits at a time. The orchestration below demonstrates how to run them. 
+
+Just use `(gen-radix-sort Type Alignment)` and the Crisp compiler will build the correct
+kernels and the hoisting example code will walk through everything.
 
 ```
+;;  the three passes and their param names, for reference.
+;;  (histogram_pass input-vec bit-offset &out global-histogram  &optional local-histogram)
+;;  (scan_historgram global-histogram &out bucket-offsets)
+;;  (scatter_pass input-vec bucket-offsets bit-offset &out output-vec)
+
+
+#
+# radix-sort orchestration
+#
 (with-template-type (T A)
   (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
 
@@ -6940,6 +6955,11 @@ Sorting
 - gen-bitonic-sort-vector!
 - gen-bitonic-sort-soa-vector!
 
+- histogram-pass
+- scan-histogram
+- scatter-pass
+- gen-radix-sort
+
 
 
 
@@ -7089,6 +7109,8 @@ hoisting and def-orchestration
 - launch-parallel
 - launch-interleaved
 - +wg-size+  ; constant in def-orchestration (only)
+- make-hoist-vector 
+- swap-refs (kludgy?)
 
 
 lisp
