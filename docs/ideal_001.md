@@ -4868,87 +4868,102 @@ When swapping, there is a sorting direction. `direction == true` for an ascendin
 
 
 A possible implementation might be
+
 ```
-;; This would be a helper function
-(with-template-type (T) 
-  (declare (type-is T #'is-orderable?))
-  (def-function bitonic-compare-and-swap (local-vec idx1 idx2 direction)
-    (declare #((vector-type T) ulong ulong bool => nil))
+;; helper function
+(with-template-type (T U) ; T is element type, U is key type
+  ;; U must be orderable, T doesn't have to be if keyF is provided.
+  (declare (type-is U #'is-orderable?))
+  (def-function bitonic-compare-and-swap (local-vec idx1 idx2 direction &optional (keyF nil))
+    (declare #((vector-type T) ulong ulong bool &optional #(T => U) => nil))
     (let ((val1 (~ local-vec idx1))
           (val2 (~ local-vec idx2)))
-      (when (if direction
-                (> val1 val2)   ; Ascending: swap if val1 > val2
-                (< val1 val2))  ; Descending: swap if val1 < val2
-        (set! (~ local-vec idx1) val2)
-        (set! (~ local-vec idx2) val1)))))
 
-;; out of place sorting
+      ;; extract keys if keyF is provided, otherwise use the values themselves
+      (let ((key1 (if keyF (funcall keyF val1) val1))
+            (key2 (if keyF (funcall keyF val2) val2)))
+
+        ;; Compare the keys
+        (when (if direction (> key1 key2) (< key1 key2))
+          ;; Swap the original full values (structs)
+          (set! (~ local-vec idx1) val2)
+          (set! (~ local-vec idx2) val1)))))
+
+;; out of place sort
 (with-template-type (T A)
-   (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?))
-(def-function bitonic-sort-workgroup (data-in data-out)
-  (declare (local-size :set-to 256 :msg "local-work-size should be a power of 2 for bitonic-sort-workgroup")
-           #((vector-type T :global :readable) (vector-type T :global :writeable) => nil))
-  (let ((N   (get-local-linear-size)) ;; should be power of 2.
-        (shared-array (make-scratch-vector T :local :read_write :std140 N))
-        (global-id (get-global-id))
-        (local-id (get-local-id)))
-    (r-t-assert-0 (is-power-of-2 N) "local_work_size should be a power of 2")
-    ;; load data from global to shared memory 
-    ;; Each thread loads one element. For simplicity, assume N = global_size
-    (when (< global-id N) ;; Boundary check for global data
-      (set! (~ shared-array local-id) (~ data-in global-id)))
-    (local-barrier)
+  ;; Constraint relaxed: T only needs to be orderable IF keyF is NOT provided.
+  ;; The compiler/constraint system needs to handle this conditional constraint.
+  (declare (value-is A #'is-alignment?))
+  (def-function bitonic-sort-workgroup (data-in data-out &key keyF)
+    (declare (local-size :set-to 256 :msg "local-work-size should be a power of 2 for bitonic-sort-workgroup")
+             #((vector-type T :global :readable) (vector-type T :global :writeable) 
+                &key #'(T => #_is-orderable?) => nil))
+    (let ((N   (get-local-linear-size)) ;; should be power of 2.
+         (shared-array (make-scratch-vector T :local :read_write :std140 N))
+         (global-id (get-global-id))
+         (local-id (get-local-id)))
+      (r-t-assert-0 (is-power-of-2 N) "local_work_size should be a power of 2")
+      ;; load data from global to shared memory 
+      ;; Each thread loads one element. For simplicity, assume N = global_size
+      (when (< global-id N) ;; Boundary check for global data
+        (set! (~ shared-array local-id) (~ data-in global-id)))
+      (local-barrier)
 
-    ;; perform Bitonic Sort
-    ;; Outer loop: Builds increasingly large bitonic sequences
-    ;; 'j' represents the size of the bitonic sequence being formed (1, 2, 4, ... N/2)
-    (do-power-step (j N) ; Iterates j = 1, 2, 4, ... N/2
-      ;; Inner loop: Merges bitonic sequences of size 'j'
-      ;; 'k' represents the sub-sequence length to compare (j/2, j/4, ... 1)
-      (dec-times-by-half (k (/ j 2)) ; Iterates k = j/2, j/4, ... 1
-        ;; Determine sorting direction for this phase
-        ;; The first half of the sequences sort ascending, second half descending
-        (let* ((direction (> (bit-and local-id (+ j j)) 0))) ; Determines if this half sorts UP or DOWN
-               (partner-id (bit-xor local-id k))) ; Partner is 'k' distance away
+      ;; perform Bitonic Sort
+      ;; Outer loop: Builds increasingly large bitonic sequences
+      ;; 'j' represents the size of the bitonic sequence being formed
+      (do-power-step (j N)  ; Iterates j = 1, 2, 4, ... N/2
+        ;; Inner loop: Merges bitonic sequences of size 'j'
+        ;; 'k' represents the sub-sequence length to compare (j/2, j/4, ... 1)
+        (dec-times-by-half (k (/ j 2))
+          ;; Determine sorting direction for this phase
+          ;; The first half of the sequences sort ascending, second half  descending
+          (let* ((direction (> (bit-and local-id (+ j j)) 0))) ; Determines if this half sorts UP or DOWN
+                (partner-id (bit-xor local-id k))) ; Partner is 'k' distance away
 
-          (when (< partner-id N) ; Ensure partner ID is within bounds (for non-power-of-2 sizes)
-            (bitonic-compare-and-swap shared-array local-id partner-id direction)))
-        (local-barrier)))
-    
-    ;; store sorted data from shared to global memory
-    (when (< global-id N) ;; Boundary check for global data
-      (set! (~ data-out global-id) (~ shared-array local-id)))
-    (local-barrier))))
+            (when (< partner-id N) ; Ensure partner ID is within bounds (for non-power-of-2 sizes)
+              (bitonic-compare-and-swap shared-array local-id partner-id direction keyF))) 
+          (local-barrier)))
+
+      ; store sorted data from shared to global memory
+      (when (< global-id N) ;; Boundary check for global data
+        (set! (~ data-out global-id) (~ shared-array local-id)))
+      (local-barrier)))
 
 ;; in place sorting
 (with-template-type (T A)
-  (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?))
-  (def-function bitonic-sort-workgroup! (data)
-    (declare #((vector-type T :global :read_write A)
-    (bitonic-sort-workgroup data data)))))  
+  ;; Constraint relaxed: T only needs to be orderable IF keyF is NOT provided.
+  ;; The compiler/constraint system needs to handle this conditional constraint.
+  (declare (value-is A #'is-alignment?))
+  (def-function bitonic-sort-workgroup! (data &key keyF)
+    (declare #((vector-type T :global :read_write A) &key (function T => #_is-orderable?) => nil))
+    (bitonic-sort-workgroup data data :key keyF)))
 
-;; Kernels
+
+;; Kernels. These don't use the key. Define your own if you need to set one.
 (with-template-type (T A)
   (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?))
   (def-kernel bitonic_sort_workgroup (data-in data-out)
-    (declare (type-signature-of #'bitonic-sort-workgroup))
+    (declare #((vector-type T :global :readable) (vector-type T :global :writeable) => nil))
     (bitonic-sort-workgroup data-in data-out)))
     
 (with-template-type (T A)
   (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?))
   (def-kernel bitonic_sort_workgroup_in_place (data)
-    (declare (type-signature-of #'bitonic-sort-workgroup!))
+    (declare #((vector-type T :global :read_write) => nil))
     (bitonic-sort-workgroup! data)))
-    
 ```
 
 ### `bitonic_merge_pass`
 
 ```
+(bitonic-merge-pass data j k &keyF)
+
 (gen-bintonic_merge_pass elementT alignment kernelName &key keyF)
 (gen-bintonic_soa_merge_pass structT property alignment kernelName)
 ```
-The merge pass is provided as a kernel template that can be generated. 
+The merge pass is provided as both a function you can use, and a kernel template that can be generated. 
+The function takes 
 It will generate a kernel that takes a data, j and k arguments. 
 The generated hoisting code will demonstrate how to manipulate j and k
 on each subsequent call.
@@ -4964,9 +4979,11 @@ Possible Implementation
 
 ```
 (with-template-type (T A)
-  (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?)) 
-  (def-kernel bitonic_merge_pass (data j k)
-    (declare #((vector-type T :global :read_write A) ulong ulong => nil))
+  ;; Constraint relaxed: T only needs to be orderable IF keyF is NOT provided.
+  ;; The compiler/constraint system needs to handle this conditional constraint.
+  (declare (value-is A #'is-alignment?)) 
+  (def-function bitonic-merge-pass (data j k &key keyF)
+    (declare #((vector-type T :global :read_write A) ulong ulong &key #'(T => #_is-orderable?) => nil))
 
     (let ((i (get-global-id)))
       
@@ -4982,17 +4999,26 @@ Possible Implementation
           ;;    with the lower index. This prevents a "double swap".
           (when (< i partner-id)
             (let ((val1 (~ data i))
-                  (val2 (~ data partner-id)))
+                  (val2 (~ data partner-id))
+                  (key1 (if keyF (funcall keyF val1) val1))
+                  (key2 (if keyF (funcall keyF val2) val2)))
               
               ;; 4. Perform the compare-and-swap based on the direction.
               (when (if direction
-                        (> val1 val2)   ; Ascending sort for this region
-                        (< val1 val2))  ; Descending sort for this region
+                        (> key1 key2)   ; Ascending sort for this region
+                        (< key1 key2))  ; Descending sort for this region
                 (set! (~ data i) val2)
                 (set! (~ data partner-id) val1)))))))))
+
+;; kernel doesn't take a key. Define your own if you wish to use one.
+(with-template-type (T A)
+  (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?)) 
+  (def-kernel bitonic_merge_pass (data j k)
+    (declare #((vector-type T :global :read_write A) ulong ulong => nil))
+    (bitonic-merge-pass data j k)))
 ```
 
-### Don't Make Me Think `bitonic-sort-vector!`
+### Don't Make Me Think `gen-bitonic-sort-vector`
 
 ```
 (gen-bitonic-sort-vector elementT alignment) ;;  &key keyF
