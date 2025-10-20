@@ -3398,6 +3398,8 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 - loop-vector-stride / loop-soa-stride / loop-tensor-stride
 - loop-group-stride / loop-tile-stride
 - dotimes / dotimes+ / dotimes*
+- do-times-by-doubling
+- do-times-by-multiply
 - dec-times / dec-times+ / dec-times*
 - dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
 - dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
@@ -3478,6 +3480,31 @@ Binds `i` to 0, counts up to N, incrementing by `stride` each time through the l
 ```
 Binds `i` to `N-1` and counts down to `0`, subtracting `stride` each time through the loop. `stride` is optional, defaults to 1.
 This is the opposite of `dotimes`
+
+
+### do-times-by-doubling
+```
+  (do-times-by-doubling (i:ulong init:ulong N:ulong) 
+   ...)
+```
+Binds `i` to `init`. Each time through the loop, `i` is doubled until
+it reaches (or exceeds) `N`.  The last call will always have `i` bound to a value less than or equal to `N`.
+
+Example: If `init` is 1 and `N` is 64: i => 1, 2, 4, 8, 16, 32, 64
+Example: If `init` is 1 and `N` is 100: i => 1, 2, 4, 8, 16, 32, 64
+
+### do-times-by-multiply
+```
+  (do-times-by-multiply (i:ulong init:ulong N:ulong factor:ulong)
+   ...)
+```
+Binds `i` to `init`. Each time through the loop, `i` is multiplied by `factor` until i reaches (or exceeds) `N`.  The last call will always have 
+`i` bound to a value less than or equal to `N`.
+
+The `factor` value must be greater than 1.
+
+Example:  `init` is 1  `N` is 64 and the `factor` is 4:  i => 1, 4, 16, 64
+
 
 ### dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
 ```
@@ -3572,7 +3599,6 @@ higher order function arguments that must be thread level (only) operations.
 - all grid-wide reduction variants ( `reduce-to-1-*`, `reduce-vec-*`)
 - `filter`
 - `convert-layout` 
-- `bitonic-sort-vector!` 
 - `when-is-last-workgroup`
 
 
@@ -4863,7 +4889,7 @@ A possible implementation might be
   (declare (local-size :set-to 256 :msg "local-work-size should be a power of 2 for bitonic-sort-workgroup")
            #((vector-type T :global :readable) (vector-type T :global :writeable) => nil))
   (let ((N   (get-local-linear-size)) ;; should be power of 2.
-        (shared-array (make-scratch-vector ulong :local :read_write :std140 N))
+        (shared-array (make-scratch-vector T :local :read_write :std140 N))
         (global-id (get-global-id))
         (local-id (get-local-id)))
     (r-t-assert-0 (is-power-of-2 N) "local_work_size should be a power of 2")
@@ -4910,7 +4936,7 @@ A possible implementation might be
     
 (with-template-type (T A)
   (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?))
-  (def-kernel bitonic_sort_workgroup_in_place (data-)
+  (def-kernel bitonic_sort_workgroup_in_place (data)
     (declare (type-signature-of #'bitonic-sort-workgroup!))
     (bitonic-sort-workgroup! data)))
     
@@ -4969,22 +4995,43 @@ Possible Implementation
 ### Don't Make Me Think `bitonic-sort-vector!`
 
 ```
-(bitonic-sort-vector! vec merge-stage-name:string &key keyF)
-(bitonic-sort-soa-vector! soa-vec property merge-stage-name:string)
-;or
-(gen-bitonic_sort_vector! elementT alignment sort-stage-name:string merge-stage-name:string &key keyF)
-(gen-bitonic_sort_soa_vector! structT property alignment sort-stage-name:string merge-stage-name:string)
+(gen-bitonic-sort-vector elementT alignment) ;;  &key keyF
+(gen-bitonic-sort-soa-vector elementT alignment)
+
+(gen-bitonic-sort-vector! elementT alignment) ;;  &key keyF
+(gen-bitonic-sort-soa-vector! structT property alignment)
 ```
 
-If you don't want a toolkit, `bitonic-sort-vector!` will sort the vector AND generate the correct `bitonic_merge_pass` kernel .  The hoisting example code will correctly show
+If you don't want a toolkit, Crisp provides some "orchestrations" that will sort the vector.  
+If generated, then the two kernels will be compiled and the hoisting example code will correctly show
 how to calculate `j` and `k` and enqueue the merge pass until done.  
 
-Or, even simpler, `gen-bitonic_sort_vector!` just needs some type info and names for the two kernels. It also generates the correct hoisting example code. 
 
-`soa-vector` variants of these two functions are provided as well. 
+`soa-vector` variants of these two orchestrations are provided as well. 
 
-These four variations are all grid level operations. 
 
+Possible implementation.
+```
+(with-template-type (T L)
+  (def-kernel bitonic_sort_vector_in_place (vec)
+    (declare #((vector-type T :global :read_write L)))
+    (bitonic-sort-workgroup vec vec)))
+
+
+
+(with-template-type (T L)
+  (def-orchestration bitonic-sort-vector!
+    (launch-sequential (gen-bitonic_sort_vector_in_place T L "bitonic_sort_vector_in_place_${T}_${L}"))
+
+    ; +wg-size+ is available as a constant in def-orchestration
+
+    (do-times-by-doubling (j (* 2 +wg-size+))
+      (do-times-by-half (k (/ j 2))
+        (launch-sequential ((gen-bitonic_merge_pass T L "bintonic_merge_pass_${T}_${L}")
+                              bitonic_sort_vector_in_place_T_L::vec j k))))))
+
+
+```
 
 
 Radix Sort
@@ -6560,6 +6607,8 @@ control flow
 - dec-times / dec-times+ / dec-times*
 - dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
 - dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
+- do-times-by-doubling
+- do-times-by-multiply
 - do-power-step
 - dec-power-step
 - in-warp
@@ -6593,8 +6642,22 @@ Sorting
 -------
 - bitonic-sort-workgroup
 - bitonic-sort-workgroup!
-- bitonic_merge_pass
-- bitonic-sort-vector!
+- bitonic-sort-soa-workgroup
+- bitonic-sort-soa-workgroup!
+### kernels
+- gen-bitonic_sort_workgroup
+- gen-bitonic_sort_workgroup_in_place
+- gen-bitonic_sort_soa_workgroup
+- gen-bitonic_sort_soa_workgroup_in_place
+### merge_pass kernels
+- gen-bintonic_merge_pass
+- gen-bintonic_soa_merge_pass
+### orchestrations
+- gen-bitonic-sort-vector
+- gen-bitonic-sort-soa-vector
+- gen-bitonic-sort-vector!
+- gen-bitonic-sort-soa-vector!
+
 
 
 
@@ -6735,6 +6798,14 @@ static analysis
 - max-registers
 - warn-max-registers
 - check-barriers
+
+hoisting and def-orchestration
+------------------------------
+- def-orchestration
+- launch-sequential
+- launch-parallel
+- launch-interleaved
+- +wg-size+  ; constant in def-orchestration (only)
 
 
 lisp
@@ -6960,8 +7031,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
       Kernel typically takes an "offset" into the data. (vector-view vibes).
       Works well with "embarassingly parallel" ops like: vector_add, convert-layout (matrix transpose), grid-strides,
       But won't work with: reductions, filter (and prefix-sum-scan), sorting (radix/bitonic). 
-      Merge sort, however, chunks.
-      in "def-orchestration" : (pipeline my_chunk_kernel (full-data-vec) :chunks 4))  
+      [ ] Merge sort, however, chunks.  
       There is a REAL need here. Data interleaving has a lot of reqs.  So setting up a sample might 
       be fire.
 
