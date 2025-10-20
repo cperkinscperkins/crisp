@@ -3354,42 +3354,112 @@ A C++ `for` loop is a big liability when improperly used in a GPU kernel. If the
 performed uniformly across all the threads in a work group then massive stalls can occur
 which kill throughput and performance. 
 
-Crisp makes it easy to declare uniform loops.  The basic syntax looks like this:
+Similarly, the compiler is capable of unrolling a loop if its target is compile-time calculable.
 
+In Crisp, you can convey both of these expectations in your code, and if the compiler detects
+that it is not achievable, it will emit an error. This makes writing performant code that 
+does not diverge much easier. There is much less guessing will-it/won't-it.
+
+Crisp has `*` variants of all the looping macros. These variants allow you to tell the compiler
+that you expect the loop to run uniformly across the entire warp. If the compiler detects the 
+possibility for warp-level divergences, it will emit a compliation error.
+
+Similarly, there are `+` variants where you tell the compiler that you expect the loop target
+to be compile-time calculable. The compiler will error if it is not.
+
+Note, that these variants are used to help you discover divergences. Even if you don't use them
+the loop will still benefit if it is warp level uniform, and the compiler might still optimize
+by unrolling. The use (or not) of the variant doesn't change the actual performance.
+
+### detecting compile-time calculable
+
+In this example, if the compiler detects that `someN` is not compile-time calculable, it will
+emit an error.
+```
+(dotimes+ (x someN)
+...)
+```
+
+Alternately, we could achieve the same result by using the `constexpr` declaration
 ```
 (let ((someN:long someThing))
-  (declare (uniform someN))
-   (dotimes+ (x someN)
+  (declare (constexpr someN))  ;; declare that we expect someN to be compile-time calculable. 
+                               ;; compiler will emit an error if it is not.
+   (dotimes (x someN)
       ...))
 ```
-or even easier
+
+
+### detecting uniform execution
+In this example, if the compiler detects that `someN` is not uniform across the warps it will
+emit an error. 
 ```
 (dotimes* (x someN)
  ...)
 ```
-This second example with `dotimes*` is automatically transformed to the first one (with `dotimes+`) by the compiler.
+
+Warp level loop uniformity is the most useful/important. And that's what `dotimes*` checks.
+
+But note, that `(declare (uniform someVal))` is a check across the entire workgroup.
+So the "roll our own" approach makes for a (needlessly) stronger guarantee.
+
+```
+(let ((someN:long someThing))
+  (declare (uniform someN))  ;; declare that we expect someN to be uniform
+                             ;; ACROSS THE ENTIRE WORKGROUP 
+                             ;; compiler will emit an error if it detects otherwise.
+   (dotimes (x someN)
+      ...))
+```
+
+### forcing uniform loop execution
+
+If you want to FORCE a loop to be uniform across the entire workgroup, Crisp makes it easy to do that 
+using the `to-uniform` declaration.
+
+```
+(let ((someN:long someThing))
+  (declare (to-uniform someN)) 
+   (dotimes* (x someN)
+      ...))
+```
+
+`to-uniform` will capture the variable in workgroup thread and broadcast it to all the others.
+
+
 
 ### (uniform <varName>)
-`(declare (uniform someN))`
+`(declare (uniform someVar))`
+
+The compiler will check that `someVar` is uniform across the workgroup and if it is not, emit an error.
+
+### (to-uniform <varName>)
+`(declare (to-uniform someVar))`
 This is a convenience declaration to help programmers set up values that are uniform in a workgroup.
 
-The `uniform` declaration causes the compiler to
+The `to-uniform` declaration causes the compiler to
 - initialize the variable in exactly one workgroup thread
 - share it with the other threads of the workgroup via local memory and a barrier.
 
 Furthermore
 - The variable named and the `declare` invocation both MUST originate in 
 the same `let` clause. 
-- `uniform` cannot be used in other `declare` contexts.
+- `to-uniform` cannot be used in other `declare` contexts.
+
+### (constexpr <varName>)
+`(declare (constexpr someVar))`
+
+The compiler will check that `someVar` is compile-time calculable, and emit an error if it is not.
+
+
 
 ### dotimes+ 
  `dotimes+` is the `+` variant. It will throw a compiler error if it
-is used without a constant or uniform `N` value. 
+is used without a compile-time calculable `N` value. 
 
 ### dotimes*
-`dotimes*` is the `*` variant. Any expression provided for its `N` will be
-automatically captured by the compiler as a uniform for you, with no
-error or warning emitted by the compiler. 
+`dotimes*` is the `*` variant. It will throw a compiler error if it determines
+that the `N` value is not uniform across the warp. 
 
 
 ### caution
@@ -3397,10 +3467,6 @@ You must still exercise vigilance over the body of the loop.
 Inserting `if`, `when` or `cond` clauses can lead to branch divergence, 
 where different threads in a workgroup take different execution paths. 
 This will cause stalls and kill performance. 
-
-But also, before using `+` or `*` variants, you must be confident that
-uniformity is correct for your problem. 
-
 
 
 
@@ -3429,14 +3495,12 @@ body of the loop.
 
 ### + variants
 Most of the Looping Constructs have a variant whose name ends in `+`. These variants 
-only accept constant or uniform values for their target `N` . The compiler will error if that
-condition is not met. Whenver possible, try to use the `+` variants for more performant code. 
+only accept compile-time calculable values for their target `N` . The compiler will emit
+an error if `N` is not. 
 
 ### * variants
-If not provided a uniform or constant value, then the `*` variants will just make it a uniform for you.
-They are a convenience.  They automatically capture the target `N` as a uniform value in one thread and use shuffle operations to retrieve it. 
-
-See the discussion of Uniform Loops above. 
+The compiler will check that the target `N` is uniform across the warp. If the compiler
+detects that it is not warp-level uniform, it will emit an error. 
 
 ### variants compared
 Let's start with a simple example:
@@ -3452,25 +3516,9 @@ between threads, the loop will not be uniformly executed and this may result in 
 (dotimes+ (x (+ a b))
  ...)
 ```
-<!-- NOTE: this opens up a huge can of worms.  There are two possible response. -->
-<!-- RESPONSE #1 -->
 If `(+ a b)` is calculable at compile time, then this is fine. The compiler will insert that value and the loop 
-will be uniform.
-Otherwise for the expression `(+ a b)` to be uniform, it would have to first be captured in a variable that was declared such. So not calculable at compile time this would be considered non-unform and would cause a compiler error.
-But this fix is simple, just capture and declare it.
-```
-(let ((N (+ a b))
-   (declare (uniform N)
-   (dotimes+ (x N)
-    ... ))))
-```
-Or, even simpler, have the compiler do that for you with the `*` variant `dotimes*`.
-<!-- RESPONSE #2 -->
-If `(+ a b)` is calculable at compile time, then this is fine. The compiler will insert that value and the loop 
-will be uniform.
-If both `a` and `b` are `uniform` then the entire expression will be considered unform as well.
-But if either `a` or `b` are not `uniform` then this would cause a compiler error. This can be gotten 
-around by either capturing the sum in a variable that is made uniform, or using the `*` variant.
+will be uniform. The compiler might even elect to unroll the loop for faster performance.
+
 
 
 `*`
@@ -3478,8 +3526,9 @@ around by either capturing the sum in a variable that is made uniform, or using 
 (dotimes* (x (+ a b))
  ...)
 ```
-As a convenience, the compiler will have one thread of the workgroup capture `(+ a b)` as a value and then all threads
-in the workgroup will access it via a shuffle operation. This will force the loop to be uniform. 
+The compiler will check that both `a` and `b` are warp-level uniform. If they are, then their sum is as well and 
+this will both compile just fine, but it'll execute quickly without stalling. But if the compiler
+detects that this is not warp-level uniform it will emit an error.
 
 
 
@@ -3499,7 +3548,7 @@ Binds `i` to `N-1` and counts down to `0`, subtracting `stride` each time throug
 This is the opposite of `dotimes`
 
 
-### do-times-by-doubling
+### do-times-by-doubling / do-times-by-double+ / do-times-by-doubling*
 ```
   (do-times-by-doubling (i:ulong init:ulong N:ulong) 
    ...)
@@ -3510,7 +3559,7 @@ it reaches (or exceeds) `N`.  The last call will always have `i` bound to a valu
 Example: If `init` is 1 and `N` is 64: i => 1, 2, 4, 8, 16, 32, 64
 Example: If `init` is 1 and `N` is 100: i => 1, 2, 4, 8, 16, 32, 64
 
-### do-times-by-multiply
+### do-times-by-multiply / do-times-by-multiply+ / do-times-by-multiply*
 ```
   (do-times-by-multiply (i:ulong init:ulong N:ulong factor:ulong)
    ...)
@@ -3554,7 +3603,7 @@ Example #1:  `N` is 64 and the `factor` is 4:  i => 64, 16, 4, 1
 Example #2:  `N` is 24 and the `factor` is 5:  i => 24, 4
 
 
-### do-power-step
+### do-power-step / do-power-step+ / do-power-step*
 
 ```
   (do-power-step (step-var:ulong limit:ulong) 
@@ -3580,7 +3629,7 @@ The number of steps taken is `(log2 padded_limit)` ( aka `(log padded_limit 2)`)
 ```
 
 
-### dec-power-step
+### dec-power-step / dec-power-step+ / dec-power-step*
 
 ```
   (dec-power-step (step-var:ulong limit:ulong) 
@@ -3851,29 +3900,31 @@ Then half again, and so on. And then we  record the results into the same Result
 Branching
 =========
 
-Crisp has the same three basic branching expressions as Common Lisp: `if` , `when` and `cond`
+Crisp has the same four basic branching expressions as Common Lisp: `if` , `when`, `unless`, and `cond`
 
 They each operate similarly: first evalute a predicate expression, and if true, then execute 
-some consequent. With variations for multiple checks, multiple statements, etc.
-
-### * variant
-Each of these has a `*` variant: `if*`, `when*` and `cond*`.  The `*` variants do NOT run their
-predicate in every thread in a workgroup. Instead only one thread per workgroup checks the predicate
-and it stores the result. All threads in the workgroup fetch it via a shuffle and dispatch on that same 
-result.  This means the `*` variants run uniformly. 
-
-Further, if the predicate can be evaluated at compile time, then compiler will simply evaluate it and replace the
-entire expression with the selected branch. 
-
-When possible, try to use the `*` variants of these functions.
+some consequent. With variations for multiple checks, multiple statements, etc.  
+( `unless` checks the predicate for being `false`, not `true`).
 
 ### + variant
-The `+` variant exists as well (`if+`, `when+`, `cond+`). 
-It does not make its predicate be uniform, it only checks at compile time that it is.
-It is most useful if you expect the predicate to be compile-time evaluable.
+The `+` variant exists as well (`if+`, `when+`, `unless+`, `cond+`). 
+This variant checks that the predicate expression is compile time calculable. It wil error if it is not.
+This variant is very useful for when you expect the compiler will "compile away" some clause. 
+Use it to have your intentions confirmed, rather than guessing. 
+
+This is parallel to  `if constexpr (...)` introduced in C++17.
+
+### * variant
+Each of these has a `*` variant: `if*`, `when*`, `unless*`, and `cond*`.  
+
+The `*` variant checks that the predicate expression is uniform across the entire warp. If the compiler
+detects that it is not, it will emit an error. This variant is EXTREMELY USEFUL when developing 
+high performance non-diverging code. 
+
+
 
 ### `it` - anaphoric
-All the branching expressions are "anaphoric", which is a linguistic concept to describe a word that acts as a substitute for an earlier expression.
+All the branching expressions (except `unless`) are "anaphoric", which is a linguistic concept to describe a word that acts as a substitute for an earlier expression.
 For example "The cat chased the mouse, but it got away", the word "it" is an anaphoric reference to the mouse.
 Whatever.
 
@@ -6900,6 +6951,8 @@ control flow
 - loop-tile-stride                [2D]
 - grid-level         [DP]
 - uniform            [DP]
+- constexpr          [DP]
+- to-uniform         [DP]
 - dotimes / dotimes+ / dotimes*
 - dec-times / dec-times+ / dec-times*
 - dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
@@ -6915,6 +6968,7 @@ control flow
 - shuffle-xor
 - if / if+ / if*
 - when / when+ / when*
+- unless / unless+ / unless*
 - cond / cond+ / when*
 - select-if
 
@@ -7242,7 +7296,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
                       A1:  special declare?
                       A2:  marshall-vector call and voidp type.
 
-[ ] vector-view that changes element type. (like casting a vector of double to long) "reinterpret"
+[x] vector-view that changes element type. (like casting a vector of double to long) "reinterpret"
 
 [ ] DATA-POOL   - could be a real value add here. Kernels can't really dynamically allocate memory, so a pool system would be handy.
               Also very handy if we can calculate how much scratch will be needed and communicate that back in the hoisting code.
@@ -7257,7 +7311,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 [X] MACROEXPAND - where to put this? A REPL tool? compiler flag?
 
 
-[ ] SORTING  ( [ ]radix & [x]bitonic   - probably over warp, workgroup, global, vector)
+[x] SORTING  ( [ ]radix & [x]bitonic   - probably over warp, workgroup, global, vector)
 
 [X] PROFILING ? yet another side channel?   advise?  -- is mostly a host side issue, correct?  
     DECISION: hoisting example code will have commented out code that enables profling. 
@@ -7298,13 +7352,13 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 
 [ ] warp scheduling and [x] memory coalescing
 
-[ ] def-orchestration / calls kernels and some prebuilt affordances: cuBLAS, possibly oneMKL?.  "soft description". basic vector declarations, data passing, looping.
+[x] def-orchestration / calls kernels and some prebuilt affordances: cuBLAS, possibly oneMKL?.  "soft description". basic vector declarations, data passing, looping.
     probably need a (TBD ...) and (hoist-comment ...) macro.   Templates?  Gen?  
 
 
 ### To Do (SHORT)
 - [ ] FFT
-- [ ] Radix Sort
+- [x] Radix Sort
 - [ ] Debugging Story
 - [ ] Compile-time introspection first-class citizen: 
     [x] get-struct-members
