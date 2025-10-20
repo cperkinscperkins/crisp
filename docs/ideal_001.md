@@ -1183,6 +1183,23 @@ when derived types are used.
 | `:pass-orig`    |  `nil`                                         | `T`                                            |
 
 
+def-type-function
+-----------------
+
+Similar to `def-constraint`, `def-type-function` is not a regular function.
+A type function takes one type and returns another. That's it. Having such is just useful enough
+to make certain macro and meta-programming tasks possible and palatable. It does not require 
+a `(declare ..)` block.
+
+Type functions are evaluated at compile time (only). They cannot perform other actions like defining types 
+or generating specializations. 
+
+Possible example:
+```
+(def-type-function get-unsigned-type (InputType)
+  (cond ((<= (sizeof InputType) (sizeof uint)) 'uint)
+        (T 'ulong)))
+```
 
 
     
@@ -5106,7 +5123,7 @@ This new output buffer then becomes the input buffer for the next pass of the ho
 
 #### `histogram-pass`
 ```
- (histogram-pass input-vec global-histogram bit-offset &optional local-histogram)
+ (histogram-pass input-vec bit-offset &out global-histogram  &optional local-histogram)
 ```
 
  - this routine requires that the `local_work_size` is set to 256
@@ -5120,10 +5137,14 @@ Possible Implementation
 (def-constraint is-signed-integer? (T)
    (and (is-signed? T) (is-integer? T)))
 
+;;
+;; histogram-pass
+;; 
 (with-template-type (T A)
   (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
-  (def-grid-function histogram-pass (input-vec global-histogram bit-offset &optional (local-histogram (make-scratch-vector uint :local A 256))
-    (declare #((vector-type T :global :readable A) (vector-type uint :global :read_write A 256) uint => nil)
+  (def-grid-function histogram-pass (input-vec bit-offset &out global-histogram  
+                                                     &optional (local-histogram (make-scratch-vector uint :local A 256))
+    (declare #((vector-type T :global :readable A) uint &out (vector-type uint :global :read_write A 256)  &optional (local-scratch-vector-type T)))
               (local-work-size :set-to 256 :msg "local_work_size must be 256 for histogram kernel"))
               
     ;; setup
@@ -5170,7 +5191,241 @@ Possible Implementation
             (atomic-add! (~ global-histogram local-id) count-for-this-bin)))) )))
 ```
 
+### scan histogram pass
 
+```
+(scan-histogram global-histogram &out bucket-offsets)
+```
+
+The `global-histogram` that was the output of `histogram-pass` is the input of this routine.
+And its output is a prefix-sum vector.
+
+
+```
+;;
+;; scan-historgram
+;;
+(with-template-type (A)
+  (declare (value-is A #'is-alignment?))
+  (def-function scan-histogram (global-histogram &out bucket-offsets)
+    (declare #((vector-type uint :global :readable A 256)
+              &out (vector-type uint :global :writeable A 256) => nil)
+            ;; Ensure this kernel runs with only ONE workgroup of size 256
+            (local-size :set-to 256)
+            (global-size :set-to 256))
+
+    (let ((local-id (get-local-id))
+           ;; A buffer in fast local memory to perform the scan
+          (local-scan-buffer (make-local-scratch-vector uint 256)))
+
+      ;; load data from global to local
+      ;; each thread loads one count from the global histogram
+      (set! (~ local-scan-buffer local-id) (~ global-histogram local-id))
+      (local-barrier) ; ensure load is complete before scan begins
+
+      ;; perform Parallel Exclusive Scan in local memory 
+      ;; uses the built-in primitive - modifies
+      ;; 'local-scan-buffer' in place and returns the total sum (which is ignored)
+      (exclusive-scan-workgroup local-scan-buffer)
+      ;; no barrier needed here, scan primitive includes own internal barriers.
+
+      ;; store results from local to global
+      ;; Each thread writes one offset back to the global output buffer.
+      (set! (~ bucket-offsets local-id) (~ local-scan-buffer local-id)))))
+```
+
+
+### scatter pass
+
+```
+(scatter-pass input-vec bucket-offset bit-offset &out output-vec)
+```
+
+Ping-Pong: This kernel reads from `input-vec` and writes to `output-vec`. The host needs to swap these buffers between passes.
+
+Transformations: The `radix-transform` helper encapsulates the bitwise logic for signed integers and floats.
+
+Local Rank (The Tricky Part): The local-rank-within-digit function is the most complex part. A high-performance implementation requires another clever scan algorithm within the workgroup. 
+
+```
+;;
+;; scatter pass
+;;
+(with-template-type (T A)
+  (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
+  (def-grid-function scatter-pass (input-vec bucket-offsets bit-offset &out output-vec)
+    (declare #((vector-type T :global :readable A) ; Input data
+               (vector-type uint :global :readable A 256) ; Bucket offsets
+              uint ; Current bit offset
+              &out (vector-type T :global :writeable A))) ; Output data
+
+    ;; setup shared memory
+    (let* ((wg-size (get-local-size))
+           ;; Need space to store the data chunk for this workgroup
+           (local-data-chunk (make-local-scratch-vecvtor T wg-size))
+           ;; Need space to store the 'digit' for each element in the chunk
+           (local-digits (make-local-scratch-vecvtor uint wg-size))
+           ;; Need space for the local scan (prefix sum) result for each thread
+           (local-scan-indices (make-local-scratch-vecvtor uint wg-size))
+
+           (local-id (get-local-id))
+           (global-id (get-global-id)))
+
+      ;; load data chunk
+      ;; Each thread loads one element into local memory.
+      (when (< global-id (length~ input-vec))
+        (set! (~ local-data-chunk local-id) (~ input-vec global-id)))
+      (local-barrier)
+
+      ;; calculate digits and local scan
+      ;; each thread determines its element's digit for this pass.
+      (let* ((initial-val (~ local-data-chunk local-id))
+            ;; Apply signed/float transformations (same as histogram kernel)
+            (sortable-int (radix-transform initial-val)) ; Use a helper/macro  
+            (digit (bit-and (ash sortable-int (- bit-offset)) #xFF)))
+
+        (set! (~ local-digits local-id) digit)
+        (local-barrier)
+
+        ;; Perform a local scan on the digits to find the rank within the workgroup
+        ;; Need a scan that counts occurrences of each digit.
+        (let ((local-rank (local-rank-within-digit local-digits local-id)))
+          (set! (~ local-scan-indices local-id) local-rank)))
+      (local-barrier)
+
+      ;; calculate global write position
+      ;; Read the starting offset for this element's digit from the global offsets.
+      (let ((global-bucket-offset (~ bucket-offsets (~ local-digits local-id)))
+            (local-rank (~ local-scan-indices local-id)))
+
+        (let ((final-write-pos (+ global-bucket-offset local-rank)))
+
+          ;; write to global output
+          ;; Write the ORIGINAL element value to its final sorted position for this pass.
+          (when (< global-id (length~ input-vec)) ; Bounds check
+            (set! (~ output-vec final-write-pos) (~ local-data-chunk local-id))))))))
+
+;;
+;; get-unsigned-type
+;;
+;; Helper to determine the corresponding unsigned integer type
+(def-type-function get-unsigned-type (T)
+  (cond ((<= (sizeof T) (sizeof uint)) 'uint)
+        (T 'ulong)))
+
+;;
+;; radix-transform
+;;
+;; we could also realize this as a series of overloads.
+(with-template-type (T)
+  ;; Ensure T is a type we can work with
+  (declare (type-is T #'is-numeric?))
+
+  ;; Determine the corresponding unsigned integer type (UintT) for the result
+  (let ((UintT (get-unsigned-type T)))
+
+    (def-function radix-transform (value:T)
+      ;; The function returns an unsigned integer of the same size as T
+      (declare #(T => UintT))
+
+      (cond
+        
+        ((is-unsigned-integer? T)
+         ;; No transformation needed, just ensure it's the right uint type if T was smaller
+         (as value UintT))
+
+        
+        ((is-signed-integer? T)
+         ;; Calculate the mask for the most significant bit (sign bit)
+         (let ((msb-mask:UintT (ash 1 (- (* (sizeof T) 8) 1))))
+           ;; Flip the sign bit using XOR to map negatives below positives
+           (logxor (as value UintT) msb-mask)))
+
+        
+        ((is-floating-point? T)
+         ;; Bit-cast the float to an unsigned integer of the same size
+         (let ((as-uint:UintT (as-bits value UintT)))
+           ;; Check if the original float value was negative
+           (if (< value 0.0)
+               ;; If negative, flip ALL bits to reverse their order
+               (lognot as-uint)
+               ;; If positive, add the sign bit offset (same as signed int XOR)
+               (let ((msb-mask:UintT (ash 1 (- (* (sizeof T) 8) 1))))
+                 (logxor as-uint msb-mask)))))
+
+        ;; Should not be reached if T is numeric
+        (T (c-t-error "Unsupported type for radix_transform"))))))
+
+;;
+;; local-rank-within-digit
+;;
+(with-template-type (A) ;; A is the alignment
+  (declare (value-is A #'is-alignment?))
+  ;; This function calculates the 0-based rank of a thread among threads
+  ;; in the same workgroup that have the same digit for the current radix pass.
+  ;; It uses fast atomic operations on local memory.
+  (def-function local-rank-within-digit (local-digits ;; Input: array (size=wg_size) of digits (0-255) for each thread
+                                          local-id     ;; Input: this thread's local ID
+                                          ;; Optional scratch space for atomic counters
+                                          &optional (digit-counts (make-scratch-vector uint :local A 256)))
+    (declare #((vector-type uint :local) uint &optional (vector-type uint :local A 256) => uint))
+
+    ;; initialize the shared counter array
+    ;; Need to zero out the 256 counters. This can be done in parallel.
+    ;; Assuming local_work_size >= 256. If not, this needs a loop.
+    (when (< local-id 256)
+      (set! (~ digit-counts local-id) 0))
+    ;; Ensure all counters are zero before any thread proceeds.
+    (local-barrier)
+
+    ;; atomically increment and get rank
+    ;; each thread reads its digit for the current pass.
+    (let ((my-digit (~ local-digits local-id)))
+
+      ;; Atomically increment the counter for that specific digit in local memory.
+      ;; The 'atomic-add!' returns the value *before* the increment.
+      ;; This previous value is exactly the 0-based rank needed.
+      ;; (e.g. the first thread with digit '5' gets rank 0, the second gets rank 1, etc.)
+      (let ((rank (atomic-add! (~ digit-counts my-digit) 1)))
+
+        ;; synchronize
+        (local-barrier)
+
+        ;; return the calculated rank
+        rank))))
+```
+
+### coordinating all three: histogram / san / scatter
+;; histogram_pass (input-vec bit-offset &out global-histogram  &optional local-histogram)
+;; scan_historgram (global-histogram &out bucket-offsets)
+;; scatter_pass (input-vec bucket-offsets bit-offset &out output-vec)
+
+```
+(with-template-type (T A)
+  (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
+
+  (def-orchestration radix-sort
+    ;; the goal is to start with the unsorted input-vec (that we'll pass to the first kernel, histogram-pass)
+    ;; and finally end up with the sorted output-vec.
+
+    (let* ((histogram_pass_kernel (gen-histogram_pass T A "histogram_pass_kernel"))
+           (buffer-A (make-hoist-vector histogram_pass_kernel::input-vec))
+           (buffer-B (make-hoist-vector histogram_pass_kernel::input-vec :empty T)))
+
+      (let* ((num-passes (/ (* (sizeof T) 8) 8)) ;; why is this not just sizeof T?
+             (N (* num-passes 8)))
+        (dotimes (bit-offset N 8)
+          (launch-sequential 
+            (histogram_pass_kernel buffer-A bit-offset _)
+            ((gen-scan_histogram A "scan_histogram") histogram_pass::global-histogram _)
+            ((gen-scatter_pass T A)) scan_histogram::global-histogram scan_histogram::bucket-offsets bit-offset buffer-B)
+          (swap-refs buffer-A buffer-B))) ;; <-- orchestration only routine. ping pong
+
+      (let ((final-buffer (if (even? num-passes) buffer-A buffer-B)))
+        ; present victory?
+      ))))
+
+```
 
 
 
@@ -6602,6 +6857,7 @@ def-
 - def-type                   [T]
 - def-derived-type
 - def-constraint
+- def-type-function
 
 control flow
 ------------
@@ -6713,6 +6969,7 @@ Type Constraints
 - type-has-prop?
 - has-overload?
 - is-substitutable-for?
+- sizeof
 
 other
 -----
@@ -6850,6 +7107,7 @@ lisp
 - ash
 - as-bits
 - unless
+
 
 
 ### Keys
