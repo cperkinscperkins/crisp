@@ -5845,8 +5845,140 @@ its value.
                            
 ```
 
-Arithmetic
-==========
+
+Math Operations & Arithmetic
+============================
+
+Floating Point Precision
+-------------------------
+
+### variable type
+
+The Crisp language supports four floating point types that have different levels of precision:
+
+|  Type    | Size   | Aspect |
+|----------|--------|--------|
+| half     | 16 bit | :bf16  |
+| bfloat16 | 16 bit | :fp16  |
+| float    | 32 bit |        |
+| double   | 64 bit | :fp64  |
+
+The usual trade-offs are in play: larger sizes are more accurate but slower. 
+Smaller sizes are less accurate, but faster.
+
+Note that while all platforms support 32 bit, the other sizes aren't always available. If needed use the compile-time checks
+`target-has` or `device-has` to partition supporting and unusupporting code. See [target-has/device-has](#target-has--device-has) 
+
+### precision
+
+In addition to choice of variable type, Crisp has a precision control that supports two
+different options: `fast` and `ieee`.
+
+With the `ieee` the compiler will choose instructions that guarantee IEEE 754 compliance.
+For operations like division or square root, this might mean selecting a slightly slower
+but fully precise instruction sequence. This is conditional on the GPU hardware providing
+IEEE 754 conforming instructions.
+This might also entail disabling automatic FMAD generation, and ensuring that denormalized
+numbers are handled correctly (not flushed to zero).
+
+With the `fast` precision option, the compiler will prioritize speed, selecting faster
+but potentially approximate instructcions (like `rsqrt.approx`). It might use specific
+low-precision instructions if available and appropriate.  
+This will likely enable FMAD generation, allow "flush-to-zero" mode for denormal numbers.
+Additionally, it might disable `Nan` and `Inf`.  
+
+Consult the Crisp documentation for any particular target for a complete rundown.
+
+### selecting precision
+
+Crisp provides three avenues for selecting precision. In order of specifity, 
+from the least specific to the most specific, they are: 
+
+| What                           |  Value           | Descripotion         |
+|--------------------------------|------------------|----------------------|
+| `--math-precision`             | `fast` or `ieee` | compilation flag     |
+| `(declaim (precision <KEY>))`  | `fast` or `ieee` | per-file declamation |
+| `(with-precision (<KEY>) ...)` | `fast` or `ieee` | in-function macro    |
+
+If there are competing values for precision, the compiler will favor the MOST specific.
+
+Example:
+```
+;; 1 
+(declaim (precision fast))
+
+;; 2  ... inside some function
+    (with-precision (ieee)
+        (/ important-divisor important-dividend))
+
+;; 3 ... later
+    (/ nobody-divisor nobody-dividend)
+```
+1. the file uses `declaim` to select fast precision
+2. inside some function, the `with-precision` macro is used so the "important" division is highly accurate, regardless of any other setting.
+3. the "nobody" division will use less accurate but fast division by virtue of the declaim in #1.
+4. in the example above, the `--math-precision` flag would always be ignored. The `declaim` at file level 
+would override.
+
+#### overriding precision: `--force-math-precision`
+
+The `--force-math-precision` compiler flag can be used to override ALL other precision choices.
+It will override the developers stated intent, and for that reason it should be avoided. This flag is intended for validation and testing purposes and should not be used as part of your release
+cycle.  The compiler emits a warning whenever this flag is used. 
+
+Floating Point Only Operations
+------------------------------
+
+Crisp provides the following operations for floating point numbers:
+
+### Unary Operations
+
+The Unary Operations take just a single argument.
+Example:
+```
+(sqrt x)
+```
+
+- `sqrt`
+- `rsqrt`
+- `exp`   ; `(exp x)` calculates $e^x$
+- `log`
+- `log2`
+- `sin`
+- `cos`
+- `tan`
+- `asin`
+- `acos`
+- `atan`
+
+
+### Binary Operations
+- `pow`   => `(pow base exponent)`
+- `atan2` => `(atan2 y x)`
+
+Floating Point and Integer Operations
+-------------------------------------
+
+These operations are available for both floating point and integer values.
+
+- `abs`  
+- `min`   => `(min a b)`
+- `max`
+- `clamp` => `(clamp x min-val max-val)`
+- `+`
+- `-`
+- `*`
+- `/`    see [Integer Division](#integer-division) below.
+
+Integer Only Operations
+-----------------------
+
+- `ash`   ;; arithmetic shift `(ash I count)`
+- `logand`
+- `logior`
+- `logxor`
+- `lognot`
+- `popcount`
 
 Integer Division
 ----------------
@@ -5896,21 +6028,21 @@ This rounds the result up toward positive infinity. It returns the quotient and 
 In addition to the three above, there is also `round`. This performes division and rounds the quotient towards the nearest integer. If equidistant it "rounds half toward even" following the  IEEE 754 standard.  Like the others, it returns both the quotient and the remainder. 
 
 ```
-(round 5 2 ) => 2 and 3.  2.5 is rounded DOWN towards the nearest even integer, which is 2
-(/ 7 2)      => 3 and 4   Notice how the truncating / differs from round (below).
-(round 7 2)  => 4 and 3   3.5 is rounded UP towards the nearest even integer, which is 4.  
+(round 5 2 ) => 2 and 1.  2.5 is rounded DOWN towards the nearest even integer, which is 2
+(/ 7 2)      => 3 and 1   Notice how the truncating / differs from round (below).
+(round 7 2)  => 4 and -1  3.5 is rounded UP towards the nearest even integer, which is 4.  
 (round 8 2)  => 4 and 0
-(round 9 2)  => 4 and 5   4.5 is rounded DOWN towards the nearest even integer, which is 4. 
+(round 9 2)  => 4 and 1   4.5 is rounded DOWN towards the nearest even integer, which is 4. 
 ```
 
 ### Comparison
 
-|Function	    | Behavior	  | (func 10 3) | (func -10 3)|
-|-------------|--------------------|--------|--------|
-| (/ a b)     |	Rounds toward zero |	3, 1  |	-3, -1 |
-| (floor a b) |	Rounds toward -∞   |	3, 1  |	-4, 2  |
-| (ceil a b)	| Rounds toward +∞   |	4, -2 |	-3, -1 |
-| (round a b) | Rounds nearest neighbor | 3, 1 | -3, -1 | 
+|Function	    | Behavior	    | (func 10 3) | (func -10 3)|
+|-------------|-------------------------|--------|--------|
+| (/ a b)     |	Rounds toward zero      | 3, 1  |	-3, -1 |
+| (floor a b) |	Rounds toward -∞        |	3, 1  |	-4, 2  |
+| (ceil a b)	| Rounds toward +∞        |	4, -2 |	-3, -1 |
+| (round a b) | Rounds nearest neighbor | 3, 1  | -3, -1 | 
 
 
 Builtin GPU Functions & Constants
@@ -6473,6 +6605,8 @@ accept an "offset" into the vector and a paramter that accepts a "length".
 
 If there vector arguments to the kernel that should NOT interleaved, specify them with the `:exclude` key.
 
+<!-- NOTE: this design has no way of specifying dependencies. ie, running the kernel on the output of another. -->
+
 Example:
 ```
 ;; assume input-vec-t and output-vec-t already defined.
@@ -6682,10 +6816,13 @@ Compiliation Flags
 Used to define parameter values ( see `def-parameter`)
 Example: `crisp.exe -DSTART_INDEX=20` 
 
-### Math Flags (TBD)
+### Math Flags `--math-precision` 
 
-There are tradeoffs between accuracy and speed in many math operations. These are elected at compile-time and there is
-an assortment of flags to choose from. 
+The `--math-precision` flag can be set to `fast` or `ieee`. But note that Crisp supports
+in-file precision election. See the section on [Math Precision](#precision) above.
+
+Also, there is a `--force-math-precision` flag that can override, but its use is discouraged.
+It is intended for testing and validation and shouldn't be used generally.
 
 
 Fast Compilation
@@ -6899,7 +7036,7 @@ The only flags it respects are
 - `--skip-c-t-checks`
 - `--no-static-analysis`
 - `-D`
-- math accuracy flags
+- `--math-precision` (and `--force-math-precision` but discouraged)
 - flags governing errors and warnings (TBD)
 
 
@@ -7391,7 +7528,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
       Kernel typically takes an "offset" into the data. (vector-view vibes).
       Works well with "embarassingly parallel" ops like: vector_add, convert-layout (matrix transpose), grid-strides,
       But won't work with: reductions, filter (and prefix-sum-scan), sorting (radix/bitonic). 
-      [ ] Merge sort, however, chunks.  
+      [ ] Merge sort, however, chunks.  (Could be done using bitonic/radix for the smaller sets)
       There is a REAL need here. Data interleaving has a lot of reqs.  So setting up a sample might 
       be fire.
 
