@@ -14,6 +14,7 @@ The Crisp compiler takes .crisp files and can output SPIR-V, PTX, or a binary fo
 The compiler can ALSO output C++ or Python code snippets that can "hoist" that same kernel. 
 The snippets can be targeted to: OpenCL, LevelZero, or CUDA, as well as whether to use
 Unified Memory/USM/SVM.
+Someday soon.
 
 
 Focus
@@ -22,42 +23,39 @@ Focus
 The focus is on performance, compiliation speed, safety and correctness.
 GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-arrays, and more are directly exposed by the Crisp language.
 
-
 Major Features of the Crisp language and tools
 ----------------------------------------------
 
-- Hoisting and Tooling Ecosystem. Crisp has a Kernel First approach. While Crisp is used to write GPU kernels (only), the compiler can output boilerplate
-  C++ or Python code that loads, prepares and runs each kernel, as well as copy back its data. 
-  The hoisting code can also demonstrate how to take that same kernel as a string and JIT Compile
-  and run it.
+- Distinct thread level vs grid level contexts makes programmer intent clear and whole classes of common errors are impossible to write
+- `&out` output params also convey intent and eliminate a different group of common errors.
 - Guaranteed Safety and Termination. Crisp is not Turing complete. By virtue of that, it is not subject
   to the halting problem.   Kernels written in Crisp are guaranteed to finish.
-  <!--  This is different than guaranteeing that the Event is completed. For example, an out-of-bounds access could cause a kernel to terminate
-        but its event might not ever be completed.  
-        Also, deadlocks are not preventable (though Crisp has several metaphors that help)
-        -->
-- Extremely Fast Compilation. With the lib and lib caches and in-memory compilation, Crisp can be configured
-  to be an integral fast compilation system featuring maximum re-use of preperatory precompilation.
-- In-Memory Compilation API: Crisp is designed as a compiler library, not just a command-line tool. 
-  It features a C and Python API that operates on in-memory source code strings via a virtual file system, completely avoiding disk I/O for the fastest possible Just-in-Time (JIT) compilation.
+- Side channels and scratch vectors provide the illusion of on-demand memory allocation. Eliminate busy work.
+- Common GPU practices like strides,  shuffles, reductions across workgroups and warps are all
+  expressed as top level language features.
+- Both "Arrays of Structs" (AoS) and "Structs of Arrays" (SoA) directly and seamlessly supported, including for complex numbers.
+- Qualifiers for compile-time calculable values as well as being UNIFORM across warp or workgroup with compile-time verification
+- `std140` alignment supported for both interopability and performance
+- Strongly typed with all types resolved at compile-time. Crisp does not feature dynamic typing.
 - Pragmatic Error Handling. Crisp has  optional debug logging that is turned on with a compiler flag.
   It also has a simple `maybe` type to streamline code past errors and with a minimum of thread divergence.
-- Common GPU practices like strides, structs-of-array (AoS and SoA), shuffles, reductions across workgroups and warps are all
-  expressed as top level language features. 
-- "Side Channels" give the programmer the illusion of on-demand memory allocation. Crisp already 
-  has side channel support for scratch memory or return results. 
-- Strongly typed with all types resolved at compile-time. Crisp does not feature dynamic typing.
 - Powerful Metaprogramming: By leveraging a Lisp-based syntax, Crisp supports powerful and clean metaprogramming.
   The `with-template-type` system automatically   generates type constructors and specialization functions, allowing for a level of abstraction and code generation that is difficult to achieve in other kernel languages.
 - Functions support multiple return values. 
 - Variadic functions are not supported, however variadic macros ARE. Anyone familiar with Lisp knows the power of `defmacro`  
-- The type system supports templates and incomplete types for flexibility. 
-- All variables and parameters will attempt to be stored in registers for performance. Some can be 
-declared more or less critical in the event of register "spill" when there are not enough. 
+- The type system supports templates and incomplete types for flexibility.
+- Crisp compiler can optionally generate "hoisting" code for both C++ and Python. This creates a completely enclosed `demonstrate_my_kernel()` function that 
+  reads the kernel from disk, allocates dummy memory, sets the arguments, enqueues the kernel and copies back any resulting data. 
+- The hoisting code can also demonstrate how to take that same kernel as a string and JIT Compile
+  and run it.
 - Kernels and functions can declare how/what they depend on or expect the enqueing code to configure
  global and local work sizes.  These expectations are output into the hoisting example code that is output.
 - Opt-in static analysis is available. Different checks are requested individually per-function or per-kernel. When
-  activated the Crisp compiler can check for memory coalescence, bank conflicts, thread divergence, barrier deadlocks and more.
+  activated the Crisp compiler can check for memory coalescence, bank conflicts, thread divergence, barrier deadlocks and more. 
+- In-Memory Compilation API: Crisp is designed as a compiler library, not just a command-line tool. 
+  It features a C and Python API that operates on in-memory source code strings via a virtual file system, completely avoiding disk I/O for the fastest possible Just-in-Time (JIT) compilation.
+
+
 
 Differences From Lisp
 ---------------------
@@ -192,8 +190,7 @@ Of these "`def-`" expressions, there are three primary ones that serve as execut
 ```
 (def-kernel do_something (i val VEC)
    ;; <type-declaration-here>
-   (set! (~ VEC i) val) ;; store val into index i of VEC
- )
+   (set! (~ VEC i) val)) ;; store val into index i of VEC
 ```
 We'll discuss type declarations and type signatures later. For now, just understand that
 `def-kernel` is how you define a kernel function that can be enqueued and invoked by some
@@ -235,7 +232,7 @@ Thread level functions
 (def-grid-function vector-add (A B &out C)
   ;; <type-declaration-here>
   (loop-vector-stride A (i)
-     (set! (~ C i) (do-add (~ A i) (~ B i))))) ;
+     (set! (~ C i) (do-add (~ A i) (~ B i))))) 
 ```
 
 `def-grid-function` also defines a function, much like `def-function` above. 
@@ -6950,7 +6947,7 @@ must be used consistently by both the tree shaking and future compilation passes
 - `--IR-target`
 - `--binary-GPU-target`
 - `--debug-output`
-- math flags (speed, accuracy , etc)
+- `--math-precision`
 
 ### In Memory Compilation
 
