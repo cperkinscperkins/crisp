@@ -38,6 +38,8 @@ Major Features of the Crisp language and tools
 
 - Flexible Data Layouts:  Crisp provides distinct types and specialized accessors for both "Array of Structs" (vector) and "Struct of Arrays" (soa-vector).  This gives developers the tools to choose the most performant memory layout for their algorithm without sacrificing type safety or readability.
 
+- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:std140`) and GPU-native iteration patterns (`loop-grid-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
+
 - Compile-Time Verification:  Special variants of control-flow forms (if*, dotimes+) and declarations (uniform, constexpr) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
 
 - Strict Memory Layout Standard:  All Crisp structs adhere to the std140 memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
@@ -60,6 +62,8 @@ Major Features of the Crisp language and tools
 
 Differences From Lisp
 ---------------------
+
+> Move this to an appendix
 
 While Crisp is an s-expression based language and shares with Common Lisp the very powerful `defmacro` 
 construct as well as many other fundamentals ( `if`, `when` `cond`, `let` etc), there are 
@@ -6069,52 +6073,55 @@ Or declare their type: `(complex-type double)`
 
 The arithmetic functions fall out easily:
 ```
-;; ( + ) Addition
+
+;; this macro lets us use "a b c d" notation in the body of our
+;; binary arithmetic functions. Much easier to read. 
+;; Just remmber to wrap in parantheses: (a)
+(defmacro with-complex-components ((z1 z2) &body body)
+  "Establishes local macros a, b, c, d for the components of z1 and z2."
+  `(macrolet ((a () '(real~ ,z1))
+               (b () '(imag~ ,z1))
+               (c () '(real~ ,z2))
+               (d () '(imag~ ,z2)))
+     ;; Execute the body within the scope of the local macros
+     ,@body))
+
 (with-template-type (T)
   (declare (type-is T #'is-floating-point?))
+
+  ;; ( + ) Addition
   (def-function + (Z1 Z2)
     (declare #((complex-type T) (complex-type T) => (complex-type T)))
     ;; $(a+c) + (b+d)i$
-    (make-complex :real (+ (real~ Z1) (real~ Z2))
-                  :imag (+ (imag~ Z1) (imag~ Z2)))))
+    (with-complex-components (Z1 Z2)
+      (make-complex :real (+ (a) (c))
+                    :imag (+ (b) (d)))))
 
-;; ( - ) Subtraction
-(with-template-type (T)
-  (declare (type-is T #'is-floating-point?))
+  ;; ( - ) Subtraction
   (def-function - (Z1 Z2)
     (declare #((complex-type T) (complex-type T) => (complex-type T)))
     ;; $(a-c) + (b-d)i$
-    (make-complex :real (- (real~ Z1) (real~ Z2))
-                  :imag (- (imag~ Z1) (imag~ Z2)))))
+    (with-complex-components (Z1 Z2)
+      (make-complex :real (- (a) (c))
+                    :imag (- (b) (d)))))
 
-;; ( * ) Multiplication
-(with-template-type (T)
-  (declare (type-is T #'is-floating-point?))
+  ;; ( * ) Multiplication
   (def-function * (Z1 Z2)
     (declare #((complex-type T) (complex-type T) => (complex-type T)))
     ;; $(ac-bd) + (ad+bc)i$
-    (make-complex :real (- (* (real~ Z1) (real~ Z2))
-                           (* (imag~ Z1) (imag~ Z2)))
-                  :imag (+ (* (real~ Z1) (imag~ Z2))
-                           (* (imag~ Z1) (real~ Z2))))))
+    (with-complex-components (Z1 Z2)
+      (make-complex :real (- (* (a) (c)) (* (b) (d)))
+                    :imag (+ (* (a) (d)) (* (b) (c))))))
 
-;; ( / ) Division
-(with-template-type (T)
-  (declare (type-is T #'is-floating-point?))
+  ;; ( / ) Division
   (def-function / (Z1 Z2)
     (declare #((complex-type T) (complex-type T) => (complex-type T)))
     ;; Formula: (ac+bd)/(c²+d²) + (bc-ad)/(c²+d²) i
-    (let ((a (real~ Z1))
-          (b (imag~ Z1))
-          (c (real~ Z2))
-          (d (imag~ Z2)))
-      ;; Calculate the denominator
-      (let ((denom (+ (* c c) (* d d))))
-        ;; Check for division by zero ( return NaN/Inf or specific error)
-        ;; For simplicity here, we rely on float division behavior.
+    (with-complex-components (Z1 Z2)
+      (let ((denom (+ (* (c) (c)) (* (d) (d)))))
         (make-complex
-          :real (/ (+ (* a c) (* b d)) denom)
-          :imag (/ (- (* b c) (* a d)) denom))))))
+          :real (/ (+ (* (a) (c)) (* (b) (d))) denom)
+          :imag (/ (- (* (b) (c)) (* (a) (d))) denom))))))
 ```
 
 Additionally, Crisp provides the following operations for complex numbers:
