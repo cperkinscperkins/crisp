@@ -6045,6 +6045,93 @@ In addition to the three above, there is also `round`. This performes division a
 | (round a b) | Rounds nearest neighbor | 3, 1  | -3, -1 | 
 
 
+
+Complex Numbers
+===============
+
+Complex numbers are fairly straightforward in Crisp.
+
+The implementation Crisp provides uses a template and `def-struct` like so:
+
+```
+(with-template-type (T)
+  (declare (type-is T #'is-floating-point?))
+  (def-struct complex (real T) (imag T)))
+
+```
+Thus to make them: `(make-complex :real someFloat :imag otherFloat)`
+Or declare their type: `(complex-type double)`
+
+The arithmetic functions fall out easily:
+```
+;; ( + ) Addition
+(with-template-type (T)
+  (declare (type-is T #'is-floating-point?))
+  (def-function + (Z1 Z2)
+    (declare #((complex-type T) (complex-type T) => (complex-type T)))
+    ;; $(a+c) + (b+d)i$
+    (make-complex :real (+ (real~ Z1) (real~ Z2))
+                  :imag (+ (imag~ Z1) (imag~ Z2)))))
+
+;; ( - ) Subtraction
+(with-template-type (T)
+  (declare (type-is T #'is-floating-point?))
+  (def-function - (Z1 Z2)
+    (declare #((complex-type T) (complex-type T) => (complex-type T)))
+    ;; $(a-c) + (b-d)i$
+    (make-complex :real (- (real~ Z1) (real~ Z2))
+                  :imag (- (imag~ Z1) (imag~ Z2)))))
+
+;; ( * ) Multiplication
+(with-template-type (T)
+  (declare (type-is T #'is-floating-point?))
+  (def-function * (Z1 Z2)
+    (declare #((complex-type T) (complex-type T) => (complex-type T)))
+    ;; $(ac-bd) + (ad+bc)i$
+    (make-complex :real (- (* (real~ Z1) (real~ Z2))
+                           (* (imag~ Z1) (imag~ Z2)))
+                  :imag (+ (* (real~ Z1) (imag~ Z2))
+                           (* (imag~ Z1) (real~ Z2))))))
+
+;; ( / ) Division
+(with-template-type (T)
+  (declare (type-is T #'is-floating-point?))
+  (def-function / (Z1 Z2)
+    (declare #((complex-type T) (complex-type T) => (complex-type T)))
+    ;; Formula: (ac+bd)/(c²+d²) + (bc-ad)/(c²+d²) i
+    (let ((a (real~ Z1))
+          (b (imag~ Z1))
+          (c (real~ Z2))
+          (d (imag~ Z2)))
+      ;; Calculate the denominator
+      (let ((denom (+ (* c c) (* d d))))
+        ;; Check for division by zero ( return NaN/Inf or specific error)
+        ;; For simplicity here, we rely on float division behavior.
+        (make-complex
+          :real (/ (+ (* a c) (* b d)) denom)
+          :imag (/ (- (* b c) (* a d)) denom))))))
+```
+
+Additionally, Crisp provides the following operations for complex numbers:
+
+| Operation       | Descrption                                              |
+|-----------------|---------------------------------------------------------|
+| `(conjugate z)` |  If $z = a + bi$, returns $a - bi$.                     |
+| `(magnitude z)` | Returns $\sqrt{a^2 + b^2}$ (a real number).             |
+| `(phase z)`     | Returns the angle $\text{atan2}(b, a)$ (a real number). |
+| `(real~ Z)`     | Retrieve the `:real` part of the complex                |
+| `(imag~ Z)`     | Retrive the `:imag` part of the complex                 |
+
+
+And the transcendantals ( `exp`, `log`, `sqrt`, `sin`, `cos`, etc )
+
+soa-vector and complex
+----------------------
+
+Because complex numbers are defined as Crisp structs, they can take advantage
+of `soa-vector` and `soa-vector-view` support. 
+
+
 Builtin GPU Functions & Constants
 =================================
 
@@ -7503,7 +7590,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     [ ] get-return-type
     [ ] get-member-types
 - [ ] reduction macros -> templates
-- [ ] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
+- [x] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
 - [ ] ENTRYPOINT - for libraries
 - [ ] fused softmax
 - [ ] data pool
