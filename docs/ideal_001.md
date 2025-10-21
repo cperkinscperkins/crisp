@@ -26,34 +26,35 @@ GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-a
 Major Features of the Crisp language and tools
 ----------------------------------------------
 
-- Distinct thread level vs grid level contexts makes programmer intent clear and whole classes of common errors are impossible to write
-- `&out` output params also convey intent and eliminate a different group of common errors.
-- Guaranteed Safety and Termination. Crisp is not Turing complete. By virtue of that, it is not subject
-  to the halting problem.   Kernels written in Crisp are guaranteed to finish.
-- Side channels and scratch vectors provide the illusion of on-demand memory allocation. Eliminate busy work.
-- Common GPU practices like strides,  shuffles, reductions across workgroups and warps are all
-  expressed as top level language features.
-- Both "Arrays of Structs" (AoS) and "Structs of Arrays" (SoA) directly and seamlessly supported, including for complex numbers.
-- Qualifiers for compile-time calculable values as well as being UNIFORM across warp or workgroup with compile-time verification
-- `std140` alignment supported for both interopability and performance
-- Strongly typed with all types resolved at compile-time. Crisp does not feature dynamic typing.
-- Pragmatic Error Handling. Crisp has  optional debug logging that is turned on with a compiler flag.
-  It also has a simple `maybe` type to streamline code past errors and with a minimum of thread divergence.
-- Powerful Metaprogramming: By leveraging a Lisp-based syntax, Crisp supports powerful and clean metaprogramming.
-  The `with-template-type` system automatically   generates type constructors and specialization functions, allowing for a level of abstraction and code generation that is difficult to achieve in other kernel languages.
-- Functions support multiple return values. 
-- Variadic functions are not supported, however variadic macros ARE. Anyone familiar with Lisp knows the power of `defmacro`  
-- The type system supports templates and incomplete types for flexibility.
-- Crisp compiler can optionally generate "hoisting" code for both C++ and Python. This creates a completely enclosed `demonstrate_my_kernel()` function that 
-  reads the kernel from disk, allocates dummy memory, sets the arguments, enqueues the kernel and copies back any resulting data. 
-- The hoisting code can also demonstrate how to take that same kernel as a string and JIT Compile
-  and run it.
-- Kernels and functions can declare how/what they depend on or expect the enqueing code to configure
- global and local work sizes.  These expectations are output into the hoisting example code that is output.
-- Opt-in static analysis is available. Different checks are requested individually per-function or per-kernel. When
-  activated the Crisp compiler can check for memory coalescence, bank conflicts, thread divergence, barrier deadlocks and more. 
-- In-Memory Compilation API: Crisp is designed as a compiler library, not just a command-line tool. 
-  It features a C and Python API that operates on in-memory source code strings via a virtual file system, completely avoiding disk I/O for the fastest possible Just-in-Time (JIT) compilation.
+- Distinct Execution Contexts:  A formal context system (thread, grid, dispatch) separates sequential per-thread code from parallel grid-level operations.  This makes a whole class of subtle but catastrophic parallel programming bugs (like nesting grid-level operations) impossible to write by turning them into clear, compile-time errors.
+
+- Explicit Output Parameters:  The &out modifier explicitly marks output-only parameters in function signatures.  This creates a clear, compiler-enforced contract that prevents race conditions and bugs caused by reading from uninitialized or partially-written output buffers.
+
+- Guaranteed Termination:  Crisp is intentionally not Turing-complete (no unbounded recursion or loops).  This provides a mathematical guarantee that kernels will always finish, preventing GPU hangs. It also unlocks a suite of powerful static analysis tools that are impossible in general-purpose languages.
+
+- First-Class GPU Primitives:  Common but complex GPU patterns like grid-strides, warp shuffles, and parallel reductions are provided as high-level, built-in language constructs.  This allows developers to write powerful, performant code that is both readable and correct, without having to reinvent these difficult algorithms from scratch.
+
+- Automated Scratch Memory:  High-level primitives (like reductions and sorts) can automatically manage their own temporary local and global memory via a "side-channel" mechanism.  This eliminates tedious and error-prone manual buffer allocation and management.
+
+- Flexible Data Layouts:  Crisp provides distinct types and specialized accessors for both "Array of Structs" (vector) and "Struct of Arrays" (soa-vector).  This gives developers the tools to choose the most performant memory layout for their algorithm without sacrificing type safety or readability.
+
+- Compile-Time Verification:  Special variants of control-flow forms (if*, dotimes+) and declarations (uniform, constexpr) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
+
+- Strict Memory Layout Standard:  All Crisp structs adhere to the std140 memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
+
+- Pragmatic Error Handling:  A simple maybe type is integrated into the language.  This provides a lightweight, compiler-assisted mechanism for handling potential failures in a way that minimizes control-flow divergence, a major performance killer on GPUs.
+
+- Powerful Metaprogramming:  A Lisp-based syntax with defmacro and a rich templating system (`with-template-type`).  Developers can extend the language with new abstractions, control structures, and code generators, creating domain-specific solutions that are clean and expressive.
+
+- Static Typing with Powerful Generics: Crisp is statically typed with a robust templating system and compile-time type constraints. This provides the compile-time safety and performance benefits typical of C++, preventing runtime type errors, while offering a level of generic programming and code generation via metaprogramming that surpasses traditional C++ templates and is absent in dynamic languages like Python or Common Lisp.
+
+- Automated Hoisting Code:  The Crisp compiler can optionally generate a complete, runnable main() function in C++ or Python.  This automates the tedious and error-prone task of writing host-side launch code, providing an instant, working "blueprint" that demonstrates how to allocate memory, set arguments, and correctly launch a kernel.
+
+- Opt-In Static Analysis:  The compiler includes a suite of advanced, opt-in checks.  This allows the compiler to act as an expert performance coach, automatically detecting subtle but critical issues like memory-coalescing failures, shared memory bank conflicts, and potential barrier deadlocks.
+
+- In-Memory Compilation API:  Crisp is designed as a compiler library with a C/Python API.  This enables fast, in-memory JIT compilation, allowing applications to dynamically generate and run new kernels on the fly without disk I/O.
+
+
 
 
 
