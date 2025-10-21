@@ -223,7 +223,7 @@ of a single thread and not orchestrating the operation of all threads generally.
 Thread level functions
 - accept arguments
 - CAN return values
-- the body of these functions are a "thread level context" (more about this later)
+- the body of these functions are a "thread level context"
 - can call other thread level functions
 - but CANNOT call "grid level" functions or use grid level macros
 - can use Lisp-style naming rules. (dashes ok in function names, case insensitive)
@@ -476,6 +476,13 @@ It is the equivalent of "reinterpret cast" in C++.
 (let ((f (some-float-returning-op)))
   (some-int-op (to-int f)))
 ```
+
+#### `(as someVal T)`
+
+Rather than `as-XXXX`, you can also use the `as` type cast. It takes a value and a desired type arg.
+Example: `(as someInt uint)` 
+
+Note there is no equivalent shorthand for _conversion_ (ie no `to`). Use  `to-XXXX` .
 
 
 
@@ -1254,7 +1261,7 @@ These property functions can be overloaded.  They can also be retrieved with `~X
 
 #### Settable Properties
 
-None of the `vector` properties can be set, however, excepting `length`, the vector properties are compile time properties. 
+None of the `vector` properties can be set. Also, excepting `length`, all the vector properties are compile time properties. 
 The `length` property on a `vector` is sometimes a compile time property, but usually it's a runtime property. Regardless, it cannot be changed, .
 But ALL the properties on a `vector-view` can be set, including `length`.
 
@@ -3961,9 +3968,9 @@ then the answer is the same as the CPU: 10 seconds.  But if `should-we-do-it?` i
 then the answer is 20 seconds. The first set of threads excute `do-it` while one thread waits stalled. Then all the other threads are STALLED while
 one thread preforms `do-something-else`.  So our workgroup takes 20 seconds. The branches do not run independently.
 
-If the uniform variant `if*` were used then it would take 10 seconds, and there would be no stalling. This is because it would not diverge in a workgroup. Of course, that
+If the result of `(should-we-do-it? a)` were captured in a variable and forced to be uniform with `to-uniform`, then we'd guarantee that it would take only 10 seconds, and there would be no stalling. This is because it would not diverge in a workgroup. Of course, that
 might not be appropriate for some problem sets. But you can see where it is obviously superior to structure your problem so that it CAN 
-take advantage of such an optimization.
+take advantage of such an optimization. 
 
 
 Predicated Selection
@@ -3977,7 +3984,7 @@ and you'll be fine.
 
 This does NOT have shortcut evaluation like in C++.  Recommend that `<expr-A>` and `<expr-B>` be simple.
 
-There is no uniform `+` or `*` variant for `select-if`, the uniform `if*` is better in that case because it DOES have shortcut evaluation.
+There is no uniform `+` or `*` variant for `select-if`.
 
 <!-- NOTE: how is this actually realized on a GPU -->
 
@@ -7597,7 +7604,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [x] vector-view that changes element-type
 - [ ] dot product and accumulate for matrices
 - [ ] / group barriers
-- [ ] complex numbers - need for FFT
+- [x] complex numbers - need for FFT
 - [ ] matrix ops / vector ops
     [ ] (m*v M v) - convenience function for matrix-vector multiplication. Very common special case of matmul
     [ ] / (determinant M)
