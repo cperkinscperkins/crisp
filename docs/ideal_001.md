@@ -28,7 +28,7 @@ Major Features of the Crisp language and tools
 
 - Distinct Execution Contexts:  A formal context system (thread, grid, dispatch) separates sequential per-thread code from parallel grid-level operations.  This makes a whole class of subtle but catastrophic parallel programming bugs (like nesting grid-level operations) impossible to write by turning them into clear, compile-time errors.
 
-- Explicit Output Parameters:  The &out modifier explicitly marks output-only parameters in function signatures.  This creates a clear, compiler-enforced contract that prevents race conditions and bugs caused by reading from uninitialized or partially-written output buffers.
+- Explicit Output Parameters:  The `&out` modifier explicitly marks output-only parameters in function signatures.  This creates a clear, compiler-enforced contract that prevents race conditions and bugs caused by reading from uninitialized or partially-written output buffers.
 
 - Guaranteed Termination:  Crisp is intentionally not Turing-complete (no unbounded recursion or loops).  This provides a mathematical guarantee that kernels will always finish, preventing GPU hangs. It also unlocks a suite of powerful static analysis tools that are impossible in general-purpose languages.
 
@@ -36,11 +36,11 @@ Major Features of the Crisp language and tools
 
 - Automated Scratch Memory:  High-level primitives (like reductions and sorts) can automatically manage their own temporary local and global memory via a "side-channel" mechanism.  This eliminates tedious and error-prone manual buffer allocation and management.
 
-- Flexible Data Layouts:  Crisp provides distinct types and specialized accessors for both "Array of Structs" (vector) and "Struct of Arrays" (soa-vector).  This gives developers the tools to choose the most performant memory layout for their algorithm without sacrificing type safety or readability.
+- Flexible Data Layouts:  Crisp provides distinct types and specialized accessors for both "Array of Structs" (`vector`) and "Struct of Arrays" (`soa-vector`).  This gives developers the tools to choose the most performant memory layout for their algorithm without sacrificing type safety or readability.
 
 - Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:std140`) and GPU-native iteration patterns (`loop-grid-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
 
-- Compile-Time Verification:  Special variants of control-flow forms (if*, dotimes+) and declarations (uniform, constexpr) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
+- Compile-Time Verification:  Special variants of control-flow forms (`if*`, `dotimes+`) and declarations (`uniform`, `constexpr`) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
 
 - Strict Memory Layout Standard:  All Crisp structs adhere to the std140 memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
 
@@ -50,7 +50,7 @@ Major Features of the Crisp language and tools
 
 - Static Typing with Powerful Generics: Crisp is statically typed with a robust templating system and compile-time type constraints. This provides the compile-time safety and performance benefits typical of C++, preventing runtime type errors, while offering a level of generic programming and code generation via metaprogramming that surpasses traditional C++ templates and is absent in dynamic languages like Python or Common Lisp.
 
-- Automated Hoisting Code:  The Crisp compiler can optionally generate a complete, runnable main() function in C++ or Python.  This automates the tedious and error-prone task of writing host-side launch code, providing an instant, working "blueprint" that demonstrates how to allocate memory, set arguments, and correctly launch a kernel.
+- Automated Hoisting Code:  The Crisp compiler can optionally generate a complete, runnable `main()` function in C++ or Python.  This automates the tedious and error-prone task of writing host-side launch code, providing an instant, working "blueprint" that demonstrates how to allocate memory, set arguments, and correctly launch a kernel.
 
 - Opt-In Static Analysis:  The compiler includes a suite of advanced, opt-in checks.  This allows the compiler to act as an expert performance coach, automatically detecting subtle but critical issues like memory-coalescing failures, shared memory bank conflicts, and potential barrier deadlocks.
 
@@ -62,8 +62,6 @@ Major Features of the Crisp language and tools
 
 Differences From Lisp
 ---------------------
-
-> Move this to an appendix
 
 While Crisp is an s-expression based language and shares with Common Lisp the very powerful `defmacro` 
 construct as well as many other fundamentals ( `if`, `when` `cond`, `let` etc), there are 
@@ -197,6 +195,7 @@ Of these "`def-`" expressions, there are three primary ones that serve as execut
 ------------
 
 ```
+;; -- do_something --
 (def-kernel do_something (i val VEC)
    ;; <type-declaration-here>
    (set! (~ VEC i) val)) ;; store val into index i of VEC
@@ -217,6 +216,7 @@ Kernel functions
 `def-function`
 -------------
 ```
+;; -- do-add --
 (def-function do-add (x y)
    ;; <type-declaration-here>
    (+ x y)) ; return the sum of x and y
@@ -238,6 +238,7 @@ Thread level functions
 ------------------
 
 ```
+;; -- vector_add --
 (def-grid-function vector-add (A B &out C)
   ;; <type-declaration-here>
   (loop-vector-stride A (i)
@@ -272,6 +273,7 @@ then, afterward, "peek" at the solution.
 Like so
 ```
 ;; --- INCORRECT ---
+;; -- calc --
 (def-kernel calc (A B)
  ;; <type-declaration-here>
  
@@ -305,6 +307,7 @@ Thus protecting you from accidentally making the race condition mistake.
 
 ```
 ;; --- CORRECT ---
+;; -- calc --
 (def-kernel calc (A &out B)
  ;; <type-declaration-here>
  
@@ -665,6 +668,8 @@ Like `def-function` ALL the parameters to the kernel function must have their ty
 ;  the return type is assumed NIL.
 
 (def-type int-result-vector (vector-type int :global :writeable :std140 1))
+
+;; -- add_two --
 (def-kernel add_two (a:int b:int &out result:int-result-vector)
    (set! (~ result 0) (+ a b)))
 ```
@@ -717,6 +722,8 @@ which is a function Crisp provides for making Crisp vectors from `void` pointers
 
 ```
 (def-type float-vec-t (vector-type float :global :compact))
+
+;; -- vector_add_k --
 (def-kernel-exact vector_add_k (APtr:voidp ASz:ulong BPtr:voidp BSz:ulong CPtr:voidp CSz:ulong)
   (let ((A (marshall-vector APtr ASz (float-vec-t :read_only)))
         (B (marshall-vector BPtr BSz (float-vec-t :read_only)))
@@ -826,6 +833,8 @@ x~ #'(point => float)
 y~ #'(point => float)
 
 ; example:
+
+;; -- align-y --
 (def-function align-y (p1 p2)
   (declare #'(point point => nil))
   (let ((horiz (y~ p1)))    ; get 'y from point p1
@@ -857,6 +866,7 @@ In this example, this function flips a point over the vertical axis
 by returning the negatiion of the x value.
 
 ```
+;;;  x~
 (def-function x~ (p:point)
   (declare (return-type float))
   (- (~x~ p)))  ;; internally use the non-overrideable access function.
@@ -878,7 +888,7 @@ The overload member access functions (like `x~` in the previous section) will NO
 If you want to overload access there too, an additional overload function must be defined:
 
 ```
-;; (x~ sv) returns the vector of ALL x values, we are adjusting the one at idx
+;;;  (x~ sv) returns the vector of ALL x values, we are adjusting the one at idx
 (def-function x~ (sv:(soa-vector-type point) idx:ulong)
     (declare (return-type float))
     (- (~ (x~ sv) idx)))
@@ -919,6 +929,8 @@ If the setter parameters are typed, there is no need for an additonal declare.
 
 ```
 ;; this custom setter function negates x
+
+;;;  x~  (setter)
 (def-setter x~ (p:point newVal:float)
    (set! (~x~ p) (- newVal))) 
 
@@ -931,6 +943,8 @@ for that is recommended as well. The compiler will warn if it detects the absenc
 In the future, Crisp may handle this automatically. 
 ```
 ;; additional overload if we are using soa-vectors.
+
+;;;  x~   (setter soa)
 (def-setter x~ (sv:(soa-vector-type point) idx:ulong newVal:float)
     (set! (~ (x~ sv) idx) newVal))
 ```
@@ -949,6 +963,8 @@ where `XXXX` is the name of the function, struct, vector, etc that was defined.
 
 ```
 (with-template-type (T)
+
+  ;; -- addTwo --
   (def-function addTwo (a:T b:T)
       (declare (return-type T))
     (+ a b)))
@@ -956,12 +972,15 @@ where `XXXX` is the name of the function, struct, vector, etc that was defined.
 
 (with-template-type (T U A)
     (declare (type-is U #'is-floating-point?) (value-is A #'is-address-space?))
+
+  ;; -- move-discrete --
   (def-function move-discrete (a:T b:U)
      (declare (return-type (vector-type U A)))
      ...))
 
 ; we can template structs as well
 (with-template-type (T)
+  ;; -- point -- 
   (def-struct point (x:T) (y:T)))
 
 ```
@@ -972,6 +991,8 @@ Example:
 ```
 (with-template-type (T &optional (M ""))
   (let ((make-reduce-l-s-v (gen-make-reduction-local-scratch-vec T M)))
+
+    ;; -- reduce-something --
     (def-function reduce-something (someFunction someThing &optional (localScratchVec (make-reduce-s-v)))
       ...)))
 ```
@@ -989,6 +1010,7 @@ That type expression can be used to specialize the template and return that spec
 Example:
 ```
 (with-template-type (T)
+  ;; -- point --
   (def-struct point (x:T) (y:T)))
 
 (point-type int)  <== evaluates to the type, which is a point specialized to int.
@@ -997,6 +1019,8 @@ Example:
 ;; I don't like this example as it's not really realizable.
 (with-template-type (T U A)
     (declare (type-is U #'is-floating-point?) (value-is A #'is-address-space?))
+
+  ;; -- move-discrete --
   (def-function move-discrete (a:T b:U)
      (declare (return-type (vector-type U A)))
      ...))
@@ -1011,10 +1035,12 @@ This can help make interoperation between different functions and structures mor
 
 ```
 (with-template-type (T U)
+  ;; -- pair --
   (def-struct pair (first:T) (second:U)))
 
 (def-type incomplete-p-t (pair-type nil (vector-view-type)))  ;; <-- a pair with a vector-view in the second type. Who cares what's in the first?
 
+;; -- sum-length --
 (def-function sum-length (a b)
   (declare (type a b incomplete-p-t) (return-type ulong)) 
   (+ (length~ (second~ a)  (length~ (second~ b)))))
@@ -1029,15 +1055,18 @@ of whatever it is wrapping.  This is `gen-XXXX`
 
 ```
 (with-template-type (T)
+
+  ;; -- addTwo --
   (def-function addTwo (a:T b:T)
       (declare (return-type T))
     (+ a b)))
 
-(fold someVector (gen-addTwo int)) ; <-- specialize "addTwo" for int and pass that to fold
+(reduce-to-workgroup someVector (gen-addTwo int)) ; <-- specialize "addTwo" for int and pass that to reduce-to-workgroup
 
 
 ; template over a struct
 (with-template-type (T)
+  ;; -- point --
   (def-struct point (x:T y:T)))
 
 (gen-point int)                         ; a. generate the template. 
@@ -1065,6 +1094,8 @@ which is a string name that the compiler should give the kernel.
 
 ```
 (with-template-type (T)
+
+   ;; -- happy_stance --
    (def-kernel happy_stance (data:(vector-type T :global :read-write)
      ...)))
 
@@ -1079,6 +1110,7 @@ The `with-template-type` argument list supports `&optional` and `&key`
 
 ```
 (with-template-type (T &optional C)
+  ;; -- Point --
   (def-struct Point (x:T) (y:T)
     (when C '(color:C)) ; The color field is optional
   ))
@@ -1215,6 +1247,7 @@ or generating specializations.
 
 Possible example:
 ```
+;; -- get-unsigned-type --
 (def-type-function get-unsigned-type (InputType)
   (cond ((<= (sizeof InputType) (sizeof uint)) 'uint)
         (T 'ulong)))
@@ -1419,6 +1452,7 @@ But note that the last two are not available in the hoisting example code for lo
 #### Usage
 
 ```
+;; -- count --
 (def-function count (v)
     (declare (return-type ulong) (type v (vector-type long :global :read-only)))
  ...)
@@ -1436,6 +1470,8 @@ its type definition. Only the size can be unspecified.
 ```
 (def-type data-from-host-t (vector-type float :constant :read-only :std140))
 (def-type result-from-kernel-t (vector-type float :global :write-only :std140))
+
+;; -- my_kernel --
 (def-kernel my_kernel (in:data-from-host-t out:result-from-kernel-t)
   ...)
 ```
@@ -1468,6 +1504,7 @@ need an accompanying `declare` or similar to determine.
 (def-type vec-floats-t (vector-type float :local :read-write :std140))
 (def-type vec-ints-t (vector-type int :local :read-write :std140))
 
+;; -- do_things --
 (def-kernel do_things ()
   (let ((some-ints #(1 2 3 4 5)) ;; <-- compiler will attempt to infer type, but best to declare it.
          (hundred-floats (make-vector vec-floats-t 100))
@@ -1664,12 +1701,15 @@ Possible Implementation
 ;; NOTE: convert-soa-to-aos should be implemented as a macro like convert-aos-to-soa below.
 ;; The will take the "temporary struct" creation out of runtime, making it marginally faster.
 (with-template-type (T)
+
+    ;; -- convert-soa-to-aos --
     (def-function convert-soa-to-aos (input-soa-vector output-vector)
         (declare #((soa-vector-type T) (vector T) => nil))
         (loop-soa-stride input-soa-vector (i)
             (let ((temp-struct:T (get-struct input-soa-vector i)))
                 (set! (~ output-vector i) temp-struct)))))
 
+;; -- convert-aos-to-soa --
 (defmacro convert-aos-to-soa (input-vector output-soa-vector)
     (c-t-assert (type-equal (element-type input-vector) (element-type output-soa-vector)))
     (let ((T (element-type input-vector))
@@ -1711,6 +1751,7 @@ Due to inference, `def-const` expressions do not typically need type information
 (def-const +PI+ 3.141592654)
 (declare (type +PI+ float))        ; type is explicit
 
+;; -- circle-area --
 (def-function circle-area (r)
    (declare #'(float => float))
   (* r r +PI+))
@@ -1813,6 +1854,7 @@ CRISP also has a type function for :constant :read-only vectors returned by `con
       (inc! (offset~ big-view) 8))
     (return small-image-mask-vec)))
 
+;; -- my_image_kernel --
 (def-kernel my_image_kernel ()
   (declare (use +image-mask-8+))
   ;; this kernel and the functions it calls can 
@@ -1875,6 +1917,8 @@ The third result would be hoisted as a `ulong` array ptr.
 ```
 (def-type float-vec (vector-type float :global :read_only :std140))
 (def-type ulong-vec (vector-type ulong :global :writeable :std140))
+
+;; -- calc-final-result --
 (def-function calc-final-result (A x y)
   (declare #(float-vec ulong unlong => nil))
   (let ((result-1 (make-result-vector A :comment "Gamma Squad needs this result"))
@@ -1892,6 +1936,7 @@ one scratch vector is allocated.
 
 Below is  a simple example
 ```
+;; -- calc_something --
 (def-kernel calc_something (A Res)
   (declare #(float-vec ulong-vec => nil))
   (let ((intermediate (make-scratch-vector A (/ (length~ A) 2) :comment "half of size of A parameter"))
@@ -2070,11 +2115,13 @@ It is uwise to overload `~` for all tensors. Use `def-derived-type` when overloa
 (def-derived-type normalized-tv (tensor-view 1 (vector-view-type :element-type float)))
 
 ;; we return int values between 0-100
+;;; ~
 (def-function ~ (tensor index)
   (declare #(normalized-tv ulong => int))
   (round (* (~ tensor index) 100)))
 
 ;; and store those ints back to floats
+;;; ~  (setter)
 (def-setter ~ (tensor index val)
   (declare #(normalized-tv ulong int => nil))
   (set! (~ tensor index) (/ val 100.0)))
@@ -2195,6 +2242,7 @@ Remember, NO DATA IS MOVED.
 
 Possible Implemenation
 ```
+;; -- transpose! --
 (def-function transpose! (M:matrix)
   (declare #((matrix) => nil))
 
@@ -2236,6 +2284,7 @@ Remember dest-tile should be `:local` memory.
 
 Here are possible implementations
 ```
+;; -- load-tile --
 (defmacro load-tile (source-M dest-tile tile-y tile-x &key transpose)
   `(let ((tile-dim (num-cols ,dest-tile))
          (local-id-x (get-local-id 0))
@@ -2280,6 +2329,7 @@ not necessarily like we want them to be.
 
 (def-const TILE_DIM:ulong +warp-size+)
 
+;; -- convert-layout --
 (def-function convert-layout (source-M dest-M choice &optional (scratch (make-tile-scratch (element-type source-M))))
   ;; scratch is 32x32 (+warp-size+ x +warp-size+)
   (declare #(matrix matrix matrix-layout &optional (vector-type (element-type source-M)) => nil))
@@ -2324,6 +2374,7 @@ A **Type Constructor** is a function that takes a type as an argument and return
 (with-template-type (T)
    (def-type anotherGlobalVecT (vector-type T :global)))
 
+;; -- count-ints --
 (def-function count-ints (v)
     (declare #'((anotherGlobalVecT-type int) => ulong))
  ...)
@@ -2383,10 +2434,12 @@ NEVER be called with a value of type `B`  unless `as-A ` were used.
 ```
 ;; def-struct makes a new type 'point'
 ;; and we make a 'distance' function that takes points.
+;; -- point --
 (def-struct point
     (x float)
     (y:float))
 
+;; -- distance --
 (def-function distance (a:point b:point)
     (declare (return-type float))
     #| pythagorean formula here |#  )
@@ -2396,6 +2449,7 @@ NEVER be called with a value of type `B`  unless `as-A ` were used.
 ;; a custom distance formula for it.
 (def-derived-type coordinate point :subst :no)
 
+;; -- distance --
 (def-function distance (a:coordinate b:coordinate)
   (declare (return-type float))
   #| haversine formula here |# )
@@ -2579,6 +2633,7 @@ Regardless of the method, remember that kernel names have to obey C identifier n
 
 
 ```
+;; -- two_stage_operation --
 (def-kernel two_stage_operation (A B C)
     (declare #(my-v-t my-v-t my-v-t => nil)
              (local-size :derive-from B :msg "two_stage_operation local work size should be the same as the length of B")
@@ -2616,10 +2671,12 @@ ANSWER: I guess.
 ```
 (def-type my-vec-t (vector-type int :local))
 
+;; -- count-if --
 (def-function count-if (v:my-vec-t predicate?)
     (declare (return-type ulong) (type predicate? #'(int => bool)))
     ...)
 
+;; -- count-if -- 
 (def-function count-if (v pred?)
     (declare #'(my-vec-t #'(int => bool) => ulong))
     ...)
@@ -2697,6 +2754,8 @@ result or error.
 
 ```
 (with-template-type (T)
+
+  ;; -- div-safe --
   (def-function div-safe (dividend divisor)
     (declare #'(T T => (maybe T)))
     (if (= divisor 0)
@@ -2710,6 +2769,8 @@ result or error.
 `let-maybe` is a binding environment that makes working with `maybe` types much easier.  
 ```
 ; Example 1
+
+;; -- math-1 --
 (def-function math-1 (a b)
   (declare #(long long => long))
  (let-maybe ((m1 (div-safe 10 a))
@@ -2719,6 +2780,8 @@ result or error.
        0))
 
 ; Example 2
+
+;; -- math-2 --
 (def-function math-2 (a b)
   (declare #(long long => (maybe long)))
  (let-maybe ((m1 (div-safe 10 a))
@@ -2749,6 +2812,8 @@ guard and unwrap a single `maybe` type.
 
 ```
 ; this won't compile
+
+;; -- math-3 --
 (def-function math-3 (a b)
   (declare #(long long => (maybe long)))
  (let ((m1 (div-safe 10 a))
@@ -2797,6 +2862,7 @@ forced to return 'maybe' simply because one of its sub-functions uses it.
  It does not prevent the `maybe` from being logged. 
 
 ```
+;; -- some-math-ops --
 (def-function some-math-ops (a b)
   (declare #'(float float => float))
   (let ((m (or-else (div-safe a b) 1))  ;<-- if there is an :Err, m will be '1'
@@ -2836,6 +2902,7 @@ the main body of the kernel with a check to ensure it is run by only one thread.
 is generated will set the global work size (thread count) to be 1.  
 
 ```
+;; -- do_little --
 (def-kernel do_little (#| some args |#)
   (declare single-task)
   #| some work |#
@@ -2880,7 +2947,7 @@ This differs from OpenCL `get_global_id` which returns an absolute thread id (an
 
 Example:
 ```
-(def-kernel (#| some args |#)
+(def-kernel k (#| some args |#)
   ;; first prepare
   (when-thread-is 0
     (let  ... ))
@@ -3015,6 +3082,7 @@ have arity expectations.  Communicate them with `:dims`
 If the `:dims` declaration does not match the arity of `:set-to` or `:derived-from`, or the arity differs between `global-size` and `local-size` then the compiler will error.
 
 ```
+;; -- operate_2D --
 (def-kernel operate_2D ()
    (declare (global-size :dims 2))
    ...)
@@ -3025,10 +3093,12 @@ The `:set-to` key instructs the hoisting code to use a specific value, (or value
 
 ```
 ; Crisp Code
+;; -- fun --
 (def-kernel fun ()
   (declare (local-size :set-to 256))
    ...)
 
+;; -- do_something --
 (def-kernel do_something ()
   (declare (global-size :set-to '(512 256)  :msg "please don't change"))
   (declare (local-size :set-to '(32 32)))
@@ -3049,6 +3119,8 @@ The `:derive-from` key instructs the hoisting code that the kernel expects the s
 
 ```
 ;; Crisp Code
+
+;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
    (declare (type image-data (vector-type :uchar :global :read_write))
             (type width height ulong)
@@ -3083,6 +3155,7 @@ will be hoisting the kernel. But it DOES interoperate with the `check-thread-bou
 has been "rounded up" to a multiple of the workgroup size by the host.
 
 ```
+;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
    (declare (type image-data (vector-type :uchar :global :read_write))
             (type width height ulong)
@@ -3153,6 +3226,8 @@ There are three variants for 1D, 2D and 3D .
 ;; 1D Vector Add
 (def-type source-vec (vector-type float :global :readable))     
 (def-type result-vec (vector-type float :global :write_only))    
+
+;; -- vector_add --
 (def-kernel vector_add (A B &out C)
   (declare (type A B source-vec) (type C result-vec) 
            (global-size :derive-from A :msg "no bounds checking. global_work_size MUST match vector lengths" ))
@@ -3161,6 +3236,8 @@ There are three variants for 1D, 2D and 3D .
 
 
 ;; 2D Lighten Image
+
+;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
    (declare (type image-data (vector-type :uchar :global :read_write))
             (type width height ulong)
@@ -3257,6 +3334,8 @@ inside the `loop-grid-stride`. It can be a number, an expression that evaluates 
 ;; 1D Vector Add
 (def-type source-vec (vector-type float :global :readable))     ;; let's revisit that :read_only requirement for kernels?
 (def-type result-vec (vector-type float :global :write_only))    ;;  ibid
+
+;; -- vector_add --
 (def-kernel vector_add (A B &out C)
   (declare (type A B source-vec) (type C result-vec) 
      (global-size :derive-from A))     
@@ -3302,6 +3381,7 @@ This is much like `loop-grid-stride` except that it always has just one thread i
 `loop-vector-stride` iterates over a vector  using the Grid Stride strategy. With it, there is no need to declare a grid stride target.
 This makes it simpler, clearer and less error prone.   With it our vector_add example from the previous section becomes even simpler.
 ```
+;; -- vector_add --
 (def-kernel vector_add (A B &out C)
   (declare (type A B source-vec) (type C result-vec)
      (global-size :derive-from A))      
@@ -3636,6 +3716,7 @@ The number of steps taken is `(log2 padded_limit)` ( aka `(log padded_limit 2)`)
 
 #### possible implementation
 ```
+;; -- do-power-step --
 (defmacro do-power-step ((step-var limit) &body body)
   "Loops log2(padded_limit) times, where padded_limit is the next
    highest power of two from limit. Binds step-var to 1, 2, 4, 8..."
@@ -3660,6 +3741,7 @@ So `i` would be bound to 128, 64, 32, 16, 8, 4, 2, and 1.
 
 #### possible implementation
 ```
+-- dec-power-step --
 (defmacro dec-power-step ((step-var limit) &body body)
   "Loops log2(padded_limit) times, binding step-var to ..., 8, 4, 2, 1."
   (let ((d (gensym))
@@ -3783,6 +3865,7 @@ going to agree on a convention that the local_work_size is 64.
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 (def-type result-vec (vector-type long :global :writeable))  
 
+;; -- sum_vector --
 (def-kernel sum_vector (A:source-vec &out Res:result-vec)
     (declare (local-size :set-to +wg-size+) (global-size :derive-from A))
                                      
@@ -3891,13 +3974,14 @@ Then half again, and so on. And then we  record the results into the same Result
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 (def-type result-vec (vector-type long :global :writeable))  
 
+;; -- calculate-this-thread-sum --
 (def-function calculate-this-thread-sum (A:source-vec)
   (declare #(source-vec -> long))
   (let ((sum:long 0))
     (loop-vector-stride A (i)
       (inc! sum (~ A i))))) ; <-- inc! implicity returns final sum
 
-
+;; -- sum_vector_warp --
 (def-kernel sum_vector_warp (A:source-vec Res:result-vec)
     (declare (local-size :set-to +warp-size+ :msg "this kernel uses a 32 warp size, which should also be the local_work_size when enqueueing") 
              (global-size :derive-from A))
@@ -4033,6 +4117,8 @@ Example:
 (map-stride #'+ (A B) C)
 
 ;; function returning multiple values used
+
+;; -- analyze --
 (def-function analyze (v)
   (declare #'(ulong => bool bool))
   (return (is-even? v) (appears-in-fibonacci? v)))
@@ -4082,6 +4168,7 @@ The example below will output "warp total: 640" repeatedly, once for each warp, 
 Possible Implementation:
 
 ```
+;; -- reduce-to-warp --
 (defmacro reduce-to-warp (someFunction someVar identity  &optional (active-threads +warp-size+))
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
@@ -4134,6 +4221,7 @@ behalf.  This can help inform the hoisting code for what the extra scratch memor
 
 Possible Implementation
 ```
+;; -- reduce-to-workgroup --
 (defmacro reduce-to-workgroup (someFunction someVar identity &key message 
                                                              (local-scratch-vec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
                                                              return-vec)
@@ -4221,6 +4309,7 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 
 Possible Implementation
 ```
+;; -- reduce-to-1-small --
 (defmacro reduce-to-1-small (someFunction someVar identity &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
                                                                (globalScratchVec (funcall (get-make-reduction-global-scratch-vec (type-of someVar) message)))
                                                              &key message)
@@ -4295,6 +4384,7 @@ Its size should be the number of warps in a single workgroup (ie `sz = local_wor
 
 Possible Implementation
 ```
+;; -- reduce-to-1-atomic --
 (defmacro reduce-to-1-atomic (someFunction someVar identity return-vec
                               &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
                               &key message)
@@ -4341,6 +4431,7 @@ Its size should be the number of warps in a single workgroup (ie `sz = local_wor
 
 Possible Implementation
 ```
+;; -- reduce-to-1-cas --
 (defmacro reduce-to-1-cas (someFunction someVar identity return-vec
                               &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
                               &key message)
@@ -4392,8 +4483,7 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 
 Possible Implementation
 ```
-
-
+;; -- reduce-to-1-cont --
 (defmacro reduce-to-1-cont (someFunction someVar identity continuation-kernel-name layout
                                    &optional (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (type-of someVar) layout message)))
                                              (localScratchVec  (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) layout message))))  
@@ -4469,6 +4559,7 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 This is what an implementation of `reduce-vec-small` might look like
 
 ```
+;; -- reduce-vec-small --
 (defmacro reduce-vec-small (someFunction vec identity 
                                         &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (element-type vec) message)))
                                                   (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (element-type vec) message)))
@@ -4520,6 +4611,7 @@ Its size should be the number of warps in a single workgroup (ie `sz = local_wor
 
 Possible Implementation
 ```
+;; -- reduce-vec-atomic --
 (defmacro reduce-vec-atomic (someFunction vec identity return-vec
                               &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (element-type vec) message)))
                               &key message)
@@ -4553,6 +4645,7 @@ of the vector reductions, it might not always be the most performant solution.
 
 Possible Implementation
 ```
+;; -- reduce-vec-cas --
 (defmacro reduce-vec-cas (someFunction vec identity return-vec
                               &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (element-type vec) message)))
                               &key message)
@@ -4579,6 +4672,7 @@ will be generated to complete the reduction operation.
 
 Possible Implementation
 ```
+;; -- reduce-vec-cont --
 (defmacro reduce-vec-cont (someFunction vec identity continuation-kernel-name
                                         &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (element-type vec) message)))
                                                   (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (element-type vec) message)))
@@ -4620,11 +4714,13 @@ Here is an example of how those functions might be implemented.
 
 ```
 (with-template-type (T &optional (M ""))
+
+  -- make-reduction-local-scratch-vec --
   (def-function make-reduction-local-scratch-vec ()
     (let ((local-scratch-size (ceil (get-local-work-size) (get-warp-size)))) ;; or just (get-num-warps) right?
-      (make-scratch-vector T :local :read_write local-scratch-size :name "make-reduction-local-scratch-vec" :comment M))))
+      (make-scratch-vector T :local :read_write local-scratch-size :name "make-reduction-local-scratch-vec" :comment M)))
 
-(with-template-type (T &optional (M ""))
+  -- make-reduction-global-scratch-vec --
   (def-function make-reduction-global-scratch-vec ()
     (let ((global-scratch-size (ceil (get-global-work-size) (get-local-work-size)))
       (make-scratch-vector T :global :read_write global-scratch-size :name "make-reduction-global-scratch-vec" :comment M )))))
@@ -4697,6 +4793,7 @@ Output: #(0 1 1 2 3 3)
 This is a possible implementation of `exclusive-scan` realized via a Belloch Scan:
 
 ```
+;; -- exclusive-scan --
 (defmacro exclusive-scan (local-vec)
   `(let ((local-id (get-local-id))
          (wg-size (get-local-linear-size)))
@@ -4739,6 +4836,8 @@ Word Count With Exclusive Scan
 
 (def-type text-t (vector-type uchar :global :readable :std140))
 (def-type index-t (vector-type ulong :global :writeable :std140))
+
+;; -- word_count --
 (def-kernel word_count (corpus word result)
  (declare #(text-t text-t index-t => nil))
   (let ((local-wg-matches (make-scratch-vector uint :local :read_write :std140 (local-work-size)))
@@ -4799,6 +4898,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
 
 ### possible implementation of filter
 ```
+;; -- filter --
 (defmacro filter (input-vec predicateF result-vec)
   (c-t-assert (is-type-of predicateF (predicate-type (element-type input-vec))) "type mismatch between predicateF and input-vec")
   (c-t-assert (is-type-of (element-type input-vec) (element-type result-vec)) "type mismatch between input-vec and result-vec")
@@ -4961,6 +5061,8 @@ A possible implementation might be
 (with-template-type (T U) ; T is element type, U is key type
   ;; U must be orderable, T doesn't have to be if keyF is provided.
   (declare (type-is U #'is-orderable?))
+
+  ;; -- bitonic-compare-and-swap --
   (def-function bitonic-compare-and-swap (local-vec idx1 idx2 direction &optional (keyF nil))
     (declare #((vector-type T) ulong ulong bool &optional #(T => U) => nil))
     (let ((val1 (~ local-vec idx1))
@@ -4981,6 +5083,8 @@ A possible implementation might be
   ;; Constraint relaxed: T only needs to be orderable IF keyF is NOT provided.
   ;; The compiler/constraint system needs to handle this conditional constraint.
   (declare (value-is A #'is-alignment?))
+
+  -- bitonic-sort-workgroup --
   (def-function bitonic-sort-workgroup (data-in data-out &key keyF)
     (declare (local-size :set-to 256 :msg "local-work-size should be a power of 2 for bitonic-sort-workgroup")
              #((vector-type T :global :readable) (vector-type T :global :writeable) 
@@ -5022,6 +5126,8 @@ A possible implementation might be
   ;; Constraint relaxed: T only needs to be orderable IF keyF is NOT provided.
   ;; The compiler/constraint system needs to handle this conditional constraint.
   (declare (value-is A #'is-alignment?))
+
+  ;; -- bitonic-sort-workgroup! --
   (def-function bitonic-sort-workgroup! (data &key keyF)
     (declare #((vector-type T :global :read_write A) &key (function T => #_is-orderable?) => nil))
     (bitonic-sort-workgroup data data :key keyF)))
@@ -5030,12 +5136,16 @@ A possible implementation might be
 ;; Kernels. These don't use the key. Define your own if you need to set one.
 (with-template-type (T A)
   (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?))
+
+  -- bitonic_sort_workgroup --
   (def-kernel bitonic_sort_workgroup (data-in data-out)
     (declare #((vector-type T :global :readable) (vector-type T :global :writeable) => nil))
     (bitonic-sort-workgroup data-in data-out)))
     
 (with-template-type (T A)
   (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?))
+
+  -- bitonic_sort_workgroup_in_place --
   (def-kernel bitonic_sort_workgroup_in_place (data)
     (declare #((vector-type T :global :read_write) => nil))
     (bitonic-sort-workgroup! data)))
@@ -5069,6 +5179,8 @@ Possible Implementation
   ;; Constraint relaxed: T only needs to be orderable IF keyF is NOT provided.
   ;; The compiler/constraint system needs to handle this conditional constraint.
   (declare (value-is A #'is-alignment?)) 
+
+  ;; -- bitonic-merge-pass --
   (def-function bitonic-merge-pass (data j k &key keyF)
     (declare #((vector-type T :global :read_write A) ulong ulong &key #'(T => #_is-orderable?) => nil))
 
@@ -5100,6 +5212,8 @@ Possible Implementation
 ;; kernel doesn't take a key. Define your own if you wish to use one.
 (with-template-type (T A)
   (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?)) 
+
+  ;; -- bitonic_merge_pass --
   (def-kernel bitonic_merge_pass (data j k)
     (declare #((vector-type T :global :read_write A) ulong ulong => nil))
     (bitonic-merge-pass data j k)))
@@ -5126,6 +5240,8 @@ how to calculate `j` and `k` and enqueue the merge pass until done.
 Possible implementation.
 ```
 (with-template-type (T L)
+
+  ;; bitonic_sort_vector_in_place
   (def-kernel bitonic_sort_vector_in_place (vec)
     (declare #((vector-type T :global :read_write L)))
     (bitonic-sort-workgroup vec vec)))
@@ -5133,6 +5249,8 @@ Possible implementation.
 
 
 (with-template-type (T L)
+
+  ;; bitonic-sort-vector!
   (def-orchestration bitonic-sort-vector!
     (launch-sequential (gen-bitonic_sort_vector_in_place T L "bitonic_sort_vector_in_place_${T}_${L}"))
 
@@ -5212,6 +5330,8 @@ Possible Implementation
 ;; 
 (with-template-type (T A)
   (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
+
+  ;; -- histogram-pass --
   (def-grid-function histogram-pass (input-vec bit-offset &out global-histogram  
                                                      &optional (local-histogram (make-scratch-vector uint :local A 256))
     (declare #((vector-type T :global :readable A) uint &out (vector-type uint :global :read_write A 256)  &optional (local-scratch-vector-type T)))
@@ -5277,6 +5397,8 @@ And its output is a prefix-sum vector.
 ;;
 (with-template-type (A)
   (declare (value-is A #'is-alignment?))
+
+  ;; -- scan-histogram --
   (def-function scan-histogram (global-histogram &out bucket-offsets)
     (declare #((vector-type uint :global :readable A 256)
               &out (vector-type uint :global :writeable A 256) => nil)
@@ -5323,6 +5445,8 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
 ;;
 (with-template-type (T A)
   (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
+
+  ;; -- scatter-pass --
   (def-grid-function scatter-pass (input-vec bucket-offsets bit-offset &out output-vec)
     (declare #((vector-type T :global :readable A) ; Input data
                (vector-type uint :global :readable A 256) ; Bucket offsets
@@ -5378,8 +5502,10 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
 ;;
 ;; get-unsigned-type
 ;;
-;; Helper to determine the corresponding unsigned integer type
+
+;; -- get-unsigned-type --
 (def-type-function get-unsigned-type (T)
+  ;; Helper to determine the corresponding unsigned integer type
   (cond ((<= (sizeof T) (sizeof uint)) 'uint)
         (T 'ulong)))
 
@@ -5394,6 +5520,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
   ;; Determine the corresponding unsigned integer type (UintT) for the result
   (let ((UintT (get-unsigned-type T)))
 
+    ;; -- radix-transform --
     (def-function radix-transform (value:T)
       ;; The function returns an unsigned integer of the same size as T
       (declare #(T => UintT))
@@ -5434,6 +5561,8 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
   ;; This function calculates the 0-based rank of a thread among threads
   ;; in the same workgroup that have the same digit for the current radix pass.
   ;; It uses fast atomic operations on local memory.
+
+  ;; -- local-rank-within-digit --
   (def-function local-rank-within-digit (local-digits ;; Input: array (size=wg_size) of digits (0-255) for each thread
                                           local-id     ;; Input: this thread's local ID
                                           ;; Optional scratch space for atomic counters
@@ -5489,6 +5618,7 @@ kernels and the hoisting example code will walk through everything.
 (with-template-type (T A)
   (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
 
+  ;; -- radix-sort --
   (def-orchestration radix-sort
     ;; the goal is to start with the unsorted input-vec (that we'll pass to the first kernel, histogram-pass)
     ;; and finally end up with the sorted output-vec.
@@ -5664,12 +5794,14 @@ workgroup will add its sum to the first element of the result vector.
 ;; the final result vector is just has 1 long value
 (def-type result-vec (vector-type long :global :writeable :length 1)) 
 
+;; -- calculate-this-thread-sum --
 (def-function calculate-this-thread-sum (A:source-vec)
   (declare #(source-vec -> long) (grid-level))
   (let ((sum:long 0))
     (loop-vector-stride A (i)
       (inc! sum (~ A i))))) ; <-- inc! implicity returns final sum
 
+;; -- sum_vector_warp_to_on --
 (def-kernel sum_vector_warp_to_one (A:source-vec Res:result-vec)
     (declare (local-size :set-to +warp-size+ ...)
              (global-size :derive-from A))
@@ -5762,7 +5894,9 @@ its value.
 
 ``` 
 (with-template-type (T)
-  (declare (type-is T #'is-scalar? T))                      
+  (declare (type-is T #'is-scalar? T)) 
+
+  ;; -- dot-prod-grid --                     
   (def-grid-function dot-prod-grid (A B RESULT)
     (declare #((vector-type T) (vector-type T) (vector-type T :global :writeable) => nil)) 
     (when-thread-is 0
@@ -5773,6 +5907,8 @@ its value.
 
 (with-template-type (T)
   (declare (type-is T #'is-scalar?))
+
+  ;; -- dot-prod-seq --
   (def-function dot-prod-seq (A B)
     (declare #((vector-type T) (vector-type T) => T))
 
@@ -5795,7 +5931,9 @@ its value.
   which is more performant.
 |#
 (with-template-type (T)
-  (declare (type-is T #'is-scalar? T))       
+  (declare (type-is T #'is-scalar? T))
+
+  ;; -- matmul-naive --       
   (def-function matmul-naive (A B)
     (declare #(matrix matrix => matrix) (global-size :dims 2))
     (let ((inner-A (num-cols A))
@@ -5827,6 +5965,8 @@ its value.
 
 (with-template-type (T)
   (declare (type-is T #'is-scalar?))
+
+  ;; -- matmul --
   (def-function matmul (A B C)
     (declare #(matrix matrix matrix => nil) (global-size :dims 2))
 
@@ -6075,6 +6215,7 @@ The implementation Crisp provides uses a template and `def-struct` like so:
 ```
 (with-template-type (T)
   (declare (type-is T #'is-floating-point?))
+  ;; -- complex --
   (def-struct complex (real T) (imag T)))
 
 ```
@@ -6087,6 +6228,8 @@ The arithmetic functions fall out easily:
 ;; this macro lets us use "a b c d" notation in the body of our
 ;; binary arithmetic functions. Much easier to read. 
 ;; Just remmber to wrap in parantheses: (a)
+
+;; -- with-complex-components --
 (defmacro with-complex-components ((z1 z2) &body body)
   "Establishes local macros a, b, c, d for the components of z1 and z2."
   `(macrolet ((a () '(real~ ,z1))
@@ -6177,6 +6320,8 @@ to improve data reuse and reduce global memory traffic.
 ;; templated with a floating point type
 (with-template-type (T A)
   (declare (is-type T #'is-floating-point?) (is-value A #'is-alignment?))
+
+  ;; -- calculate-twiddle-factor --
   (def-function calculate-twiddle-factor (k N)
     ;; $W_N^k = \cos(2\pi k/N) - i\sin(2\pi k/N)$
     (declare #(ulong ulong => (complex-type T)))
@@ -6187,6 +6332,7 @@ to improve data reuse and reduce global memory traffic.
 ;;
 ;; precompute-twiddles
 ;;
+  ;; -- precompute-twiddles --
   (def-grid-function precompute-twiddles (N &out twiddle-vec)
     (declare #(ulong &out (vector-type (complex-type T) :global :writeable A) => nil))
 
@@ -6204,6 +6350,8 @@ to improve data reuse and reduce global memory traffic.
 ;; Templated on complex type CT (which implies float type T)
 (with-template-type (CT)
   (declare (type-is CT #'is-complex?))
+
+  ;; -- fft-butterfly --
   (def-function fft-butterfly (a b w)
     ;; $A' = A + BW, B' = A - BW$ 
     (declare #(CT CT CT => CT CT)) ; Returns two complex values
@@ -6218,6 +6366,8 @@ to improve data reuse and reduce global memory traffic.
 ;; reverse-bits
 ;;
   ;; Helper function to reverse bits (thread-level)
+
+  ;; -- reverse-bits --
   (def-function reverse-bits (index num-bits)
     (declare #(ulong ulong => ulong))
     (let ((reversed-index:ulong 0))
@@ -6233,6 +6383,8 @@ to improve data reuse and reduce global memory traffic.
 ;; bit-reverse-copy
 ;;
   ;; The main grid function
+
+  ;; -- bit-reverse-copy --
   (def-grid-function bit-reverse-copy (input-vec N &out output-vec)
     (declare #((vector-type T :global :readable A)
                ulong
@@ -6257,6 +6409,8 @@ to improve data reuse and reduce global memory traffic.
            (type-is CT #'is-complex?)) ; Assuming is-complex? exists
 
   ;; The main grid function for one FFT pass
+
+  ;; -- fft-pass --
   (def-grid-function fft-pass (input-vec twiddle-vec stage pass-stride N &out output-vec)
     (declare #((vector-type CT :global :readable A) ; Input data
                (vector-type CT :global :readable A) ; Twiddle factors (size N/2)
@@ -6309,6 +6463,7 @@ Now using soa-vector for better performance
 > also def-orch definition needs more work
 
 ```
+;; -- load-complex-soa-tile --
 (defmacro load-complex-soa-tile (soa-vec tile-y tile-x local-reals local-imags)
   ;; Macro expands into the efficient load logic:
   `(let ((tile-dim (num-cols ,local-reals)) ; Assume square tile
@@ -6334,6 +6489,8 @@ Now using soa-vector for better performance
   (declare (type-is T #'is-floating-point?)
            (value-is A #'is-alignment?)
            (type-is CT #'is-complex?))
+
+  ;; -- fft-pass-soa-tiled --
   (def-grid-function fft-pass-soa-tiled (input-soa-vec twiddle-vec stage pass-stride N &out output-vec)
       ;; same signature as fft-pass ?
       (declare #((soa-vector-type CT :global :readable A) ; Input data
@@ -6404,6 +6561,8 @@ Now using soa-vector for better performance
 ;; Takes real/imag parts of a, b, w. Returns real/imag of a' and b'.
 (with-template-type (T)
   (declare (type-is T #'is-floating-point?))
+
+  ;; -- fft-butterfly-soa --
   (def-function fft-butterfly-soa (a-re a-im b-re b-im w-re w-im)
     (declare #(T T T T T T => T T T T)) ; RealA', ImagA', RealB', ImagB'
     ;; Calculate BW = (b_re*w_re - b_im*w_im) + (b_re*w_im + b_im*w_re)i
@@ -6419,6 +6578,8 @@ Now using soa-vector for better performance
 And a possible orchestration
 ```
 (with-template-type (T A)
+
+  ;; -- fft -- 
   (def-orchestration fft 
 
     ;; Define temp buffers (A for bit-reversed, B for ping-pong)
@@ -6625,6 +6786,7 @@ crisp.exe -Dfull_ride=nil -Dsleigh_ride=T -Dover_ride=1  ... etc
 ### another example
 
 ```
+;; -- calculate --
 (def-function calculate (x)
   (declare #(float => float))
   (let (#+(target-has :fp64)
@@ -6866,6 +7028,8 @@ Let's dive into some simple examples.
 ```
 ;; assume vector_add is defined and is not templated, uses &out
 ;; (vector_add A B &out C)
+
+;; -- just-vector_add --
 (def-orchestration just-vector_add
   (let ((K (gen-vector_add))
         (A (make-hoist-vector K::A))
@@ -6918,6 +7082,8 @@ to the host use `copy-back`. Crisp will generate code for that in the hoisting e
 ;; assume both vector_add and vector_sum are templated for some element-type.
 ;; (vector_add A B &out C)
 ;; (vector_sum DATA-IN &out RESULT)
+
+;; -- add-and-sum-doubles --
 (def-orchestration add-and-sum-doubles
   (let ((VADD (gen-vector_add double "v_add_double"))
         (VSUM (gen-vector_sum double "v_sum_double"))
@@ -6944,6 +7110,8 @@ evaluate to the name of the type `XXXX`.
 
 ```
 (with-template-type (T)
+
+  ;; -- add-and-sum-any --
   (def-orchestration add-and-sum-any
     (let ((VADD (gen-vector_add double "v_add_${T}"))
           (VSUM (gen-vector_sum double "v_sum_${T}"))
@@ -7046,6 +7214,7 @@ And then the launch specifications.
 Example:
 ```
 
+;; -- vector_add_chunked --
 (def-kernel vector_add_chunked (len offset A B &out C)
    ;; assume input-vec-t and output-vec-t already defined.
   (declare #(ulong ulong input-vec-t input-vec-t &out output-vec-t))
@@ -7054,6 +7223,7 @@ Example:
         (C-view (make-vector-view C len offset)))
     (map-stride #'+ A-view B-view C-view)))
 
+;; -- add-interleaved --
 (def-orchestration add-interleaved
   (let ((VADD_CHUNKED (gen-vector_add_chunked))
         (A (make-hoist-vector VADD_CHUNKED::A))
