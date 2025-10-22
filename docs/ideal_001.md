@@ -58,8 +58,6 @@ Major Features of the Crisp language and tools
 
 
 
-
-
 Differences From Lisp
 ---------------------
 
@@ -119,6 +117,120 @@ These are simple and should be flexible enough to get things done.
 ### misc
 
 `let` in Crisp is like `let*` in Common Lisp. Asterisk not needed.
+
+
+Table of Contents
+=================
+
+-Overview 
+- - Focus 
+- - Major Features of the Crisp language and tools 
+- - Differences From Lisp 
+- Thread Level / Grid Level / Dispatch Contexts 
+- - Why Different from C++/CUDA
+- Top Level Execution Constructs 
+- Return Vector Pattern `&out` 
+- Argument Passing and Side Channels
+- Crisp Types
+- - Basic Numeric Types
+- - Vector Numeric Types
+- - Numeric Type Promotion, Casting, Conversion
+- - Other Basic Types
+- - Declaring Types - Functions
+- - Function Overloading
+- - Recursion Disallowed
+- - Declaring Types - Kernels
+- - Struct Types
+- - `def-setter`
+- - Template Types
+- - `def-constraint`
+- - `def-type-function`
+- - Vectors and Vector-View
+- - `soa-vector` and `soa-view`
+- - `def-const`
+- - `def-parameter`
+- - `def-const-vec`
+- - Side Channel Vectors
+- - Tensors
+- - Matrices
+- - Type Aliases and Type Constructors
+- - Derived Types
+- - No Lambda Functions
+- - Continuation Kernels
+- - First Order Functions
+- - First Order Types
+- - Enumerations
+- - Maybe Type
+- Control Flow
+- - Single Task
+- - when-thread-is / abs-when-thread-is
+- - when-thread-in-group-is / when-group-is
+- - when-is-last-workgroup
+- - Hoisting and Enqueing a Kernel
+- - Latency Hiding - warp sizes and workgroup sizes
+- - One Thread Per Element
+- - Looping - Grid Stride
+- - Looping -- Uniform Loops
+- - Looping Constructs
+- - Grid Level Operations
+- - Sum a Vector using Local Memory
+- - Warps & Shuffles
+- - Sum a Vector using Warps and Shuffles
+- Branching
+- - Cost of Divergent Branching
+- - Predicated Selection
+- Higher Order Function Operations
+- - map
+- - reduce variants
+- - reduce vector
+- Filtering / Prefix-Sum Scan
+- - exclusive scan
+- - inclusive scan
+- - Word Count with Exclusive Scan
+- - `filter`
+- Sorting
+- - Bitonic Sort
+- - Radix Sort
+- Atomics
+- Vector And Tensor Operations
+- - dot product
+- - matrix multiplication (matmul)
+- Math Operations & Arithmetic
+- - Floating Point Precision
+- - Floating Point Only Operations
+- - Floating Point and Integer Operations
+- - Integer Only Operations
+- - Integer Division
+- Complext Numbers
+- - soa-vector and complex
+- Fast Fourier Transform (FFT)
+- Builtin GPU Functions & Constants
+- Forgotten
+- Logging and Debugging
+- - Logging Utilities
+- Conditional Compilation
+- defmacro
+- Static Analysis
+- - declaim
+- - check-coalesce
+- - check-bank-conflicts
+- - check-divergence
+- - max-registers / warn-max-registers
+- - check-barriers
+- Hoisting and `def-orchestration`
+- - `def-orchestration`
+- - launch-sequential
+- - launch-parallel
+- - launch-interleaved
+- Compiler Invocation and Options
+- - Compilation Flags
+- Hoisting Code
+- In-Memory Compilation API
+- - C API
+- - Status Codes
+- - Flags
+- INDECES
+- To Do etc.
 
 Thread Level / Grid Level / Dispatch
 =========================================
@@ -7176,7 +7288,7 @@ A "launch specification" is simply a kernel _variable_ and the correct number of
 
 
 
-launch parallel
+launch-parallel
 ---------------
 
 ```
