@@ -118,7 +118,8 @@ These are simple and should be flexible enough to get things done.
 
 `let` in Crisp is like `let*` in Common Lisp. Asterisk not needed.
 
-
+<details open>
+<summary>T.o.C</summary>
 Table of Contents
 =================
 
@@ -231,6 +232,7 @@ Table of Contents
 - - Flags
 - INDECES
 - To Do etc.
+</details>
 
 Thread Level / Grid Level / Dispatch
 =========================================
