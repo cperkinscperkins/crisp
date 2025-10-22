@@ -118,6 +118,10 @@ The Common Lisp Object System is likely the most powerful object system ever des
 Crisp has nothing comparable, but instead offers modest structs, derived types, and function overloading. 
 These are simple and should be flexible enough to get things done.
 
+### misc
+
+`let` in Crisp is like `let*` in Common Lisp. Asterisk not needed.
+
 Thread Level / Grid Level / Dispatch
 =========================================
 
@@ -314,6 +318,12 @@ If you are implementing the "return-data-via-vector-parameter" pattern,
 then use `&out` and enlist the compilers help in enforcing usage boundaries.
 
 
+The `&out` parameter list keyword marks the beginning of the output parameters. 
+All subsequent parameters in the list are treated as output parameters and are subject 
+to the write-only contract within the function's scope. `&out` must appear after 
+any required or `&optional` parameters.
+
+
 
 Argument Passing and Side Channels
 ==================================
@@ -400,9 +410,9 @@ The subelements can be dereferences with the `x~`, `y~`, `z~` and `w~` functions
 Furthermore, Crisp supports "swizzles" (like `xyyy~`)
 
 ```
-(let* ((my-svec:short4 ##(5 6 7 9))
-       (all-six          (yyyy~ my-svec))
-       (tail-part      #(0 0)))
+(let ((my-svec:short4 ##(5 6 7 9))
+      (all-six          (yyyy~ my-svec))
+      (tail-part      #(0 0)))
   (declare (type tail-part short2))
   (set! (xy~ tail-part) (zw~ my-svec))
   ; OR
@@ -479,10 +489,10 @@ It is the equivalent of "reinterpret cast" in C++.
   (some-int-op (to-int f)))
 ```
 
-#### `(as someVal T)`
+#### `(as T someVal)`
 
 Rather than `as-XXXX`, you can also use the `as` type cast. It takes a value and a desired type arg.
-Example: `(as someInt uint)` 
+Example: `(as uint someInt)` 
 
 Note there is no equivalent shorthand for _conversion_ (ie no `to`). Use  `to-XXXX` .
 
@@ -851,8 +861,8 @@ by returning the negatiion of the x value.
   (declare (return-type float))
   (- (~x~ p)))  ;; internally use the non-overrideable access function.
 
-(let* ((p (make-point 5 0))
-       (neg-x (x~ p)))   ; neg-x will be -5 because of the overloaded x~ function above.
+(let ((p (make-point 5 0))
+      (neg-x (x~ p)))   ; neg-x will be -5 because of the overloaded x~ function above.
     ...)  
        
 ```
@@ -1295,8 +1305,8 @@ define your own vector type and overload `~` for that type.
 
 ```
 ; example
-(let* ((vec #(2 4 6 8))
-       (elem (~ vec 1))) ;; 4
+(let ((vec #(2 4 6 8))
+      (elem (~ vec 1))) ;; 4
   (set! (~ vec 0) (* 2 elem))) ;; stores "8" into the first position of the vec.
 ```
 
@@ -1459,7 +1469,7 @@ need an accompanying `declare` or similar to determine.
 (def-type vec-ints-t (vector-type int :local :read-write :std140))
 
 (def-kernel do_things ()
-  (let* ((some-ints #(1 2 3 4 5)) ;; <-- compiler will attempt to infer type, but best to declare it.
+  (let ((some-ints #(1 2 3 4 5)) ;; <-- compiler will attempt to infer type, but best to declare it.
          (hundred-floats (make-vector vec-floats-t 100))
          (ten-floats (make-vector-view hundred-floats 10)))
     (declare (type some-ints vec-ints-t))
@@ -1566,9 +1576,9 @@ Example
 ```
 (def-struct point (x:long) (y:long))
 
-(let* ((sv      (make-soa-vector point :local :read_write :std140 20))
-       (y       (y~ sv 9))
-       (x-vec   (x~ sv)))
+(let ((sv      (make-soa-vector point :local :read_write :std140 20))
+      (y       (y~ sv 9))
+      (x-vec   (x~ sv)))
     ...)
 ```
 
@@ -1662,8 +1672,8 @@ Possible Implementation
 
 (defmacro convert-aos-to-soa (input-vector output-soa-vector)
     (c-t-assert (type-equal (element-type input-vector) (element-type output-soa-vector)))
-    (let* ((T (element-type input-vector))
-           (set-forms (with-struct-accessors T (aos-accF soa-accF)
+    (let ((T (element-type input-vector))
+          (set-forms (with-struct-accessors T (aos-accF soa-accF)
                        ;; body generates one form for each member
                        ;; "i" and "temp-struct" TBD below.
                        `(set! (,soa-accF ,output-soa-vector i (,aos-accF temp-struct))))))
@@ -1794,9 +1804,9 @@ CRISP also has a type function for :constant :read-only vectors returned by `con
 
 (def-const-vec +image-mask-8+
   (declare (use +image-mask-32+))
-  (let* ((small-image-mask-vec (make-vector image-mask-t 8))
-         (small-view  (make-vector-view small-image-mask-vec 2))
-         (big-view    (make-vector-view +image-mask-32+ 2)))
+  (let ((small-image-mask-vec (make-vector image-mask-t 8))
+        (small-view  (make-vector-view small-image-mask-vec 2))
+        (big-view    (make-vector-view +image-mask-32+ 2)))
     (dotimes (x 4)
       (copy-vec :from big-view :to small-view)
       (inc! (offset~ small-view) 2)
@@ -2188,10 +2198,10 @@ Possible Implemenation
 (def-function transpose! (M:matrix)
   (declare #((matrix) => nil))
 
-  (let* ((dims-vec (dims~ M))
-         (strides-vec (strides~ M)))
-         (temp-dim0 (~ dims-vec 0))
-         (temp-stride0 (~ strides-vec 0))
+  (let ((dims-vec (dims~ M))
+        (strides-vec (strides~ M)))
+        (temp-dim0 (~ dims-vec 0))
+        (temp-stride0 (~ strides-vec 0))
     ;; Swap the dimensions: (num_rows, num_cols) -> (num_cols, num_rows)
     (set! (~ dims-vec 0) (~ dims-vec 1))
     (set! (~ dims-vec 1) temp-dim0)
@@ -4199,7 +4209,7 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
               Its value is indeterminant in OTHER threads.
 
 ```
-(let* ((global-scratch (make-scratch-vector ulong :global :read_write (ceil (get-global-work-size) (get-local-work-size))))
+(let ((global-scratch (make-scratch-vector ulong :global :read_write (ceil (get-global-work-size) (get-local-work-size))))
        (local-scratch (make-scratch-vector ulong :local :read_write (ceil (get-local-works-size) +warp-size+)))
        (someVar 1))
    (reduce-to-1-small #'+ someVar 0 local-scratch global-scratch)
@@ -4233,7 +4243,7 @@ Possible Implementation
             (l-w-s (get-local-work-size)))
         (declare (uniform N l-w-s))
         (cond+  ((< N +warp-size+)
-                  (let* ((lane-id (get-lane-id))
+                  (let ((lane-id (get-lane-id))
                         (var (if (< lane-id N) (~ ,globalScratchVec lane-id) ,identity))))
                     (reduce-to-warp ,someFunction var ,identity N)
                     ; Broadcast to all threads in wg
@@ -4242,7 +4252,7 @@ Possible Implementation
                     (local-barrier)
                     (set! ,someVar (~ ,local-scratch-vec 0)))
                 ((< N l-w-s)
-                  (let* ((local-id (get-local-id))
+                  (let ((local-id (get-local-id))
                         (var (if (< local-id N) (~ ,globalScratchVec local-id) ,identity))))
                     (reduce-to-workgroup ,someFunction var ,identity ,localScratchVec)
                     ; broadcast
@@ -4395,7 +4405,7 @@ Possible Implementation
                            (type g-s-v (global-scratch-vec-type (type-of ,someVar) ,layout))
                            (type result-vec (vector-type (type-of ,someVar) :global :writeable ,layout))
                            (local-size :derive-from g-s-v :msg (string-concat ,continuation-kernel-name "requires a local_work_size at least as big as the global-scratch-vector")))
-                      (let* ((num-items (length~ g-s-v))
+                      (let ((num-items (length~ g-s-v))
                             (local-id (get-local-id))
                             ;; Each thread in the workgroup loads one partial result.
                             ;; If there are more threads than items, inactive threads get the identity.
@@ -4995,7 +5005,7 @@ A possible implementation might be
         (dec-times-by-half (k (/ j 2))
           ;; Determine sorting direction for this phase
           ;; The first half of the sequences sort ascending, second half  descending
-          (let* ((direction (> (bit-and local-id (+ j j)) 0))) ; Determines if this half sorts UP or DOWN
+          (let ((direction (> (bit-and local-id (+ j j)) 0))) ; Determines if this half sorts UP or DOWN
                 (partner-id (bit-xor local-id k))) ; Partner is 'k' distance away
 
             (when (< partner-id N) ; Ensure partner ID is within bounds (for non-power-of-2 sizes)
@@ -5223,10 +5233,10 @@ Possible Implementation
       ;; they are bit-wise evaluable. 
       (loop-vector-stride input-vec (i)
         ;; a. Get the value from the input vector.
-        (let* ((initial-val (~ input-vec i))
-               (base-val  #+(is-floating-point? T) (as-bits initial-val uint)
+        (let ((initial-val (~ input-vec i))
+              (base-val  #+(is-floating-point? T) (as-bits initial-val uint)
                           #-(is-floating-point? T) initial-val)
-               (val    #+(is-signed-integer? T) (logxor base-val #x80000000)
+              (val    #+(is-signed-integer? T) (logxor base-val #x80000000)
                        #-(is-signed-integer? T) base-val))
 
           #+(is-floating-point? T)
@@ -5320,16 +5330,16 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
               &out (vector-type T :global :writeable A))) ; Output data
 
     ;; setup shared memory
-    (let* ((wg-size (get-local-size))
+    (let ((wg-size (get-local-size))
            ;; Need space to store the data chunk for this workgroup
-           (local-data-chunk (make-local-scratch-vecvtor T wg-size))
+          (local-data-chunk (make-local-scratch-vecvtor T wg-size))
            ;; Need space to store the 'digit' for each element in the chunk
-           (local-digits (make-local-scratch-vecvtor uint wg-size))
+          (local-digits (make-local-scratch-vecvtor uint wg-size))
            ;; Need space for the local scan (prefix sum) result for each thread
-           (local-scan-indices (make-local-scratch-vecvtor uint wg-size))
+          (local-scan-indices (make-local-scratch-vecvtor uint wg-size))
 
-           (local-id (get-local-id))
-           (global-id (get-global-id)))
+          (local-id (get-local-id))
+          (global-id (get-global-id)))
 
       ;; load data chunk
       ;; Each thread loads one element into local memory.
@@ -5339,7 +5349,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
 
       ;; calculate digits and local scan
       ;; each thread determines its element's digit for this pass.
-      (let* ((initial-val (~ local-data-chunk local-id))
+      (let ((initial-val (~ local-data-chunk local-id))
             ;; Apply signed/float transformations (same as histogram kernel)
             (sortable-int (radix-transform initial-val)) ; Use a helper/macro  
             (digit (bit-and (ash sortable-int (- bit-offset)) #xFF)))
@@ -5392,14 +5402,14 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
         
         ((is-unsigned-integer? T)
          ;; No transformation needed, just ensure it's the right uint type if T was smaller
-         (as value UintT))
+         (as UintT value))
 
         
         ((is-signed-integer? T)
          ;; Calculate the mask for the most significant bit (sign bit)
          (let ((msb-mask:UintT (ash 1 (- (* (sizeof T) 8) 1))))
            ;; Flip the sign bit using XOR to map negatives below positives
-           (logxor (as value UintT) msb-mask)))
+           (logxor (as UintT value) msb-mask)))
 
         
         ((is-floating-point? T)
@@ -5483,12 +5493,12 @@ kernels and the hoisting example code will walk through everything.
     ;; the goal is to start with the unsorted input-vec (that we'll pass to the first kernel, histogram-pass)
     ;; and finally end up with the sorted output-vec.
 
-    (let* ((histogram_pass_kernel (gen-histogram_pass T A "histogram_pass_kernel"))
-           (buffer-A (make-hoist-vector histogram_pass_kernel::input-vec))
-           (buffer-B (make-hoist-vector histogram_pass_kernel::input-vec :empty T)))
+    (let ((histogram_pass_kernel (gen-histogram_pass T A "histogram_pass_kernel"))
+          (buffer-A (make-hoist-vector histogram_pass_kernel::input-vec))
+          (buffer-B (make-hoist-vector histogram_pass_kernel::input-vec :empty T)))
 
-      (let* ((num-passes (/ (* (sizeof T) 8) 8)) ;; why is this not just sizeof T?
-             (N (* num-passes 8)))
+      (let ((num-passes (/ (* (sizeof T) 8) 8)) ;; why is this not just sizeof T?
+            (N (* num-passes 8)))
         (dotimes (bit-offset N 8)
           (launch-sequential 
             (histogram_pass_kernel buffer-A bit-offset _)
@@ -5795,7 +5805,7 @@ its value.
       (when-thread-is 0
         (r-t-assert (= inner-A inner-B) "inner dimensions must match!"))
       
-      (let* ((vec (make-result-vector A (* outer-A outer-B)))
+      (let ((vec (make-result-vector A (* outer-A outer-B)))
             (res (make-tensor-view vec outer-A outer-B )))
                 (loop-grid-stride (x y)   
                   (declare (grid-stride-target outer-A outer-B))
@@ -6144,6 +6154,301 @@ Because complex numbers are defined as Crisp structs, they can take advantage
 of `soa-vector` and `soa-vector-view` support. 
 
 
+Fast Fourier Transform (FFT)
+============================
+
+The routines and orchestration below implement the Fast Fourier Transform using the Cooley-Tukey algorithm. 
+It first optionally rearranges the input data using a bit-reversal permutation. 
+Then, it precomputes the necessary complex constants called twiddle factors. 
+The core of the algorithm is a loop that iterates through several stages. 
+In each stage, it launches the fft-pass kernel, which performs parallel "butterfly" operations 
+across the dataset, progressively transforming the data from the time domain to the frequency domain. 
+This process uses temporary "ping-pong" buffers to store intermediate results between stages. 
+Finally, a concluding step ensures the fully transformed data resides in the designated output vector.
+
+Performance Note: The implementation below is a direct global-memory implementation. 
+For maximum performance, real-world FFTs often use tiling with local memory (similar to matmul) 
+to improve data reuse and reduce global memory traffic.
+
+```
+;;
+;;  calculate-twiddle-factor
+;;
+;; templated with a floating point type
+(with-template-type (T A)
+  (declare (is-type T #'is-floating-point?) (is-value A #'is-alignment?))
+  (def-function calculate-twiddle-factor (k N)
+    ;; $W_N^k = \cos(2\pi k/N) - i\sin(2\pi k/N)$
+    (declare #(ulong ulong => (complex-type T)))
+    (let ((angle:T (/ (* -2.0 PI (as T k)) (as T N))))
+      (make-complex (cos angle) (sin angle))))
+
+
+;;
+;; precompute-twiddles
+;;
+  (def-grid-function precompute-twiddles (N &out twiddle-vec)
+    (declare #(ulong &out (vector-type (complex-type T) :global :writeable A) => nil))
+
+    ;; Each thread calculates twiddle factors using grid stride
+    (loop-grid-stride twiddle-vec (k) ; Loop from k = 0 to N-1 (or length of twiddle-vec)
+      (when (< k N) ; Ensure we only calculate N twiddles
+        ;; Calculate the k-th twiddle factor
+        (let ((twiddle (calculate-twiddle-factor k N)))
+          ;; Store it in the output vector
+          (set! (~ twiddle-vec k) twiddle))))))
+
+;;
+;; fft-butterfly
+;;
+;; Templated on complex type CT (which implies float type T)
+(with-template-type (CT)
+  (declare (type-is CT #'is-complex?))
+  (def-function fft-butterfly (a b w)
+    ;; $A' = A + BW, B' = A - BW$ 
+    (declare #(CT CT CT => CT CT)) ; Returns two complex values
+    (let ((bw (* b w)))
+      (return (+ a bw) (- a bw)))))
+
+
+(with-template-type (T A)
+  (declare (value-is A #'is-alignment?)) ;; T can be any type here
+
+;;
+;; reverse-bits
+;;
+  ;; Helper function to reverse bits (thread-level)
+  (def-function reverse-bits (index num-bits)
+    (declare #(ulong ulong => ulong))
+    (let ((reversed-index:ulong 0))
+      (dotimes (i num-bits)
+        ;; Add the least significant bit of 'index' to the most significant
+        ;; available position in 'reversed-index'
+        (set! reversed-index (logior (ash reversed-index 1)
+                                      (bit-and index 1)))
+        ;; Shift 'index' right to process the next bit
+        (set! index (ash index -1))))
+      (return reversed-index)))
+;;
+;; bit-reverse-copy
+;;
+  ;; The main grid function
+  (def-grid-function bit-reverse-copy (input-vec N &out output-vec)
+    (declare #((vector-type T :global :readable A)
+               ulong
+               &out (vector-type T :global :writeable A) => nil))
+
+    (let ((num-bits (log2 N))) ; Calculate number of bits needed for N indices
+      ;; Use grid stride for parallelism - each thread handles multiple indices
+      (loop-vector-stride input-vec (i)
+        ;; 1. Calculate the destination index by reversing the bits of 'i'
+        (let ((dest-index (reverse-bits i num-bits)))
+          ;; 2. Read the value from the source index 'i' (coalesced read)
+          (let ((val (~ input-vec i)))
+            ;; 3. Write the value to the bit-reversed destination index (uncoalesced write)
+            (set! (~ output-vec dest-index) val)))))))
+
+;;
+;; fft-pass
+;;
+(with-template-type (T A CT) ; T=float type, A=alignment, CT=complex type
+  (declare (type-is T #'is-floating-point?)
+           (value-is A #'is-alignment?)
+           (type-is CT #'is-complex?)) ; Assuming is-complex? exists
+
+  ;; The main grid function for one FFT pass
+  (def-grid-function fft-pass (input-vec twiddle-vec stage pass-stride N &out output-vec)
+    (declare #((vector-type CT :global :readable A) ; Input data
+               (vector-type CT :global :readable A) ; Twiddle factors (size N/2)
+               ulong ; Current stage (0 to log2N-1)
+               ulong ; Stride for this pass (2^stage)
+               ulong ; Total FFT size (power of 2)
+               &out (vector-type CT :global :writeable A) => nil)) ; Output data
+
+    ;; Use grid stride - each thread calculates one butterfly output pair
+    (loop-vector-stride output-vec (i)
+      (when (< i (/ N 2)) ; Each thread handles one pair, so loop up to N/2
+
+        ;; --- 1. Calculate Indices ---
+        ;; This is the tricky part: determine which two elements (idx1, idx2)
+        ;; and which twiddle factor (k) this thread 'i' is responsible for.
+        ;; This specific indexing pattern is for the decimation-in-time algorithm.
+        (let ((group-len pass-stride)          ; Length of the sub-DFT groups
+              (half-group-len (/ group-len 2))
+              (group-num (floor i half-group-len))
+              (idx-in-group (mod i half-group-len))
+               ;; Indices for the butterfly input elements
+              (idx1 (+ (* group-num group-len) idx-in-group))
+              (idx2 (+ idx1 half-group-len))
+               ;; Index for the twiddle factor W_N^k
+               ;; (Note: Needs adjustment based on N and pass_stride)
+              (k (* idx-in-group (/ N group-len))))
+
+          ;; --- 2. Perform Butterfly ---
+          ;; Check bounds (important if N is not perfectly divisible)
+          (when (and (< idx1 N) (< idx2 N))
+            ;; Load inputs
+            (let ((a (~ input-vec idx1))
+                  (b (~ input-vec idx2))
+                  ;; Load twiddle factor (using 'k' calculated above)
+                  (w (~ twiddle-vec k)))
+
+              ;; Perform the butterfly operation
+              (multiple-value-bind (a-prime b-prime) (fft-butterfly a b w)
+
+                ;; --- 3. Store Results ---
+                ;; Write the two results to the output vector
+                (set! (~ output-vec idx1) a-prime)
+                (set! (~ output-vec idx2) b-prime)))))))))
+
+```
+
+Now using soa-vector for better performance
+
+> CODE BELOW NOT ENTIRELY COMPLETE
+> also def-orch definition needs more work
+
+```
+(defmacro load-complex-soa-tile (soa-vec tile-y tile-x local-reals local-imags)
+  ;; Macro expands into the efficient load logic:
+  `(let ((tile-dim (num-cols ,local-reals)) ; Assume square tile
+         (local-id-x (get-local-id 0))
+         (local-id-y (get-local-id 1)))
+
+     ;; 1. Calculate Global Source Coordinates (Coalesced for Components)
+     (let ((source-x (+ (* ,tile-x tile-dim) local-id-x))
+           (source-y (+ (* ,tile-y tile-dim) local-id-y)))
+
+       ;; 2. Read Components and Write to Separate Local Tiles
+       (when (and (< source-y (length~ ,soa-vec)) (< source-x tile-dim)) ; Adjust bounds check
+         ;; Coalesced read from real component array
+         (set! (~ ,local-reals local-id- local-id-x) (real~ ,soa-vec source-y))
+         ;; Coalesced read from imag component array
+         (set! (~ ,local-imags local-id-y local-id-x) (imag~ ,soa-vec source-y))))))
+
+;;
+;; fft-pass-soa-tiled -- This requires a 2D enqueue
+;;
+(def-const TILE_DIM +warp-size+) ; 32
+(with-template-type (T A CT) ; T=float type, A=alignment, CT=complex type
+  (declare (type-is T #'is-floating-point?)
+           (value-is A #'is-alignment?)
+           (type-is CT #'is-complex?))
+  (def-grid-function fft-pass-soa-tiled (input-soa-vec twiddle-vec stage pass-stride N &out output-vec)
+      ;; same signature as fft-pass ?
+      (declare #((soa-vector-type CT :global :readable A) ; Input data
+                (vector-type CT :global :readable A) ; Twiddle factors (size N/2)
+                ulong ; Current stage (0 to log2N-1)
+                ulong ; Stride for this pass (2^stage)
+                ulong ; Total FFT size (power of 2)
+                &out (soa-vector-type CT :global :writeable A) => nil) ; Output data
+                (local-size :dims 2 :msg "fft-pass-soa-tiled requires a 2D enqueue"))
+
+      ;; --- 1. SETUP ---
+      
+      ;; Define TWO local memory tiles
+      (def-local-mem local-reals (matrix T TILE_DIM TILE_DIM))
+      (def-local-mem local-imags (matrix T TILE_DIM TILE_DIM))
+
+      ;; Load the tile for this workgroup
+      (load-complex-soa-tile input-soa-vec tile-y tile-x local-reals local-imags)
+      (local-barrier) ; Ensure loading is done
+
+      (let ((local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
+            (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1)))
+
+        ;; --- 2. LOOP OVER WORK BLOCKS (If workgroup handles multiple butterflies) ---
+        ;; This part depends on how work is assigned (e.g., each thread doing multiple butterflies)
+        ;; Let's simplify and assume one butterfly per thread for now, matching non-tiled.
+
+        ;; --- 3. LOAD TILE INTO SoA FORMAT ---
+        ;; Use a hypothetical SoA-aware load macro. This handles coalescing.
+        (load-tile-soa input-vec local-reals local-imags group-idy group-idx)
+        (local-barrier)
+
+        ;; --- 4. COMPUTE BUTTERFLIES IN LOCAL MEMORY ---
+        ;; This part needs careful indexing based on the FFT stage/stride
+        ;; Let's assume 'idx1', 'idx2', 'k' are calculated as before
+        (when (< (get-global-id) (/ N 2))
+            (let (;; Calculate indices within the local tile
+                  (local-idx1 ...) (local-idy1 ...)
+                  (local-idx2 ...) (local-idy2 ...)
+                  (k ...)) ; Twiddle index
+                  
+              ;; Load components from SoA local tile
+              (let ((a-re (~ local-reals local-idy1 local-idx1))
+                    (a-im (~ local-imags local-idy1 local-idx1))
+                    (b-re (~ local-reals local-idy2 local-idx2))
+                    (b-im (~ local-imags local-idy2 local-idx2))
+                    (w (~ twiddle-vec k))) ; Assume twiddles are AoS complex
+
+                ;; Perform SoA butterfly
+                (multiple-value-bind (ap-re ap-im bp-re bp-im)
+                    (fft-butterfly-soa a-re a-im b-re b-im (real~ w) (imag~ w))
+
+                  ;; --- 5. WRITE RESULTS BACK TO SoA LOCAL TILE ---
+                  ;; Need barriers between stages if results overwrite inputs needed later
+                  (set! (~ local-reals local-idy1 local-idx1) ap-re)
+                  (set! (~ local-imags local-idy1 local-idx1) ap-im)
+                  (set! (~ local-reals local-idy2 local-idx2) bp-re)
+                  (set! (~ local-imags local-idy2 local-idx2) bp-im)))))
+        (local-barrier)
+
+        ;; --- 6. STORE TILE FROM SoA FORMAT ---
+        ;; Use a hypothetical SoA-aware store macro. This handles coalescing.
+        (store-complex-soa-tile local-reals local-imags output-vec group-idy group-idx))))
+
+;;
+;; fft-butterfly-soa
+;;
+;; Takes real/imag parts of a, b, w. Returns real/imag of a' and b'.
+(with-template-type (T)
+  (declare (type-is T #'is-floating-point?))
+  (def-function fft-butterfly-soa (a-re a-im b-re b-im w-re w-im)
+    (declare #(T T T T T T => T T T T)) ; RealA', ImagA', RealB', ImagB'
+    ;; Calculate BW = (b_re*w_re - b_im*w_im) + (b_re*w_im + b_im*w_re)i
+    (let ((bw-re (- (* b-re w-re) (* b-im w-im)))
+          (bw-im (+ (* b-re w-im) (* b-im w-re))))
+      ;; Return A' = A + BW and B' = A - BW
+      (return (+ a-re bw-re) (+ a-im bw-im) ; RealA', ImagA'
+              (- a-re bw-re) (- a-im bw-im))))) ; RealB', ImagB'
+
+```
+
+
+And a possible orchestration
+```
+(with-template-type (T A)
+  (def-orchestration fft 
+
+    ;; Define temp buffers (A for bit-reversed, B for ping-pong)
+    (make-temp-vector buffer-A ...)
+    (make-temp-vector buffer-B ...)
+    (make-temp-vector twiddles ...) ; Need twiddle factor table
+
+    (launch-sequential
+      ;; Optional: Bit-reverse input into buffer-A
+      ((gen-bit-reverse-copy T A) input-vec buffer-A (length~ input-vec))
+
+      ;; Precompute twiddles (could be another kernel or host-side)
+      ((gen-precompute-twiddles T A) twiddles (length~ input-vec)))
+
+    ;; Host loop over FFT stages
+    (loop-host ((stage 0 (+ stage 1)) :times (log2 (length~ input-vec)))
+      (let ((pass-stride (expt 2 stage))
+            ;; Determine input/output for ping-pong
+            (current-input (if (even? stage) buffer-A buffer-B))
+            (current-output (if (even? stage) buffer-B buffer-A)))
+        (launch-sequential
+          ((gen-fft-pass T A) current-input twiddles stage pass-stride current-output))))
+
+    ;; Final copy to ensure output is in the right buffer
+    (copy-final (if (even? (log2 (length~ input-vec))) buffer-A buffer-B) output-vec)))
+```
+
+
+
+
 Builtin GPU Functions & Constants
 =================================
 
@@ -6309,7 +6614,7 @@ Example.
 ```
 In the above example, `A` would be defined because `full_ride` was `T`.
 But `B` would NOT be defined, because `sleigh_ride` was `nil`
-And `C` would also NOT be defined, because  `0` does puns as false.
+And `C` would also NOT be defined, because  `0` puns as false.
 
 And, the following compilation line would reverse those completely:
 ```
@@ -6559,44 +6864,71 @@ Let's dive into some simple examples.
 ### "default" orchestration
 
 ```
-;; assume vector_add is defined and is not templated
+;; assume vector_add is defined and is not templated, uses &out
+;; (vector_add A B &out C)
 (def-orchestration just-vector_add
-  (launch-sequential #'vector_add))
+  (let ((K (gen-vector_add))
+        (A (make-hoist-vector K::A))
+        (B (make-hoist-vector K::B))
+        (C (make-hoist-vector K::C)))
+  (launch-sequential (K A B C))
+  (copy-back C)))
 ```
-The above is equivalent to the default orchestration Crisp assumes for any kernel when 
-generating hoisting code. Remember that `vector_add` usually takes three vector arguments, 
-and notice that none of them need to be mentioned in a simple orchestration like this.
-
-The compiler sees that `vector_add` is wanting to be launched, and it will go look at the arguments
-that kernel needs and the code it generates will set up and initialize some dummy values, and handle
-their enqueueing, etc.  
+The above is equivalent to the default orchestration Crisp would produce when hoisting
+`vector_add`, if none wer provided.  It "generates" the kernel, prepares memory for each vector, enqueues it, and copies
+back to the host any `&out` data.
 
 This introductory example shows the `def-orchestration` begins with a name for the orchestration
 and is followed by a series of command for how to launch kernels. 
 
+Let's take a quick look at its pieces:
 
-### argument passing
+#### gen-KERNEL_NAME
 
-```
-; assume vector_add and vector_sum are both defined and neither is templated
-(def-orchestration my-add-and-sum
-  (launch-sequential #'vector_add (vector_sum vector_add::C _)))
-```
+In the context of an orchestration you'll typically want a variable to refer to 
+the kernels you intend to launch. Use `gen-KERNEL_NAME` for this. For kernels that are 
+templated, this is also used to generate its type. Don't forget that in this case a
+kernel name string will be required and it must obey the C language naming rules.
+ `(gen-templated_kernel float "name_of_kernel")`
 
-The example above launches two kernels, first `vector_add`, and once it is done, `vector_sum`.
-The declaration for `vector_sum` might look like this: `(def-kernel vector_sum (A:some-vec-type &out Result:some-vec-type) ...` which would mean that `vector_sum` expects to be called with two vector arguments (`A` and `Result`) 
+#### make-hoist-vector and kernel_var_name::param-name
 
-In this particular orchestration, we want the result of `vector_add` to be be passed as the first argument to `vector_sum`, so to tell Crisp that we just combine the name of the kernel with the name of its argument together with `::`
-and use that.    For the second argument to `vector_sum` , we want the compiler to just use a dummy value like 
-it would have in the previous example, so we use `_` to indicate that.
+`(make-hoist-vector <VectorType> &optional size)`
+
+For every vector argument to pass to a kernel, use `make-hoist-vector` and Crisp will generate
+the code to set that up when outputting the hoisting code. The `<VectorType>` should be a complete
+vector type, BUT there shortcut that let's you just grab the type directly from the kernel definition:
+
+`kernel_var_name::param-name` Using the name of the kernel _variable_ that is in scope of the
+`def-orchestration`, NOT the name of the kernel itself (ie `K` in the above, not `vector_add`) 
+
+#### copy-back
+
+`(copy-back <hoist-vector-var>)`
+
+For any data you expect to be modified on the GPU, if you want it copied back 
+to the host use `copy-back`. Crisp will generate code for that in the hoisting example.
+
+
+
 
 ###  kernel template instantiation
+
 ```
 ;; assume both vector_add and vector_sum are templated for some element-type.
+;; (vector_add A B &out C)
+;; (vector_sum DATA-IN &out RESULT)
 (def-orchestration add-and-sum-doubles
+  (let ((VADD (gen-vector_add double "v_add_double"))
+        (VSUM (gen-vector_sum double "v_sum_double"))
+        (A (make-hoist-vector VADD::A))
+        (B (make-hoist-vector VADD::B))
+        (C (make-hoist-vector VADD::C))
+        (RESULT (make-hoist-vector VSUM::RESULT 1)))
   (launch-sequential
-     (gen-vector_add double "v_a_double") 
-     ((gen-vector_sum double "v_s_double") v_a_double::C _)))
+     (VADD A B C)
+     (VSUM C RESULT))
+  (copy-back RESULT)))
 
 ; this orchestration will cause the kernels `v_a_double` and `v_s_double` to be created in the output.
 ```
@@ -6607,22 +6939,36 @@ two kernels ( `v_a_double` and `v_s_double` ) that will appear in the output.
 
 ### template def-orchestration
 
+`def-orchestration` can itself be templated. Within its body `${XXXX}` can appear in strings and 
+evaluate to the name of the type `XXXX`.
+
 ```
 (with-template-type (T)
   (def-orchestration add-and-sum-any
-    (launch-sequential
-      (gen-vector_add T "v_a_${T}")
-      ((gen-vector_sum T "v_s_${T}") v_a_T::C _))))
+    (let ((VADD (gen-vector_add double "v_add_${T}"))
+          (VSUM (gen-vector_sum double "v_sum_${T}"))
+       ...))))
 
 (gen-add-and-sum-any float)  ; kernels `v_a_float` and `v_s_float` will be created in the binary.
 
 ```
-`def-orchestration` can, itself, be templated. Like kernels, nothing will be generated by the compiler 
+`def-orchestration` can be templated. Like kernels, nothing will be generated by the compiler 
 (not for regular output nor hoisting) UNLESS one or more `gen-Orchestration-Name` appear in the .crisp file.
 
 This is a good way for Crisp libraries to provide orchestration code, since it is ignored otherwise. 
 It is then incumbent on the user of the library to explicitly put the desired `gen-XXXX` form in
 their own .crisp file.
+
+
+### `_` as a dummy var placeholder.
+
+The "calls" to a vector variable in an orchestration must have the correct number of arguments for that kernel.
+But you don't have to be burdened to declare and bind each and every one. For any argument position
+you can't be bothered to worry about, just use `_` and Crisp will look up what type that argument should be
+and make a dummy var for you and pass it.  
+
+`(launch-sequential (VADD _ _ _))`  <-- invoke the `vector_add` from the earlier examples with dummy
+placeholders. Crisp will provide the right arg type, whatever that is (vectors in this case).
 
 ### More notes on `def-orchestration`
 
@@ -6642,7 +6988,8 @@ Presently, the following forms are the ONLY ones allowed within the body of a `d
 - `launch-interleaved`
 - the `dotimes` and related `dec-` / `do-` macros
 - `_`  
-- `kernel_name::var-name` identifier 
+- `let`
+- `kernel_var_name::param-name` identifier 
 
 launch-sequential
 -----------------
@@ -6656,26 +7003,10 @@ The CPU is free to do other things while the sequence of kernels run, and it doe
 
 ### launch specification
 
-A "launch specification" has two possible forms: specifying only the kernel, or specifying the kernel and its arguments.
+A "launch specification" is simply a kernel _variable_ and the correct number of arguments. eg. `(VADD A B C)` or
+`(VADD _ _ _)` or `(VADD _ B _)` etc
 
-For the kernel-only form, the kernel can just be named with `#'` preceding it. Or, for a templated kernel, 
-the `(gen-KernelName ...)` form is sufficient.
 
-For the kernel-with-arguments form, put the kernel name (or its generation) in the function position of the 
-s-expression and then use either an underscore (`_`) for each variable, or refer to some variable used in a previous step
-by combining another kernal name and its variable name: (e.g. `vector_add::C`). 
- This "other" kernel name must be from a different kernel that was used earlier in the orchestration.
-
-Note that in the context of `def-orchestration` it is legal to use the `gen-XXXX` form
-on an untemplated kernel for the purposes of giving it a unique name.  ( e.g. `(gen-SomeKernelName nil "new_kernel_name")`)
-
-```
-;; assume vector_add is NOT templated.
-(launch-sequential 
-     (gen-vector_add nil "initial_v_a")
-     ((gen-vector_add nil "second_v_a") _ initial_v_a::C _)
-     ((gen-vector_add nil "third_v_a") initial_v_a::B second_v_a::C _))
-```
 
 launch parallel
 ---------------
@@ -6685,31 +7016,38 @@ launch parallel
 ```
 
 `launch-parallel` is much like `launch-sequential` except that the kernels are all launched parallel to one
-another. Crisp will add code to divide the available thread space up between them (excepting `single-task` kernels which just get one thread).
+another. Crisp will add code to divide the available thread space up between them (excepting `single-task` kernels which just get one thread). Exactly how this is done is target implementation specific. It could use individual queues.
 
-Note that kernels in this form CANNOT refer to each others variables. Dependencies between them are disallowed.
+Note the parallel kernels can't safely write to the same vectors (whether marked with `&out` or not). Crisp will 
+error if it detects parallel re-use of `&out` vectors, but even if you sneak around the compiler it still won't
+work correctly.
 
 launch-interleaved
 ------------------
 ```
-(launch-interleaved launch-specification offset-param-specifier length-param-specifier &key exclude)
+(launch-interleaved (hoist-vectors) (len offset) &rest launch-specification)
 ```
 
 When the compiler encounters `launch-interleaved`, the hoisting code that is generated will enqueue
 the kernels and data such that the memory copy and the kernel execution overlap. This helps hide latency
 and is often the secret to maximizing performance and throughput.  
 
-The kernel launched must have, in addition to one or more vector data arguments, a parameter that can
+The kernel launched should have, in addition to one or more vector data arguments, a parameter that can
 accept an "offset" into the vector and a paramter that accepts a "length". 
 
-If there vector arguments to the kernel that should NOT interleaved, specify them with the `:exclude` key.
+The hoist vectors that you want to be progressively interleaved with the kernel execution are passed in the
+first argument list to `launch-interleaved`. 
 
-<!-- NOTE: this design has no way of specifying dependencies. ie, running the kernel on the output of another. -->
+Following that is the binding which binds the `len` and `offset` variable names.
+
+And then the launch specifications.
+
 
 Example:
 ```
-;; assume input-vec-t and output-vec-t already defined.
+
 (def-kernel vector_add_chunked (len offset A B &out C)
+   ;; assume input-vec-t and output-vec-t already defined.
   (declare #(ulong ulong input-vec-t input-vec-t &out output-vec-t))
   (let ((A-view (make-vector-view A len offset))
         (B-view (make-vector-view B len offset))
@@ -6717,10 +7055,15 @@ Example:
     (map-stride #'+ A-view B-view C-view)))
 
 (def-orchestration add-interleaved
-  (launch-interleaved #'vector_add_chunked vector_add_chunked::len vector_add_chunked::offset))
+  (let ((VADD_CHUNKED (gen-vector_add_chunked))
+        (A (make-hoist-vector VADD_CHUNKED::A))
+        (B (make-hoist-vector VADD_CHUNKED::B))
+        (C (make-hoist-vector VADD_CHUNKED::C)))
+  (launch-interleaved (A B C) (len offset) 
+    (VADD_CHUNKED len offset A B C))))
 ```
-In the example above, Crisp will correctly conclude that ALL the vector arguments ( `A`, `B`, and `C`) 
-should be interleaved and the hoisting code will demonstrate how to allocate some memory, pin it, 
+In the example above, Crisp will generate hoisting code that interleaves the memory copy  `A`, `B`, and `C` 
+and the kernel execution.  It will demonstrate how to allocate some memory, pin it, 
 and interatively copy it to the GPU device while executing the kernel concurrently.
 
 Neat!
@@ -7405,7 +7748,7 @@ hoisting and def-orchestration
 
 lisp
 ----
-- let                     [D]        ; not sure about let*
+- let                     [D]        
 - '
 - defmacro
 - math + - / *
@@ -7593,7 +7936,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 
 
 ### To Do (SHORT)
-- [ ] FFT
+- [x] FFT
 - [x] Radix Sort
 - [ ] Debugging Story
 - [ ] Compile-time introspection first-class citizen: 
