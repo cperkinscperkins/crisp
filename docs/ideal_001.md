@@ -118,8 +118,9 @@ These are simple and should be flexible enough to get things done.
 
 `let` in Crisp is like `let*` in Common Lisp. Asterisk not needed.
 
-<details open>
-<summary>T.o.C</summary>
+<details>
+<summary>Table of Contents</summary>
+
 Table of Contents
 =================
 
