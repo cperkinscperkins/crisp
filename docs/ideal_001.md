@@ -3180,8 +3180,8 @@ Crisp has a number of `declare` directives that allow the host and the kernel to
 
 ### global-size / local-size
 ```
-(global-size &key set-to VALS derive-from EXPR dims:ulong msg:string)
-(local-size &key set-to VALS derive-from EXPR dims:ulong msg:string)
+(global-size &key set-to VALS derive-from EXPR strategy:SYM tile-shape:(<extents>) dims:ulong msg:string)
+(local-size &key set-to VALS derive-from EXPR strategy:SYM  tile-shape:(<extents>) dims:ulong msg:string)
 ```
 These directives tells the hoisting code about how the kernel expects the global_work_size or local_work_size to be set.  
 If both are used, then their arity must agree. And, the `work_dim` value the hoisting code sets will also match their arity.
@@ -3191,6 +3191,9 @@ The local_work_size is the number of threads grouped together in a single workgr
 The global_work_size is the number of threads that the kernel will be enqueued upon. For maximum throughput, it is best to be a multiple of the local_work_size. 
 
 A single directive CANNOT use both the `:set-to` and `:derive-from` keys.
+
+These directives are optional but hightly encouraged as they serve to both document intent to future readers
+of your kernel code, but also so the hoisting code is configuring things correctly for your kernel.
 
 #### :msg
 The `:msg` key takes a string that will be output into the comment at the place where the hoisting code is setting the particular value. 
@@ -3209,6 +3212,7 @@ If the `:dims` declaration does not match the arity of `:set-to` or `:derived-fr
    (declare (global-size :dims 2))
    ...)
 ```
+
 
 #### :set-to
 The `:set-to` key instructs the hoisting code to use a specific value, (or values if multi-dimensional).
@@ -3237,7 +3241,9 @@ The `:set-to` key instructs the hoisting code to use a specific value, (or value
 ```
 
 #### :derive-from
-The `:derive-from` key instructs the hoisting code that the kernel expects the size value to be in response to the named kernel parameter.  If the expression names a vector, then in response to its length. 
+The `:derive-from` key instructs the hoisting code that the kernel expects the size value to be in response to the named kernel parameter.  If the expression names a vector, then in response to its length. How "in response to" should be
+intepreted is specified by the `:strategy` key (see below).  
+It can take a single symbol (for a vector, implying its length) or a list of symbols (for scalar parameters representing dimensions).
 
 ```
 ;; Crisp Code
@@ -3246,7 +3252,7 @@ The `:derive-from` key instructs the hoisting code that the kernel expects the s
 (def-kernel lighten_image (image-data width height)
    (declare (type image-data (vector-type :uchar :global :read_write))
             (type width height ulong)
-            (global-size :derive-from '(width height) :msg "ensure enough threads for every pixel of image, otherwise use the stepping convolution")) 
+            (global-size :derive-from '(width height) :strategy :one-thread-per :msg "ensure enough threads for every pixel of image, otherwise use the stepping convolution")) 
   ...)
 
 // hoisting
@@ -3259,6 +3265,39 @@ The `:derive-from` key instructs the hoisting code that the kernel expects the s
                           { imageWidth, imageHeight }  /* global_work_size ensure enough threads for every pixel of image, otherwise use the stepping convolution */,
                           ...);
 ```
+
+#### :strategy
+
+The `:strategy` key is most useful when used in conjunction with `:derive-from` (above). 
+
+With `:derive-from` we are telling the hoisting code, "take such-and-such vectors size into consideration when setting the
+global work size".  And the `:strategy` tells it _how_ that should be done.
+
+It can be one of four possible values.
+
+- `:one-thread-per`  This strategy means we expect there to be at least one global thread for each element of the vector. See [One Thread Per Element](#one-thread-per-element) discussion below.
+
+- `:strided` This strategy tells the hoisting code that we are expecting to use a grid stride pattern to walk
+the vector. (Read more at [Looping -- Grid Stride](#looping---grid-stride)). In this case the hoisting code
+will try to size the global work size near the number of threads actually available on the hardware (and not more).
+
+- `:interleaved` This strategy tells the hoisting code that we are expecting this kernels launching to be interleaved
+with a progressive chunked memory transfer. It's a good practice to document expectations further with the `:msg` key.
+See [`launch-interleaved`](#launch-interleaved) for more information.
+
+- `:exact` This strategy tells the hoisting code to set the global work size to be exactly the size, no more no less. This
+strategy could also be used with the `:set-to` key.
+
+- `:tiled`  This signals that the kernel ises a tiled algorithm (like `matmul` or `convert-layout` below).  The global
+size isn't based on the total number of elements, but on the number of tiles needed to cover the input data.
+The host code generator would calculate the grid dimensions based on the input matrix/tensor dimensions and the tile dimensions.
+When using this strategy, be sure to also use the `:tile-shape` key so the hoisting code can calculate accordingly.
+
+- `:tile-shape`  When  using the `:tiled` strategy you can provide the extents of the tile so the host can 
+calculate accordingly.   
+
+
+If the `:strategy` is not provided, then the default assumption is `:one-thread-per`. 
 
 
 
@@ -3281,7 +3320,7 @@ has been "rounded up" to a multiple of the workgroup size by the host.
 (def-kernel lighten_image (image-data width height)
    (declare (type image-data (vector-type :uchar :global :read_write))
             (type width height ulong)
-            (global-size :derive-from ( width height))) ; <-- this sets the upper bound for check-thread-bounds 
+            (global-size :derive-from ( width height) :strategy :one-thread-per)) ; <-- this sets the upper bound for check-thread-bounds 
   (let ((image-matrix (make-tensor-view image-data width height)))
     (in-each-thread (x y)
       (when (check-thread-bounds x y) 
@@ -3352,7 +3391,7 @@ There are three variants for 1D, 2D and 3D .
 ;; -- vector_add --
 (def-kernel vector_add (A B &out C)
   (declare (type A B source-vec) (type C result-vec) 
-           (global-size :derive-from A :msg "no bounds checking. global_work_size MUST match vector lengths" ))
+           (global-size :derive-from A :strategy :exact :msg "no bounds checking. global_work_size MUST match vector lengths exactly" ))
   (in-each-thread (i)                        ; 'i' will be bound to the thread index / global-id
     (set! (~ C i) ( + (~ A i) (~ B i)))))
 
@@ -3363,7 +3402,7 @@ There are three variants for 1D, 2D and 3D .
 (def-kernel lighten_image (image-data width height)
    (declare (type image-data (vector-type :uchar :global :read_write))
             (type width height ulong)
-            (global-size :derive-from '(width height))) 
+            (global-size :derive-from '(width height) :strategy :one-thread-per)) 
   (let ((image-matrix (make-tensor-view image-data width height)))
     (in-each-thread (x y)
       (when (check-thread-bounds x y) 
@@ -3460,7 +3499,7 @@ inside the `loop-grid-stride`. It can be a number, an expression that evaluates 
 ;; -- vector_add --
 (def-kernel vector_add (A B &out C)
   (declare (type A B source-vec) (type C result-vec) 
-     (global-size :derive-from A))     
+     (global-size :derive-from A :strategy :strided))     
   (loop-grid-stride (i)                       ; 'i' will be bound to the thread index / global-id
     (declare (grid-stride-target A))          ; length of vector parameter 'A' is the where we stride to.
     (set! (~ C i) ( + (~ A i) (~ B i)))))
@@ -3506,10 +3545,16 @@ This makes it simpler, clearer and less error prone.   With it our vector_add ex
 ;; -- vector_add --
 (def-kernel vector_add (A B &out C)
   (declare (type A B source-vec) (type C result-vec)
-     (global-size :derive-from A))      
+     (global-size :derive-from A :strategy :strided))       
   (loop-vector-stride A (i)                   
     (set! (~ C i) ( + (~ A i) (~ B i)))))
 ```
+
+Note that the `global-size` declaration above isn't strictly necessary when using `loop-vector-stride` as it will
+inject that same declaration. But it's a good practice and conflict declarations could result in useful warnings,
+which would prevent mistakes. 
+
+
 #### work_dims 
 In Crisp, vectors are always 1D, but a kernel can be enqueued with a work_dims of 2 or 3. 
 In that case, `loop-vector-stride` will stride using `get_global_linear_id/size` just like `loop-grid-stride-linear`.
@@ -3989,7 +4034,7 @@ going to agree on a convention that the local_work_size is 64.
 
 ;; -- sum_vector --
 (def-kernel sum_vector (A:source-vec &out Res:result-vec)
-    (declare (local-size :set-to +wg-size+) (global-size :derive-from A))
+    (declare (local-size :set-to +wg-size+) (global-size :derive-from A :strategy :strided))
                                      
    (let ((sum:long 0))
      ; 1- Stride the vector, summing it up. Each thread has its own value in 'sum'
@@ -4106,7 +4151,7 @@ Then half again, and so on. And then we  record the results into the same Result
 ;; -- sum_vector_warp --
 (def-kernel sum_vector_warp (A:source-vec Res:result-vec)
     (declare (local-size :set-to +warp-size+ :msg "this kernel uses a 32 warp size, which should also be the local_work_size when enqueueing") 
-             (global-size :derive-from A))
+             (global-size :derive-from A :strategy :strided))
   ; 1- Stride the vector, summing it up. Each thread has its own value in 'sum'
   (let ((sum (calculate-this-thread-sum A)))
      ; 2 - Reduce. 
@@ -5750,8 +5795,8 @@ And its output is a prefix-sum vector.
     (declare #((vector-type uint :global :readable A 256)
               &out (vector-type uint :global :writeable A 256) => nil)
             ;; Ensure this kernel runs with only ONE workgroup of size 256
-            (local-size :set-to 256)
-            (global-size :set-to 256))
+            (local-size :set-to 256 :strategy :exact)
+            (global-size :set-to 256 :strategy :exact))
 
     (let ((local-id (get-local-id))
            ;; A buffer in fast local memory to perform the scan
@@ -6142,16 +6187,16 @@ workgroup will add its sum to the first element of the result vector.
 (def-type result-vec (vector-type long :global :writeable :length 1)) 
 
 ;; -- calculate-this-thread-sum --
-(def-function calculate-this-thread-sum (A:source-vec)
-  (declare #(source-vec -> long) (grid-level))
+(def-grid-function calculate-this-thread-sum (A:source-vec)
+  (declare #(source-vec -> long))
   (let ((sum:long 0))
     (loop-vector-stride A (i)
       (inc! sum (~ A i))))) ; <-- inc! implicity returns final sum
 
-;; -- sum_vector_warp_to_on --
+;; -- sum_vector_warp_to_one --
 (def-kernel sum_vector_warp_to_one (A:source-vec Res:result-vec)
     (declare (local-size :set-to +warp-size+ ...)
-             (global-size :derive-from A))
+             (global-size :derive-from A :strategy :strided))
 
     (let ((sum (calculate-this-thread-sum A)))
         (in-warp (lane-id)
@@ -6245,7 +6290,8 @@ its value.
 
   ;; -- dot-prod-grid --                     
   (def-grid-function dot-prod-grid (A B RESULT)
-    (declare #((vector-type T) (vector-type T) (vector-type T :global :writeable) => nil)) 
+    (declare #((vector-type T) (vector-type T) (vector-type T :global :writeable) => nil)
+              (global-size :derive-from A :strategy :strided)) 
     (when-thread-is 0
       (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
     (let ((C-scratch (make-scratch-vector A :name "dot product")))  
@@ -6281,7 +6327,7 @@ its value.
   (declare (type-is T #'is-scalar? T))
 
   ;; -- matmul-naive --       
-  (def-function matmul-naive (A B)
+  (def-grid-function matmul-naive (A B)
     (declare #(matrix matrix => matrix) (global-size :dims 2))
     (let ((inner-A (num-cols A))
           (inner-B (num-rows B))
@@ -6314,8 +6360,14 @@ its value.
   (declare (type-is T #'is-scalar?))
 
   ;; -- matmul --
-  (def-function matmul (A B C)
-    (declare #(matrix matrix matrix => nil) (global-size :dims 2))
+  (def-grid-function matmul (A B C)
+    (declare #(matrix matrix matrix => nil)
+             (local-size :set-to `(,TILE_DIM ,TILE_DIM)) 
+             (global-size :derive-from C             
+                          :strategy :tiled           
+                          :tile-shape TILE_DIM       ; Tile size is TILE_DIM x TILE_DIM
+                          :dims 2
+                          :msg "Launch one workgroup per output tile of C"))
 
     (let ((tile-A (make-tile TILE_DIM T))
           (tile-B (make-tile TILE_DIM T))
@@ -7570,7 +7622,9 @@ Example:
 ;; -- vector_add_chunked --
 (def-kernel vector_add_chunked (len offset A B &out C)
    ;; assume input-vec-t and output-vec-t already defined.
-  (declare #(ulong ulong input-vec-t input-vec-t &out output-vec-t))
+  (declare #(ulong ulong input-vec-t input-vec-t &out output-vec-t)
+           (global-size :derive-from len :strategy :interleaved
+                         :msg "this kernel processes data defined by offset/len"))
   (let ((A-view (make-vector-view A len offset))
         (B-view (make-vector-view B len offset))
         (C-view (make-vector-view C len offset)))
