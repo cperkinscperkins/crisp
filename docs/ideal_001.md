@@ -118,13 +118,12 @@ These are simple and should be flexible enough to get things done.
 
 `let` in Crisp is like `let*` in Common Lisp. Asterisk not needed.
 
+Table of Contents
+=================
 <details>
 <summary>Table of Contents</summary>
 
-Table of Contents
-=================
-
--Overview 
+- Overview 
 - - Focus 
 - - Major Features of the Crisp language and tools 
 - - Differences From Lisp 
