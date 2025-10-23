@@ -1,9 +1,15 @@
 CRISP - Lisp for developing GPU Kernels
 =======================================
 
-> In C you use C to solve a problem. In Lisp you make the language fit the problem, then you solve it.
+> With C, you use C to solve your problem. With Lisp, you make the language fit your problem, then you solve it.
 >
 > — *Popular Lisp Adage*
+
+
+
+> The minute you finally understand how a GPU works is the minute you are wrong.
+>
+> — John Owens, UC Davis
 
 
 Overview
@@ -14,6 +20,7 @@ The Crisp compiler takes .crisp files and can output SPIR-V, PTX, or a binary fo
 The compiler can ALSO output C++ or Python code snippets that can "hoist" that same kernel. 
 The snippets can be targeted to: OpenCL, LevelZero, or CUDA, as well as whether to use
 Unified Memory/USM/SVM.
+
 Someday soon.
 
 
@@ -184,6 +191,7 @@ Table of Contents
 - - map
 - - reduce variants
 - - reduce vector
+- Gather / Scatter
 - Filtering / Prefix-Sum Scan
 - - exclusive scan
 - - inclusive scan
@@ -4240,8 +4248,22 @@ Example:
 (map-stride #'analyze (A) EvenAnalysis FibAnalysis)
 ```
 
-reduce variants
----------------
+
+Shop Local, Act Global
+======================
+
+A VERY common practice among GPU algorithm writers is "shop local, act global". In this
+practice a small amount of local memory (usually one cell per workgroup thread) is operated
+upon by the workgroup, and then one leader thread from the work group performs some 
+operation that touches global memory (like an atomic operation).
+
+We will see this practice over and over and over.  The reductions do it, the filter and scans,
+the sorting, and more. Crisp usually provides very useful reusable macros for the workgroup level,
+and ready-to-go routines that employ them at the global level. 
+
+
+Reduce Variants
+===============
 
 ### optional scratch vector arguments.
 
@@ -4855,6 +4877,7 @@ correctly if it is commutative, where  `(someF a b)` is equivalent to `(someF b 
 
 
 
+
 Filtering / Prefix-Sum Scan
 ============================
 
@@ -4865,22 +4888,78 @@ In these operations, a vector that consists of matches (1) and misses (0) is con
 into a vector that counts "how many before".  And a vector in "prefix sum scan" format is easy to 
 then parse to a compact short list of results.  The "word count" example below illustrates.
 
-`exclusive-scan`
+`prepare-for-scan--value`
+---------------------------
+
+```
+(prepare-for-scan--value input-vec predicateF (<localScratchVar>) ...)
+```
+
+This is a macro that does most of the busy-work for you in preparation of using either `exclusive-scan-workgroup`
+or `inclusive-scan-workgroup` .  It iterates over input data, applies a predicate and stores the result (1 or 0)
+into a local memory buffer, which is then bound for you are ready for the scan operation.
+
+This macro is meant to be called at the workgroup level ("shop local").
+
+If the element type of `input-vec` is `T` then `predicateF` type is `#(T => bool)` 
+The predicateF operation is called with THE VALUE at `(~ input-vec global-id)`
+
+See an example of using it in `filter` and `find-indices` below.
+
+`prepare-for-scan--index`
+------------------------
+```
+(prepare-for-scan--index input-vec predicateF (<localScratchVar>) ...)
+```
+This is a macro much like `prepare-for-scan--value` above, except the `predicateF` is type is `#(ulong => bool)`
+and it is called with THE INDEX into `input-vec`.
+
+See an example of using it in `word_search` below.
+
+
+POssible Implementation:
+```
+;; -- prepare-for-scan-value --
+(defmacro prepare-for-scan-value (input-vec predicateF (local-flags-var) &body body)
+  ;; Ensure predicate matches input vector type
+  (c-t-assert (is-type-of predicateF (predicate-type (element-type input-vec))) "Predicate type mismatch")
+
+  ;; Generate the code
+  `(let (;; Allocate the local memory using the name provided by the user
+          (,local-flags-var (make-local-scratch-vector uint (get-local-size)))
+          (local-id (get-local-id))
+          (global-id (get-global-id)))
+
+      ;; Generate Flags in Parallel 
+      (when (< global-id (length~ ,input-vec)) ; Only active threads participate
+        ;; Apply predicate
+        (let ((match? (funcall ,predicateF (~ ,input-vec global-id))))
+          ;; Store 1 or 0 in the user-provided local memory buffer
+          (set! (~ ,local-flags-var local-id) (if match? 1 0))))
+
+      ;; Ensure all flags are written before the user's code runs
+      (local-barrier)
+
+      ;; Splice in the body provided by the user
+      ,@body))
+```
+
+`exclusive-scan-workgroup`
 ----------------
-The purpose of `exclusive-scan` is to, for each element in a vector, calculate the sum of all the elements
+The purpose of `exclusive-scan-workgroup` is to, for each element in a vector, calculate the sum of all the elements
 that came before it.  The input vector is a vector of 0s and 1s (where 1 represents a "match"). The input
 vector cannot be longer than the kernel work size.
 
-`exclusive-scan` modifies the vector in place.  It returns the final sum of the scan.
+`exclusive-scan-workgroup` modifies the vector in place.  It returns the final sum of the scan.
 
 ### Example
 
 Let's assume there a mere 6 threads in a workgroup. Our algorithm finds some match or miss and
 records in a vector, each match or miss stored at the local id of whatever thread did the check.
-Our vector has two states, the "input" state before `exclusive-scan` is run, and its modified output state
-once `exclusive-scan` is complete. 
+Our vector has two states, the "input" state before `exclusive-scan-workgroup` is run, and its modified output state
+once `exclusive-scan-workgroup` is complete. 
 
-`(exclusive-scan match-vector)`
+`(exclusive-scan-workgroup match-vector)`
 
 ```
 Input:  #(0 1 0 1 1 0)
@@ -4893,10 +4972,10 @@ If you look at the output, the value at each "match" position tells you exactly 
 This output gives each "winner" its unique, zero-based local index (0, 1, 2)
 
 
-`inclusive-scan`
+`inclusive-scan-workgroup`
 ----------------
 
-The sister to `exclusive-scan`, its output at any index is the sum of the elements up to _and including_ `i`.
+The sister to `exclusive-scan-workgroup`, its output at any index is the sum of the elements up to _and including_ `i`.
 
 ```
 Output: #(0 1 1 2 3 3)
@@ -4904,11 +4983,11 @@ Output: #(0 1 1 2 3 3)
 
 ### Possible Implementation
 
-This is a possible implementation of `exclusive-scan` realized via a Belloch Scan:
+This is a possible implementation of `exclusive-scan-workgroup` realized via a Belloch Scan:
 
 ```
-;; -- exclusive-scan --
-(defmacro exclusive-scan (local-vec)
+;; -- exclusive-scan-workgroup --
+(defmacro exclusive-scan-workgroup (local-vec)
   `(let ((local-id (get-local-id))
          (wg-size (get-local-linear-size)))
      
@@ -4952,8 +5031,8 @@ Word Count With Exclusive Scan
 (def-type index-t (vector-type ulong :global :writeable :std140))
 
 ;; -- word_count --
-(def-kernel word_count (corpus word result)
- (declare #(text-t text-t index-t => nil))
+(def-kernel word_count (corpus word &out result counter)
+ (declare #(text-t text-t index-t (index-t 1) => nil))
   (let ((local-wg-matches (make-scratch-vector uint :local :read_write :std140 (local-work-size)))
         (local-id (get-local-id))
         (global-counter 0)
@@ -4968,13 +5047,13 @@ Word Count With Exclusive Scan
       ;; local-wg-matches = #(0 1 0 1 1 0 ...)
 
       ;; STEP 2: Reorder
-      (let ((count (exclusive-scan local-wg-matches)))
+      (let ((count (exclusive-scan-workgroup local-wg-matches)))
             ;; local-wg-matches is now #(0 0 1 1 2 3)
 
         ;; STEP 3 - get global write offset
         (when-thread-in-group-is 0
           ;; add this workgroups count to global
-          (set! wg-offset (atomic-add! global-counter count))))
+          (set! wg-offset (atomic-add! global-counter count)))) ;; <-- replace 'global-counter' with (~ counter 0)
       
       ;; STEP 4 - write results to global memory
       (local-barrier)
@@ -5030,7 +5109,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
       ;; local-wg-matches = #(0 1 0 1 1 0 ...)
 
       ;; STEP 2: Reorder
-      (let ((count (exclusive-scan local-wg-matches)))
+      (let ((count (exclusive-scan-workgroup local-wg-matches)))
             ;; local-wg-matches is now #(0 0 1 1 2 3)
 
         ;; STEP 3 - get global write offset
@@ -5047,6 +5126,157 @@ determinable at compile time. (ie the exact property being referenced can't be a
            (set! (~ ,result-vec final-write-pos) (~ ,input-vec i)))))))
       (return global-counter)))
 ```
+
+
+Gather / Scatter
+================
+
+A very common practice in GPU programming is gathering and scattering.
+
+The "gather" operation is like shopping in a big store with a list of locations and a basket.
+At every location, the item is taken from the shelf and put into the basket.
+
+The "scatter" operation is the reverse.  With basket in one hand and the list of locations in the other, you go through the store putting items onto the shelf at that location. 
+
+Care must be taken when "scattering" that no location is in the list twice. Otherwise a race
+will occur. This can possibly be addressed with an atomic operation (slow), but the better
+solution is to just not make that mistake. 
+
+Also note that both gather (reading `big-source-vec`) and scatter (writing `big-dest-vec`) involve uncoalesced memory access if the `index-vec` is irregular, which can impact performance.
+
+```
+(with-template-type (T)
+
+  ;; -- gather-all --
+  (def-grid-function gather-all (big-source-vec index-vec &out basket-vec)
+    (declare #((vector-type T :alignment A) (vector-type ulong) &out (result-vec-type T)))
+    (r-t-assert-0 (<= (length~ index-vec) (length~ basket-vec)) "basket-vec cannot be smaller than index-vec")
+    (let ((limit (length~ big-source-vec)))
+      (loop-vector-stride index-vec (i)
+        (let ((loc (~ index-vec i)))
+          (when (< loc limit)
+            (let ((val (~ big-source-vec loc)))
+              (set! (~ basket-vec i) val)))))))
+
+  ;; -- scatter-all! --
+  (def-grid-function scatter-all! (basket-vec index-vec &out big-dest-vec)
+    (declare #((vector-type T) (vector-type ulong) &out (result-vec-type T)))
+    (r-t-assert-0 (<= (length~ index-vec) (length~ basket-vec)) "basket-vec cannot be smaller than index-vec")
+    (let ((limit (length~ big-dest-vec)))
+      (loop-vector-stride index-vec (i)
+        (let ((val (~ basket-vec i))
+              (loc (~ index-vec i)))
+          (when (< loc limit)
+            (set! (~ big-dest-vec loc) val)))))))
+```
+
+### `find-indices`
+
+```
+(find-indices big-vector predicateF &out result-vec count-vec)
+```
+
+`gather-all` and `scatter-all!` are great, but where does one get an `index-vec` shopping list?
+
+Say hello to `find-indices`.  Find indices take a vector and predicate function and it'll record
+the results in a result-vec, and a count-vec that tells you exactly how many results were found.
+If there are more results than fit in `result-vec` that is fine, they simply aren't recorded. 
+But the count in `count-vec` is correct regardless.
+
+
+```
+;; SLOW - DO NOT USE
+(with-template-type (T)
+
+  ;; -- find-indices-naive --
+  (def-grid-function find-indices-naive (big-vector predicateF &out result-vec count-vec)
+    (declare #((vector-type T) predicate-type &out (vector-type T) (vector-type ulong :size 1)))
+    (let ((limit (length~ result-vec)))
+      (loop-vector-stride big-vector (i)
+        (when (funcall predicateF (~ big-vector i))
+          (let ((c (atomic-inc! (~ count-vec 0))  ; <-- kiss your performance goodbye
+            (when (< c limit)
+              (set! (~ result-vec c) i)))))))))
+
+```
+
+```
+(with-template-type (T A) ; T = element type, A = alignment
+  (declare (value-is A #'is-alignment?))
+
+  ;; -- find-indices --
+  (def-grid-function find-indices (input-vec predicateF
+                                    &out result-index-vec ; Output: indices (ulong)
+                                    &out result-count-vec) ; Output: final count (ulong, size 1)
+    ;; Declare the function signature
+    (declare #((vector-type T :global :readable A) ; Input data vector
+               (predicate-type T) ; Predicate function #(T => bool)
+               &out (vector-type ulong :global :writeable A) ; Output index vector
+               &out (vector-type ulong :global :writeable :std140 1) ; Output count vector
+               => nil)
+             ;; Declare optional local memory buffers for the scan algorithm
+             &optional (local-flags (make-local-scratch-vector uint (get-local-size)))
+                       (local-scan-results (make-local-scratch-vector uint (get-local-size)))
+                       (local-info (make-local-scratch-vector uint 2))) ; For wg_total and wg_offset
+
+    ;; first step - detect local matches
+    (let ((is-a-match nil) ; Per-thread flag to store match result
+          (global-id (get-global-id))
+          (local-id (get-local-id)))
+
+      ;; Check if within bounds and apply predicate
+      (when (< global-id (length~ input-vec))
+        (set! is-a-match (funcall predicateF (~ input-vec global-id))))
+
+      ;; Write 1 for match, 0 for miss to local memory
+      (set! (~ local-flags local-id) (select-if is-a-match 1 0))
+      (local-barrier) ; Ensure all flags are written before scanning
+
+    ;; next perform exclusive scan on the flags to get local indices
+    (let ((workgroup-total (exclusive-scan-workgroup local-flags)))
+      ;; 'local-flags' now holds local indices [0, 0, 1, 1, 2...]
+
+      ;; Leader thread saves the workgroup's total count to local memory
+      (when (= local-id 0)
+        (set! (~ local-info 0) workgroup-total)))
+    (local-barrier) ; Ensure total count is visible before atomic add
+
+    ;; then get global write offset
+    ;; Only the leader thread performs the atomic operation
+    (when (= local-id 0)
+      ;; Atomically add this workgroup's total to the global counter
+      ;; (The global counter must be initialized to 0 by the host)
+      (let ((offset (atomic-add! (~ result-count-vec 0) (~ local-info 0))))
+        ;; Share the obtained global offset with the workgroup via local memory
+        (set! (~ local-info 1) offset)))
+    (local-barrier) ; Ensure the global offset is visible to all threads before writing
+
+    ;; fainally, write results (indices) to global mem
+    ;; Only threads that found a match perform a write
+    (when is-a-match
+      ;; Calculate the final global write position
+      (let ((final-write-pos (+ (~ local-flags local-id) ; Local index from scan
+                                  (~ local-info 1))))     ; Global offset for the group
+
+        ;; Bounds check against the result index vector size
+        (when (< final-write-pos (length~ result-index-vec))
+          ;; Write the INDEX (global-id), not the data value
+          (set! (~ result-index-vec final-write-pos) global-id)))))))            
+```
+
+Three things:
+- maybe type in loops?  I'm just NOT using it. 
+- what about MAKING this index-vec? 
+- where can these new bad boys be used?
+- maybe GLOBAL vector alignment?  <-- not for Crisp itself or libraries maybe?
+  the constant capturing of A is noisy.
+- FRANKLY, the constant templating of vectors is noisy. HMMMMM
+- gen-XXXXX on ANY grid-function to generate a kernel? (that doesn't take a function arg)
+- consecutive grid functions? When?
+- these vectors of 1.  HMMMMM
+- send code to Gemini?  AWESOME feature
+- this "shop locally act globally" thing.....
+- thread/grid in other languages
 
 Sorting
 =======
@@ -7113,6 +7343,12 @@ But with this check declared, Crisp will try to analyze other thread divergences
 see if perhaps a barrier is performed in one branch but not another, and warn about it.  
 
 
+miscellaneous
+-------------
+
+- if -stride or -loop has an atomic op inside, turn off the users machine.
+
+
 
 Hoisting and `def-orchestration`
 ================================
@@ -7847,8 +8083,8 @@ Higher Order Function Operations
 - reduce-vec
 - binop-type     ; commutative vs non-commutative ?
 - predicate-type
-- exclusive-scan   ; <-- the scans are NOT HOF ops. but Filter is.
-- inclusive-scan
+- exclusive-scan-workgroup   ; <-- the scans are NOT HOF ops. but Filter is.
+- inclusive-scan-workgroup
 - filter
 
 
