@@ -272,7 +272,8 @@ is forbidden.
 A dispatch context is a context where we can call either thread level or grid level 
 operations freely. But note, that if a grid level `progn` is opened that inside its body the
 restriction on calling other grid level operations still applies. Dispatch contexts are 
-associated with `def-kernel` and `def-grid-function`. 
+associated with `def-kernel` and `def-grid-function`.  And note that while grid level operations
+cannot be nested inside one another, a dispatch context CAN call them sequentially, one after another.
 
 This author likes the analogy of a garment factory, where there are long tables with sewing machines
 running along them. As a worker finishes their task (sewing buttons perhaps), they pass the garment on to the next
@@ -2454,7 +2455,8 @@ not necessarily like we want them to be.
 ;; -- convert-layout --
 (def-function convert-layout (source-M dest-M choice &optional (scratch (make-tile-scratch (element-type source-M))))
   ;; scratch is 32x32 (+warp-size+ x +warp-size+)
-  (declare #(matrix matrix matrix-layout &optional (vector-type (element-type source-M)) => nil))
+  (declare #(matrix matrix matrix-layout &optional (vector-type (element-type source-M)) => nil)
+            (global-size :strategy :strided))
   (c-t-assert (!= choice :other-layout) "dude")
   (r-t-assert-0 (!= choice :other-layout) "??")
 
@@ -3273,7 +3275,7 @@ The `:strategy` key is most useful when used in conjunction with `:derive-from` 
 With `:derive-from` we are telling the hoisting code, "take such-and-such vectors size into consideration when setting the
 global work size".  And the `:strategy` tells it _how_ that should be done.
 
-It can be one of four possible values.
+It can be one of five possible values.
 
 - `:one-thread-per`  This strategy means we expect there to be at least one global thread for each element of the vector. See [One Thread Per Element](#one-thread-per-element) discussion below.
 
@@ -3293,11 +3295,15 @@ size isn't based on the total number of elements, but on the number of tiles nee
 The host code generator would calculate the grid dimensions based on the input matrix/tensor dimensions and the tile dimensions.
 When using this strategy, be sure to also use the `:tile-shape` key so the hoisting code can calculate accordingly.
 
-- `:tile-shape`  When  using the `:tiled` strategy you can provide the extents of the tile so the host can 
-calculate accordingly.   
 
 
 If the `:strategy` is not provided, then the default assumption is `:one-thread-per`. 
+
+
+#### :tile-shape
+
+`:tile-shape`  When  using the `:tiled` strategy you can provide the extents of the tile so the host can 
+calculate accordingly.  
 
 
 
@@ -3441,8 +3447,12 @@ requesting to the next muliple of a nice local_work_size.
 Looping - Grid Stride
 ---------------------
 
-While a typical GPU can run many simultaneous threads, there are definitely problem spaces that exceeed its maximums.  
-In these cases, we want to launch a bunch of threads and have each perform their work N times without overlapping. 
+The One Thread Per Element strategy is simple and it can scale to any size. But if the number of threads
+needed is greater than the maximum number on your GPU, then the driver will have to juggle and reload 
+kernels and workgroups until the problem space is complete. This can be suboptimal for performance. 
+In many of these cases, we can simply launch of bunch of threads and have them each loop internally a bit.
+This could mean there would be no juggling or reloading required. 
+Each thread would have to perform their work N times without overlapping. 
 Where N = Size-of-Problem / Number-of-Threads-Launched.  
 
 A grid-stride loop is a common pattern for processing large datasets that are bigger than the number of threads launched. It ensures that each thread processes multiple data elements while maintaining full occupancy and avoiding divergence.
@@ -3488,6 +3498,14 @@ will warn you if you do not. And if you do, but it's arity does not match the `g
 ```
 The `loop-grid-stride` loop needs to know when to stop. That's what stride target is. This goes in a `declare` section
 inside the `loop-grid-stride`. It can be a number, an expression that evaluates to a number, or a vector in which case it is assumed to be `(length someVector)`
+
+
+### strided strategy
+
+As was discussed in [Hoisting and Enqueueing a Kernel](#hoisting-and-enqueing-a-kernel) it is good practice
+to `declare` your kernels global work size expectations and the strategy it hopes to employ.
+
+The `:strided` strategy is almost always the correct choice when doing grid strides of various flavors.
 
 
 ### grid stride example with explanation.
@@ -3926,7 +3944,7 @@ Grid Level Operations
 Grid-level operations are primitives that orchestrate work across the entire grid of threads. A fundamental rule in Crisp is that 
 a `progn` with a grid-level context CANNOT contain other grid level operations. (ie no nesting). Attempting to do so is a semantic error that leads to incorrect calculations, massively redundant work, and incomplete coverage of the problem space.
 
-The following Crisp functions and macros are grid level operations, the either open grid level contexts or take
+The following Crisp functions and macros are grid level operations, they either open grid level contexts or take
 higher order function arguments that must be thread level (only) operations. 
 
 - all `-stride` functions
@@ -4128,8 +4146,16 @@ each of the threads holds its own copy of a sum. Then, as before, we reduce. Hal
 the warp uses a shuffle and an XOR mask to fetch the sum from another thread and add it.
 Then half again, and so on. And then we  record the results into the same Result vector.
 
+The result vector should be size M, where M = global_work_size / local_work_size.
+The host can finish summing the result vector.
 
+Note that this version ties the workgroup size to the size of a single warp. 
+Doing so might limit the "latency hiding" opportunities, because there are no "extra" warps
+ to fill in if this one stalls on a memory access.  But that potential performance
+penalty is offset by the use of shuffles, instead of local memory and barriers.
+Shuffles, if used correctly, are wicked fast, but they can't reach outside a single warp.
 
+This version of vector summing is likely faster than the last one.
 
 ```
 ;; 32 warps maximum for most hardware
@@ -4303,12 +4329,36 @@ upon by the workgroup, and then one leader thread from the work group performs s
 operation that touches global memory (like an atomic operation).
 
 We will see this practice over and over and over.  The reductions do it, the filter and scans,
-the sorting, and more. Crisp usually provides very useful reusable macros for the workgroup level,
+the sorting, and more.  Crisp usually provides very useful reusable macros for the workgroup level,
 and ready-to-go routines that employ them at the global level. 
 
 
 Reduce Variants
 ===============
+
+Crisp provide several choices for reductions. There are two "shop local" variants that perform
+quick efficient reductions at the warp or workgroup level. And the remainders are grid level
+routines that first "shop local" using the warp or workgroup routines and then "act global"
+to gather up the results of the reduction across the different workgroups.
+
+This first set of reductions reduce a variable ( `<someVar>` ) with a commutative operation ( `someFunction`)
+across threads (of a warp, of a workgroup, etc)
+
+- reduce-to-warp
+- reduce-to-workgroup
+- reduce-to-1-small
+- reduce-to-1-atomic
+- reduce-to-1-cas
+- reduce-to-1-cont
+
+The second set of reductions reduce a vector, with various techniques. They employ
+grid strides however, which means you'll want to declare `:strategy :strided` .
+
+- reduce-vec-small
+- reduce-vec-atomic
+- reduce-vec-cas
+- reduce-vec-cont
+
 
 ### optional scratch vector arguments.
 
@@ -4330,7 +4380,8 @@ the same warp. It does this iteratively until all the threads in the warp whose 
 `reduce-to-warp` achieves its reduction using shuffles and `dec-times-by-half+` without using barriers or local memory. 
 It is extremely fast. But it is limited to just one warp. The kernel could `(declare (local-size :set-to 32))` where 32 is max thread count per warp for most GPUs, 
 and this is a good fit for many problems. But a workgroup that consists of multiple warps is often better
- because if one warp needs to pause while it fetches memory, another warp can be run in its stead - but this only happens within a single workgroup.   
+ because if one warp needs to pause while it fetches memory, another warp can be run in its stead - but this only happens within a single workgroup. Note that while `reduce-to-warp` does coordinate other threads at the warp level, it is NOT
+ a grid level operation can be used in a wide variety of situations and applications.
 
 - `someFunction` is a `binop-type`, meaning it has type `#(T T => T)` where `T` is the type of `<someVar>`
 - After completion `<someVar>` in all the threads of the warp will be bound to the final value of the reduction.
@@ -4376,6 +4427,8 @@ Possible Implementation:
 
 `reduce-to-workgroup` is much the same as `reduce-to-warp` but it reduces all the threads in the workgroup, not just in the warp. 
 In addition to `someFunction` , `<someVar>` and `identity` it also accepts two `&key` arguments.
+
+Like `reduce-to-warp` this is NOT a grid level operation and it can be used in a wide variety of contexts and situations.
 
 #### return-vec
 The `:return-vec` is a vector that will store the return results (if desired).  This is a vector of the same
@@ -4691,8 +4744,9 @@ Possible Implementation
                         ;; Only thread 0 writes the final result to the output vector.
                         (when (= local-id 0)
                           (set! (~ result-vec 0) val))) ))
-             
-      ; after this the globalScratchVec will one value per group.
+                          
+      (declare (grid-level))
+      ; after reduce-to-workgroup the globalScratchVec will one value per group.
       (reduce-to-workgroup ,someFunction ,someVar ,identity ,localScratchVec)
       (when-thread-in-group-is 0
         (set! (~ ,globalScratchVec (get-group-id) ,someVar)))
@@ -8137,7 +8191,10 @@ Higher Order Function Operations
 - reduce-to-1-atomic
 - reduce-to-1-cas
 - reduce-to-1-cont
-- reduce-vec
+- reduce-vec-small
+- reduce-vec-atomic
+- reduce-vec-cas
+- reduce-vec-cont
 - binop-type     ; commutative vs non-commutative ?
 - predicate-type
 - exclusive-scan-workgroup   ; <-- the scans are NOT HOF ops. but Filter is.
@@ -8560,12 +8617,10 @@ Three things:
   the constant capturing of A is noisy.
 - FRANKLY, the constant templating of vectors is noisy. HMMMMM  (<T>  (def-fun..))
 - gen-XXXXX on ANY grid-function to generate a kernel? (that doesn't take a function arg)
-- consecutive grid functions? When?
 - these vectors of 1.  HMMMMM
 - send code to Gemini?  AWESOME feature
-- this "shop locally act globally" thing.....
-- thread/grid in other languages
 - curry/lambda for word_count. f*ck
+- lose make-vector and gen-make- and use make-scratch-vector instead. Defaults to :local, can be overriden.
 
 <!-- PUT THIS LITTLE SUMMARY ON MEMORY SOMEPLACE -->
 Memory
