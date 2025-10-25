@@ -6,12 +6,6 @@ CRISP - Lisp for developing GPU Kernels
 > — *Popular Lisp Adage*
 
 
-
-> The minute you finally understand how a GPU works is the minute you are wrong.
->
-> — John Owens, UC Davis
-
-
 Overview
 --------
 
@@ -244,6 +238,10 @@ Table of Contents
 
 Thread Level / Grid Level / Dispatch
 =========================================
+
+> A GPU is not a CPU
+>
+> — ( this author )
 
 In most Lisp languages, `progn` is a term used to desribe a set of code that is grouped together and bound 
 by parentheses. In C++ we might say "the body of a function" or the "body of a closure". In C++ a `progn` is
@@ -7397,6 +7395,10 @@ coordination with the hoisting code.
 
 Static Analysys
 ===============
+
+> The minute you finally understand how a GPU works is the minute you are wrong.
+>
+> — John Owens, UC Davis
 
 If you were ever wondering why Crisp is intentionally not Turing-complete, this section is the answer. 
 Because every kernel is guaranteed to terminate, its control flow is finite and can be completely analyzed by the compiler. 
