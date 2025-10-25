@@ -2798,9 +2798,10 @@ be performed AFTER a continuation kernel is invoked. The compiler will warn you 
 defining a continuation kernel inside a `def-kernel`.  To ensure a clear execution model, the 
 compiler requires that the declarative invocation of the continuation kernel must be the **final expression**
 in its scope.  A warning will be issued if any code follows this invocation. 
+This is typicallly done with `launch-kernel` (see below).
 
-The invocation of a continuation kernel is merely for show. In reality it is compiled away to NOP.  
-But the hoisting code that the Crisp generates will demonstrate loading and enqueueing the first kernel,
+The launch-kernel directive used to specify the continuation is not executed by the initial kernel; it compiles to a NOP. Its purpose is purely declarative: it signals to the hoisting code generator which kernel to launch next.  
+The hoisting code that the Crisp generates will demonstrate loading and enqueueing the first kernel,
 waiting on it complete, and then enqueing the second one, typically sharing memory args between them.
 
 If using `let-kernel` it is a good practice to `declare` the desired local and global work sizes so the
@@ -2827,6 +2828,39 @@ If this declaration is missing, the kernel will take the name of the binding its
 
 Regardless of the method, remember that kernel names have to obey C identifier naming rules.
 
+#### `launch-kernel`
+
+`(launch-kenrnel (continue-later A C ) :copyback (A C))`
+
+It is not possible to invoke any kernel function from any other. But `launch-kernel` CAN 
+appear in your code with a kernel invocation.  It should appear as the **final expression**
+of your kernel execution.
+
+The compiler will simply NOP out the actual `launch-kernel` invocation from the calling kernel.
+It does nothing and doesn't effect the compilation of the kernel in which it appears.
+
+But the hoisting code that is generated WILL respect it, and will hoist that target invocation
+after your own kernel.
+
+It supports an optional `:copyback` key which can be used to list the arguments that should be 
+copied back to the host when the continuation kernel is done. Only paramters to the continuation 
+kernel itself OR the original kernel can be named in the copyback list. 
+
+example
+```
+; define two kernels, one launches the other.
+(def-kernel something-else (V) ...)
+
+(def-kernel first-this (A B &out C))
+   ... ;; do something
+   (launch-kernel (something-else C)))
+```
+
+`launch-kernel` is also how "continuation kernel" invocations are specified
+and realized. Additionally, it can appear in a `def-orchestration` context (see below).
+
+
+### Continuation Kernel Example
 
 ```
 ;; -- two_stage_operation --
@@ -2835,7 +2869,7 @@ Regardless of the method, remember that kernel names have to obey C identifier n
              (local-size :derive-from B :msg "two_stage_operation local work size should be the same as the length of B")
              (global-size :set-to (+ (length~ A) (length~ B) (length~ C)) :msg "two_stage_operation global work size
              should be big enough for all three vector arguments"))
-    (let-kernel ((continue-later (a c)
+    (let-kernel ((continue-later (a &out c)
                   (declare (kernel-name "last_stage_op")
                           #(my-v-t my-v-t => nil)
                           (local-size :derive-from A :msg "last_stage_op requires a local work size at least as long as A")
@@ -2846,7 +2880,7 @@ Regardless of the method, remember that kernel names have to obey C identifier n
         ...
         ;; this isn't a real invocation.  It just demonstrates to the hoisting code
         ;; HOW this function expects the continuation kernel to be called
-        (continue-later A C)))
+        (launch-kernel (continue-later A C) :copyback (B C))))
 ```
 
 
@@ -7745,6 +7779,7 @@ execution environment.
 
 Presently, the following forms are the ONLY ones allowed within the body of a `def-orchestration`:
 - `launch-sequential`
+- `launch-kernel`
 - `launch-parallel`
 - `launch-interleaved`
 - the `dotimes` and related `dec-` / `do-` macros
@@ -7767,7 +7802,23 @@ The CPU is free to do other things while the sequence of kernels run, and it doe
 A "launch specification" is simply a kernel _variable_ and the correct number of arguments. eg. `(VADD A B C)` or
 `(VADD _ _ _)` or `(VADD _ B _)` etc
 
+launch-kernel
+-------------
 
+```
+(launch-kernel launch-specification &key copyback)
+```
+Launches exactly one kernel invocation, a `:copyback` key can specify the variables that should be copied back.
+
+These can be useful if you need host-side processing in-between kernel calls, however this is quite suboptimal and should be considered an anti-pattern.
+
+If you need to launch multiple kernels, the other `launch-XXXX` with an explicit `(copyback ...)` call at the end will be superior.
+
+```
+(launch-kernel (VADD A B C) :copyback (C))
+;; host does something here with C? Possible, but bad idea.
+(launch-kernel (VSUM C RES) :copyback (RES))
+```
 
 launch-parallel
 ---------------
