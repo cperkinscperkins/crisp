@@ -148,6 +148,7 @@ Table of Contents
 - - `def-constraint`
 - - `def-type-function`
 - - Vectors and Vector-View
+- - Vectors Of Lenght 1: `single-result` and `set-result!`
 - - `soa-vector` and `soa-view`
 - - `def-const`
 - - `def-parameter`
@@ -1721,7 +1722,7 @@ you'll need to use `def-const-vec` which is covered below, or a direct instance 
 Vectors Of Lenght 1: `single-result` and `set-result!`
 ------------------------------------------------------
 
-It is extremely common for kernels to have vectors of length 1 that
+It is extremely common for kernels to have vectors of length 1 that have
 just a single value in the `&out` position of a kernel parameter list.
 Many kernels have muliple of these. 
 
@@ -3277,6 +3278,10 @@ which ensures that assumptions and dependencies are adhered to by both sides.
 There are two important decisions that the host must make at the moment a kernel is enqueued. 
 1. global work size - how many threads are spawned simultaneously for this kernels operation. 
 2. local work size - how many threads are grouped together such that they can share fast local memory.
+But note that in specifying these two values, you are also making a third very important decision:
+3. number of workgroups.    The number of workgroups is simply the global work size divided by the local work size:
+`num-groups = global-size / local-size`.  It is not uncommon to have kernels where the number of workgroups
+cannot exceed the local work size. When this restriction is in place, certain algorithms become much simpler. 
 
 
 Typically, the most performant choices that maximize GPU throughput use a "local_work_size" that is both
@@ -3410,6 +3415,24 @@ If the `:strategy` is not provided, then the default assumption is `:one-thread-
 
 `:tile-shape`  When  using the `:tiled` strategy you can provide the extents of the tile so the host can 
 calculate accordingly.  
+
+### num-groups
+```
+(declare (num-groups :max :local-size :msg "number of groups can't be bigger than a local work size"))
+;OR
+(declare (num-groups :max <someExpr> :msg "But here's my number, so call me maybe."))
+```
+
+As mentioned earlier, the number of workgroups for a kernel is simply the "global work size" divided by the "local work size". 
+Thus the need to have any kernel specify it is redundant. Simply declaring `global-size` and `local-size` are sufficient.
+
+But there are cases where kernels make assumptions about the number of workgroups. The most common one being that the 
+number of workgroups cannot exceed the local work size. In that even simply `(declare (num-groups :max :local-size))`.
+This will help document this restriction to anyone reading the kernel code, and the hoisting code that is 
+generated will also abide by that restriction (and note it in the comments).
+
+Alternately, some other expression can be provided. And, as with `local-size` and `global-size` and optional `:msg` 
+can be used to inject a comment into the hoisting code.
 
 
 
