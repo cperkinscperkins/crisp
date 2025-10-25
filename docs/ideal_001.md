@@ -248,7 +248,7 @@ by parentheses. In C++ we might say "the body of a function" or the "body of a c
 typically surrounded by curly braces `{ ... }`  .
 
 In Crisp, the `progn` that appear in function bodies implicitly have one of three "contexts" that
-inform the compiler on the type of and scope of actions that might be taking place in that `progn`.
+inform the compiler on the type and scope of actions that might be taking place in that `progn`.
 These three contexts are
 
 - thread level
@@ -264,8 +264,8 @@ level `progn` it is illegal to make grid level or dispatch level operations/call
 In contrast in a grid level context there is an expectation that thread with such-and-such id is
 accessing global memory at such-and-such index, or performing atomic operations on global memory.
 Grid level contexts most often come from macros like `loop-grid-stride`. Inside a grid level
-`progn` making  thread level operations is perfectly fine. But calling OTHER grid level operations
-is forbidden. 
+`progn` making thread level operations is perfectly fine. But calling OTHER grid level operations
+is forbidden. In other words, grid level operations cannot nest inside one another.
 
 A dispatch context is a context where we can call either thread level or grid level 
 operations freely. But note, that if a grid level `progn` is opened that inside its body the
@@ -289,7 +289,7 @@ a grid level operation. That requires management. A single worker sitting at a s
 Why This is Different from C++/CUDA
 -----------------------------------
 
-In C++/CUDA, there is no formal distinction between a "dress pattern" and an "assembly line blueprint" A programmer can accidentally write code that has a single thread try to launch a new, grid-wide operation. The C++ compiler won't prevent this. This code compiles but results in a silent, catastrophic bug: either the logic is fundamentally incorrect, or the performance is thousands of times slower than expected. The developer is left to debug a complex runtime issue with no help from the compiler.
+In C++/CUDA, there is no formal distinction between a "dress pattern" and an "assembly line blueprint". A programmer can accidentally write code that has a single thread try to launch a new, grid-wide operation. The C++ compiler won't prevent this. This code compiles but results in a silent, catastrophic bug: either the logic is fundamentally incorrect, or the performance is thousands of times slower than expected. The developer is left to debug a complex runtime issue with no help from the compiler.
 
 Crisp's context system provides guardrails. By separating `def-function` and `def-grid-function`, the compiler understands the intent of your code. If you try to call a grid-level function from a thread-level context, you get an immediate, clear compile-time error, not a mysterious runtime bug.
 
@@ -331,7 +331,7 @@ Kernel functions
 - are not callable by other Crisp functions (see "continuation kernels" for exceptions)
 - the body `progn` of the kernel function is a dispatch context
 - can call both "thread level" functions and "grid level" functions.
-- kernel function names (like "do_something" above) are restricted to C-style naming rules (ie "do_something" with an underscore is valid, but "do-something" with a dash is not.)
+- kernel function names (like "do_something" above) are restricted to C-style naming rules (ie "do_something" with an underscore is valid, but "do-something" with a dash is not).
 - kernel function names are case sensitive - unlike nearly everything else in Crisp which is case insensitive.
 
 `def-function`
@@ -1245,6 +1245,31 @@ which is a string name that the compiler should give the kernel.
 
 (gen-happy_stance float "happy_stance_f")
 (gen-happy_stance int  "happy_stance_i")
+```
+
+#### kernels from `def-grid-function`
+
+Very often, especially when writing library code, you will want to
+write some access pattern as a grid function for someone to use in their
+kernel. Perhaps a grid function to "sweep up" results.
+
+But it also the case that you may also want that function as a standalone kernel.
+This is very common GPU-land where because marshalling individual workgroups is out of our
+power, the most expedient course is to simply follow one kernel with another, rather than
+trying to combine them. To assist with this very common "double usage" need, 
+the `gen-` prefix can be used with any grid function (templated or not) and
+a kernel will be produced if that third string argument is present.
+
+```
+(with-template-type (T)
+  (def-grid-function templated-sweep-f ...))
+
+(def-grid-function other-sweep-f ...)
+
+(gen-templated-sweep-f ulong) ;; <-- this just generates the ulong specializtion
+(gen-templated-sweep-f ulong "my_sweep_kernel")  ; <-- this generates a kernel
+
+(gen-other-sweep-f "my_other_sweep_kernel") ; <-- generates a kernel from an untemplated grid function
 ```
 
 
@@ -8724,11 +8749,11 @@ Three things:
 - where can these new bad boys be used? gather-all/scatter-all!
 - maybe GLOBAL vector alignment?  <-- not for Crisp itself or libraries maybe?
   the constant capturing of A is noisy.
-- FRANKLY, the constant templating of vectors is noisy. HMMMMM  (<T>  (def-fun..))
-- gen-XXXXX on ANY grid-function to generate a kernel? (that doesn't take a function arg)
-- these vectors of 1.  HMMMMM
+x FRANKLY, the constant templating of vectors is noisy. HMMMMM  (<T>  (def-fun..))
+x gen-XXXXX on ANY grid-function to generate a kernel? (that doesn't take a function arg)
+x these vectors of 1.  HMMMMM
 - send code to Gemini?  AWESOME feature
-- curry/lambda for word_count. f*ck
+x curry/lambda for word_count. f*ck
 - lose make-vector and gen-make- and use make-scratch-vector instead. Defaults to :local, can be overriden.
 
 <!-- PUT THIS LITTLE SUMMARY ON MEMORY SOMEPLACE -->
