@@ -163,7 +163,6 @@ Table of Contents
 - - Matrices
 - - Type Aliases and Type Constructors
 - - Derived Types
-- - No Lambda Functions
 - - Continuation Kernels
 - - First Order Functions
 - - First Order Types
@@ -188,6 +187,7 @@ Table of Contents
 - - Cost of Divergent Branching
 - - Predicated Selection
 - Higher Order Function Operations
+- - Lambda No, Curry Yes
 - - map
 - - reduce variants
 - - reduce vector
@@ -461,6 +461,7 @@ of the operation. The host will also need to prepare memory for any scratch/inte
 The normal practice is that the kernel function has its parameter list for incoming arguments and everything the kernel
 needs is present in its calling interface, and it passes those arguments down to subfunctions, as appropriate. 
 
+<!-- result vector will probably go away -->
 There are two specialized Crisp constructs that can help with this: `make-result-vector` and `make-scratch-vector`.  These
 operations, discussed in detail below, allow you to "pretend" to allocate memory
 in your  kernel.   Each invocation of `make-result-vector` results in an extra allocation of memory appearing in the example
@@ -1121,9 +1122,22 @@ Example:
 ```
 
 
-Note that automatic numeric type promotion does not occur during template argument deduction. All arguments passed to a templated function must match the expected type exactly, or an explicit conversion function (like `to-float`) must be used.
+Note that automatic numeric type promotion does not occur during template argument deduction. 
+All arguments passed to a templated function must match the expected type exactly, 
+or an explicit conversion function (like `to-float`) must be used.
 
+### Syntactic Sugar: `(<T> ...`
 
+`(with-template-type (T U)`  can get a little long to type and swallow. For that reason,
+Crisp has a bit of syntactic suger that can make them slighly more palatable:
+
+```
+(<T U>  
+ (def-...
+```
+
+Borrowing from C++, the type vars can appear between `<  >`  and that expression
+can stand-in for the wordier `with-template-type (T)` .  
 
 
 ### XXXX-type
@@ -1155,6 +1169,11 @@ Example:
 
 Passing `nil` as a type argument when specializing with `XXXX-type` produces an incomplete type. 
 This can help make interoperation between different functions and structures more flexible.
+
+Incomplete types are used in function signatures (only). Use them when you need to define 
+a flexibe function, one that is typed to a struct or vector or similar, but maybe doesn't need
+ALL the information normally needed when we define it. But once it is _used_ the compiler will make sure that
+all the needed type information is present (or it'll error :-) )
 
 ```
 (with-template-type (T U)
@@ -1206,7 +1225,11 @@ limited cases.
 
 Note that `gen-XXXX` CANNOT instantiate an incomplete type. Passing `nil` as type arg is not allowed.
 
-<!-- QUESTION: How DO incomplete types get made into complete types? Such that they could then be instantiated. -->
+<!-- QUESTION: How DO incomplete types get made into complete types? Such that they could then be instantiated. 
+      ANSWER: That's not how they work. They just make function signatures flexible. 
+              They are never instantiated themselves. They just let a function sneak by for a 
+              bit without having to have ALL the info.  A complete type will still need to be provided once
+              someone USES the function. -->
 
 #### kernels
 
@@ -1670,6 +1693,38 @@ NOT be used unless you have good reason.
 
 `:constant` address space is the most performant, but to set up a vector with that
 you'll need to use `def-const-vec` which is covered below, or a direct instance ( `#(1 2 3)`).
+
+
+Vectors Of Lenght 1: `single-result` and `set-result!`
+------------------------------------------------------
+
+It is extremely common for kernels to have vectors of length 1 that
+just a single value in the `&out` position of a kernel parameter list.
+Many kernels have muliple of these. 
+
+To make this a bit easier Crisp has  `single-result` which is type declaration,
+and `set-result!` which is a macro that makes it easier to set it without have to 
+do to the dereference to 0 or thread screen.
+
+Example:
+```
+(def-kernel count-something (... &out v)
+   (declare (type v (single-result long)))
+   ...
+   (set-result! v some-count-we-calculated))
+```
+
+Possible Implementation
+```
+(<T>
+  (def-type single-result (vector-type T :global :writeable :compact :length 1)))
+
+(defmacro set-result! (result-v value)
+ `(when-global-linear-id-is 0
+    (set! (~ ,result-v 0) ,value)))
+```
+
+
 
 
 soa-vector and soa-view
@@ -2683,13 +2738,7 @@ Keep this in mind when using `set-derived` and type casting, as things
 might not work like you'd expect in a language like C. 
 
 
-No Lambda Functions 
--------------------
-Because the GPU has only one callstack per warp (not one per thread), lambda functions are 
-not supported. This is because they enable lexical closures (capturing variables from their surrounding scope),
- which would add significant complexity to the kernel's memory model and is 
- difficult to map efficiently to GPU hardware.  
-The Common Lisp `labels` macro is similarly not supported for this same reason.
+
 
 
 Continuation Kernels
@@ -2700,7 +2749,7 @@ distribution of local and global work sizes, and then to complete that calculati
 that is typically enqueued with a set of local and global work sizes tailored to it. 
 
 This occurs because there is no way to marshall which workgroups execute in which order, and there are
-no "global barriers" with which to enforce it. Atomics can be used as ersatz barriers, but overuse often leads to unused GPU capacity and stalled threads. The "last man standing" strategy (see `when-is-last-workgroup`)
+no "global barriers" with which to enforce it. Atomics can be used as ersatz barriers, but overuse often leads to unused GPU cFapacity and stalled threads. The "last man standing" strategy (see `when-is-last-workgroup`)
 is an example of working around these limitations. 
 
 When an algorithm has clearly defined stages, and those stages might benefit from a separate enqueue, then 
@@ -4281,6 +4330,64 @@ There is no uniform `+` or `*` variant for `select-if`.
 Higher Order Function Operations
 ================================
 
+Lambda No, Curry Yes
+--------------------
+Because the GPU has only one callstack per warp (not one per thread), lambda functions are 
+not supported. This is because they enable lexical closures (capturing variables from their surrounding scope),
+ which would add significant complexity to the kernel's memory model and is 
+ difficult to map efficiently to GPU hardware.  
+The Common Lisp `labels` macro is similarly not supported for this same reason.
+
+### `curry`
+
+```
+(curry #'someFunction <kernel-level-arg0> ...)
+```
+
+But a limited form of "currying" IS available.  
+The `curry` form takes a function of N arguments as its first arg, followed by M "kernel level args" where 
+M <= N. It returns a new function that accepts (N-M) arguments and can be passed to other HOF functions.
+
+By "kernel level args" we mean that the argument binding values that are accepted by the `curry` form MUST
+originate in the kernel parameter list. `curry` CAN be used in sub-functions, but the compiler must be able
+to trace each possible argument bind back to a kernel parameter.  This particular compiler check will 
+be deferred for library functions marked as `entrypoint` BUT the requirement remains and will be enforced
+when the call-chain ends up underneath a kernel.  This requirement is because kernel parameters 
+are uniform across all threads, so capturing them doesn't introduce divergence 
+or the complexities of capturing thread-local state
+
+The example in the next section shows `curry` in action.
+
+### `compose`
+
+```
+(compose #'secondFunction #'firstFunction) => #'combinedFunction
+```
+
+`compose` combines to functions. For `firstFunction` whose type is `#'(T => U)` 
+and `secondFunction` whose type is `#'(U => Z)`  a new function is returned that 
+performs both, first calling  `firstFunction`, then followed by `secondFunction` on its output. It's type is `#'(T => Z)`.
+In C++ parlance the resulting function performs `secondFunction(firstFunction(x))` . 
+
+
+In the example below, we wish to use the `filter` function which takes a predicate that maps `T` to `bool`.  (ie  `#'(T => bool)` )
+But we want to use `lookup`, which takes TWO arguments, not one.   We can use the `curry` form
+to create a new function `lookup-ref` .  But we want to filter if the reference is even,
+so we use `compose` to combine the lookup with the check for even number.
+
+```
+(def-function lookup (someVec i)
+   (~ someVec i))
+
+(def-kernel cross_table (inputVec referenceVec &out outputVec matcheVec)
+  (let ((lookup-ref (curry #'lookup referenceVec))
+        (lookup-even? (compose #'is-even? lookup-ref))
+        (count (filter inputVec lookup-even? outputVec)))
+    (when-global-linear-id-is 0
+        (set! (~ matchCountVec 0) count))))
+
+```
+
 map
 ---
 
@@ -4744,7 +4851,7 @@ Possible Implementation
                         ;; Only thread 0 writes the final result to the output vector.
                         (when (= local-id 0)
                           (set! (~ result-vec 0) val))) ))
-                          
+
       (declare (grid-level))
       ; after reduce-to-workgroup the globalScratchVec will one value per group.
       (reduce-to-workgroup ,someFunction ,someVar ,identity ,localScratchVec)
