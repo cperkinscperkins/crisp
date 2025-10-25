@@ -1425,6 +1425,51 @@ Possible example:
 
 
     
+GPU Memory
+----------
+
+In the next section we introduce the `vector` data type. This is the only
+data type Crisp supports for passing, or making available, blocks of memory
+from the host TO the kernel. It is also the only vehicle for getting
+any data back FROM a kernel, even if it's just a single digit (see the `single-result` subsection).
+
+For the kernel authors perspective there are three types of memory with
+which we need to concern ourselves: Global, Local, and Constant.
+
+### Global Memory
+
+Global memory is the largest memory space available to the GPU, typically measured in gigabytes (GB). It's accessible by all threads across all workgroups and is the only memory space directly accessible by the host CPU for transferring data to and from the GPU.
+
+Any memory you prepare host-side and pass to the kernel (:readable or :read_write) will reside in global memory. Likewise, any results passed back from the kernel (&out) must also be in global memory.
+
+But global memory access is slow.
+
+### Local Memory
+
+Local memory (also called "shared memory") is fast. It is a low-latency high bandwidth on-chip memory space.
+Its size is typically measured in kilobytes (KB) per compute unit (48KB to 128KB), and this
+limited pool is shared among all workgroups running concurrently on that unit.
+
+It must be prepared by the host, but the host 
+can only prepare it to be available, it cannot write into it. It is not usable as a 
+communication channel between host and kernel. 
+
+Local memory is bound to a workgroup. It cannot be used to share 
+data between workgroups. For that, global memory is needed.
+
+Because it's a limited resource, requesting excessive local memory per workgroup can reduce the number of workgroups that run concurrently (lower occupancy), potentially impacting overall performance. 
+
+### Constant Memory
+
+Constant memory is another fast on-chip memory that is optimized for broadcast scenarios. 
+It is read only memory from the kernels perspective, but it CAN be initialized by the host. 
+It is usually limited to 64KB per compute unit, and is ideal for small, read-only lookup tables, configuration
+parameters, or coefficients that are shared by all threads.
+
+With Crisp you have two ways of preparing constant memory: 
+- Define and initialize it entirely at compile time using `def-constant-vector`. Kernels access it by its defined name.
+- Declare a kernel parameter as `(vector-type T :constant ...)`. The host is then responsible for allocating and initializing a read-only buffer and passing it to the kernel. The hoisting code generator will produce example code demonstrating the necessary host API calls.
+
 
 
 
@@ -1462,6 +1507,9 @@ A `vector` has the following immutable properties:
 | access   | access  | one of :read_only :write_only :read_write :readable :writeable |
 | align    |         | one of :std140 or :compact |
 
+The `length` property for a `vector` is sometimes known at compile time, but is most often a runtime property.
+However the other three properties are all known and evaluable at compile time. 
+
 A `vector-view` has these properties:
 | Property | Type    | Description |
 | ---------|---------|-------------|
@@ -1491,6 +1539,11 @@ Use `def-setter` to overload the property setting function.  `~XXXX~` can also b
 
 Note that it is an error to set the `length` or `offset` of the `vector-view` such that it's `length + offset` is greater
 than the `length` of the parent. But the checking and enforcement for these errors is NOT on by default.
+
+#### Pass Through
+
+The `vector` property accessors (  `address-space~`, `access~` and `align~` ) can all be used directly on a `vector-view`. 
+There is no reason to do `(access~ (parent~ some-vector-view))`.  Simply doing `(access~ some-vector-view)` is sufficient.
 
 ### Element Access
 
@@ -1571,34 +1624,55 @@ It's a `vector` or a `vector-view`.
 `(vector-type <element-type>)`
 Example: `(vector-type float)`
 This example simply specifies that the value or parameter is a `vector` or `vector-view` 
-with a float element type. It does not specify any particular address space, access, or size.
+with a float element type. It does not specify any particular alignment, address space, access, or size.
+
+<!-- 
+REMOVING THESE FOR NOW. 
+
+Having vector-view be an always accepted proxy for vector is VERY HANDY.  
+
+I have yet to encounter a case where we would want a function signature to take only a true vector,
+or only a vector-view.  So, these are likely going to be removed. 
 
 `(vector-view-type)`
 `(vector-base-type)`
 These two allow the user to specify that a value is only a `vector-view` or NOT a `vector-view`.
 
+-->
+
 #### Using Optional
-`(vector-type <element-type> &optional address-space access align length)`
+`(vector-type <element-type> &optional align address-space access length)`
+<!--
+REMOVING
 `(vector-view-type <element-type> &optional address-space access align length)`
 `(vector-base-type <element-type> &optional address-space access align length)`
+-->
 
-Example: `(vector-type float :global)` 
-This example specifies a vector (or vector-view) of floats in the global address space. 
-It does not specify access or size.
+Example: `(vector-type float :compact)` 
+This example specifies a vector (or vector-view) of floats with `:compact` alignment. 
+It does not specify address-space,  access, or size.
+
+Note that this is the MINIMUM amount of information needed to use element access `(~ someVec i)`
+If a `vector-type` doesn't include `element-type` AND `align` then the body
+of the function won't compile uses of element access (`~`).
 
 The first set of type functions is actually the same as these three. 
 The `address-space`, `access` and `length` may appear in order.
 
 #### Using Keys
-`(vector-type &key element-type address-space access align length)`
+`(vector-type &key element-type align address-space access length)`
+<!-- REMOVING FOR NOW
 `(vector-view-type &key element-type address-space access align length)`
 `(vector-base-type &key element-type address-space access align length)`
+-->
 
 Example: `(vector-type :access :writeable)`  This specifies that some vector is writeable. 
-It could be of any type, address space or size.
+It could be of any type, address space, alignment, or size.
 
+<!-- 
 Example: `(vector-view-type :element-type float :length 100)` This specifies that the 
 vector is a `vector-view` of 100 floats. It could be any address space, access, or alignment.
+-->
 
 Example: `(vector-type)`  This specifies merely that something is a `vector` or `vector-view`, but nothing else is known about it.
 
@@ -1607,7 +1681,7 @@ Example: `(vector-type)`  This specifies merely that something is a `vector` or 
 #### Element Type
 The element type of a vector must be an element of a fixed size known at compile time.
 It cannot be the type of a function. 
-Nor can be a vector (but this functionality is available through the `vector-view`)
+Nor can it be a vector (but this functionality is available through the `vector-view`)
 
 #### Access
 The enumeration for access has five different choices in Crisp:
@@ -1624,22 +1698,22 @@ But note that the last two are not available in the hoisting example code for lo
 ```
 ;; -- count --
 (def-function count (v)
-    (declare (return-type ulong) (type v (vector-type long :global :read-only)))
+    (declare (return-type ulong) (type v (vector-type long :std140 :global :read-only)))
  ...)
 
  ;; vectors (and vector views) can be compile-time fixed size
-(vector-type float :local :read-write :std140 100)
+(vector-type float :std140 :local :read-write 100)
 ```
 
 ### Vector Arguments for Kernels
 `def-kernel` is the definition for the kernel function. Its parameter list does not support `vector-view`.
-And any `vector` in its parameter list MUST have its element-type, address-space and access specified in
+And any `vector` in its parameter list MUST have its element-type, align, address-space and access specified in
 its type definition. Only the size can be unspecified.
 
 
 ```
-(def-type data-from-host-t (vector-type float :constant :read-only :std140))
-(def-type result-from-kernel-t (vector-type float :global :write-only :std140))
+(def-type data-from-host-t (vector-type float :std140 :global :read-only ))
+(def-type result-from-kernel-t (vector-type float :std140 :global :write-only ))
 
 ;; -- my_kernel --
 (def-kernel my_kernel (in:data-from-host-t out:result-from-kernel-t)
@@ -1655,7 +1729,7 @@ And it can also create a `vector-view` with a size determined at runtime.
 
 - `(make-vector vectorType)` will instantiate a vector of a set type. The type argument MUST include the length.
 - `(make-vector vectorType length)` length can be provided explicitly if the type doesn't specify it.
-- `(make-vector &key element-type address-space access align length)`
+- `(make-vector &key element-type align address-space access  length)`
 - `(make-vector-view parent length &optional offset)` 
 
 And `#( val1, val2, ... valN)` instantiates a `vector` directly.  But note that vectors
@@ -1671,8 +1745,8 @@ need an accompanying `declare` or similar to determine.
      -->
 
 ```
-(def-type vec-floats-t (vector-type float :local :read-write :std140))
-(def-type vec-ints-t (vector-type int :local :read-write :std140))
+(def-type vec-floats-t (vector-type float :std140 :local :read-write ))
+(def-type vec-ints-t (vector-type int :std140 :local :read-write ))
 
 ;; -- do_things --
 (def-kernel do_things ()
@@ -2023,6 +2097,10 @@ If anything wants to read from that vec during the execution of some kernel,
 that kernel needs to add a `(use <const-vec-name>)` to its `declare` directive. 
 Then it, or functions it calls, can simply refer to the const-vec, like one would a global variable.  
 
+### Works with SoA
+Returning a `soa-vector` from `def-const-vec` is fully supported. 
+
+
 ### Constant Vec Using Other Constant Vec
 
 When preparing masks, sometimes the construction of one mask depends on another. So long
@@ -2033,12 +2111,14 @@ refer to an earlier `def-const-vec` .  The requirement is that the named const v
 clause MUST have been defined earlier in the translation unit. 
 
 ### Type Function
-CRISP also has a type function for :constant :read-only vectors returned by `const-vec-type`
-`(const-vec-type <element-type> &optional length)`
+CRISP also has two type functions for `:constant :read-only` vectors returned by `const-vec-type`
+`(const-vec-type <element-type> <align> &optional length)` 
+and
+`(const-soa-vec-type <element-type> <align> &optional length)`
 
 
 ```
-(def-type image-mask-t (const-vec-type uchar))
+(def-type image-mask-t (const-vec-type uchar :compact))
 (def-const-vec +image-mask-32+ 
   (let ((image-mask-vec (make-vector image-mask-t 32)))
     (dotimes (x 32)
