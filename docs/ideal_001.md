@@ -148,7 +148,8 @@ Table of Contents
 - - `def-constraint`
 - - `def-type-function`
 - - Vectors and Vector-View
-- - Vectors Of Lenght 1: `single-result` and `set-result!`
+- - Reduce Boilerplate: Vectors Of Lenght 1: `single-result` and `set-result!`
+- - Reduce Boilerplate: `in-vec` and `out-vec`
 - - `soa-vector` and `soa-view`
 - - `def-const`
 - - `def-parameter`
@@ -1793,8 +1794,8 @@ NOT be used unless you have good reason.
 you'll need to use `def-const-vec` which is covered below, or a direct instance ( `#(1 2 3)`).
 
 
-Vectors Of Lenght 1: `single-result` and `set-result!`
-------------------------------------------------------
+Reduce Boilerplate: Vectors Of Lenght 1: `single-result` and `set-result!`
+--------------------------------------------------------------------------
 
 It is extremely common for kernels to have vectors of length 1 that have
 just a single value in the `&out` position of a kernel parameter list.
@@ -1822,7 +1823,27 @@ Possible Implementation
     (set! (~ ,result-v 0) ,value)))
 ```
 
+Reduce Boilerplate: `in-vec` and `out-vec`
+-------------------------------------------
 
+`vector-type` declarations can be long, but for most kernel arguments there are 
+ two common choices:  global readable vectors for input paramters, and global writeable vectors
+for output parrameters.  Crisp has prepared two vector `def-type` to make this easier: `in-vec` 
+and `out-vec`. Just specialize them with the element type and align and you are set.
+
+Example:
+```
+(def-kernel my_kernel (A B &out C)
+  (declare #'((in-vec float :std140) (in-vec float :std140) (out-vec float :std140)))
+  ...)
+```
+
+Possible Implmenetionat
+```
+(<T A>   ;; <-- shorthand notation for with-template-type
+  (def-type in-vec (vector-type T A :global :readable))
+  (def-type out-vec (vector-type T A :global :writeable)))
+```
 
 
 soa-vector and soa-view
