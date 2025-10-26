@@ -461,19 +461,19 @@ of the operation. The host will also need to prepare memory for any scratch/inte
 The normal practice is that the kernel function has its parameter list for incoming arguments and everything the kernel
 needs is present in its calling interface, and it passes those arguments down to subfunctions, as appropriate. 
 
-<!-- result vector will probably go away -->
-There are two specialized Crisp constructs that can help with this: `make-result-vector` and `make-scratch-vector`.  These
+
+There are two specialized Crisp constructs that can help with this: `make-scratch-vector` and `make-implicit-vector`.  These
 operations, discussed in detail below, allow you to "pretend" to allocate memory
-in your  kernel.   Each invocation of `make-result-vector` results in an extra allocation of memory appearing in the example
+in your  kernel.   Each invocation of `make-implicit-vector` results in an extra allocation of memory appearing in the example
 hoisting code, with a matching pointer passed implicitly as a kernel argument. Uses of `make-scratch-vector` are collected
 by the compiler and are combined into a single scratch memory pool, which is similarly added as an implicit kernel argument.  These are conveniences.  The compiler calculates the size requirements for these and outputs them to the hoisting example code, but it's ultimately up to your final hoisting code to ensure the memory is sufficient.
 
 Another side channel that adds implicit kernel arguments is the debugging communication channel, which can be enabled during compilation.
 
-Lastly, kernel developers who want their own "side channel" can do so with `make-implicit-vector` , or if the data is constant and 
-known at compile time then `def-constant-vector` and `use` would be better choices.
+Lastly, if the data is constant and known at compile time then `def-constant-vector` and `use` would be better choices. 
+These are also discussed below.
 
-Side channels introduce side effects into functions that would otherwise be referentially transparent. For this reason, it's often better to avoid them. Many users choose to declare result memory in the kernel parameter list and pass it to sub-functions rather than introducing this impurity. Crisp supports both formulations. 
+Side channels introduce side effects into functions that would otherwise be referentially transparent. For this reason, it's often better to avoid them. Many users choose to explicitly declare all their required memory in the kernel parameter list and pass it to sub-functions rather than introducing this impurity. Crisp supports both formulations. 
 
 
 Crisp Types
@@ -2190,7 +2190,7 @@ the correct allocation size.
 Each invocation must be countable by the compiler. This means they cannot appear in loops. 
 
 The invocations take a `<VectorExpression>` as a first argument. That can be a type expression OR just some
-vector value. The "new" vector will have the same type as the source, except that its `:access` may be changed to `:writeable` of the original vector was only `:readable` or `:read_only`.   If an existing vector value is
+vector value. The "new" vector will have the same type as the source, except that its `:access` may be changed to `:read-write` if the original vector was only `:readable` or `:read_only`.   If an existing vector value is
 used, then the size will be set to be the same. This can be very handy, because if that value originates as 
 a kernel argument, then the example hoisting code will specify that the size should match. 
 
@@ -2203,12 +2203,11 @@ as it will need to match a marshalling invocation.  The `:comment` key will outp
 Lastly, note that `<VectorExpression>` can include `soa-vector` vector type specifiers.
 
 
-### make-result-vector
+### make-implicit-vector
 
-`(make-result-vector <VectorExpression> &optional length &key name comment)`
+`(make-implicit-vector <VectorExpression> &optional length &key name comment)`
 
-Each invocation of `make-result-vector` means an additional entry will be hoisted. Thus kernels can return 
-multiple values. 
+Each invocation of `make-implicit-vector` means an additional entry will be hoisted. 
 
 In the example below, this function, if called by a kernel, would cause two additional float array pointer to 
 be hoisted, plus a pointer to a unsigned long array.  The first one would be the same length as the `A` vector argument to this function. 
@@ -2218,24 +2217,36 @@ The third result would be hoisted as a `ulong` array ptr.
 
 
 ```
-(def-type float-vec (vector-type float :global :read_only :std140))
-(def-type ulong-vec (vector-type ulong :global :writeable :std140))
+(def-type float-vec (vector-type float :std140 :global :read_only))
+(def-type ulong-vec (vector-type ulong :std140 :global :writeable :std140))
 
 ;; -- calc-final-result --
-(def-function calc-final-result (A x y)
-  (declare #(float-vec ulong unlong => nil))
-  (let ((result-1 (make-result-vector A :comment "Gamma Squad needs this result"))
-        (result-2 (make-result-vector A (* x y)))
-        (result-3 (make-result-vector ulong-vec (* x x) :name "haversine")))
+(def-grid-function calc-final-result (x y &out A)
+  (declare #( ulong unlong &out float-vec => nil))
+  (let ((gamma-1 (make-implicit-vector A :comment "Gamma Squad should provide these"))
+        (gamma-2 (make-implicit-vector A (* x y)))
+        (haversine-3 (make-implicit-vector ulong-vec (* x x) :name "haversine")))
       ...))
 ```
 
 ### make-scratch-vector
-`(make-scratch-vector <VectorExpression> &optional length &key name comment)`
+```
+(make-scratch-vector <VectorExpression> &optional length &key name comment)
+(make-scratch-vector T length &optional address-space &key name comment)
+```
 
-Unlike the others, each invocation of `make-scratch-vector` doesn't result in a new kernel arg that needs to be
+There are two variants of `make-scratch-vector`.  One uses an existing `<VectorExpression>` which is 
+flexible for defining pretty much any type of vector.  
+
+While the second is more practical. It just needs an element type `T` and a `length` and it will
+assume a `:local` address-space vector with `:read-write` access and `:std140` alignment.  An optional 
+`address-space` argument can be provided if you need a `:global` scratch vec.
+
+Remember that `:local` memory is limited, and demanding too much can limit the number of workgroups that can run simultaneously.
+
+Unlike `make-implicit-vector`, each invocation of `make-scratch-vector` doesn't necessarily result in a new kernel arg that needs to be
 enqueueed. Instead, the size expressions are gathered up and communicated back to the hoisting code and just
-one scratch vector is allocated. 
+one scratch vector is allocated (assuming they all have the same vector type.)
 
 Below is  a simple example
 ```
@@ -2243,7 +2254,7 @@ Below is  a simple example
 (def-kernel calc_something (A Res)
   (declare #(float-vec ulong-vec => nil))
   (let ((intermediate (make-scratch-vector A (/ (length~ A) 2) :comment "half of size of A parameter"))
-        (otherIntermed (make-scratch-vector ulong-vec (* (get-global-linear-size) 1.5) :comment "we need half again as many launched threads")))
+        (otherIntermed (make-scratch-vector float (* (get-local-size) 1.5) :comment "we need half again as many threads in a workgroup")))
      ...))
 ```
 
@@ -2260,14 +2271,31 @@ And this is an excerpt of the hoisting code that might be generated.
  clEnqueeuNDRangeKernel( someCommandQueue, calcSomethingKernel,         
                           ...);
 ```
+<!-- 
+Implementation Notes
 
-### make-implicit-vector
+We'll need to modify the args up and down the call tree to get these "side channel" vars propogated.
 
-`(make-implicit-vector <VectorExpression> &optional length &key name comment)`
-This works much the same as `make-result-vector` but has no specific purpose. 
+Modifying the beginning of the arglist (of course).
 
+-->
 
+### Specialize Scratch Vector Routines
 
+Many kernels routinely get scratch vectors sized for a workgroup or the number of
+groups. There are predefined functions for this, that specify the desired size.
+
+These default to `:local` address space, `:read-write` access and `:std140` layout.
+But the address space can be made `:global` with an optional argument.
+
+```
+(make-scratch-local-work-size T &optional address-space)
+(make-scratch-num-groups T &optional address-space)
+```
+There is a matching type function
+```
+(scratch-vec-type T &optional address-space)
+```
 
 Tensors
 -------
@@ -4250,7 +4278,7 @@ Instead, we'll use two smaller scratch pads.  One is local memory that has the
 same number of entries as the local_work_size of the kernel.  Local memory is fast, 
 but limited to the threads in the same workgroup.  The second scratch pad
 is global memory, and it is M entries wide, where M = NUM_THREADS / WORKGROUP_SIZE, 
-or  M = global_work_size / local_work_size.
+or  M = global_work_size / local_work_size.  This the same as the number of workgroups.
 
 The routine will use a tree reduce pattern so that half the threads in the workgroup 
 add their sum to the comparable in the other half. And then repeat, halving the 
@@ -4260,7 +4288,8 @@ Lastly one thread in each work group writes its sum to the global scratchpad.
 
 After this, we could use a global barrier and then sum that scratchpad.
 But since the global scratchpad needs to be prepared by the host anyway,
-it's simpler to just end the operation and have the host sum them up.
+it's simpler to just end the operation and enqueue a second operation to 
+complete the sum.  Or sum it on the host, if that is your preference.
 
 In our `sum_vector` routine, the host will supply the vector it wants
 to be summed, plus the result vector (which is also that global scratchpad).
@@ -4271,41 +4300,47 @@ going to agree on a convention that the local_work_size is 64.
 
 
 ```
-;; this kernel assumes a local_work_size of 64
-(def-const +wg-size+:ulong 64)  
-
-;; the source vector can be any size. 
-(def-type source-vec (vector-type long :global :readable))     
-
 ;; the result vector should be size M, where M = global_work_size / local_work_size
-(def-type result-vec (vector-type long :global :writeable))  
+;; aka num-groups.
+(def-type result-vec (vector-type long :std140 :global :writeable :size (get-num-groups)) 
 
-;; -- sum_vector --
-(def-kernel sum_vector (A:source-vec &out Res:result-vec)
-    (declare (local-size :set-to +wg-size+) (global-size :derive-from A :strategy :strided))
+;; -- sum_vector_first_stage --
+(def-kernel sum_vector_first_stage (A:(in-vec long :std140) &out Res:result-vec)
+  ;; A can be any size, but Res should be num-groups
+  (declare (global-size :derive-from A :strategy :strided))
                                      
    (let ((sum:long 0))
-     ; 1- Stride the vector, summing it up. Each thread has its own value in 'sum'
-     (loop-grid-stride (i)
-       (declare (grid-stride-target A))
+     ;; Stride the vector, summing it up. Each thread has its own value in 'sum'
+     (loop-vector-stride A (i)
         (inc! sum (~ A i)))
     
-      ;; 2- Prepare local memory and store sum in it. 
-      (let ((slm (make-vector long :local :read_write +wg-size+)))
-        (in-each-thread-in-group (local-idx)
-          (set! (~ slm local-idx) sum)
-          
-          ;; 3- tree reduce
-          (dec-times-by-half+ (s (/ +wg-size+ 2))  s is 32, then 16, 8, 4, 2, 1
-            (local-barrier)
-            (when (< local-idx s)
-              (inc! (~ slm local-idx) (~ slm (+ local-idx s))))))
+    ;; Prepare local memory and store sum in it. 
+    (let ((slm (make-scratch-local-work-size long)))
+      (in-each-thread-in-group (local-idx)
+        (set! (~ slm local-idx) sum)
+        
+        ;; tree reduce
+        (dec-times-by-half* (s (/ (get-local-size) 2))  s is 32, then 16, 8, 4, 2, 1
+          (local-barrier)
+          (when (< local-idx s)
+            (inc! (~ slm local-idx) (~ slm (+ local-idx s))))))
 
-        ;; 4- move sums to global 
-        (when-thread-in-group-is (0)
-          (let ((wg-idx (get-workgroup-id 0)))
-            (set! (~ Res wg-idx) (~ slm 0))))))) 
+      ;; move sums to global 
+      (when-thread-in-group-is (0)
+        (let ((wg-idx (get-workgroup-id 0)))
+          (set! (~ Res wg-idx) (~ slm 0))))))) 
 ```
+
+This example is provided so that you can see several "Crisp-ish" constructs used together, 
+like the tree reduce `dec-time-by-half` and its `*` variant, the scratch vector creation 
+all applied to the topic of a workgroup sized reduction using local memory and a local barrier. 
+
+But, again, the vector is not fully summed. That'll require a second kernel pass. 
+ The simplest solution there is to make another kernel that
+employs `reduce-vec-second-stage` (see below) and then you'll have a two step solution. If you would
+like to see the hoisting code in action, then use either a continuation kernel (see above) 
+or  `def-orchestration` (see below).
+
 
 Warps & Shuffles
 ----------------
@@ -4377,7 +4412,7 @@ the warp uses a shuffle and an XOR mask to fetch the sum from another thread and
 Then half again, and so on. And then we  record the results into the same Result vector.
 
 The result vector should be size M, where M = global_work_size / local_work_size.
-The host can finish summing the result vector.
+This is the same size as the number of workgroups.
 
 Note that this version ties the workgroup size to the size of a single warp. 
 Doing so might limit the "latency hiding" opportunities, because there are no "extra" warps
@@ -4392,10 +4427,11 @@ This version of vector summing is likely faster than the last one.
 (def-constant +warp-size+:ulong 32)
 
 ;; the source vector can be any size. 
-(def-type source-vec (vector-type long :global :readable))     
+(def-type source-vec (in-vec long :std140))    
 
 ;; the result vector should be size M, where M = global_work_size / local_work_size
-(def-type result-vec (vector-type long :global :writeable))  
+;; aka num-groups
+(def-type result-vec (vector-type long :std140 :global :writeable :size (get-num-groups)))  
 
 ;; -- calculate-this-thread-sum --
 (def-function calculate-this-thread-sum (A:source-vec)
@@ -4404,24 +4440,34 @@ This version of vector summing is likely faster than the last one.
     (loop-vector-stride A (i)
       (inc! sum (~ A i))))) ; <-- inc! implicity returns final sum
 
-;; -- sum_vector_warp --
-(def-kernel sum_vector_warp (A:source-vec Res:result-vec)
-    (declare (local-size :set-to +warp-size+ :msg "this kernel uses a 32 warp size, which should also be the local_work_size when enqueueing") 
+;; NOTE: +warp-size+ is a constant Crisp provides.
+
+;; -- sum_vector_warp_first_stage --
+(def-kernel sum_vector_warp_first_stage (A:source-vec Res:result-vec)
+    (declare (local-size :set-to +warp-size+ :msg "this kernel requires the local work size to be the same as the warp size") 
              (global-size :derive-from A :strategy :strided))
-  ; 1- Stride the vector, summing it up. Each thread has its own value in 'sum'
+  ;; Stride the vector, summing it up. Each thread has its own value in 'sum'
   (let ((sum (calculate-this-thread-sum A)))
-     ; 2 - Reduce. 
+     ;;  Reduce 
     (in-warp (lane-id)
       ;; this reduction uses `s` from `dec-times-by-half` to bisect/reduce. The `lane-id` is unused.
       (dec-times-by-half+ (s (/ +warp-size+ 2))
          (inc! sum (shuffle-xor sum s))))
     
-    ; 3 - move sum to global
+    ;; move sum to global
     (when-thread-in-group-is (0)
       (let ((wg-idx (get-workgroup-id 0)))
           (set! (~ Res wg-idx) sum)))))   
       
 ```
+
+Like the previous sum_vector demonstration, this example is provided so that you can see
+ "Crisp-ish" constructs used together, this time with shuffles and warps. 
+The vector is not fully summed. That requires a second kernel pass. 
+Most expedient is to make another kernel that
+employs `reduce-vec-second-stage` (see below) and then you'll have a two step solution. If you would
+like to see the hoisting code in action, then use either a continuation kernel (see above) 
+or  `def-orchestration` (see below).
 
 Branching
 =========
@@ -4539,6 +4585,12 @@ or the complexities of capturing thread-local state
 
 The example in the next section shows `curry` in action.
 
+<!--
+Implementation Notes
+for transpilation, create a new uniquely named inline C function that takes each capture as an arg, PLUS the expected arg
+and use that instead of original 
+-->
+
 ### `compose`
 
 ```
@@ -4560,12 +4612,12 @@ so we use `compose` to combine the lookup with the check for even number.
 (def-function lookup (someVec i)
    (~ someVec i))
 
-(def-kernel cross_table (inputVec referenceVec &out outputVec matcheVec)
+(def-kernel cross_table (inputVec referenceVec &out outputVec matchCount:single-result)
   (let ((lookup-ref (curry #'lookup referenceVec))
         (lookup-even? (compose #'is-even? lookup-ref))
         (count (filter inputVec lookup-even? outputVec)))
-    (when-global-linear-id-is 0
-        (set! (~ matchCountVec 0) count))))
+    (set-result! matchCount count)))
+
 
 ```
 
@@ -4624,28 +4676,39 @@ and ready-to-go routines that employ them at the global level.
 Reduce Variants
 ===============
 
-Crisp provide several choices for reductions. There are two "shop local" variants that perform
-quick efficient reductions at the warp or workgroup level. And the remainders are grid level
+Crisp provide several choices and building blocks for reductions. There are "shop local" variants that perform
+quick efficient reductions at the warp or workgroup level. And there are also some Single Pass grid level
 routines that first "shop local" using the warp or workgroup routines and then "act global"
 to gather up the results of the reduction across the different workgroups.
 
 This first set of reductions reduce a variable ( `<someVar>` ) with a commutative operation ( `someFunction`)
-across threads (of a warp, of a workgroup, etc)
+across threads (of a warp, of a workgroup, or all)
 
 - reduce-to-warp
 - reduce-to-workgroup
-- reduce-to-1-small
+- reduce-to-1-second-stage
 - reduce-to-1-atomic
 - reduce-to-1-cas
 - reduce-to-1-cont
 
 The second set of reductions reduce a vector, with various techniques. They employ
-grid strides however, which means you'll want to declare `:strategy :strided` .
+grid strides however, which means you'll want to declare `:strategy :strided` if you use them in your own
+functions/kernels.
 
-- reduce-vec-small
+- reduce-vec-first-stage
+- reduce-vec-second-stage
 - reduce-vec-atomic
 - reduce-vec-cas
 - reduce-vec-cont
+
+Note that the `XXXX-atomic` and `XXXX-cas` variants are Single Pass variants that require only one
+kernel to complete their calculation, though they use atomics which may have performance earmarks.
+The `XXXX-cont` variation is single construct that uses kernel continuations, so they are "two pass"
+solutions.  The `XXXX-second-stage` is a small "sweep up and finish" construct that completes a "first stage" of 
+some reduction.  For vectors that "first stage" is `reduce-vec-first-stage`.  For variables, the first
+stage would be `reduce-to-workgroup`.  Note that `reduce-to-workgoup` is a VERY useful workhorse
+and is used by many of the other reduction. Lastly `reduce-to-warp` is a thread level function 
+that is special case and very fast. It is used by `reduce-to-workgroup`. 
 
 
 ### optional scratch vector arguments.
@@ -4662,7 +4725,7 @@ If not provided Crisp will generate the scratch memory for you.
 
 `reduce-to-warp` is a macro that applies `someFunction` to `<someVar>` expression in the current thread and another thread in
 the same warp. It does this iteratively until all the threads in the warp whose id is less than `active-threads`
- have been reduced.  Note that using a value for `active-threads` that is GREATER than the warp size for the GPU hardware
+ have been reduced. At the culmination of this operation, each warp will have `someVar` set to the final reduction value in each thread of that warp.   Note that using a value for `active-threads` that is GREATER than the warp size for the GPU hardware
  is undefined behavior. This reduction cannot reduce more than `+warp-size+` threads.
 
 `reduce-to-warp` achieves its reduction using shuffles and `dec-times-by-half+` without using barriers or local memory. 
@@ -4789,11 +4852,11 @@ Possible Implementation
 
 ```
 
-### reduce-to-1-small
+### reduce-to-1-second-stage
 
-`(reduce-to-1-small someFunction <someVar> identity &optional localScratchVec globalScratchVec)`
+`(reduce-to-1-second-stage someFunction <someVar> identity &optional localScratchVec globalScratchVec)`
 
-`reduce-to-1-small` is much the same as `reduce-to-workgroup` but reduces all threads in all workgroups down to one single value.
+`reduce-to-1-second-stage` is much the same as `reduce-to-workgroup` but reduces all threads in all workgroups down to one single value.
 
 HOWEVER, it has a caveat, in that the number of workgroups MUST NOT BE greater than `local_work_size`.  If this is
 violated, this routine will runtime assert. However, remember that runtime asserts are only observable when 
@@ -4806,14 +4869,14 @@ If the `localScratchVec` optional argument is not provided, Crisp will generate 
 If you wish to provide it, it should be a `vector` (or `vector-view`) that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
 
-`reduce-to-1-small` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
+`reduce-to-1-second-stage` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
 If you want to provide it yourself, it should be a `vector` whose `element-type` is the same as `<someVar>` , 
 its address space MUST be `:global` and it's size is the number of workgroups 
 which can be calculated as `M` where `M = global_work_size / local_work_size`. 
 
 
 - After the operation completes, the state of both `localScratchVec` and `globalScratchVec` are indeterminant. 
-- `reduce-to-1-small` returns nil.
+- `reduce-to-1-second-stage` returns nil.
 - `<someVar>` in thread 0 of workgroup 0 will hold the final value of the reduction
               this is the same as global linear thread id of 0.
               Its value is indeterminant in OTHER threads.
@@ -4822,7 +4885,7 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 (let ((global-scratch (make-scratch-vector ulong :global :read_write (ceil (get-global-work-size) (get-local-work-size))))
        (local-scratch (make-scratch-vector ulong :local :read_write (ceil (get-local-works-size) +warp-size+)))
        (someVar 1))
-   (reduce-to-1-small #'+ someVar 0 local-scratch global-scratch)
+   (reduce-to-1-second-stage #'+ someVar 0 local-scratch global-scratch)
    (when-global-linear-id-is 0
       ;; someVar will hold the total in this thread.
       ... ))
@@ -4831,21 +4894,21 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 
 Possible Implementation
 ```
-;; -- reduce-to-1-small --
-(defmacro reduce-to-1-small (someFunction someVar identity &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
+;; -- reduce-to-1-second-stage --
+(defmacro reduce-to-1-second-stage (someFunction someVar identity &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
                                                                (globalScratchVec (funcall (get-make-reduction-global-scratch-vec (type-of someVar) message)))
                                                              &key message)
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
   `(progn
-    (declare (grid-level))
+    (declare (grid-level) (num-groups :max :local-size))
     (when-thread-is 0
-      (r-t-assert (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for reduce-to-1-small"))
+      (r-t-assert (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for reduce-to-1-second-stage"))
 
     ; after this the globalScratchVec will one value per group.
     (reduce-to-workgroup ,someFunction ,someVar ,identity ,localScratchVec)
     (when-thread-in-group-is 0
-      (set! (~ ,globalScratchVec (get-group-id) ,someVar)))
+      (set! (~ ,globalScratchVec (get-group-id)) ,someVar))
 
     ; inter thread reduction.  Easiest and fastest if it fits in one warp,
     ; or one workgroup.
@@ -4880,7 +4943,7 @@ Possible Implementation
 `reduce-to-1-atomic` is much the same as `reduce-to-workgroup` but reduces all threads in all workgroups down to one single value.
 That value is stored in `return-vec` which is a required argument. It should be a vector of length 1.
 
-Unlike `reduce-to-1-small`, `reduce-to-1-atomic` can work across all threads and is not constrained by workgroup sizes.  
+Unlike `reduce-to-1-second-stage`, `reduce-to-1-atomic` can work across all threads and is not constrained by workgroup sizes.  
 Instead `reduce-to-1-atomic` has a different limitation: `someFunction` must be one of three commutative operations: `+`, `min` or `max`
 that have `atomic-XXXX!` counterparts.
 
@@ -5054,11 +5117,41 @@ The `reduce-vec-XXXX` variants are different in that they are respondent to a `v
 
 All the vector reductions are "grid level" operations, meaning they cannot be nested in other grid level ops.
 
-### reduce-vec-small
 
-`(reduce-vec-small  someFunction vec identity &optional localScratchVec globalScratchVec)`
+### reduce-vec-first-stage
+`(reduce-vec-first-stage someFunction vec identity &out intermediateVec &optional localScratchVec)`
 
-This variant has the same limitation as `reduce-to-1-small`: the number of workgroups MUST NOT BE greater than `local_work_size`.  If this is
+This variant reduces `vec` down to a `intermediateVec` vec which will hold
+one reduction value per workgroup.  You can then enqueue a kernel with `reduce-vec-second-stage` and pass it `intermediateVec` to complete the reduction.
+
+The `localScratchVec` should be the same size as the size of a workgroup (ie local work size). 
+
+Possible Implementation
+```
+(<T A>
+  (declare (value-is A #'is-alignment?))
+
+  ;; -- reduce-vec-first-stage --
+  (def-grid-function reduce-vec-first-stage (someFunction vec identity &out intermediateVec) 
+
+    (declare #'((binop-type T) (in-vec T A) T &out (out-vec T A)))
+    (r-t-assert-0 (= (length~ intermediateVec) (get-num-groups) "intermediatVec length must equal number of workgroups))
+
+    (let ((sum identity))
+      (loop-vector-stride vec (i)
+       (set! sum (funcall someFunction sum (~ vec i)))))
+
+      (reduce-to-workgroup someFunction sum identity :return-vec intermediateVec))))
+
+```
+
+
+
+### reduce-vec-second-stage
+
+`(reduce-vec-second-stage  someFunction vec identity &optional localScratchVec globalScratchVec)`
+
+This variant has the same limitation as `reduce-to-1-second-stage`: the number of workgroups MUST NOT BE greater than `local_work_size`.  If this is
 violated, this routine will runtime assert. However, remember that runtime asserts are only observable when 
 the debug logging option has been elected when compiling. 
 
@@ -5069,21 +5162,21 @@ If the `localScratchVec` optional argument is not provided, Crisp will generate 
 If you wish to provide it, it should be a `vector` (or `vector-view`) that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
 
-`reduce-vec-small` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
+`reduce-vec-second-stage` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
 If you want to provide it yourself, it should be a `vector` whose `element-type` is the same as `<someVar>` , 
 its address space MUST be `:global` and it's size is the number of workgroups 
 which can be calculated as `M` where `M = global_work_size / local_work_size`. 
 
 
-- when `reduce-vec-small` completes, the state of the scratch vectors are indeterminant
-- `reduce-vec-small` returns the result of the reduction.
+- when `reduce-vec-second-stage` completes, the state of the scratch vectors are indeterminant
+- `reduce-vec-second-stage` returns the result of the reduction.
 
 
-This is what an implementation of `reduce-vec-small` might look like
+This is what an implementation of `reduce-vec-second-stage` might look like
 
 ```
-;; -- reduce-vec-small --
-(defmacro reduce-vec-small (someFunction vec identity 
+;; -- reduce-vec-second-stage --
+(defmacro reduce-vec-second-stage (someFunction vec identity 
                                         &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (element-type vec) message)))
                                                   (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (element-type vec) message)))
                                         &key message)
@@ -5092,7 +5185,7 @@ This is what an implementation of `reduce-vec-small` might look like
   `(progn
     (declare (grid-level))
     (when-thread-is 0
-     (r-t-assert (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for reduce-vec-small"))
+     (r-t-assert (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for reduce-vec-second-stage"))
     (let ((sum ,identity)
           (len (length~ ,vec)))
       (declare (uniform len))
@@ -5100,7 +5193,7 @@ This is what an implementation of `reduce-vec-small` might look like
         (declare (grid-stride-target ,vec))
         (when (< x len)
           (set! sum (funcall ,someFunction sum (~ ,vec x)))))
-      (reduce-to-1-small ,someFunction sum ,identity ,localScratchVec ,globalScratchVec)
+      (reduce-to-1-second-stage ,someFunction sum ,identity ,localScratchVec ,globalScratchVec)
       ;; The result is now in 'sum' of thread 0.
       ;; Return it to the caller.
       (return (shuffle sum 0)))))
@@ -8496,11 +8589,12 @@ Higher Order Function Operations
 - map-stride
 - reduce-to-warp
 - reduce-to-workgroup
-- reduce-to-1-small
+- reduce-to-1-second-stage
 - reduce-to-1-atomic
 - reduce-to-1-cas
 - reduce-to-1-cont
-- reduce-vec-small
+- reduce-vec-first-stage
+- reduce-vec-second-stage
 - reduce-vec-atomic
 - reduce-vec-cas
 - reduce-vec-cont
