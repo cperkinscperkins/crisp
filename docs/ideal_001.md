@@ -187,12 +187,13 @@ Table of Contents
 - - map
 - - reduce variants
 - - reduce vector
-- Gather / Scatter
+- Boolean Reductions
 - Filtering / Prefix-Sum Scan
 - - exclusive scan
 - - inclusive scan
 - - Word Count with Exclusive Scan
 - - `filter`
+- Gather / Scatter
 - Sorting
 - - Bitonic Sort
 - - Radix Sort
@@ -5316,6 +5317,57 @@ But they still work fine with commutative operations like addition, multiply, mi
 Additionally any function defined with `def-function` can be used with the reduction, but it will only work
 correctly if it is commutative, where  `(someF a b)` is equivalent to `(someF b a)`. 
 
+Boolean Reductions
+==================
+
+`all?` / `none?`
+----------------
+```
+(all? someVec &out result &optional predicateF)
+(none? someVec &out result &optional predicateF)
+```
+`all?` checks to see if all the values in a `vector` are true and, if so, sets its result to `true`, otherwise `false`
+
+Conversely, `none?` checks to make sure that none of the values are true, and if so, set result to `true`.
+
+Possible Implementation
+```
+;; -- all? --
+(<T A>
+  (def-grid-function all? (someVec &out result-vec &optional (predicateF (gen-to-bool T)))
+    (declare #'((in-vec T A) &out (single-result int) &optional (predicate-type T)))
+      
+    ;; this thread checks its strides
+    (let ((partial-result:int 1)) 
+      (loop-vector-stride someVec (i)
+        (unless (funcall predicateF (~ someVec i))
+          (set! partial-result 0))))
+
+    (reduce-to-1-cas #'logand partial-result 1 result-vec)))
+```
+
+`any?`
+-----
+```
+(any? someVec &out result &optional predicateF)
+```
+`any?` checks to see if any of the values in `someVec` are true and, if so, sets its result to `true`.
+
+Possible Implementation
+```
+;; -- any? --
+(<T A>
+  (def-grid-function any? (someVec &out result-vec &optional (predicateF (gen-to-bool T)))
+    (declare #'((in-vec T A) &out (single-result int) &optional (predicate-type T)))
+      
+    ;; this thread checks its strides
+    (let ((partial-result:int 0)) 
+      (loop-vector-stride someVec (i)
+        (when (funcall predicateF (~ someVec i))
+          (set! partial-result 1))))
+
+    (reduce-to-1-cas #'logior partial-result 0 result-vec)))
+```
 
 
 
@@ -7802,7 +7854,6 @@ miscellaneous
 -------------
 
 - if -stride or -loop has an atomic op inside, turn off the users machine.
-- when-is-last-workgroup cannot have set-result! inside its body. 
 
 
 
@@ -7965,6 +8016,7 @@ Presently, the following forms are the ONLY ones allowed within the body of a `d
 - `_`  
 - `let`
 - `kernel_var_name::param-name` identifier 
+- `make-hoist-vector`
 
 launch-sequential
 -----------------
@@ -8562,6 +8614,9 @@ Higher Order Function Operations
 - reduce-vec-cont
 - binop-type     ; commutative vs non-commutative ?
 - predicate-type
+- all?
+- none?
+- any?
 - exclusive-scan-workgroup   ; <-- the scans are NOT HOF ops. but Filter is.
 - inclusive-scan-workgroup
 - filter
@@ -8827,7 +8882,7 @@ To Do
 - [ ] metadata:  'bifurcation count' and 'cognitive load'.  Not sure. 
 - [ ] give more thought to "events". Not sure what CUDA does. 
 - [x] in-warp / in-XXXXX  =>  is this really better than just (let ((lane-id (get-lane-id))) ...)  &c.  Esp consider: (let (in-warp (let ...)))  which is a lot of nesting versus ONE  (let ...)
-+ [ ] fold and friend BUT REDUCED via shuffle <-- we added `reduce-` do we need others? 
++ [ ] OTHER reductions: scan / boolean (all, any none?) / Segmented
 - [x] reduce-vec ?
 - [ ] pronounce "shuffle" as "shoo-FLAY"
 - = specialization constants? More of a host thing.  Host runtime access to crisp compiler seems more powerful.
@@ -8944,6 +8999,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     [ ] get-return-type
     [ ] get-member-types
 - [x] reduction macros -> templates
+- [ ] OTHER reductions: scan / boolean (all, any none?) / Segmented
 - [x] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
 - [ ] ENTRYPOINT - for libraries
 - [ ] fused softmax
