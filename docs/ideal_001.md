@@ -809,7 +809,6 @@ There are five different cases where this happens:
  - vectors
  - debug communication channel
  - scratch memory
- - result memory
  - user defined "implicit" vectors
 
  Crisp lets you put vectors directly into the kernel parameter list, but in practice the hoisting code will often need to set TWO arguments: a C-style pointer
@@ -821,7 +820,7 @@ for the debug data channel data pointer and size.   <!-- NOTE:  we might use int
 If the kernel or any of the functions it calls invoke `make-scratch-vector`, then then kernel
 will accept two additional arguments for the scratch memory pool and its size. 
 
-Similarly, every invocation of `make-result-vector` or `make-implicit-vector` add two implicit args (pointer and size) to the kernel.
+Similarly, every invocation of `make-implicit-vector` adds two implicit args (pointer and size) to the kernel.
 
 <!-- NOTES
 clSetKernelArg : https://registry.khronos.org/OpenCL/sdk/3.0/docs/man/html/clSetKernelArg.html
@@ -862,11 +861,10 @@ the `&out` specifier and possibly other safety checks.
 #### implicit vector arguments
 
 If the kernel or any of its subfunctions use the Crisp side channel convenience functions
-like `make-scratch-vector` , `make-result-vector`, `make-implicit-vector` OR if the kernel was/will be compiled with the debug logging option, then these vectors will have
+like `make-scratch-vector` , `make-implicit-vector` OR if the kernel was/will be compiled with the debug logging option, then these vectors will have
 to be  explicitly passed by the host and marshalled.  
 
 - `marshall-scratch-vector`
-- `marshall-result-vector`
 - `marshall-implicit-vector`
 - `marshall-debug-logging-vector`
 
@@ -1818,6 +1816,7 @@ Possible Implementation
 (<T>
   (def-type single-result (vector-type T :global :writeable :compact :length 1)))
 
+;; in context of when-is-last-workgroup, we screen with local id is 0
 (defmacro set-result! (result-v value)
  `(when-global-linear-id-is 0
     (set! (~ ,result-v 0) ,value)))
@@ -2283,19 +2282,23 @@ Modifying the beginning of the arglist (of course).
 ### Specialize Scratch Vector Routines
 
 Many kernels routinely get scratch vectors sized for a workgroup or the number of
-groups. There are predefined functions for this, that specify the desired size.
+groups. There are predefined macros for this, that specify the desired size.
 
 These default to `:local` address space, `:read-write` access and `:std140` layout.
 But the address space can be made `:global` with an optional argument.
 
+
 ```
-(make-scratch-local-work-size T &optional address-space)
-(make-scratch-num-groups T &optional address-space)
+(make-scratch-local-work-size T &optional address-space &key name comment)
+(make-scratch-num-groups T &optional address-space &key name comment)
+(make-scratch-num-warps T &optional address-space &key name comment) ;; <--  number of warps in a single workgroup.
 ```
 There is a matching type function
 ```
 (scratch-vec-type T &optional address-space)
 ```
+
+<!-- num-warps is (ceil (get-local-work-size) (get-warp-size)) -->
 
 Tensors
 -------
@@ -4707,7 +4710,7 @@ The `XXXX-cont` variation is single construct that uses kernel continuations, so
 solutions.  The `XXXX-second-stage` is a small "sweep up and finish" construct that completes a "first stage" of 
 some reduction.  For vectors that "first stage" is `reduce-vec-first-stage`.  For variables, the first
 stage would be `reduce-to-workgroup`.  Note that `reduce-to-workgoup` is a VERY useful workhorse
-and is used by many of the other reduction. Lastly `reduce-to-warp` is a thread level function 
+and is used by many of the other reductions. Lastly `reduce-to-warp` is a thread level operation 
 that is special case and very fast. It is used by `reduce-to-workgroup`. 
 
 
@@ -4776,7 +4779,9 @@ Possible Implementation:
 
 `(reduce-to-workgroup someFunction <someVar> identity &key return-vec local-scratch-vec message )`
 
-`reduce-to-workgroup` is much the same as `reduce-to-warp` but it reduces all the threads in the workgroup, not just in the warp. 
+`reduce-to-workgroup` is very useful workhorse construct.  It applies the reduction across all threads and results
+in each the 0 thread of each workgroup having the final reduction (and optionally storing it in `return-vec`).
+Functionally, `reduce-to-workgroup` is much the same as `reduce-to-warp` but it reduces all the threads in the workgroup, not just in the warp. 
 In addition to `someFunction` , `<someVar>` and `identity` it also accepts two `&key` arguments.
 
 Like `reduce-to-warp` this is NOT a grid level operation and it can be used in a wide variety of contexts and situations.
@@ -4808,7 +4813,7 @@ Possible Implementation
 ```
 ;; -- reduce-to-workgroup --
 (defmacro reduce-to-workgroup (someFunction someVar identity &key message 
-                                                             (local-scratch-vec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
+                                                             (local-scratch-vec (make-scratch-num-warps (type-of someVar) message))
                                                              return-vec)
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
@@ -4854,11 +4859,13 @@ Possible Implementation
 
 ### reduce-to-1-second-stage
 
-`(reduce-to-1-second-stage someFunction <someVar> identity &optional localScratchVec globalScratchVec)`
+`(reduce-to-1-second-stage someFunction <someVar> identity &out final-result &optional localScratchVec globalScratchVec)`
 
 `reduce-to-1-second-stage` is much the same as `reduce-to-workgroup` but reduces all threads in all workgroups down to one single value.
+That value will be stored in `final-result` which is a `single-result`.  `someVar` will also be correctly set in the very last workgroup,
+but not other workgroups which will hold intermediate values. 
 
-HOWEVER, it has a caveat, in that the number of workgroups MUST NOT BE greater than `local_work_size`.  If this is
+Also this routing has a restriction in that the number of workgroups MUST NOT BE greater than `local_work_size`.  If this is
 violated, this routine will runtime assert. However, remember that runtime asserts are only observable when 
 the debug logging option has been elected when compiling. 
 
@@ -4880,35 +4887,29 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 - `<someVar>` in thread 0 of workgroup 0 will hold the final value of the reduction
               this is the same as global linear thread id of 0.
               Its value is indeterminant in OTHER threads.
+- `final-result` will hold the final result of the reduction.
 
 ```
-(let ((global-scratch (make-scratch-vector ulong :global :read_write (ceil (get-global-work-size) (get-local-work-size))))
-       (local-scratch (make-scratch-vector ulong :local :read_write (ceil (get-local-works-size) +warp-size+)))
-       (someVar 1))
-   (reduce-to-1-second-stage #'+ someVar 0 local-scratch global-scratch)
-   (when-global-linear-id-is 0
-      ;; someVar will hold the total in this thread.
-      ... ))
-
+(let ((someVar (some-calculation ...)))
+   (reduce-to-1-second-stage #'+ someVar 0 output-single)
 ```
 
 Possible Implementation
 ```
-;; -- reduce-to-1-second-stage --
-(defmacro reduce-to-1-second-stage (someFunction someVar identity &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
-                                                               (globalScratchVec (funcall (get-make-reduction-global-scratch-vec (type-of someVar) message)))
-                                                             &key message)
+;; -- reduce-to-1-second-stage -- 
+(defmacro reduce-to-1-second-stage (someFunction someVar identity out-single 
+                                    &optional (localScratchVec (make-scratch-num-warps (type-of someVar) :message message))
+                                              (globalScratchVec (make-scratch-num-groups (type-of someVar) :message message))
+                                    &key message)
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
   `(progn
     (declare (grid-level) (num-groups :max :local-size))
-    (when-thread-is 0
-      (r-t-assert (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for reduce-to-1-second-stage"))
+    (r-t-assert-0 (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for reduce-to-1-second-stage")
 
     ; after this the globalScratchVec will one value per group.
-    (reduce-to-workgroup ,someFunction ,someVar ,identity ,localScratchVec)
-    (when-thread-in-group-is 0
-      (set! (~ ,globalScratchVec (get-group-id)) ,someVar))
+    (reduce-to-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec :return-vec ,globalScratchVec)
+    
 
     ; inter thread reduction.  Easiest and fastest if it fits in one warp,
     ; or one workgroup.
@@ -4916,32 +4917,31 @@ Possible Implementation
       (let ((N (length~ ,globalScratchVec))
             (l-w-s (get-local-work-size)))
         (declare (uniform N l-w-s))
-        (cond+  ((< N +warp-size+)
+        (cond*  ((< N +warp-size+)
                   (let ((lane-id (get-lane-id))
-                        (var (if (< lane-id N) (~ ,globalScratchVec lane-id) ,identity))))
+                        (var (if (< lane-id N) (~ ,globalScratchVec lane-id) ,identity)))
                     (reduce-to-warp ,someFunction var ,identity N)
                     ; Broadcast to all threads in wg
                     (when-thread-in-group-is 0
-                      (set! (~ ,local-scratch-vec 0) ,someVar))
+                      (set! (~ ,localScratchVec 0) var))
                     (local-barrier)
-                    (set! ,someVar (~ ,local-scratch-vec 0)))
+                    (set! ,someVar (~ ,localScratchVec 0))))
                 ((< N l-w-s)
                   (let ((local-id (get-local-id))
                         (var (if (< local-id N) (~ ,globalScratchVec local-id) ,identity))))
-                    (reduce-to-workgroup ,someFunction var ,identity ,localScratchVec)
-                    ; broadcast
-                    (when (= local-id 0)
-                      (set! (~ ,localScratchVec 0) var))
-                    (local-barrier)
-                    (set! ,someVar (~ ,localScratchVec 0))))))))
+                    (reduce-to-workgroup ,someFunction var ,identity :local-scratch-vec ,localScratchVec)
+                    (set! ,someVar var)))
+        (set-result! ,out-single ,someVar)))))
+                    
 ```
 
 ### reduce-to-1-atomic
 
-`(reduce-to-1-atomic someFunction <someVar> identity return-vec &optional localScratchVec)`
+`(reduce-to-1-atomic someFunction <someVar> identity &out return-vec &optional localScratchVec)`
 
-`reduce-to-1-atomic` is much the same as `reduce-to-workgroup` but reduces all threads in all workgroups down to one single value.
-That value is stored in `return-vec` which is a required argument. It should be a vector of length 1.
+`reduce-to-1-atomic` is a reduction of a variable like the others, but it is a single pass operation.
+No "second stage" kernel is needed.  It reduces all threads in all workgroups down to one single value.
+That value is stored in `return-vec` which is a required argument. It should be a vector of length 1 (ie, a `single-result`)
 
 Unlike `reduce-to-1-second-stage`, `reduce-to-1-atomic` can work across all threads and is not constrained by workgroup sizes.  
 Instead `reduce-to-1-atomic` has a different limitation: `someFunction` must be one of three commutative operations: `+`, `min` or `max`
@@ -4971,7 +4971,7 @@ Possible Implementation
 ```
 ;; -- reduce-to-1-atomic --
 (defmacro reduce-to-1-atomic (someFunction someVar identity return-vec
-                              &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
+                              &optional (localScratchVec (make-scratch-num-warps (type-of someVar) :message message))
                               &key message)
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
@@ -4981,7 +4981,7 @@ Possible Implementation
   `(let ((atomic-op (get-atomic-equivalent ,someFunction)))
      (declare (grid-level))
     ; after this the globalScratchVec will one value per group.
-    (reduce-to-workgroup ,someFunction ,someVar ,identity ,localScratchVec)
+    (reduce-to-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec)
 
     ; atomic combination
     (when-thread-in-group-is 0
@@ -4990,10 +4990,11 @@ Possible Implementation
 
 ### reduce-to-1-cas
 
-`(reduce-to-1-cas someFunction <someVar> identity return-vec  &optional localScratchVec)`
+`(reduce-to-1-cas someFunction <someVar> identity &out return-vec  &optional localScratchVec)`
 
-`reduce-to-1-cas` is much the same as `reduce-to-workgroup` but reduces all threads in all workgroups down to one single value.
-That value is stored in `return-vec` which is a required argument. It should be a vector of length 1.
+`reduce-to-1-cas` is a reduction of a variable like the others, but it is a single pass operation.
+No "second stage" kernel is needed.  It reduces all threads in all workgroups down to one single value.
+That value is stored in `return-vec` which is a required argument. It should be a vector of length 1 (ie, a `single-result`)
 
 Unlike `reduce-to-1-atomic` , which only works with a few operations, `reduce-to-1-cas` can work with ANY commutative binary operation.
 It does this via atomic compare and swap (via `atomic-binop!`) which, while flexible, might not always be the most performant solution.
@@ -5018,7 +5019,7 @@ Possible Implementation
 ```
 ;; -- reduce-to-1-cas --
 (defmacro reduce-to-1-cas (someFunction someVar identity return-vec
-                              &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) message)))
+                              &optional (localScratchVec (make-scratch-num-warps (type-of someVar) :message message))
                               &key message)
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
@@ -5026,7 +5027,7 @@ Possible Implementation
   `(progn
     (declare (grid-level))
     ; after this the globalScratchVec will one value per group.
-    (reduce-to-workgroup ,someFunction ,someVar ,identity ,localScratchVec)
+    (reduce-to-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec)
 
     ; atomic combination
     (when-thread-in-group-is 0
@@ -5069,16 +5070,16 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 Possible Implementation
 ```
 ;; -- reduce-to-1-cont --
-(defmacro reduce-to-1-cont (someFunction someVar identity continuation-kernel-name layout
-                                   &optional (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (type-of someVar) layout message)))
-                                             (localScratchVec  (funcall (gen-make-reduction-local-scratch-vec (type-of someVar) layout message))))  
+(defmacro reduce-to-1-cont (someFunction someVar identity continuation-kernel-name
+                             &optional (globalScratchVec (make-scratch-num-groups (type-of someVar)))
+                                       (localScratchVec (make-scratch-num-warps (type-of someVar)))) 
    (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
    (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
    `(let-kernel ((continuation-k  (l-s-v g-s-v result-vec)
                   (declare (kernel-name ,continuation-kernel-name)
-                           (type l-s-v (local-scratch-vec-type (type-of ,someVar) ,layout))
-                           (type g-s-v (global-scratch-vec-type (type-of ,someVar) ,layout))
-                           (type result-vec (vector-type (type-of ,someVar) :global :writeable ,layout))
+                           (type l-s-v (scratch-vec-type (type-of ,someVar)))
+                           (type g-s-v (scratch-vec-type (type-of ,someVar) :global))
+                           (type result-vec (single-result (type-of ,someVar)))
                            (local-size :derive-from g-s-v :msg (string-concat ,continuation-kernel-name "requires a local_work_size at least as big as the global-scratch-vector")))
                       (let ((num-items (length~ g-s-v))
                             (local-id (get-local-id))
@@ -5089,22 +5090,20 @@ Possible Implementation
                                       ,identity)))
                         
                         ;; Perform a standard workgroup reduction on the partial results.
-                        (reduce-to-workgroup ,someFunction val ,identity l-s-v)
+                        (reduce-to-workgroup ,someFunction val ,identity :local-scratch-vec l-s-v)
                         
-                        ;; The final result is now in 'val' of thread 0.
-                        ;; Only thread 0 writes the final result to the output vector.
+                        ;; The final result is now in 'val' of all wg threads.
+                        ;; To avoid contention, only thread 0 writes the final result to the output vector.
                         (when (= local-id 0)
                           (set! (~ result-vec 0) val))) ))
 
       (declare (grid-level))
       ; after reduce-to-workgroup the globalScratchVec will one value per group.
-      (reduce-to-workgroup ,someFunction ,someVar ,identity ,localScratchVec)
-      (when-thread-in-group-is 0
-        (set! (~ ,globalScratchVec (get-group-id) ,someVar)))
+      (reduce-to-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec :result-vec ,globalScratchVec)
       
        ;; this isn't a real invocation. It just demonstrates to the hoisting code 
        ;; HOW this function expects the "continuation" kernel to be called.
-      (continuation-k ,globalScratchVec ,localScratchVec (make-result-vector (type-of ,someVar) 1))))  
+      (launch-kernel (continuation-k ,globalScratchVec ,localScratchVec (make-hoist-vector (type-of ,someVar) 1)))))  
       
 ```
 
@@ -5149,11 +5148,10 @@ Possible Implementation
 
 ### reduce-vec-second-stage
 
-`(reduce-vec-second-stage  someFunction vec identity &optional localScratchVec globalScratchVec)`
+`(reduce-vec-second-stage  someFunction intermediateVec identity &out final-result &optional localScratchVec globalScratchVec)`
 
-This variant has the same limitation as `reduce-to-1-second-stage`: the number of workgroups MUST NOT BE greater than `local_work_size`.  If this is
-violated, this routine will runtime assert. However, remember that runtime asserts are only observable when 
-the debug logging option has been elected when compiling. 
+This variant has a different requirement than  `reduce-to-1-second-stage`: it is launched 
+with just ONE workgroup, which must have the same number of threads as `intermediateVec` length.
 
 #### optional scratch vectors
 This routine accepts two optional arguments.  `localScratchVec` and `globalScratchVec`.
@@ -5169,40 +5167,48 @@ which can be calculated as `M` where `M = global_work_size / local_work_size`.
 
 
 - when `reduce-vec-second-stage` completes, the state of the scratch vectors are indeterminant
-- `reduce-vec-second-stage` returns the result of the reduction.
+- `final-result` will hold the final result of the reduction.
 
 
 This is what an implementation of `reduce-vec-second-stage` might look like
 
 ```
 ;; -- reduce-vec-second-stage --
-(defmacro reduce-vec-second-stage (someFunction vec identity 
-                                        &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (element-type vec) message)))
-                                                  (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (element-type vec) message)))
-                                        &key message)
-  (c-t-assert (is-type-of someFunction (binop-type (element-type vec))) "type mismatch between someFunction and vec")
-  (c-t-assert (is-type-of (element-type vec) (type-of identity)) "type mismatch between vec and identity")
-  `(progn
-    (declare (grid-level))
-    (when-thread-is 0
-     (r-t-assert (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for reduce-vec-second-stage"))
-    (let ((sum ,identity)
-          (len (length~ ,vec)))
-      (declare (uniform len))
-      (loop-grid-stride (x)
-        (declare (grid-stride-target ,vec))
-        (when (< x len)
-          (set! sum (funcall ,someFunction sum (~ ,vec x)))))
-      (reduce-to-1-second-stage ,someFunction sum ,identity ,localScratchVec ,globalScratchVec)
-      ;; The result is now in 'sum' of thread 0.
-      ;; Return it to the caller.
-      (return (shuffle sum 0)))))
+;; This kernel's only job is to run the final reduction.
+;; It's launched with a single workgroup that must be large
+;; enough to hold the intermediate data.
+(<T A>
+  (declare (value-is A #'is-alignment?))
+
+  ;; -- reduce-vec-second-stage --
+  ;; This kernel IS the final reduction.
+  (def-grid-function reduce-vec-second-stage (someFunction intermediateVec identity
+                                               &out final-result
+                                               &optional (localScratch (make-scratch-local-work-size T)))
+    (declare #'((binop-type T) (in-vec T A) T &out (single-result T)
+                                         &optional (scratch-vec-type T))
+             (grid-level)
+             ;; launch just one workgroup, big enough to accomodate intermediateVec
+             (num-groups :max 1)
+             (local-size :derive-from intermediateVec :strategy :one-thread-per))
+
+    (let ((local-id (get-local-id))
+          (N (length~ intermediateVec)))
+      
+      (when (< local-id N)
+        (set! (~ localScratch local-id) (~ intermediateVec local-id)))
+      (local-barrier)
+
+      (let ((val (if (< local-id N) (~ localScratch local-id) identity)))
+        (reduce-to-workgroup someFunction val identity)
+        (set-result! final-result val)))))
+
 
 ```
 
 ### reduce-vec-atomic
 
-`(reduce-vec-atomic  someFunction vec identity return-vec-global &optional localScratchVec)`
+`(reduce-vec-atomic  someFunction vec identity &out return-vec &optional localScratchVec)`
 
 The `reduce-vec-atomic` variant has the same limitations as `reduce-to-1-atomic`: 
 `someFunction` must be one of three commutative operations: `+`, `min` or `max`
@@ -5221,28 +5227,26 @@ Its size should be the number of warps in a single workgroup (ie `sz = local_wor
 
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 
-- `reduce-vec-atomic` returns nil.
-- `result-vec` will hold the value of the reduction. It must be `:global` memory.
+- `result-vec` will hold the value of the reduction. 
 
 
 Possible Implementation
 ```
 ;; -- reduce-vec-atomic --
-(defmacro reduce-vec-atomic (someFunction vec identity return-vec
-                              &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (element-type vec) message)))
-                              &key message)
-  (c-t-assert (is-type-of someFunction (binop-type (element-type vec))) "type mismatch between someFunction and vec")
-  (c-t-assert (is-type-of (element-type vec) (type-of identity)) "type mismatch between vec and identity")
-  (c-t-assert (is-type-of (element-type vec) (element-type return-vec)) "type mismatch between vec and return-vec")
-  (c-t-assert (or (= someFunction #'+) (= someFunction #'min) (= someFunction #'max)) "only #'+, #'min or #'max are accepted operations for reduce-to-1-atomic")
-  `(let ((sum ,identity)
+(<T A>
+  (def-grid-function reduce-vec-atomic (someFunction vec identity &out return-vec
+                                &optional (localScratchVec (make-scratch-num-warps T)))
+    (declare #'((binop-type T) (in-vec T A) T &out (single-result T) &optional (scratch-vec-type T)))
+
+    (c-t-assert (or (= someFunction #'+) (= someFunction #'min) (= someFunction #'max)) "only #'+, #'min or #'max are accepted operations for reduce-vec-atomic")
+    
+    (let ((var identity)
           (len (length~ ,vec)))
-      (declare (uniform len) (grid-level))
-      (loop-grid-stride (x)
-        (declare (grid-stride-target ,vec))
-        (when (< x len)
-          (set! sum (funcall ,someFunction sum (~ ,vec x)))))
-      (reduce-to-1-atomic ,someFunction sum ,identity ,return-vec ,localScratchVec)))
+        (declare (uniform len))
+        (loop-grid-stride vec (i)
+          (set! var (funcall someFunction var (~ vec i)))))
+        (reduce-to-1-atomic someFunction var identity return-vec localScratchVec)))
+
   
 ```
 
@@ -5256,27 +5260,23 @@ atomic compare and swap is used to force the order of the reduction. While this 
 of the vector reductions, it might not always be the most performant solution. 
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 
-- `reduce-vec-cas` returns nil.
-- `result-vec` will hold the value of the reduction. It must be `:global` memory.
+- `result-vec` will hold the value of the reduction. 
 
 Possible Implementation
 ```
 ;; -- reduce-vec-cas --
-(defmacro reduce-vec-cas (someFunction vec identity return-vec
-                              &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (element-type vec) message)))
-                              &key message)
-  (c-t-assert (is-type-of someFunction (binop-type (element-type vec))) "type mismatch between someFunction and vec")
-  (c-t-assert (is-type-of (element-type vec) (type-of identity)) "type mismatch between vec and identity")
-  (c-t-assert (is-type-of (element-type vec) (element-type return-vec)) "type mismatch between vec and return-vec")
-  `(let ((sum ,identity)
+(<T A>
+  (def-grid-function reduce-vec-cas (someFunction vec identity &out return-vec
+                                &optional (localScratchVec (make-scratch-num-warps T)))
+    (declare #'((binop-type T) (in-vec T A) T &out (single-result T) &optional (scratch-vec-type T)))
+
+    (let ((var identity)
           (len (length~ ,vec)))
-      (declare (uniform len) (grid-level))
-      (loop-grid-stride (x)
-        (declare (grid-stride-target ,vec))
-        (when (< x len)
-          (set! sum (funcall ,someFunction sum (~ ,vec x)))))
-      (reduce-to-1-cas ,someFunction sum ,identity ,return-vec ,localScratchVec)))
-  
+        (declare (uniform len))
+        (loop-grid-stride vec (i)
+          (set! var (funcall someFunction var (~ vec i)))))
+        (reduce-to-1-cas someFunction var identity return-vec localScratchVec)))
+
 ```
 
 ### reduce-vec-cont
@@ -5289,57 +5289,18 @@ will be generated to complete the reduction operation.
 Possible Implementation
 ```
 ;; -- reduce-vec-cont --
-(defmacro reduce-vec-cont (someFunction vec identity continuation-kernel-name
-                                        &optional (localScratchVec (funcall (gen-make-reduction-local-scratch-vec (element-type vec) message)))
-                                                  (globalScratchVec (funcall (gen-make-reduction-global-scratch-vec (element-type vec) message)))
-                                        &key message)
-  (c-t-assert (is-type-of someFunction (binop-type (element-type vec))) "type mismatch between someFunction and vec")
-  (c-t-assert (is-type-of (element-type vec) (type-of identity)) "type mismatch between vec and identity")
-  `(let ((sum ,identity)
-          (len (length~ ,vec)))
-      (declare (uniform len) (grid-level))
-      (loop-grid-stride (x)
-        (declare (grid-stride-target ,vec))
-        (when (< x len)
-          (set! sum (funcall ,someFunction sum (~ ,vec x)))))
-      (reduce-to-1-cont ,someFunction sum ,identity continuation-kernel-name  ,localScratchVec ,globalScratchVec)))
-```
+(<T A>
+  (def-grid-function reduce-vec-cont (someFunction vec identity continuation-kernel-name
+                              &optional (localScratchVec (make-scratch-num-warps T))
+                                        (globalScratchVec (make-scratch-num-groups T)))
+    (declare #'((binop-type T) (in-vec T) T string &optional (scratch-vec-type T) (scratch-vec-type T :global)))
 
-### generating scratch vectors
-
-As mentioned earlier, some reductions accept optional scratch vector arguments, and if unspecified, Crisp
-will generate them for you.  But the functions Crisp uses are available to you.
-To help reduce errors and bookkeeping, Crisp provides two templated functions which can help generate them:
-`make-reduction-local-scratch-vec` and `make-reduction-global-scratch-vec`
-
-To use them, you'll need to generate the function you want for some particular element type using the `gen-` prefix.
-The generators accept a type (`T`) argument and an optional comment message (`M`). The comment message is important
-because it will appear the hoisting code informing where/why such-and-such amount of memory has to be allocated.
-
-
-Example:
-```
-(let ((local-float-s-v (gen-make-reduction-local-scratch-vec float "scratch memory for the workgroup reduction on illumination scalars"))
-      (scratch-vec (local-float-s-v)))
-    ;; assume there is some variable named "illumination"
-   (reduce-to-workgroup #'* illumination scratch-vec)
-   ...)
-```
-
-Here is an example of how those functions might be implemented.
-
-```
-(with-template-type (T &optional (M ""))
-
-  -- make-reduction-local-scratch-vec --
-  (def-function make-reduction-local-scratch-vec ()
-    (let ((local-scratch-size (ceil (get-local-work-size) (get-warp-size)))) ;; or just (get-num-warps) right?
-      (make-scratch-vector T :local :read_write local-scratch-size :name "make-reduction-local-scratch-vec" :comment M)))
-
-  -- make-reduction-global-scratch-vec --
-  (def-function make-reduction-global-scratch-vec ()
-    (let ((global-scratch-size (ceil (get-global-work-size) (get-local-work-size)))
-      (make-scratch-vector T :global :read_write global-scratch-size :name "make-reduction-global-scratch-vec" :comment M )))))
+    (let ((var identity)
+          (len (length~ vec)))
+      (declare (uniform len))
+      (loop-vector-stride vec (i)
+        (set! var (funcall someFunction var (~ vec i))))
+      (reduce-to-1-cont someFunction var identity continuation-kernel-name localScratchVec globalScratchVec))))
 ```
 
 
@@ -7841,6 +7802,7 @@ miscellaneous
 -------------
 
 - if -stride or -loop has an atomic op inside, turn off the users machine.
+- when-is-last-workgroup cannot have set-result! inside its body. 
 
 
 
@@ -8981,7 +8943,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     [ ] is-grid-level? 
     [ ] get-return-type
     [ ] get-member-types
-- [ ] reduction macros -> templates
+- [x] reduction macros -> templates
 - [x] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
 - [ ] ENTRYPOINT - for libraries
 - [ ] fused softmax
