@@ -2304,8 +2304,52 @@ There is a matching type function
 ```
 (scratch-vec-type T &optional address-space)
 ```
-
 <!-- num-warps is (ceil (get-local-work-size) (get-warp-size)) -->
+
+### Scratch Helpers
+
+```
+(load-local global-vec scratch-vec &optional identity)
+(store-global scratch-vec global-vec &optional (transformF #'identityF))
+
+(load-tile ...) 
+(store-tile ...)
+```
+
+In `:one-thread-per` strategies, a common practice is to divide some input vec
+across workgroups and have each workgroup work on the vec using a local memory
+copy of the workgroups segment. These two macros handle that and even include a 
+`local-barrier`.
+
+`load-local` has an optional `identity` arg. If the global work size is
+greater than `global-vec`, then it may be necessary to fill in the matching portion
+of the `scratch-vec` with something, and `identity` is that something.
+
+There are also  `load-tile` and `store-tile` helpers to assist with
+similar operations in 2D strided scenarios. They are described below with Matrices. 
+
+Possible Implementation
+```
+(defmacro load-local (global-vec scratch-vec &optional (identity 0))
+  (c-t-assert (type-equal (element-type global-vec) (element-type scratch-vec)) "type match!")
+  (when identity (c-t-assert (type-equal (element-type global-vec) (type-of identity)) "identiy type"))
+  `(let ((lid (get-local-linear-id))
+         (gid (get-global-linear-id))
+         (val (if (< gid (length~ ,global-vec)) (~ ,global-vec gid) ,identity)))
+      (set! (~ ,scratch-vec lid) val)
+      (local-barrier)))
+
+(defmacro store-global (scratch-vec global-vec 
+              &optional (transformF (get-identityF (element-type global-vec))))
+  (c-t-assert (type-equal (element-type global-vec) (element-type scratch-vec)) "type match!")
+  `(let ((lid (get-local-linear-id))
+         (gid (get-global-linear-id)))
+            ;; (wg-idx (get-workgroup-linear-id))) ;;<-- exists? 
+      (when (< gid (length~ ,global-vec))
+        (set! (~ ,global-vec gid) (funcall ,transformF (~ ,scratch-vec lid))))
+      (local-barrier))
+
+```
 
 Tensors
 -------
@@ -4578,20 +4622,20 @@ The Common Lisp `labels` macro is similarly not supported for this same reason.
 ### `curry`
 
 ```
-(curry #'someFunction <kernel-level-arg0> ...)
+(curry #'someFunction <uniform-arg0> ...)
 ```
 
 But a limited form of "currying" IS available.  
-The `curry` form takes a function of N arguments as its first arg, followed by M "kernel level args" where 
+The `curry` form takes a function of N arguments as its first arg, followed by M uniform args where 
 M <= N. It returns a new function that accepts (N-M) arguments and can be passed to other HOF functions.
 
-By "kernel level args" we mean that the argument binding values that are accepted by the `curry` form MUST
-originate in the kernel parameter list. `curry` CAN be used in sub-functions, but the compiler must be able
-to trace each possible argument bind back to a kernel parameter.  This particular compiler check will 
+By "uniform" we mean that the argument binding values that are accepted by the `curry` form MUST
+be uniform across the entire workgroup.  Thus, they either must originate in the kernel parameter list,
+be declared `uniform`, forced to be uniform with `to-uniform`, etc. If crossing function calls, the compiler
+will check up through the call chain to make sure that it can verify that these captures to `curry` are, in fact,
+uniform. This particular compiler check will 
 be deferred for library functions marked as `entrypoint` BUT the requirement remains and will be enforced
-when the call-chain ends up underneath a kernel.  This requirement is because kernel parameters 
-are uniform across all threads, so capturing them doesn't introduce divergence 
-or the complexities of capturing thread-local state
+when the call-chain ends up underneath a kernel.  This requirement is so capturing them doesn't introduce divergence or the complexities of capturing thread-local state
 
 The example in the next section shows `curry` in action.
 
@@ -4788,7 +4832,7 @@ Possible Implementation:
 
 `reduce-to-workgroup` is very useful workhorse construct.  It applies the reduction across all threads and results
 in each the 0 thread of each workgroup having the final reduction (and optionally storing it in `return-vec`).
-Functionally, `reduce-to-workgroup` is much the same as `reduce-to-warp` but it reduces all the threads in the workgroup, not just in the warp. 
+Functionally, `reduce-to-workgroup` is much the same as `reduce-to-warp` but it reduces all the threads in the workgroup, not just in the warp.  The value `<someVar>` will be `uniform` at the completion of this operation.
 In addition to `someFunction` , `<someVar>` and `identity` it also accepts two `&key` arguments.
 
 Like `reduce-to-warp` this is NOT a grid level operation and it can be used in a wide variety of contexts and situations.
@@ -4861,6 +4905,7 @@ Possible Implementation
       (local-barrier)
       (set! ,someVar (~ ,local-scratch-vec 0))))
 
+      ;; add (declare (uniform ,someVar)) ??  
 
 ```
 
@@ -7374,11 +7419,11 @@ Now using soa-vector for better performance
          (local-id-x (get-local-id 0))
          (local-id-y (get-local-id 1)))
 
-     ;; 1. Calculate Global Source Coordinates (Coalesced for Components)
+     ;; Calculate Global Source Coordinates (Coalesced for Components)
      (let ((source-x (+ (* ,tile-x tile-dim) local-id-x))
            (source-y (+ (* ,tile-y tile-dim) local-id-y)))
 
-       ;; 2. Read Components and Write to Separate Local Tiles
+       ;; Read Components and Write to Separate Local Tiles
        (when (and (< source-y (length~ ,soa-vec)) (< source-x tile-dim)) ; Adjust bounds check
          ;; Coalesced read from real component array
          (set! (~ ,local-reals local-id- local-id-x) (real~ ,soa-vec source-y))
@@ -7404,8 +7449,6 @@ Now using soa-vector for better performance
                 ulong ; Total FFT size (power of 2)
                 &out (soa-vector-type CT :global :writeable A) => nil) ; Output data
                 (local-size :dims 2 :msg "fft-pass-soa-tiled requires a 2D enqueue"))
-
-      ;; --- 1. SETUP ---
       
       ;; Define TWO local memory tiles
       (def-local-mem local-reals (matrix T TILE_DIM TILE_DIM))
@@ -7418,16 +7461,16 @@ Now using soa-vector for better performance
       (let ((local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
             (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1)))
 
-        ;; --- 2. LOOP OVER WORK BLOCKS (If workgroup handles multiple butterflies) ---
+        ;; LOOP OVER WORK BLOCKS (If workgroup handles multiple butterflies)
         ;; This part depends on how work is assigned (e.g., each thread doing multiple butterflies)
         ;; Let's simplify and assume one butterfly per thread for now, matching non-tiled.
 
-        ;; --- 3. LOAD TILE INTO SoA FORMAT ---
+        ;; LOAD TILE INTO SoA FORMAT
         ;; Use a hypothetical SoA-aware load macro. This handles coalescing.
         (load-tile-soa input-vec local-reals local-imags group-idy group-idx)
         (local-barrier)
 
-        ;; --- 4. COMPUTE BUTTERFLIES IN LOCAL MEMORY ---
+        ;; COMPUTE BUTTERFLIES IN LOCAL MEMORY 
         ;; This part needs careful indexing based on the FFT stage/stride
         ;; Let's assume 'idx1', 'idx2', 'k' are calculated as before
         (when (< (get-global-id) (/ N 2))
@@ -7447,7 +7490,7 @@ Now using soa-vector for better performance
                 (multiple-value-bind (ap-re ap-im bp-re bp-im)
                     (fft-butterfly-soa a-re a-im b-re b-im (real~ w) (imag~ w))
 
-                  ;; --- 5. WRITE RESULTS BACK TO SoA LOCAL TILE ---
+                  ;; WRITE RESULTS BACK TO SoA LOCAL TILE
                   ;; Need barriers between stages if results overwrite inputs needed later
                   (set! (~ local-reals local-idy1 local-idx1) ap-re)
                   (set! (~ local-imags local-idy1 local-idx1) ap-im)
@@ -7455,7 +7498,7 @@ Now using soa-vector for better performance
                   (set! (~ local-imags local-idy2 local-idx2) bp-im)))))
         (local-barrier)
 
-        ;; --- 6. STORE TILE FROM SoA FORMAT ---
+        ;; STORE TILE FROM SoA FORMAT 
         ;; Use a hypothetical SoA-aware store macro. This handles coalescing.
         (store-complex-soa-tile local-reals local-imags output-vec group-idy group-idx))))
 
@@ -7509,6 +7552,60 @@ And a possible orchestration
 
     ;; Final copy to ensure output is in the right buffer
     (copy-final (if (even? (log2 (length~ input-vec))) buffer-A buffer-B) output-vec)))
+```
+
+Fused Softmax
+=============
+
+```
+(fused-softmax input-vec &out output-vec &optional scratch)
+```
+
+Softmax is a mathematical function that takes a vector of numbers (often called "logits") and converts them into a probability distribution. Each output value is between 0 and 1, and all the output values add up to 1. It's famous for being the final step in AI classification models, turning the model's "scores" into a set of confidence percentages.
+
+The fused softmax operation is a workgroup level operation, meaning that once completed, each 
+workgroup's values add up to 1. The typical use case is a vector that backs a 2D matrix is the 
+input, with the workgroup size set to the row width, and the number of workgroups is equal to 
+the number of rows (ie the column height) in the matrix.
+
+`fuzed-softmax` takes an input and output vector, and optionally accepts a 
+scratch vector whose length is equal to the local work size.
+
+```
+;; -- fuxed-softmaz
+(<T A>
+  (type-is T #'is-floating-point?)
+
+  (def-grid-function fuzed-softmax (input-vec &out output-vec 
+                          &optional (scratch-vec (make-scratch-local-work-size T)))
+    (declare #'((in-vec T A) &out (out-vec T A) &optional (scratch-vec-type T))
+      (global-size :derive-from input-vec :strategy :one-thread-per))
+
+  (load-local input-vec scratch-vec)
+
+  ;; find max
+  (let ((lid (get-local-id))
+        (xi  (~ scratch-vec lid))
+        (max-val xi))
+    (reduce-to-workgroup #'max max-val -INF)
+
+    ;; subtract and exponentiate
+    ;; $e^{x_i - \text{max}}$
+    (let ((xi-minus-max (- xi max-val))
+          (exm    (exp xi-minus-max)))
+      ;; overwrite scratch
+      (set! (~ scratch-vec lid) exm))
+
+    (local-barrier)
+
+    ;; sum across workgroup, 'sum' is uniform after
+    (let ((sum (~ scratch-vec lid)))
+      (reduce-to-workgroup #'+ sum 0.0)
+
+      ;; divide by sum, store
+      (let ((transformF (curry #'/ sum)))
+        (store-global scratch-vec output-vec transformF))))))
+    
 ```
 
 
@@ -8726,6 +8823,7 @@ control flow
 - local-size        [DP] [KO]      [3D]
 - check-thread-bounds              [3D]
 - check-wg-bounds                  [3D]
+- with-global-linear-id            [3D] ; I keep using this. rename?
 - in-each-thread                   [3D]
 - in-each-thread-in-group          [3D]
 - loop-grid-stride       [D]       [3D]
@@ -8773,8 +8871,9 @@ Higher Order Function Operations
 - reduce-vec-atomic
 - reduce-vec-cas
 - reduce-vec-cont
-- binop-type     ; commutative vs non-commutative ?
+- binop-type     
 - predicate-type
+- get-identity-f  ; needs writeup
 - all?
 - none?
 - any?
@@ -8808,6 +8907,10 @@ Sorting
 - scatter-pass
 - gen-radix-sort
 
+Algorithms
+----------
+- fft
+- fuzed-softmax
 
 
 
@@ -8878,7 +8981,12 @@ other
 - convert-soa-to-aos
 - convert-aos-to-soa
 - make-scratch-vector
-- make-result-vector
+- make-scratch-local-work-size
+- make-scratch-num-groups
+- make-scratch-num-warps
+- scratch-vec-type
+- load-local
+- store-global
 - make-implicit-vector
 - marshall-vector
 - marshall-scratch-vector
@@ -8927,6 +9035,8 @@ other
 - has-target
 - local-mem                 [DP]
 - global-mem :return-value  [DP] 
+
+
 
 
 logging and debugging
@@ -9167,6 +9277,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [x] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
 - [ ] ENTRYPOINT - for libraries
 - [ ] fused softmax
+- [ ] use maybe something "real" (texel ?)
 - [ ] data pool
 - [x] vector-view that changes element-type
 - [ ] dot product and accumulate for matrices
