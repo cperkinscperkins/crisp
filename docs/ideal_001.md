@@ -447,8 +447,9 @@ then use `&out` and enlist the compilers help in enforcing usage boundaries.
 
 The `&out` parameter list keyword marks the beginning of the output parameters. 
 All subsequent parameters in the list are treated as output parameters and are subject 
-to the write-only contract within the function's scope. `&out` must appear after 
-any required or `&optional` parameters.
+to the write-only contract within the function's scope. Following  `&out` there can be `&optional` and `&key` paramters, 
+there are NOT considered to be `&out` parameters.
+
 
 
 
@@ -5193,7 +5194,7 @@ Possible Implementation
       (loop-vector-stride vec (i)
        (set! sum (funcall someFunction sum (~ vec i)))))
 
-      (reduce-to-workgroup someFunction sum identity :return-vec intermediateVec))))
+    (reduce-to-workgroup someFunction sum identity :return-vec intermediateVec))))
 
 ```
 
@@ -5521,7 +5522,7 @@ POssible Implementation:
 
   ;; Generate the code
   `(let (;; Allocate the local memory using the name provided by the user
-          (,local-flags-var (make-local-scratch-vector uint (get-local-size)))
+          (,local-flags-var (make-scratch-local-work-size uint))
           (local-id (get-local-id))
           (global-id (get-global-id)))
 
@@ -5706,7 +5707,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
 (defmacro filter (input-vec predicateF result-vec)
   (c-t-assert (is-type-of predicateF (predicate-type (element-type input-vec))) "type mismatch between predicateF and input-vec")
   (c-t-assert (is-type-of (element-type input-vec) (element-type result-vec)) "type mismatch between input-vec and result-vec")
-  `(let ((local-wg-matches (make-scratch-vector uint :local :read_write :std140 (get-linear-work-size)))
+  `(let ((local-wg-matches (make-scratch-local-work-size uint))
         (local-id (get-local-id))
         (global-counter 0)
         (wg-offset 0)
@@ -5826,8 +5827,8 @@ But the count in `count-vec` is correct regardless.
                &out (vector-type ulong :global :writeable :std140 1) ; Output count vector
                => nil)
              ;; Declare optional local memory buffers for the scan algorithm
-             &optional (local-flags (make-local-scratch-vector uint (get-local-size)))
-                       (local-scan-results (make-local-scratch-vector uint (get-local-size)))
+             &optional (local-flags (make-scratch-local-work-size uint))
+                       (local-scan-results (make-scratch-local-work-size uint))
                        (local-info (make-local-scratch-vector uint 2))) ; For wg_total and wg_offset
 
     ;; first step - detect local matches
@@ -6032,7 +6033,7 @@ A possible implementation might be
              #((vector-type T :global :readable) (vector-type T :global :writeable) 
                 &key #'(T => #_is-orderable?) => nil))
     (let ((N   (get-local-linear-size)) ;; should be power of 2.
-         (shared-array (make-scratch-vector T :local :read_write :std140 N))
+         (shared-array (make-scratch-vector T N))
          (global-id (get-global-id))
          (local-id (get-local-id)))
       (r-t-assert-0 (is-power-of-2 N) "local_work_size should be a power of 2")
@@ -6275,8 +6276,8 @@ Possible Implementation
 
   ;; -- histogram-pass --
   (def-grid-function histogram-pass (input-vec bit-offset &out global-histogram  
-                                                     &optional (local-histogram (make-scratch-vector uint :local A 256))
-    (declare #((vector-type T :global :readable A) uint &out (vector-type uint :global :read_write A 256)  &optional (local-scratch-vector-type T)))
+                                                     &optional (local-histogram (make-scratch-vector uint 256))
+    (declare #((in-vec T A) uint &out (out-vec uint A 256)  &optional (scratch-vector-type T)))
               (local-work-size :set-to 256 :msg "local_work_size must be 256 for histogram kernel"))
               
     ;; setup
@@ -6342,8 +6343,8 @@ And its output is a prefix-sum vector.
 
   ;; -- scan-histogram --
   (def-function scan-histogram (global-histogram &out bucket-offsets)
-    (declare #((vector-type uint :global :readable A 256)
-              &out (vector-type uint :global :writeable A 256) => nil)
+    (declare #((in-vec uint  A 256)
+              &out (out-vec uint  A 256) => nil)
             ;; Ensure this kernel runs with only ONE workgroup of size 256
             (local-size :set-to 256 :strategy :exact)
             (global-size :set-to 256 :strategy :exact))
@@ -6390,28 +6391,27 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
 
   ;; -- scatter-pass --
   (def-grid-function scatter-pass (input-vec bucket-offsets bit-offset &out output-vec)
-    (declare #((vector-type T :global :readable A) ; Input data
-               (vector-type uint :global :readable A 256) ; Bucket offsets
+    (declare #((in-vec T A) ; Input data
+               (in-vec uint  A 256) ; Bucket offsets
               uint ; Current bit offset
-              &out (vector-type T :global :writeable A))) ; Output data
+              &out (out-vec T A))) ; Output data
 
     ;; setup shared memory
     (let ((wg-size (get-local-size))
            ;; Need space to store the data chunk for this workgroup
-          (local-data-chunk (make-local-scratch-vecvtor T wg-size))
+          (local-data-chunk (make-scratch-local-work-size T ))
            ;; Need space to store the 'digit' for each element in the chunk
-          (local-digits (make-local-scratch-vecvtor uint wg-size))
+          (local-digits (make-scratch-local-work-size uint ))
            ;; Need space for the local scan (prefix sum) result for each thread
-          (local-scan-indices (make-local-scratch-vecvtor uint wg-size))
+          (local-scan-indices (make-scratch-local-work-size uint))
 
           (local-id (get-local-id))
           (global-id (get-global-id)))
 
       ;; load data chunk
       ;; Each thread loads one element into local memory.
-      (when (< global-id (length~ input-vec))
-        (set! (~ local-data-chunk local-id) (~ input-vec global-id)))
-      (local-barrier)
+      (load-local input-vec local-data-chunk)
+      
 
       ;; calculate digits and local scan
       ;; each thread determines its element's digit for this pass.
@@ -9276,7 +9276,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - - [ ] Segmented
 - [x] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
 - [ ] ENTRYPOINT - for libraries
-- [ ] fused softmax
+- [x] fused softmax
 - [ ] use maybe something "real" (texel ?)
 - [ ] data pool
 - [x] vector-view that changes element-type
