@@ -569,6 +569,7 @@ Therefore these are the promotions Crisp performs automatically:
 | Unsigned Integers | `uchar` -> `ushort` -> `uint` -> `ulong`    |
 | Signed Integers   | `char` -> `short` -> `int` -> `long`        |
 | Floating Point    | `half` or `bfloat16` -> `float` -> `double` |
+| Integer to Float  | int → float, int → double, long → double, (etc for unsigned). |
 
 This applies element-wise to hardware vector types as well:
 `ucharN` -> `ushortN` -> `uintN` -> `ulongN`    (etc for signed integer and floating point).
@@ -576,13 +577,17 @@ This applies element-wise to hardware vector types as well:
 All other conversions require an explicit cast.
 
 ```
-;; COMPILE ERROR: No automatic promotion between int and float.
-(let ((a (some-int-returning-op)))
-  (some-float-op a))
+;; COMPILE ERROR: No automatic promotion from float to int. (see Value Conversion section for CORRECT)
+(let ((f (some-float-returning-op)))
+  (some-int-op f))
 
-;; CORRECT: Use an explicit conversion function.
-(let ((a (some-int-returning-op)))
-  (some-float-op (to-float a)))
+;; COMPILE ERROR: No automatic promotion between signed and unsigned
+(let ((u (some-unsigned-int-returning-op)))
+  (some-signed-int-op u))
+
+;; CORRECT
+(let ((u (some-unsigned-int-returning-op)))
+  (some-signed-int-op (to-int u)))
 ```
 
 ### Convert: `to-` , Cast `as-`
@@ -602,6 +607,7 @@ or `round`.  See the section on integer division for a comparison.
 <!-- NOTE: maybe move that section on truncate/floor/ etc to yet another place? -->
 
 ```
+;; CORRECT - we must use ceil, floor, truncate or round to convert floating point to integer
 (let ((f (some-float-returning-op)))
   (some-int-op (ceil f)))
 ```
@@ -612,9 +618,9 @@ It is the equivalent of "reinterpret cast" in C++.
 
 
 ```
-;; without `to-int` below, this would not compile
+;; this compiles, but is most likely wrong if some-int-op needs to perform actual numeric calculations
 (let ((f (some-float-returning-op)))
-  (some-int-op (to-int f)))
+  (some-int-op (as-int f))) ;; <-- DANGER
 ```
 
 #### `(as T someVal)`
@@ -5134,7 +5140,8 @@ Possible Implementation
   ;; -- reduce-vec-first-stage --
   (def-grid-function reduce-vec-first-stage (someFunction vec identity &out intermediateVec) 
 
-    (declare #'((binop-type T) (in-vec T A) T &out (out-vec T A)))
+    (declare #'((binop-type T) (in-vec T A) T &out (out-vec T A))
+      (global-size :derive-from vec :strategy :strided))
     (r-t-assert-0 (= (length~ intermediateVec) (get-num-groups) "intermediatVec length must equal number of workgroups))
 
     (let ((sum identity))
@@ -5235,9 +5242,12 @@ Possible Implementation
 ```
 ;; -- reduce-vec-atomic --
 (<T A>
+  (declare (value-is A #'is-alignment?))
+
   (def-grid-function reduce-vec-atomic (someFunction vec identity &out return-vec
                                 &optional (localScratchVec (make-scratch-num-warps T)))
-    (declare #'((binop-type T) (in-vec T A) T &out (single-result T) &optional (scratch-vec-type T)))
+    (declare #'((binop-type T) (in-vec T A) T &out (single-result T) &optional (scratch-vec-type T))
+      (global-size :derive-from vec :strategy :strided))
 
     (c-t-assert (or (= someFunction #'+) (= someFunction #'min) (= someFunction #'max)) "only #'+, #'min or #'max are accepted operations for reduce-vec-atomic")
     
@@ -5267,9 +5277,12 @@ Possible Implementation
 ```
 ;; -- reduce-vec-cas --
 (<T A>
+  (declare (value-is A #'is-alignment?))
+
   (def-grid-function reduce-vec-cas (someFunction vec identity &out return-vec
                                 &optional (localScratchVec (make-scratch-num-warps T)))
-    (declare #'((binop-type T) (in-vec T A) T &out (single-result T) &optional (scratch-vec-type T)))
+    (declare #'((binop-type T) (in-vec T A) T &out (single-result T) &optional (scratch-vec-type T))
+            (global-size :derive-from vec :strategy :strided))
 
     (let ((var identity)
           (len (length~ ,vec)))
@@ -5291,10 +5304,13 @@ Possible Implementation
 ```
 ;; -- reduce-vec-cont --
 (<T A>
+  (declare (value-is A #'is-alignment?))
+
   (def-grid-function reduce-vec-cont (someFunction vec identity continuation-kernel-name
                               &optional (localScratchVec (make-scratch-num-warps T))
                                         (globalScratchVec (make-scratch-num-groups T)))
-    (declare #'((binop-type T) (in-vec T) T string &optional (scratch-vec-type T) (scratch-vec-type T :global)))
+    (declare #'((binop-type T) (in-vec T) T string &optional (scratch-vec-type T) (scratch-vec-type T :global))
+                (global-size :derive-from vec :strategy :strided))
 
     (let ((var identity)
           (len (length~ vec)))
@@ -5334,8 +5350,11 @@ Possible Implementation
 ```
 ;; -- all? --
 (<T A>
+  (declare (value-is A #'is-alignment?))
+
   (def-grid-function all? (someVec &out result-vec &optional (predicateF (gen-to-bool T)))
-    (declare #'((in-vec T A) &out (single-result int) &optional (predicate-type T)))
+    (declare #'((in-vec T A) &out (single-result int) &optional (predicate-type T))
+      (global-size :derive-from someVec :strategy :strided))
       
     ;; this thread checks its strides
     (let ((partial-result:int 1)) 
@@ -5357,8 +5376,11 @@ Possible Implementation
 ```
 ;; -- any? --
 (<T A>
+  (declare (value-is A #'is-alignment?))
+
   (def-grid-function any? (someVec &out result-vec &optional (predicateF (gen-to-bool T)))
-    (declare #'((in-vec T A) &out (single-result int) &optional (predicate-type T)))
+    (declare #'((in-vec T A) &out (single-result int) &optional (predicate-type T))
+      (global-size :derive-from someVec :strategy :strided))
       
     ;; this thread checks its strides
     (let ((partial-result:int 0)) 
@@ -5367,6 +5389,41 @@ Possible Implementation
           (set! partial-result 1))))
 
     (reduce-to-1-cas #'logior partial-result 0 result-vec)))
+```
+
+Segmented Reduction
+===================
+
+very difficult
+
+```
+sourceVec #(10  5 20  8 12  7 30)
+screenVec #( T  F  F  T  F  T  F)
+segmentVec #(     35    20    37)
+
+(defmacro segmented-warp-reduction (someFunction identity valExpr flagExpr)
+  `(do-times-by-doubling+ (i 1 +warp-size+)
+    (let ((neighbor-flag (shuffle-down ,flagExpr i))
+          (neighbor-val (shuffle-down ,valExpr i))
+          (delta  (select-if (not neighbor-flag) neighbor-val ,identity)))
+        (set! ,valExpr (funcall ,someFunction ,valExpr delta)))))
+
+(<T A>
+  (declare (is-value A #'is-alignment?))
+
+  (def-grid-function segmented-reduction (sourceVec screenVec someFunction identity &out segmentVec)
+    (declare #'((in-vec T A) (in-vec bool A) (binop-type T) &out (out-vec T A)))
+    (with-global-linear-id (gid)
+      (when (< gid (length~ sourceVec)) ;; not striding , :one-thread-per ?
+        (let ((my-val (~ sourceVec gid))
+              (my-flag (~ sourceVec gid)))
+          (segmented-warp-reduction someFunction identity my-val my-flag)
+
+          (when my-flag
+            ;; where?
+          ))))))
+
+
 ```
 
 
@@ -7678,9 +7735,113 @@ will error.
 ```
 Implementation Notes: for SPIR-V, device-has will require specialization constants, which means
 coordination with the hoisting code.
+```
 
+Assist defmacro Development
+===========================
+
+Crisp has some constructs that are useful to developers leveraging `defmacro` and needing
+to navigate the Crisp-specific terrain.
+
+### `is-thread-level?`
+
+`(is-thread-level? function-identifier) => T/nil`
+
+`is-thread-level?` is a compile time introspection function that can help write certain types of macros.  It returns
+`T` if the function in question was defined with `def-function` and `nil` for anything else.
+
+Usage Example
+```
+(defmacro process-vector (vec func)
+  ;; Check if 'func' is a simple, thread-level function
+  (if (is-thread-level? func)
+      ;; If YES: Wrap it in a grid-level primitive
+      `(map-stride ,func ,vec ,vec)
+      
+      ;; If NO: It must be a def-grid-function, so just call it
+      `(,func ,vec)))
+```
+
+### `get-return-type`
+
+`(get-return-type function-identifier) => <Type>`
+
+`get-return-type` is a compile time introspection function for macro writing. It returns the return type of the 
+function in question. This is NOT the same as `return-type-of` which is a type expression meant to be used in 
+a type declaration.  
+
+Remember that Crisp types are NOT available at runtime. 
+
+Example
+```
+(defmacro some-HOF-op (func A B &out C)
+  ;; do some compile time checking
+  (let ((ResultType (get-return-type func)))
+    ;; 4. Check if the output vector 'C' matches.
+    (c-t-assert (type-equal (element-type C) ResultType) "Output vector C has wrong type")
+    ...
+```
+
+### `get-signature`
+
+`(get-signature function-identifier)` => <Signature>`
 
 ```
+(get-signature #'int_vector_sum) =>  `((vector-type int :std140 :global :readable) &out (vector-type int :std140 :global :write_only))
+```
+
+
+### `can-call?`
+
+`(can-call? function-identifier &rest argument-types) => T/nil`
+
+`can-call?` is another compile time introspection construct for macro writers. With it you 
+can determine if some function is "callable" with some set of argument types. 
+
+Example:
+```
+(can-call? #'+ 'int 'float) =>  T 
+
+(can-call? #'* 'int 'point) => nil
+```
+
+### `get-struct-members`
+
+`(get-struct-members 'point) => '(x y)`
+
+This is a low-level introspection macro useful for writing other macros (such as `with-struct-accessors`)
+For some named struct type it returns a list of property name symbols. 
+
+Example (Reminder: this is all compile-time evaluated code from a macro, not runtime code in any Crisp top level execution context)
+```
+(let ((member-count (length (get-struct-members 'my-struct))))
+  ...)
+;; OR
+(when (member 'energy (get-struct-members 'particle-struct))
+  ...)
+```
+
+### `get-struct-types`
+
+`(get-struct-types 'point) => '(float float)`
+
+Another low-level introspection macro. For the named struct it returns a list of type expressions.
+
+### `get-c-t-length`
+
+`(get-c-t-length <vector-or-tensor-type>) => length or nil`
+
+`get-c-t-length` is passed a vector type and will return its length if it is known at compile time.
+Otherwise it returns nil.  Can be used for various purposes, including making unrolling decisions.
+
+### `get-current-context`
+
+`(get-curret-context) => :dispatch / :grid / :thread`
+
+Returns the context at the place where the macro is called. Useful if you need to write macros
+that alter behavior based on context in order to provide a predictable experience for the caller.
+
+
 
 Static Analysys
 ===============
@@ -8993,13 +9154,16 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [x] FFT
 - [x] Radix Sort
 - [ ] Debugging Story
-- [ ] Compile-time introspection first-class citizen: 
-    [x] get-struct-members
-    [ ] is-grid-level? 
-    [ ] get-return-type
-    [ ] get-member-types
+- [x] Compile-time introspection first-class citizen: 
+    [x] get-struct-members   / with-struct-accessors
+    [x] ~is-grid-level?~  / is-thread-level?
+    [x] get-return-type
+    [x] get-member-types
 - [x] reduction macros -> templates
-- [ ] OTHER reductions: scan / boolean (all, any none?) / Segmented
+- [ ] OTHER reductions: 
+- - [x] scan 
+- - [x] boolean (all, any none?) 
+- - [ ] Segmented
 - [x] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
 - [ ] ENTRYPOINT - for libraries
 - [ ] fused softmax
