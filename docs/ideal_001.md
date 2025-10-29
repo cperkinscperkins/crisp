@@ -3451,6 +3451,22 @@ Implementation Notes
     )
 ```
 
+when-is-last-warp / when-is-last-thread
+---------------------------------------
+```
+(when-is-last-warp (lane-id) ...)
+(when-is-last-thread (local-id) ...) ; <-- available in 0,1,2,3 arity
+```
+That "last man standing" pattern is also availabe for the last warp in a workgroup,
+or the last thread in a workgroup. These use a local `atomic-dec!` so they have less
+stall. See `when-is-last-workgroup` for an explanation. 
+
+For the last thread or warp in the last workgroup, simply compose the two constructs:
+```
+(when-is-last-workgroup ()
+  (when-is-last-thread ()
+   ...))
+```
 
 Hoisting and Enqueing a Kernel
 ------------------------------
@@ -4675,6 +4691,15 @@ so we use `compose` to combine the lookup with the check for even number.
 
 
 ```
+
+### `ident`
+
+```
+(ident x) => f where f(anything) => x
+```
+
+Given a value `x`, the `ident` function returns another function that, given any value
+returns the original `x`. 
 
 map
 ---
@@ -7659,6 +7684,10 @@ access to stdout or the file system. This makes debugging and logging challengin
  - compile-time messaging, so that the compiler can be directed to output messages and information. 
  - side channel logging at runtime.  This has to be elected when compiling your kernel and the hoisting/enqueue code has to participate as well.
 
+
+Compile Time Output and Assert
+------------------------------
+
 ### `c-t-output`  
 
 `(c-t-output <expr1> ... <exprN>)`
@@ -7676,45 +7705,101 @@ If `<testExpression>` is not evaluable at compile time, it will lead to a compil
 
 
 
-### `r-t-workgroup-output-if`
+Runtime Nuclear Option: `(die "disaster")`
+-----------------------------------------
 
-`(r-t-workgroup-output-if <testExpression>  <expr1> ... <exprN>)`
+```
+(when (< index 0))
+  (die "the index is negative? How did that happen?"))   ;; desperate times
+```
 
-`<testExpression>` is reduced across all the threads in a workgroup. If it is true in any of them,
-then the the logging occurs in just one of them. Afterwards, kernel execution continues normally.
+`die` is a small but critical component. It is available whether debugging
+output has been elected OR NOT. It's sole argument, a string, must be fully known at compile time. 
+Unlike `r-t-assert` it has no facility for runtime string concatenation. 
+
+`die` records a tiny 16 byte record (per workgroup) into global memory
+and then halts the kenrel. It is up to the host side caller to retreive that data and 
+check it. The 16 bytes don't contain any text message like the one above, instead it
+has a numeric identifier which can be looked up in either the metadata or the hoisting code
+to see the original string.  The 16 bytes record 
+- string_id
+- file_id
+- line_no
+- local_id x, y, z
+
+Note that using `die` ANYWHERE in your kernels call chain changes its hoisting requirement. Again,
+this is true whether debug output has been elected or not. 
+
+Possible Implementation
+```
+(defmacro (die msg-string)
+  
+  ;; compiler packs all the data at compile-time
+  (let* ((my-string-id (get-compiler-id-for msg-string))
+         (my-file-id (get-compiler-id-for (file)))
+         (my-line-no (line))
+         
+         ;; pack the primary 64-bit "flag"
+         (my-primary-data (pack-u64 my-string-id my-file-id my-line-no))
+        
+         ;; get my workgroup's slot in the global "die" buffer
+         (my-wg-id (get-workgroup-id))
+         (my-die-slot-address (~ die-buffer my-wg-id)) ;; 'die-buffer' captured non-hygenically
+         (primary-field-address (& (~ my-die-slot-address 'primary))))  ;: & 
+        
+    
+    ;; try to claim the slot.
+    ;;    (cas address, expected_value, new_value)
+    (let ((old-val (atomic-cas! primary-field-address 0 my-primary-data))
+          (old-val (atmoic-binop! primary-field-address (ident my-primary-data) 0)))
+      
+      ;; check if I won the race
+      (when (= old-val 0)
+        ;; I WON! I am the first thread to die in this WG.
+        ;; Now I safely write the *secondary* data.
+        (let* ((my-local-x (get-local-id 0))
+               (my-local-y (get-local-id 1))
+               (my-local-z (get-local-id 2))
+               (my-secondary-data (pack-u64 my-local-x my-local-y my-local-z 0))
+               (secondary-field-address (& (~ my-die-slot-address 'secondary))))
+          (set! (~ secondary-field-address) my-secondary-data))))
+        
+    ;; regardless of if I won or not, I must halt.
+    (device-halt!)
+  )
+)
+```
+
+Runtime Asserts
+---------------
+
+There are various asserts available at runtime. They are available if the debug output is enabled or not, but their behavior changes slightly.
+
+The runtime asserts always evaluation their test expression.  If it is `true`, then
+the kernel continues on unperturbed.
+
+But if debug output is on (via `--debug-output`)
+then these asserts evaluate all their remaining expression arguments and output them into the relevant logging
+buffer subdivision, then they terminate the kernel execution.
+
+If debug output is NOT on, the assert still calls `(die)` on failure. This logs the 16-byte 'black box' packet (`string_id`, `line_no`, etc.) and halts the kernel.
+
+These all use `die` underneath, so some amount of thread id and line numbers, etc are output.
+
 
 
 ### `r-t-workgroup-assert`
 
 `(r-t-workgroup-assert <testExpression>  <expr1> ... <exprN>)`
 
-Akin to `assert` in C.  If the kernel is compiled with the `--debug-output` flag then this macro will result in an evaluation of `<testExpression>`. If true, fine.  If false, then the other expressions are output into the debug log
-and then the kernel halts across all threads. The exact mechanism for halting is implementation dependent, typically a
-`__trap()` or `assert()` but for some hardware there may be NO halting mechanism in which case the kernel just
-continues to run until it finishes. ( Good luck with that ).
+Akin to `assert` in C. This macro will result in an evaluation of `<testExpression>`. If true, fine. The
+kernel execution continues normally. But if if false, then it behaves like the assert behavior described above
+and then terminates calling `die`.
 
-Note that `<testExpression>` reduced across all the threads in a workgroup. If it is true in any of them,
-then the the logging occurs in just one of them and afterwards the halt.  So `r-t-workgroup-assert` is protected
-from "firehose" problems.
 
-### `r-t-output`
+Note that `<testExpression>` reduced across ALL the threads in a workgroup. If it is false in ANY of them,
+then the assert behavior is tripped.  So `r-t-workgroup-assert` is protected from "firehose" problems.
 
-`(r-t-output <expr1> ... <exprN>)`
-"r-t" stands for "run time".  If the kernel is compiled with the `--debug-output` flag then this macro will output
-each of its expressions into the debug output memory. Note that this output will have to be retrieved by the hoisting 
-code once the kernel is done executing. 
-If the `--debug-output` flag is NOT present when the kernel is compiled, then this expression and all arguments
-are simply skipped by the compiler. 
-
-#### WARNING - FIREHOSE
-If `r-t-output` appears loose in your kernel, it will almost certainly result in thousands of threads simultaneously
-trying to dump string into a debug buffer. To avoid this either use `r-t-workgroup-output-if` instead, or 
-surroud `r-t-output` in one of the thread guards.
-
-```
-(when-thread-is 0
-   (r-t-output "reached midpoint" someVal))
-```
 
 ### `r-t-assert`
 ```
@@ -7722,21 +7807,64 @@ surroud `r-t-output` in one of the thread guards.
 (r-t-assert-0 <testExpression>  <expr1> ... <exprN>)
 ```
 
-Akin to `assert` in C.  If the kernel is compiled with the `--debug-output` flag then this macro will result in an evaluation of `<testExpression>`. If true, fine.  If false, then the other expressions are output into the debug log
-and then the kernel halts across all threads. 
+Behaves like the asserts described above.  Ultimately, will call `die` if `<testExpression>` is false.
 
-The variant `r-t-assert-0` uses the `when-thread-is 0` guard and so the 
+`r-t-assert` is engaged by EVERY thread.  It is not screened or limited to a single workgroup.
+
+In contrast, the variant `r-t-assert-0` uses the `when-thread-is 0` guard and so the 
 check and output is only performed in one thread.
 
 #### WARNING - FIREHOSE
-If `r-t-assert` appears loose in your kernel, it will almost certainly result in thousands of threads simultaneously
-trying to dump string into a debug buffer. To avoid this either use `r-t-workgroup-assert` instead, or `r-t-assert-0`, or
-surroud `r-t-assert` in one of the thread guards.
+If `r-t-assert` appears loose in your kernel, it could result in many threads simultaneously
+trying to dump strings into a debug buffer. Use the debugging subdivisions to control it (see [Debugging Implementation](#debugging-implementation)), or consider using `r-t-workgroup-assert` instead, or `r-t-assert-0`, or
+surroud `r-t-assert` in one of the other thread guards.
+
+```
+(when-thread-in-group-is 0
+   (r-t-assert (< 0 lives) "no lives left"))
+```
+
+Runtime Logging
+---------------
+
+### `r-t-workgroup-output-if`
+
+`(r-t-workgroup-output-if <testExpression>  <expr1> ... <exprN>)`
+
+If the kernel is compiled with the `--debug-output` flag then this macro will reduce 
+`<testExpression>` across all the threads in a workgroup. If it is true in any of them,
+then the the logging occurs in just one of them. Afterwards, kernel execution continues normally.
+
+If the compiler flag is not elected, this entire form is compiled away. 
+
+### `r-t-output`
+
+```
+(r-t-output <expr1> ... <exprN>)
+(r-t-output-0 <expr1> ... <exprN>)
+```
+"r-t" stands for "run time".  If the kernel is compiled with the `--debug-output` flag then this macro will output
+each of its expressions into the debug output memory. Note that this output will have to be retrieved by the hoisting 
+code once the kernel is done executing. 
+If the `--debug-output` flag is NOT present when the kernel is compiled, then this expression and all arguments
+are simply skipped by the compiler. 
+
+`r-t-output` is engaged by EVERY thread.  It is not screened or limited to a single workgroup.
+
+In contrast, the variant `r-t-output-0` uses the `when-thread-is 0` guard and so the 
+check and output is only performed in one thread.
+
+#### WARNING - FIREHOSE
+If `r-t-output` appears loose in your kernel, it could result in thousands of threads simultaneously
+trying to dump strings into a debug buffer. Use the debugging subdivisions to control it (see [Debugging Implementation](#debugging-implementation)), or consider using `r-t-workgroup-output-if` instead, or 
+surroud `r-t-output` in one of the thread guards.
 
 ```
 (when-thread-is 0
-   (r-t-assert (< 0 lives) "no lives left"))
+   (r-t-output "reached midpoint" someVal))
 ```
+
+
 
 Logging Utilities
 -----------------
@@ -7744,23 +7872,156 @@ Logging Utilities
 - `(line)`  evaluates at compile-time to the line number of the file where it appears.
 - `(file)`  evaluates at compile-time to the name of the .crisp file where it appears.
 
+Note that the routines above always include line numbers and file identifiers automatically,
+so the practical use of these logging utilities is rare - mostly reserved for dev macros.
+
 Debugging Implementation
 ========================
+
+The perennial challenge of using debug logging on a GPU is that there is just TOO MUCH of it. 
+Thousands of threads all logging identical messages isn't helping anyone, especially if the 
+memory has to be anticipated and allocated in advance, and especially when there is inevitably contention
+between threads to write to that memory. Performance degrades, output buffers fill up, and
+tempers rise.
+
+
+Crisp attempts to ameliorate that by providing SUBDIVIDED logging, as well as "first N" and "last N" 
+message options to address debug buffer overflow. What this means is the debug buffer handed to the kernel
+can be divided in differrent ways, ways to limit who logs, or ways to ensure that certain critical logging is performed and accessible.  Unfortunately, these options have to be
+selected at compile time, rather than when enqueueing the kernel. Perhaps some intrepid user
+can use the [In-Memory Compilation API](#in-memory-compilation-api) to make a handy tool.
+
+So You Want Debug Logging
+-------------------------
+
+### `--debug-output`  Master Switch.
+
+The `--debug-output` flag turns ON debug logging when it is present, or off when it is not.
+
 When the `--debug-output` flag is set then the compiler alters the compilation in several ways:
 - an additional `debug-vector-type` argument is added to the Kernel in the first argument position
 - every `r-t-assert` and `r-t-output` variant is actually enabled and compiled, rather than being
   stripped out
-- `maybe` `Err:` string expressions are compiled to output as well (Q: per thread? per workgroup? )
+- `maybe` `Err:` string expressions are compiled to output as well
+- those function call paths to those outputting forms ALSO have their params modified such that
+the debug vector is now in the first param position
 - `(is-debugging?)` expression evaluates to T at compile time.
 
 The debug output vector base type is a `(vector-type :uchar :compact :global :write_only)` and it must
-be setup by the host. 
+be setup by the host. In this part of the document we refer to this vector as "the debug buffer" or 
+just "the buffer". 
 
-- (die "special place")
-- Buffer Split Per Workgroup  ( First N)
-- Buffer Dedicated to One WOrkgroup
-- BUffer Dedicated to One Workgroup + Reserved
-- BUffer Dedicated to One Warp: First N / Last N | Reserved
+Subdivide Subdivide Subdivide - the "other" debug flags
+-------------------------------------------------------
+
+Three debug flags govern subdivision by scope, target, and call site. Two more flags
+let you select which workgroups or warps are participating in the logging, and the
+logging mode.  That's a lot of terms, but the whole system is pretty straightforward.
+
+### --debug-log-scope
+
+`--debug-log-scope=spread|dedicated`
+
+If the scope is "dedicated" then the entirety of the logging buffer will be available
+to one "target" which is either a workgroup or a warp (selected by target and index flags).  
+But if the scope is "spread", then the buffer is evenly split by the number of workgroups.
+
+Default is `spread`.
+
+### --debug-log-target
+
+`--debug-log-target=workgroup|warp`
+
+If the scope was `dedicated` then this simply specifies workgroup vs warp.
+If the scope was `spread` and `warp` is chosen, that means only one warp per workgroup
+will be enabled for logging, and each takes the full share set aside for its parent workgroup.
+If scope was `spread` and the target is `workgroup` then each workgroup gets an equal share 
+of the buffer.
+
+Default is `workgroup`
+
+### --debug-by-call-site
+
+`--debug-by-call-site`
+
+This option is ONLY available with dedicated debug logging scope ( `--debug-log-scope=dedicated` ).
+With this option all the possible debug "call sites" (ie the lines that use `(maybe)` constructs
+or call `r-t-assert` etc ) up and down the call chain of the kernel are identified and counted.
+Then the debug output buffer is subdivided by call sites.  Thus each one get a little reserved
+output area for itself.
+
+### --debug-log-mode
+
+`--debug-log-mode=first-n|last-n`
+
+When set to `first-n` then the messages are output into the buffer subdivision until it is full, then
+they stop. When set to `last-n`, then the buffer subdivision is treated as a circular buffer and the
+later entries overwrite the earlier ones. 
+IMPORTANT NOTE: `last-n` mode requires the debug log target be warp (`--debug-log-target=warp`).
+
+Defaults to `first-n`
+
+### --debug-wg-index
+
+`--debug-wg-index=0-N|last`
+
+This flag is only relevant if the scope is set to dedicated (`--debug-log-scope=dedicated`).
+
+When using dedicated scope Crisp needs to know which workgroup. This flag can be given
+a group number (from 0 up to the number of workgroups) OR it can be set to `last` in which
+the "last workgroup standing" is targeted (see [when-is-last-workgroup](#when-is-last-workgroup) for a discussion)
+
+### --debug-warp-index
+
+`--debug-warp-index=0-N|last`
+
+This flag is relevant whenever the debug target has been set to `warp` (in BOTH `spread` and `dedicated` scopes).
+
+Select which warp in a workgroup should perform debug logging to the buffer. It can be the warp number (from 0 to the max number of warps, ie 32) OR it can be set to `last` in which case the "last warp standing" is the targeted warp. 
+
+
+Common Debug Flag Configurations
+-------------------------------
+
+### Default (Low Overhead):
+- --debug-log-scope=spread
+- --debug-log-target=workgroup
+
+Result: The buffer is split evenly, giving every workgroup a small "first-N" log slot.
+
+### Focus on ONE Workgroup:
+- --debug-log-scope=dedicated
+- --debug-log-target=workgroup
+- --debug-wg-index=42
+
+Result: The entire buffer is given to workgroup 42 for a large "first-N" log.
+
+### Focus on ONE Warp:
+- --debug-log-scope=dedicated
+- --debug-log-target=warp
+- --debug-wg-index=42
+- --debug-warp-index=0
+
+Result: The entire buffer is given to warp 0 of workgroup 42 for a "first-N" log.
+
+### "Last-N" (The Champagne Case):
+- --debug-log-scope=dedicated
+- --debug-log-target=warp
+- --debug-wg-index="last"
+- --debug-warp-index=0
+- --debug-log-mode=last-n
+
+Result: The entire buffer is given to warp 0 of the "last standing" workgroup, operating in "Last-N" (rolling) mode. This is safe because target=warp.
+
+### Call Sites
+- --debug-log-scope=dedicated
+- --debug-log-target=workgroup (or warp)
+- --debug-wg-index=42
+- --debug-subdivide-by-site
+
+Result: The buffer for the dedicated target (WG 42) is subdivided, giving each log site its own "reserved" chunk (running in "first-N" mode).
+
+
 
 
 
@@ -9289,7 +9550,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 ### To Do (SHORT)
 - [x] FFT
 - [x] Radix Sort
-- [ ] Debugging Story
+- [x] Debugging Story
 - [x] Compile-time introspection first-class citizen: 
     [x] get-struct-members   / with-struct-accessors
     [x] ~is-grid-level?~  / is-thread-level?
