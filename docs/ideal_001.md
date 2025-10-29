@@ -7744,6 +7744,25 @@ Logging Utilities
 - `(line)`  evaluates at compile-time to the line number of the file where it appears.
 - `(file)`  evaluates at compile-time to the name of the .crisp file where it appears.
 
+Debugging Implementation
+========================
+When the `--debug-output` flag is set then the compiler alters the compilation in several ways:
+- an additional `debug-vector-type` argument is added to the Kernel in the first argument position
+- every `r-t-assert` and `r-t-output` variant is actually enabled and compiled, rather than being
+  stripped out
+- `maybe` `Err:` string expressions are compiled to output as well (Q: per thread? per workgroup? )
+- `(is-debugging?)` expression evaluates to T at compile time.
+
+The debug output vector base type is a `(vector-type :uchar :compact :global :write_only)` and it must
+be setup by the host. 
+
+- (die "special place")
+- Buffer Split Per Workgroup  ( First N)
+- Buffer Dedicated to One WOrkgroup
+- BUffer Dedicated to One Workgroup + Reserved
+- BUffer Dedicated to One Warp: First N / Last N | Reserved
+
+
 
 Conditional Compilation
 =======================
@@ -7937,6 +7956,13 @@ Otherwise it returns nil.  Can be used for various purposes, including making un
 
 Returns the context at the place where the macro is called. Useful if you need to write macros
 that alter behavior based on context in order to provide a predictable experience for the caller.
+
+
+### `is-debugging?`
+
+`(is-debugging?) => T or nil`
+
+Returns true if the file is being compiled with the `--debug-output` flag 
 
 
 
