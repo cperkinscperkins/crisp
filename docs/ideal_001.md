@@ -8057,7 +8057,7 @@ When the `--debug-output` flag is set then the compiler alters the compilation i
 the debug vector is now in the first param position
 - `(is-debugging?)` expression evaluates to T at compile time.
 
-The debug output vector base type is a `(vector-type :uchar :compact :global :write_only)` and it must
+The debug output vector base type is a `(vector-type ulong :compact :global :write_only)` and it must
 be setup by the host. In this part of the document we refer to this vector as "the debug buffer" or 
 just "the buffer". 
 
@@ -9479,6 +9479,7 @@ other
 - has-target
 - local-mem                 [DP]
 - global-mem :return-value  [DP] 
+- string-concat
 
 
 
@@ -9487,10 +9488,13 @@ logging and debugging
 ---------------------
 - c-t-output
 - c-t-assert
+- die
 - r-t-workgroup-output-if
 - r-t-workgroup-assert
 - r-t-output
+- r-t-output-0
 - r-t-assert
+- r-t-assert-0
 - line
 - file
 
