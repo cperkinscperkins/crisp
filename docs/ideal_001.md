@@ -7770,6 +7770,54 @@ Forgotten
 - when-thread-in-warp-is 
 
 
+Strings - Compile Time and Run Time
+===================================
+
+Compile Time Strings
+--------------------
+
+Most strings in Crisp are compile time. They follow the Common Lisp parsing rules
+(which is mostly just begin and end with double quote. "Like Me!!" )
+
+The are mostly output into the hoisting example code.
+
+### `string-concat`
+
+`(string-concat <Expr1> <Expr2> ... <ExprN>) => string`
+
+`string-concat` can be used to string some things up. Each expression can
+be a different "printable" type, which is either a numeric type or a string.
+The final string result is just all those things together, separated by spaces.
+
+Runtime Strings
+---------------
+
+Runtime strings are a completely different animal. 
+
+The only runtime strings Crisp supports are the ones output into the debug logging
+buffer. That buffer is written into by `r-t-output`, `r-t-assert`, `die` and their variants. 
+
+The buffer is a not a buffer of ASCII characters. It is a buffer of bytes, organized in groups of four ( `uint32_t` ), endianess determined by the host platform.  The buffer has a simple format. 
+It is a series of packets, each like so.
+`[IDENTIFIER][LENGTH][ x1 ][ x2] ..[xN]`   
+Where `N` is the value in `LENGTH`.  
+
+`IDENTIFIER` is a number, and in the accompanying metadata there is a table with 
+each identifier and its matching format string and params, from which the final string
+can be constructed.
+```
+{
+  "id": 123,
+  "format_string": "hello: % % % there",
+  "params": [
+    {"name": "i", "type": "int32"},
+    {"name": "j", "type": "float32"},
+    {"name": "k", "type": "uint64"}
+  ]
+}
+``` 
+
+Crisp comes scripts that can recombine these, and a small standalone tool as well.
 
 
 
@@ -9565,7 +9613,7 @@ If so, what does THAT look like?   Imagine libraries with many functions, not al
 - other things
 - - [ ] fp rounding mode
 - - [ ] general register file configurable?
-- + [ ]complex numbers
+- + [x]complex numbers
 - + [ ] group barriers
 - - [ ] prefetching
 - - [ ] marshalling / directing of workgroups.  Seems like host should do this. But perhaps I lack imagination. reduce_over_group ? 
@@ -9586,7 +9634,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 
 [X] C interop with structs/vectors : std140 
 
-[ ] LAMBDA REVISIT - uniform lambdas OK?  
+[x] LAMBDA REVISIT - uniform lambdas OK?  
 
 [ ] OVERLOAD REVISIT - how will overloaded functions, especially getters/setters, be useful if there is no var capture or globals?
                    (def-function make-xxxx ()   (def-function overload-of-something () ...))  ?  
@@ -9623,12 +9671,12 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 
 [ ] ENTRYPOINT
 
-[ ] fused softmax ( whatever T F that is.)
+[x] fused softmax ( whatever T F that is.)
 
-[ ] Am not totally loving the reduction macros. with-template-type wrapped over function seems better?  Or maybe defmacro should be   
+[x] Am not totally loving the reduction macros. with-template-type wrapped over function seems better?  Or maybe defmacro should be   
     statically typed.  Having it slip through the cracks seems weird, and dangerous.
 
-[ ] REVISIT / CLEAN UP MEMORY / SUMMARYIZE and COMPARE .  a) make-vector with compile-time known size: fully supported.  
+[x] REVISIT / CLEAN UP MEMORY / SUMMARYIZE and COMPARE .  a) make-vector with compile-time known size: fully supported.  
       b) various "scratch" local/global . c) :compact vs :std140 , d) def-constant-vec/use 
       e) communicate with hoisting, derive-from f) side-channels g) #( 1 2 3)  
       h) (declare (shared someVar) (uniform otherVar))   "shared" could be "local" or "slm" ?  This declare is for let clauses
@@ -9650,7 +9698,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 
 [no] Generate Crisp from Python.
 
-[ ] FFT 
+[x] FFT 
 
 [ ] warp scheduling and [x] memory coalescing
 
@@ -9702,6 +9750,11 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
       There is a REAL need here. Data interleaving has a lot of reqs.  So setting up a sample might 
       be fire.
 
+### SHORTEST
+[ ] Entrypoint
+[x] Strings (too much handwaving)
+[ ] ident / identity(Op) / 
+[ ] Segmented (b.c. hard)
 
 
 Three things:
@@ -9714,7 +9767,7 @@ x gen-XXXXX on ANY grid-function to generate a kernel? (that doesn't take a func
 x these vectors of 1.  HMMMMM
 - send code to Gemini?  AWESOME feature
 x curry/lambda for word_count. f*ck
-- lose make-vector and gen-make- and use make-scratch-vector instead. Defaults to :local, can be overriden.
+x lose make-vector and gen-make- and use make-scratch-vector instead. Defaults to :local, can be overriden.
 
 <!-- PUT THIS LITTLE SUMMARY ON MEMORY SOMEPLACE -->
 Memory
