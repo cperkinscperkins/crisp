@@ -3757,6 +3757,16 @@ There are three variants for 1D, 2D and 3D .
 (in-each-thread-in-group (x y z) ...)   ; 3D  
 ```
 
+### in-each-group
+
+`in-each-group` is another binding, but it binds to the WORKGROUP index. 
+
+```
+(in-each-group (x) ...)       ; 1D   x is bound to the index of the GROUP (get-workgroup-id)
+(in-each-group (x y) ...)     ; 2D   x and y bound to the wg-id 0 and 1 
+(in-each-group (x y z) ...)   ; 3D  
+```
+
 
 ### Size Matters
 
@@ -6788,6 +6798,59 @@ workgroup will add its sum to the first element of the result vector.
 Vector and Tensor Operations
 ============================
 
+`fill` and `iota`
+-----------------
+
+```
+(fill someVec someValue)
+(iota someVec)
+```
+
+The `fill` and `iota` operations work directly only their vector parameters. `fill` sets every entry to `someValue`,
+and `iota` fills the vector with its same indices.
+
+Possible Implementation
+```
+ ;; -- fill --
+(<T A> 
+  (declare (value-is A #'is-alignment?))
+
+  (def-grid-function fill (someVec someValue)
+    (declare #'((vector-type T A :global :read-write) T))
+    (loop-vector-stride someVec (i)
+      (set! (~ someVec i) someValue))))
+
+;; -- iota --
+(<T A>
+  (declare (value-is A #'is-alignment?)
+          (type-is T #'is-scalar?))
+
+  (def-grid-function iota (someVec)
+    (declare #'((vector-type T A :global :read-write)))
+    (loop-vector-stride someVec (i)
+      (set! (~ someVec i) (to T i))))) ;; <-- not supposed to be (to T ...)
+```
+
+`copy`
+-----
+
+`(copy input-vec output-vec)`
+
+Copies from input to output. Use `vector-view` if you need offsets or partials.
+
+Possible Implementation
+```
+;; -- copy --
+(<T A>
+  (declare (value-is A #'is-alignment?))
+
+  (def-grid-function copy (in &out out)
+    (declare #'((in-vec T A) &out (out-vec T A)))
+    (r-t-assert-0 (= (length~ in) (length~ out)) "lengths must be the same")
+    (loop-vector-stride in (i)
+      (set~ (~ out i) (~ in i)))))
+```
+
 dot product
 -----------
 
@@ -6804,8 +6867,8 @@ If two vectors are perpendicular, their dot product is zero. If they point in th
 ### dot-prod-grid / dot-prod-seq
 
 ```
-(dot-prod-grid A B RESULT)
-(dot-prod-seq A B)
+(dot-prod-grid A B &out RESULT)
+(dot-prod-seq A B) => RESULT
 ```
 
 Crisp provides two variants of the dot product function. `dot-prod-grid` is a grid level
@@ -6860,25 +6923,23 @@ simply by using tiles.  The `load-tile` macro is, once again, demonstrating
 its value.
 
 ``` 
-(with-template-type (T)
-  (declare (type-is T #'is-scalar? T)) 
+(with-template-type (T A)
+  (declare (type-is T #'is-scalar?)
+           (value-is A #'is-alignment?))
 
   ;; -- dot-prod-grid --                     
-  (def-grid-function dot-prod-grid (A B RESULT)
-    (declare #((vector-type T) (vector-type T) (vector-type T :global :writeable) => nil)
+  (def-grid-function dot-prod-grid (A B &out RESULT)
+    (declare #((in-vec T) (in-vec T) (single-result T))
               (global-size :derive-from A :strategy :strided)) 
     (when-thread-is 0
       (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
     (let ((C-scratch (make-scratch-vector A :name "dot product")))  
       (map-stride #'* (A B) C-scratch)
-      (reduce-vec-atomic #'+ C-scratch 0 RESULT)
-
-(with-template-type (T)
-  (declare (type-is T #'is-scalar?))
+      (reduce-vec-atomic #'+ C-scratch 0 RESULT)))
 
   ;; -- dot-prod-seq --
   (def-function dot-prod-seq (A B)
-    (declare #((vector-type T) (vector-type T) => T))
+    (declare #((in-vec T) (in-vec T) => T))
 
     (let ((sum:T 0))
       (dotimes (i (length~ A))
@@ -6977,6 +7038,42 @@ its value.
           (set! (~ C c-row c-col) acc))))))
                            
 ```
+
+Matrix Vector Multiply `(m*v M v)`
+----------------------------------
+```
+(mat-vec-mult someMatrix someVec &out outVec &optional scratchVec)
+```
+The basic operation is `y = M * x`, where `M` is a 2D matrix, `x` is a 1D vector, and the output `y` is a 1D vector.
+
+Possible Implementation
+```
+;; -- mat-vec-mult --
+(<T A>
+  (declare (value-is A #'is-alignment?))
+
+  (def-grid-function mat-vec-mult (M x-vec &out out-vec 
+                      &optional (m-row-scratch (make-scratch-vector T (num-cols M)))
+                                (x-vec-scratch (make-scratch-vector T (length~ x-vec))))
+    (declare #'((matrix (in-vec T A)) (in-vec T A) &out (out-vec T A) &optional (scratch-vec-type T) (scratch-vec-type T)))
+    (r-t-assert-0 (= (num-rows M) (length~ out-vec)) "output vector must match matrix row count")
+    (r-t-assert-0 (= (num-cols M) (length~ x-vec)) "input vector length must match matrix col count")
+    ;; matrix is not bigger than local-size * num-groups
+    (r-t-assert-0 (<= (num-cols M) (local-work-size) ) "matrix width must not be greater than local-size")
+    (r-t-assert-0 (<= (num-rows M) (get-num-groups)) "matrix height must not be greater than num work groups")
+
+    (in-each-group (i)
+      (when (< i (num-rows M))
+        (copy (row i M) m-row-scratch) ;; each workgroup takes a row.
+        (copy x-vec  x-vec-scratch)
+
+        (let ((res-view (make-vector-view out-vec 1 i)))
+          (dot-prod-grid m-row-scratch x-vec-scratch res-view))))))
+            
+```
+
+
+
 
 
 Math Operations & Arithmetic
@@ -7679,6 +7776,10 @@ Forgotten
 Logging and Debugging
 =====================
 
+> Overengineer much?
+>
+> (asked of Author)
+
 When a kernel is running on a GPU it is often on a different device, with a completely different memory and addressing system and no 
 access to stdout or the file system. This makes debugging and logging challenging. Crisp attempts to assist with two different systems:
  - compile-time messaging, so that the compiler can be directed to output messages and information. 
@@ -7705,7 +7806,7 @@ If `<testExpression>` is not evaluable at compile time, it will lead to a compil
 
 
 
-Runtime Nuclear Option: `(die "disaster")`
+`(die "disaster")`
 -----------------------------------------
 
 ```
@@ -7713,9 +7814,13 @@ Runtime Nuclear Option: `(die "disaster")`
   (die "the index is negative? How did that happen?"))   ;; desperate times
 ```
 
-`die` is a small but critical component. It is available whether debugging
-output has been elected OR NOT. It's sole argument, a string, must be fully known at compile time. 
-Unlike `r-t-assert` it has no facility for runtime string concatenation. 
+`die` is a small but critical component. If `--debug-output` was NOT elected, then 
+`die` simply halts the kernel.  
+But if the kernel is debugging output then its message is recorded into the debug output buffer 
+and then the kernel is halted. 
+Note that the message argument to `die` must be known at compile time.
+
+Importantly, space is ALWAYS reserved in the output buffer for the `die` message.
 
 `die` records a tiny 16 byte record (per workgroup) into global memory
 and then halts the kenrel. It is up to the host side caller to retreive that data and 
@@ -7727,8 +7832,7 @@ to see the original string.  The 16 bytes record
 - line_no
 - local_id x, y, z
 
-Note that using `die` ANYWHERE in your kernels call chain changes its hoisting requirement. Again,
-this is true whether debug output has been elected or not. 
+
 
 Possible Implementation
 ```
@@ -7765,9 +7869,7 @@ Possible Implementation
           (set! (~ secondary-field-address) my-secondary-data))))
         
     ;; regardless of if I won or not, I must halt.
-    (device-halt!)
-  )
-)
+    (device-halt!)))
 ```
 
 Runtime Asserts
@@ -7776,15 +7878,15 @@ Runtime Asserts
 There are various asserts available at runtime. They are available if the debug output is enabled or not, but their behavior changes slightly.
 
 The runtime asserts always evaluation their test expression.  If it is `true`, then
-the kernel continues on unperturbed.
+the kernel continues on unperturbed. If it is false, then `die` is called.
 
-But if debug output is on (via `--debug-output`)
+If debug output is on (via `--debug-output`)
 then these asserts evaluate all their remaining expression arguments and output them into the relevant logging
-buffer subdivision, then they terminate the kernel execution.
+buffer subdivision before calling die to terminate the kernel execution.
 
-If debug output is NOT on, the assert still calls `(die)` on failure. This logs the 16-byte 'black box' packet (`string_id`, `line_no`, etc.) and halts the kernel.
+If debug output is NOT on, the assert still calls `(die)` on failure. 
 
-These all use `die` underneath, so some amount of thread id and line numbers, etc are output.
+These all use `die` underneath, so some amount of thread id and line numbers, etc are recorded.
 
 
 
@@ -9095,6 +9197,7 @@ def-
 - def-derived-type
 - def-constraint
 - def-type-function
+- def-orchestration          [T]
 
 control flow
 ------------
@@ -9113,6 +9216,7 @@ control flow
 - with-global-linear-id            [3D] ; I keep using this. rename?
 - in-each-thread                   [3D]
 - in-each-thread-in-group          [3D]
+- in-each-group                    [3D]
 - loop-grid-stride       [D]       [3D]
 - grid-stride-target [DP]          [3D]
 - loop-grid-stride-linear
@@ -9300,7 +9404,12 @@ other
 - load-tile
 - store-tile
 - convert-layout
-- dot-prod
+- fill
+- iota
+- copy
+- dot-prod-grid
+- dot-prod-seq
+- mat-vec-mult
 - matmul
 - const-vec-type
 - maybe                 
@@ -9353,6 +9462,7 @@ hoisting and def-orchestration
 - launch-sequential
 - launch-parallel
 - launch-interleaved
+- launch-kernel
 - +wg-size+  ; constant in def-orchestration (only)
 - make-hoist-vector 
 - swap-refs (kludgy?)
@@ -9534,10 +9644,11 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     Hillisp ( https://github.com/michelp/hillisp )   tiny Lisp implementation written in CUDA.  Drives the GPU.  Queues up "fill" kernels, "+" kernels, etc. 
     CL GPU ( https://www.cliki.net/cl-gpu )  subset of Common Lisp on GPU
     cl-gpu ( https://github.com/angavrilov/cl-gpu ) A library for writing GPU (CUDA) kernels in a subset of Common Lisp.
+    ATen ( https://github.com/zdevito/ATen )
 
-[ ] Debugging Story - Give more attention.  A REAL pain point with developers.
+[x] Debugging Story - Give more attention.  A REAL pain point with developers.
 
-[ ] Generate Crisp from Python. 
+[no] Generate Crisp from Python.
 
 [ ] FFT 
 
@@ -9571,19 +9682,19 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [ ] / group barriers
 - [x] complex numbers - need for FFT
 - [ ] matrix ops / vector ops
-    [ ] (m*v M v) - convenience function for matrix-vector multiplication. Very common special case of matmul
+    [x] (m*v M v) - convenience function for matrix-vector multiplication. Very common special case of matmul
     [ ] / (determinant M)
-    [ ] fill
-    [ ] copy
-    [ ] iota
+    [x] fill
+    [x] copy
+    [x] iota
     [ ] gather
     [ ] (is-contiguous? M)
 - [ ] / (declare (critical name V)) ; if fighting "spill", how important is one value vs. another.
 - [x] / def-orchestration
 - [ ] / (hoist-comment )
-- [ ] / (declare (const var-name))
-- [ ] Kernel IPC
-- [ ] Data interleaving. Mostly host side, but kernel needs to be able to work in chunks. 
+- [x] / (declare (const var-name))
+- [x] Kernel IPC
+- [x] Data interleaving. Mostly host side, but kernel needs to be able to work in chunks. 
       Kernel typically takes an "offset" into the data. (vector-view vibes).
       Works well with "embarassingly parallel" ops like: vector_add, convert-layout (matrix transpose), grid-strides,
       But won't work with: reductions, filter (and prefix-sum-scan), sorting (radix/bitonic). 
