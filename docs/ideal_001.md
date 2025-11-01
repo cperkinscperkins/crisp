@@ -7275,6 +7275,122 @@ In addition to the three above, there is also `round`. This performes division a
 | (round a b) | Rounds nearest neighbor | 3, 1  | -3, -1 | 
 
 
+Quantized Integers
+==================
+
+A quantized integer (`qint`) is just like a normal integer that's being used
+to "fake" a floating-point number. Commonly a `qint8` is a single byte number
+that represents any of 256 steps over some amount of number space, a gradient.
+
+It does this in conjunction with a "Scale" and a "Zero Point" which are both 
+floating point numbers. These two values define the "number space" that the 
+gradient is applied over. 
+
+So two floats (scale and zero-point) and N qints can compactly represent the 
+same values as N floats that fall in the same number space. That's a 4x space
+saving! 
+
+While it's easy to focus on the precision lost when converting a single float, this viewpoint is flawed. The true power of qints is seen at the vector level. When a Scale and Zero-Point (two floats) are well-chosen to define the number space for an entire dataset, the relationships between the numbers are preserved with high fidelity.
+
+This is the core trade-off: in exchange for a tiny, well-managed loss of precision, you get a 4x reduction in memory size and access to blazingly-fast, specialized integer math hardware. The results are fast, compact, and perfectly workable for domains like AI.
+
+But `qint` base types have a problem when multiplied: that result can easily
+be greater than 256, which means it's no longer representable by the base `qint` 
+type. For this a second `qint` type is needed: the accumulator. 
+
+For `qint8` the accumulator is usually `qint32`.  
+
+By now, gentle reader, your assignment should be clear: receive data
+as some small `qint` base type, operate on it, using temporary `qint` accumulators, 
+and get it stored away again back as a the `qint` base type before
+anyone notices. What could be easier?
+
+Quantized Integer Types
+-----------------------
+
+These are the Crisp `qint` base types pre-defined for you.
+
+| Type   | Size    | 
+|--------|---------|
+| qb8  | 1 byte  | 
+| qb16 | 2 bytes | 
+| qb32 | 4 bytes | 
+| qb64 | 8 bytes | 
+
+But to use them, you'll typically need to define your OWN qint type like so:
+
+```
+(def-qint q-fahrenheit :base qb8 :accum qb32)
+(def-qint q-celcius :base qb8 :accum qb32)
+```
+Note that even though `q-fahrenheit` and `q-celsius` above have the exact same base and accumulator
+types that they CANNOT be intermixed.  This is because they might have different scale and zero-point
+references. These types are nominally-typed. The compiler will error if you try to mix different 
+classes, preventing you from accidentally combinging data with different scales.
+
+Once `def-qint` is used it defines TWO new types: `XXXX-base` and `XXXX-accum` for you to use.
+
+But note that the choice of math operations are limited and have special rules.
+Using `B` for the `:base` type and `A` for the `:accum` , here are the operations
+
+### to-XXXX
+
+For your `qint` type, a matching function `to-XXXX` is defined. It takes the value, scale and zerop all 
+as floating point arguments and returns a scaled value in the base type `B`.
+
+Example:
+`(to-q-celsius 23.204:float 50.0 0.0) => temp`
+where `temp` would be a 1-byte `q-celcius-base` 
+
+### to-float
+
+To convert either the base type `B` or the accumulator type `A` back to a 
+floating point number, the `zero-point` and `scale`  must both be provided. 
+These should be floating point values (`float`, `double`, `bfloat16` etc)
+The value that is returned is of the same floating point type. 
+
+Note that when converting accumulators, you need to square the scale.
+
+```
+(to-float-base B zero-point scale) => F
+
+(to-float-accum A zero-point scale-squared) => F  
+```
+
+### additon and subtraction
+
+Addition and Subtraction are available for both the base type `B` and `A` but not across them.
+
+```
+(+ B B) => B
+(- B B) => B
+
+(+ A A) => A
+(- A A) => A
+```
+
+### multiplication
+
+Multiplication of two base types returns an accumulator type. There is no other option for 
+multiplication. 
+
+```
+(* B B) => A
+```
+
+### all other math ops
+
+For all other math operations, you'll need to conver your `qint` back to a floating point value
+and then perform the calculation on that (and then convert back). 
+
+### type promotion
+
+Quantized ints have no automatic type promotion. 
+
+
+
+
+
 
 Complex Numbers
 ===============
@@ -8113,22 +8229,20 @@ Defaults to `first-n`
 
 ### --debug-wg-index
 
-`--debug-wg-index=0-N|last`
+`--debug-wg-index=0-N`
 
 This flag is only relevant if the scope is set to dedicated (`--debug-log-scope=dedicated`).
 
 When using dedicated scope Crisp needs to know which workgroup. This flag can be given
-a group number (from 0 up to the number of workgroups) OR it can be set to `last` in which
-the "last workgroup standing" is targeted (see [when-is-last-workgroup](#when-is-last-workgroup) for a discussion)
+a group number (from 0 up to the number of workgroups).
 
 ### --debug-warp-index
 
-`--debug-warp-index=0-N|last`
+`--debug-warp-index=0-N`
 
 This flag is relevant whenever the debug target has been set to `warp` (in BOTH `spread` and `dedicated` scopes).
 
-Select which warp in a workgroup should perform debug logging to the buffer. It can be the warp number (from 0 to the max number of warps, ie 32) OR it can be set to `last` in which case the "last warp standing" is the targeted warp. 
-
+Select which warp in a workgroup should perform debug logging to the buffer. It can be the warp number (from 0 to the max number of warps, ie 32) 
 
 Common Debug Flag Configurations
 -------------------------------
