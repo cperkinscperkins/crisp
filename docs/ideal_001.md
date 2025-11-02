@@ -7488,6 +7488,33 @@ required.
 Of course, the flip side of that, is that if you DO need to convert, then those scale and
 zero-point values will have to be passed as additional independent arguments. 
 
+
+### Illegal Combinations and Target-Specific Behavior
+
+The entire purpose of Crisp's quantized integer types is to leverage the extreme performance 
+of specialized AI hardware (like Tensor Cores or Intel's XMX engines). 
+This hardware is not for general-purpose integer math; it is highly optimized for 
+the "sum of products" (dot-product) pattern.
+
+This means the compiler's behavior is strict and depends on your chosen output target.
+
+#### 1. When Compiling (to LLVM IR, SPIR-V, or PTX)
+
+This path is optimized for **maximum performance**. The compiler acts as a strict gatekeeper and maintains a "whitelist" of `qint` combinations that are known to map directly to hardware intrinsics.
+
+- Supported Combinations: The most common (and often only) combination supported by hardware is `:base qb8` with `:accum qb32`. When the compiler sees this, it generates the correct high-performance intrinsic (e.g., `OpSDot` in SPIR-V or `mma.sync` in PTX).
+- Unsupported Combinations: If you define a type that is not on this hardware "whitelist" (e.g., `:base qb16` with `:accum qb64`), the compiler will emit a compile-time error.
+- No Emulation: The compiler will NOT silently generate a slow "emulation" path. This is a core design choice: it is better to give you a compile-time error than to let you ship a kernel that is 100x slower than you intended.
+
+#### 2. When Transpiling (to OpenCL C)
+
+This path is optimized for maximum portability and debugging, not performance. The transpiler has no way to guarantee that specific hardware intrinsics are available.
+
+- Therefore, in this mode, the strict "whitelist" rules are relaxed.
+- Crisp will generate a slow, emulated `for` loop to perform the quantized operations (like `B*B => A` and `A+A => A`).
+- This ensures the transpiled C code is portable and works, but it will have severely suboptimal performance as it will NOT use the specialized AI hardware.
+
+
 Low Precision Floats ("microfloats")
 ====================================
 
@@ -7554,6 +7581,33 @@ For each invocation of `def-microfloat-block` Crisp will define the type identif
  Additionally,  `quantize-to-XXXX` and `dequantize-from-XXXX` functions
  are defined. These functions operate on vectors of floats and blocks. Read more below
 
+### Illegal Combinations and Target-Specific Behavior
+
+The entire purpose of Crisp's microfloat types is to leverage the extreme performance of specialized hardware. 
+This means the compiler's behavior is strict and depends heavily on your chosen output target.
+
+1. When Compiling (to LLVM IR, SPIR-V, or PTX)
+
+This path is optimized for maximum performance. The compiler acts as a strict gatekeeper 
+and knows which combinations (e.g., :base fp8-e4m3, :accum fp32) are supported by hardware intrinsics.
+
+- Supported Combinations: The compiler generates the correct high-performance intrinsic (e.g., `OpFMulAdd` in SPIR-V or `mma.sync` in PTX).
+- Unsupported Combinations: If you define a type the hardware doesn't support (e.g., `:base fp16, :accum fp16`), the compiler will emit a compile-time error.
+- No Emulation: The compiler will not silently generate a slow "emulation" path. This is a core design choice: it is better to give you a compile-time error than to let you ship a kernel that is 100x slower than you intended.
+
+This strictness also applies to portability. A SPIR-V module compiled for 
+one hardware target (e.g., OCP MX) is not portable to another (e.g., NVIDIA). 
+The driver will reject the kernel, resulting in a fatal load-time error.
+
+2. When Transpiling (to OpenCL C)
+
+This path is optimized for maximum portability and debugging, not performance. The transpiler has no way to guarantee that specific hardware intrinsics are available.
+
+- Therefore, in this mode, the "unsupported combination" rules are relaxed.
+- Crisp will generate a slow, emulated for loop to perform the operation.
+- This ensures the transpiled C code is portable and works, but it will have severely suboptimal performance as it will not use Tensor Cores or other hardware accelerators.
+
+
 
 blockwise operations
 --------------------
@@ -7588,6 +7642,8 @@ but if you want to ensure this use the `mfb-mult-add` macro:
 ```
 (mfb-mult-add block1 block2 someA) => A
 ```
+This will ensure that the correct `@llvm.fma._` LLVM intrinsic is output into the IR, which wil then
+be correctly compiled for your target.
 
 Vector Conversion Operations
 ----------------------------
