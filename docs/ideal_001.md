@@ -22,7 +22,7 @@ Focus
 -----
 
 The focus is on performance, compiliation speed, safety and correctness.
-GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-arrays, and more are directly exposed by the Crisp language.
+GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-arrays, quantized integers, and more are directly exposed by the Crisp language.
 
 Major Features of the Crisp language and tools
 ----------------------------------------------
@@ -50,6 +50,8 @@ Major Features of the Crisp language and tools
 - Powerful Metaprogramming:  A Lisp-based syntax with defmacro and a rich templating system (`with-template-type`).  Developers can extend the language with new abstractions, control structures, and code generators, creating domain-specific solutions that are clean and expressive.
 
 - Static Typing with Powerful Generics: Crisp is statically typed with a robust templating system and compile-time type constraints. This provides the compile-time safety and performance benefits typical of C++, preventing runtime type errors, while offering a level of generic programming and code generation via metaprogramming that surpasses traditional C++ templates and is absent in dynamic languages like Python or Common Lisp.
+
+- Unified Quantized Math: Crisp provides first-class support for the entire spectrum of modern, high-performance numeric types. This includes both quantized integers (like `qint8`) and low-precision "microfloats" (like `fp8-e4m3`). The type system ensures mathematical safety by enforcing nominal "branded" types preventing you from mixing incompatible formats. It also enforces overflow-safe math, providing a direct, unified, and safe path to the massive performance gains of specialized AI hardware (like Tensor Cores) for both integer and floating-point acceleration. 
 
 - Automated Hoisting Code:  The Crisp compiler can optionally generate a complete, runnable `main()` function in C++ or Python.  This automates the tedious and error-prone task of writing host-side launch code, providing an instant, working "blueprint" that demonstrates how to allocate memory, set arguments, and correctly launch a kernel.
 
@@ -207,6 +209,7 @@ Table of Contents
 - - Floating Point and Integer Operations
 - - Integer Only Operations
 - - Integer Division
+- Quantized Integers
 - Complext Numbers
 - - soa-vector and complex
 - Fast Fourier Transform (FFT)
@@ -632,6 +635,12 @@ Example: `(as uint someInt)`
 Note there is no equivalent shorthand for _conversion_ (ie no `to`). Use  `to-XXXX` .
 
 
+Quantized Integers and Complex Numbers
+----------------------------------
+
+Crisp has in-language support for quantized integers a popular optimization among
+the GPU-dev-literati, as well as complex numbers. See [Quantized Integers](#quantized-integers)
+and [Complex Numbers](#complex-numbers) below.
 
 
 
@@ -7319,6 +7328,8 @@ These are the Crisp `qint` base types pre-defined for you.
 
 But to use them, you'll typically need to define your OWN qint type like so:
 
+### def-qint
+
 ```
 (def-qint q-fahrenheit :base qb8 :accum qb32)
 (def-qint q-celcius :base qb8 :accum qb32)
@@ -7335,8 +7346,7 @@ Using `B` for the `:base` type and `A` for the `:accum` , here are the operation
 
 ### to-XXXX
 
-For your `qint` type, a matching function `to-XXXX` is defined. It takes the value, scale and zerop all 
-as floating point arguments and returns a scaled value in the base type `B`.
+For your `qint` type, a matching function `to-XXXX` is defined. It takes the floating point value in question along with scale and zerop (also floating point) and returns a scaled value in the base type `B`.
 
 Example:
 `(to-q-celsius 23.204:float 50.0 0.0) => temp`
@@ -7378,6 +7388,23 @@ multiplication.
 (* B B) => A
 ```
 
+<!-- NOTE:
+  In theory we could provide a (* B A) affordance, but doing so 
+  means we'd also have to accompany every accumulator value with a "scale-power" that 
+  trackes how much multiplication it has captured, and then to convert
+  back (to-float-accum A zero-point original-scale scale-power)  which wouuld (pow original-scale scale-power) to get the right scaling factor.
+
+  The problem here is that this means ALL multiplication now needs to return TWO values with
+  the scale-factor being the second value. And the multiplciation of B * A would require 
+  an additional scale-factor parameter: (* B A SPi) => A SP
+
+  This is ugly as hell and no one is doing this or asking for it.  Someone can 
+  always come along and overload/macro this up if they want.  
+
+  Right now we just have (to-float-accum) require a scale-squared and we don't allow B * A multiplication. 
+  Simple. Neat.
+ -->
+
 ### all other math ops
 
 For all other math operations, you'll need to conver your `qint` back to a floating point value
@@ -7387,6 +7414,195 @@ and then perform the calculation on that (and then convert back).
 
 Quantized ints have no automatic type promotion. 
 
+### scale and zero-point independence
+
+An interesting aspect of using quantized integers, is that the scale and zero-point
+factors are only needed to convert to and from regular floating point values.
+If conducting only the basic (admitedly limited) arithmetic, then those values aren't even
+required.
+Of course, the flip side of that, is that if you DO need to convert, then those scale and
+zero-point values will have to be passed as additional independent arguments. 
+
+Low Precision Floats ("microfloats")
+====================================
+
+Similar to Quantized Integers, Crisp supports "microfloats".  These are
+very small (half byte, one byte!) storage options for floats that need a
+widened accumulator for multiplication. 
+
+But there is a significant difference, microfloats are grouped into blocks, 
+and each block has its own individual scaling factor. For example,
+a not uncommon (*) organizations is one 8-bit scale factor followed by sixteen
+individual 4-bit values :
+
+`[fp8_scale_0] [16 x fp4_data] [fp8_scale_1] [16 x fp4_data] ...`
+
+So microfloats don't have independent scaling factors in the way that quantized integers do.
+
+(*) - This "not uncommon" organization is the one used by the NVIDIA Blackwell NVFP4 format.
+It is 72 bits total and is usually padded out to 128 bits. 
+
+Micro Float Types
+-----------------
+
+Crisp provides these base types for you:
+
+| Type   | Size    | 
+|--------|---------|
+| fp4  | 4 bits (half byte)  | 
+| fp8-e4m3 | one byte - 4 bit exponent, 3 bit mantissa |
+| fp8-e5m2 | one byte - 5 bit exponent, 2 bit mantissa | 
+| fp16 | 2 bytes |
+| fp32 | 4 bytes | 
+
+def-microfloat-block
+---------------------
+
+The types above can then be used in `def-microfloat-block`
+
+```
+(def-microfloat-block mf-celcius :base fp4 :accum fp32 :scale fp8-e4m3 :count 16)
+(def-microfloat-block mf-fahrenheit :base fp4 :accum fp32 :scale fp8-e4m3 :count 16)
+```
+
+And just like with the quantized types, different block types cannot be intermixed,
+even if they are configured with identical parameters. However, if you absolutely must intermix them,
+you can do so by using `set-derived`.   
+
+For each invocation of `def-microfloat-block` Crisp will define the type identifiers
+ `XXXX-base`, `XXXX-accum` and `XXXX-scale` as well as compile-time type functions
+ `scale` and `count` 
+ <!-- 
+ WHAT are scale and count ?   type functions? compile time property accessors? 
+     see implementation of quantize-to-XXXX for use
+     
+     -->
+
+ Additionally,  `quantize-to-XXXX` and `dequantize-from-XXXX` functions
+ are defined. These functions operate on vectors of floats and blocks. Read more below
+
+
+blockwise operations
+--------------------
+
+The arithmetic operations on microfloats are "blockwise". This is highly optimized.
+
+The abbreviation `A` is used for the accumulator type, and `MFB` stands for the entire
+microfloat block.  
+
+### multiplication
+
+```
+(* MFB MFB) => A     ;  dot-product
+```
+Two microfloat blocks can be multiplied by each other, and the result is a single
+float of the accumulator type.
+
+### addition / subtraction
+```
+(+ A A ) => A   
+(- A A ) => A
+```
+Floats of the accumulator type can be added together, or subtracted.  
+
+Note that the BLOCKS themselves CANNOT be added or subtracted from one another.
+
+### optimization note
+
+The common pattern of multipling blocks and adding to an accumulator  `A = A + (B * B)` 
+is compiled to one hardware intrinsic.  The compiler should detect this and substitute automatically,
+but if you want to ensure this use the `mfb-mult-add` macro:
+```
+(mfb-mult-add block1 block2 someA) => A
+```
+
+Vector Conversion Operations
+----------------------------
+
+The conversion operations operate on entire vectors of floats and microfloat blocks. A `quantize-to-...` and 
+`dequantize-from-...` operation are defined for each invocation of `def-microfloat-block`.
+
+### quantize-to-XXXX
+```
+(quantize-to-XXXX float-input-vec &out microfloat-block-vec)
+```
+`quantize-to-XXXX` takes a vector of floats as an input arg, and a vector of microfloat blocks
+as an output parameter.  Note that length of the input vector is `:count` times the length 
+of the microfloat block output vector.
+
+This is a grid-level function. 
+
+Example:
+```
+(quantize-to-mf-celsius f32-input-vec mf-celcius-output-vec)
+```
+
+Possible Implementation
+```
+;; -- quantize-to-... --
+(<F A MFB>
+  (declare 
+    (type-is F #'is-floating-point?)
+    (value-is A #'is-alignment?)
+    (type-is MFB #'is-microfloat-block?))
+
+  (def-grid-function quantize-to-XXXX (input-vec &out output-mfb-vec 
+                              &optional (scratch-vec (make-scratch-vector F (count MFB))))
+    (declare #((in-vec F A) &out (out-vec MFB :std140)))
+    (r-t-assert-0 (= (length~ input-vec) (* (count MFB) (length~ output-mfb-vec)))
+                  "lengths don't match")
+    (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
+    ;; 
+    (loop-warp-stride (length~ output-mfb-vec) (warp-num)
+      (load-microfloat-block input-vec scratch-vec warp-num)
+      (let ((max-val (reduce-vec-warp scratch-vec #'max)) ;;
+            (scale-f (to (scale MFB) max-val))
+            (target-block (~ output-mfb-vec warp-num)))
+        (when-thread-in-warp-is 0 
+          (set! (scale~ target-block) scale-f))
+        (in-warp (lane-id)
+          (when (< lane-id (count MFB))
+            (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val)))))))))
+
+```
+
+### dequantize
+```
+o-float (Dequantization)
+This is the "dequantize" operation. It's much simpler than quantizing and is a true "embarrassingly parallel" map operation.
+
+Each thread in the grid is responsible for computing a single f32 output value. Inside the kernel, each thread must:
+
+Use its (get-global-id 0) to find its logical index i.
+
+Calculate which block it belongs to (e.g., block-id = i / 16).
+
+Calculate its index within that block (e.g., local-id = i % 16).
+
+Read the shared fp8 scale for its block from the input vector.
+
+Read its own fp4 data from the block.
+
+Perform the final math: output = (cast fp4_data f32) * (cast fp8_scale f32).
+
+Write the f32 result to the output vector.
+```
+
+
+
+element-wise access
+---------------------
+
+### `~`
+
+`(~ MFB index) => base` 
+The `~` array access expression can be used to access the raw unscaled base value of any microfloat block.
+
+### `to-float`
+
+`(to-float MFB index) => float`
+An override of `to-float` exists that can take microfloat block argument and an index. It will retrieve 
+the microfloat type at that index, scale it appropriately, and then return "regular" `float` type. 
 
 
 
@@ -9359,6 +9575,8 @@ def-
 - def-derived-type
 - def-constraint
 - def-type-function
+- def-qint
+- def-micro-float
 - def-orchestration          [T]
 
 control flow
@@ -9873,6 +10091,14 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 [x] Strings (too much handwaving)
 [ ] ident / identity(Op) / 
 [ ] Segmented (b.c. hard)
+[ ] Quantized Ints
+- [ ] dot-prod
+- [ ] matmul
+- [ ] mat-vect-mul
+- [ ] convolution
+- [ ] pooling (average / max)
+- [ ] activation functions ( ReLu etc)
+[ ] FP4 / FP8
 
 
 Three things:

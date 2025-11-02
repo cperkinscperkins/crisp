@@ -5,16 +5,19 @@ Target #1: Download
 [ ] install SBCL
 [ ] install LLVM Dev
 Q: anything add to the repo?
+A: YES - instructions on install SBCL and LLVM Dev
 
 Target #2: Generate bindings
 [ ] C2FFI
 [ ] using clang run against LLVM Dev headers
 [ ] check those into repo.
+[ ] Add instructions for how to Generate Bindings
 
 Target #3: Start Lisp Project
 [ ] ASDF
 [ ] Whatever is needed for QuickLisp
 [ ] hello world?
+[ ] Add instructions for getting Crisp with QuickLisp
 
 Target #4: Protected Namespace
 We can't have reader macros inserted into Crisp
@@ -34,14 +37,17 @@ Target #6 - LLVM IR
 [ ] walk DATA STUCT, gen LLVM IR
 [ ] compile
 [ ] test? golden string or using ORC?
+[ ] Make a new "in-progress" doc and check "[ ] minimal def-function" ?
 
 Target #7 - Transpile
 [ ] walk DATA STRUC, gen OpenCL C.
 [ ] compile
 [ ] test?
+[ ] update "in-progress" doc
 
 Target #8  - Continuous Integration
 [ ] github actions. 
+[ ] Intermediate testing? Of Lisp macros etc
 
 
 
