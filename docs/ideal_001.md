@@ -2322,6 +2322,10 @@ There is a matching type function
 (load-local global-vec scratch-vec &optional identity)
 (store-global scratch-vec global-vec &optional (transformF #'identityF))
 
+
+(load-warp-scratch global-vec scratch-vec warp-num)
+
+
 (load-tile ...) 
 (store-tile ...)
 ```
@@ -2360,6 +2364,30 @@ Possible Implementation
       (local-barrier))
 
 ```
+
+
+### load-warp-scratch
+`(load-warp-scratch global-vec scratch-vec warp-num &optional (identity 0)))`
+
+With this function, all threads in the current warp cooperatively load their
+assigned chunk from a large global vector into a small scratch vector.
+
+The small scratch vector cannot be longer than `+warp-size+` length.
+
+Possible Implementation
+```
+(defmacro load-warp-scratch (global-vec scratch-vec warp-num &optional (identity 0))
+  (c-t-assert (type-equal (element-type global-vec) (element-type scratch-vec)) "type mismatch!")
+  `(let ((len (length~ ,scratch-vec))
+         (start-idx (* ,warp-num len))
+         (g-len (length~ ,global-vec)))
+    (in-warp (lane-id)
+      (when  (< lane-id len)
+        (let ((g-idx (+ start-idx lane-id))
+              (val (if (< g-idx g-len) (~ ,global-vec g-idx) ,identity)))
+          (set! (~ ,scratch-vec lane-id) val))))))
+```
+
 
 Tensors
 -------
@@ -3968,6 +3996,18 @@ You can think of a small cleaning crew (a workgroup) is assigned to a very long 
 
 Note that as the arity of `loop-grid-stride` goes up, so does arity of the dimensions argument (`ulong`, `ulong2` and `ulong3`).
 
+### loop-warp-stride
+
+Similar in concept to `loop-group-stride`, this is a stride over the number of warps. There is
+only a 1D version of this stride.
+
+
+```
+(loop-warp-stride NUMITERATIONS (warp-idx) ...)
+```
+
+It will stride up, warp by warp, until `NUMITERATIONS` is reached. 
+
 #### loop-tile-stride 
 
 The most common use of a 2D group stride is to process a matrix using square tiles. For this, the `loop-tile-stride` macro is provided as a simpler shorthand. It simply takes a `ulong` for `tile-dim` because it assumes a square tile.
@@ -4796,6 +4836,7 @@ functions/kernels.
 
 - reduce-vec-first-stage
 - reduce-vec-second-stage
+- reduce-vec-warp
 - reduce-vec-atomic
 - reduce-vec-cas
 - reduce-vec-cont
@@ -4855,6 +4896,7 @@ Possible Implementation:
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
   `(in-warp (lane-id)
+    (declare (convergent)) ;; <-- tells compiler cannot be called in divergent branch.
     ;; Active threads use their value. Inactive threads use the identity.
     (let ((val (if (< lane-id ,active-threads)
                     ,someVar
@@ -5300,9 +5342,32 @@ This is what an implementation of `reduce-vec-second-stage` might look like
       (let ((val (if (< local-id N) (~ localScratch local-id) identity)))
         (reduce-to-workgroup someFunction val identity)
         (set-result! final-result val)))))
-
-
 ```
+
+### reduce-vec-warp
+
+`(reduce-vec-warp someFunction vec identity) => result`
+
+`reduce-vec-warp` is NOT a general purpose vec reduction routine. It uses warp-level functions
+to reduce, but cannot reduce any vector whose length is greater than `+warp-size+` (32).
+
+Note that unlike most reductions, this is NOT a grid-level function.
+
+This function is very handy for operation on certain "small" data types, like a `microfloat-block` (see [below](#low-precision-floats-microfloats))
+
+Possible Implementation
+```
+(<T A>
+  (def-function reduce-vec-warp (someFunction vec identity)
+    (declare #'((binop-type T) (in-vec T A) T => T))
+    (in-warp (lane-id)
+      (let ((len (length~ vec))
+            (v (if (< lane-id len)  (~ vec lane-id) identity)))
+        ;; reduce-to-warp broadcasts. If that changes,
+        ;; then be sure to sync this as well (screen for lane-id==0, etc)
+        (reduce-to-warp someFunction v identity)))))
+```
+
 
 ### reduce-vec-atomic
 
@@ -7442,6 +7507,16 @@ So microfloats don't have independent scaling factors in the way that quantized 
 (*) - This "not uncommon" organization is the one used by the NVIDIA Blackwell NVFP4 format.
 It is 72 bits total and is usually padded out to 128 bits. 
 
+Format Wars
+-----------
+
+There are competing formats for these microfloat blocks.
+
+NVidia NVFP4 / Blackwell: https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/
+
+OCP (Open Compute Project) MX Formats: https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
+
+
 Micro Float Types
 -----------------
 
@@ -7452,8 +7527,11 @@ Crisp provides these base types for you:
 | fp4  | 4 bits (half byte)  | 
 | fp8-e4m3 | one byte - 4 bit exponent, 3 bit mantissa |
 | fp8-e5m2 | one byte - 5 bit exponent, 2 bit mantissa | 
+| f8-e8m0 | one byte - 8 bit exponent, 0 bit mantissa. This has faster, but less precise dequantizing |
 | fp16 | 2 bytes |
 | fp32 | 4 bytes | 
+
+The `f8-e8m0` type is used for the OCP MX formats ( MXFP8, MXFP6, and MXFP4 )
 
 def-microfloat-block
 ---------------------
@@ -7472,11 +7550,6 @@ you can do so by using `set-derived`.
 For each invocation of `def-microfloat-block` Crisp will define the type identifiers
  `XXXX-base`, `XXXX-accum` and `XXXX-scale` as well as compile-time type functions
  `scale` and `count` 
- <!-- 
- WHAT are scale and count ?   type functions? compile time property accessors? 
-     see implementation of quantize-to-XXXX for use
-     
-     -->
 
  Additionally,  `quantize-to-XXXX` and `dequantize-from-XXXX` functions
  are defined. These functions operate on vectors of floats and blocks. Read more below
@@ -7554,7 +7627,7 @@ Possible Implementation
     (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
     ;; 
     (loop-warp-stride (length~ output-mfb-vec) (warp-num)
-      (load-microfloat-block input-vec scratch-vec warp-num)
+      (load-warp-scratch input-vec scratch-vec warp-num)
       (let ((max-val (reduce-vec-warp scratch-vec #'max)) ;;
             (scale-f (to (scale MFB) max-val))
             (target-block (~ output-mfb-vec warp-num)))
@@ -7566,32 +7639,44 @@ Possible Implementation
 
 ```
 
-### dequantize
+### dequantize-from-XXXX
 ```
-o-float (Dequantization)
-This is the "dequantize" operation. It's much simpler than quantizing and is a true "embarrassingly parallel" map operation.
-
-Each thread in the grid is responsible for computing a single f32 output value. Inside the kernel, each thread must:
-
-Use its (get-global-id 0) to find its logical index i.
-
-Calculate which block it belongs to (e.g., block-id = i / 16).
-
-Calculate its index within that block (e.g., local-id = i % 16).
-
-Read the shared fp8 scale for its block from the input vector.
-
-Read its own fp4 data from the block.
-
-Perform the final math: output = (cast fp4_data f32) * (cast fp8_scale f32).
-
-Write the f32 result to the output vector.
+(dequantize-from-XXXX microfloat-block-vec &out float-input-vec )
 ```
+`dequantize-from-XXXX` takes a a vector of microfloat blocks as an input arg
+ and an output vector of floats as an output parameter.  Note that length of the output vector is `:count` times the length of the microfloat block input vector.
 
+This is a grid-level function. 
+
+Possible Implementation
+```
+;; -- dequantize-from-... --
+(<MFB F A>
+  (declare 
+    (type-is F #'is-floating-point?)
+    (value-is A #'is-alignment?)
+    (type-is MFB #'is-microfloat-block?))
+
+  (def-grid-function dequantize-from-XXXX (input-mfb-vec &out output-vec)
+    (declare #((in-vec MFB :std140) &out (out-vec F A)))
+    (r-t-assert-0 (= (length~ output-vec) (* (count MFB) (length~ input-mfb-vec)))
+                  "lengths don't match")
+
+    ;; be sure to "gen-" to-float for the desired F output type
+    (loop-vector-stride output-vec (i)
+      (let ((which-block index-in-block (floor i (count MFB)))
+            (target-block (~ input-mfb-vec which-block))
+            (value (to-float target-block index-in-block)))
+        (set! (~ output-vec i) value)))))
+```
+            
 
 
 element-wise access
----------------------
+-------------------
+
+Element-wise access to microfloat blocks is not slow (like atomic ops or reading global memory). 
+But it is not optimal.  Try to avoid element-wise block access if possible. 
 
 ### `~`
 
@@ -7603,8 +7688,6 @@ The `~` array access expression can be used to access the raw unscaled base valu
 `(to-float MFB index) => float`
 An override of `to-float` exists that can take microfloat block argument and an index. It will retrieve 
 the microfloat type at that index, scale it appropriately, and then return "regular" `float` type. 
-
-
 
 
 
@@ -8822,6 +8905,15 @@ If it finds any branch whose condition is not a uniform value
 (i.e., the condition depends on something like get_lane_id or a non-uniform memory load), 
 it will emit a warning.  It will emit a congratulatory note if it is ok.
 
+<!-- NOTE
+(declare (convergent)) can be used to declare a block as non-diverging, which will trip this error.
+We use that declaration on potentially deadlocking calls.
+
+reduce-to-warp  has it now.  Very important that reduce-to-warp is called by ALL the threads
+in the warp, not just some.  
+
+-->
+
 
 max-registers / warn-max-registers
 ----------------------------------
@@ -9576,7 +9668,7 @@ def-
 - def-constraint
 - def-type-function
 - def-qint
-- def-micro-float
+- def-microfloat-block
 - def-orchestration          [T]
 
 control flow
@@ -9604,6 +9696,7 @@ control flow
 - loop-soa-stride
 - loop-tensor-stride                  [ND]
 - loop-group-stride                [3D]
+- loop-warp-stride
 - loop-tile-stride                [2D]
 - grid-level         [DP]
 - uniform            [DP]
@@ -9639,6 +9732,7 @@ Higher Order Function Operations
 - reduce-to-1-cont
 - reduce-vec-first-stage
 - reduce-vec-second-stage
+- reduce-vec-warp
 - reduce-vec-atomic
 - reduce-vec-cas
 - reduce-vec-cont
@@ -9758,6 +9852,7 @@ other
 - scratch-vec-type
 - load-local
 - store-global
+- load-warp-scratch
 - make-implicit-vector
 - marshall-vector
 - marshall-scratch-vector
@@ -9800,6 +9895,8 @@ other
 - set-derived
 - inline           <== for declare. needs definition  [DP]
 - entry-point      <==  ibid
+- convergent       <== for declare. Tells compiler code cannot be in diverging branch. reduce-to-warp uses it. 
+                       we get a deadlock in divergent code. checkedd with "divergent-barrier" static analysys
 - let-kernel
 - kernel-name           [DP]
 - /
