@@ -7146,7 +7146,41 @@ Possible Implementation
             
 ```
 
+Convolution
+-----------
 
+```
+;; -- convolve-2d --
+(<T>
+  (def-grid-function convolve-2d (input-m filter-m &out output-m)
+    (declare #'((matrix T) (matrix T) &out (matrix T))
+      (global-size :derive-from input-m :strategy :strided))
+    (let ((width (num-cols input-m))
+          (height (num-rows input-m))
+          (f-width (num-cols filter-m))
+          (f-height (num-rows filter-m))
+          (f-center-x (floor f-width 2))
+          (f-center-y (floor f-height 2)))
+      (r-t-assert-0 (and (= width (num-cols output-m)) (= height (num-rows output-m)))
+               "dimensions for input and output matrix must match")
+      (loop-grid-stride (x y)
+        (declare (grid-stride-target width height))
+        (let ((acc (zero T)))
+          (dotimes (ky f-height)
+            (dotimes (kx f-width)
+              ;; center filter on x,y
+              (let* ((offset-x (- kx f-center-x)) ; e.g., 0-1 = -1
+                     (offset-y (- ky f-center-y)) ; e.g., 1-1 = 0
+                     (pixel-x (+ x offset-x))
+                     (pixel-y (+ y offset-y)))
+                (when (and (>= pixel-x 0) (< pixel-x width)
+                           (>= pixel-y 0) (< pixel-y height))
+                  (let ((pixel (~ input-m pixel-y pixel-x))
+                        (filt-v (~ filter-m ky kx)))
+                   (set! acc (+ acc (* pixel filt-v))))))))
+            ;; after enumerating filter, store
+            (set! (~ output-m y x) acc))))))
+```
 
 
 
@@ -9702,6 +9736,132 @@ The only flags it respects are
 - flags governing errors and warnings (TBD)
 
 
+APPENDIX #1 - Math with Quantized Ints and Microfloat
+======================================================
+- [ ] dot-prod
+- [ ] matmul
+- [ ] mat-vect-mul
+- [ ] convolution
+- [ ] pooling (average / max)
+- [ ] activation functions ( ReLu etc)
+
+dot product and matmul
+----------------------
+
+These dot product and matmul implementations work for ALL types. 
+
+```
+(def-type-function get-in-vec-type (T)
+  (cond
+    ((type-is T #'is-microfloat-block?) T)
+    ((type-is T #'is-quantized-int?) (base T))
+    (T T)))
+
+(def-type-function get-accum-type (T)
+  (cond
+    ((type-is T #'is-microfloat-block?) (accum T))
+    ((type-is T #'is-quantized-int?) (accum T))
+    (T T)))
+
+
+;; -- dot-prod-seq --
+(with-template-type (T Al)
+  (declare (or (type-is T #'is-quantized-int?)
+               (type-is T #'is-microfloat-block?)
+               (type-is T #'is-scalar?))
+           (value-is Al #'is-alignment))
+
+  (def-function dot-prod-seq (A B)
+    (declare #'((in-vec (get-in-vec-type T) Al) (in-vec (get-in-vec-type T) Al) 
+                 => (get-accum-type T)))
+    (let ((sum (zero (get-accum-type T))))
+      (declare (type sum (get-accum-type T)))
+      (dotimes (i (length~ A))
+        (set! sum (+ sum (* (~ A i) (~ B i)))))
+      (return sum))))
+
+
+;; -- dot-prod-grid --
+(with-template-type (T Al)
+  (declare (or (type-is T #'is-quantized-int?)
+               (type-is T #'is-microfloat-block?)
+               (type-is T #'is-scalar?))
+           (value-is Al #'is-alignment))
+
+  (def-grid-function dot-prod-grid (A B &out RESULT)
+    (declare #'((in-vec (get-in-vec-type T) Al) (in-vec (get-in-vec-type T) Al) &out (single-result (get-accum-type T)))
+      (global-size :derive-from A :strategy :strided))
+    (when-thread-is 0
+      (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
+    (let ((C-scratch (make-scratch-vector (get-accum-type T) Al :name "dot product")))  
+      (map-stride #'* (A B) C-scratch)
+      (reduce-vec-atomic #'+ C-scratch 0 RESULT)))) ;; <-- this broadcasts
+
+
+;; same TILE_DIM as used by convert-layout 
+(def-const TILE_DIM:ulong +warp-size+)
+
+;; -- matmul --
+(with-template-type (T Al)
+ (declare (or (type-is T #'is-quantized-int?)
+               (type-is T #'is-microfloat-block?)
+               (type-is T #'is-scalar?))
+           (value-is Al #'is-alignment))
+
+  (def-grid-function matmul (A B &out C)
+    (declare #((matrix (get-in-vec-type T)) (matrix (get-in-vec-type T)) &out (matrix (get-accum-type T)))
+             (local-size :set-to `(,TILE_DIM ,TILE_DIM)) 
+             (global-size :derive-from C             
+                          :strategy :tiled           
+                          :tile-shape TILE_DIM       ; Tile size is TILE_DIM x TILE_DIM
+                          :dims 2
+                          :msg "Launch one workgroup per output tile of C"))
+
+    (let ((tile-A (make-tile TILE_DIM (base T)))
+          (tile-B (make-tile TILE_DIM (base T)))
+          (local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
+          (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1))
+          (acc (zero (get-accum-type T)))) ; Per-thread accumulator register
+      (declare (type acc (get-accum-type T)))
+
+      ;; main loop over the tiles in the inner dimension
+      (dotimes (tile-num (ceil (num-cols A) TILE_DIM))
+
+        ;; adaptive, coalesced loading
+        ;; Use the 'load-tile' macro to handle the complexity.
+        (load-tile A tile-A group-id-y tile-num
+                   :transpose (= (get-layout A) :col-major))
+
+        (load-tile B tile-B tile-num group-id-x
+                   :transpose (= (get-layout B) :row-major))
+        
+        (local-barrier)
+
+        ;; This part is now simple and fast, both local tiles are row-major.
+        (dotimes (k TILE_DIM)
+          (set! acc (+ acc (* (~ tile-A local-id-y k)
+                              (~ tile-B local-id-x k)))))
+
+        (local-barrier))
+
+      ;; store final result. coalesced access
+      (let ((c-row (+ (* group-id-y TILE_DIM) local-id-y))
+            (c-col (+ (* group-id-x TILE_DIM) local-id-x)))
+        (when (and (< c-row (num-rows C)) (< c-col (num-cols C)))
+          (set! (~ C c-row c-col) acc))))))
+```
+
+<!-- NOTE 
+  convolve-2d and mat-vec-mult are just more of the same.
+  - instead of directly using T
+  - use get-in-vec-type and get-accum-type
+  - use zero instead of  let ((acc 0.0))
+  - declare acc type as get-accum-type.
+
+-->
+
+
+
 
 
 INDECES
@@ -9711,6 +9871,7 @@ def-
 ----
 
 - def-function      [KO] [D] [T]
+- def-grid-function [KO] [D] [T]
 - def-kernel             [D] [T]
 - def-kernel-exact       [D] [T]
 - def-struct             [D] [T]
@@ -9965,6 +10126,7 @@ other
 - local-mem                 [DP]
 - global-mem :return-value  [DP] 
 - string-concat
+- zero           <== need write up (zero T) => 0 or 0.0
 
 
 
@@ -10251,7 +10413,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [ ] convolution
 - [ ] pooling (average / max)
 - [ ] activation functions ( ReLu etc)
-[ ] FP4 / FP8
+[x] FP4 / FP8 -- microfloat blocks
 
 
 Three things:
