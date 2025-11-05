@@ -3833,47 +3833,48 @@ Where N = Size-of-Problem / Number-of-Threads-Launched.
 
 A grid-stride loop is a common pattern for processing large datasets that are bigger than the number of threads launched. It ensures that each thread processes multiple data elements while maintaining full occupancy and avoiding divergence.
 
-The Crisp grid stride primitives are designed to encourage coalesced memory access patterns by default, helping the
+The Crisp stride primitives are designed to encourage coalesced memory access patterns by default, helping the
 programmer achieve maximum performance.
 
 ### IMPORTANT - NO NESTING
 
-All the `-stride` operations are "grid level" operations. That is discussed below. Essentially,
-`-stride` operations cannot nest inside one another. The compiler will error if you attempt to do so.
+Both `loop-vector-stride` and  `thread-stride` operations are "grid level" operations. That is discussed below. Essentially,
+grid level operations cannot nest inside one another. The compiler will error if you attempt to do so.
 
-Also th body of the  `-stride` operations cannot call other "grid level" operations like the variants
+Also the body of those two `-stride` operations cannot call other "grid level" operations like the variants
 on `reduce-`, `filter-` and others. You are welcome to use multiple grid level operations, they just
-cannot be nested.
+cannot be nested.  
 
-### `loop-grid-stride` 
+But a grid-level stride CAN call `workgroup-stride`, which has a "workgroup level" context.  
 
-`loop-grid-stride` let's a kernel elect the Grid Stride strategy and set up a grid stride loop,
-such that the body of `loop-grid-stride` is run on a single thread, and then `i` is 
-automatically incremented by the number of threads. 
-Crisp has three variants of `loop-grid-stride` for 1D, 2D and 3D .
+### `loop-vector-stride` 
+
+ `loop-vector-stride` iterates over a vector  using the Grid Stride strategy. 
+This macro is simple, clear and less error prone than trying to roll your own.
+The bound value (`x`) is never out-of-bounds of the vector. 
 
 ```
-(loop-grid-stride (x) ...)       ; 1D   x is bound to the x thread index / global-id 0
-(loop-grid-stride (x y) ...)     ; 2D   x and y bound to the global-id 0 and 1 
-(loop-grid-stride (x y z) ...)   ; 3D  
+(loop-vector-stride vec (x) ...)       ; 1D   x is some element index in the vector. 
+```
+In the example below, `vector_add` becomes trivial. But also note that no matter how big the vector,
+so long as the hoisting code sets the `global_work_size` to be close to the actual number of hardware
+threads available, that this `vector_add` will be much faster than the "One Thread Per" strategy when
+the number of elements in the vector is larger than the number of available hardware threads.
+
+The only way to make `vector_add` faster is to use interleaved memory and kernel execution (discussed below).
+```
+;; -- vector_add --
+(def-kernel vector_add (A B &out C)
+  (declare (type A B source-vec) (type C result-vec)
+     (global-size :derive-from A :strategy :strided))       
+  (loop-vector-stride A (i)                   
+    (set! (~ C i) ( + (~ A i) (~ B i)))))
 ```
 
-Obviously, `loop-grid-stride` is quite similar to `in-each-thread` except it implicity surrounds the work in a loop, that will
-loop the body `N` times, incrementing the thread id by N each time. Unlike the "one thread per element strategy", the check on the stride provided by the loop is enough. There is no need for an additional `check-thread-bounds` 
+### loop-soa-stride
+`(loop-soa-stride soaVec (i) ...)`
 
-#### match work_dims arity
-The hoisting code that enqueues the kernel should always use a work_dim that matches the arity of your grid stride.  Otherwise it may not work properly and will have many redundant threads.
-To help avoid mistake, always `declare` a `global-size` whenever using `loop-grid-stride`. The compiler
-will warn you if you do not. And if you do, but it's arity does not match the `global-size` arity, then the compiler will emit an error.
-
-### grid-stride-target
-```
-(grid-stride-target EXPR)
-(grid-stride-target X-Expr Y-Expr)
-(grid-stride-target X-Expr Y-Expr Z-Expr)
-```
-The `loop-grid-stride` loop needs to know when to stop. That's what stride target is. This goes in a `declare` section
-inside the `loop-grid-stride`. It can be a number, an expression that evaluates to a number, or a vector in which case it is assumed to be `(length someVector)`
+`loop-soa-stride` iterates over a `soa-vector` using the Grid Stride strategy. 
 
 
 ### strided strategy
@@ -3886,23 +3887,19 @@ The `:strided` strategy is almost always the correct choice when doing grid stri
 
 ### grid stride example with explanation.
 ```
-;; 1D Vector Add
-(def-type source-vec (vector-type float :global :readable))     ;; let's revisit that :read_only requirement for kernels?
-(def-type result-vec (vector-type float :global :write_only))    ;;  ibid
-
 ;; -- vector_add --
 (def-kernel vector_add (A B &out C)
-  (declare (type A B source-vec) (type C result-vec) 
+  ;; assumes A, B and C are all the same length.
+  (declare #'((in-vec float) (in-vec float) &out (out-vec float))
      (global-size :derive-from A :strategy :strided))     
-  (loop-grid-stride (i)                       ; 'i' will be bound to the thread index / global-id
-    (declare (grid-stride-target A))          ; length of vector parameter 'A' is the where we stride to.
+  (loop-vector-stride A (i)        
     (set! (~ C i) ( + (~ A i) (~ B i)))))
 ```
 
 Let's imagine that our vectors A, B, and C each have 100,000 elements. And imagine that our hosting code has set the 
 `global_work_size` to 1024. That is, 1024 threads are each running this kernel in parallel.
 
-`loop-grid-stride (i)` establishes a loop, with `i` bound to an index, and the the body setting the vector C at that index
+`loop-vector-stride (i)` establishes a loop, with `i` bound to an index, and the the body setting the vector C at that index
 to the sum of A and B at that index (or in C: `C[i] = A[i] + B[i]`)
 
 This runs in parallel so `i` is bound like so across all the threads:
@@ -3910,7 +3907,7 @@ This runs in parallel so `i` is bound like so across all the threads:
     Loop Iteration #1:  0     1     2    3    4    ... 1023
 ```
 And then, the next time through the loop, we don't increment by 1, instead we "stride", we increment _by the number of threads_, which 
-we imagined is 1024.  We keep striding until we hit the target. In our code, a vector is the target `(grid-stride-target A)` so its length, 
+we imagined is 1024.  We keep striding until we hit the target which is the lenght of A, 
 which we imagined at the outset was 100,000 elements, is where we'll stop striding.
 ```
     Loop Iteration #2:  1024 1025 1026 1027 1028   ... 2047
@@ -3924,97 +3921,139 @@ Hey! That looks like a grid!
 As you can see, all the indeces from 0 to 99,999 are visited, and our calculation is performed at each index. 
 In a very short time (just 98 iterations), these 1024 threads add vectors A and B and store them in C. Wow!
 
-### loop-grid-stride-linear
-`(loop-grid-stride-linear (x) ...)       ; x is bound to the x flattened thread index / global-linear-id`
 
-This is much like `loop-grid-stride` except that it always has just one thread id bind, regardless of the `work_dim` of the enqueue. The `x` term is bound to the global linear id.   Like `loop-grid-stride` it MUST be used with `grid-stride-target` or it will not be able to determine when to stop the loop. 
+General Purpose: `thread-stride`
+-------------------------------
 
-
-### loop-vector-stride
-`(loop-vector-stride Vec (i) ...)`     
-
-`loop-vector-stride` iterates over a vector  using the Grid Stride strategy. With it, there is no need to declare a grid stride target.
-This makes it simpler, clearer and less error prone.   With it our vector_add example from the previous section becomes even simpler.
-```
-;; -- vector_add --
-(def-kernel vector_add (A B &out C)
-  (declare (type A B source-vec) (type C result-vec)
-     (global-size :derive-from A :strategy :strided))       
-  (loop-vector-stride A (i)                   
-    (set! (~ C i) ( + (~ A i) (~ B i)))))
-```
-
-Note that the `global-size` declaration above isn't strictly necessary when using `loop-vector-stride` as it will
-inject that same declaration. But it's a good practice and conflict declarations could result in useful warnings,
-which would prevent mistakes. 
-
-
-#### work_dims 
-In Crisp, vectors are always 1D, but a kernel can be enqueued with a work_dims of 2 or 3. 
-In that case, `loop-vector-stride` will stride using `get_global_linear_id/size` just like `loop-grid-stride-linear`.
-
-### loop-soa-stride
-`(loop-soa-stride soaVec (i) ...)`
-
-`loop-soa-stride` iterates over a `soa-vector` using the Grid Stride strategy.  There is no need to declare a grid stride target.
-
-As with `loop-vector-stride`, if the kernel is enqueued with a work_dims of 2 or 3 this routine will stride with `get_global_linear_id`.
-
-
-### loop-tensor-stride
-```
-(loop-tensor-stride Tensor (x) ...)           ; 1D   x is bound to the flattened thread index / global-linear-id
-
-(loop-tensor-stride Tensor (x y ... N) ...)   ; ND  
-```
-
-`loop-tensor-stride` iterates over a tensor using the Grid Stride strategy.  Because the `Tensor` is provided as an argument there is no need to declare a grid stride target. 
-
-`loop-tensor-stride` is available to any arity, so long as it matches the number of dimensions of the tensor itself. 
-If the arity of the tensor matches the arity of the enqueue (`work_dim`) then the grid stride will use the `get_global_id` calls and stride by the relevant `get_global_size`.  Otherwise, it defaults to using `get_global_linear_id` and striding by the linear size, and it will handle setting the index arguments
-correctly, rolling them over at the limits of the tensor in those dimensions.
-
-
-### loop-group-stride
-
-All the `loop-XXX-stride` forms we've seen so far have been thread oriented. For example a thread is given one 
-index in a vector, which it uses, and then on the next entry to the loop it's assigned index is very far away.
-The "jump" is determined by the global work size. 
-
-But `loop-group-stride` is workgroup oriented. A target (like a `vector` or `tensor-view`) is provided, along with a work
-size and then a group of threads each get the SAME index each time through the loop. 
-
-You can think of a small cleaning crew (a workgroup) is assigned to a very long hallway (a vector). They clean one section of the hallway (a chunk), then skip ahead to the next section assigned to them, continuing until the whole hallway is clean.
+While `loop-vector-stride` is very handy and one of the most commonly used Crisp affordances, 
+it's one task is to just employ all the threads to walk a vector. Sometimes you'll need more.
+That's when `thread-stride` will come in play.  `thread-stride` allows you to configure any
+type of grid level stride. `loop-vector-stride` uses `thread-stride` under the hood.
 
 ```
-(loop-group-stride Vector chunk-sz:ulong (chunk-start-idx) ...)  1D 
-
-(loop-group-stride Matrix tile-dims:ulong2 (tile-idx-y tile-idx-x) ... ) 2D
-
-(loop-group-stride 3D-Tensor-View block-dims:ulong3 (block-z block-y block-x) ...) 3D
+(thread-stride <problem-space> <chunkExpr> (<bindings>) ...) 
 ```
 
-Note that as the arity of `loop-grid-stride` goes up, so does arity of the dimensions argument (`ulong`, `ulong2` and `ulong3`).
+ `problem-space` 
+ - a  1D vector, 2D matrix or 3D tensor 
+ - size list: `(width)` or `(width height)` or `(width height depth)` 
+ `chunkExpr` 
+  - `:global-size` (normal grid stride, could be 1D, 2D, or 3D) 
+  - `:workgroup-idx`  could be 1D, 2D, or 3D
+  - `:warp-idx`  1D only
+  - a small 1D vector, 2D matrix or 3D tensor
+  - small sizes: `(w)`, `(w h)`, or `(w h d)`
+  `bindings`
+  - `(x)`, `(x y)`, `(x y z)`
 
-### loop-warp-stride
+The "problem space" is the space of the problem you want strided. Like a very large 
+vector or matrix, or you can just provide numeric values in a quoted list.
 
-Similar in concept to `loop-group-stride`, this is a stride over the number of warps. There is
-only a 1D version of this stride.
+The "chunk expression" is the grouping of the stride. If `:global-size` then it's
+like the example with explanation above, where bindings are sequential and any 
+single thread strides by the count of all of them.
 
+For `:workgroup-idx` the threads are grouped by workgroup and each thread in each workgroup gets the
+same base value for its bindings: that workgroups index. And the stride is number of workgroups.
+So for a workgroup size of 64 and four total workgroups, threads 0 to 63 ALL get [0, 4, 8, ...] 
+
+`:warp-idx` is just like `:workgroup-idx` except the threads are grouped by warp and it is 1D only.
+
+For the "small" vectors, etc or direct sizes, the bindings are index values shared by all threads grouped
+by that size.
+
+IMPORTANT: the arity of the problem space MUST match the arity of the bindings. 
+
+### coordinate conversion when striding
+
+Inside the scope of `thread-stride` there are two helper functions defined for you: `problem-space-coords`
+and `chunk-coords`.  These take the current index bindings, combined with the current thread id and
+calculate the coordinate back into the problem space or into the chunk.
+
+These functions take no arguments themselves, and the value they return has the same arity 
+as the problem space or chunk expression. 
 
 ```
-(loop-warp-stride NUMITERATIONS (warp-idx) ...)
+(problem-space-coords) => (x ...)
+
+(chunk-coords) => (x ...)
 ```
 
-It will stride up, warp by warp, until `NUMITERATIONS` is reached. 
+### Example - Fill a 2D Matrix
+```
+(def-grid-function matrix-fill (value &out output-m)
+  (declare #'(float (matrix float :global :writeable)))
+  (thread-stride output-m :global-size (x y)
+    (set! (~ output-m y x) value)))
+```
 
-#### loop-tile-stride 
+Load Tile / Store Tile
+----------------------
 
-The most common use of a 2D group stride is to process a matrix using square tiles. For this, the `loop-tile-stride` macro is provided as a simpler shorthand. It simply takes a `ulong` for `tile-dim` because it assumes a square tile.
+Load Chunk / Store Chunk
+------------------------
+
+`load-chunk` will map the chunk to the appropriate place in the problem space and 
+load the chunk with the data there. If used within the scope of `thread-stride` 
+then the `<problem-space-coords>` and `<chunk-size>` do not need provided.
+
+But this function can be used in other contexts so long as those are provided. 
+
+Similarly, `store-chunk` does the reverse - copies memory from some chunk vector
+into the appropriate location in the problem space data. 
+
+The usualy practice is that the problem space vector is `:global` and the chunk is `:local`.
 
 ```
-(loop-tile-stride Matrix tile-dim:ulong (tile-idx-y tile-idx-x) ... )
+(load-chunk  <problem-space> <chunk> &optional (<problem-space-coords>) (<chunk-size>))
+
+(store-chunk <chunk> <problem-space> &optional (<problem-space-coords>) (<chunk-size>))
 ```
+
+Workspace Stride
+----------------
+
+Whereas `thread-stride` bends all available threads to its wicked purposes, `workspace-stride` is 
+used to just set up a stride across a workspace. This makes it one of the very few "workplace level" 
+macros that Crisp provdes.  This CAN be nested in a grid level operation (such as `thread-stride`)
+
+```
+(workspace-stride <problem-space> <chunkExpr> (<bindings>) ...)
+```
+
+ `problem-space` 
+ - a  1D vector, 2D matrix or 3D tensor 
+ - size list: `(width)` or `(width height)` or `(width height depth)` 
+ `chunkExpr` 
+  - `:local-size` (normal grid stride, could be 1D, 2D, or 3D) 
+  - `:warp-idx`  1D only
+  - a small 1D vector, 2D matrix or 3D tensor
+  - small sizes: `(w)`, `(w h)`, or `(w h d)`
+  `bindings`
+  - `(x)`, `(x y)`, `(x y z)`
+
+The `problem-space` can be anything or any size. But whatever it is, it should have
+been divided among all workgroups. Don't use `workspace-stride` to stride something
+really big. Ideally, something small and using `:local` memory.
+
+`:local-size` - each thread in the workspace starts with its own local id
+and each time through the stride increments the binding by the number of threads
+in the workspace. 
+
+`:warp-idx` - every thread in a warp will get the same binding, striding by the 
+  number of warps in a workgroup.
+
+### coordinate conversion
+
+These functions operate analagously to their `thread-stride` counterparts.
+
+```
+(ws-problem-space-coords) => (x ...)
+
+(ws-chunk-coords) => (x ...)
+```
+                     
+
 
 
 
@@ -7597,11 +7636,11 @@ The `f8-e8m0` type is used for the OCP MX formats ( MXFP8, MXFP6, and MXFP4 )
 def-microfloat-block
 ---------------------
 
-The types above can then be used in `def-microfloat-block`
+The types above can then be used in `def-microfloat-block`.  Note that blocks can have 1D or 2D arity.
 
 ```
-(def-microfloat-block mf-celcius :base fp4 :accum fp32 :scale fp8-e4m3 :count 16)
-(def-microfloat-block mf-fahrenheit :base fp4 :accum fp32 :scale fp8-e4m3 :count 16)
+(def-microfloat-block mf-celcius :base fp4 :accum fp32 :scale fp8-e4m3 :shape (16))
+(def-microfloat-block mf-weights :base fp4 :accum fp32 :scale fp8-e4m3 :shape (4 4))
 ```
 
 And just like with the quantized types, different block types cannot be intermixed,
@@ -7610,7 +7649,7 @@ you can do so by using `set-derived`.
 
 For each invocation of `def-microfloat-block` Crisp will define the type identifiers
  `XXXX-base`, `XXXX-accum` and `XXXX-scale` as well as compile-time type functions
- `scale` and `count` 
+ `scale`, `count`, and `shape` . `num-rows` and `num-cols` are defined for the 2D variant.
 
  Additionally,  `quantize-to-XXXX` and `dequantize-from-XXXX` functions
  are defined. These functions operate on vectors of floats and blocks. Read more below
@@ -7654,7 +7693,8 @@ microfloat block.
 ### multiplication
 
 ```
-(* MFB MFB) => A     ;  dot-product
+(* MFB_1D MFB_1D) => A     ;  vector dot-product
+(* MFB_2D MFB_2D) => A     ;  matrix dot-product
 ```
 Two microfloat blocks can be multiplied by each other, and the result is a single
 float of the accumulator type.
@@ -7688,12 +7728,19 @@ The conversion operations operate on entire vectors of floats and microfloat blo
 ### quantize-to-XXXX
 ```
 (quantize-to-XXXX float-input-vec &out microfloat-block-vec)
+
+(quantize-to-XXXX float-input-matrix &out microfloat-block-matrix)
 ```
-`quantize-to-XXXX` takes a vector of floats as an input arg, and a vector of microfloat blocks
-as an output parameter.  Note that length of the input vector is `:count` times the length 
+`quantize-to-XXXX` takes either a vector (or matrix) of floats as an input arg, and a vector (or matrix) of microfloat blocks
+as an output parameter.  
+
+For 1D vectors note that length of the input vector is `count` times the length 
 of the microfloat block output vector.
 
-This is a grid-level function. 
+For 2D matrices, the length of each row of the input vector is `shape[1]` times the length of each
+row of the microfloat block output matrix. 
+
+These  are grid-level functions. 
 
 Example:
 ```
@@ -7709,6 +7756,7 @@ Possible Implementation
     (value-is A #'is-alignment?)
     (type-is MFB #'is-microfloat-block?))
 
+   ;; 1D
   (def-grid-function quantize-to-XXXX (input-vec &out output-mfb-vec 
                               &optional (scratch-vec (make-scratch-vector F (count MFB))))
     (declare #((in-vec F A) &out (out-vec MFB :std140)))
@@ -7725,7 +7773,22 @@ Possible Implementation
           (set! (scale~ target-block) scale-f))
         (in-warp (lane-id)
           (when (< lane-id (count MFB))
-            (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val)))))))))
+            (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val))))))))
+
+    ;; 2D
+    (def-grid-function quantize-to-XXXX (input-tv &out output-mfb-tv 
+                              &optional (scratch-vec (make-scratch-vector F (num-cols MFB))))
+      (declare #((tensor-view-type 3 (in-vec F A)) &out (tensor-view-type 3 (out-vec MFB :std140))))
+      (r-t-assert-0 (= (num-cols input-tv) (* (num-cols MFB) (num-rows MFB))) "confusing")
+      (r-t-assert-0 (= (num-planes input-tv) (num-planes output-mfb-tv)) "number of planes not matching")
+      (r-t-assert-0 (= (num-rows intput-tv) (num-rows output-mfb-tv)) "number of rows should match")
+      
+
+      ;; workgroup
+
+
+            
+                
 
 ```
 
@@ -9906,6 +9969,17 @@ control flow
 - in-each-thread                   [3D]
 - in-each-thread-in-group          [3D]
 - in-each-group                    [3D]
+
+- loop-vector-stride
+- thread-stride
+- problem-space-coords
+- chunk-coords
+- load-chunk
+- store-chunk
+- workspace-stride
+- ws-problem-space-coords
+- ws-chunk-coords
+
 - loop-grid-stride       [D]       [3D]
 - grid-stride-target [DP]          [3D]
 - loop-grid-stride-linear
@@ -10404,6 +10478,9 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 ### SHORTEST
 [ ] Entrypoint
 [x] Strings (too much handwaving)
+[ ] mapping and composition
+[ ] update all old routines and remove them.
+[ ] workspace-level
 [ ] ident / identity(Op) / 
 [ ] Segmented (b.c. hard)
 [ ] Quantized Ints
