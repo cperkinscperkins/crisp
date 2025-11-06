@@ -39,7 +39,7 @@ Major Features of the Crisp language and tools
 
 - Flexible Data Layouts:  Crisp provides distinct types and specialized accessors for both "Array of Structs" (`vector`) and "Struct of Arrays" (`soa-vector`).  This gives developers the tools to choose the most performant memory layout for their algorithm without sacrificing type safety or readability.
 
-- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:std140`) and GPU-native iteration patterns (`loop-grid-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
+- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:std140`) and GPU-native iteration patterns (`loop-vector-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
 
 - Compile-Time Verification:  Special variants of control-flow forms (`if*`, `dotimes+`) and declarations (`uniform`, `constexpr`) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
 
@@ -269,7 +269,7 @@ level `progn` it is illegal to make grid level or dispatch level operations/call
 
 In contrast in a grid level context there is an expectation that thread with such-and-such id is
 accessing global memory at such-and-such index, or performing atomic operations on global memory.
-Grid level contexts most often come from macros like `loop-grid-stride`. Inside a grid level
+Grid level contexts most often come from macros like `loop-vector-stride`. Inside a grid level
 `progn` making thread level operations is perfectly fine. But calling OTHER grid level operations
 is forbidden. In other words, grid level operations cannot nest inside one another.
 
@@ -2322,12 +2322,11 @@ There is a matching type function
 (load-local global-vec scratch-vec &optional identity)
 (store-global scratch-vec global-vec &optional (transformF #'identityF))
 
-
-(load-warp-scratch global-vec scratch-vec warp-num)
-
-
 (load-tile ...) 
 (store-tile ...)
+
+(load-chunk ...)
+(store-chunk ...)
 ```
 
 In `:one-thread-per` strategies, a common practice is to divide some input vec
@@ -2340,7 +2339,10 @@ greater than `global-vec`, then it may be necessary to fill in the matching port
 of the `scratch-vec` with something, and `identity` is that something.
 
 There are also  `load-tile` and `store-tile` helpers to assist with
-similar operations in 2D strided scenarios. They are described below with Matrices. 
+similar operations in 2D strided scenarios. They are described below with Matrices.
+Lastly, `load-chunk` and `store-chunk` can be used with any chunk size (so long as it is
+not bigger than a single workgroup). From within  a `thread-stride` they don't require any
+placement arguments, but they are perfectly usable without. See the section on [thread-stride](#general-purpose-thread-stride). 
 
 Possible Implementation
 ```
@@ -2365,28 +2367,6 @@ Possible Implementation
 
 ```
 
-
-### load-warp-scratch
-`(load-warp-scratch global-vec scratch-vec warp-num &optional (identity 0)))`
-
-With this function, all threads in the current warp cooperatively load their
-assigned chunk from a large global vector into a small scratch vector.
-
-The small scratch vector cannot be longer than `+warp-size+` length.
-
-Possible Implementation
-```
-(defmacro load-warp-scratch (global-vec scratch-vec warp-num &optional (identity 0))
-  (c-t-assert (type-equal (element-type global-vec) (element-type scratch-vec)) "type mismatch!")
-  `(let ((len (length~ ,scratch-vec))
-         (start-idx (* ,warp-num len))
-         (g-len (length~ ,global-vec)))
-    (in-warp (lane-id)
-      (when  (< lane-id len)
-        (let ((g-idx (+ start-idx lane-id))
-              (val (if (< g-idx g-len) (~ ,global-vec g-idx) ,identity)))
-          (set! (~ ,scratch-vec lane-id) val))))))
-```
 
 
 Tensors
@@ -2764,7 +2744,7 @@ not necessarily like we want them to be.
     (let ((temp-tile (make-matrix scratch TILE_DIM (+ TILE_DIM 1)))) ; Padded tile sometimes increases performance
 
       ;; This loop makes each workgroup process multiple tiles.
-      (loop-tile-stride M TILE_DIM (tile-idx-y tile-idx-x) 
+      (thread-stride M '(TILE_DIM TILE_DIM) (tile-idx-y tile-idx-x) 
 
         ;; load tile  - coalesced read
         (load-tile M temp-tile tile-idx-y tile-idx-x :transpose (= (get-layout M) :col-major))
@@ -3405,7 +3385,7 @@ Example:
     (let  ... ))
 
   ;; now do parallel grid stride
-  (loop-grid-stride (i) 
+  (loop-vector-stride vec (i) 
     ...))
 ```
 
@@ -3934,17 +3914,21 @@ type of grid level stride. `loop-vector-stride` uses `thread-stride` under the h
 (thread-stride <problem-space> <chunkExpr> (<bindings>) ...) 
 ```
 
- `problem-space` 
- - a  1D vector, 2D matrix or 3D tensor 
- - size list: `(width)` or `(width height)` or `(width height depth)` 
- `chunkExpr` 
-  - `:global-size` (normal grid stride, could be 1D, 2D, or 3D) 
-  - `:workgroup-idx`  could be 1D, 2D, or 3D
-  - `:warp-idx`  1D only
-  - a small 1D vector, 2D matrix or 3D tensor
-  - small sizes: `(w)`, `(w h)`, or `(w h d)`
-  `bindings`
-  - `(x)`, `(x y)`, `(x y z)`
+`problem-space` 
+- a  1D vector, 2D matrix or 3D tensor 
+- size list: `(width)` or `(width height)` or `(width height depth)` 
+
+`chunkExpr` 
+- `:global-size` (normal grid stride, could be 1D, 2D, or 3D) 
+- `:workgroup-idx`  could be 1D, 2D, or 3D
+- `:warp-idx`  1D only
+- a small 1D vector, 2D matrix or 3D tensor
+- small sizes: `(w)`, `(w h)`, or `(w h d)`
+
+`bindings`
+- `(x)`, `(x y)`, `(x y z)`
+
+IMPORTANT: the arity of the problem space MUST match the arity of the bindings. 
 
 The "problem space" is the space of the problem you want strided. Like a very large 
 vector or matrix, or you can just provide numeric values in a quoted list.
@@ -3958,11 +3942,15 @@ same base value for its bindings: that workgroups index. And the stride is numbe
 So for a workgroup size of 64 and four total workgroups, threads 0 to 63 ALL get [0, 4, 8, ...] 
 
 `:warp-idx` is just like `:workgroup-idx` except the threads are grouped by warp and it is 1D only.
+Note that if using `:warp-idx` that it is extremely important that the kernel is hoisted 
+with a `local_work_size` that is a multiple of `+warp-size+`.  Otherwise operations like warp level
+reductions could end up deadlocking.
 
 For the "small" vectors, etc or direct sizes, the bindings are index values shared by all threads grouped
-by that size.
+by that size.  Note that the "small" vectors or "small" sizes do NOT need to have the same
+arity as the problem space. The "small" variants CANNOT be bigger than the net workspace size. 
 
-IMPORTANT: the arity of the problem space MUST match the arity of the bindings. 
+
 
 ### coordinate conversion when striding
 
@@ -3979,6 +3967,28 @@ as the problem space or chunk expression.
 (chunk-coords) => (x ...)
 ```
 
+### tensor-view in problem space
+```
+(problem-space-view) => tensor-view
+```
+In the scope of `thread-stride` there is another helper function which returns a `tensor-view`. This `tensor-view`
+has the size and dimensions of the `chunkExpr` but is mapped to the current location in the problem space.
+
+Note that in the event the problem space is not evenly divisible by the chunk, then the `tensor-view` that is returned
+might have dimensions smaller than the chunk if it is near the memory boundary. This way there is no accidental out of bounds
+memory access.  
+<!--
+ NOTE: explain risk of deadlock   
+ 
+ NOTE: compiler will use this to DETECT possible deadlocks 
+       this makes it EASIER to detect deadlocks at "ragged edges"
+       we insert (declare :ragged-edge) or something 
+  TODO: figure this out. (declare (convergent)) and friends.
+-->
+
+Note, also, that this is tensor-view is into the problem space, which is likely `:global`. If you are wanting fast chunk access
+use `load-chunk` / `store-chunk` below to transfer to `:local` memory for fast operations.
+
 ### Example - Fill a 2D Matrix
 ```
 (def-grid-function matrix-fill (value &out output-m)
@@ -3993,22 +4003,39 @@ Load Tile / Store Tile
 Load Chunk / Store Chunk
 ------------------------
 
+```
+(load-chunk  <problem-space> <chunk> &optional (identity-val 0) (<problem-space-coords>) (<chunk-size>))
+
+(store-chunk <chunk> <problem-space> &optional transformF (<problem-space-coords>) (<chunk-size>))
+```
+
 `load-chunk` will map the chunk to the appropriate place in the problem space and 
 load the chunk with the data there. If used within the scope of `thread-stride` 
 then the `<problem-space-coords>` and `<chunk-size>` do not need provided.
-
 But this function can be used in other contexts so long as those are provided. 
+The loading of "cooperative", with each thread setting one value.
 
 Similarly, `store-chunk` does the reverse - copies memory from some chunk vector
-into the appropriate location in the problem space data. 
+into the appropriate location in the problem space data. This is usually used with 
+some `&out` output memory whose size is identical to the problem space. 
 
-The usualy practice is that the problem space vector is `:global` and the chunk is `:local`.
+The usual practice is that the problem space vector is `:global` and the chunk is `:local`.
 
-```
-(load-chunk  <problem-space> <chunk> &optional (<problem-space-coords>) (<chunk-size>))
+`load-chunk` takes an optional `identity-val` argument. This is used when the problem space
+is not evenly divisible by the chunk size.  In that case, the chunk will be correctly loaded with
+data from the problem space where possible, but the REMAINING values of the chunk will be loaded with `identity-val`
 
-(store-chunk <chunk> <problem-space> &optional (<problem-space-coords>) (<chunk-size>))
-```
+`store-chunk` take an optional `transformF` argument. This is a function of `binop-type` that
+can be used to transform the value as it is stored. 
+
+### local-barrier
+
+Both `load-chunk` and `store-chunk` invoke `(local-barrier)` at the completion of their
+operation. This prevents read-after-write and write-after-read race conditions. 
+But be aware, that this also means these functions should NOT appear in conditional blocks 
+( `when`, `if`, `cond`, `unless`) or you will incure a deadlock. The Crisp compiler should
+detect this and emit an error.
+
 
 Workspace Stride
 ----------------
@@ -4021,16 +4048,18 @@ macros that Crisp provdes.  This CAN be nested in a grid level operation (such a
 (workspace-stride <problem-space> <chunkExpr> (<bindings>) ...)
 ```
 
- `problem-space` 
- - a  1D vector, 2D matrix or 3D tensor 
- - size list: `(width)` or `(width height)` or `(width height depth)` 
- `chunkExpr` 
-  - `:local-size` (normal grid stride, could be 1D, 2D, or 3D) 
-  - `:warp-idx`  1D only
-  - a small 1D vector, 2D matrix or 3D tensor
-  - small sizes: `(w)`, `(w h)`, or `(w h d)`
-  `bindings`
-  - `(x)`, `(x y)`, `(x y z)`
+`problem-space` 
+- a  1D vector, 2D matrix or 3D tensor 
+- size list: `(width)` or `(width height)` or `(width height depth)` 
+
+`chunkExpr` 
+- `:local-size` (normal grid stride, could be 1D, 2D, or 3D) 
+- `:warp-idx`  1D only
+- a small 1D vector, 2D matrix or 3D tensor
+- small sizes: `(w)`, `(w h)`, or `(w h d)`
+
+`bindings`
+- `(x)`, `(x y)`, `(x y z)`
 
 The `problem-space` can be anything or any size. But whatever it is, it should have
 been divided among all workgroups. Don't use `workspace-stride` to stride something
@@ -4187,10 +4216,14 @@ Looping Constructs
 
 Here is a list of the looping constructs supported by Crisp. Some are discussed elsewhere.
 
-- loop-grid-stride / grid-stride-target   ( see Looping -- Grid Stride above ) 
-- loop-grid-stride-linear
-- loop-vector-stride / loop-soa-stride / loop-tensor-stride
-- loop-group-stride / loop-tile-stride
+- loop-vector-stride / loop-soa-stride
+- thread-stride
+- - problem-space-coords
+- - chunk-coords
+- - problem-space-view
+- - load-chunk
+- - store-chunk
+- workgroup-stride
 - dotimes / dotimes+ / dotimes*
 - do-times-by-doubling
 - do-times-by-multiply
@@ -5448,7 +5481,7 @@ Possible Implementation
     (let ((var identity)
           (len (length~ ,vec)))
         (declare (uniform len))
-        (loop-grid-stride vec (i)
+        (loop-vector-stride vec (i)
           (set! var (funcall someFunction var (~ vec i)))))
         (reduce-to-1-atomic someFunction var identity return-vec localScratchVec)))
 
@@ -5481,7 +5514,7 @@ Possible Implementation
     (let ((var identity)
           (len (length~ ,vec)))
         (declare (uniform len))
-        (loop-grid-stride vec (i)
+        (loop-vector-stride vec (i)
           (set! var (funcall someFunction var (~ vec i)))))
         (reduce-to-1-cas someFunction var identity return-vec localScratchVec)))
 
@@ -7062,7 +7095,7 @@ its value.
 #|
   matmul-naive
   This is a very simple, easy to read version of matmul that uses
-  loop-grid-stride and dot-prod-seq to easily multiply two matrices.
+  thread-stride and dot-prod-seq to easily multiply two matrices.
   But it won't coalece unless A is row-major and B is col-major.
   And, even then, it will still be slow, because A and B
   are most likely using :global memory, so this routine has many
@@ -7087,9 +7120,8 @@ its value.
       
       (let ((vec (make-result-vector A (* outer-A outer-B)))
             (res (make-tensor-view vec outer-A outer-B )))
-                (loop-grid-stride (x y)   
-                  (declare (grid-stride-target outer-A outer-B))
-                  (set! (~ res x y) (dot-prod-seq (row x A) (col y B)))) ;; <-- CANT CALL DOT PROD
+                (thread-stride '(outer-A outerB) :global-size (x y)   
+                  (set! (~ res x y) (dot-prod-seq (row x A) (col y B)))) 
                 (return res)))))       
 
 #|
@@ -7202,8 +7234,7 @@ Convolution
           (f-center-y (floor f-height 2)))
       (r-t-assert-0 (and (= width (num-cols output-m)) (= height (num-rows output-m)))
                "dimensions for input and output matrix must match")
-      (loop-grid-stride (x y)
-        (declare (grid-stride-target width height))
+      (thread-stride '(width height) :global-size (x y)
         (let ((acc (zero T)))
           (dotimes (ky f-height)
             (dotimes (kx f-width)
@@ -7764,8 +7795,8 @@ Possible Implementation
                   "lengths don't match")
     (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
     ;; 
-    (loop-warp-stride (length~ output-mfb-vec) (warp-num)
-      (load-warp-scratch input-vec scratch-vec warp-num)
+    (thread-stride (length~ output-mfb-vec) :warp-idx (warp-num)
+      (load-chunk input-vec scratch-vec) ;; don't need warp-num in the context of thread-stride
       (let ((max-val (reduce-vec-warp scratch-vec #'max)) ;;
             (scale-f (to (scale MFB) max-val))
             (target-block (~ output-mfb-vec warp-num)))
@@ -7976,7 +8007,7 @@ to improve data reuse and reduce global memory traffic.
     (declare #(ulong &out (vector-type (complex-type T) :global :writeable A) => nil))
 
     ;; Each thread calculates twiddle factors using grid stride
-    (loop-grid-stride twiddle-vec (k) ; Loop from k = 0 to N-1 (or length of twiddle-vec)
+    (loop-vector-stride twiddle-vec (k) ; Loop from k = 0 to N-1 (or length of twiddle-vec)
       (when (< k N) ; Ensure we only calculate N twiddles
         ;; Calculate the k-th twiddle factor
         (let ((twiddle (calculate-twiddle-factor k N)))
@@ -9972,23 +10003,15 @@ control flow
 
 - loop-vector-stride
 - thread-stride
-- problem-space-coords
-- chunk-coords
+- - problem-space-coords
+- - chunk-coords
+- - problem-space-view
 - load-chunk
 - store-chunk
 - workspace-stride
-- ws-problem-space-coords
-- ws-chunk-coords
+- - ws-problem-space-coords
+- - ws-chunk-coords
 
-- loop-grid-stride       [D]       [3D]
-- grid-stride-target [DP]          [3D]
-- loop-grid-stride-linear
-- loop-vector-stride
-- loop-soa-stride
-- loop-tensor-stride                  [ND]
-- loop-group-stride                [3D]
-- loop-warp-stride
-- loop-tile-stride                [2D]
 - grid-level         [DP]
 - uniform            [DP]
 - constexpr          [DP]
@@ -10143,7 +10166,7 @@ other
 - scratch-vec-type
 - load-local
 - store-global
-- load-warp-scratch
+
 - make-implicit-vector
 - marshall-vector
 - marshall-scratch-vector
