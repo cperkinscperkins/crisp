@@ -82,8 +82,7 @@ In only exposes the numeric machine types that are availble on GPU hardware.
 ### no dynamic memory or garbage collection
 
 Scheme and Lisp implementations have implicit memory allocation and collection. Crisp does not.
-It does have "Side Channels" which can be used for intermediate scratch memory and return
-results memory. To be discussed later.
+It does have "Side Channels" which can be used for intermediate scratch memory and debug logging. To be discussed later.
 
 ### static typing, not dynamic
 
@@ -149,7 +148,7 @@ Table of Contents
 - - Template Types
 - - `def-constraint`
 - - `def-type-function`
-- - Vectors and Vector-View
+- - Vectors and Storage
 - - Reduce Boilerplate: Vectors Of Lenght 1: `single-result` and `set-result!`
 - - Reduce Boilerplate: `in-vec` and `out-vec`
 - - `soa-vector` and `soa-view`
@@ -875,6 +874,18 @@ The recommended practice is to use marshalling functionss immediately within a `
 to create standard Crisp views, and then call some some inner function. That inner function will let you leverage
 the `&out` specifier and possibly other safety checks. 
 
+
+### Implementation Notes
+"vector" and "storage" at the kernel boundary is just a collection of registers from the call interface.
+`marshall-vector` is just a macro that associates them.
+
+In reality even `(def-kernel k (someVector) ...)` just expands to 
+```
+(def-kernel-exact k (sv-len sv-mem)
+  (let ((someVector (marshall-vector sv-len sv-mem))) ...)
+```
+
+
 #### implicit vector arguments
 
 If the kernel or any of its subfunctions use the Crisp side channel convenience functions
@@ -931,7 +942,7 @@ This would include:
 - Scalar types (`int`, `float`, etc)
 - Small vector types (`float4` etc)
 - Other structs
-- Views to large data (`vector-view`, `tensor-view`, `matrix`)
+- Views to large data (`vector`, `tensor`, `matrix`)
 
 But it excludes:
 - `vector`
@@ -1195,7 +1206,7 @@ all the needed type information is present (or it'll error :-) )
   ;; -- pair --
   (def-struct pair (first:T) (second:U)))
 
-(def-type incomplete-p-t (pair-type nil (vector-view-type)))  ;; <-- a pair with a vector-view in the second type. Who cares what's in the first?
+(def-type incomplete-p-t (pair-type nil (vector-type)))  ;; <-- a pair with a vector in the second type. Who cares what's in the first?
 
 ;; -- sum-length --
 (def-function sum-length (a b)
@@ -1489,16 +1500,19 @@ With Crisp you have two ways of preparing constant memory:
 
 
 
-Vectors and Vector-View
+Vectors and Storage
 ------------------------
 
-A `vector` is a contiguous array of uniformly typed data. 
-Vectors cannot have their capacity resized. 
-All vectors have their data allocated either by the host or the compiler, 
+Crisp has an internal represention called `storage`.  It is a contiguous array of bytes. 
+`storage` entities cannot have their capacity resized. 
+All `storage` entities have their data allocated either by the host or the compiler, 
 they cannot be dynamically allocated by the runtime. 
 
-A `vector-view` is a vector that is a view into a parent `vector`. `vector-view` is a sub-type of `vector` and it can be
- used as an argument nearly every place a `vector` is usable.
+We mention this internal represention not because you will interact directly with it, but because
+it underpins the `vector`, `soa-vector`, `matrix` and `tensor` constructs. All of them have a parent `storage`to which they provide access.
+
+A `vector` is a view into a parent `storage`. It provides 1D linear access. Technically a `vector`
+is a 1D `tensor`
 
 ### Alignment
 
@@ -1515,51 +1529,56 @@ Also note that Crisp structs are ALWAYS `:std140`, putting them in a vector does
 
 ### Properties
 
-A `vector` has the following immutable properties:
+ `storage` has the following immutable properties:
+| Property      | Type          |              |     Description |
+| --------------|---------------|--------------|-----------------|
+| bytes         | ulong         | runtime      | the number of bytes in the `storage`. This is immutable.|
+| address-space | address-space | compile-time | one of `:global`, `:local`, `:constant` |
+| access        | access        | compile-time | one of `:read_only` `:write_only` `:read_write` `:readable` `:writeable` |
+
+
+The `bytes` property for a `storage` is sometimes known at compile time, but is most often a runtime property.
+However the other properties are all known and evaluable at compile time. 
+
+A `vector` has these properties:
 | Property | Type    | Description |
 | ---------|---------|-------------|
-| length   | ulong   | the number of elements in the vector. This is immutable.|
-| address-space | address-space | one of :global, :local, :constant |
-| access   | access  | one of :read_only :write_only :read_write :readable :writeable |
-| align    |         | one of :std140 or :compact |
-
-The `length` property for a `vector` is sometimes known at compile time, but is most often a runtime property.
-However the other three properties are all known and evaluable at compile time. 
-
-A `vector-view` has these properties:
-| Property | Type    | Description |
-| ---------|---------|-------------|
-| length   |  ulong  | the number of elements in the `vector-view`. It cannot be greater than `(length~ (parent~ vector-view))` |
-| parent   | vector  | address of a "parent" vector |
+| align    |         | compile-time. one of `:std140` or `:compact` |
+| length   | ulong   | the number of elements in the `vector`. Its total bytes cannot be greater than the parent `storage` |
+| parent   | storage | address of a "parent" storage |
 | offset   | ulong   | offset into parent. |
 
-Each of those properties can be accessed by the .<prop> function.
-e.g. `(length~ someVector)` , `(parent~ someVectorView)`
+The `align` property is known at compile-time and is immutable.  
 
-These property functions can be overloaded.  They can also be retrieved with `~XXXX~` (which is not overloadable).
+But since `vector` is just a view into some `storage`, its other properties are mutable. 
+
+Each of those properties can be accessed by the `<prop>~` function.
+e.g. `(length~ someVector)` , `(parent~ someVector)`
+
+These property functions for the mutable properties can be overloaded.  They can also be retrieved with `~XXXX~` (which is not overloadable).
 
 #### Settable Properties
 
-None of the `vector` properties can be set. Also, excepting `length`, all the vector properties are compile time properties. 
-The `length` property on a `vector` is sometimes a compile time property, but usually it's a runtime property. Regardless, it cannot be changed, .
-But ALL the properties on a `vector-view` can be set, including `length`.
+None of the `storage` properties can be set. Also, excepting `bytes`, all the `storage` properties are compile time properties. 
+The `bytes` property on a `storage` entity is sometimes a compile time property, but usually it's a runtime property. Regardless, it cannot be changed, .
+But ALL the mutable properties on a `vector` can be set, including `length`.
 
 ```
-(set! (length~ someVectorView) 10)
-(set! (parent~ someVectorView) someVector)   
-(set! (offset~ someVectorView) 100)
+(set! (length~ someVector) 10)
+(set! (parent~ someVector) otherStorage)   
+(set! (offset~ someVector) 100)
 ```
 
 Use `def-setter` to overload the property setting function.  `~XXXX~` can also be used to get / set the respective properties
 
 
-Note that it is an error to set the `length` or `offset` of the `vector-view` such that it's `length + offset` is greater
-than the `length` of the parent. But the checking and enforcement for these errors is NOT on by default.
+Note that it is an error to set the `length` or `offset` of the `vector` such that it's `(length + offset) * (sizeof elementType)` is greater
+than the `bytes` of the parent `storage`. But the checking and enforcement for these errors is NOT on by default.
 
 #### Pass Through
 
-The `vector` property accessors (  `address-space~`, `access~` and `align~` ) can all be used directly on a `vector-view`. 
-There is no reason to do `(access~ (parent~ some-vector-view))`.  Simply doing `(access~ some-vector-view)` is sufficient.
+The `storage` property accessors  `address-space~` and `access~`  can both be used directly on a `vector`. 
+There is no reason to do `(access~ (parent~ some-vector))`.  Simply doing `(access~ some-vector)` is sufficient.
 
 ### Element Access
 
@@ -1593,9 +1612,11 @@ access functions cannot be overloaded.   `~ref~` is intended to be used from ove
 
 ### Helpers 
 
-`(element-type someVector)`  a type expression that returns the type of the elements in the `vector` or `vector-view`.
+`(element-type someVector)`  a type expression that returns the type of the elements in the `vector`.
 
-`(bytes someVector)`  a helper function that calculates the current number of bytes in the `vector` or `vector-view`.
+`(bytes someVector)`  a helper function that calculates the current number of bytes in the `vector`.
+Note that this is NOT a passthrough. If you want the total number of bytes in the parent `storage`
+you'll need `(bytes~ (parent~ someVector))`
 
 
 
@@ -1606,14 +1627,13 @@ This would include:
 - Scalar types (`int`, `float`, etc)
 - Small vector types (`float4` etc)
 - Structs
-- Views to large data (`vector-view`, `tensor-view`, `matrix`)
+- Views to large data (`vector`, `tensor`, `matrix`)
 
 But it excludes:
-- `vector`
+- `storage`
 - `functions` and `kernels`
 
-Note also that views can't be exchanged with the host directly. A vector that contains a view
-cannot use the C interop for data exchange with host. Marshalling would be required.
+
 
 
 ### Vector Types
@@ -1635,37 +1655,20 @@ Therefore, there are several vector type functions available in CRISP,
 
 #### Simplest
 `(vector-type)`
-It's a `vector` or a `vector-view`.  
+It's a `vector`.  
 
 `(vector-type <element-type>)`
 Example: `(vector-type float)`
-This example simply specifies that the value or parameter is a `vector` or `vector-view` 
+This example simply specifies that the value or parameter is a `vector` 
 with a float element type. It does not specify any particular alignment, address space, access, or size.
 
-<!-- 
-REMOVING THESE FOR NOW. 
-
-Having vector-view be an always accepted proxy for vector is VERY HANDY.  
-
-I have yet to encounter a case where we would want a function signature to take only a true vector,
-or only a vector-view.  So, these are likely going to be removed. 
-
-`(vector-view-type)`
-`(vector-base-type)`
-These two allow the user to specify that a value is only a `vector-view` or NOT a `vector-view`.
-
--->
 
 #### Using Optional
 `(vector-type <element-type> &optional align address-space access length)`
-<!--
-REMOVING
-`(vector-view-type <element-type> &optional address-space access align length)`
-`(vector-base-type <element-type> &optional address-space access align length)`
--->
+
 
 Example: `(vector-type float :compact)` 
-This example specifies a vector (or vector-view) of floats with `:compact` alignment. 
+This example specifies a vector  of floats with `:compact` alignment. 
 It does not specify address-space,  access, or size.
 
 Note that this is the MINIMUM amount of information needed to use element access `(~ someVec i)`
@@ -1677,27 +1680,19 @@ The `address-space`, `access` and `length` may appear in order.
 
 #### Using Keys
 `(vector-type &key element-type align address-space access length)`
-<!-- REMOVING FOR NOW
-`(vector-view-type &key element-type address-space access align length)`
-`(vector-base-type &key element-type address-space access align length)`
--->
+
 
 Example: `(vector-type :access :writeable)`  This specifies that some vector is writeable. 
 It could be of any type, address space, alignment, or size.
 
-<!-- 
-Example: `(vector-view-type :element-type float :length 100)` This specifies that the 
-vector is a `vector-view` of 100 floats. It could be any address space, access, or alignment.
--->
 
-Example: `(vector-type)`  This specifies merely that something is a `vector` or `vector-view`, but nothing else is known about it.
+Example: `(vector-type)`  This specifies merely that something is a `vector`, but nothing else is known about it.
 
 
 
 #### Element Type
 The element type of a vector must be an element of a fixed size known at compile time.
-It cannot be the type of a function. 
-Nor can it be a vector (but this functionality is available through the `vector-view`)
+It cannot be the type of a function.  Nor can it be a `storage` entity.
 
 #### Access
 The enumeration for access has five different choices in Crisp:
@@ -1717,12 +1712,12 @@ But note that the last two are not available in the hoisting example code for lo
     (declare (return-type ulong) (type v (vector-type long :std140 :global :read-only)))
  ...)
 
- ;; vectors (and vector views) can be compile-time fixed size
+ ;; vectors can be compile-time fixed size
 (vector-type float :std140 :local :read-write 100)
 ```
 
 ### Vector Arguments for Kernels
-`def-kernel` is the definition for the kernel function. Its parameter list does not support `vector-view`.
+`def-kernel` is the definition for the kernel function. 
 And any `vector` in its parameter list MUST have its element-type, align, address-space and access specified in
 its type definition. Only the size can be unspecified.
 
@@ -1732,7 +1727,7 @@ its type definition. Only the size can be unspecified.
 (def-type result-from-kernel-t (vector-type float :std140 :global :write-only ))
 
 ;; -- my_kernel --
-(def-kernel my_kernel (in:data-from-host-t out:result-from-kernel-t)
+(def-kernel my_kernel (in:data-from-host-t &out out:result-from-kernel-t)
   ...)
 ```
 
@@ -1740,13 +1735,13 @@ its type definition. Only the size can be unspecified.
 
 While the kernels cannot dynamically allocate vector memory, the kernel CAN
 declare a vector on the stack at compile time.  This vector must have a known-at-compile-time length.
-And it can also create a `vector-view` with a size determined at runtime. 
 
 
 - `(make-vector vectorType)` will instantiate a vector of a set type. The type argument MUST include the length.
 - `(make-vector vectorType length)` length can be provided explicitly if the type doesn't specify it.
 - `(make-vector &key element-type align address-space access  length)`
-- `(make-vector-view parent length &optional offset)` 
+- `(make-vector parentStorage length &optional offset)` 
+- `(make-vector parentVector length &optional offset)`  ;; see below
 
 And `#( val1, val2, ... valN)` instantiates a `vector` directly.  But note that vectors
 created this way do not have information about address space or access and
@@ -1768,26 +1763,26 @@ need an accompanying `declare` or similar to determine.
 (def-kernel do_things ()
   (let ((some-ints #(1 2 3 4 5)) ;; <-- compiler will attempt to infer type, but best to declare it.
          (hundred-floats (make-vector vec-floats-t 100))
-         (ten-floats (make-vector-view hundred-floats 10)))
+         (ten-floats-view (make-vector (parent~ hundred-floats) 10)))
     (declare (type some-ints vec-ints-t))
     ...))
 
 ```
 
-Note that `make-vector-view` CAN take another `vector-view` as the parent argument. But
-there is no nesting. Instead the resulting view will have the original `vector` as a parent, 
-not the `vector-view` argument.  Similarly, expect that is `offset` property will be the 
-net offset.
+ `(make-vector parentVector length &optional offset)`
+Note that `make-vector` CAN take another `vector` as the parent argument. But
+there is no nesting. Instead the resulting vector will take the `storage` of the `vector` arg as a parent. 
+Similarly, expect that is `offset` property will be the net offset.
 
 #### reinterpret-view
 ```
 (reinterpret-view source-vec new-type-symbol &key length offset))
 ```
 
-`reinterpret-view` is a macro that takes a `vector` or `vector-view` argument and type (`float`, `int` etc)
-and returns a `vector-view`. If the optional `:length` key isn't used, then the length of the new `vector-view` will be calculated automatically.  The returned `vector-view` inherits the address-space, access permissions, and layout (`:compact` or `:std140`) from the source-vec. Only the element-type and length are changed.
+`reinterpret-view` is a macro that takes a `vector` argument and type (`float`, `int` etc)
+and returns a new `vector`. If the optional `:length` key isn't used, then the length of the new `vector` will be calculated automatically.  The returned `vector` inherits the address-space, access permissions, and layout (`:compact` or `:std140`) from the source-vec. Only the element-type and length are changed.
 This is a casting operation and it is the callers responsibility to make sure the whole
-`vector-view` is funded with data. Give care when using the `:length` and `:offset` keys and if casting from a smaller 
+`vector` is funded with data. Give care when using the `:length` and `:offset` keys and if casting from a smaller 
 type to a larger one make sure there is enough source data even without using those keys.
 
 There are some restrictions though. They are enforced at compile time:
@@ -1862,8 +1857,8 @@ Possible Implmenetionat
 ```
 
 
-soa-vector and soa-view
------------------------
+soa-vector
+----------
 
 `soa-vector` is a special type of vector, with a special memory layout. They are used for vectors of structs (only).
 
@@ -1890,8 +1885,7 @@ struct Points {
 };
 ```
 
-A `soa-view` is a `soa-vector` that is a view into a parent `soa-vector`.  It subtypes `soa-vector` like
-`vector-view` does `vector`.
+
 
 ### Alignment
 
@@ -1900,26 +1894,18 @@ alignments are applied to the inner vectors.  The outer `struct` is always `:std
 
 ### Base Properties
 
-A `soa-vector` has the following immutable properties:
+A `soa-vector` has these properties:
 
 | Property     | Type         | Description      |
 |--------------|--------------|------------------|
-| length       | ulong        | the number of elements in the `soa-vector`. This is immutable. |
-| address-space|address-space | one of `:global`, `:local`, `:constant`   |
-| access       | access       | `:read_only`, `:write_only`, `:read_write`, `:readable` , `:writeable` |
-| align        | align        | one of `:std140` or `:compact` |
-
-A `soa-view` has these properties:
-
-| Property     | Type         | Description      |
-|--------------|--------------|------------------|
-| length       | ulong        | the number of elements in the `soa-view`. It cannot be greater than `(length~ (parent~ soa-view))` |
-| parent       | soa-view     | address of "parent" soa-view |
+| align        | align        | one of `:std140` or `:compact`. This is for the inner vectors.|
+| length       | ulong        | the number of elements in the `soa-vector`. Its bytes cannot be greater than its parent `storage` |
+| parent       | storage      | address of"parent storage |
 | offset       | ulong        | offset into parent. |
 
 ### Struct Properties
 
-Additionally,  `soa-vector` and `soa-view` also inherit the properties of their struct element type. 
+Additionally,  `soa-vector` also inherits the properties of their struct element type. 
 
 
 Example
@@ -1941,7 +1927,7 @@ Owning to memory coalesence, when the index is a thread id from parallel threads
 #### `XXXX~` without index
 
 Whereas constrastingly, in the example above `(x~ sv)` returns the ENTIRE VECTOR of X from the `soa-vector`.
- `x-vec` would be `(vector-type :element-type long :length 20)`.  <!-- or should it be a vector-view-type ? -->
+ `x-vec` would be `(vector-type :element-type long :length 20)`.  
 
 Its primary purpose is to pass a single, contiguous stream of data to another high-performance primitive, like `reduce-vec`
 
@@ -1952,12 +1938,13 @@ If you want a particular struct as singular construct, it can be gotten with `ge
 creation of a new structure to hold the value.
 `(let ((some-point (get-struct sv 3))))`   
 
-`soa-vector` and `soa-view` do NOT support the `~` or `~ref~` element access functions like regular `vector` and `vector-view`.
+`soa-vector` does NOT support the `~` or `~ref~` element access functions like a regular `vector`.
 
 ### Helper Functions
 
-Like `vector`, `soa-vector` and `soa-view` support `element-type` and `bytes` helpers.
-`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding.
+Like `vector`, `soa-vector`  supports `element-type` and `bytes` helpers.
+`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding. But remember, the `soa-vector` is a view into some `storage`. Use `(bytes~ (parent~ someSoaVec))` to get the
+full storage bytes.
 
 ### Member Data Rules
 
@@ -1972,25 +1959,24 @@ Like `vector`, `soa-vector` and `soa-view` support `element-type` and `bytes` he
  
  ```
  (soa-vector-type <element-type> &optional address-space access align length)
- (soa-view-type <element-type> &optional address-space access align length)
 
  (soa-vector-type &key element-type address-space access align length)
- (soa-view-type &key element-type address-space access align length)
  ```
 
  ### Creating
 
- `soa-vector` have parallel creation routines to `vector` and abide by the same requirements (ie length must be known at compile time).
+`soa-vector` have parallel creation routines to `vector` and abide by the same requirements (ie length must be known at compile time).
 
- - `(make-soa-vector soaVectorType)`
- - `(make-soa-vector soaVectorType length)`
- - `(make-soa-vector &key element-type address-space access align length)`
- - `(make-soa-view parent length &optional offset)`
+- `(make-soa-vector soaVectorType)`
+- `(make-soa-vector soaVectorType length)`
+- `(make-soa-vector &key element-type address-space access align length)`
+- `(make-soa-vector parentStorage length &optional offset)`
+- `(make-soa-vector parentVector length &optional offset)`
 
 
  ### Reinterpreting
 
-`soa-vector` and `soa-view` do not support any sort of reinterpret cast. But their underlying vectors
+`soa-vector` does not support any sort of reinterpret cast. But their underlying vectors
 do.  
 ```
   (let ((vector-view-of-ints (reinterpret-view (x~ point-soa-vec) 'int))) ...)
@@ -2165,8 +2151,8 @@ and
 (def-const-vec +image-mask-8+
   (declare (use +image-mask-32+))
   (let ((small-image-mask-vec (make-vector image-mask-t 8))
-        (small-view  (make-vector-view small-image-mask-vec 2))
-        (big-view    (make-vector-view +image-mask-32+ 2)))
+        (small-view  (make-vector small-image-mask-vec 2))
+        (big-view    (make-vector +image-mask-32+ 2)))
     (dotimes (x 4)
       (copy-vec :from big-view :to small-view)
       (inc! (offset~ small-view) 2)
@@ -2372,47 +2358,45 @@ Possible Implementation
 Tensors
 -------
 
-In Crisp a `vector` is always a one dimensional contiguous blocks of memory. 
-The `vector-view` is slice of a larger parent vector, but the `vector-view` remains 
-contiguous and one dimensional.  
-Tensors are represented by the `tensor-view` which is similar to a `vector-view` except 
+In Crisp a `vector` is always a one dimensional contiguous blocks of memory.  
+Tensors are represented by  `tensor` which is similar to a `vector` except 
 that it has adjustable strides.
 
 Tensors can have their exact size determined at runtime, but the number of their dimensions (eg. 2D matrix versus 4D hypercube )
 must be known at compile time.
 
-### tensor-view-type
+### tensor-type
 
 Tensors are typed completely by dimensions and the complete vector-type of a parent. 
 Tensors are incompletely typed if the parent vector-type is incomplete, or absent.
 
 ```
-(tensor-view-type) 
-(tensor-view-type NumDims)
-(tensor-view-type NumDims parentVectorType)
-; (tensor-view-type &key :dims :parent)  ; <-- NOTE: we don't have comparable parent key for vector-view ? Maybe define there? Or remove this?
+(tensor-type) 
+(tensor-type NumDims)
+(tensor-type NumDims parentVectorType)
+; (tensor-type &key :dims :parent)  ; <-- NOTE: we don't have comparable parent key for vector-view ? Maybe define there? Or remove this?
 
 (num-dims-of someTensorViewType)
 ```
 
-`num-dims-of` is a compile-time expression that returns the dimensions used to define the `tensor-view-type` .
- It triggers a compile-time error if the `tensor-view-type` doesn't contain that (it does NOT return nil).
+`num-dims-of` is a compile-time expression that returns the dimensions used to define the `tensor-type` .
+ It triggers a compile-time error if the `tensor-type` doesn't contain that (it does NOT return nil).
 
- In Crisp, a 1D `tensor-view` can be used nearly anywhere a `vector-view` can be used (which is nearly anywhere a `vector` can be used.)
+ In Crisp, a 1D `tensor` can be used nearly anywhere a `vector` can be used.
 
 ### Creating Tensors
 
-There are four routines for creating `tensor-view`s. Two for `tensor-view` of any dimension,
-and two for creating matrices, which are 2D `tensor-views`. 
+There are four routines for creating `tensor`s. Two for `tensor` of any dimension,
+and two for creating matrices, which are 2D `tensor`. 
 ```
-(make-tensor-view parent len ... lenN  &key (offset 0))
-(make-tensor-view strideVec parentVec len ... lenN &key (offset 0))
+(make-tensor parent len ... lenN  &key (offset 0))
+(make-tensor strideVec parentVec len ... lenN &key (offset 0))
 
 (make-matrix parent len0 len1 &key (major :row) (offset 0))
 (make-matrix parent strideVec len0 len1 &key (offset 0))
 ```
 For the 2D `matrix`, one of the declarations supports a `:major` key which can be `:row` or `:col`.
-Alternately, the `strideVec` can set the strides. Setting the strides directly is how to get "row major" vs "col major" (versus "plane major" etc) tensor-view in higher dimensions. 
+Alternately, the `strideVec` can set the strides. Setting the strides directly is how to get "row major" vs "col major" (versus "plane major" etc) tensor in higher dimensions. 
 
 
 In the example below, let's look at a 3x4 matrix `A`, with elements labeled 
@@ -2422,7 +2406,7 @@ In the example below, let's look at a 3x4 matrix `A`, with elements labeled
 <summary>C++ notation</summary>
 <pre>
 ```
-         Col 0    Col 1    Col 2    Col 3
+         Col 0     Col 1     Col 2     Col 3
        +---------+---------+---------+---------+
 Row 0  | A[0][0] | A[0][1] | A[0][2] | A[0][3] |
        +---------+---------+---------+---------+
@@ -2438,7 +2422,7 @@ Row 2  | A[2][0] | A[2][1] | A[2][2] | A[2][3] |
 <summary>Crisp notation</summary>
 <pre>
 ```
-        Col 0      Col 1      Col 2      Col 3
+        Col 0       Col 1       Col 2       Col 3
        +-----------+-----------+-----------+-----------+
 Row 0  | (~ A 0 0) | (~ A 0 1) | (~ A 0 2) | (~ A 0 3) |
        +-----------+-----------+-----------+-----------+
@@ -2454,10 +2438,10 @@ Next, here is two different ways this matrix could be created.
 In both methods, the coordinates above are exactly the same.
 ```
 ;; Create a row-major view of a 3x4 matrix
-(make-tensor-view #(4 1) my-data-vec 3 4)
+(make-tensor #(4 1) my-data-vec 3 4)
 
 ;; Create a column-major view of a 3x4 matrix
-(make-tensor-view #(1 3) my-data-vec 3 4)
+(make-tensor #(1 3) my-data-vec 3 4)
 ```
 
 But, when laid out linearly, these two tensors are not the same. 
@@ -2477,13 +2461,13 @@ generally far simpler to use one of the other versions and let Crisp set up the 
 ### Properties
 
 
-A `tensor-view` has these runtime properties:
+A `tensor` has these runtime properties:
 | Name     | Type        | Description |
 |----------|-------------|-------------|
-| length   | ulong       | the number of elements in the `tensor-view`. It cannot be greater than `(length~ (parent~ vector-view))` |
-| parent   | vector      | address of a "parent" vector |
+| length   | ulong       | the number of elements in the `tensor`.  |
+| parent   | vector      | address of a "parent" storage |
 | offset   | ulong       | offset into parent. |
-| num-dims | ulong       | number of dimensions of the tensor-view.  This is an immutable compile time property of the tensor-view |
+| num-dims | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
 | strides  | stride-type |  `vector` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
 | dims     | dims-type   | `vector` the lenght of `num-dims` that tracks the extant of that particular dimension
 
@@ -2492,7 +2476,7 @@ e.g. `(length~ someTensorView)` , `(parent~ someTensorView)`
 
 
 ### Element Access.  Use `~` 
-As in vectors `~` is the primary access function for getting and setting elements of a `tensor-view`.
+As in vectors `~` is the primary access function for getting and setting elements of a `tensor`.
 It is also the safe and correct access function because it correctly navigates to the underlying data
 using strides. 
 
@@ -2515,7 +2499,7 @@ It is uwise to overload `~` for all tensors. Use `def-derived-type` when overloa
 
 ```
 ;; source vector is floats ranged 0-1
-(def-derived-type normalized-tv (tensor-view 1 (vector-view-type :element-type float)))
+(def-derived-type normalized-tv (tensor 1 (vector-type :element-type float)))
 
 ;; we return int values between 0-100
 ;;; ~
@@ -2551,28 +2535,28 @@ despite the horrible problems that might occur if done incorrect, we are making 
 
 ### Helpers 
 
-`(element-type someTensor)`  a type expression that returns the type of the elements in the `tensor-view`.
+`(element-type someTensor)`  a type expression that returns the type of the elements in the `tensor`.
 
-`(bytes someTensor)`  a helper function that calculates the current number of bytes in the `tensor-view`.
+`(bytes someTensor)`  a helper function that calculates the current number of bytes in the `tensor`.
 
 ### identity-tensor
 
-This is a specialization of the tensor-view, but is not a true tensor in that does NOT require
+This is a specialization of the tensor, but is not a true tensor in that does NOT require
 any vector data.  It is immutable. It is a Kronecker delta tensor. Every component is 0, except those
 where all the indeces are equal, which are 1.
 
 ```
 (identity-tensor-type &optional rank)
 (make-identity-tensor rank)
-(is-identity-tensor? someTensorView) ;; can be called on any tensor-view
+(is-identity-tensor? someTensorView) ;; can be called on any tensor
 ```
 
 Matrices
 --------
 
-`(def-type matrix (tensor-view 2))`
+`(def-type matrix (tensor 2))`
 
-Matrices are simply 2D tensor views. The type alias `matrix` is defined to make coding easier, but any 2D `tensor-view` can automatically be considered a matrix. It is not a "derived" type.
+Matrices are simply 2D tensor views. The type alias `matrix` is defined to make coding easier, but any 2D `tensor` can automatically be considered a matrix. It is not a "derived" type.
 
 In [Creating Tensors](#creating-tensors) above, two routines for creating matrices are discussed:
 ```
@@ -2584,15 +2568,15 @@ Additionally, there are special functions specifically for matrices.
 
 ### col
 
-`(col x:ulong A:matrix) => 1D tensor-view`
+`(col x:ulong A:matrix) => 1D tensor`
 
-Given an index `x` and a 2D `tensor-view` matrix `A`   this returns a 1D `tensor-view` of that column of the matrix.
+Given an index `x` and a 2D `tensor` matrix `A`   this returns a 1D `tensor` of that column of the matrix.
 
 ### row
 
-`(row y:ulong A:matrix) => 1D tensor-view` 
+`(row y:ulong A:matrix) => 1D tensor` 
 
-Given an index `y` and a 2D `tensor-view` matrix `A`   this returns a 1D `tensor-view` of that row of the matrix.
+Given an index `y` and a 2D `tensor` matrix `A`   this returns a 1D `tensor` of that row of the matrix.
 
 ### num-cols / num-rows
 
@@ -2612,7 +2596,7 @@ These utility functions return the number of columns or rows of the matrix.
 ### transpose
 
 ```
-(transpose M) ; returns a new tensor-view, leaving M alone.
+(transpose M) ; returns a new tensor, leaving M alone.
 (transpose! M) ; M is transposed, strides updated in place
 ```
 
@@ -2812,7 +2796,7 @@ between two types.
 
 (def-derived-type <new-name> <type-expr> &key (subst :no))
 ```
-The `type-expr` is any type that supports a `make-` function (`vector`, `vector-view`, `soa-vector`, `soa-view`, `tensor-view` and things created from `def-struct` )  
+The `type-expr` is any type that supports a `make-` function (`vector`, `soa-vector`,  `tensor` and things created from `def-struct` )  
 <!-- what about numeric types? bool, or nil ?  Definitely NOT functions or kernels, right?-->
 
 
@@ -2945,15 +2929,15 @@ depending on the value of `subst`.
 
 #### extending views
 
-If you want to extend a type like `vector-view` with your own type that has extra data members,
+If you want to extend a type like `vector` with your own type that has extra data members,
 you can use `def-struct` in conjunction with `set-derived` for this.
 Example:
 ```
-(def-struct MY-VIEW 
-    (base:tensor-view)
+(def-struct MY-VEC 
+    (base:vector-type)
     (new-prop:int))
 
-(set-derived tensor-view-type MY-VIEW-type :subst :pass-orig)
+(set-derived vector-type MY-VIEW-type :subst :pass-orig)
 ```
 
 #### std140
@@ -3673,7 +3657,7 @@ has been "rounded up" to a multiple of the workgroup size by the host.
    (declare (type image-data (vector-type :uchar :global :read_write))
             (type width height ulong)
             (global-size :derive-from ( width height) :strategy :one-thread-per)) ; <-- this sets the upper bound for check-thread-bounds 
-  (let ((image-matrix (make-tensor-view image-data width height)))
+  (let ((image-matrix (make-tensor image-data width height)))
     (in-each-thread (x y)
       (when (check-thread-bounds x y) 
         (inc! (~ matrix x y) 30)))))
@@ -3755,7 +3739,7 @@ There are three variants for 1D, 2D and 3D .
    (declare (type image-data (vector-type :uchar :global :read_write))
             (type width height ulong)
             (global-size :derive-from '(width height) :strategy :one-thread-per)) 
-  (let ((image-matrix (make-tensor-view image-data width height)))
+  (let ((image-matrix (make-tensor image-data width height)))
     (in-each-thread (x y)
       (when (check-thread-bounds x y) 
         (inc! (~ matrix x y) 30)))))
@@ -3967,14 +3951,14 @@ as the problem space or chunk expression.
 (chunk-coords) => (x ...)
 ```
 
-### tensor-view in problem space
+### tensor in problem space
 ```
-(problem-space-view) => tensor-view
+(problem-space-view) => tensor
 ```
-In the scope of `thread-stride` there is another helper function which returns a `tensor-view`. This `tensor-view`
+In the scope of `thread-stride` there is another helper function which returns a `tensor`. This `tensor`
 has the size and dimensions of the `chunkExpr` but is mapped to the current location in the problem space.
 
-Note that in the event the problem space is not evenly divisible by the chunk, then the `tensor-view` that is returned
+Note that in the event the problem space is not evenly divisible by the chunk, then the `tensor` that is returned
 might have dimensions smaller than the chunk if it is near the memory boundary. This way there is no accidental out of bounds
 memory access.  
 <!--
@@ -3986,7 +3970,7 @@ memory access.
   TODO: figure this out. (declare (convergent)) and friends.
 -->
 
-Note, also, that this is tensor-view is into the problem space, which is likely `:global`. If you are wanting fast chunk access
+Note, also, that this is tensor is into the problem space, which is likely `:global`. If you are wanting fast chunk access
 use `load-chunk` / `store-chunk` below to transfer to `:local` memory for fast operations.
 
 ### Example - Fill a 2D Matrix
@@ -3997,8 +3981,6 @@ use `load-chunk` / `store-chunk` below to transfer to `:local` memory for fast o
     (set! (~ output-m y x) value)))
 ```
 
-Load Tile / Store Tile
-----------------------
 
 Load Chunk / Store Chunk
 ------------------------
@@ -4844,7 +4826,7 @@ as an argument to a provided function, and then store it at the same position in
 ```
 Requirements:
 - `someFunc` has the signature `#((element-type A) => (element-type Z))`
-- `A` and `Z` are a  `vector`, `vector-view` or `tensor-view`
+- `A` and `Z` are a  `vector`  or `tensor`
 - `A` and `Z` have the same dimensions.
 - `A` is `readable` and `Z` is `writeable`
 
@@ -5006,7 +4988,7 @@ next operations can be performed within the workgroup.
 
 #### local-scratch-vec
 The `:local-scratch-vec` key.  If not provided, Crisp will generate it for you.
-If you wish to provide it, it should be a `vector` (or `vector-view`) that is writeable local memory. 
+If you wish to provide it, it should be a `vector` that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32. 
 
 #### message
@@ -5084,7 +5066,7 @@ the debug logging option has been elected when compiling.
 This routine accepts two optional arguments.  `localScratchVec` and `globalScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
-If you wish to provide it, it should be a `vector` (or `vector-view`) that is writeable local memory. 
+If you wish to provide it, it should be a `vector`  that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
 
 `reduce-to-1-second-stage` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
@@ -5168,7 +5150,7 @@ It is a compilation error to use it with any other operation.
 This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
-If you wish to provide it, it should be a `vector` (or `vector-view`) that is writeable local memory. 
+If you wish to provide it, it should be a `vector` that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
 
 
@@ -5215,7 +5197,7 @@ It does this via atomic compare and swap (via `atomic-binop!`) which, while flex
 This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
-If you wish to provide it, it should be a `vector` (or `vector-view`) that is writeable local memory. 
+If you wish to provide it, it should be a `vector` that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
 
 
@@ -5267,7 +5249,7 @@ The compiler will emit and error if it cannot identify them.
 This routine accepts two optional arguments.  `localScratchVec` and `globalScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
-If you wish to provide it, it should be a `vector` (or `vector-view`) that is writeable local memory. 
+If you wish to provide it, it should be a `vector`  that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
 
 `reduce-to-1-cont` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
@@ -5323,7 +5305,7 @@ reduce vector
 -------------
 
 The previous reductions are general purpose tools that let you create algorithms that reduce over warps, workgroups, or all the threads.  
-The `reduce-vec-XXXX` variants are different in that they are respondent to a `vector` (or `vector-view` or a 1D `tensor-view`). 
+The `reduce-vec-XXXX` variants are different in that they are respondent to a `vector` (or a 1D `tensor`). 
 
 All the vector reductions are "grid level" operations, meaning they cannot be nested in other grid level ops.
 
@@ -5369,7 +5351,7 @@ with just ONE workgroup, which must have the same number of threads as `intermed
 This routine accepts two optional arguments.  `localScratchVec` and `globalScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
-If you wish to provide it, it should be a `vector` (or `vector-view`) that is writeable local memory. 
+If you wish to provide it, it should be a `vector` that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
 
 `reduce-vec-second-stage` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
@@ -5457,7 +5439,7 @@ that have `atomic-XXXX!` counterparts.
 This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
-If you wish to provide it, it should be a `vector` (or `vector-view`) that is writeable local memory. 
+If you wish to provide it, it should be a `vector` that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
 
 
@@ -6982,7 +6964,7 @@ Possible Implementation
 
 `(copy input-vec output-vec)`
 
-Copies from input to output. Use `vector-view` if you need offsets or partials.
+Copies from input to output. Use `vector` as a view if you need offsets or partials.
 
 Possible Implementation
 ```
@@ -7024,9 +7006,9 @@ all available threads simultaneously.
 `dot-prod-seq` is a thread level sequential function that simply loops in the current thread.
 
 Both accept two matrix arguments. They can
-be a `vector`, `vector-view` or a 1D `tensor-view`.  Note that `dot-prod-grid` should be
-coalesced automatically for `vector` and `vector-view` arguments. But not
-necessarily for `tensor-view`.  A row of a row-major `matrix` would be fine, but
+be a `vector`,  or a 1D `tensor`.  Note that `dot-prod-grid` should be
+coalesced automatically for `vector`  arguments. But not
+necessarily for `tensor`.  A row of a row-major `matrix` would be fine, but
 the col or a row-major `matrix` would not be able to have coalesced memory copy.
 
 The `RESULT` argument for `dot-prod-grid` should be a `:global` writeable vector. The
@@ -7047,7 +7029,7 @@ rotating and scaling vectors in 3D graphics or applying weights in a neural netw
 `(matmul A B)`
 
 Crisp provides a `matmul` function. It takes two arguments, they are both matrices,
-which are just 2D `tensor-view`. Note using `matmul` requires that the calling kernel
+which are just 2D `tensor`. Note using `matmul` requires that the calling kernel
 is enqueued with an arity of 2.
 
 Note also that the inner dimensions must match.  For example multipling
@@ -7119,7 +7101,7 @@ its value.
         (r-t-assert (= inner-A inner-B) "inner dimensions must match!"))
       
       (let ((vec (make-result-vector A (* outer-A outer-B)))
-            (res (make-tensor-view vec outer-A outer-B )))
+            (res (make-tensor vec outer-A outer-B )))
                 (thread-stride '(outer-A outerB) :global-size (x y)   
                   (set! (~ res x y) (dot-prod-seq (row x A) (col y B)))) 
                 (return res)))))       
@@ -7212,7 +7194,7 @@ Possible Implementation
         (copy (row i M) m-row-scratch) ;; each workgroup takes a row.
         (copy x-vec  x-vec-scratch)
 
-        (let ((res-view (make-vector-view out-vec 1 i)))
+        (let ((res-view (make-vector out-vec 1 i)))
           (dot-prod-grid m-row-scratch x-vec-scratch res-view))))))
             
 ```
@@ -7809,7 +7791,7 @@ Possible Implementation
     ;; 2D
     (def-grid-function quantize-to-XXXX (input-tv &out output-mfb-tv 
                               &optional (scratch-vec (make-scratch-vector F (num-cols MFB))))
-      (declare #((tensor-view-type 3 (in-vec F A)) &out (tensor-view-type 3 (out-vec MFB :std140))))
+      (declare #((tensor-type 3 (in-vec F A)) &out (tensor-type 3 (out-vec MFB :std140))))
       (r-t-assert-0 (= (num-cols input-tv) (* (num-cols MFB) (num-rows MFB))) "confusing")
       (r-t-assert-0 (= (num-planes input-tv) (num-planes output-mfb-tv)) "number of planes not matching")
       (r-t-assert-0 (= (num-rows intput-tv) (num-rows output-mfb-tv)) "number of rows should match")
@@ -7964,7 +7946,7 @@ soa-vector and complex
 ----------------------
 
 Because complex numbers are defined as Crisp structs, they can take advantage
-of `soa-vector` and `soa-vector-view` support. 
+of `soa-vector`  support. 
 
 
 Fast Fourier Transform (FFT)
@@ -8416,7 +8398,17 @@ can be constructed.
 }
 ``` 
 
-Crisp comes scripts that can recombine these, and a small standalone tool as well.
+Crisp comes with scripts that can recombine these, and a small standalone tool as well.
+
+This formulation for string handling is analagous to the OSL "Journal Buffer" system. The
+hope is that their performance penalty is minimal which will encourage use.
+
+NOTE: Under consideration is just outputting full strings into a uchar buffer. That is simple
+and no doubt attractive to Crisp users. This issue is that doing so can easily have 
+a HUGE impact on performance. On the plus side, uchar 
+output would be easily to stream out, which means it would be composable with other 
+tools (like grep and tail). This might show up with a `--debug-output=string` type of 
+formulation. 
 
 
 
@@ -9396,9 +9388,9 @@ Example:
   (declare #(ulong ulong input-vec-t input-vec-t &out output-vec-t)
            (global-size :derive-from len :strategy :interleaved
                          :msg "this kernel processes data defined by offset/len"))
-  (let ((A-view (make-vector-view A len offset))
-        (B-view (make-vector-view B len offset))
-        (C-view (make-vector-view C len offset)))
+  (let ((A-view (make-vector A len offset))
+        (B-view (make-vector B len offset))
+        (C-view (make-vector C len offset)))
     (map-stride #'+ A-view B-view C-view)))
 
 ;; -- add-interleaved --
@@ -10142,17 +10134,14 @@ other
 - XXXX-type
 - gen-XXXX
 - vector
-- vector-view
 - `length~ / parent~ / offset~`   [O]
 - element-type
 - bytes  
 - `~`                             [O]
 - `~ref~`
 - vector-type          [KO]
-- vector-view-type     [KO]
 - vector-base-type     [KO]
 - make-vector          [KO]
-- make-vector-view     [KO]
 - soa-vector-type      [KO]
 - soa-view-type        [KO]
 - make-soa-vector      [KO]
@@ -10170,14 +10159,13 @@ other
 - make-implicit-vector
 - marshall-vector
 - marshall-scratch-vector
-- marshall-result-vector
 - marshall-implicit-vector
 - marshall-debug-logging-vector
 - voidp
 - #(1 2 3)
 - use                   [DP]
-- tensor-view-type
-- make-tensor-view     [KO]
+- tensor-type
+- make-tensor     [KO]
 - make-matrix          [KO]
 - num-dims-of
 - `dims~`
@@ -10306,7 +10294,7 @@ To Do
      The "twist" of using the type in the function position is very Clojure, but, honestly, too much of it makes things confusing. 
 - [x] SBCL vs C++ ?
 - [x] type "narrowing" suggested in with-template-type examples.
-- [x] dependent types ( we've introduced them somewhat with tensor-view-type which takes both a number (dims) and a whole other type)
+- [x] dependent types ( we've introduced them somewhat with tensor-type which takes both a number (dims) and a whole other type)
 - [x] maybe type.  on-error-continue   <-- not sure we need on-error-continue.  (or-else <someexpr> <proxy-expr>) should work everywhere, right?
 - [x] string formatting? ->  NO.  Just output things with spaces between. Default. 
 + [x] "side channel" implementation notes
@@ -10318,7 +10306,7 @@ To Do
 + [ ] vector functions: copy, fill, iota. 
 + [ ] tensor functions: transpose , is-abelian? .gather() / .contiguous() 
                     "transpose" operation can often be done without moving any data. Just change the strides of the tensor.
-      tensor-views handle most slicing/shaping needs.  also "broadcasting" which is setting one of the strides to 0. So the "next row" calculation goes nowhere. It's a simple way of taking a [1 2 3 ] and making into [[1 2 3] [1 2 3] [1 2 3]...]
+      tensors handle most slicing/shaping needs.  also "broadcasting" which is setting one of the strides to 0. So the "next row" calculation goes nowhere. It's a simple way of taking a [1 2 3 ] and making into [[1 2 3] [1 2 3] [1 2 3]...]
 - [ ] is-symmetric?  symmetric tensors only need to store upper triangle ( which may be more than half ).  How to map that to/from a linear vector? 
     would it have to be immutable?    Might need custom  `aref`/`.` than knows how to "mirror" indeces.  
 - [ ] make-identity/is-identity   <-- square matrix with 0 everywhere but 1 on diagonal.  Once again, a fle
@@ -10501,8 +10489,8 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 ### SHORTEST
 [ ] Entrypoint
 [x] Strings (too much handwaving)
-[ ] mapping and composition
-[ ] update all old routines and remove them.
+[x] mapping and composition
+[x] update all old routines and remove them.
 [ ] workspace-level
 [ ] ident / identity(Op) / 
 [ ] Segmented (b.c. hard)
@@ -10514,6 +10502,14 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [ ] pooling (average / max)
 - [ ] activation functions ( ReLu etc)
 [x] FP4 / FP8 -- microfloat blocks
+[ ] (declare (convergent)) (ragged-edge) ? and friends
+[ ] matrices and tensors as first class kernel args? Yes: Document. 
+[ ] rename "vector" as "storage". "vector-view" -> "vector", etc tensor matrix.
+    and, yes, the NEW vector, matrix, tensor are first class kernel args.
+    dumb storage is the storage but access is via views. the ex-views ALL
+    have "offset" and "stride". 
+    [ ] update "Member Data Rules" for vector
+    [ ] change single-result implementation to use vector-view type  args
 
 
 Three things:
@@ -10527,6 +10523,8 @@ x these vectors of 1.  HMMMMM
 - send code to Gemini?  AWESOME feature
 x curry/lambda for word_count. f*ck
 x lose make-vector and gen-make- and use make-scratch-vector instead. Defaults to :local, can be overriden.
+- concepts / type classes / type collections.  microfloats and quantized integers
+  seem like they should be leveraging a generalizable pattern.
 
 <!-- PUT THIS LITTLE SUMMARY ON MEMORY SOMEPLACE -->
 Memory
