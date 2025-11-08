@@ -331,7 +331,7 @@ We'll discuss type declarations and type signatures later. For now, just underst
 host application.  The host application can only invoke kernels that you define, no other
 functions.
 Kernel functions
-- take arguments like a regular function
+- accept arguments like a regular function (with a constrained set of available types)
 - do not return values
 - are not callable by other Crisp functions (see "continuation kernels" for exceptions)
 - the body `progn` of the kernel function is a dispatch context
@@ -353,7 +353,7 @@ The functions that are defined are "thread level" functions, meaning they are ex
 of a single thread and not orchestrating the operation of all threads generally.
 
 Thread level functions
-- accept arguments
+- accept arguments, including higher order function args
 - CAN return values
 - the body of these functions are a "thread level context"
 - can call other thread level functions
@@ -377,7 +377,7 @@ are called "grid functions" because the CAN invoke grid level operations
 (as opposed to thread level functions which cannot).
 
 Grid functions
-- accept arguments
+- accept arguments, including higher order function args
 - CANNOT return values
 - have a "dispatch context" in the top level
 - can call thread level functinos
@@ -794,11 +794,12 @@ Declaring Types - Kernels
 `def-kernel` defines a kernel function. It is much the same as `def-function` with only a few differences:
 
 - `def-kernel` functions always returns NIL. It does not need to explicitly declare a return type.
-- `vector` types must be fully typed with address space, access, alignment and element type. (See Vector Types below)
+- `vector`, `matrix` and `tensor` types must be fully typed with address space, access, alignment and element type. (See Vector Types below)
 - `def-kernel` functions do NOT support `&key` or `&optional` arguments.
 - but it DOES support `&out` 
 - the function name for kernels MUST obey the C standard identifying rules.  Thus "do_something" is a valid name, but "do-something" is not.
 - unlike regular functions, kernel functions do NOT support overloading. Each kernel function must have a unique name.
+- `def-kernel` function has a constrained choice of accepts types for parameters. It does NOT support first order function arguments (unlike regular `def-function` and `def-grid-function`) nor can structs be passed as plain arguments (but they CAN be put in a `vector` )
 
 Like `def-function` ALL the parameters to the kernel function must have their types declared somehow. 
 
@@ -945,8 +946,8 @@ This would include:
 - Views to large data (`vector`, `tensor`, `matrix`)
 
 But it excludes:
-- `vector`
 - `functions` and `kernels`
+- Crisp specific internals, like `storage`
 
 Note also that views can't be exchanged with the host directly. A struct that contains a view
 cannot use the C interop for data exchange with host. Marshalling would be required.
@@ -10491,7 +10492,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 [x] Strings (too much handwaving)
 [x] mapping and composition
 [x] update all old routines and remove them.
-[ ] workspace-level
+[ ] workspace-level  -- is-thread-level? might be impacted
 [ ] ident / identity(Op) / 
 [ ] Segmented (b.c. hard)
 [ ] Quantized Ints
@@ -10504,12 +10505,12 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 [x] FP4 / FP8 -- microfloat blocks
 [ ] (declare (convergent)) (ragged-edge) ? and friends
 [ ] matrices and tensors as first class kernel args? Yes: Document. 
-[ ] rename "vector" as "storage". "vector-view" -> "vector", etc tensor matrix.
+[x] rename "vector" as "storage". "vector-view" -> "vector", etc tensor matrix.
     and, yes, the NEW vector, matrix, tensor are first class kernel args.
     dumb storage is the storage but access is via views. the ex-views ALL
     have "offset" and "stride". 
-    [ ] update "Member Data Rules" for vector
-    [ ] change single-result implementation to use vector-view type  args
+    [x] update "Member Data Rules" for vector
+    
 
 
 Three things:
