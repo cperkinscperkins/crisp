@@ -7501,7 +7501,11 @@ Using `B` for the `:base` type and `A` for the `:accum` , here are the operation
 For your `qint` type, a matching function `to-XXXX` is defined. It takes the floating point value in question along with scale and zerop (also floating point) and returns a scaled value in the base type `B`.
 
 Example:
-`(to-q-celsius 23.204:float 50.0 0.0) => temp`
+```
+(to-q-celsius <float> <zero-point> <scale>) => <q-celsius-base>
+;; e.g:
+(to-q-celsius 23.204:float 0.0 50.0) => temp
+```
 where `temp` would be a 1-byte `q-celcius-base` 
 
 ### to-float
@@ -7556,6 +7560,19 @@ multiplication.
   Right now we just have (to-float-accum) require a scale-squared and we don't allow B * A multiplication. 
   Simple. Neat.
  -->
+
+### max / min
+
+`max` and `min` are available for both base and accumulator types.
+(Spoiler Alert: `max` and `min` are NOT available for `microfloat-block` in next section)
+
+```
+(max B B) => B
+(min B B) => B
+
+(max A A) => A
+(min A A) => A
+```
 
 ### all other math ops
 
@@ -9948,6 +9965,60 @@ These dot product and matmul implementations work for ALL types.
 -->
 
 
+### max-pool
+
+The `max-pool` algorithm requires `max` which is not supported by `microfloat-block` so
+this algorithm only works with regular floats and quantized ints.
+
+`max-pool` is a downsampling operation, essential in convolutional neural networks (CNNs). Its main job is to shrink a feature map (like an image) while preserving the most prominent features (the ones with the highest values).
+
+It works by sliding a "window" (usually 2x2) across the input matrix and picking the single highest value from that window to be the only value in the new, smaller output matrix.
+
+```
+;; -- max-pool--
+(<T A>
+  (declare (type-is (supports-max? T)))  ;; maybe (supports? #'max T) but maybe not.
+
+  (def-grid-function max-pool (input-M win-w win-h &out output-M)
+    ;; Q: is 'make-scratch-matrix' specialized by T or take it as an argument? 
+    ;;    or do we ((gen-make-scratch-matrix T) win-w win-h) ?
+    (declare #'((in-matrix T A) uint uint &out (out-matrix T A))
+              (global-size :derive-from output-M :strategy :strided))
+    (r-t-assert-0 (and (= (num-cols input-M) (* win-w (num-cols output-M)))
+                       (= (num-rows input-M) ( win-h (num-rows output-M))))
+                       "input matrix size must be output matrix size times win dim")
+    (r-t-assert-0 (and (> win-w 0) (> win-h 0)) "window must have extant")
+    (thread-stride output-M :global-size (xo yo)
+      (let ((x-in-start (* xo win-w))
+            (y-in-start (* yo win-y))
+        
+            (max-val -INF)) ;; (identity-of #'max T)
+       (dotimes (ky win-h)
+        (dotimes (kx win-w)
+          (let* ((x-in (+ x-in-start kx))
+                 (y-in (+ y-in-start ky))
+                 ;; Note: No bounds check needed if we trust the assert
+                 (pixel-val (~ input-M y-in x-in)))
+                ;; This works for both f32 and qint (B=B)
+                (set! max-val (max max-val pixel-val)))))
+        ;; store
+        (set! (~ output-M yo xo) max-val)))))
+
+;; Remark the whole "sometimes x y z order, othertimes z y x" bothers me
+;; points are usually (x, y), but C++ A[y][x]  or (~ A y x)  
+
+```
+
+
+### Average Pool
+
+`average-pool` is a downsampling operation, just like `max-pool`. It's a core component of most convolutional neural networks (CNNs).
+
+Its job is to shrink a feature map (like an image) by sliding a window over it. But, instead of picking the single highest value from the window (what `max-pool` does), `average-pool` calculates the mathematical average of all values within that window.
+
+This results in a "smoother," "softer" downsampling that preserves a generalized sense of the neighborhood rather than just its single most prominent feature.  
+
+
 
 
 
@@ -10493,7 +10564,8 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 [x] mapping and composition
 [x] update all old routines and remove them.
 [ ] workspace-level  -- is-thread-level? might be impacted
-[ ] ident / identity(Op) / 
+[ ] ident / (identity-of #'max T) => -INF or wahtever.
+[ ] (supports-max? T) or (supports? #'max T) ?
 [ ] Segmented (b.c. hard)
 [ ] Quantized Ints
 - [ ] dot-prod
