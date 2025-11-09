@@ -10045,8 +10045,6 @@ It works by sliding a "window" (usually 2x2) across the input matrix and picking
   (declare (type-is (supports-max? T)))  ;; maybe (supports? #'max T) but maybe not.
 
   (def-grid-function max-pool (input-M win-w win-h &out output-M)
-    ;; Q: is 'make-scratch-matrix' specialized by T or take it as an argument? 
-    ;;    or do we ((gen-make-scratch-matrix T) win-w win-h) ?
     (declare #'((in-matrix T A) uint uint &out (out-matrix T A))
               (global-size :derive-from output-M :strategy :strided))
     (r-t-assert-0 (and (= (num-cols input-M) (* win-w (num-cols output-M)))
@@ -10083,7 +10081,47 @@ Its job is to shrink a feature map (like an image) by sliding a window over it. 
 
 This results in a "smoother," "softer" downsampling that preserves a generalized sense of the neighborhood rather than just its single most prominent feature.  
 
+This version of `average-pool` works with any numeric type or quantized integers. There is
+not a performent version for microfloat blocks. 
 
+
+```
+;; -- average-pool--
+(<T A>
+  (declare (value-is A #'is-alignment?)
+    (or (type-is T #'is-numeric?)
+        (type-is T #'is-quantized-int?)))
+
+  (def-grid-function average-pool (input-M win-w win-h &out output-M
+                                  &key zero-point scale)
+    (declare #'((in-matrix T A) uint uint &out (out-matrix T A))
+              (global-size :derive-from output-M :strategy :strided))
+    (r-t-assert-0 (and (= (num-cols input-M) (* win-w (num-cols output-M)))
+                       (= (num-rows input-M) ( win-h (num-rows output-M))))
+                       "input matrix size must be output matrix size times win dim")
+    (r-t-assert-0 (and (> win-w 0) (> win-h 0)) "window must have extant")
+    (c-t-assert (when (is-quantized-int? T) (nor  (nullp zero-point) (nullp scale)))
+                "using quantized int requires :zero-point and :scale keys ")
+    (thread-stride output-M :global-size (xo yo)
+      (let ((x-in-start (* xo win-w))
+            (y-in-start (* yo win-y))
+            (win-count  (* win-w win-h))
+            (acc (identity-of #'+ (accum T))))
+       (dotimes (ky win-h)
+        (dotimes (kx win-w)
+          (let* ((x-in (+ x-in-start kx))
+                 (y-in (+ y-in-start ky))
+                 ;; Note: No bounds check needed if we trust the assert
+                 (pixel-val (~ input-M y-in x-in)))
+              ;; ADD
+              (set! acc (+ acc (to (accum T) pixel-val))))))
+        ;; store
+        (let ((acc-f (if+ (is-quantized-int? T)
+                        (to-float-accum acc zero-point scale)
+                       acc))
+              (avg-val (/ acc-f win-count)))
+          (set! (~ output-M yo xo) avg-val))))))
+```
 
 
 
