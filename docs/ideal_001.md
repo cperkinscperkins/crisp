@@ -7066,6 +7066,9 @@ But the `matmul` implementation below it solves both of those problems
 simply by using tiles.  The `load-tile` macro is, once again, demonstrating
 its value.
 
+The version of `matmul` below is not our final one. We'll visit it again when we cover
+the hardware accellerated types that have a widened accumulator, quantized integers and microfloats.
+
 ``` 
 (with-template-type (T A)
   (declare (type-is T #'is-scalar?)
@@ -10042,7 +10045,8 @@ It works by sliding a "window" (usually 2x2) across the input matrix and picking
 ```
 ;; -- max-pool--
 (<T A>
-  (declare (type-is (supports-max? T)))  ;; maybe (supports? #'max T) but maybe not.
+  (declare (type-is (supports-max? T))  ;; maybe (supports? #'max T) but maybe not.
+           (value-is A #'is-alignment?))
 
   (def-grid-function max-pool (input-M win-w win-h &out output-M)
     (declare #'((in-matrix T A) uint uint &out (out-matrix T A))
@@ -10097,7 +10101,7 @@ not a performent version for microfloat blocks.
     (declare #'((in-matrix T A) uint uint &out (out-matrix T A))
               (global-size :derive-from output-M :strategy :strided))
     (r-t-assert-0 (and (= (num-cols input-M) (* win-w (num-cols output-M)))
-                       (= (num-rows input-M) ( win-h (num-rows output-M))))
+                       (= (num-rows input-M) (* win-h (num-rows output-M))))
                        "input matrix size must be output matrix size times win dim")
     (r-t-assert-0 (and (> win-w 0) (> win-h 0)) "window must have extant")
     (c-t-assert (when (is-quantized-int? T) (nor  (nullp zero-point) (nullp scale)))
@@ -10123,6 +10127,37 @@ not a performent version for microfloat blocks.
           (set! (~ output-M yo xo) avg-val))))))
 ```
 
+
+### ReLU
+
+ReLU stands for Rectified Linear Unit. It's the most popular activation function in modern neural networks. Its job is to introduce non-linearity into the network, which is what allows it to learn complex patterns (otherwise, the whole network would just be one giant, simple matmul).
+
+The operation itself is a simple element-wise function: `output = max(0, input)`
+
+It acts as a one-way gate:
+- If the input is positive, it passes through unchanged ( `ReLU(5.0)` is `5.0`).
+- If the input is negative, it is "rectified" (clamped) to zero ( `ReLU(-5.0)` is `0.0`).
+
+This function is both simple to write and performant for the basic math types and quantized integers. But there is no comparable for the microfloat blocks. This asymmetry is not usually a problem however, because `matmul` outputs the `accum` type, which for microfloats is just a 32 bit float.  And a matrix of regular floats works
+great with ReLU or any of the other common activation functions. 
+
+```
+;; -- ReLU--
+(<T A>
+  (declare (value-is A #'is-alignment?)
+         (type-is (supports-max? T)))
+    
+  (def-grid-function relu (input-M  &out output-M &key (zero-point (identity-of #'+ T)))
+    (declare #'((in-matrix T A)  &out (out-matrix T A))
+              (global-size :derive-from output-M :strategy :strided))
+    (c-t-assert (when (is-quantized-int? T) (not  (nullp zero-point)))
+                "using quantized int requires :zero-point key. The default value would be incorrect for that type.")
+    (r-t-assert-0 (and (= (num-cols input-M) (num-cols output-M))
+                       (= (num-rows input-M) (num-rows output-M)))
+                       "input matrix size must be output matrix size should be same")
+    (thread-stride input-M :global-size (x y)
+      (set! (~ output-M y x) (max zero-point (~ input-M y x))))))
+```
 
 
 INDECES
