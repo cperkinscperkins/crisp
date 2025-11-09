@@ -3983,6 +3983,21 @@ use `load-chunk` / `store-chunk` below to transfer to `:local` memory for fast o
 ```
 
 
+### `ceil-pow2`
+
+For certain operations, like warp reductions, it is imperative that certain activities
+fit completely in a warp and are not "split" across warp divide. 
+
+If the argument to `ceil-pow2` is a power of 2, it'll be returns. But if not, then the
+next hightest power of 2 will be returned. This can be very handy in loops
+or for making sure chunk strides don't split work across the warp boundary. 
+
+```
+(ceil-pow2 4) => 4
+(ceil-pow2 5) => 8
+```
+
+
 Load Chunk / Store Chunk
 ------------------------
 
@@ -7361,6 +7376,20 @@ These operations are available for both floating point and integer values.
 - `*`
 - `/`    see [Integer Division](#integer-division) below.
 
+### binop vs accum-op
+
+Most of the operations above binary operations, aka `binop-type`, aka their
+type signature is generally `#'(T T => T)`.
+
+Crisp also has accumulator operations, aka `accum-op`, where the type signature
+is `#'(T T => (accum T))`. These are "widening" operations. For the basic types (`float`, `int` etc)  the `(accum T)` is just `T`.  So no special handling is required.
+
+One example of an `accum-op` is `*!` which is multiplication but it "widens" the base type to 
+an accumulator type.  We'll see more of this below when discuss the hardware accelerated types 
+like Quantized Integers and MicroFloat Blocks.
+
+- `*!`  => `#'(T T => (accum T))`  widening multiplication.
+
 Integer Only Operations
 -----------------------
 
@@ -7469,7 +7498,7 @@ anyone notices. What could be easier?
 Quantized Integer Types
 -----------------------
 
-These are the Crisp `qint` base types pre-defined for you.
+These are the Crisp `qint` base types pre-defined for you.   
 
 | Type   | Size    | 
 |--------|---------|
@@ -7478,7 +7507,9 @@ These are the Crisp `qint` base types pre-defined for you.
 | qb32 | 4 bytes | 
 | qb64 | 8 bytes | 
 
-But to use them, you'll typically need to define your OWN qint type like so:
+Note that there are no mathematical operations defined for any of them. 
+But once you define your own qint type there will be
+operations defined for your type. You'll typically need to define your OWN qint type like so:
 
 ### def-qint
 
@@ -7491,10 +7522,28 @@ types that they CANNOT be intermixed.  This is because they might have different
 references. These types are nominally-typed. The compiler will error if you try to mix different 
 classes, preventing you from accidentally combinging data with different scales.
 
+The `def-qint` for `q-celcius` above expands to
+```
+;; simple type aliases
+(def-type q-celcius qb8)
+(def-type q-celcius-accum qb32)
+
+;; a new overload of the accum type function
+(def-type-function accum (T:q-celcius) 
+   q-celcius-accum)
+;; and of the base type function, just returns same type
+(def-type-function base (T:q-celcius)
+  q-celcius)
+```
+
+Plus the following conversion and math functions.
+Using `B` for the `:base` type and `A` for the `:accum` , here are the operations
+
+<!-- 
+TO BE REMOVED
 Once `def-qint` is used it defines TWO new types: `XXXX-base` and `XXXX-accum` for you to use.
 
-But note that the choice of math operations are limited and have special rules.
-Using `B` for the `:base` type and `A` for the `:accum` , here are the operations
+-->
 
 ### to-XXXX
 
@@ -7502,11 +7551,11 @@ For your `qint` type, a matching function `to-XXXX` is defined. It takes the flo
 
 Example:
 ```
-(to-q-celsius <float> <zero-point> <scale>) => <q-celsius-base>
+(to-q-celsius <float> <zero-point> <scale>) => <q-celsius>
 ;; e.g:
 (to-q-celsius 23.204:float 0.0 50.0) => temp
 ```
-where `temp` would be a 1-byte `q-celcius-base` 
+where `temp` would be a 1-byte `qb8` but aliased as `q-celcius` 
 
 ### to-float
 
@@ -7518,7 +7567,7 @@ The value that is returned is of the same floating point type.
 Note that when converting accumulators, you need to square the scale.
 
 ```
-(to-float-base B zero-point scale) => F
+(to-float B zero-point scale) => F
 
 (to-float-accum A zero-point scale-squared) => F  
 ```
@@ -7535,13 +7584,17 @@ Addition and Subtraction are available for both the base type `B` and `A` but no
 (- A A) => A
 ```
 
-### multiplication
+Implementation note: addition and subtraction are NOT defined for any of the qint base types.
+But there are compiler-only primitives that map to the hardware instrucions (`iadd`) and these 
+are used when we overload `+` and `-` for any `def-qint` instance.
+
+### `*!` widened multiplication
 
 Multiplication of two base types returns an accumulator type. There is no other option for 
 multiplication. 
 
 ```
-(* B B) => A
+(*! B B) => A
 ```
 
 <!-- NOTE:
@@ -7678,9 +7731,29 @@ And just like with the quantized types, different block types cannot be intermix
 even if they are configured with identical parameters. However, if you absolutely must intermix them,
 you can do so by using `set-derived`.   
 
+`def-microfloat-block` with `mf-celcius` like above would result in
+```
+(def-type mf-celsius-base fp4)
+(def-type mf-celcius-accum fp32)
+(def-type mf-celsius-scale fp8-e4m3)
+
+(def-struct mf-celcius 
+  (scale mf-celsius-scale)
+  #| the 16 fp4 elements |#) ;; these are not strided tensors or anything. 
+
+;; accum and base are defined for ALL numeric types.
+(def-type-function accum (T:mf-celcius) mf-celcius-accum)
+(def-type-function base (T:mf-celcius) mf-celcius-base)
+;; but scale is only defined for microfloat blocks
+(def-type-function scale (T:mf-celcius) mf-celcius-scale)
+```
+
+<!--
 For each invocation of `def-microfloat-block` Crisp will define the type identifiers
  `XXXX-base`, `XXXX-accum` and `XXXX-scale` as well as compile-time type functions
  `scale`, `count`, and `shape` . `num-rows` and `num-cols` are defined for the 2D variant.
+-->
+
 
  Additionally,  `quantize-to-XXXX` and `dequantize-from-XXXX` functions
  are defined. These functions operate on vectors of floats and blocks. Read more below
@@ -7721,11 +7794,11 @@ The arithmetic operations on microfloats are "blockwise". This is highly optimiz
 The abbreviation `A` is used for the accumulator type, and `MFB` stands for the entire
 microfloat block.  
 
-### multiplication
+### widening multiplication
 
 ```
-(* MFB_1D MFB_1D) => A     ;  vector dot-product
-(* MFB_2D MFB_2D) => A     ;  matrix dot-product
+(*! MFB_1D MFB_1D) => A     ;  vector dot-product
+(*! MFB_2D MFB_2D) => A     ;  matrix dot-product
 ```
 Two microfloat blocks can be multiplied by each other, and the result is a single
 float of the accumulator type.
@@ -7749,6 +7822,17 @@ but if you want to ensure this use the `mfb-mult-add` macro:
 ```
 This will ensure that the correct `@llvm.fma._` LLVM intrinsic is output into the IR, which wil then
 be correctly compiled for your target.
+
+### max / min
+`max` and `min` are NOT defined for the main MFB block type.  But they are defined
+for both the base and accumulator types.
+```
+(max B B) => B
+(max A A) => A
+
+(min B B) => B
+(min A A) => A
+```
 
 Vector Conversion Operations
 ----------------------------
@@ -7789,26 +7873,29 @@ Possible Implementation
 
    ;; 1D
   (def-grid-function quantize-to-XXXX (input-vec &out output-mfb-vec 
-                              &optional (scratch-vec (make-scratch-vector F (count MFB))))
+                              &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (count MFB)))))
     (declare #((in-vec F A) &out (out-vec MFB :std140)))
     (r-t-assert-0 (= (length~ input-vec) (* (count MFB) (length~ output-mfb-vec)))
                   "lengths don't match")
     (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
     ;; 
-    (thread-stride (length~ output-mfb-vec) :warp-idx (warp-num)
-      (load-chunk input-vec scratch-vec) ;; don't need warp-num in the context of thread-stride
-      (let ((max-val (reduce-vec-warp scratch-vec #'max)) ;;
-            (scale-f (to (scale MFB) max-val))
-            (target-block (~ output-mfb-vec warp-num)))
-        (when-thread-in-warp-is 0 
-          (set! (scale~ target-block) scale-f))
-        (in-warp (lane-id)
-          (when (< lane-id (count MFB))
-            (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val))))))))
+    (thread-stride (length~ output-mfb-vec) (ceil-pow2 (count MFB)) (warp-num)
+      ;; we may be loading a smaller chunk than we declared to thread stride,
+      ;; so we can't use the short version of load-chunk. 
+      (let ((identity-val (identity-of #'max F)))
+        (load-chunk input-vec scratch-vec identity-val '(warp-num) '((count MFB))) 
+        (let ((max-val (reduce-vec-warp scratch-vec #'max identity-val)) ;;
+              (scale-f (to (scale MFB) max-val))
+              (target-block (~ output-mfb-vec warp-num)))
+          (when-thread-in-warp-is 0 
+            (set! (scale~ target-block) scale-f))
+          (in-warp (lane-id)
+            (when (< lane-id (count MFB))
+              (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val)))))))))
 
     ;; 2D
     (def-grid-function quantize-to-XXXX (input-tv &out output-mfb-tv 
-                              &optional (scratch-vec (make-scratch-vector F (num-cols MFB))))
+                              &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (num-cols MFB)))))
       (declare #((tensor-type 3 (in-vec F A)) &out (tensor-type 3 (out-vec MFB :std140))))
       (r-t-assert-0 (= (num-cols input-tv) (* (num-cols MFB) (num-rows MFB))) "confusing")
       (r-t-assert-0 (= (num-planes input-tv) (num-planes output-mfb-tv)) "number of planes not matching")
@@ -9855,51 +9942,33 @@ dot product and matmul
 These dot product and matmul implementations work for ALL types. 
 
 ```
-(def-type-function get-in-vec-type (T)
-  (cond
-    ((type-is T #'is-microfloat-block?) T)
-    ((type-is T #'is-quantized-int?) (base T))
-    (T T)))
-
-(def-type-function get-accum-type (T)
-  (cond
-    ((type-is T #'is-microfloat-block?) (accum T))
-    ((type-is T #'is-quantized-int?) (accum T))
-    (T T)))
-
-
 ;; -- dot-prod-seq --
 (with-template-type (T Al)
-  (declare (or (type-is T #'is-quantized-int?)
-               (type-is T #'is-microfloat-block?)
-               (type-is T #'is-scalar?))
-           (value-is Al #'is-alignment))
+  (declare  (value-is Al #'is-alignment))
 
   (def-function dot-prod-seq (A B)
-    (declare #'((in-vec (get-in-vec-type T) Al) (in-vec (get-in-vec-type T) Al) 
-                 => (get-accum-type T)))
-    (let ((sum (zero (get-accum-type T))))
-      (declare (type sum (get-accum-type T)))
+    (declare #'((in-vec T Al) (in-vec T Al) 
+                 => (accum T)))
+    (let ((sum (identity-of #'+ (accum T))))
+      (declare (type sum (accum T)))
       (dotimes (i (length~ A))
-        (set! sum (+ sum (* (~ A i) (~ B i)))))
+        (set! sum (+ sum (*! (~ A i) (~ B i))))) ;; widening multiplication *!
       (return sum))))
 
 
 ;; -- dot-prod-grid --
 (with-template-type (T Al)
-  (declare (or (type-is T #'is-quantized-int?)
-               (type-is T #'is-microfloat-block?)
-               (type-is T #'is-scalar?))
-           (value-is Al #'is-alignment))
+  (declare (value-is Al #'is-alignment))
 
   (def-grid-function dot-prod-grid (A B &out RESULT)
-    (declare #'((in-vec (get-in-vec-type T) Al) (in-vec (get-in-vec-type T) Al) &out (single-result (get-accum-type T)))
+    (declare #'((in-vec T Al) (in-vec T Al) &out (single-result (accum T)))
       (global-size :derive-from A :strategy :strided))
     (when-thread-is 0
       (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
-    (let ((C-scratch (make-scratch-vector (get-accum-type T) Al :name "dot product")))  
-      (map-stride #'* (A B) C-scratch)
-      (reduce-vec-atomic #'+ C-scratch 0 RESULT)))) ;; <-- this broadcasts
+    (let ((C-scratch (make-scratch-vector (accum T) Al :name "dot product"))
+          (zero (identity-of #'+ (accum T))))  
+      (map-stride #'*! (A B) C-scratch) ;; widening multiplication *!
+      (reduce-vec-atomic #'+ C-scratch zero RESULT)))) ;; <-- this broadcasts
 
 
 ;; same TILE_DIM as used by convert-layout 
@@ -9907,13 +9976,10 @@ These dot product and matmul implementations work for ALL types.
 
 ;; -- matmul --
 (with-template-type (T Al)
- (declare (or (type-is T #'is-quantized-int?)
-               (type-is T #'is-microfloat-block?)
-               (type-is T #'is-scalar?))
-           (value-is Al #'is-alignment))
+ (declare (value-is Al #'is-alignment))
 
   (def-grid-function matmul (A B &out C)
-    (declare #((matrix (get-in-vec-type T)) (matrix (get-in-vec-type T)) &out (matrix (get-accum-type T)))
+    (declare #((matrix T) (matrix T) &out (matrix (accum T)))
              (local-size :set-to `(,TILE_DIM ,TILE_DIM)) 
              (global-size :derive-from C             
                           :strategy :tiled           
@@ -9925,8 +9991,8 @@ These dot product and matmul implementations work for ALL types.
           (tile-B (make-tile TILE_DIM (base T)))
           (local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
           (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1))
-          (acc (zero (get-accum-type T)))) ; Per-thread accumulator register
-      (declare (type acc (get-accum-type T)))
+          (acc (identity-of #'+ (accum T)))
+      (declare (type acc (accum T)))
 
       ;; main loop over the tiles in the inner dimension
       (dotimes (tile-num (ceil (num-cols A) TILE_DIM))
@@ -9943,7 +10009,7 @@ These dot product and matmul implementations work for ALL types.
 
         ;; This part is now simple and fast, both local tiles are row-major.
         (dotimes (k TILE_DIM)
-          (set! acc (+ acc (* (~ tile-A local-id-y k)
+          (set! acc (+ acc (*! (~ tile-A local-id-y k)  ;; widening multiplication
                               (~ tile-B local-id-x k)))))
 
         (local-barrier))
@@ -9957,10 +10023,9 @@ These dot product and matmul implementations work for ALL types.
 
 <!-- NOTE 
   convolve-2d and mat-vec-mult are just more of the same.
-  - instead of directly using T
-  - use get-in-vec-type and get-accum-type
-  - use zero instead of  let ((acc 0.0))
-  - declare acc type as get-accum-type.
+  - output is (accum T)
+  - use (identiy-of #'+ (accum T)) for 0 in most places.
+  - use *! (widening multiplication) instead of *
 
 -->
 
