@@ -5619,37 +5619,48 @@ Possible Implementation
 Segmented Reduction
 ===================
 
-very difficult
+With the common use of prefix-sum scans, GPU programmers often find themselves using "segment maps".
+These are very common for "ragged edged" data.  Essentially, you have a source vector of data
+accompanied by a vector of flags, where "1" means start a segment, and "0" continue the segment.
+
+`segmented-reduction` will perform a reduction on each segment, storing the result in a result vector.
+
+In addition to the source data and the flags, this algorithm also needs an `incl-scan` variable which
+is an inclusive scan of the flags.  The inclusive scan will be the indeces of the segment vec were it using
+1 based counting. But since this isn't Visual Basic, we'll subtract one to make it match our 0 based counting.
+
+Note that the output `segment-vec` is also expected to be the correct length, so yet another preperatory step
+will be to reduce the `flags-vec` to count them. 
 
 ```
-sourceVec #(10  5 20  8 12  7 30)
-screenVec #( T  F  F  T  F  T  F)
-segmentVec #(     35    20    37)
+source-vec  #( 3  1  5  2  8  4  7  9)
+flags-vec   #( 1  0  0  1  0  1  0  0) <- '1' marks the start of each segment
+incl-scan   #( 1  1  1  2  2  3  3  3) <-- inclusive-scan of flags-vec produces this.
+segment-vec #( 9        10    20)      <-- final output
+```
 
-(defmacro segmented-warp-reduction (someFunction identity valExpr flagExpr)
-  `(do-times-by-doubling+ (i 1 +warp-size+)
-    (let ((neighbor-flag (shuffle-down ,flagExpr i))
-          (neighbor-val (shuffle-down ,valExpr i))
-          (delta  (select-if (not neighbor-flag) neighbor-val ,identity)))
-        (set! ,valExpr (funcall ,someFunction ,valExpr delta)))))
+| Data:     | `[3,`     | `1,` | `5,` | `2,`    | `8,` | `4,`      | `7,` | `9]` |
+| :---      | :---      | :--- | :--- | :---    | :--- | :---      | :--- | :--- |
+| Flags:    | `[1,`     | `0,` | `0,` | `1,`    | `0,` | `1,`      | `0,` | `0]` |
+| incl-scan:| `1`       | `1`  | `1`  | `2`     | `2`  | `3`       | `3`  | `3`  |
+| Segments: | `(3+1+5)` |      |      | `(2+8)` |      | `(4+7+9)` |      |      |
+| Goal:     | `[9,`     |      |      | `10,`   |      | `20]`     |      |      |
 
+
+```
+;; -- segmented-reduction
 (<T A>
-  (declare (is-value A #'is-alignment?))
-
-  (def-grid-function segmented-reduction (sourceVec screenVec someFunction identity &out segmentVec)
-    (declare #'((in-vec T A) (in-vec bool A) (binop-type T) &out (out-vec T A)))
-    (with-global-linear-id (gid)
-      (when (< gid (length~ sourceVec)) ;; not striding , :one-thread-per ?
-        (let ((my-val (~ sourceVec gid))
-              (my-flag (~ sourceVec gid)))
-          (segmented-warp-reduction someFunction identity my-val my-flag)
-
-          (when my-flag
-            ;; where?
-          ))))))
-
-
+  (def-grid-function segmented-reduction (source-vec flags-vec incl-scan someFunction identity &out segments-vec)
+    (declare #'((in-vec T A) (in-vec uint A) (in-vec uint A) (binop-type T) T &out (out-vec T A))
+      (global-size :derive-from source-vec :strategy :strided))
+    (loop-vector-stride source-vec (i)
+      (let ((val (~ source-vec i))
+            (segment-id (1- (~ incl-scan i))))
+        ;; each thread just atomically modifies its index in segments-vec
+        (atomic-binop! (~ segments-vec segment-id) someFunction val))))) 
 ```
+
+
 
 
 
@@ -5720,14 +5731,22 @@ POssible Implementation:
 ```
 
 `exclusive-scan-workgroup`
-----------------
+-------------------------
 The purpose of `exclusive-scan-workgroup` is to, for each element in a vector, calculate the sum of all the elements
-that came before it.  The input vector is a vector of 0s and 1s (where 1 represents a "match"). The input
-vector cannot be longer than the kernel work size.
+that came before it. This is an extremely useful routine. If the activity if "finding matches" then the input vector
+might be a vector of 0s and 1s (where 1 represents a "match"). 
+But other times the vector is the "number of matches" for each of the workgroups or warps, in this case 
+`exclusive-scan-workgroup` lets us transform that into a running total of all matches (ie `#(3 2 7 1) => #(3 5 12 13)`).
+
+Since this only works on the scope of one workgroup, the input vector cannot be longer than the kernel work size.
 
 `exclusive-scan-workgroup` modifies the vector in place.  It returns the final sum of the scan.
 
-### Example
+It works in two passes, first "sweeping up" the values with an increasing step size, and then "sweeping down" the results.
+This "sweep up" "sweep down" will be more important once we want to start perform these scans on the really big vectors, vectors
+that are bigger than just one workgroup.  
+
+### Finding Matches Example
 
 Let's assume there a mere 6 threads in a workgroup. Our algorithm finds some match or miss and
 records in a vector, each match or miss stored at the local id of whatever thread did the check.
@@ -5748,7 +5767,7 @@ This output gives each "winner" its unique, zero-based local index (0, 1, 2)
 
 
 `inclusive-scan-workgroup`
-----------------
+-------------------------
 
 The sister to `exclusive-scan-workgroup`, its output at any index is the sum of the elements up to _and including_ `i`.
 
@@ -5796,6 +5815,97 @@ This is a possible implementation of `exclusive-scan-workgroup` realized via a B
        ;; The macro can return the total sum from the workgroup
        total-sum)))
 ```
+
+
+
+global-exclusive-scan
+---------------------
+
+Unfortunately, doing an exclusive scan on a really big vector is not a simple isolated operation. 
+It starts with an upsweep operation, which is simple enough. That populates an output vec that is
+divided into workgroup-sized sections with localized exclusive scan.  It also populates
+a `block-sums` vector whose length is the number of workgroups. 
+
+If that `block-sums` vector's length fits within the size of a single workgroup, then simply call
+`exclusive-scan-workgroup` on it to order it. And then move onto the downsweep stage.
+But if the `block-sums` is too long, then call `global-exclusive-scan-upsweep` on IT and get 
+ANOTHER block sums that is shorter. Repeat as necessary until you finally get a blocksum that fits
+in a workgroup.
+The number of upsweep *P*asses can be calculated with this formula
+$$P = \lceil \frac{\log(N)}{\log(W)} \rceil$$
+Where:
+- *P* is the number of "upsweep" passes (and, of course, downsweep passes as well)
+- *N* is the length of the original input vector.
+- *W* is the workgroup size (usually 256)
+
+Then apply the `global-exclusive-scan-downsweep` algorithm with the blocksums and finally apply it 
+to the output vector from the very first pass. 
+
+Note that it is imperative that the workgroup-size and workgroup-count is the same for each matching "pair"
+of upsweep / downsweep calls.
+
+What could be simpler?
+
+```
+(<T A>
+  (def-grid-function global-exclusive-scan-upsweep (input-vec &out output-vec block-sums
+                                    &optional (scratch-vec (make-scratch-local-work-size T)))
+    (declare #'((in-vec T A) &out (out-vec T A) (out-vec T A) &optional (scratch-vector-type T))
+      (global-size :derive-from input-vec :strategy :strided))
+    (r-t-assert-0 (= (length~ block-sums (get-num-workgroups))) "block-sums length should be the number of workgroups")
+    (r-t-assert-0 (= (length~ input-vec) (length~ output-vec)) "in/out vec lengths don't match")
+    (thread-stride input-vec :workgroup-idx (wg-idx)
+      (load-chunk input-vec scratch-vec)
+      (let ((total (exclusive-scan-workgroup scratch-vec))) ;; scratch-vec now reordered. local-barrier within exclusive-scan-wg
+        (when (= 0 (get-local-id))
+          (set! (~ block-sums wg-idx) total)))
+      (local-barrier)
+      (store-chunk scratch-vec output-vec)))
+
+  (def-grid-function global-exclusive-scan-downsweep (input-vec block-sums &out output-vec)
+    (declare #'((in-vec T A) (in-vec T A) &out (out-vec T A))
+      (global-size :derive-from  input-vec :strategy :strided))
+    (r-t-assert-0 (= (length~ input-vec) (length~ output-vec)) "in/out vec lengths don't match")
+    (loop-vector-stride input-vec (i)
+      (let ((val (~ input-vec i))
+            (prefix (~ block-sums (get-group-id 0))))
+          (set! (~ output-vec i) (+ val prefix))))))
+
+
+;; All orchestrations are for "demo" purposes only, but that is especially true for this one.
+;; We do two recursive upsweeps and two matching downsweeps. But the actual number of 
+;; upsweeps and downsweeps required will depend on the size of your vector and the
+;; size and number of workgroups available (see the formula above)
+(<T A M>
+  (def-orchestration global-exclusive-scan
+    (let ((upsweep-kernel (gen-global-exclusive-scan-upsweep T A "${M}_upsweep_${T}"))
+          (downsweep-kernel (gen-global-exclusive-scan-downsweep T A "${M}_downsweep_${T}"))
+          (ex-scan-wg-kernel (gen-ex_scan_wg_kernel T A "${M}_ex_scan_kernel_${T}"))
+          (IN (make-hoist-vector upsweep-kernel::input-vec))
+          (OUT (make-hoist-vector upsweep-kernel::output-vec))
+          (BLOCK-SUMS-1 (make-hoist-vector upsweep-kernel::block-sums))
+          (SCRATCH (make-hoist-vector upsweep-kernel::output-vec))
+          (BLOCK-SUMS-2 (make-hoist-vector ex-scan-wg-kernel::in-vec)))
+      ;; we will sometimes pass a vector as BOTH input and output to modify it in place.
+      (launch-sequential
+        (upsweep-kernel IN OUT BLOCK-SUMS-1)
+        (upsweep-kernel BLOCK-SUMS-1 SCRATCH BLOCK-SUMS-2) 
+        (ex-scan-wg-kernel BLOCK-SUMS-2)
+        (downsweep-kernel SCRATCH BLOCK-SUMS-2 BLCck-SUMS-1)
+        (downsweep-kernel OUT BLOCK-SUMS-1 OUT)))))
+    
+```
+
+global-inclusive-scan
+---------------------
+
+Global inclusive scan, like its exclusive scan counterpart, is done with an upsweep and a downsweep operation, with
+the same recursive behavior expected. 
+```
+(global-inclusive-scan-upsweep input-vec &out output-vec block-sums &optional scratch-vec)
+(global-inclusive-scan-downsweep input-vec block-sums &out output-vec))
+```
+
 
 Word Count With Exclusive Scan
 ------------------------------
@@ -7567,7 +7677,8 @@ floating point number, the `zero-point` and `scale`  must both be provided.
 These should be floating point values (`float`, `double`, `bfloat16` etc)
 The value that is returned is of the same floating point type. 
 
-Note that when converting accumulators, you need to square the scale.
+Note that when converting accumulators, you need to square the scale if the widening
+is the result of multiplying the base type.  If it was widened simply to handle a lot of addition (as in a reduction) then the scale remains the same. If the accumulator represents multiple multiplications, then it should be `(pow scale num-of-multiplications)`
 
 ```
 (to-float B zero-point scale) => F
@@ -7752,6 +7863,7 @@ you can do so by using `set-derived`.
 ```
 
 <!--
+REMOVE
 For each invocation of `def-microfloat-block` Crisp will define the type identifiers
  `XXXX-base`, `XXXX-accum` and `XXXX-scale` as well as compile-time type functions
  `scale`, `count`, and `shape` . `num-rows` and `num-cols` are defined for the 2D variant.
@@ -8072,6 +8184,8 @@ Finally, a concluding step ensures the fully transformed data resides in the des
 Performance Note: The implementation below is a direct global-memory implementation. 
 For maximum performance, real-world FFTs often use tiling with local memory (similar to matmul) 
 to improve data reuse and reduce global memory traffic.
+Additionally, some of the core operations in FFT are just dot products on both the real and imaginary part of a complex number. This can be accelerated by using the widening
+accumulator hardware types like quantized integers and microfloat blocks. 
 
 ```
 ;;
@@ -9932,12 +10046,6 @@ The only flags it respects are
 
 APPENDIX #1 - Math with Quantized Ints and Microfloat
 ======================================================
-- [ ] dot-prod
-- [ ] matmul
-- [ ] mat-vect-mul
-- [ ] convolution
-- [ ] pooling (average / max)
-- [ ] activation functions ( ReLu etc)
 
 dot product and matmul
 ----------------------
@@ -10121,7 +10229,7 @@ not a performent version for microfloat blocks.
               (set! acc (+ acc (to (accum T) pixel-val))))))
         ;; store
         (let ((acc-f (if+ (is-quantized-int? T)
-                        (to-float-accum acc zero-point scale)
+                        (to-float-accum acc zero-point scale) ;; don't square scale
                        acc))
               (avg-val (/ acc-f win-count)))
           (set! (~ output-M yo xo) avg-val))))))
@@ -10665,7 +10773,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [ ] OTHER reductions: 
 - - [x] scan 
 - - [x] boolean (all, any none?) 
-- - [ ] Segmented
+- - [x] Segmented
 - [x] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
 - [ ] ENTRYPOINT - for libraries
 - [x] fused softmax
@@ -10704,17 +10812,17 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 [ ] workspace-level  -- is-thread-level? might be impacted
 [ ] ident / (identity-of #'max T) => -INF or wahtever.
 [ ] (supports-max? T) or (supports? #'max T) ?
-[ ] Segmented (b.c. hard)
-[ ] Quantized Ints
-- [ ] dot-prod
-- [ ] matmul
-- [ ] mat-vect-mul
-- [ ] convolution
-- [ ] pooling (average / max)
-- [ ] activation functions ( ReLu etc)
+[x] Segmented (b.c. hard)
+[x] Quantized Ints
+- [x] dot-prod
+- [x] matmul
+- [x] mat-vect-mul
+- [x] convolution
+- [x] pooling (average / max)
+- [x] activation functions ( ReLu etc)
 [x] FP4 / FP8 -- microfloat blocks
 [ ] (declare (convergent)) (ragged-edge) ? and friends
-[ ] matrices and tensors as first class kernel args? Yes: Document. 
+[x] matrices and tensors as first class kernel args? Yes: Document. 
 [x] rename "vector" as "storage". "vector-view" -> "vector", etc tensor matrix.
     and, yes, the NEW vector, matrix, tensor are first class kernel args.
     dumb storage is the storage but access is via views. the ex-views ALL
