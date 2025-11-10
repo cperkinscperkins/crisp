@@ -7487,6 +7487,7 @@ These operations are available for both floating point and integer values.
 - `+`
 - `-`
 - `*`
+- `*!`  widening multiplication. see [Quantized Integers](#quantized-integers)
 - `/`    see [Integer Division](#integer-division) below.
 
 ### binop vs accum-op
@@ -9188,6 +9189,22 @@ Returns true if the file is being compiled with the `--debug-output` flag
 
 
 
+`entrypoint`
+============
+```
+(def-grid-function foo (...)
+  (declare (entrypoint))
+   ...)
+```
+
+`entrypoint` is a declaration that can appear in any non-kernel function. It is similar to `DllExport`, in that it
+tells the compiler that function is a top-level API function that should not be optimized away.
+Further `entrypoint` functions are compiled "library-wise", meaning the function and all its dependencies get
+bundled together (typically in a .bc file). This results in fast compilation for any kernel that uses it.
+
+
+
+
 Static Analysys
 ===============
 
@@ -10366,9 +10383,16 @@ Higher Order Function Operations
 - all?
 - none?
 - any?
+- segmented-reduction
 - exclusive-scan-workgroup   ; <-- the scans are NOT HOF ops. but Filter is.
 - inclusive-scan-workgroup
+- global-exclusive-scan-upsweep
+- global-exclusive-scan-downsweep
+- global-inclusive-scan-upsweep
+- global-inclusive-scan-downsweep
 - filter
+- filter-soa
+- find-indices
 
 
 Sorting
@@ -10514,7 +10538,7 @@ other
 - as-original
 - set-derived
 - inline           <== for declare. needs definition  [DP]
-- entry-point      <==  ibid
+- entrypoint 
 - convergent       <== for declare. Tells compiler code cannot be in diverging branch. reduce-to-warp uses it. 
                        we get a deadlock in divergent code. checkedd with "divergent-barrier" static analysys
 - let-kernel
@@ -10775,7 +10799,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - - [x] boolean (all, any none?) 
 - - [x] Segmented
 - [x] Math: sqrt / rsqrt / pow / exp / log / log2 / sin / cos / tan / asin / acos / atan / abs / min / max / clamp
-- [ ] ENTRYPOINT - for libraries
+- [x] ENTRYPOINT - for libraries
 - [x] fused softmax
 - [ ] use maybe something "real" (texel ?)
 - [ ] data pool
@@ -10805,7 +10829,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
       be fire.
 
 ### SHORTEST
-[ ] Entrypoint
+[x] Entrypoint
 [x] Strings (too much handwaving)
 [x] mapping and composition
 [x] update all old routines and remove them.
