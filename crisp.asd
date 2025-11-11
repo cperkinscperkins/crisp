@@ -22,7 +22,7 @@
   :build-operation "program-op"
   
   ;; This is the name of the file to create
-  :build-pathname "crisp-compile"
+  :build-pathname "bin/crisp-compile"
   
   ;; This is the Lisp function to run when the
   ;; executable is launched.

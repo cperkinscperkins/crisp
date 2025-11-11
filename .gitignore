@@ -1,0 +1,23 @@
+Here are the lines you'll want for your .gitignore file, plus a few other common Lisp/SBCL artifacts you'll definitely want to ignore.
+
+Code snippet
+
+
+# VS Code editor metadata
+.vscode/
+
+# Compiled executables
+bin/
+
+
+# === Recommended Lisp / SBCL ===
+
+# Compiled Common Lisp "fast-load" files (binaries)
+*.fasl
+
+# Emacs/Slime backup and lock files
+*~
+.#*
+
+# Any local executable
+*.exe
