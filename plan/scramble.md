@@ -2,60 +2,63 @@
 SBCL / LLVM Dev / C2FFI / CFFI
 
 Target #1: Download
-[x] install SBCL
-[x] install LLVM Dev
-Q: anything add to the repo?
-A: YES - [x] instructions on install SBCL and LLVM Dev
+- [x] install SBCL
+- [x] install LLVM Dev
+- Q: anything add to the repo?
+- A: YES - [x] instructions on install SBCL and LLVM Dev
 
-        ~Target #2: Generate bindings~
-        ~[ ] C2FFI~
-        ~[ ] using clang run against LLVM Dev headers~
-        ~[ ] check those into repo.~
-        ~[ ] Add instructions for how to Generate Bindings~
+~~Target #2: Generate bindings~~
+~~[ ] C2FFI~~
+~~[ ] using clang run against LLVM Dev headers~~
+~~[ ] check those into repo.~~
+~~[ ] Add instructions for how to Generate Bindings~~
 
 Target #3: Start Lisp Project
-[x] ASDF
-- [ ] start with some of our dependencies.
-[ ] Whatever is needed for QuickLisp
-[x] hello world?
-[x] INSTALL.md:  where/how to get QuickLisp
+- [x] ASDF
+- [x] start with some of our dependencies.
+- [ ] Whatever is needed for QuickLisp
+- [x] hello world?
+- [x] INSTALL.md:  where/how to get QuickLisp
 
 
 Target 3.5 Hook Up Bindings
-[ ] cffi-grovel
+- [/] cffi-grovel
+- [x] use cffi and just hook them up manually.
+- [x] This works: `(crisp.llvm-bindings:llvm-module-create "my_test_module")`  
+    Should we put it in a test?
 
 Target #4: Protected Namespace
 We can't have reader macros inserted into Crisp
 code to trigger behavior.
-[ ] locked down namespace
+- [x] locked down namespace
 
 Target #5: Our first Crisp Expression.
-: declaim? def-kernel ? with-template-type? def-function?
-[ ] def-function
-[ ] (def-function () #'(declare (return-type int)) 7) ; a function that returns 7.
-[ ] parsing #'
-[ ] macroexpansion
-[ ] walk AST, construct data struc
-[ ] walk DATA STUCT, analyze types
+- : declaim? def-kernel ? with-template-type? def-function?
+- [ ] def-function
+- [ ] (def-function () #'(declare (return-type int)) 7) ; a function that returns 7.
+- [ ] parsing #'
+- [ ] macroexpansion
+- [ ] walk AST, construct data struc
+- [ ] walk DATA STUCT, analyze types
 
 Target #6 - LLVM IR
-[ ] walk DATA STUCT, gen LLVM IR
-[ ] compile
-[ ] test? golden string or using ORC?
-[ ] Make a new "in-progress" doc and check "[ ] minimal def-function" ?
+- [ ] walk DATA STUCT, gen LLVM IR
+- [ ] compile
+- [ ] test? golden string or using ORC?
+- [ ] Make a new "in-progress" doc and check "[ ] minimal def-function" ?
 
 Target #7 - Transpile
-[ ] walk DATA STRUC, gen OpenCL C.
-[ ] compile
-[ ] test?
-[ ] update "in-progress" doc
+- [ ] walk DATA STRUC, gen OpenCL C.
+- [ ] compile
+- [ ] test?
+- [ ] update "in-progress" doc
 
 Target #8  - Continuous Integration
-[ ] github actions. 
-[ ] Intermediate testing? Of Lisp macros etc
+- [ ] github actions. 
+- [ ] Intermediate testing? Of Lisp macros etc
 
 Target #9 - Deploy Crisp on QuickLisp
-[ ] ?
+- [ ] ?
 
 
 Compilation Steps
