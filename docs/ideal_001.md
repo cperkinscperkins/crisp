@@ -10799,13 +10799,13 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     presumably some 'terminate()' call from within kernel. But what about from host? A: Not easily from host. Requires reset. 
 
 [ ] OTHERS
-   Mojo    ( https://www.modular.com/mojo )  One language, any hardware.  Bare metal performance. Pythonic Code.  
-    Triton  ( https://openai.com/index/triton ) open source gpu programming for neural networks. 
-    Cutlass  ( https://github.com/NVIDIA/cutlass ) CUDA Templates and Python DSLs for High-Performance Linear Algebra
-    Hillisp ( https://github.com/michelp/hillisp )   tiny Lisp implementation written in CUDA.  Drives the GPU.  Queues up "fill" kernels, "+" kernels, etc. 
-    CL GPU ( https://www.cliki.net/cl-gpu )  subset of Common Lisp on GPU
-    cl-gpu ( https://github.com/angavrilov/cl-gpu ) A library for writing GPU (CUDA) kernels in a subset of Common Lisp.
-    ATen ( https://github.com/zdevito/ATen )
+   -Mojo    ( https://www.modular.com/mojo )  One language, any hardware.  Bare metal performance. Pythonic Code.  
+    -Triton  ( https://openai.com/index/triton ) open source gpu programming for neural networks. 
+    -Cutlass  ( https://github.com/NVIDIA/cutlass ) CUDA Templates and Python DSLs for High-Performance Linear Algebra
+    -Hillisp ( https://github.com/michelp/hillisp )   tiny Lisp implementation written in CUDA.  Drives the GPU.  Queues up "fill" kernels, "+" kernels, etc. 
+    -CL GPU ( https://www.cliki.net/cl-gpu )  subset of Common Lisp on GPU
+    -cl-gpu ( https://github.com/angavrilov/cl-gpu ) A library for writing GPU (CUDA) kernels in a subset of Common Lisp.
+    -ATen ( https://github.com/zdevito/ATen )
 
 [x] Debugging Story - Give more attention.  A REAL pain point with developers.
 
