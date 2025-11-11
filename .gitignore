@@ -1,8 +1,3 @@
-Here are the lines you'll want for your .gitignore file, plus a few other common Lisp/SBCL artifacts you'll definitely want to ignore.
-
-Code snippet
-
-
 # VS Code editor metadata
 .vscode/
 
