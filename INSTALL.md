@@ -1,6 +1,14 @@
 
 
-## 🚀 How to Install
+
+Clone (or fork) This
+--------------------
+`git clone https://github.com/cperkinscperkins/crisp.git`
+
+
+
+🚀 Dependencies
+----------------
 
 Crisp requires **SBCL** and the **LLVM development libraries** (version 15 or newer is recommended).
 
@@ -63,10 +71,34 @@ winget install LLVM.LLVM
 
 ## 3\. Verify The Installation (The "Hello World" Test)
 
-After installing, open a new terminal and run:
+If you are on Linux or Mac, then after installing, open a new terminal and run:
 
 ```bash
 llvm-config --version
 ```
 
 If this prints a version number (e.g., `21.1.4`), you're all set.
+
+If you are on Windows, then rummage around where you installed it and make sure things are ok.
+
+
+Build
+-----
+
+- from a terminal, `cd` to the `crisp` directory.
+- launch SBCL  (invoke `sbcl` from the shell)
+
+Now you are in SBCL.  We will add the current working directory to the ASDF registry,
+load and build the crisp compiler.
+
+* `(push *default-pathname-defaults* asdf:*central-registry*)`
+* `(asdf:load-system "crisp")`
+* `(asdf:make "crisp")`
+* `(exit)`
+
+Back to shell.
+
+- ./crisp-compile.exe
+  `Hello, Crisp Compiler v0.0.1!`
+
+
