@@ -10,10 +10,11 @@
   ;; --- File Definitions ---
   ;; load components in exactly this order
   :serial t
-  :components (;(:file "src/llvm-bindings") ; (From Target #3.5)
-               ;(:file "src/compiler")      ; (Future semantic analysis)
-               ;(:file "src/codegen")       ; (Future LLVM IR generator)
-               (:file "src/main"))         ; ("hello world" main function)
+  :components ((:file "src/package")         ; 1. Defines all packages
+               (:file "src/llvm-bindings")   ; 2. Uses one package, defines FFI
+               ;(:file "src/compiler")        ; 3. Uses FFI, defines compiler
+               ;(:file "src/codegen")         ; 4. Uses compiler, defines codegen
+               (:file "src/main"))           ; 5. Uses compiler, defines main
 
   ;; --- Build Instructions ---
   ;; how to build "crisp-compile" exe from (asdf:make "crisp")
