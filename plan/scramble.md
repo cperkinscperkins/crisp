@@ -2,16 +2,16 @@
 SBCL / LLVM Dev / C2FFI / CFFI
 
 Target #1: Download
-[ ] install SBCL
-[ ] install LLVM Dev
+[x] install SBCL
+[x] install LLVM Dev
 Q: anything add to the repo?
-A: YES - instructions on install SBCL and LLVM Dev
+A: YES - [x] instructions on install SBCL and LLVM Dev
 
-Target #2: Generate bindings
-[ ] C2FFI
-[ ] using clang run against LLVM Dev headers
-[ ] check those into repo.
-[ ] Add instructions for how to Generate Bindings
+        ~Target #2: Generate bindings~
+        ~[ ] C2FFI~
+        ~[ ] using clang run against LLVM Dev headers~
+        ~[ ] check those into repo.~
+        ~[ ] Add instructions for how to Generate Bindings~
 
 Target #3: Start Lisp Project
 [ ] ASDF
