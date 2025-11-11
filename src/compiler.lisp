@@ -1,6 +1,9 @@
 ;; src/compiler.lisp
 (in-package :crisp.compiler)
 
+;; TEST THAT LLVM SHARED LIB IS WORKING
+;; ====================================
+
 (defun test-llvm-hello-world ()
   "The 'Target #5' test.
   Manually builds the LLVM IR for the function:
@@ -49,3 +52,40 @@
       (format t "Cleaning up...~%")
       (llvm-dispose-builder builder)
       (llvm-dispose-module module))))
+
+
+;; EXPORTS TO CRISP LANGUAGE
+;; ==========================
+
+(defmacro def-function (name params &body body)
+  "Defines a new, thread-level Crisp function."
+  
+  ;; 1. Parse the (declare ...) form
+  ;; We find the (declare ...) form, which we assume is first.
+  (let* ((declarations (if (and (listp (first body))
+                                (eq (caar body) 'declare))
+                           (cdar body) ; Get the list of declarations
+                           nil))
+         ;; The "real" body is whatever is left.
+         (real-body (if declarations
+                        (rest body)
+                        body)))
+
+    ;; 2. "Invert" the AST
+    ;; We return a *new* Lisp form that's just a simple,
+    ;; internal "constructor." 
+    `(internal-def-function
+      ',name          ; Quote the name (e.g., 'my-func)
+      ',params        ; Quote the param list (e.g., '())
+      ',declarations  ; Quote the declarations (e.g., '((return-type int)))
+      ',real-body)))  ; Quote the body (e.g., '(7))
+
+
+;; INTERNAL TO COMPILER
+;; ====================
+
+(defun internal-def-function (name params declarations body)
+  
+  (format t "Compiler: Saw function ~a~%" name)
+  ;; ... (Later, this will call the LLVM Gen) ...
+  )

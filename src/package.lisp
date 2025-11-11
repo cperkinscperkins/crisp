@@ -26,7 +26,9 @@
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)
-  (:export #:test-llvm-hello-world))
+  (:export #:test-llvm-hello-world
+           
+           #:def-function))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -34,7 +36,10 @@
 
 
 (defpackage :crisp-language
-  (:use) ;; <--- THIS IS THE KEY. It means "use nothing from Common Lisp."
+  (:use) ;; <--- THIS IS KEY. It means "use nothing from Common Lisp."
+
+  (:import-from :crisp.compiler
+   #:def-function)
 
   ;; --- 1. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
