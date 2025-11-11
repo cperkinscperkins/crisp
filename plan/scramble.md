@@ -14,10 +14,15 @@ A: YES - [x] instructions on install SBCL and LLVM Dev
         ~[ ] Add instructions for how to Generate Bindings~
 
 Target #3: Start Lisp Project
-[ ] ASDF
+[x] ASDF
+- [ ] start with some of our dependencies.
 [ ] Whatever is needed for QuickLisp
-[ ] hello world?
-[ ] Add instructions for getting Crisp with QuickLisp
+[x] hello world?
+[x] INSTALL.md:  where/how to get QuickLisp
+
+
+Target 3.5 Hook Up Bindings
+[ ] cffi-grovel
 
 Target #4: Protected Namespace
 We can't have reader macros inserted into Crisp
@@ -49,7 +54,8 @@ Target #8  - Continuous Integration
 [ ] github actions. 
 [ ] Intermediate testing? Of Lisp macros etc
 
-
+Target #9 - Deploy Crisp on QuickLisp
+[ ] ?
 
 
 Compilation Steps

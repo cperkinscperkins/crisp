@@ -89,16 +89,19 @@ Build
 - launch SBCL  (invoke `sbcl` from the shell)
 
 Now you are in SBCL.  We will add the current working directory to the ASDF registry,
-load and build the crisp compiler.
+load, make a 'bin' directory,  and build the crisp compiler.
 
-* `(push *default-pathname-defaults* asdf:*central-registry*)`
-* `(asdf:load-system "crisp")`
-* `(asdf:make "crisp")`
-* `(exit)`
+```
+(push *default-pathname-defaults* asdf:*central-registry*)
+(asdf:load-system "crisp")
+(uiop::ensure-directories-exist "bin/")
+(asdf:make "crisp")
+(exit)
+```
 
 Back to shell.
-
-- ./crisp-compile.exe
-  `Hello, Crisp Compiler v0.0.1!`
-
+```
+$   ./bin/crisp-compile.exe
+=>  Hello, Crisp Compiler v0.0.1!
+```
 
