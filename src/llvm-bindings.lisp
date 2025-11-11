@@ -1,11 +1,6 @@
 ;; src/llvm-bindings.lisp
-(defpackage :crisp.llvm-bindings
-  (:use :cl :cffi)
-  (:export #:llvm-module-create ; Exporting the Lisp-y function names
-           #:llvm-print-module-to-string
-           ;; ... and so on ...
-           ))
 (in-package :crisp.llvm-bindings)
+
 
 
 ;; Find the LLVM C library

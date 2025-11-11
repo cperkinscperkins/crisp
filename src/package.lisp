@@ -1,4 +1,38 @@
 ;; src/package.lisp
+
+(defpackage :crisp.llvm-bindings
+  (:use :cl :cffi)
+  (:export
+   ;; Core Module and Context
+   #:llvm-module-create
+   #:llvm-print-module-to-string
+   #:llvm-dispose-module
+   #:llvm-dispose-message
+   ;; Types
+   #:llvm-int32-type
+   #:llvm-function-type
+   ;; Functions
+   #:llvm-add-function
+   ;; Basic Blocks
+   #:llvm-append-basic-block
+   ;; Builder
+   #:llvm-create-builder
+   #:llvm-position-builder-at-end
+   #:llvm-dispose-builder
+   ;; Instructions
+   #:llvm-const-int
+   #:llvm-build-ret
+   ))
+
+(defpackage :crisp.compiler
+  (:use :cl :cffi :crisp.llvm-bindings)
+  (:export #:test-llvm-hello-world))
+
+(defpackage :crisp.main
+  (:use :cl)
+  (:export :main))
+
+
 (defpackage :crisp-language
   (:use) ;; <--- THIS IS THE KEY. It means "use nothing from Common Lisp."
 

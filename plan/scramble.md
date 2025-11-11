@@ -35,7 +35,7 @@ code to trigger behavior.
 Target #5: Our first Crisp Expression.
 - : declaim? def-kernel ? with-template-type? def-function?
 - [ ] def-function
-- [ ] (def-function () (declare (return-type int)) 7) ; a function that returns 7.
+- [x] (def-function () (declare (return-type int)) 7) ; a function that returns 7.
 - [ ] parsing #'
 - [ ] macroexpansion
 - [ ] walk AST, construct data struc
