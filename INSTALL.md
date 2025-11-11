@@ -21,10 +21,10 @@ Crisp requires **SBCL** and the **LLVM development libraries** (version 15 or ne
 Use `apt` to get the `llvm-dev` package.
 
 ```
-sudo apt-get install llvm-17-dev
+sudo apt-get install llvm-21-dev
 ```
 
-This package automatically installs the libraries, headers, and `llvm-config-17`.
+This package automatically installs the libraries, headers, and `llvm-config-21`.
 
 #### On macOS
 
@@ -49,7 +49,7 @@ This is the trickiest. The best method is to use the official pre-compiled binar
 
 1.  Go to the [LLVM GitHub Releases](https://github.com/llvm/llvm-project/releases) page.
 2.  Find the version you want (e.g., 17.0.6).
-3.  Download the **"Windows (64-bit)"** installer (e.g., `LLVM-17.0.6-win64.exe`).
+3.  Download the **"Windows (64-bit)"** installer (e.g., `LLVM-21.1.4-win64.exe`).
 4.  **Run the installer.** During setup, you **must** check the box that says:
       * **"Add LLVM to the system PATH for all users"** (or "current user").
 
@@ -69,4 +69,4 @@ After installing, open a new terminal and run:
 llvm-config --version
 ```
 
-If this prints a version number (e.g., `17.0.6`), you're all set.
+If this prints a version number (e.g., `21.1.4`), you're all set.
