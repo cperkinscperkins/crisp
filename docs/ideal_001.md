@@ -3933,7 +3933,7 @@ reductions could end up deadlocking.
 
 For the "small" vectors, etc or direct sizes, the bindings are index values shared by all threads grouped
 by that size.  Note that the "small" vectors or "small" sizes do NOT need to have the same
-arity as the problem space. The "small" variants CANNOT be bigger than the net workspace size. 
+arity as the problem space. The "small" variants CANNOT be bigger than the net workgroup size. 
 
 
 
@@ -4035,15 +4035,15 @@ But be aware, that this also means these functions should NOT appear in conditio
 detect this and emit an error.
 
 
-Workspace Stride
+Workgroup Stride
 ----------------
 
-Whereas `thread-stride` bends all available threads to its wicked purposes, `workspace-stride` is 
-used to just set up a stride across a workspace. This makes it one of the very few "workplace level" 
+Whereas `thread-stride` bends all available threads to its wicked purposes, `workgroup-stride` is 
+used to just set up a stride across a worksgroup. This makes it one of the very few "workplace level" 
 macros that Crisp provdes.  This CAN be nested in a grid level operation (such as `thread-stride`)
 
 ```
-(workspace-stride <problem-space> <chunkExpr> (<bindings>) ...)
+(workgroup-stride <problem-space> <chunkExpr> (<bindings>) ...)
 ```
 
 `problem-space` 
@@ -4060,12 +4060,12 @@ macros that Crisp provdes.  This CAN be nested in a grid level operation (such a
 - `(x)`, `(x y)`, `(x y z)`
 
 The `problem-space` can be anything or any size. But whatever it is, it should have
-been divided among all workgroups. Don't use `workspace-stride` to stride something
+been divided among all workgroups. Don't use `workgroup-stride` to stride something
 really big. Ideally, something small and using `:local` memory.
 
-`:local-size` - each thread in the workspace starts with its own local id
+`:local-size` - each thread in the workgroup starts with its own local id
 and each time through the stride increments the binding by the number of threads
-in the workspace. 
+in the workgroup. 
 
 `:warp-idx` - every thread in a warp will get the same binding, striding by the 
   number of warps in a workgroup.
@@ -4075,9 +4075,9 @@ in the workspace.
 These functions operate analagously to their `thread-stride` counterparts.
 
 ```
-(ws-problem-space-coords) => (x ...)
+(wg-problem-space-coords) => (x ...)
 
-(ws-chunk-coords) => (x ...)
+(wg-chunk-coords) => (x ...)
 ```
                      
 
@@ -4433,6 +4433,21 @@ result in incorrect calculations and/or slow performance.
 Atomic operations (see below) performed on `:global` memory are, by fiat, grid level operations. If your
 `defmacro` uses any atomic operation on `:global` memory, be sure to `(declare (grid-level))`.  
 Atomic operations on `:local` memory have no such requirement.
+
+Workgroup Level Operations
+--------------------------
+
+Workgroup-level operations are a bit like grid-level, in that multiple threads are being coordinated in
+the context of some `progn`, but the scope of coordination is limited to within a single workgroup.  
+Workgroup level operations cannot be nested inside other workgroup-level operations, 
+in this regard they are similar to grid level ops. But workgroup level
+operations CAN be invoked in thread-level contexts (so long as that doesn't result in nested workgroup level contexts).
+
+### `(declare (workgroup-level))`
+
+`workgroup-level` is a declaration that tells the compiler (and other users) that a particular `progn` is a workgroup level
+context. If you are writing a `defmacro` that is doing workgroup level coordination, then be sure to include
+this declaration in its expansion.
 
 
 Barriers and Fences
@@ -4966,7 +4981,7 @@ Possible Implementation:
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
   `(in-warp (lane-id)
-    (declare (convergent)) ;; <-- tells compiler cannot be called in divergent branch.
+    (declare (warp-convergent)) ;; <-- tells compiler cannot be called in divergent branch.
     ;; Active threads use their value. Inactive threads use the identity.
     (let ((val (if (< lane-id ,active-threads)
                     ,someVar
@@ -5029,6 +5044,7 @@ Possible Implementation
 
   `(progn
     ; After this local-scratch-vec contains partial sum from each warp in the wg
+    (declare (workgroup-level))
     (reduce-to-warp ,someFunction ,someVar ,identity)
     (when-thread-in-warp-is 0
       (set! (~ ,local-scratch-vec (get-warp-id)) ,someVar))
@@ -5784,6 +5800,7 @@ This is a possible implementation of `exclusive-scan-workgroup` realized via a B
 (defmacro exclusive-scan-workgroup (local-vec)
   `(let ((local-id (get-local-id))
          (wg-size (get-local-linear-size)))
+    (declare (workgroup-level))
      
      ;; first pass - the up-sweep (reduction tree)
      ;; In each step, we add the value from 2^d elements away.
@@ -9188,6 +9205,23 @@ that alter behavior based on context in order to provide a predictable experienc
 Returns true if the file is being compiled with the `--debug-output` flag 
 
 
+### `(declare (grid-level))`
+
+This was mentioned earlier, under  [Grid Level Operations](#grid-level-operations)
+A macro can add this declaration to a `progn` when doing grid level ops, and then the compiler
+will ensure the proper call context restrictions are observed.
+
+### `(declare (warp-convergent))` and `(declare (workgroup-convergent))`
+
+
+The `(declare (XXXX-convergent))` tag is a safety contract between your new macro and the Crisp compiler's static analyzer.
+When you add this declaration, you are "tagging" your macro and telling the compiler:
+> "This code block MUST be called by all threads in its group (warp or workgroup) to avoid a deadlock. You (the compiler) are now responsible for ensuring this rule is followed."
+
+This tag enables Crisp's `(check-divergence)` static analysis. The compiler will then throw a compile-time error if an end-user tries to call your macro from inside a divergent branch (like a `(when (< (get-local-id 0) 10) ...)`).
+
+Many constructs in Crisp, like `local-barrier` or shuffle operations, automatically inject the appropriate "taint", 
+so you don't need this declaration when those are present. But it is easy to write a macro that _assumes_ warp or workgroup wide operation. In that case, use the declaration so the compiler will help users of your macro. 
 
 `entrypoint`
 ============
@@ -10335,11 +10369,12 @@ control flow
 - - problem-space-view
 - load-chunk
 - store-chunk
-- workspace-stride
-- - ws-problem-space-coords
-- - ws-chunk-coords
+- workgroup-stride
+- - wg-problem-space-coords
+- - wg-chunk-coords
 
 - grid-level         [DP]
+- workgroup-level    [DP]
 - uniform            [DP]
 - constexpr          [DP]
 - to-uniform         [DP]
@@ -10538,9 +10573,9 @@ other
 - as-original
 - set-derived
 - inline           <== for declare. needs definition  [DP]
-- entrypoint 
-- convergent       <== for declare. Tells compiler code cannot be in diverging branch. reduce-to-warp uses it. 
-                       we get a deadlock in divergent code. checkedd with "divergent-barrier" static analysys
+- entrypoint            [DP]
+- warp-convergent       [DP] <== for declare. Tells compiler code cannot be in diverging branch. reduce-to-warp uses it. 
+- workgroup-convergent  [DP]    we get a deadlock in divergent code. checkedd with "divergent-barrier" static analysys
 - let-kernel
 - kernel-name           [DP]
 - /
@@ -10553,7 +10588,7 @@ other
 - local-mem                 [DP]
 - global-mem :return-value  [DP] 
 - string-concat
-- zero           <== need write up (zero T) => 0 or 0.0
+
 
 
 
@@ -10833,7 +10868,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 [x] Strings (too much handwaving)
 [x] mapping and composition
 [x] update all old routines and remove them.
-[ ] workspace-level  -- is-thread-level? might be impacted
+[x] workgroup-level  -- is-thread-level? might be impacted
 [ ] ident / (identity-of #'max T) => -INF or wahtever.
 [ ] (supports-max? T) or (supports? #'max T) ?
 [x] Segmented (b.c. hard)
@@ -10845,7 +10880,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
 - [x] pooling (average / max)
 - [x] activation functions ( ReLu etc)
 [x] FP4 / FP8 -- microfloat blocks
-[ ] (declare (convergent)) (ragged-edge) ? and friends
+[x] (declare (convergent)) (ragged-edge) ? and friends
 [x] matrices and tensors as first class kernel args? Yes: Document. 
 [x] rename "vector" as "storage". "vector-view" -> "vector", etc tensor matrix.
     and, yes, the NEW vector, matrix, tensor are first class kernel args.
