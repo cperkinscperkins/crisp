@@ -84,8 +84,64 @@
 ;; INTERNAL TO COMPILER
 ;; ====================
 
-(defun internal-def-function (name params declarations body)
-  
-  (format t "Compiler: Saw function ~a~%" name)
-  ;; ... (Later, this will call the LLVM Gen) ...
+;; Sema Structs
+;; ------------
+
+;; blueprint for a function
+(defstruct semantic-function
+  name         ; 'my-func
+  param-types  ; A list of types
+  return-type  ; The *validated* type, e.g., 'i32
+  body         ; A list of *other* semantic nodes
   )
+
+;; blueprint for a 'return' statement
+(defstruct semantic-return
+  return-type  ; 'i32
+  value-node   ; The node for the value being returned
+  )
+
+;; blueprint for a literal
+(defstruct semantic-literal
+  value-type   ; 'i32
+  value        ; 7
+  )
+
+
+
+(defun internal-def-function (name params declarations body)
+  "This is the 'Semantic Analyzer' (Pass 2).
+   It walks the Lisp AST and returns a 'Typed AST'."
+
+   (format t "Compiler: Saw function ~a ~a ~a ~a~%" name params declarations body)
+  
+  ;; Analyze Declarations
+  (let ((return-type (analyze-return-type declarations))) ; This returns 'i32
+  
+    ;; Analyze Body
+    (let* ((body-nodes (analyze-body-expressions body))
+           (inferred-type (get-type-of (first body-nodes))))
+      
+      ;; Check Types
+      (unless (equal inferred-type return-type)
+        (error "Type mismatch!"))
+
+      ;; Build and return the "blueprint"
+      (make-semantic-function
+       :name name
+       :return-type return-type
+       :body (list (make-semantic-return
+                    :return-type return-type
+                    :value-node (first body-nodes)))))))
+
+;; -- Helper stubs  - VERY HARDCODED
+(defun analyze-return-type (declarations)
+  (if (equal declarations '((return-type int))) 'i32 nil))
+
+(defun analyze-body-expressions (body)
+  (if (equal body '(7))
+      (list (make-semantic-literal :value-type 'i32 :value 7))
+      nil))
+
+(defun get-type-of (something)
+    'i32)

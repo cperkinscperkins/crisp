@@ -13,7 +13,7 @@
   :components ((:file "src/package")         ; 1. Defines all packages
                (:file "src/llvm-bindings")   ; 2. Uses one package, defines FFI
                (:file "src/compiler")        ; 3. Uses FFI, defines compiler
-               ;(:file "src/codegen")         ; 4. Uses compiler, defines codegen
+               (:file "src/codegen")         ; 4. Uses compiler, defines codegen
                (:file "src/main"))           ; 5. Uses compiler, defines main
 
   ;; --- Build Instructions ---
