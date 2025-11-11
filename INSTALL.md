@@ -4,8 +4,8 @@ INSTALL and BUILD
 
 These instructions are, ummm, "fresh".
 
-Clone (or fork) This
---------------------
+Clone This
+----------
 `git clone https://github.com/cperkinscperkins/crisp.git`
 
 
@@ -15,13 +15,13 @@ Clone (or fork) This
 
 Crisp requires **SBCL** and the **LLVM development libraries** (version 15 or newer is recommended).
 
-### 1\. Install SBCL
+### 1 Install SBCL
 
   * **macOS:** `brew install sbcl`
   * **Linux (Ubuntu/Debian):** `sudo apt-get install sbcl`
   * **Windows:** Download and run the installer from [sbcl.org](http://www.sbcl.org/platform-table.html).
 
-### 2\. Install LLVM Dev Libraries
+### 2 Install LLVM Dev Libraries
 
 - C libraries (`.so`, `.dylib`, `.dll`)
 - C API header files (`llvm-c/*.h`)
@@ -72,7 +72,7 @@ winget install LLVM.LLVM
 
 -----
 
-## 3\. Verify The Installation (The "Hello World" Test)
+### Verify LLVM Installation 
 
 If you are on Linux or Mac, then after installing, open a new terminal and run:
 
@@ -91,18 +91,25 @@ Build
 - from a terminal, `cd` to the `crisp` directory.
 - launch SBCL  (invoke `sbcl` from the shell)
 
-Now you are in SBCL.  We will add the current working directory to the ASDF registry,
-load, make a 'bin' directory,  and build the crisp compiler.
+Now we are in SBCL.  
+We will 
+- add the current working directory to the ASDF registry,
+- load crisp
+- test the basic installion
+- make a 'bin' directory
+- build the crisp compiler.
 
 ```
 (push *default-pathname-defaults* asdf:*central-registry*)
 (asdf:load-system "crisp")
+(crisp.compiler:test-llvm-hello-world) ; <-- this will call the LLVM lib to gen IR for a small function and print it out.
+
 (uiop::ensure-directories-exist "bin/")
 (asdf:make "crisp")
 (exit)
 ```
 
-Back to shell.
+Back to shell.  Let's try out the compiler
 ```
 $   ./bin/crisp-compile.exe
 =>  Hello, Crisp Compiler v0.0.1!
