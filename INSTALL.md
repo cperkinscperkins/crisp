@@ -115,3 +115,8 @@ $   ./bin/crisp-compile.exe
 =>  Hello, Crisp Compiler v0.0.1!
 ```
 
+Other tests: compile a function that returns 7.
+```
+(in-package crisp.compiler)
+(generate-llvm-ir (def-function wow () (declare (return-type int)) 7))
+```
