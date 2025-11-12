@@ -12,21 +12,21 @@ jobs:
       - name: 1. Check out code
         uses: actions/checkout@v4
 
-      - name: 2. Install Dependencies (SBCL and LLVM)
+      - name: 2. Install Dependencies (SBCL, ASDF, and LLVM)
         run: |
-          # Install helper packages
+          # helper packages
           sudo apt-get update
           sudo apt-get install -y wget gpg-agent software-properties-common lsb-release
           
           # Get the LLVM GPG key
           wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
           
-          # Manually add the LLVM repository source file instead of using add-apt-repository
+          # Manually add the LLVM repository source file
           echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
           
           # Now install the packages
           sudo apt-get update
-          sudo apt-get install -y sbcl llvm-21-dev
+          sudo apt-get install -y sbcl cl-asdf llvm-21-dev
 
       - name: 3. Run Crisp Test Script
         run: |
