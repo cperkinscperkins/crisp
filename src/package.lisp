@@ -22,6 +22,12 @@
    ;; Instructions
    #:llvm-const-int
    #:llvm-build-ret
+   ;; Alloca
+   #:llvm-get-param
+   #:llvm-build-alloca
+   #:llvm-build-store
+   #:llvm-build-load
+   #:llvm-build-add
    ))
 
 (defpackage :crisp.compiler

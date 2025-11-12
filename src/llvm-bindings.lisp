@@ -66,3 +66,32 @@
 (defcfun ("LLVMBuildRet" llvm-build-ret) :pointer
   (builder :pointer)
   (value :pointer))
+
+;; --- Parameters ---
+(defcfun ("LLVMGetParam" llvm-get-param) :pointer
+  (function :pointer)
+  (index :uint))
+
+;; --- Memory (The "Alloca Trick") ---
+(defcfun ("LLVMBuildAlloca" llvm-build-alloca) :pointer
+  (builder :pointer)
+  (type :pointer)
+  (name :string))
+
+(defcfun ("LLVMBuildStore" llvm-build-store) :pointer
+  (builder :pointer)
+  (value :pointer)
+  (pointer :pointer))
+
+(defcfun ("LLVMBuildLoad2" llvm-build-load) :pointer
+  (builder :pointer)
+  (type :pointer)
+  (pointer :pointer)
+  (name :string))
+  
+;; --- Math ---
+(defcfun ("LLVMBuildAdd" llvm-build-add) :pointer
+  (builder :pointer)
+  (lhs :pointer)
+  (rhs :pointer)
+  (name :string))

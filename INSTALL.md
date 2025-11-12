@@ -119,4 +119,5 @@ Other tests: compile a function that returns 7.
 ```
 (in-package crisp.compiler)
 (generate-llvm-ir (def-function wow () (declare (return-type int)) 7))
+(generate-llvm-ir (def-function adds ((a i32) (b i32)) (declare (return-type int)) (+ a b)))
 ```
