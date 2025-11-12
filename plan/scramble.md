@@ -110,7 +110,7 @@ Next Priorities
 ===============
 - [x] lose  (a i32)
 - [x] (declare #'(int int => int))
-- [ ] lowercase function names ("wow" not "WOW").
+- [x] lowercase function names ("wow" not "WOW").
 - [ ] GHA CI
 - [ ] Linux?
 - [ ] DWARF
