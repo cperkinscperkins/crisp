@@ -34,15 +34,15 @@ code to trigger behavior.
 
 Target #5: Our first Crisp Expression.
 - : declaim? def-kernel ? with-template-type? def-function?
-- [ ] def-function
+- [x] def-function
 - [x] (def-function () (declare (return-type int)) 7) ; a function that returns 7.
 - [ ] parsing #'
-- [ ] macroexpansion
-- [ ] walk AST, construct data struc
-- [ ] walk DATA STUCT, analyze types
+- [x] macroexpansion
+- [x] walk AST, construct data struc
+- [x] walk DATA STUCT, analyze types
 
 Target #6 - LLVM IR
-- [ ] walk DATA STUCT, gen LLVM IR
+- [x] walk DATA STUCT, gen LLVM IR
 - [ ] compile
 - [ ] test? golden string or using ORC?
 - [ ] Make a new "in-progress" doc and check "[ ] minimal def-function" ?
@@ -60,17 +60,23 @@ Target #8  - Continuous Integration
 Target #9 - Deploy Crisp on QuickLisp
 - [ ] ?
 
+Target #10 - Hoisting
+
+Target #11 - C API for Compilation
+
+Target #12 - def-orchestration
+
 
 Compilation Steps
 =================
 
-1 - Parse ( free )
-2 - Macro Expansion (free)
-3 - Semantic Analysys - build symbol table with "meaning" of every symbol in AST.
-4 - Type Inference and Type Checking
-5 - Function Resolution ( Overloads and Templates )
-6 - Contextual Validation ( grid-level vs thread etc) <-- might be doable at different stages.
-7 - Generate IR / Transpile
+- Parse ( free )
+- Macro Expansion (free)
+- Semantic Analysys - build symbol table with "meaning" of every symbol in AST.
+- Type Inference and Type Checking
+- Function Resolution ( Overloads and Templates )
+- Contextual Validation ( grid-level vs thread etc) <-- might be doable at different stages.
+- Generate IR / Transpile
 
 
 LLVM IR
@@ -99,3 +105,21 @@ LLVM IR
 - structs : LLVMStuctType::create(...) and Type context
 - DWARF meta for EVERYTHING
 
+
+Next Priorities
+===============
+- [x] lose  (a i32)
+- [ ] (declare #'(int int => int))
+- [ ] lowercase function names ("wow" not "WOW").
+- [ ] GHA CI
+- [ ] Linux?
+- [ ] DWARF
+- [ ] def-grid-function
+- [ ] def-kernel - case-sensitive
+- [ ] Hoisting
+- [ ] E2E Test?
+- [ ] with-template-type
+- [ ] multiple return values
+- [ ] cond  ( we can make all other divergent control flows from that: when, if, unless)
+- [ ] bool true false.  ( macros can still use T/nil ? )
+- [ ] .crisp files.  basic flag for crisp-compiler.exe
