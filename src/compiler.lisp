@@ -60,25 +60,21 @@
 (defmacro def-function (name params &body body)
   "Defines a new, thread-level Crisp function."
   
-  ;; 1. Parse the (declare ...) form
-  ;; We find the (declare ...) form, which we assume is first.
-  (let* ((declarations (if (and (listp (first body))
-                                (eq (caar body) 'declare))
-                           (cdar body) ; Get the list of declarations
-                           nil))
-         ;; The "real" body is whatever is left.
-         (real-body (if declarations
-                        (rest body)
-                        body)))
+  ;; 1. NEW: Find all (declare ...) forms at the start of the body.
+  (let* ((declarations
+           (loop for form in body
+                 while (and (listp form) (eq (car form) 'declare))
+                 collect (rest form))) ; Collect '((type a b int), (return-type int))
+         
+         (real-body (nthcdr (length declarations) body))) ; The "real" code
 
-    ;; 2. "Invert" the AST
-    ;; We return a *new* Lisp form that's just a simple,
-    ;; internal "constructor." 
+    ;; 2. "Invert" the AST (this is the same as before)
+    ;;    We're just passing a cleaner 'params' list now.
     `(internal-def-function
-      ',name          ; Quote the name (e.g., 'my-func)
-      ',params        ; Quote the param list (e.g., '())
-      ',declarations  ; Quote the declarations (e.g., '((return-type int)))
-      ',real-body)))  ; Quote the body (e.g., '(7))
+      ',name          ;  'my-add
+      ',params        ;  '(a b)
+      ',declarations  ; '(((type a b int)) ((return-type int)))
+      ',real-body)))  ;  '((+ a b))
 
 
 ;; INTERNAL TO COMPILER
@@ -127,47 +123,77 @@
 ;; Internal handlers
 ;; -----------------
 ;; *  (def-function wow () (declare (return-type int)) 7) = > #S(semantic-function ...)
-;; *  (def-function yowza ((a i32) (b i32)) (declare (return-type int)) (+ a b))  => #S(semantic-function ...)
+;; *  (def-function yowza (a  b ) (declare (type a b int) (return-type int)) (+ a b))  => #S(semantic-function ...)
 (defun internal-def-function (name params declarations body)
-  "This is the 'Semantic Analyzer' (Pass 2).
-   It walks the Lisp AST and returns a 'Typed AST'."
+  "This is the 'Semantic Analyzer' (Pass 2)."
   
-  (format t "Compiler: Analyzing function ~a ~a ~a ~a ...~%" name params declarations body)
+  (format t "Compiler: Analyzing function ~a...~%" name)
   
-  ;; 1. Analyze Declarations (like before)
-  (let ((return-type (analyze-return-type declarations))) ; Returns 'i32
+  ;; 1. Analyze Declarations
+  (let ((return-type (analyze-return-type declarations))
+        
+        ;; 2. NEW: Build the environment from params AND declarations
+        (env (analyze-environment params declarations)))
 
-    ;; 2. NEW: Analyze Parameters
-    ;;    This builds our "environment"
-    (let ((env (analyze-parameters params)))
+    ;; 3. Analyze the Body (this code is now unchanged)
+    (let* ((body-nodes (analyze-body-expressions body env))
+           (return-node (first (last body-nodes))) 
+           (inferred-type (semantic-node-type return-node)))
 
-      ;; 3. NEW: Analyze the Body (which is now a list of expressions)
-      ;;    (analyze-expression is the new "recursive brain")
-      (let* ((body-nodes (analyze-body-expressions body env))
-             ;; Get the last expression as the return value
-             (return-node (first (last body-nodes))) 
-             (inferred-type (semantic-node-type return-node)))
+      ;; 4. Check Types (unchanged)
+      (unless (equal inferred-type return-type)
+        (error "Type mismatch! Declared ~a but got ~a" 
+               return-type inferred-type))
 
-        ;; 4. Check Types
-        (unless (equal inferred-type return-type)
-          (error "Type mismatch! Declared ~a but got ~a" 
-                 return-type inferred-type))
-
-        ;; 5. Build and return the "blueprint"
-        (make-semantic-function
-         :name name
-         :param-list (loop for p in params collect 
-                           (make-semantic-param :name (first p) 
-                                                :type (second p)))
-         :return-type return-type
-         :body (list (make-semantic-return
-                      :return-type return-type
-                      :value-node return-node)))))))
+      ;; 5. Build and return the "blueprint" (this is now simpler)
+      ;;    The param-list is now built from the 'env'
+      (make-semantic-function
+       :name name
+       :param-list (loop for (param-name param-type) in env
+                         collect (make-semantic-param :name param-name
+                                                      :type param-type))
+       :return-type return-type
+       :body (list (make-semantic-return
+                    :return-type return-type
+                    :value-node return-node))))))
 
 
-;; -- Helper stubs  - VERY HARDCODED
+;; --- NEW: The "Brain's" Upgraded Helpers ---
+
 (defun analyze-return-type (declarations)
-  (if (equal declarations '((return-type int))) 'i32 nil))
+  "Finds and returns the return-type from a declare list."
+  ;; This 'assoc' is robust and finds the 'return-type'
+  ;; anywhere in the declarations list.
+  (let ((found (assoc 'return-type (first declarations)))) ; (Stub: assumes one declare block)
+    (if found
+        (let ((type (second found)))
+          (if (eq type 'int) 'i32 type))
+        nil))) ; (We'll make this smarter later)
+
+(defun analyze-environment (params declarations)
+  "Builds the environment (symbol table) from params and declare forms."
+  ;; This is the new "brain" for parameters.
+  ;; For now, we'll implement a simple version.
+  (format t "Building environment...~a ~a ~%" params declarations)
+  
+  ;; 1. Find the (type ...) declaration
+  ;;    (This is a stub; a real one would search all declarations)
+  (let ((type-decl (assoc 'type (first declarations))))
+    
+    (if (not type-decl)
+        (error "Missing (declare (type ...)) for parameters."))
+    
+    ;; type-decl is '(type a b int)'
+    (let* ((param-names (butlast (rest type-decl) 1))
+           (param-type (first (last type-decl))))
+      
+      ;; 2. Map 'int' to 'i32'
+      (let ((real-type (if (eq param-type 'int) 'i32 param-type)))
+        
+        ;; 3. Build the environment list
+        ;;    e.g., '((a i32) (b i32))
+        (mapcar #'(lambda (name) (list name real-type))
+                param-names)))))
 
 
 
