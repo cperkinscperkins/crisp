@@ -1,0 +1,24 @@
+# .github/workflows/ci.yml
+name: Crisp CI
+
+on: [push, pull_request]
+
+jobs:
+  build-and-test:
+    name: Build and Test (SBCL, LLVM 21)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Check out code
+        uses: actions/checkout@v4
+
+      - name: 2. Install Dependencies (SBCL and LLVM)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sbcl llvm-21-dev
+
+      - name: 3. Run Crisp Test Script
+        run: |
+          # Run the test script. SBCL will exit with 0 on success
+          # or non-zero on error, which will pass/fail the CI step.
+          sbcl --non-interactive --load tests/run-ci.lisp
