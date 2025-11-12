@@ -7,7 +7,7 @@
   "This is the 'Code Generator' (Pass 3).
    It walks the 'Typed AST' (blueprint) and calls the LLVM API."
   
-  (let ((module (llvm-module-create (symbol-name (semantic-function-name semantic-func))))
+  (let ((module (llvm-module-create (string-downcase (symbol-name (semantic-function-name semantic-func)))))
         (builder (llvm-create-builder)))
     (unwind-protect
          ;; --- 1. Setup Types & Function Signature ---
@@ -24,7 +24,7 @@
                                              param-types-array
                                              (length param-types)
                                              nil))
-                (llvm-func (llvm-add-function module (symbol-name (semantic-function-name semantic-func)) fn-type))
+                (llvm-func (llvm-add-function module (string-downcase (symbol-name (semantic-function-name semantic-func))) fn-type))
                 (entry-block (llvm-append-basic-block llvm-func "entry")))
 
            (llvm-position-builder-at-end builder entry-block)
@@ -39,7 +39,7 @@
                  do (let* ((param-name (semantic-param-name param))
                            (llvm-type (get-llvm-type (semantic-param-type param)))
                            ;; 1. Allocate a stack slot (e.g., %a_ptr)
-                           (ptr (llvm-build-alloca builder llvm-type (symbol-name param-name))))
+                           (ptr (llvm-build-alloca builder llvm-type (string-downcase (symbol-name param-name)))))
                       
                       ;; --- BODY of the let* ---
                       ;; 2. Store the function's argument (%a) into its slot (%a_ptr)
@@ -100,7 +100,7 @@
            (ptr (gethash name env)))         ; Get the stack pointer
     
         ;; Pass the 'llvm-type' as the new second argument
-        (llvm-build-load builder llvm-type ptr (symbol-name name))))
+        (llvm-build-load builder llvm-type ptr (string-downcase (symbol-name name)))))
 
     ;; Case: (semantic-add 'a 'b)
     (semantic-add
