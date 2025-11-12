@@ -14,11 +14,15 @@ jobs:
 
       - name: 2. Install Dependencies (SBCL and LLVM)
         run: |
-          # Add the official LLVM apt repository
+          # Install helper packages
           sudo apt-get update
-          sudo apt-get install -y wget gpg-agent software-properties-common
-          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key|sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
-          sudo add-apt-repository "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-21 main"
+          sudo apt-get install -y wget gpg-agent software-properties-common lsb-release
+          
+          # Get the LLVM GPG key
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          
+          # Manually add the LLVM repository source file instead of using add-apt-repository
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
           
           # Now install the packages
           sudo apt-get update
