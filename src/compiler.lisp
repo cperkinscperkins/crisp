@@ -90,7 +90,7 @@
 ;; blueprint for a function
 (defstruct semantic-function
   name         ; 'my-func
-  param-types  ; A list of types
+  param-list   ; A list of types
   return-type  ; The *validated* type, e.g., 'i32
   body         ; A list of *other* semantic nodes
   )
@@ -107,41 +107,121 @@
   value        ; 7
   )
 
+;; Represents a function parameter (e.g., 'a' and its type 'i32)
+(defstruct semantic-param
+  name
+  type)
 
+;; Represents reading a variable (e.g., 'a' or 'b')
+(defstruct semantic-var-read
+  name
+  type)
 
+;; Represents a function call (e.g., '(+ a b)')
+(defstruct semantic-add
+  type     ; The *result* type (e.g., 'i32)
+  left-arg   ; The 'semantic-var-read' node for 'a'
+  right-arg  ; The 'semantic-var-read' node for 'b'
+  )
+
+;; Internal handlers
+;; -----------------
+;; *  (def-function wow () (declare (return-type int)) 7) = > #S(semantic-function ...)
+;; *  (def-function yowza ((a i32) (b i32)) (declare (return-type int)) (+ a b))  => #S(semantic-function ...)
 (defun internal-def-function (name params declarations body)
   "This is the 'Semantic Analyzer' (Pass 2).
    It walks the Lisp AST and returns a 'Typed AST'."
-
-   (format t "Compiler: Saw function ~a ~a ~a ~a~%" name params declarations body)
   
-  ;; Analyze Declarations
-  (let ((return-type (analyze-return-type declarations))) ; This returns 'i32
+  (format t "Compiler: Analyzing function ~a ~a ~a ~a ...~%" name params declarations body)
   
-    ;; Analyze Body
-    (let* ((body-nodes (analyze-body-expressions body))
-           (inferred-type (get-type-of (first body-nodes))))
-      
-      ;; Check Types
-      (unless (equal inferred-type return-type)
-        (error "Type mismatch!"))
+  ;; 1. Analyze Declarations (like before)
+  (let ((return-type (analyze-return-type declarations))) ; Returns 'i32
 
-      ;; Build and return the "blueprint"
-      (make-semantic-function
-       :name name
-       :return-type return-type
-       :body (list (make-semantic-return
-                    :return-type return-type
-                    :value-node (first body-nodes)))))))
+    ;; 2. NEW: Analyze Parameters
+    ;;    This builds our "environment"
+    (let ((env (analyze-parameters params)))
+
+      ;; 3. NEW: Analyze the Body (which is now a list of expressions)
+      ;;    (analyze-expression is the new "recursive brain")
+      (let* ((body-nodes (analyze-body-expressions body env))
+             ;; Get the last expression as the return value
+             (return-node (first (last body-nodes))) 
+             (inferred-type (semantic-node-type return-node)))
+
+        ;; 4. Check Types
+        (unless (equal inferred-type return-type)
+          (error "Type mismatch! Declared ~a but got ~a" 
+                 return-type inferred-type))
+
+        ;; 5. Build and return the "blueprint"
+        (make-semantic-function
+         :name name
+         :param-list (loop for p in params collect 
+                           (make-semantic-param :name (first p) 
+                                                :type (second p)))
+         :return-type return-type
+         :body (list (make-semantic-return
+                      :return-type return-type
+                      :value-node return-node)))))))
+
 
 ;; -- Helper stubs  - VERY HARDCODED
 (defun analyze-return-type (declarations)
   (if (equal declarations '((return-type int))) 'i32 nil))
 
-(defun analyze-body-expressions (body)
-  (if (equal body '(7))
-      (list (make-semantic-literal :value-type 'i32 :value 7))
-      nil))
 
-(defun get-type-of (something)
-    'i32)
+
+(defun analyze-parameters (params)
+  "Builds the environment (a symbol table)."
+  ;; For now, just a simple list.
+  ;; '((a i32) (b i32))
+  (mapcar #'(lambda (p) (list (first p) (second p))) params))
+
+(defun analyze-body-expressions (body-list env)
+  "Recursively analyzes a list of expressions."
+  (mapcar #'(lambda (expr) (analyze-expression expr env)) body-list))
+
+(defun analyze-expression (expr env)
+  "Recursively analyzes a *single* expression."
+  (cond
+    ;; Case 1: It's a literal, like 7
+    ((integerp expr)
+     (make-semantic-literal :value-type 'i32 :value expr))
+
+    ;; Case 2: It's a variable, like 'a'
+    ((symbolp expr)
+     (let ((found (assoc expr env)))
+       (if found
+           (make-semantic-var-read :name expr :type (second found))
+           (error "Unknown variable: ~a" expr))))
+
+    ;; Case 3: It's a function call, like '(+ a b)'
+    ((listp expr)
+     (let ((op (first expr)))
+       (cond
+         ((eq op '+)
+          ;; This is the new logic for '+'
+          (let* ((left-node (analyze-expression (second expr) env))
+                 (right-node (analyze-expression (third expr) env))
+                 (left-type (semantic-node-type left-node))
+                 (right-type (semantic-node-type right-node)))
+            
+            ;; (This is a stub, a real one would be smarter)
+            (unless (and (eq left-type 'i32) (eq right-type 'i32))
+              (error "Can only add i32 types for now!"))
+            
+            (make-semantic-add :type 'i32 ; The result type
+                               :left-arg left-node
+                               :right-arg right-node)))
+         
+         (t (error "Unknown operator: ~a" op)))))
+    
+    (t (error "Unknown expression: ~a" expr))))
+
+
+;; --- Helper to get the type from any node ---
+(defun semantic-node-type (node)
+  (etypecase node
+    (semantic-literal (semantic-literal-value-type node))
+    (semantic-var-read (semantic-var-read-type node))
+    (semantic-add (semantic-add-type node))))
