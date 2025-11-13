@@ -27,8 +27,11 @@
                   ;; Bind *package* so Eclector reads symbols
                   ;; into the sandboxed :crisp-language package.
                   (*package* (find-package :crisp-language)))
+                (format *error-output* "got client ~a~%" client)
               (loop
                 (let ((form-cst (eclector-cst:read client stream nil :eof)))
+
+                  (format *error-output* "form-cst: ~a~%" form-cst)
                 
                   (when (eq form-cst :eof)
                     (return))
