@@ -5,7 +5,10 @@
   :version "0.0.1"
 
   ;; --- Dependencies ---
-  :depends-on ("cffi" "eclector")
+  :depends-on ("cffi"
+               "eclector"
+               "eclector-concrete-syntax-tree"
+               "concrete-syntax-tree")
 
   ;; --- File Definitions ---
   ;; load components in exactly this order

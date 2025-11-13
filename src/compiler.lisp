@@ -64,25 +64,62 @@
 (defmacro def-function (name params &body body)
   "Defines a new, thread-level Crisp function."
   
-  ;; 1. NEW: Find all (declare ...) forms at the start of the body.
-  (let* ((declarations
-           (loop for form in body
-                 while (and (listp form) (eq (car form) 'declare))
-                 append (rest form))) ; append '((type a b int), (return-type int))
+  ;; Find the :source-location argument (our new plumbing)
+  ;; It's a bit hacky, but works for now.
+  (let* ((source-location-pair (find :source-location body :key #'car))
+         (source-location (if source-location-pair
+                              (second source-location-pair)
+                              nil))
+         (body-without-loc (remove source-location-pair body))
          
-         (real-body (nthcdr #|(length declarations)|# 1 body))) ; The "real" code
+         (declarations
+           (loop for form in body-without-loc
+                 while (and (listp form) (eq (car form) 'declare))
+                 append (rest form)))
+         (real-body (nthcdr (length declarations) body-without-loc)))
 
-    ;; 2. "Invert" the AST (this is the same as before)
-    ;;    We're just passing a cleaner 'params' list now.
     `(internal-def-function
-      ',name          ;  'my-add
-      ',params        ;  '(a b)
-      ',declarations  ; '(((type a b int)) ((return-type int)))
-      ',real-body)))  ;  '((+ a b))
+      ',name
+      ',params
+      ',declarations            ;  '(((type a b int)) ((return-type int)))
+      ',real-body               ;  '((+ a b))
+      ,source-location)))
 
 
 ;; INTERNAL TO COMPILER
 ;; ====================
+
+(defun compile-toplevel-form (form location)
+  "Analyzes and compiles a single top-level form."
+  ;; For now, we only handle def-function
+  (if (and (consp form) (eq (car form) 'def-function))
+      ;; Pass the location to the macro's expansion
+      (generate-llvm-ir (eval `(def-function ,(second form) ,(third form)
+                                 ;; We need to quote the location to pass it literally
+                                 :source-location ',location 
+                                 ,@(cdddr form))))
+      (format t "WARNING: Skipping top-level form: ~a~%" form)))
+
+;; --- Error Conditions ---
+
+(define-condition crisp-compiler-error (error)
+  ((source-location :initarg :source-location :reader error-source-location))
+  (:report (lambda (condition stream)
+             (format stream "A Crisp compilation error occurred."))))
+
+(define-condition crisp-type-error (crisp-compiler-error)
+  ((expected :initarg :expected :reader type-error-expected)
+   (inferred :initarg :inferred :reader type-error-inferred))
+  (:report (lambda (condition stream)
+             (format stream "Type mismatch! Expected ~a but inferred ~a."
+                     (type-error-expected condition)
+                     (type-error-inferred condition)))))
+
+(define-condition crisp-unknown-variable (crisp-compiler-error)
+  ((name :initarg :name :reader unknown-variable-name))
+  (:report (lambda (condition stream)
+             (format stream "Unknown variable ~a."
+                     (unknown-variable-name condition)))))
 
 ;; Sema Structs
 ;; ------------
@@ -93,36 +130,41 @@
   param-list   ; A list of types
   return-type  ; The *validated* type, e.g., 'i32
   body         ; A list of *other* semantic nodes
+  source-location
   )
 
 ;; blueprint for a 'return' statement
 (defstruct semantic-return
   return-type  ; 'i32
   value-node   ; The node for the value being returned
+  source-location
   )
 
 ;; blueprint for a literal
 (defstruct semantic-literal
   value-type   ; 'i32
   value        ; 7
+  source-location
   )
 
 ;; Represents a function parameter (e.g., 'a' and its type 'i32)
 (defstruct semantic-param
   name
-  type)
+  type
+  source-location)
 
 ;; Represents reading a variable (e.g., 'a' or 'b')
 (defstruct semantic-var-read
   name
-  type)
+  type
+  source-location)
 
 ;; Represents a function call (e.g., '(+ a b)')
 (defstruct semantic-add
   type     ; The *result* type (e.g., 'i32)
   left-arg   ; The 'semantic-var-read' node for 'a'
   right-arg  ; The 'semantic-var-read' node for 'b'
-  )
+  source-location)
 
 
 ;; ---------------------------------
@@ -136,7 +178,7 @@
 ;; *  (def-function with-arrow (a b) (declare #'(int int => int)) (+ a b))
 ;; (generate-llvm-ir ...)
 
-(defun internal-def-function (name params declarations body)
+(defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
   (format t "Compiler: Analyzing function ~a...~%" name)
   
@@ -149,40 +191,50 @@
                (env (analyze-environment-from-spec params fn-spec)))
           
           ;; Run the rest of the compiler using THESE variables
-          (analyze-and-build-function name params body env return-type declarations))
+          (analyze-and-build-function name params body env return-type declarations location))
         
         ;; --- Path B: Use (type ...) and (return-type ...) ---
         (let* ((return-type (analyze-return-type-from-list declarations))
                (env (analyze-environment-from-list params declarations)))
           
           ;; Run the rest of the compiler using THESE variables
-          (analyze-and-build-function name params body env return-type declarations)))))
+          (analyze-and-build-function name params body env return-type declarations location)))))
 
-(defun analyze-and-build-function (name params body env return-type declarations)
+(defun analyze-and-build-function (name params body env return-type declarations location)
   "This is the shared 'guts' of the analyzer."
 
   (format T "anaylze-and-build-function name: ~a  params: ~a body: ~a  declarations: ~a~%" name params body declarations)
   
   ;; 3. Analyze the Body
-  (let* ((body-nodes (analyze-body-expressions body env))
+  (let* ((body-nodes (analyze-body-expressions body env location))
          (return-node (first (last body-nodes))) 
          (inferred-type (if return-node (semantic-node-type return-node) 'nil)))
 
     ;; 4. Check Types
     (unless (equal inferred-type return-type)
-      (error "Type mismatch! Declared ~a but inferred ~a" 
-             return-type inferred-type))
+      (error 'crisp-type-error 
+             :expected return-type 
+             :inferred inferred-type
+             ;; Get the location from the struct we just built
+             :source-location (if return-node
+                                  (semantic-return-source-location return-node)
+                                  location)))
 
     ;; 5. Build and return the "blueprint"
     (make-semantic-function
      :name name
      :param-list (loop for (param-name param-type) in env
                        collect (make-semantic-param :name param-name
-                                                    :type param-type))
+                                                    :type param-type
+                                                    :source-location location))
      :return-type return-type
      :body (list (make-semantic-return
                   :return-type return-type
-                  :value-node return-node)))))
+                  :value-node return-node
+                  :source-location (if return-node ; Get location from return node
+                                       (semantic-node-source-location return-node)
+                                       location))) ; Fallback
+     :source-location location)))
 
 
 ;; ### Helpers
@@ -241,23 +293,25 @@
   ;; '((a i32) (b i32))
   (mapcar #'(lambda (p) (list (first p) (second p))) params))
 
-(defun analyze-body-expressions (body-list env)
+(defun analyze-body-expressions (body-list env location)
   "Recursively analyzes a list of expressions."
-  (mapcar #'(lambda (expr) (analyze-expression expr env)) body-list))
+  (mapcar #'(lambda (expr) (analyze-expression expr env location)) body-list))
 
-(defun analyze-expression (expr env)
+(defun analyze-expression (expr env location)
   "Recursively analyzes a *single* expression."
   (cond
     ;; Case 1: It's a literal, like 7
     ((integerp expr)
-     (make-semantic-literal :value-type 'i32 :value expr))
+     (make-semantic-literal :value-type 'i32 :value expr :source-location location))
 
     ;; Case 2: It's a variable, like 'a'
     ((symbolp expr)
      (let ((found (assoc expr env)))
        (if found
-           (make-semantic-var-read :name expr :type (second found))
-           (error "Unknown variable: ~a" expr))))
+           (make-semantic-var-read :name expr :type (second found) :source-location location)
+           (error 'crisp-unknown-variable 
+                  :name expr
+                  :source-location location))))
 
     ;; Case 3: It's a function call, like '(+ a b)'
     ((listp expr)
@@ -265,18 +319,19 @@
        (cond
          ((eq op '+)
           ;; This is the new logic for '+'
-          (let* ((left-node (analyze-expression (second expr) env))
-                 (right-node (analyze-expression (third expr) env))
+          (let* ((left-node (analyze-expression (second expr) env location))
+                 (right-node (analyze-expression (third expr) env location))
                  (left-type (semantic-node-type left-node))
                  (right-type (semantic-node-type right-node)))
             
             ;; (This is a stub, a real one would be smarter)
             (unless (and (eq left-type 'i32) (eq right-type 'i32))
-              (error "Can only add i32 types for now!"))
+              (error "Can only add i32 types for now!")) ; TODO: Update to condition
             
-            (make-semantic-add :type 'i32 ; The result type
+            (make-semantic-add :type 'i32
                                :left-arg left-node
-                               :right-arg right-node)))
+                               :right-arg right-node
+                               :source-location location)))
          
          (t (error "Unknown operator: ~a" op)))))
     
@@ -289,3 +344,10 @@
     (semantic-literal (semantic-literal-value-type node))
     (semantic-var-read (semantic-var-read-type node))
     (semantic-add (semantic-add-type node))))
+
+
+(defun semantic-node-source-location (node)
+  (etypecase node
+    (semantic-literal (semantic-literal-source-location node))
+    (semantic-var-read (semantic-var-read-source-location node))
+    (semantic-add (semantic-add-source-location node))))
