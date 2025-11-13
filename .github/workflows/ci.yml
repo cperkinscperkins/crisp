@@ -12,9 +12,9 @@ jobs:
       - name: 1. Check out code
         uses: actions/checkout@v4
 
-      - name: 2. Install Dependencies (SBCL, ASDF, and LLVM)
+      - name: 2. Install Dependencies (SBCL, ASDF, CFFI, and LLVM)
         run: |
-          # helper packages
+          # Install helper packages
           sudo apt-get update
           sudo apt-get install -y wget gpg-agent software-properties-common lsb-release
           
@@ -26,7 +26,7 @@ jobs:
           
           # Now install the packages
           sudo apt-get update
-          sudo apt-get install -y sbcl cl-asdf llvm-21-dev
+          sudo apt-get install -y sbcl cl-asdf cl-cffi llvm-21-dev
 
       - name: 3. Run Crisp Test Script
         run: |

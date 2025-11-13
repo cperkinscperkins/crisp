@@ -17,9 +17,11 @@ Crisp requires **SBCL** and the **LLVM development libraries** (version 15 or ne
 
 ### 1 Install SBCL
 
-  * **macOS:** `brew install sbcl`
-  * **Linux (Ubuntu/Debian):** `sudo apt-get install sbcl cl-asdf`
-  * **Windows:** Download and run the installer from [sbcl.org](http://www.sbcl.org/platform-table.html).
+- **macOS:** `brew install sbcl`
+- **Linux (Ubuntu/Debian):** `sudo apt-get install sbcl`
+- **Windows:** Download and run the installer from [sbcl.org](https://sbcl.org).
+
+(Note: The Windows/macOS installers bundle ASDF. The Linux apt package does not, but Step 3 will handle this.)
 
 ### 2 Install LLVM Dev Libraries
 
@@ -74,6 +76,26 @@ winget install LLVM.LLVM
 
 -----
 
+### 3 Install Lisp Dependencies (CFF)
+
+Your Lisp environment needs the **CFFI** library.
+
+#### Method 1: Quicklisp (Recommended for all platforms)
+This is the standard way to manage Lisp libraries. If you don't have Quicklisp, you can install it from [quicklisp.lisp.org](https://quicklisp.lisp.org).
+
+. Launch SBCL.
+. Install CFFI by running:
+```
+(ql:quickload "cffi")
+```
+Quicklisp will download and install CFFI and its dependencies (including its own version of ASDF).
+
+#### Method 2: Linux System Packages (Alternative)
+If you are on Linux and do not want to use Quicklisp, you can install the system packages for ASDF and CFFI:
+```
+sudo apt-get install -y cl-asdf cl-cffi
+```
+
 ### Verify LLVM Installation 
 
 If you are on Linux or Mac, then after installing, open a new terminal and run:
@@ -102,6 +124,7 @@ We will
 - build the crisp compiler.
 
 ```
+(require "asdf")
 (push *default-pathname-defaults* asdf:*central-registry*)
 (asdf:load-system "crisp")
 (crisp.compiler:test-llvm-hello-world) ; <-- this will call the LLVM lib to gen IR for a small function and print it out.
@@ -117,7 +140,7 @@ $   ./bin/crisp-compile.exe
 =>  Hello, Crisp Compiler v0.0.1!
 ```
 
-Other tests: compile a function that returns 7.
+Other tests: Generate some LLVM-IR
 ```
 (in-package crisp.compiler)
 (generate-llvm-ir (def-function wow () (declare (return-type int)) 7))
