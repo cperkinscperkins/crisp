@@ -32,12 +32,30 @@
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)
+
+  (:import-from :concrete-syntax-tree
+                #:raw
+                #:source)
+
   (:export #:test-llvm-hello-world
            
-           #:def-function))
+           #:def-function
+
+           #:compile-toplevel-form
+           #:crisp-compiler-error
+           #:crisp-type-error
+           #:error-source-location
+           #:type-error-expected
+           #:type-error-inferred
+           #:crisp-unknown-variable
+           #:unknown-variable-name))
 
 (defpackage :crisp.main
   (:use :cl)
+
+  (:local-nicknames
+   (:eclector-cst :eclector.concrete-syntax-tree)
+   (:cst :concrete-syntax-tree))
   (:export :main))
 
 

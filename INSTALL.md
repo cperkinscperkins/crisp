@@ -129,7 +129,8 @@ We will
 ```
 (require "asdf")
 (push *default-pathname-defaults* asdf:*central-registry*)
-(asdf:load-system "crisp")
+(ql:quickload "crisp")
+;; (asdf:load-system "crisp")
 
 ;; if you want to quickly test, this will use LLVM lib to gen IR for a small function.
 (cffi:use-foreign-library crisp.llvm-bindings::libllvm)

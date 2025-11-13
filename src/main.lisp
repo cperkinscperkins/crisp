@@ -1,6 +1,7 @@
 ;; src/main.lisp
 (in-package :crisp.main)
 
+
 (defun main ()
   "Main entry point for the crisp-compile executable."
 
@@ -21,21 +22,23 @@
           (with-open-file (stream filename)
             (format *error-output* "; Compiling ~a...~%" filename)
             
-            ;; This is the core loop for a file-based compiler.
-            (loop
-              ;; Use Eclector to read one form.
-              ;; The nil and :eof args make it return :eof at the end
-              ;; instead of signaling an end-of-file error.
-              (let ((form (eclector.reader:read stream nil :eof)))
-              
-                (when (eq form :eof)
-                  (return))
-                  
-                ;; --- This is where we will hook in the compiler ---
-                ;; For now, just print the form to prove we read it.
-                (print form)
-                ;; (compile-toplevel-form form) ; <-- This is the next step
-                )))
+            ;; This is the core loop for files.
+            (let ((client (make-instance 'eclector-cst:cst-client)))
+              (loop
+                (let ((form-cst (eclector-cst:read client stream nil :eof)))
+                
+                  (when (eq form-cst :eof)
+                    (return))
+                    
+                  ;; get the raw s-expression for the compiler
+                  (let ((raw-form (cst:raw form-cst))
+                        ;; get the location data
+                        (location form-cst))
+                        
+                    ;; call the compiler with the form and its location
+                    (crisp.compiler:compile-toplevel-form raw-form location))
+                  ;; ----------------------------
+                  ))))
           
         ;; This `end-of-file` handler is just for the loop,
         ;; in case we didn't use the :eof argument correctly.
