@@ -94,9 +94,9 @@
 
 (defun compile-toplevel-form (form location)
   "Analyzes and compiles a single top-level form."
-  (format *error-output* "c-t-f form: ~a location: ~a~%" form location)
+  (format *error-output* "c-t-f form: ~a~% location: ~a~%" form location)
   ;; For now, we only handle def-function
-  (if (and (consp form) (string= (symbol-name (car form)) "DEF-FUNCTION"))
+  (if (and (consp form) (eq (car form) 'def-function))
       ;; Pass the location to the macro's expansion
       (generate-llvm-ir (eval `(def-function ,(second form) ,(third form)
                                  ;; We need to quote the location to pass it literally
@@ -207,12 +207,14 @@
 (defun analyze-and-build-function (name params body env return-type declarations location)
   "This is the shared 'guts' of the analyzer."
 
-  (format T "anaylze-and-build-function name: ~a  params: ~a body: ~a  declarations: ~a location: ~a ~%" name params body declarations location)
+  (format T "anaylze-and-build-function name: ~a  params: ~a~% body: ~a~%  declarations: ~a~% location: ~a ~%" name params body declarations location)
   
   ;; 3. Analyze the Body
   (let* ((body-nodes (analyze-body-expressions body env location))
          (return-node (first (last body-nodes))) 
          (inferred-type (if return-node (semantic-node-type return-node) 'nil)))
+
+    (format T " body-nodes: ~a~%  return-node: ~a~%  inferred-type: ~a  return-type: ~a" body-nodes return-node inferred-type return-type)
 
     ;; 4. Check Types
     (unless (equal inferred-type return-type)
@@ -221,7 +223,7 @@
              :inferred inferred-type
              ;; Get the location from the struct we just built
              :source-location (if return-node
-                                  (semantic-return-source-location return-node)
+                                  (semantic-node-source-location return-node)  ;; was semantic-return-source-location
                                   location)))
 
     ;; 5. Build and return the "blueprint"
