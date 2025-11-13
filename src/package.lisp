@@ -1,5 +1,47 @@
 ;; src/package.lisp
 
+
+;;; ---
+;;; Package Architecture Note
+;;;
+;;; This file defines all packages for the Crisp system. The package
+;;; definitions are ordered carefully to resolve dependencies.
+;;;
+;;; The most complex interaction is between `:crisp.compiler` and
+;;; `:crisp-language`. The goal is to create a "protected" user
+;;; environment (`:crisp-language`) while the compiler implementation
+;;; lives in its own package (`:crisp.compiler`).
+;;;
+;;; 1. :crisp.compiler
+;;;    - This is the "implementation" package.
+;;;    - It contains all internal logic (analyzers, codegen, etc.).
+;;;    - It is the *source of truth* for core language symbols.
+;;;      It defines and EXPORTS symbols like `def-function`, `declare`,
+;;;      `return-type`, and `int`.
+;;;
+;;; 2. :crisp-language
+;;;    - This is the "user sandbox" package.
+;;;    - It `(:use)`s *nothing* from Common Lisp.
+;;;    - It SHADOWING-IMPORTs "safe" CL symbols (+, if, defmacro).
+;;;    - It IMPORTs the core language symbols (`def-function`, `declare`, etc.)
+;;;      *from* `:crisp.compiler`.
+;;;
+;;; This design breaks the circular dependency we had before.
+;;;
+;;; --- The Compilation Flow ---
+;;; 1. `crisp.main` binds `*package*` to the `:crisp-language` package.
+;;; 2. Eclector reads the user's .crisp file. All symbols (like `def-function`)
+;;;    are read into the `:crisp-language` package.
+;;; 3. The compiler's internal functions (in `:crisp.compiler`) can now
+;;;    use direct `(eq ...)` checks, because the symbols they check
+;;;    against (e.g., `'declare`) are the *exact same symbols* that
+;;;    `:crisp-language` imported.
+;;;
+;;; This ensures that `crisp-language::declare` is `eq` to
+;;; `crisp.compiler::declare`, solving all our package-mismatch errors.
+;;; ---
+
+
 (defpackage :crisp.llvm-bindings
   (:use :cl :cffi)
   (:export
@@ -37,11 +79,20 @@
                 #:raw
                 #:source)
 
+
+
   (:export #:test-llvm-hello-world
-           
+           #:def-function
+           #:compile-toplevel-form
            #:def-function
 
-           #:compile-toplevel-form
+           ;; laungage symbols
+           #:declare
+           #:return-type
+           #:type
+           #:int
+
+           ;; error conditions
            #:crisp-compiler-error
            #:crisp-type-error
            #:error-source-location
@@ -63,7 +114,11 @@
   (:use) ;; <--- THIS IS KEY. It means "use nothing from Common Lisp."
 
   (:import-from :crisp.compiler
-   #:def-function)
+   #:def-function
+   #:declare
+   #:return-type
+   #:type
+   #:int)
 
   ;; --- 1. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
@@ -80,17 +135,25 @@
    #:progn
    #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
    #:equal ;; and so on...
-   #:defmacro) ;; We need defmacro to build the language
+   #:defmacro  ;; We need defmacro to build the language
+   ) 
 
   ;; --- 3. Export *all* of our Crisp primitives ---
   (:export
    ;; Our new "safe" built-ins
-   #:if #:when #:let #:+ #:* ;;... all the shadowed imports
+   #:if #:when #:unless #:cond #:case
+   #:let #:let*
+   #:progn
+   #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
+   #:equal 
+   #:defmacro  
 
-   ;; Our custom GPU functions
+   ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function
    #:def-orchestration #:def-qint #:def-microfloat-block
    #:def-type-alias #:def-struct
+   #:declare
+   #:return-type #:type #:int
 
    ;; Our looping constructs
    #:loop-vector-stride #:loop-soa-stride
