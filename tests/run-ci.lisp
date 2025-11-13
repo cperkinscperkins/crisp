@@ -5,6 +5,9 @@
 (format t "~&; --- Loading Crisp system via Quicklisp...~%")
 ;; Tell Quicklisp to find local projects in the current directory
 (push *default-pathname-defaults* ql:*local-project-directories*)
+
+(asdf:clear-system "crisp")
+
 ;; ql:quickload will find crisp.asd, see the dependencies,
 ;; download cffi and eclector, and then load crisp.
 (ql:quickload "crisp")

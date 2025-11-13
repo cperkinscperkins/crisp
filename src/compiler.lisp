@@ -63,27 +63,28 @@
 
 (defmacro def-function (name params &body body)
   "Defines a new, thread-level Crisp function."
-  
   ;; Find the :source-location argument (our new plumbing)
   ;; It's a bit hacky, but works for now.
-  (let* ((source-location-pair (find :source-location body :key #'car))
-         (source-location (if source-location-pair
-                              (second source-location-pair)
-                              nil))
-         (body-without-loc (remove source-location-pair body))
-         
-         (declarations
-           (loop for form in body-without-loc
-                 while (and (listp form) (eq (car form) 'declare))
-                 append (rest form)))
-         (real-body (nthcdr (length declarations) body-without-loc)))
+  (let* ((source-location (getf body :source-location))
+         ;; Re-build the body *without* the :source-location key/value
+         (real-body (loop for (key val) on body by #'cddr
+                          unless (eq key :source-location)
+                          append (list key val))))
 
-    `(internal-def-function
-      ',name
-      ',params
-      ',declarations            ;  '(((type a b int)) ((return-type int)))
-      ',real-body               ;  '((+ a b))
-      ,source-location)))
+    ;; Handle declarations (this part is tricky, let's simplify)
+    (let* ((declarations
+             (loop for form in real-body
+                   ;; --- FIX 2: Use STRING= for package-agnostic check ---
+                   while (and (listp form) (string= (symbol-name (car form)) "DECLARE"))
+                   append (rest form)))
+           (body-forms (nthcdr (length declarations) real-body)))
+
+      `(internal-def-function
+        ',name
+        ',params
+        ',declarations            ;  '(((type a b int)) ((return-type int)))
+        ',body-forms              ;  '((+ a b))
+        ,source-location))))
 
 
 ;; INTERNAL TO COMPILER
@@ -91,8 +92,9 @@
 
 (defun compile-toplevel-form (form location)
   "Analyzes and compiles a single top-level form."
+  (format *error-output* "c-t-f form: ~a location: ~a~%" form location)
   ;; For now, we only handle def-function
-  (if (and (consp form) (eq (car form) 'def-function))
+  (if (and (consp form) (string= (symbol-name (car form)) "DEF-FUNCTION"))
       ;; Pass the location to the macro's expansion
       (generate-llvm-ir (eval `(def-function ,(second form) ,(third form)
                                  ;; We need to quote the location to pass it literally
@@ -203,7 +205,7 @@
 (defun analyze-and-build-function (name params body env return-type declarations location)
   "This is the shared 'guts' of the analyzer."
 
-  (format T "anaylze-and-build-function name: ~a  params: ~a body: ~a  declarations: ~a~%" name params body declarations)
+  (format T "anaylze-and-build-function name: ~a  params: ~a body: ~a  declarations: ~a location: ~a ~%" name params body declarations location)
   
   ;; 3. Analyze the Body
   (let* ((body-nodes (analyze-body-expressions body env location))
