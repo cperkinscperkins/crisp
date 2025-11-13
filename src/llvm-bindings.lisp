@@ -18,14 +18,14 @@
 (defcfun ("LLVMModuleCreateWithName" llvm-module-create) :pointer
   (module-id :string))
 
-(defcfun ("LLVMPrintModuleToString" llvm-print-module-to-string) :string
+(defcfun ("LLVMPrintModuleToString" llvm-print-module-to-string) :pointer
   (module :pointer))
 
 (defcfun ("LLVMDisposeModule" llvm-dispose-module) :void
   (module :pointer))
 
 (defcfun ("LLVMDisposeMessage" llvm-dispose-message) :void
-  (message :string))
+  (message :pointer))
 
 ;; --- Types ---
 (defcfun ("LLVMInt32Type" llvm-int32-type) :pointer)
