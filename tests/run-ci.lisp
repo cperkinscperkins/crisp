@@ -1,17 +1,18 @@
 ;; tests/run-ci.lisp
 (in-package :cl-user)
 
-;; Load ASDF
-(require "asdf")
-
-;; load the crisp system
-(format t "~&; --- Loading ASDF and Crisp system...~%")
-(push *default-pathname-defaults* asdf:*central-registry*)
-(asdf:load-system "crisp")
+;; load the crisp system using Quicklisp
+(format t "~&; --- Loading Crisp system via Quicklisp...~%")
+;; Tell Quicklisp to find local projects in the current directory
+(push *default-pathname-defaults* ql:*local-project-directories*)
+;; ql:quickload will find crisp.asd, see the dependencies,
+;; download cffi and eclector, and then load crisp.
+(ql:quickload "crisp")
 (format t "~&; --- System loaded successfully.~%")
 
-
+;; Switch into the compiler package
 (in-package :crisp.compiler)
+
 
 ;; basic FFI test
 (format t "~&; --- Running test-llvm-hello-world ---~%")
