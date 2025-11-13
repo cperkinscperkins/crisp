@@ -23,7 +23,10 @@
             (format *error-output* "; Compiling ~a...~%" filename)
             
             ;; This is the core loop for files.
-            (let ((client (make-instance 'eclector-cst:cst-client)))
+            (let ((client (make-instance 'eclector-cst:cst-client))
+                  ;; Bind *package* so Eclector reads symbols
+                  ;; into the sandboxed :crisp-language package.
+                  (*package* (find-package :crisp-language)))
               (loop
                 (let ((form-cst (eclector-cst:read client stream nil :eof)))
                 

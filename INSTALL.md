@@ -129,6 +129,7 @@ We will
 ```
 (require "asdf")
 (push *default-pathname-defaults* asdf:*central-registry*)
+(asdf:clear-system "crisp")
 (ql:quickload "crisp")
 ;; (asdf:load-system "crisp")
 
