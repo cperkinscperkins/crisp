@@ -6,7 +6,7 @@
 ;; Find the LLVM C library
 (define-foreign-library libllvm
   (:windows "LLVM-C.dll")
-  (:unix "libLLVM.so")
+  (:unix "libLLVM-21.so" "libLLVM.so")
   (:darwin "libLLVM.dylib")
   (t (:default "libLLVM")))
 
