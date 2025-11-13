@@ -55,10 +55,12 @@
              (cffi:foreign-free param-types-array)))
            
            ;; --- 4. Print the result ---
-           (let ((ir-string (llvm-print-module-to-string module)))
-             (format t "--- Generated LLVM IR: ---~%~a~%" ir-string)
-             (llvm-dispose-message ir-string)
-             (format t "--------------------------~%")))
+           (let ((ir-ptr (llvm-print-module-to-string module)))
+             (unwind-protect
+                  (let ((lisp-string (cffi:foreign-string-to-lisp ir-ptr)))
+                    (format t "--- Generated LLVM IR: ---~%~a~%" lisp-string)
+                    (format t "--------------------------~%"))
+               (llvm-dispose-message ir-ptr))))
       
       ;; --- 5. Cleanup ---
       (llvm-dispose-builder builder)

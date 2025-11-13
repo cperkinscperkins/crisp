@@ -41,11 +41,15 @@
                  (llvm-build-ret builder (llvm-const-int i32-type 7 nil))
 
                  ;; --- 5. Print the result ---
-                 (let ((ir-string (llvm-print-module-to-string module)))
-                   (format t "--- Generated LLVM IR: ---~%~a~%" ir-string)
-                   ;; We must free the string LLVM gave us
-                   (llvm-dispose-message ir-string)
-                   (format t "--------------------------~%"))))))
+                 (let ((ir-ptr (llvm-print-module-to-string module)))
+                   ;; Use unwind-protect to guarantee we free the pointer
+                   (unwind-protect
+                        ;; manually convert the C string pointer to a Lisp string
+                        (let ((lisp-string (cffi:foreign-string-to-lisp ir-ptr)))
+                          (format t "--- Generated LLVM IR: ---~%~a~%" lisp-string)
+                          (format t "--------------------------~%"))
+                     ;; free the original pointer LLVM gave us
+                     (llvm-dispose-message ir-ptr)))))))
       
       ;; --- 6. Cleanup (The "finally" block) ---
       ;; This runs no matter what.
