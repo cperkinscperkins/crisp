@@ -112,6 +112,19 @@ Next Priorities
 - [x] (declare #'(int int => int))
 - [x] lowercase function names ("wow" not "WOW").
 - [ ] GHA CI
+- [ ] Error Handling 
+- - [ ] line number and file
+- - [ ] our internal errors? (we will have a LOT of defmacro)
+- - [ ] errors from LLVM ?
+- - [ ] bad defmacro from user
+- - [ ] type mismatch
+- - [ ] failure to infer 
+- - [ ] misspelling
+- - [ ] bad syntax / paren
+- - [ ] wrong number/type args
+- - [ ] keep eye on use cases Tests, Compiler.exe, C API
+- - [ ] How to test our own error system?
+
 - [ ] Linux?
 - [ ] DWARF
 - [ ] def-grid-function
@@ -123,3 +136,5 @@ Next Priorities
 - [ ] cond  ( we can make all other divergent control flows from that: when, if, unless)
 - [ ] bool true false.  ( macros can still use T/nil ? )
 - [ ] .crisp files.  basic flag for crisp-compiler.exe
+
+- [ ] SEO (even the _AIs_ can't find us, completely unsearchable today)

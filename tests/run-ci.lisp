@@ -1,6 +1,8 @@
 ;; tests/run-ci.lisp
 (in-package :cl-user)
 
+(require "asdf")
+
 ;; 1. Load the crisp system
 (format t "~&; --- Loading ASDF and Crisp system...~%")
 (push *default-pathname-defaults* asdf:*central-registry*)

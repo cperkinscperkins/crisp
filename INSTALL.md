@@ -18,7 +18,7 @@ Crisp requires **SBCL** and the **LLVM development libraries** (version 15 or ne
 ### 1 Install SBCL
 
   * **macOS:** `brew install sbcl`
-  * **Linux (Ubuntu/Debian):** `sudo apt-get install sbcl`
+  * **Linux (Ubuntu/Debian):** `sudo apt-get install sbcl cl-asdf`
   * **Windows:** Download and run the installer from [sbcl.org](http://www.sbcl.org/platform-table.html).
 
 ### 2 Install LLVM Dev Libraries
@@ -36,6 +36,8 @@ sudo apt-get install llvm-21-dev
 ```
 
 This package automatically installs the libraries, headers, and `llvm-config-21`.
+
+Or just get `llvm-dev` if version 21 isn't configured for your Linux.
 
 #### On macOS
 
