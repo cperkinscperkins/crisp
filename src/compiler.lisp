@@ -70,14 +70,16 @@
          (real-body (loop for (key val) on body by #'cddr
                           unless (eq key :source-location)
                           append (list key val))))
-
+    (format T "which package?: ~a ~%" *package*)             
+    (format T "name: ~a  params: ~a  body: ~a ~%source-location: ~a  real-body: ~a~%"
+               name params body source-location real-body)
     ;; Handle declarations (this part is tricky, let's simplify)
-    (let* ((declarations
-             (loop for form in real-body
-                   ;; --- FIX 2: Use STRING= for package-agnostic check ---
-                   while (and (listp form) (string= (symbol-name (car form)) "DECLARE"))
-                   append (rest form)))
-           (body-forms (nthcdr (length declarations) real-body)))
+    (let* ((declare-forms
+              (loop for form in real-body
+                    while (and (listp form) (eq (car form) 'declare))
+                    collect form))
+            (declarations (loop for form in declare-forms append (rest form)))
+            (body-forms (nthcdr (length declare-forms) real-body)))
 
       `(internal-def-function
         ',name
