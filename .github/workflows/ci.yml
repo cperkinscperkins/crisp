@@ -33,11 +33,15 @@ jobs:
           # Download quicklisp.lisp
           curl -O https://beta.quicklisp.org/quicklisp.lisp
           
-          # Install it non-interactively and add it to the SBCL init file
-          sbcl --non-interactive \
-               --load quicklisp.lisp \
-               --eval '(quicklisp-quickstart:install)' \
-               --eval '(ql:add-to-init-file)'
+          # Install it non-interactively.
+          # We pipe "echo """ (a newline) to sbcl to
+          # automatically answer the "Press Enter to continue"
+          # prompt from (ql:add-to-init-file).
+          echo "" | sbcl --non-interactive \
+                         --load quicklisp.lisp \
+                         --eval '(quicklisp-quickstart:install)' \
+                         --eval '(ql:add-to-init-file)' \
+                         --eval '(quit)'
 
       - name: 4. Run Crisp Test Script
         run: |
