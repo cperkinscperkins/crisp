@@ -10,6 +10,9 @@
 (ql:quickload "crisp")
 (format t "~&; --- System loaded successfully.~%")
 
+(format t "~&; --- Loading LLVM foreign library...~%")
+(cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
 ;; Switch into the compiler package
 (in-package :crisp.compiler)
 

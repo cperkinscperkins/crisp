@@ -10,7 +10,7 @@
   (:darwin "libLLVM.dylib")
   (t (:default "libLLVM")))
 
-(use-foreign-library libllvm)
+;; (use-foreign-library libllvm)
 
 
 

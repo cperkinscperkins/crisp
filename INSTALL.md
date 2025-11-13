@@ -130,8 +130,12 @@ We will
 (require "asdf")
 (push *default-pathname-defaults* asdf:*central-registry*)
 (asdf:load-system "crisp")
-(crisp.compiler:test-llvm-hello-world) ; <-- this will call the LLVM lib to gen IR for a small function and print it out.
 
+;; if you want to quickly test, this will use LLVM lib to gen IR for a small function.
+(cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+(crisp.compiler:test-llvm-hello-world) 
+
+;; to build the compiler
 (uiop::ensure-directories-exist "bin/")
 (asdf:make "crisp")
 (exit)
@@ -139,8 +143,9 @@ We will
 
 Back to shell.  Let's try out the compiler
 ```
-$   ./bin/crisp-compile.exe
-=>  Hello, Crisp Compiler v0.0.1!
+$   ./bin/crisp-compile.exe ./tests/return_7.crisp
+    -- come and see --
+
 ```
 
 Other tests: Generate some LLVM-IR
@@ -148,4 +153,7 @@ Other tests: Generate some LLVM-IR
 (in-package crisp.compiler)
 (generate-llvm-ir (def-function wow () (declare (return-type int)) 7))
 (generate-llvm-ir (def-function adds (a b) (declare (type a b int) (return-type int)) (+ a b)))
+
+;; or run the CI tests and quit after
+(load #P"./tests/run-ci.lisp")
 ```
