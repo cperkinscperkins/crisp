@@ -28,23 +28,22 @@
                   ;; into the sandboxed :crisp-language package.
                   (*package* (find-package :crisp-language)))
                 (format *error-output* "got client ~a~%" client)
-              (loop
-                (let ((form-cst (eclector-cst:read client stream nil :eof)))
+              ;; bind the client to Eclector's special variable.
+              (let ((eclector.base:*client* client))
+                (loop
+                  ;; call read with the arguments it expects:
+                  ;;    (stream &optional eof-error-p eof-value)
+                  (let ((form-cst (eclector-cst:read stream nil :eof)))
 
-                  (format *error-output* "form-cst: ~a~%" form-cst)
-                
-                  (when (eq form-cst :eof)
-                    (return))
-                    
-                  ;; get the raw s-expression for the compiler
-                  (let ((raw-form (cst:raw form-cst))
-                        ;; get the location data
-                        (location form-cst))
-                        
-                    ;; call the compiler with the form and its location
-                    (crisp.compiler:compile-toplevel-form raw-form location))
-                  ;; ----------------------------
-                  ))))
+                    (format *error-output* "form-cst: ~a~%" form-cst)
+                  
+                    (when (eq form-cst :eof)
+                      (return))
+                      
+                    (let ((raw-form (cst:raw form-cst))
+                          (location form-cst))
+                      
+                      (crisp.compiler:compile-toplevel-form raw-form location)) )))))
           
         ;; This `end-of-file` handler is just for the loop,
         ;; in case we didn't use the :eof argument correctly.
