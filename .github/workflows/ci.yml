@@ -12,11 +12,11 @@ jobs:
       - name: 1. Check out code
         uses: actions/checkout@v4
 
-      - name: 2. Install Dependencies (SBCL, ASDF, CFFI, and LLVM)
+      - name: 2. Install System Dependencies (SBCL & LLVM)
         run: |
           # Install helper packages
           sudo apt-get update
-          sudo apt-get install -y wget gpg-agent software-properties-common lsb-release
+          sudo apt-get install -y sbcl wget gpg-agent software-properties-common lsb-release curl
           
           # Get the LLVM GPG key
           wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
@@ -24,11 +24,22 @@ jobs:
           # Manually add the LLVM repository source file
           echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
           
-          # Now install the packages
+          # Now install the system packages
           sudo apt-get update
-          sudo apt-get install -y sbcl cl-asdf cl-cffi cl-eclector llvm-21-dev
+          sudo apt-get install -y sbcl llvm-21-dev
 
-      - name: 3. Run Crisp Test Script
+      - name: 3. Install Quicklisp
+        run: |
+          # Download quicklisp.lisp
+          curl -O https://beta.quicklisp.org/quicklisp.lisp
+          
+          # Install it non-interactively and add it to the SBCL init file
+          sbcl --non-interactive \
+               --load quicklisp.lisp \
+               --eval '(quicklisp-quickstart:install)' \
+               --eval '(ql:add-to-init-file)'
+
+      - name: 4. Run Crisp Test Script
         run: |
           # Run the test script. SBCL will exit with 0 on success
           # or non-zero on error, which will pass/fail the CI step.
