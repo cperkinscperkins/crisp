@@ -26,7 +26,7 @@ jobs:
           
           # Now install the packages
           sudo apt-get update
-          sudo apt-get install -y sbcl cl-asdf cl-cffi llvm-21-dev
+          sudo apt-get install -y sbcl cl-asdf cl-cffi cl-eclector llvm-21-dev
 
       - name: 3. Run Crisp Test Script
         run: |

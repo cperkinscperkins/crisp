@@ -63,7 +63,7 @@ After this, running `llvm-config --version` in a new terminal should show the ve
 This is the trickiest. The best method is to use the official pre-compiled binaries from the LLVM GitHub page.
 
 1.  Go to the [LLVM GitHub Releases](https://github.com/llvm/llvm-project/releases) page.
-2.  Find the version you want (e.g., 17.0.6).
+2.  Find the version you want
 3.  Download the **"Windows (64-bit)"** installer (e.g., `LLVM-21.1.4-win64.exe`).
 4.  **Run the installer.** During setup, you **must** check the box that says:
       * **"Add LLVM to the system PATH for all users"** (or "current user").
@@ -76,25 +76,28 @@ winget install LLVM.LLVM
 
 -----
 
-### 3 Install Lisp Dependencies (CFF)
+### 3 Install Lisp Dependencies (CFFI and Eclector)
 
-Your Lisp environment needs the **CFFI** library.
+Your Lisp environment needs the **CFFI** and **Eclector** libraries.
 
 #### Method 1: Quicklisp (Recommended for all platforms)
-This is the standard way to manage Lisp libraries. If you don't have Quicklisp, you can install it from [quicklisp.lisp.org](https://quicklisp.lisp.org).
+This is the standard way to manage Lisp libraries. If you don't have Quicklisp, you can install it from [quicklisp.org](http://quicklisp.org).
 
 . Launch SBCL.
 . Install CFFI by running:
 ```
 (ql:quickload "cffi")
+(ql:quickload "eclector")
 ```
-Quicklisp will download and install CFFI and its dependencies (including its own version of ASDF).
+Quicklisp will download and install them and their dependencies (including ASDF).
 
 #### Method 2: Linux System Packages (Alternative)
 If you are on Linux and do not want to use Quicklisp, you can install the system packages for ASDF and CFFI:
 ```
-sudo apt-get install -y cl-asdf cl-cffi
+sudo apt-get install -y cl-asdf cl-cffi cl-eclector
 ```
+
+(Note: If you use this method, your "Build" Lisp commands must begin with `(require "asdf")`.)
 
 ### Verify LLVM Installation 
 

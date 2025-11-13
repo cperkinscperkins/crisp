@@ -111,8 +111,8 @@ Next Priorities
 - [x] lose  (a i32)
 - [x] (declare #'(int int => int))
 - [x] lowercase function names ("wow" not "WOW").
-- [ ] GHA CI
-- [ ] Error Handling 
+- [x] GHA CI
+- [ ] Error Handling and Reporting 
 - - [ ] line number and file
 - - [ ] our internal errors? (we will have a LOT of defmacro)
 - - [ ] errors from LLVM ?
@@ -125,7 +125,7 @@ Next Priorities
 - - [ ] keep eye on use cases Tests, Compiler.exe, C API
 - - [ ] How to test our own error system?
 
-- [ ] Linux?
+- [x] Linux?
 - [ ] DWARF
 - [ ] def-grid-function
 - [ ] def-kernel - case-sensitive
