@@ -78,4 +78,4 @@ jobs:
           ! ./bin/crisp-compile tests/errors/empty_body.crisp 2>&1 | grep -F "Type mismatch! Expected I32 but inferred NIL"
 
           echo "--- Running E2E: failure test (arity_mismatch.crisp) ---"
-          #! ./bin/crisp-compile tests/errors/arity_mismatch.crisp 2>&1 | grep -F "Arity mismatch!"
+          ! ./bin/crisp-compile tests/errors/arity_mismatch.crisp 2>&1 | grep -F "Arity mismatch!"
