@@ -18,40 +18,45 @@
       
     (let ((filename (first args)))
       (handler-case
-          ;; with-open-file handles the pathname string just fine.
-          (with-open-file (stream filename)
-            (format *error-output* "; Compiling ~a...~%" filename)
-            
-            ;; This is the core loop for files.
-            (let ((client (make-instance 'eclector-cst:cst-client))
-                  ;; Bind *package* so Eclector reads symbols
-                  ;; into the sandboxed :crisp-language package.
-                  (*package* (find-package :crisp-language)))
-                (format *error-output* "got client ~a~%" client)
-              ;; bind the client to Eclector's special variable.
-              (let ((eclector.base:*client* client))
-                (loop
-                  ;; call read with the arguments it expects:
-                  ;;    (stream &optional eof-error-p eof-value)
-                  (let ((form-cst (eclector-cst:read stream nil :eof)))
+           ;; with-open-file handles the pathname string just fine.
+           (with-open-file (stream filename)
+             (format *error-output* "; Compiling ~a...~%" filename)
+             
+             ;; This is the core loop for files.
+             (let (;; Bind *package* so cl:read reads symbols
+                   ;; into the sandboxed :crisp-language package.
+                   ;; This is still a critical piece of the design.
+                   (*package* (find-package :crisp-language)))
+               (loop
+                 ;; Use the standard Common Lisp `read` function.
+                 ;; It will signal an `end-of-file` condition
+                 ;; when it reaches the end, which is handled below.
+                 (let ((form (read stream nil :eof)))
 
-                    (format *error-output* "form-cst: ~a~%" form-cst)
-                  
-                    (when (eq form-cst :eof)
-                      (return))
-                      
-                    (let ((raw-form (cst:raw form-cst))
-                          (location form-cst))
-                      
-                      (crisp.compiler:compile-toplevel-form raw-form location)) )))))
-          
-        ;; This `end-of-file` handler is just for the loop,
-        ;; in case we didn't use the :eof argument correctly.
+                   (when (eq form :eof)
+                     (return))
+                     
+
+                   ;; Temporarily pass `nil` as the location. Your compiler
+                   ;; will need to handle this (e.g., by passing it
+                   ;; down to the semantic forms, which will also have
+                   ;; a `nil` location for now).
+                   (let ((raw-form form)
+                         (location nil))
+                     
+                     (crisp.compiler:compile-toplevel-form raw-form location)) ))))
+           
+        ;; main compiler error handler   
+        (crisp.compiler:crisp-compiler-error (c)
+          (print-compiler-error c filename)
+          (uiop:quit 1))
+
+        ;; Standard end-of-file condition from cl:read
         (end-of-file ()
-          nil)
+          nil) ; This is a clean exit, just stop the loop.
           
         ;; This is our placeholder error handler for everything else
-        ;; (e.g., file-not-found, read errors).
+        ;; (e.g., file-not-found, package errors).
         (error (c)
           (format *error-output* "~&Error: ~a~%" c)
           (uiop:quit 1)))

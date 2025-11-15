@@ -658,10 +658,27 @@ Other Basic Types
 
 Currently under debate whether `bool` is an instantiable value.
 
-keyword (e.g. :some-key) -- is a type of symbol. compiler converts this to unique byte value. 
-                            
 
-function (#'someFunction)
+### symbols
+
+Common Lisp has a symbol type and it is repelete with them. Crisp does not support these
+in the runtime. Note that the only known implementation of Crips uses Common Lisp 
+for macro evaluation. And, so, in that context, symbols are allowed.
+
+You'll also see that types are passed to macros, they are usually quoted like symbols (`'int`).
+
+But as a general rule, symbols are not support in Crisp and the compiler will error if you
+try to use them in runtime code. See `keyword symbols` below for the exception to this rule.
+
+### keyword symbols
+
+keyword symbols (`:some-key` ) ARE supported, but are only usable as values if
+they appear in an enumartion. 
+(Note, they don't need to be in an enumeration if they are simply function parameter keys)
+
+                            
+### higher order functions
+`#'someFunction` are supported.
 
 
 

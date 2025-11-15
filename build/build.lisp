@@ -13,13 +13,10 @@
 (push *default-pathname-defaults* ql:*local-project-directories*)
 
 (asdf:clear-system "crisp")
-(asdf:clear-system "eclector")
-(asdf:clear-system "eclector-concrete-syntax-tree")
-(asdf:clear-system "concrete-syntax-tree")
 (asdf:clear-system "cffi")
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
-;; download cffi and eclector, and then load crisp.
+;; download cffi, and then load crisp.
 (ql:quickload "crisp")
 (format t "~&; --- System loaded successfully.~%")
 

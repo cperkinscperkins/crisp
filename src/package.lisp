@@ -30,7 +30,7 @@
 ;;;
 ;;; --- The Compilation Flow ---
 ;;; 1. `crisp.main` binds `*package*` to the `:crisp-language` package.
-;;; 2. Eclector reads the user's .crisp file. All symbols (like `def-function`)
+;;; 2. We read the user's .crisp file. All symbols (like `def-function`)
 ;;;    are read into the `:crisp-language` package.
 ;;; 3. The compiler's internal functions (in `:crisp.compiler`) can now
 ;;;    use direct `(eq ...)` checks, because the symbols they check
@@ -75,10 +75,6 @@
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)
 
-  (:import-from :concrete-syntax-tree
-                #:raw
-                #:source)
-
 
 
   (:export #:test-llvm-hello-world
@@ -104,9 +100,6 @@
 (defpackage :crisp.main
   (:use :cl)
 
-  (:local-nicknames
-   (:eclector-cst :eclector.concrete-syntax-tree)
-   (:cst :concrete-syntax-tree))
   (:export :main))
 
 
