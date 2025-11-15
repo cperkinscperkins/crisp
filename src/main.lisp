@@ -5,6 +5,13 @@
 (defun main ()
   "Main entry point for the crisp-compile executable."
 
+  (defun print-compiler-error (c filename)
+    "Prints a formatted compiler error to *error-output*."
+    (format *error-output* "~&~%Crisp compilation failed in ~a~@[ at ~a~]:~%  ~a~&"
+            filename
+            (crisp.compiler:error-source-location c)
+            c))
+
   ;; load libllvm when exe runs, not when built.
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
   
