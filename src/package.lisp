@@ -86,6 +86,7 @@
            #:declare
            #:return-type
            #:type
+           "|=>|"
            #:int
 
            ;; error conditions
@@ -111,6 +112,7 @@
    #:declare
    #:return-type
    #:type
+   "|=>|"
    #:int)
 
   ;; --- 1. Import *only* the "safe" CL data symbols ---
@@ -147,6 +149,7 @@
    #:def-type-alias #:def-struct
    #:declare
    #:return-type #:type #:int
+
 
    ;; Our looping constructs
    #:loop-vector-stride #:loop-soa-stride

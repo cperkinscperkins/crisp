@@ -122,13 +122,13 @@
                      (type-error-expected condition)
                      (type-error-inferred condition)))))
 
-(define-condition crisp-arity-error (crisp-compiler-error)
+(define-condition crisp-signature-arity-error (crisp-compiler-error)
   ((expected :initarg :expected :reader arity-error-expected)
    (inferred :initarg :inferred :reader arity-error-inferred))
   (:report (lambda (condition stream)
-             (format stream "Arity mismatch! Function expected ~a arguments but was given ~a."
-                     (arity-error-expected condition)
-                     (arity-error-inferred condition)))))
+             (format stream "Arity mismatch! Function param list has ~a arguments but type signature declared ~a."
+                     (arity-error-inferred condition)
+                     (arity-error-expected condition)))))
 
 (define-condition crisp-unsupported-form-error (crisp-compiler-error)
   ((form :initarg :form :reader unsupported-form))
@@ -227,6 +227,11 @@
 
   (format T "anaylze-and-build-function name: ~a  params: ~a~% body: ~a~%  declarations: ~a~% location: ~a ~%" name params body declarations location)
   
+  ;; Handle the case where a function promises a return value but has no body.
+  (when (and (not (eq return-type 'nil)) (null body))
+    (error 'crisp-type-error :expected return-type :inferred 'nil :source-location location))
+
+  
   ;; 3. Analyze the Body
   (let* ((body-nodes (analyze-body-expressions body env location))
          (return-node (first (last body-nodes))) 
@@ -289,8 +294,9 @@
   (let ((param-types (loop for type in fn-spec 
                            until (eq type '=>) 
                            collect (if (eq type 'int) 'i32 type))))
+    (format T "params: ~a  param-types: ~a~%" params param-types)
     (unless (= (length params) (length param-types)) 
-      (error 'crisp-arity-error 
+      (error 'crisp-signature-arity-error 
              :expected (length param-types) 
              :inferred (length params) 
              :source-location nil)) ; Can't get location easily here yet
@@ -312,14 +318,18 @@
 (defun analyze-environment-from-list (params declarations)
   "Builds the environment from a (type ...) decl."
   (let ((type-decl (assoc 'type declarations)))
-    (when (and params (not type-decl))
-        (error "Missing (declare (type ...)) for parameters ~a" params))
-    (when (and params type-decl) 
-      (unless (= (length params) (- (length (rest type-decl)) 1)) 
-        (error 'crisp-arity-error 
-               :expected (- (length (rest type-decl)) 1) 
+    ;; This function should ONLY handle (type ...) declarations.
+    ;; If a #'(...) is present, another path handles it. If neither are,
+    ;; and params exist, it's an error.
+    (when (and params (not type-decl) (not (assoc 'function declarations)))
+      (error "Missing type declarations for parameters: ~a" params))
+
+    (when (and params type-decl)
+      (unless (= (length params) (length (butlast (rest type-decl))))
+        (error 'crisp-signature-arity-error
+               :expected (length (butlast (rest type-decl)))
                :inferred (length params)))
-        (let* ((param-names (butlast (rest type-decl) 1))
+      (let* ((param-names (butlast (rest type-decl) 1))
             (param-type (first (last type-decl)))
             (real-type (if (eq param-type 'int) 'i32 param-type)))
         (mapcar #'(lambda (name) (list name real-type))
@@ -349,6 +359,11 @@
     ;; Case 1: It's a literal, like 7
     ((integerp expr)
      (make-semantic-literal :value-type 'i32 :value expr :source-location location))
+
+    ;; Case 1.5: It's a keyword symbol, like :foo
+    ((keywordp expr)
+     (error 'crisp-unsupported-form-error :form expr :source-location location))
+
 
     ;; Case 2: It's a variable, like 'a'
     ((symbolp expr)
