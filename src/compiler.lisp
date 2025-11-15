@@ -61,25 +61,24 @@
 ;; EXPORTS TO CRISP LANGUAGE
 ;; ==========================
 
-(defmacro def-function (name params &body body)
+(defmacro def-function (name params &rest body-and-location)
   "Defines a new, thread-level Crisp function."
-  ;; Find the :source-location argument (our new plumbing)
-  ;; It's a bit hacky, but works for now.
-  (let* ((source-location (getf body :source-location))
-         ;; Re-build the body *without* the :source-location key/value
-         (real-body (loop for (key val) on body by #'cddr
-                          unless (eq key :source-location)
-                          append (list key val))))
+  ;; Find the position of our injected :source-location keyword.
+  (let* ((loc-pos (position :source-location body-and-location))
+         ;; The source location is the value right after the keyword.
+         (source-location (when loc-pos (nth (1+ loc-pos) body-and-location)))
+         ;; The "real" body is everything before the keyword.
+         (body (if loc-pos (subseq body-and-location 0 loc-pos) body-and-location)))
     (format T "which package?: ~a ~%" *package*)             
-    (format T "name: ~a  params: ~a  body: ~a ~%source-location: ~a  real-body: ~a~%"
-               name params body source-location real-body)
+    (format T "name: ~a  params: ~a  body: ~a ~%source-location: ~a~%"
+               name params body source-location)
     ;; Handle declarations (this part is tricky, let's simplify)
     (let* ((declare-forms
-              (loop for form in real-body
+              (loop for form in body
                     while (and (listp form) (eq (car form) 'declare))
                     collect form))
             (declarations (loop for form in declare-forms append (rest form)))
-            (body-forms (nthcdr (length declare-forms) real-body)))
+            (body-forms (nthcdr (length declare-forms) body)))
 
       `(internal-def-function
         ',name
