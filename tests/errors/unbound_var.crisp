@@ -1,0 +1,3 @@
+(def-function unbound-var (a)
+  (declare (type a int) (return-type int))
+  (+ a doodle))

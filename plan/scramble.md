@@ -113,7 +113,7 @@ Next Priorities
 - [x] lowercase function names ("wow" not "WOW").
 - [x] GHA CI
 - [ ] Error Handling and Reporting 
-- - [ ] line number and file
+- - [x] line number and file -> moved to tree.leaf.branch
 - - [ ] our internal errors? (we will have a LOT of defmacro)
 - - [ ] errors from LLVM ?
 - - [ ] bad defmacro from user
@@ -124,6 +124,15 @@ Next Priorities
 - - [ ] wrong number/type args
 - - [ ] keep eye on use cases Tests, Compiler.exe, C API
 - - [ ] How to test our own error system?
+
+ERRORS
+- [x] incomplete type signature: no (type b int).  I guess if no return-type we just assume nil?
+- [x] (def-function (def-function)) illegal nesting'
+- [x] unknown function/symbol call (whack ..)
+- [x] unbound argument (+ whack adoodle)
+- macro stuff?
+- call fn with wrong number of args
+
 
 - [x] Linux?
 - [ ] DWARF

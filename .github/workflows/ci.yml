@@ -74,9 +74,18 @@ jobs:
           echo "--- Running E2E: failure test (unsupported_symbol.crisp) ---"
           ! ./bin/crisp-compile tests/errors/unsupported_symbol.crisp 2>&1 | grep -F "Unsupported form"
 
+          echo "--- Running E2E: failure test (unknown_func_pos.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/unknown_func_pos.crisp 2>&1 | grep -F "Unsupported form"
+
+          echo "--- Running E2E: failure test (illegal_nesting.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/illegal_nesting.crisp 2>&1 | grep -F "Unsupported form"
+
+
           echo "--- Running E2E: failure test (empty_body.crisp) ---"
           ! ./bin/crisp-compile tests/errors/empty_body.crisp 2>&1 | grep -F "Type mismatch! Expected I32 but inferred NIL"
 
           echo "--- Running E2E: failure test (arity_mismatch.crisp) ---"
           ! ./bin/crisp-compile tests/errors/arity_mismatch.crisp 2>&1 | grep -F "Arity mismatch!"
 
+          echo "--- Running E2E: failure test (unbound_var.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/unbound_var.crisp 2>&1 | grep -F "Unbound variable"
