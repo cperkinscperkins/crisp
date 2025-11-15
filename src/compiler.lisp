@@ -268,13 +268,20 @@
 (defun analyze-return-type-from-spec (fn-spec)
   "Parses '(int int => int)' and returns 'i32'."
   (let ((arrow (member '=> fn-spec)))
-    (if arrow
-        (let ((return-types (rest arrow)))
-          (when (> (length return-types) 1)
-            (error "Multiple return values are not yet supported."))
-          (let ((type (first return-types)))
-            (if (eq type 'int) 'i32 type)))
-        'nil)))
+    (cond
+      ((and arrow (rest arrow)) ; e.g. '(=> int)
+       (let ((return-types (rest arrow)))
+         (when (> (length return-types) 1)
+           (error "Multiple return values are not yet supported."))
+         (let ((type (first return-types)))
+           (cond
+             ((eq type 'int) 'i32)
+             ((null type) 'nil) ; Handles (=> nil) for void
+             (t type)))))
+      ((and arrow (not (rest arrow))) ; e.g. '(int =>)
+       'nil)
+      (t ; No arrow
+       'nil))))
 
 (defun analyze-environment-from-spec (params fn-spec)
   "Builds the environment '((a i32) (b i32))'
@@ -282,9 +289,11 @@
   (let ((param-types (loop for type in fn-spec 
                            until (eq type '=>) 
                            collect (if (eq type 'int) 'i32 type))))
-    (unless (= (length params) (length param-types))
-      (error "Arity mismatch: ~a params given, but ~a types declared."
-             (length params) (length param-types)))
+    (unless (= (length params) (length param-types)) 
+      (error 'crisp-arity-error 
+             :expected (length param-types) 
+             :inferred (length params) 
+             :source-location nil)) ; Can't get location easily here yet
     (mapcar #'list params param-types)))
 
 
@@ -295,7 +304,9 @@
   (let ((found (assoc 'return-type declarations)))
     (if found
         (let ((type (second found)))
-          (if (eq type 'int) 'i32 type))
+          (cond ((eq type 'int) 'i32)
+                ((null type) 'nil)
+                (t type)))
         'nil)))
 
 (defun analyze-environment-from-list (params declarations)
@@ -303,7 +314,11 @@
   (let ((type-decl (assoc 'type declarations)))
     (when (and params (not type-decl))
         (error "Missing (declare (type ...)) for parameters ~a" params))
-    (when (and params type-decl)
+    (when (and params type-decl) 
+      (unless (= (length params) (- (length (rest type-decl)) 1)) 
+        (error 'crisp-arity-error 
+               :expected (- (length (rest type-decl)) 1) 
+               :inferred (length params)))
         (let* ((param-names (butlast (rest type-decl) 1))
             (param-type (first (last type-decl)))
             (real-type (if (eq param-type 'int) 'i32 param-type)))
@@ -326,6 +341,10 @@
 (defun analyze-expression (expr env location)
   "Recursively analyzes a *single* expression."
   (format t "analyze-expression expr: ~a location: ~a~%" expr location)
+  ;; Handle empty body case, which `read` can return as NIL
+  (when (null expr)
+    (error 'crisp-unsupported-form-error :form expr :source-location location))
+
   (cond
     ;; Case 1: It's a literal, like 7
     ((integerp expr)
@@ -360,9 +379,13 @@
                                :right-arg right-node
                                :source-location location)))
          
-         (t (error "Unknown operator: ~a" op)))))
+         (t (error 'crisp-unsupported-form-error
+                   :form op
+                   :source-location (append location '(0)))))))
     
-    (t (error "Unknown expression: ~a" expr))))
+    (t (error 'crisp-unsupported-form-error
+              :form expr
+              :source-location location))))
 
 
 ;; --- Helper to get the type from any node ---
