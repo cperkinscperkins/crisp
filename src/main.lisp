@@ -18,33 +18,24 @@
       
     (let ((filename (first args)))
       (handler-case
-           ;; with-open-file handles the pathname string just fine.
-           (with-open-file (stream filename)
-             (format *error-output* "; Compiling ~a...~%" filename)
-             
-             ;; This is the core loop for files.
-             (let (;; Bind *package* so cl:read reads symbols
-                   ;; into the sandboxed :crisp-language package.
-                   ;; This is still a critical piece of the design.
-                   (*package* (find-package :crisp-language)))
-               (loop
-                 ;; Use the standard Common Lisp `read` function.
-                 ;; It will signal an `end-of-file` condition
-                 ;; when it reaches the end, which is handled below.
-                 (let ((form (read stream nil :eof)))
-
-                   (when (eq form :eof)
-                     (return))
-                     
-
-                   ;; Temporarily pass `nil` as the location. Your compiler
-                   ;; will need to handle this (e.g., by passing it
-                   ;; down to the semantic forms, which will also have
-                   ;; a `nil` location for now).
-                   (let ((raw-form form)
-                         (location nil))
-                     
-                     (crisp.compiler:compile-toplevel-form raw-form location)) ))))
+        ;; with-open-file handles the pathname string just fine.
+        (with-open-file (stream filename)
+          (format *error-output* "; Compiling ~a...~%" filename)
+          
+          ;; This is the core loop for files.
+          (let ((toplevel-index 0)
+                ;; Bind *package* so cl:read reads symbols
+                ;; into the sandboxed :crisp-language package.
+                (*package* (find-package :crisp-language)))
+            (loop for form = (read stream nil :eof)
+                  until (eq form :eof)
+                  do (progn
+                      ;; The "location" for a top-level form is a list
+                      ;; containing its index in the file.
+                      ;; e.g., the first form is at `(0)`, the second at `(1)`.
+                      (let ((location (list toplevel-index)))
+                        (crisp.compiler:compile-toplevel-form form location))
+                      (incf toplevel-index)))))
            
         ;; main compiler error handler   
         (crisp.compiler:crisp-compiler-error (c)
