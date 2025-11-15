@@ -1,0 +1,6 @@
+(def-function illegal-nest (a)
+ (declare (type a int) (return-type int))
+ (def-function show-off (b)
+    (declare (type b int) (return-type int))
+    (+ b 1))
+ (+ a 2))

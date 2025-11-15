@@ -9,3 +9,11 @@
 (def-function moar (a b) 
   (declare #'(int int => int)) 
   (+ a b))
+
+(def-function call-another (a b)
+  (declare #'(int int => int))
+  (moar a b))
+
+(def-function nested-calls (a b)
+  (declare #'(int int => int))
+  (+ a (+ b (first))))
