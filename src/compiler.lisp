@@ -107,17 +107,35 @@
 ;; --- Error Conditions ---
 
 (define-condition crisp-compiler-error (error)
-  ((source-location :initarg :source-location :reader error-source-location))
+  ((source-location :initarg :source-location :reader error-source-location
+                    :initform nil))
   (:report (lambda (condition stream)
-             (format stream "A Crisp compilation error occurred."))))
+             (format stream "A Crisp compilation error occurred~@[ at ~a~]."
+                     (error-source-location condition)))))
 
 (define-condition crisp-type-error (crisp-compiler-error)
-  ((expected :initarg :expected :reader type-error-expected)
+  ((message :initarg :message :initform "Type mismatch!" :reader type-error-message)
+   (expected :initarg :expected :reader type-error-expected)
    (inferred :initarg :inferred :reader type-error-inferred))
   (:report (lambda (condition stream)
              (format stream "Type mismatch! Expected ~a but inferred ~a."
                      (type-error-expected condition)
                      (type-error-inferred condition)))))
+
+(define-condition crisp-arity-error (crisp-compiler-error)
+  ((expected :initarg :expected :reader arity-error-expected)
+   (inferred :initarg :inferred :reader arity-error-inferred))
+  (:report (lambda (condition stream)
+             (format stream "Arity mismatch! Function expected ~a arguments but was given ~a."
+                     (arity-error-expected condition)
+                     (arity-error-inferred condition)))))
+
+(define-condition crisp-unsupported-form-error (crisp-compiler-error)
+  ((form :initarg :form :reader unsupported-form))
+  (:report (lambda (condition stream)
+             (format stream "Unsupported form '~a' found in function body."
+                     (unsupported-form condition)))))
+
 
 (define-condition crisp-unknown-variable (crisp-compiler-error)
   ((name :initarg :name :reader unknown-variable-name))
@@ -219,7 +237,7 @@
     ;; 4. Check Types
     (unless (equal inferred-type return-type)
       (error 'crisp-type-error 
-             :expected return-type 
+             :expected return-type
              :inferred inferred-type
              ;; Get the location from the struct we just built
              :source-location (if return-node
@@ -301,10 +319,13 @@
 
 (defun analyze-body-expressions (body-list env location)
   "Recursively analyzes a list of expressions."
-  (mapcar #'(lambda (expr) (analyze-expression expr env location)) body-list))
+  (loop for expr in body-list
+        for i from 0
+        collect (analyze-expression expr env (append location (list i)))))
 
 (defun analyze-expression (expr env location)
   "Recursively analyzes a *single* expression."
+  (format t "analyze-expression expr: ~a location: ~a~%" expr location)
   (cond
     ;; Case 1: It's a literal, like 7
     ((integerp expr)
@@ -324,9 +345,9 @@
      (let ((op (first expr)))
        (cond
          ((eq op '+)
-          ;; This is the new logic for '+'
-          (let* ((left-node (analyze-expression (second expr) env location))
-                 (right-node (analyze-expression (third expr) env location))
+          ;; Pass the appended location to the children.
+          (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+                 (right-node (analyze-expression (third expr) env (append location '(2))))
                  (left-type (semantic-node-type left-node))
                  (right-type (semantic-node-type right-node)))
             
