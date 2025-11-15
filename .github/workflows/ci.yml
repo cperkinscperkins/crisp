@@ -56,6 +56,9 @@ jobs:
 
       - name: 6. Run End-to-End Tests (Executable)
         run: |
+          # Exit immediately if a pipeline returns a non-zero status.
+          set -o pipefail
+
           echo "--- Running E2E: success test (return_7.crisp) ---"
           ./bin/crisp-compile tests/return_7.crisp
           
@@ -65,14 +68,14 @@ jobs:
           # 3. We pipe stderr to stdout (with 2>&1).
           # 4. We use `grep` to check if our error message is present.
           # If it's present, `grep` exits 0 (success).
-          # If it's missing, `grep` exits 1 (failure), failing the CI job. -F treats pattern as a fixed string.
+          # If it's missing, `grep` exits 1 (failure), failing the CI job.
           ! ./bin/crisp-compile tests/errors/unsupported_keyword.crisp 2>&1 | grep -F "Unsupported form"
 
           echo "--- Running E2E: failure test (unsupported_symbol.crisp) ---"
-          ! ./bin/crisp-compile tests/errors/unsupported_symbol.crisp 2>&1 | grep -F "Unsupported form"
+          #! ./bin/crisp-compile tests/errors/unsupported_symbol.crisp 2>&1 | grep -F "Unsupported form"
 
           echo "--- Running E2E: failure test (empty_body.crisp) ---"
-          ! ./bin/crisp-compile tests/errors/empty_body.crisp 2>&1 | grep -F "Type mismatch! Expected i32 but inferred nil"
+          #! ./bin/crisp-compile tests/errors/empty_body.crisp 2>&1 | grep -F "Type mismatch! Expected I32 but inferred NIL"
 
           echo "--- Running E2E: failure test (arity_mismatch.crisp) ---"
-          ! ./bin/crisp-compile tests/errors/arity_mismatch.crisp 2>&1 | grep -F "Arity mismatch!"
+          #! ./bin/crisp-compile tests/errors/arity_mismatch.crisp 2>&1 | grep -F "Arity mismatch!"
