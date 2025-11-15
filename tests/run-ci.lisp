@@ -9,7 +9,7 @@
 (asdf:clear-system "crisp")
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
-;; download cffi and eclector, and then load crisp.
+;; download cffi, and then load crisp.
 (ql:quickload "crisp")
 (format t "~&; --- System loaded successfully.~%")
 

@@ -76,9 +76,9 @@ winget install LLVM.LLVM
 
 -----
 
-### 3 Install Lisp Dependencies (CFFI and Eclector)
+### 3 Install Lisp Dependencies (CFFI)
 
-Your Lisp environment needs the **CFFI** and **Eclector** libraries.
+Your Lisp environment needs the **CFFI** library.
 
 #### Method 1: Quicklisp (Recommended for all platforms)
 This is the standard way to manage Lisp libraries. If you don't have Quicklisp, you can install it from [quicklisp.org](http://quicklisp.org).
@@ -87,14 +87,13 @@ This is the standard way to manage Lisp libraries. If you don't have Quicklisp, 
 . Install CFFI by running:
 ```
 (ql:quickload "cffi")
-(ql:quickload "eclector")
 ```
 Quicklisp will download and install them and their dependencies (including ASDF).
 
 #### Method 2: Linux System Packages (Alternative)
 If you are on Linux and do not want to use Quicklisp, you can install the system packages for ASDF and CFFI:
 ```
-sudo apt-get install -y cl-asdf cl-cffi cl-eclector
+sudo apt-get install -y cl-asdf cl-cffi
 ```
 
 (Note: If you use this method, your "Build" Lisp commands must begin with `(require "asdf")`.)
