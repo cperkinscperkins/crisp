@@ -96,13 +96,16 @@
   "Analyzes and compiles a single top-level form."
   (format *error-output* "c-t-f form: ~a~% location: ~a~%" form location)
   ;; For now, we only handle def-function
-  (if (and (consp form) (eq (car form) 'def-function))
-      ;; Pass the location to the macro's expansion
-      (generate-llvm-ir (eval `(def-function ,(second form) ,(third form)
-                                 ;; We need to quote the location to pass it literally
-                                 :source-location ',location 
-                                 ,@(cdddr form))))
-      (format t "WARNING: Skipping top-level form: ~a~%" form)))
+  (when (and (consp form) (eq (car form) 'def-function))
+    ;; We need to inject the :source-location into the macro call.
+    (let ((form-with-location (append form (list :source-location `',location))))
+      ;; IMPORTANT: We must expand the macro *while we are in the
+      ;; :crisp-language package* to ensure symbols like '=>' are
+      ;; resolved correctly. `eval` would switch the package back
+      ;; to :crisp.compiler, breaking our symbol checks.
+      (let ((expanded-form (macroexpand-1 form-with-location)))
+        ;; Now we can safely eval the result of the expansion.
+        (generate-llvm-ir (eval expanded-form))))))
 
 ;; --- Error Conditions ---
 
@@ -272,7 +275,7 @@
 
 (defun analyze-return-type-from-spec (fn-spec)
   "Parses '(int int => int)' and returns 'i32'."
-  (let ((arrow (member '=> fn-spec)))
+  (let ((arrow (member '=> fn-spec :test #'string=)))
     (cond
       ((and arrow (rest arrow)) ; e.g. '(=> int)
        (let ((return-types (rest arrow)))
@@ -292,11 +295,11 @@
   "Builds the environment '((a i32) (b i32))'
    from '(a b)' and '(int int => int)'."
   (let ((param-types (loop for type in fn-spec 
-                           until (eq type '=>) 
+                           until (string= type '=>) 
                            collect (if (eq type 'int) 'i32 type))))
     (format T "params: ~a  param-types: ~a~%" params param-types)
     (unless (= (length params) (length param-types)) 
-      (error 'crisp-signature-arity-error 
+      (error 'crisp-signature-arity-error
              :expected (length param-types) 
              :inferred (length params) 
              :source-location nil)) ; Can't get location easily here yet
