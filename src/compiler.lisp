@@ -57,6 +57,26 @@
       (llvm-dispose-builder builder)
       (llvm-dispose-module module))))
 
+;; Global Compiler State
+;; ---------------------
+
+(defvar *function-table* (make-hash-table)
+  "A hash table mapping function names (symbols) to a list of
+  FUNCTION-SIGNATURE structs. This supports overloading.")
+
+(defvar *compilation-call-stack* nil
+  "A list of function names currently in the compilation stack, used to
+  detect recursion.")
+
+(defstruct function-signature
+  "Represents the full signature of a Crisp function."
+  (name nil :type symbol)
+  (parameters nil :type list)
+  (return-types nil :type list)
+  (source-location nil :type list)
+  (is-template-p nil :type boolean)
+  (template-params nil :type list))
+
 
 ;; EXPORTS TO CRISP LANGUAGE
 ;; ==========================
@@ -138,6 +158,11 @@
              (format stream "Unsupported form '~a' found in function body."
                      (unsupported-form condition)))))
 
+(define-condition crisp-recursion-error (crisp-compiler-error)
+  ((form :initarg :form :reader recursive-form))
+  (:report (lambda (condition stream)
+             (format stream "Recursion is not allowed. Call to '~a' is recursive." (recursive-form condition)))))
+
 
 (define-condition crisp-unknown-variable (crisp-compiler-error)
   ((name :initarg :name :reader unknown-variable-name))
@@ -190,6 +215,14 @@
   right-arg  ; The 'semantic-var-read' node for 'b'
   source-location)
 
+(defstruct semantic-call
+  "Represents a call to a user-defined function."
+  name            ; The symbol name of the function being called
+  type            ; The return type of the function
+  args            ; A list of semantic nodes for the arguments
+  source-location
+  )
+
 
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
@@ -226,46 +259,55 @@
 
 (defun analyze-and-build-function (name params body env return-type declarations location)
   "This is the shared 'guts' of the analyzer."
-
   (format T "anaylze-and-build-function name: ~a  params: ~a~% body: ~a~%  declarations: ~a~% location: ~a ~%" name params body declarations location)
   
-  ;; Handle the case where a function promises a return value but has no body.
-  (when (and (not (eq return-type 'nil)) (null body))
-    (error 'crisp-type-error :expected return-type :inferred 'nil :source-location location))
+  ;; 1. Create and register the function signature BEFORE analyzing the body.
+  ;; This is the core of the single-pass strategy.
+  (let ((signature (make-function-signature
+                    :name name
+                    :parameters (mapcar #'second env)
+                    :return-types (list return-type) ; for now
+                    :source-location location)))
+    ;; For overloading, we'd push to a list. For now, just set it.
+    (setf (gethash name *function-table*) (list signature)))
 
-  
-  ;; 3. Analyze the Body
-  (let* ((body-nodes (analyze-body-expressions body env location))
-         (return-node (first (last body-nodes))) 
-         (inferred-type (if return-node (semantic-node-type return-node) 'nil)))
+  ;; 2. Push the current function onto the call stack to detect recursion.
+  (push name *compilation-call-stack*)
+  (unwind-protect
+       (progn
+         ;; Handle the case where a function promises a return value but has no body.
+         (when (and (not (eq return-type 'nil)) (null body))
+           (error 'crisp-type-error :expected return-type :inferred 'nil :source-location location))
 
-    (format T " body-nodes: ~a~%  return-node: ~a~%  inferred-type: ~a  return-type: ~a" body-nodes return-node inferred-type return-type)
+         ;; 3. Analyze the Body
+         (let* ((body-nodes (analyze-body-expressions body env location))
+                (return-node (first (last body-nodes)))
+                (inferred-type (if return-node (semantic-node-type return-node) 'nil)))
 
-    ;; 4. Check Types
-    (unless (equal inferred-type return-type)
-      (error 'crisp-type-error 
-             :expected return-type
-             :inferred inferred-type
-             ;; Get the location from the struct we just built
-             :source-location (if return-node
-                                  (semantic-node-source-location return-node)  ;; was semantic-return-source-location
-                                  location)))
+           (format T " body-nodes: ~a~%  return-node: ~a~%  inferred-type: ~a  return-type: ~a" body-nodes return-node inferred-type return-type)
 
-    ;; 5. Build and return the "blueprint"
-    (make-semantic-function
-     :name name
-     :param-list (loop for (param-name param-type) in env
-                       collect (make-semantic-param :name param-name
-                                                    :type param-type
-                                                    :source-location location))
-     :return-type return-type
-     :body (list (make-semantic-return
-                  :return-type return-type
-                  :value-node return-node
-                  :source-location (if return-node ; Get location from return node
-                                       (semantic-node-source-location return-node)
-                                       location))) ; Fallback
-     :source-location location)))
+           ;; 4. Check Types
+           (unless (equal inferred-type return-type)
+             (error 'crisp-type-error
+                    :expected return-type
+                    :inferred inferred-type
+                    :source-location (if return-node
+                                         (semantic-node-source-location return-node)
+                                         location)))
+
+           ;; 5. Build and return the "blueprint"
+           (make-semantic-function
+            :name name
+            :param-list (loop for (param-name param-type) in env
+                              collect (make-semantic-param :name param-name :type param-type :source-location location))
+            :return-type return-type
+            :body (list (make-semantic-return
+                         :return-type return-type
+                         :value-node return-node
+                         :source-location (if return-node (semantic-node-source-location return-node) location)))
+            :source-location location)))
+    ;; 4. Ensure the function is popped from the stack on exit.
+    (pop *compilation-call-stack*)))
 
 
 ;; ### Helpers
@@ -379,26 +421,69 @@
     ;; Case 3: It's a function call, like '(+ a b)'
     ((listp expr)
      (let ((op (first expr)))
-       (cond
-         ((eq op '+)
-          ;; Pass the appended location to the children.
-          (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-                 (right-node (analyze-expression (third expr) env (append location '(2))))
-                 (left-type (semantic-node-type left-node))
-                 (right-type (semantic-node-type right-node)))
-            
-            ;; (This is a stub, a real one would be smarter)
-            (unless (and (eq left-type 'i32) (eq right-type 'i32))
-              (error "Can only add i32 types for now!")) ; TODO: Update to condition
-            
-            (make-semantic-add :type 'i32
-                               :left-arg left-node
-                               :right-arg right-node
-                               :source-location location)))
-         
-         (t (error 'crisp-unsupported-form-error
-                   :form op
-                   :source-location (append location '(0)))))))
+      ;; log the fucntion table
+       (format T "*function-table*: ~a~%" *function-table*)
+       (loop for key being the hash-keys of *function-table*
+        do (format t "Key: ~a~%" key))
+
+       (cond ((eq op '+)
+              ;; Pass the appended location to the children.
+              (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+                     (right-node (analyze-expression (third expr) env (append location '(2))))
+                     (left-type (semantic-node-type left-node))
+                     (right-type (semantic-node-type right-node)))
+
+                ;; (This is a stub, a real one would be smarter)
+                (unless (and (eq left-type 'i32) (eq right-type 'i32))
+                  (error "Can only add i32 types for now!")) ; TODO: Update to condition
+
+                (make-semantic-add :type 'i32
+                                   :left-arg left-node
+                                   :right-arg right-node
+                                   :source-location location)))
+
+             ;; Check if 'op' is a known function
+             ((gethash op *function-table*)
+               (progn
+                 ;; Check for recursion first.
+                 (when (member op *compilation-call-stack*)
+                   (error 'crisp-recursion-error :form op :source-location (append location '(0))))
+
+                 ;; 1. Analyze the arguments passed to the call.
+                 (let* ((arg-forms (rest expr))
+                        (arg-nodes (loop for arg-form in arg-forms
+                                         for i from 1
+                                         collect (analyze-expression arg-form env (append location (list i)))))
+                        (arg-types (mapcar #'semantic-node-type arg-nodes))
+                        ;; 2. Get the function signature(s) from the table.
+                        (signatures (gethash op *function-table*))
+                        ;; 3. Find the matching overload (for now, we assume one).
+                        ;;    TODO: A real implementation would loop through signatures
+                        ;;    and find the one that matches the arg-types.
+                        (signature (first signatures)))
+
+                   ;; 4. Perform Arity and Type Checking
+                   (unless (= (length arg-types) (length (function-signature-parameters signature)))
+                     (error 'crisp-signature-arity-error
+                            :expected (length (function-signature-parameters signature))
+                            :inferred (length arg-types)
+                            :source-location location))
+
+                   (unless (equal arg-types (function-signature-parameters signature))
+                     (error 'crisp-type-error
+                            :message (format nil "Incorrect argument types for call to '~a'." op)
+                            :expected (function-signature-parameters signature)
+                            :inferred arg-types
+                            :source-location location))
+
+                   ;; 5. Build the semantic-call node.
+                   (make-semantic-call :name op :type (first (function-signature-return-types signature))
+                                       :args arg-nodes :source-location location))))
+
+             ;; TODO: unrecognized function ?
+             (t (error 'crisp-unsupported-form-error
+                       :form op
+                       :source-location (append location '(0)))))))
     
     (t (error 'crisp-unsupported-form-error
               :form expr
@@ -410,11 +495,13 @@
   (etypecase node
     (semantic-literal (semantic-literal-value-type node))
     (semantic-var-read (semantic-var-read-type node))
-    (semantic-add (semantic-add-type node))))
+    (semantic-add (semantic-add-type node))
+    (semantic-call (semantic-call-type node))))
 
 
 (defun semantic-node-source-location (node)
   (etypecase node
     (semantic-literal (semantic-literal-source-location node))
     (semantic-var-read (semantic-var-read-source-location node))
-    (semantic-add (semantic-add-source-location node))))
+    (semantic-add (semantic-add-source-location node))
+    (semantic-call (semantic-call-source-location node))))
