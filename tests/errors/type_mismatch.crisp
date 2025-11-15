@@ -1,4 +1,0 @@
-(def-function type-mismatch () 
-  (declare (return-type int)) 
-  
-  :this-is-not-an-integer)
