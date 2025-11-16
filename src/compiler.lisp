@@ -68,6 +68,12 @@
   "A list of function names currently in the compilation stack, used to
   detect recursion.")
 
+(defvar *call-graph* nil
+  "A hash table representing the call graph of functions.
+  Keys are caller function names, values are lists of callee names.")
+
+(defvar *current-compiling-function* nil)
+
 (defstruct function-signature
   "Represents the full signature of a Crisp function."
   (name nil :type symbol)
@@ -233,7 +239,10 @@
 (defun compile-module (forms module builder)
   "Orchestrates the multi-pass compilation of a list of top-level forms."
   ;; Pass 1: Gather all function signatures first.
-  (analyze-signatures-pass forms)
+  (let ((*call-graph* (make-hash-table)))
+    (analyze-signatures-pass forms)
+    ;; After analysis, check the constructed graph for cycles.
+    (check-for-recursion-cycles))
   ;; Pass 2: Now that all signatures are known, compile the function bodies.
   (compile-forms-pass forms module builder))
 
@@ -250,37 +259,33 @@
 
 (defun compile-forms-pass (forms module builder)
   "Pass 2: Iterates through forms to perform full analysis and codegen."
-  ;; The call stack must persist across the entire compilation pass
-  ;; to detect mutual recursion between top-level functions.
-  (let ((*compilation-call-stack* nil))
-    (loop for form in forms
-          for i from 0
-          do (let ((location (list i))) ; Simplified location for now
-               (cond
-                 ((and (consp form) (eq (car form) 'def-function))
-                  (compile-toplevel-form form location module builder))
-                 ;; TODO: Add handlers for with-template-type, etc.
-                 )))))
+  (loop for form in forms
+        for i from 0
+        do (let ((location (list i))) ; Simplified location for now
+             (cond
+               ((and (consp form) (eq (car form) 'def-function))
+                (compile-toplevel-form form location module builder))
+               ;; TODO: Add handlers for with-template-type, etc.
+               ))))
 
 (defun compile-toplevel-form (form location module builder)
   "Analyzes and compiles a single top-level form (used in Pass 2)."
   (format *error-output* "c-t-f form: ~a~% location: ~a~%" form location)
   ;; For now, we only handle def-function
   (when (and (consp form) (eq (car form) 'def-function))
-    ;; We need to inject the :source-location into the macro call.
-    (push (second form) *compilation-call-stack*)
-    (format T "compilation-call-stack: ~a~%" *compilation-call-stack*)
-    (unwind-protect
-         (let ((form-with-location (append form (list :source-location `',location))))
-           ;; IMPORTANT: We must expand the macro *while we are in the
-           ;; :crisp-language package* to ensure symbols like '=>' are
-           ;; resolved correctly. `eval` would switch the package back
-           ;; to :crisp.compiler, breaking our symbol checks.
-           (let ((expanded-form (macroexpand-1 form-with-location)))
-             (generate-llvm-ir (eval expanded-form) module builder))))))
+    ;; In single-pass mode, the signature won't be registered yet.
+    ;; We check and register it here to ensure forward calls work.
+    ;; In multi-pass mode, this check prevents re-registration.
+    (unless (gethash (second form) *function-table*)
+      (register-function-signature form location))
+
+    (let ((*current-compiling-function* (second form))
+          (form-with-location (append form (list :source-location `',location))))
+      (let ((expanded-form (macroexpand-1 form-with-location)))
+        (generate-llvm-ir (eval expanded-form) module builder)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Analysis Internals
+;; Recursion Cycle Detection
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; Internal handlers
@@ -289,6 +294,38 @@
 ;; *  (def-function adds (a  b ) (declare (type a b int) (return-type int)) (+ a b)) 
 ;; *  (def-function with-arrow (a b) (declare #'(int int => int)) (+ a b))
 ;; (generate-llvm-ir ...)
+
+(defun check-for-recursion-cycles ()
+  "Iterates through the call graph to find any recursive cycles."
+  (format T "check-for-recursion-cycles.  call-graph: ~a~%" *call-graph*)
+  (let ((visited (make-hash-table)))
+    (loop for caller being the hash-keys of *call-graph*
+          do (unless (gethash caller visited)
+               (detect-cycle-from-node caller visited (make-hash-table))))))
+
+(defun detect-cycle-from-node (node visited visiting)
+  "Performs a DFS from the given node to detect a cycle."
+  (setf (gethash node visiting) t)
+
+  (let ((callees (gethash node *call-graph*)))
+    (dolist (callee callees)
+      (cond
+        ;; If the callee is in the current 'visiting' path, we found a cycle.
+        ((gethash callee visiting)
+         (let ((sig (first (gethash callee *function-table*))))
+           (error 'crisp-recursion-error
+                  :form callee
+                  :source-location (when sig (function-signature-source-location sig)))))
+
+        ;; If the callee has not been visited at all yet, recurse.
+        ((not (gethash callee visited))
+         (detect-cycle-from-node callee visited visiting)))))
+
+  ;; We're done with this node's path. Remove it from 'visiting'
+  ;; and add it to 'visited' so we don't check it again.
+  (remhash node visiting)
+  (setf (gethash node visited) t))
+
 
 (defun register-function-signature (form location)
   "Extracts and registers a function's signature without analyzing its body."
@@ -452,9 +489,11 @@
 
 (defun analyze-function-call (op expr env location)
   "Analyzes a call to a user-defined function."
-  ;; Check for recursion first.
-  (when (member op *compilation-call-stack*)
-    (error 'crisp-recursion-error :form op :source-location (append location '(0))))
+  ;; Record the dependency in the call graph for later cycle detection.
+  (format T "analyze-function-call.  call-graph: ~a  current-compiling-function: ~a~%" *call-graph* *current-compiling-function*)
+  (when (and *call-graph* *current-compiling-function*)
+    (pushnew op (gethash *current-compiling-function* *call-graph*)))
+
 
   ;; 1. Analyze the arguments passed to the call.
   (let* ((arg-forms (rest expr))
@@ -531,6 +570,7 @@
     ;; Case 3: It's a function call, like '(+ a b)'
     ((listp expr)
      (let ((op (first expr)))
+       (format T "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
        (let ((handler (gethash op *expression-analyzers*)))
          (cond
            ;; Is there a specific handler for this operator (e.g., '+')?

@@ -117,11 +117,11 @@ Next Priorities
 - - [ ] our internal errors? (we will have a LOT of defmacro)
 - - [ ] errors from LLVM ?
 - - [ ] bad defmacro from user
-- - [ ] type mismatch
+- - [x] type mismatch
 - - [ ] failure to infer 
-- - [ ] misspelling
+- - [x] misspelling
 - - [ ] bad syntax / paren
-- - [ ] wrong number/type args
+- - [x] wrong number/type args
 - - [ ] keep eye on use cases Tests, Compiler.exe, C API
 - - [ ] How to test our own error system?
 
@@ -133,8 +133,8 @@ ERRORS
 - [ ] macro stuff?
 - [ ] malformed -  ?? => => 
 - [x] missing paren
-- [ ] recursion
-- [ ] mutual recursion
+- [x] recursion
+- [x] mutual recursion
 - [x] call fn with wrong number of args
 
 
