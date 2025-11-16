@@ -111,22 +111,19 @@
 ;; INTERNAL TO COMPILER
 ;; ====================
 
-(defun compile-toplevel-form (form location)
+(defun compile-toplevel-form (form location module builder)
   "Analyzes and compiles a single top-level form."
   (format *error-output* "c-t-f form: ~a~% location: ~a~%" form location)
   ;; For now, we only handle def-function
   (when (and (consp form) (eq (car form) 'def-function))
     ;; We need to inject the :source-location into the macro call.
     (let ((form-with-location (append form (list :source-location `',location))))
-      ;; IMPORTANT: We must expand the macro *while we are in the
+      ;; IMPORTANT: We must expand the macro *while we are in the 
       ;; :crisp-language package* to ensure symbols like '=>' are
       ;; resolved correctly. `eval` would switch the package back
       ;; to :crisp.compiler, breaking our symbol checks.
       (let ((expanded-form (macroexpand-1 form-with-location)))
-        ;; Now we can safely eval the result of the expansion.
-        (generate-llvm-ir (eval expanded-form))))))
-
-;; --- Error Conditions ---
+        (generate-llvm-ir (eval expanded-form) module builder)))))
 
 (define-condition crisp-compiler-error (error)
   ((source-location :initarg :source-location :reader error-source-location

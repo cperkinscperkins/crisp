@@ -1,114 +1,140 @@
 ;; src/codegen.lisp
 (in-package :crisp.compiler)
 
-;; --- Main Entry Point ---
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; CFFI Type Definitions for LLVM
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(cffi:defctype llvm-type-ref :pointer)
+(cffi:defctype llvm-value-ref :pointer)
 
-(defun generate-llvm-ir (semantic-func)
-  "This is the 'Code Generator' (Pass 3).
-   It walks the 'Typed AST' (blueprint) and calls the LLVM API."
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Code Generation (Pass 3)
+;;
+;; This file takes the semantic "blueprint" from the analyzer and generates
+;; LLVM IR from it.
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun generate-llvm-ir (semantic-function module builder)
+  "Top-level function to generate LLVM IR for a given semantic function."
+  (let* ((fn-name (string-downcase (semantic-function-name semantic-function)))
+         )
+    ;; --- 1. Define the Function Type ---
+    (let* ((return-type (llvm-type-for-name (semantic-function-return-type semantic-function)))
+           (param-nodes (semantic-function-param-list semantic-function))
+           (param-count (length param-nodes))
+           ;; Create a C-style array of LLVM types for the parameters
+           (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
+      (loop for i from 0
+            for param-node in param-nodes
+            do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i)
+                     (llvm-type-for-name (semantic-param-type param-node))))
+
+      (let ((fn-type (llvm-function-type return-type param-types-array param-count nil)))
+
+        ;; --- 2. Create the Function ---
+        (let ((func (llvm-add-function module fn-name fn-type)))
+
+          ;; --- 3. Create the Code Block ---
+          (let ((entry-block (llvm-append-basic-block func "entry"))
+                (var-env (make-hash-table)))
+            (llvm-position-builder-at-end builder entry-block)
+
+            ;; --- 4. Allocate and Store Parameters ---
+            (loop for i from 0
+                  for param-node in param-nodes
+                  for llvm-param = (llvm-get-param func i)
+                  do (let* ((param-name (semantic-param-name param-node))
+                            (alloca (llvm-build-alloca builder (llvm-type-for-name (semantic-param-type param-node)) (string-downcase param-name))))
+                       (llvm-build-store builder llvm-param alloca)
+                       (setf (gethash param-name var-env) alloca)))
+
+            ;; --- 5. Generate the Body ---
+            (let* ((body-node (first (semantic-function-body semantic-function)))
+                   (return-value (generate-expression-ir builder module var-env (semantic-return-value-node body-node))))
+              (llvm-build-ret builder return-value))))))))
+
+(defun generate-expression-ir (builder module var-env node)
+  "Recursively generates IR for a single expression node."
+  ;; --- TEST LOGGING ---
+  (format t "~&[DEBUG] generate-expression-ir | Builder: ~a | Node: ~a~%" builder (type-of node))
   
-  (let ((module (llvm-module-create (string-downcase (symbol-name (semantic-function-name semantic-func)))))
-        (builder (llvm-create-builder)))
-    (unwind-protect
-         ;; --- 1. Setup Types & Function Signature ---
-         (let* ((i32-type (llvm-int32-type)) ; (Stub)
-                
-                ;; Get param types from the blueprint
-                (param-types (mapcar #'(lambda (p) (get-llvm-type (semantic-param-type p)))
-                                     (semantic-function-param-list semantic-func)))
-                
-                ;; Create an array of C pointers for CFFI
-                (param-types-array (cffi:foreign-alloc :pointer :initial-contents param-types))
-                
-                (fn-type (llvm-function-type i32-type ; (Stub: return type)
-                                             param-types-array
-                                             (length param-types)
-                                             nil))
-                (llvm-func (llvm-add-function module (string-downcase (symbol-name (semantic-function-name semantic-func))) fn-type))
-                (entry-block (llvm-append-basic-block llvm-func "entry")))
-
-           (llvm-position-builder-at-end builder entry-block)
-           
-           ;; --- 2. The "Alloca Trick" ---
-           ;; Create a new "environment" to map Lisp symbols to LLVM pointers
-           (let ((env (make-hash-table)))
-             
-             ;; 2a. Allocate stack slots for all parameters
-           (loop for param in (semantic-function-param-list semantic-func)
-                 for i from 0
-                 do (let* ((param-name (semantic-param-name param))
-                           (llvm-type (get-llvm-type (semantic-param-type param)))
-                           ;; 1. Allocate a stack slot (e.g., %a_ptr)
-                           (ptr (llvm-build-alloca builder llvm-type (string-downcase (symbol-name param-name)))))
-                      
-                      ;; --- BODY of the let* ---
-                      ;; 2. Store the function's argument (%a) into its slot (%a_ptr)
-                      (llvm-build-store builder (llvm-get-param llvm-func i) ptr)
-                      
-                      ;; 3. Save the pointer for later
-                      (setf (gethash param-name env) ptr)))
-             
-             ;; --- 3. Compile the Body ---
-             (dolist (node (semantic-function-body semantic-func))
-               (generate-llvm-instruction builder node env))
-
-             (cffi:foreign-free param-types-array)))
-           
-           ;; --- 4. Print the result ---
-           (let ((ir-ptr (llvm-print-module-to-string module)))
-             (unwind-protect
-                  (let ((lisp-string (cffi:foreign-string-to-lisp ir-ptr)))
-                    (format t "--- Generated LLVM IR: ---~%~a~%" lisp-string)
-                    (format t "--------------------------~%"))
-               (llvm-dispose-message ir-ptr))))
-      
-      ;; --- 5. Cleanup ---
-      (llvm-dispose-builder builder)
-      (llvm-dispose-module module)))
-
-;; --- Codegen Helpers ---
-
-(defun get-llvm-type (type-symbol)
-  "Maps our 'i32' symbol to the LLVM type."
-  (if (eq type-symbol 'i32)
-      (llvm-int32-type)
-      (error "Unknown type: ~a" type-symbol)))
-
-(defun generate-llvm-instruction (builder node env)
-  "Generates code for a single semantic node."
   (etypecase node
-    ;; Case: (semantic-return ...)
-    (semantic-return
-     (let ((value-node (semantic-return-value-node node)))
-       ;; 1. Recursively generate the value
-       (let ((llvm-value (generate-llvm-value builder value-node env)))
-         ;; 2. Build the 'ret' instruction
-         (llvm-build-ret builder llvm-value))))))
-
-(defun generate-llvm-value (builder node env)
-  "Recursively generates code for a 'value' node."
-  (etypecase node
-    ;; Case: (semantic-literal 7)
+    ;; --- Literal ---
     (semantic-literal
-     (llvm-const-int (get-llvm-type (semantic-literal-value-type node))
+     (llvm-const-int (llvm-type-for-name (semantic-literal-value-type node))
                      (semantic-literal-value node)
                      nil))
-    
-    ;; Case: (semantic-var-read 'a)
+    ;; --- Variable Read ---
     (semantic-var-read
-     (let* ((name (semantic-var-read-name node))
-           (type (semantic-var-read-type node))
-           (llvm-type (get-llvm-type type)) ; Get the LLVM type
-           (ptr (gethash name env)))         ; Get the stack pointer
-    
-        ;; Pass the 'llvm-type' as the new second argument
-        (llvm-build-load builder llvm-type ptr (string-downcase (symbol-name name)))))
+     (let* ((var-name (semantic-var-read-name node))
+            (alloca (gethash var-name var-env))
+            (type (llvm-type-for-name (semantic-var-read-type node)))
+            (loaded-name (string-downcase (format nil "~a" var-name)))
+            (current-block (llvm-get-insert-block builder))
+            (parent-fn (llvm-get-basic-block-parent current-block)))
+       ;; --- TEST LOGGING ---
+       (format t "~&[DEBUG] Loading var '~a'. Found in env: ~a. Alloca ptr: ~a~%"
+           var-name (nth-value 1 (gethash var-name var-env)) alloca)
+       (format t "~&[DEBUG] Builder is in block ~a which belongs to function ~a~%"
+               current-block parent-fn)
+       (llvm-build-load2 builder type alloca loaded-name)))
 
-    ;; Case: (semantic-add 'a 'b)
+    ;; --- Add ---
     (semantic-add
-     (let* (;; 1. Recursively generate the value for the left
-            (llvm-lhs (generate-llvm-value builder (semantic-add-left-arg node) env))
-            ;; 2. Recursively generate the value for the right
-            (llvm-rhs (generate-llvm-value builder (semantic-add-right-arg node) env)))
-       ;; 3. Build the 'add' instruction
-       (llvm-build-add builder llvm-lhs llvm-rhs "add_tmp")))))
+     (let ((lhs (generate-expression-ir builder module var-env (semantic-add-left-arg node)))
+           (rhs (generate-expression-ir builder module var-env (semantic-add-right-arg node))))
+       (llvm-build-add builder lhs rhs "add_tmp")))
+
+    ;; --- Function Call ---
+    (semantic-call
+     (format T "~&[DEBUG] :: Generating function call to '~a'~%" (semantic-call-name node))
+     (let* ((callee-name (string-downcase (semantic-call-name node)))
+            (sig (first (gethash (semantic-call-name node) *function-table*)))
+
+             ;; 1. Get the Lisp return type symbol (e.g. 'I32 or NIL)
+             (crisp-return-type (first (function-signature-return-types sig)))
+
+             ;; 2. Get the LLVM return type (handles NIL -> void)
+             (llvm-return-type (if crisp-return-type
+                                 (llvm-type-for-name crisp-return-type)
+                                 (llvm-void-type)))
+
+             ;; 3. Build the LLVM function *type* (the signature)
+             (param-count (length (function-signature-parameters sig)))
+             (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count))
+             (_ (loop for i from 0 for p-type in (function-signature-parameters sig)
+                      do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i)
+                               (llvm-type-for-name p-type))))
+             (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
+
+             ;; 4. Get the LLVM function *value* (the callable function)
+             (callee (or (llvm-get-named-function module callee-name)
+                         ;; If not in this module, declare it
+                         (llvm-add-function module callee-name llvm-fn-type)))
+             
+             (arg-nodes (semantic-call-args node))
+             (num-args (length arg-nodes))
+             (args-array (cffi:foreign-alloc 'llvm-value-ref :count num-args)))
+       ;; --- TEST LOGGING ---
+       (format t "~&[DEBUG] Calling func '~a'. Callee ptr: ~a sig: ~a crisp-return-type: ~a~%"
+           (semantic-call-name node) callee sig crisp-return-type)
+       (loop for i from 0 for arg-node in arg-nodes
+             do (let ((arg-val (generate-expression-ir builder module var-env arg-node)))
+                  ;; --- TEST LOGGING ---
+                  (format t "~&[DEBUG] Arg ~a value: ~a~%" i arg-val)
+                  (setf (cffi:mem-aref args-array 'llvm-value-ref i) arg-val)))
+       (llvm-build-call2 builder
+                           llvm-fn-type  ; <-- THE FIX (was return-type)
+                           callee
+                           args-array
+                           num-args
+                           (if crisp-return-type "call_tmp" ""))
+       ))))
+
+(defun llvm-type-for-name (type-name)
+  "Maps a Crisp type symbol to an LLVM type."
+  (case type-name
+    (i32 (llvm-int32-type))
+    (otherwise (error "Unknown type name for LLVM: ~a" type-name))))

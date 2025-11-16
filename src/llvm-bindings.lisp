@@ -10,6 +10,8 @@
   (:darwin "libLLVM.dylib")
   (t (:default "libLLVM")))
 
+;; We don't load this here, because otherwise the build will
+;; not succeed.  This library is loaded as part of main.
 ;; (use-foreign-library libllvm)
 
 
@@ -27,6 +29,10 @@
 (defcfun ("LLVMDisposeMessage" llvm-dispose-message) :void
   (message :pointer))
 
+(defcfun ("LLVMTypeOf" llvm-type-of) :pointer
+  "Obtain the type of a value."
+  (val :pointer))
+
 ;; --- Types ---
 (defcfun ("LLVMInt32Type" llvm-int32-type) :pointer)
 
@@ -42,6 +48,16 @@
   (name :string)
   (type :pointer))
 
+(defcfun ("LLVMGetInsertBlock" llvm-get-insert-block) :pointer
+  (builder :pointer))
+
+(defcfun ("LLVMGetBasicBlockParent" llvm-get-basic-block-parent) :pointer
+  (block :pointer))
+
+(defcfun ("LLVMGetNamedFunction" llvm-get-named-function) :pointer
+  (module :pointer)
+  (name :string))
+
 ;; --- Basic Blocks ---
 (defcfun ("LLVMAppendBasicBlock" llvm-append-basic-block) :pointer
   (function :pointer)
@@ -56,6 +72,15 @@
 
 (defcfun ("LLVMDisposeBuilder" llvm-dispose-builder) :void
   (builder :pointer))
+
+(defcfun ("LLVMBuildCall2" llvm-build-call2) :pointer
+  "Builds a call instruction."
+  (builder :pointer)
+  (fn-type :pointer)
+  (fn :pointer)
+  (args :pointer)
+  (num-args :unsigned-int)
+  (name :string))
 
 ;; --- Instructions ---
 (defcfun ("LLVMConstInt" llvm-const-int) :pointer
@@ -83,7 +108,12 @@
   (value :pointer)
   (pointer :pointer))
 
-(defcfun ("LLVMBuildLoad2" llvm-build-load) :pointer
+(defcfun ("LLVMBuildLoad" llvm-build-load) :pointer
+  (builder :pointer)
+  (pointer :pointer)
+  (name :string))
+
+(defcfun ("LLVMBuildLoad2" llvm-build-load2) :pointer
   (builder :pointer)
   (type :pointer)
   (pointer :pointer)

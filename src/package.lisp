@@ -50,17 +50,22 @@
    #:llvm-print-module-to-string
    #:llvm-dispose-module
    #:llvm-dispose-message
+   #:llvm-type-of
    ;; Types
    #:llvm-int32-type
    #:llvm-function-type
    ;; Functions
    #:llvm-add-function
+   #:llvm-get-named-function
+   #:llvm-get-insert-block
+   #:llvm-get-basic-block-parent
    ;; Basic Blocks
    #:llvm-append-basic-block
    ;; Builder
    #:llvm-create-builder
    #:llvm-position-builder-at-end
    #:llvm-dispose-builder
+   #:llvm-build-call2
    ;; Instructions
    #:llvm-const-int
    #:llvm-build-ret
@@ -68,9 +73,8 @@
    #:llvm-get-param
    #:llvm-build-alloca
    #:llvm-build-store
-   #:llvm-build-load
-   #:llvm-build-add
-   ))
+   #:llvm-build-load2
+   #:llvm-build-add))
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)
