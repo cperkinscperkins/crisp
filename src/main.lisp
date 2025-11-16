@@ -24,40 +24,52 @@
       (uiop:quit 1))
       
     (let ((filename (first args)))
-      (handler-case
-        ;; with-open-file handles the pathname string just fine.
-        (with-open-file (stream filename)
-          (format *error-output* "; Compiling ~a...~%" filename)
-          
-          ;; This is the core loop for files.
-          (let ((toplevel-index 0)
-                ;; Bind *package* so cl:read reads symbols
-                ;; into the sandboxed :crisp-language package.
-                (*package* (find-package :crisp-language)))
-            (loop for form = (read stream nil :eof)
-                  until (eq form :eof)
-                  do (progn
-                      ;; The "location" for a top-level form is a list
-                      ;; containing its index in the file.
-                      ;; e.g., the first form is at `(0)`, the second at `(1)`.
-                      (let ((location (list toplevel-index)))
-                        (crisp.compiler:compile-toplevel-form form location))
-                      (incf toplevel-index)))))
-           
-        ;; main compiler error handler   
-        (crisp.compiler:crisp-compiler-error (c)
-          (print-compiler-error c filename)
-          (uiop:quit 1))
+      (let* ((module-name (pathname-name filename))
+             (module (crisp.llvm-bindings:llvm-module-create module-name))
+             (builder (crisp.llvm-bindings:llvm-create-builder)))
+        (unwind-protect
+             (handler-case
+                 (progn
+                   ;; with-open-file handles the pathname string just fine.
+                   (with-open-file (stream filename)
+                     (format *error-output* "; Compiling ~a...~%" filename)
+                     
+                     ;; This is the core loop for files.
+                     (let ((toplevel-index 0)
+                           ;; Bind *package* so cl:read reads symbols
+                           ;; into the sandboxed :crisp-language package.
+                           (*package* (find-package :crisp-language)))
+                       (loop for form = (read stream nil :eof)
+                             until (eq form :eof)
+                             do (progn
+                                 ;; The "location" for a top-level form is a list
+                                 ;; containing its index in the file.
+                                 ;; e.g., the first form is at `(0)`, the second at `(1)`.
+                                 (let ((location (list toplevel-index)))
+                                   (crisp.compiler:compile-toplevel-form form location module builder))
+                                 (incf toplevel-index)))))
+                   
+                   ;; After the loop, print the entire module.
+                   (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
+                     (unwind-protect
+                          (format t "--- Generated LLVM IR: ---~%~a~%" (cffi:foreign-string-to-lisp ir-ptr))
+                       (crisp.llvm-bindings:llvm-dispose-message ir-ptr))))
 
-        ;; Standard end-of-file condition from cl:read
-        (end-of-file ()
-          nil) ; This is a clean exit, just stop the loop.
-          
-        ;; This is our placeholder error handler for everything else
-        ;; (e.g., file-not-found, package errors).
-        (error (c)
-          (format *error-output* "~&Error: ~a~%" c)
-          (uiop:quit 1)))
-          
-      (format *error-output* "; ...Compilation finished.~%")
-      (uiop:quit 0))))
+               ;; main compiler error handler
+               (crisp.compiler:crisp-compiler-error (c)
+                 (print-compiler-error c filename)
+                 (uiop:quit 1))
+
+               ;; Standard end-of-file condition from cl:read
+               (end-of-file ()
+                 nil) ; This is a clean exit, just stop the loop.
+                 
+               ;; This is our placeholder error handler for everything else
+               ;; (e.g., file-not-found, package errors).
+               (error (c)
+                 (format *error-output* "~&Error: ~a~%" c)
+                 (uiop:quit 1))))
+          ;; Cleanup
+          (crisp.llvm-bindings:llvm-dispose-builder builder)
+          (crisp.llvm-bindings:llvm-dispose-module module)))
+      (format *error-output* "; ...Compilation finished.~%")))
