@@ -67,6 +67,9 @@ jobs:
  
           echo "--- Running E2E: success test (multipass.crisp) ---"
           ./bin/crisp-compile tests/multipass.crisp
+
+          echo "--- Running E2E: failure test to exercise --single-pass flag ---"
+          ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"
           
           echo "--- Running E2E: failure test (unsupported_keyword.crisp) ---"
           # 1. Run the compiler on the bad file.
