@@ -32,22 +32,15 @@
                  (progn
                    ;; with-open-file handles the pathname string just fine.
                    (with-open-file (stream filename)
-                     (format *error-output* "; Compiling ~a...~%" filename)
-                     
-                     ;; This is the core loop for files.
-                     (let ((toplevel-index 0)
-                           ;; Bind *package* so cl:read reads symbols
-                           ;; into the sandboxed :crisp-language package.
-                           (*package* (find-package :crisp-language)))
-                       (loop for form = (read stream nil :eof)
-                             until (eq form :eof)
-                             do (progn
-                                 ;; The "location" for a top-level form is a list
-                                 ;; containing its index in the file.
-                                 ;; e.g., the first form is at `(0)`, the second at `(1)`.
-                                 (let ((location (list toplevel-index)))
-                                   (crisp.compiler:compile-toplevel-form form location module builder))
-                                 (incf toplevel-index)))))
+                     (format *error-output* "; Compiling ~a...~%" filename) 
+                     (let* ((;; Bind *package* so cl:read reads symbols
+                             ;; into the sandboxed :crisp-language package.
+                             *package* (find-package :crisp-language))
+                            (forms (loop for form = (read stream nil :eof)
+                                         until (eq form :eof)
+                                         collect form)))
+                       ;; Hand off the list of forms to the multi-pass compiler
+                       (crisp.compiler:compile-module forms module builder)))
                    
                    ;; After the loop, print the entire module.
                    (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))

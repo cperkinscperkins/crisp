@@ -111,20 +111,6 @@
 ;; INTERNAL TO COMPILER
 ;; ====================
 
-(defun compile-toplevel-form (form location module builder)
-  "Analyzes and compiles a single top-level form."
-  (format *error-output* "c-t-f form: ~a~% location: ~a~%" form location)
-  ;; For now, we only handle def-function
-  (when (and (consp form) (eq (car form) 'def-function))
-    ;; We need to inject the :source-location into the macro call.
-    (let ((form-with-location (append form (list :source-location `',location))))
-      ;; IMPORTANT: We must expand the macro *while we are in the 
-      ;; :crisp-language package* to ensure symbols like '=>' are
-      ;; resolved correctly. `eval` would switch the package back
-      ;; to :crisp.compiler, breaking our symbol checks.
-      (let ((expanded-form (macroexpand-1 form-with-location)))
-        (generate-llvm-ir (eval expanded-form) module builder)))))
-
 (define-condition crisp-compiler-error (error)
   ((source-location :initarg :source-location :reader error-source-location
                     :initform nil))
@@ -240,12 +226,81 @@
 ;; The Brain (Semantic Analyzer)
 ;; ---------------------------------
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Multi-Pass Orchestration
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun compile-module (forms module builder)
+  "Orchestrates the multi-pass compilation of a list of top-level forms."
+  ;; Pass 1: Gather all function signatures first.
+  (analyze-signatures-pass forms)
+  ;; Pass 2: Now that all signatures are known, compile the function bodies.
+  (compile-forms-pass forms module builder))
+
+(defun analyze-signatures-pass (forms)
+  "Pass 1: Iterates through forms to find and register function signatures."
+  (loop for form in forms
+        for i from 0
+        do (let ((location (list i))) ; Simplified location for now
+             (cond
+               ((and (consp form) (eq (car form) 'def-function))
+                (register-function-signature form location))
+               ;; TODO: Add handlers for with-template-type, def-struct, etc.
+               ))))
+
+(defun compile-forms-pass (forms module builder)
+  "Pass 2: Iterates through forms to perform full analysis and codegen."
+  (loop for form in forms
+        for i from 0
+        do (let ((location (list i))) ; Simplified location for now
+             (cond
+               ((and (consp form) (eq (car form) 'def-function))
+                (compile-toplevel-form form location module builder))
+               ;; TODO: Add handlers for with-template-type, etc.
+               ))))
+
+(defun compile-toplevel-form (form location module builder)
+  "Analyzes and compiles a single top-level form (used in Pass 2)."
+  (format *error-output* "c-t-f form: ~a~% location: ~a~%" form location)
+  ;; For now, we only handle def-function
+  (when (and (consp form) (eq (car form) 'def-function))
+    ;; We need to inject the :source-location into the macro call.
+    (let ((form-with-location (append form (list :source-location `',location))))
+      ;; IMPORTANT: We must expand the macro *while we are in the
+      ;; :crisp-language package* to ensure symbols like '=>' are
+      ;; resolved correctly. `eval` would switch the package back
+      ;; to :crisp.compiler, breaking our symbol checks.
+      (let ((expanded-form (macroexpand-1 form-with-location)))
+        (generate-llvm-ir (eval expanded-form) module builder)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Analysis Internals
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 ;; Internal handlers
 ;; -----------------
 ;; *  (def-function wow () (declare (return-type int)) 7) 
 ;; *  (def-function adds (a  b ) (declare (type a b int) (return-type int)) (+ a b)) 
 ;; *  (def-function with-arrow (a b) (declare #'(int int => int)) (+ a b))
 ;; (generate-llvm-ir ...)
+
+(defun register-function-signature (form location)
+  "Extracts and registers a function's signature without analyzing its body."
+  (let* ((name (second form))
+         (params (third form))
+         (body (cdddr form))
+         (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
+         (declarations (loop for f in declare-forms append (rest f)))
+         (fn-decl (find 'function declarations :key #'car))
+         (param-types (if fn-decl
+                          (loop for type in (second fn-decl) until (string= type '=>) collect (if (eq type 'int) 'i32 type))
+                          (mapcar #'(lambda (p) 'i32) params))) ; Simplified fallback
+         (return-type (if fn-decl
+                          (analyze-return-type-from-spec (second fn-decl))
+                          (analyze-return-type-from-list declarations))))
+    (setf (gethash name *function-table*)
+          (list (make-function-signature :name name :parameters param-types :return-types (list return-type) :source-location location)))))
+
 
 (defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
