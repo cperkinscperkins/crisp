@@ -131,7 +131,10 @@ ERRORS
 - [x] unknown function/symbol call (whack ..)
 - [x] unbound argument (+ whack adoodle)
 - [ ] macro stuff?
-- [ ] malformed - 
+- [ ] malformed -  ?? => => 
+- [x] missing paren
+- [ ] recursion
+- [ ] mutual recursion
 - [x] call fn with wrong number of args
 
 

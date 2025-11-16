@@ -95,6 +95,7 @@
 
            ;; error conditions
            #:crisp-compiler-error
+           #:crisp-unexpected-eof-error
            #:crisp-type-error
            #:error-source-location
            #:type-error-expected

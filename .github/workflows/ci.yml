@@ -92,3 +92,6 @@ jobs:
 
           echo "--- Running E2E: failure test (unbound_var.crisp) ---"
           ! ./bin/crisp-compile tests/errors/unbound_var.crisp 2>&1 | grep -F "Unbound variable"
+
+          echo "--- Running E2E: failure test (malformed.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/malformed.crisp 2>&1 | grep -F "Unexpected end of file"

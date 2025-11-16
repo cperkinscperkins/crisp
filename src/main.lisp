@@ -60,16 +60,19 @@
                  (print-compiler-error c filename)
                  (uiop:quit 1))
 
-               ;; Standard end-of-file condition from cl:read
-               (end-of-file ()
-                 nil) ; This is a clean exit, just stop the loop.
-                 
+               ;; Handle unexpected EOF from the reader, which usually means
+               ;; an unclosed parenthesis. We create our custom condition and
+               ;; handle it directly, avoiding the debugger.
+               (end-of-file (c)
+                 (print-compiler-error (make-condition 'crisp.compiler:crisp-unexpected-eof-error) filename)
+                 (uiop:quit 1))
+
                ;; This is our placeholder error handler for everything else
                ;; (e.g., file-not-found, package errors).
                (error (c)
-                 (format *error-output* "~&Error: ~a~%" c)
-                 (uiop:quit 1))))
+                 (format *error-output* "~&An unexpected error occurred: ~a~%" c)
+                 (uiop:quit 1)))
           ;; Cleanup
           (crisp.llvm-bindings:llvm-dispose-builder builder)
           (crisp.llvm-bindings:llvm-dispose-module module)))
-      (format *error-output* "; ...Compilation finished.~%")))
+      (format *error-output* "; ...Compilation finished.~%"))))

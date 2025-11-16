@@ -150,6 +150,12 @@
                      (type-error-expected condition)
                      (type-error-inferred condition))))) 
 
+(define-condition crisp-unexpected-eof-error (crisp-compiler-error)
+  ()
+  (:report (lambda (condition stream)
+             (declare (ignore condition))
+             (format stream "Unexpected end of file. This usually means a parenthesis or quote is missing."))))
+
 (define-condition crisp-signature-arity-error (crisp-compiler-error)
   ((expected :initarg :expected :reader arity-error-expected)
    (inferred :initarg :inferred :reader arity-error-inferred))
