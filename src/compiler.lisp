@@ -250,14 +250,17 @@
 
 (defun compile-forms-pass (forms module builder)
   "Pass 2: Iterates through forms to perform full analysis and codegen."
-  (loop for form in forms
-        for i from 0
-        do (let ((location (list i))) ; Simplified location for now
-             (cond
-               ((and (consp form) (eq (car form) 'def-function))
-                (compile-toplevel-form form location module builder))
-               ;; TODO: Add handlers for with-template-type, etc.
-               ))))
+  ;; The call stack must persist across the entire compilation pass
+  ;; to detect mutual recursion between top-level functions.
+  (let ((*compilation-call-stack* nil))
+    (loop for form in forms
+          for i from 0
+          do (let ((location (list i))) ; Simplified location for now
+               (cond
+                 ((and (consp form) (eq (car form) 'def-function))
+                  (compile-toplevel-form form location module builder))
+                 ;; TODO: Add handlers for with-template-type, etc.
+                 )))))
 
 (defun compile-toplevel-form (form location module builder)
   "Analyzes and compiles a single top-level form (used in Pass 2)."
@@ -265,13 +268,16 @@
   ;; For now, we only handle def-function
   (when (and (consp form) (eq (car form) 'def-function))
     ;; We need to inject the :source-location into the macro call.
-    (let ((form-with-location (append form (list :source-location `',location))))
-      ;; IMPORTANT: We must expand the macro *while we are in the
-      ;; :crisp-language package* to ensure symbols like '=>' are
-      ;; resolved correctly. `eval` would switch the package back
-      ;; to :crisp.compiler, breaking our symbol checks.
-      (let ((expanded-form (macroexpand-1 form-with-location)))
-        (generate-llvm-ir (eval expanded-form) module builder)))))
+    (push (second form) *compilation-call-stack*)
+    (format T "compilation-call-stack: ~a~%" *compilation-call-stack*)
+    (unwind-protect
+         (let ((form-with-location (append form (list :source-location `',location))))
+           ;; IMPORTANT: We must expand the macro *while we are in the
+           ;; :crisp-language package* to ensure symbols like '=>' are
+           ;; resolved correctly. `eval` would switch the package back
+           ;; to :crisp.compiler, breaking our symbol checks.
+           (let ((expanded-form (macroexpand-1 form-with-location)))
+             (generate-llvm-ir (eval expanded-form) module builder))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Analysis Internals
@@ -305,76 +311,45 @@
 (defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
   (format t "Compiler: Analyzing function ~a...~%" name)
-  
-  ;; 1. Check for #'(...) syntax
-  (let ((fn-decl (find 'function declarations :key #'car)))
-    (if fn-decl
-        ;; --- Path A: Found #'(...) syntax ---
-        (let* ((fn-spec (second fn-decl)) 
-               (return-type (analyze-return-type-from-spec fn-spec))
-               (env (analyze-environment-from-spec params fn-spec)))
-          
-          ;; Run the rest of the compiler using THESE variables
-          (analyze-and-build-function name params body env return-type declarations location))
-        
-        ;; --- Path B: Use (type ...) and (return-type ...) ---
-        (let* ((return-type (analyze-return-type-from-list declarations))
-               (env (analyze-environment-from-list params declarations)))
-          
-          ;; Run the rest of the compiler using THESE variables
-          (analyze-and-build-function name params body env return-type declarations location)))))
+  (let* ((fn-decl (find 'function declarations :key #'car))
+         (return-type (if fn-decl
+                          (analyze-return-type-from-spec (second fn-decl))
+                          (analyze-return-type-from-list declarations)))
+         (env (if fn-decl
+                  (analyze-environment-from-spec params (second fn-decl))
+                  (analyze-environment-from-list params declarations))))
 
-(defun analyze-and-build-function (name params body env return-type declarations location)
-  "This is the shared 'guts' of the analyzer."
-  (format T "anaylze-and-build-function name: ~a  params: ~a~% body: ~a~%  declarations: ~a~% location: ~a ~%" name params body declarations location)
-  
-  ;; 1. Create and register the function signature BEFORE analyzing the body.
-  ;; This is the core of the single-pass strategy.
-  (let ((signature (make-function-signature
-                    :name name
-                    :parameters (mapcar #'second env)
-                    :return-types (list return-type) ; for now
-                    :source-location location)))
-    ;; For overloading, we'd push to a list. For now, just set it.
-    (setf (gethash name *function-table*) (list signature)))
+    ;; Handle the case where a function promises a return value but has no body.
+    (when (and (not (eq return-type 'nil)) (null body))
+      (error 'crisp-type-error :expected return-type :inferred 'nil :source-location location))
 
-  ;; 2. Push the current function onto the call stack to detect recursion.
-  (push name *compilation-call-stack*)
-  (unwind-protect
-       (progn
-         ;; Handle the case where a function promises a return value but has no body.
-         (when (and (not (eq return-type 'nil)) (null body))
-           (error 'crisp-type-error :expected return-type :inferred 'nil :source-location location))
+    ;; 2. Analyze the Body
+    (let* ((body-nodes (analyze-body-expressions body env location))
+           (return-node (first (last body-nodes)))
+           (inferred-type (if return-node (semantic-node-type return-node) 'nil)))
 
-         ;; 3. Analyze the Body
-         (let* ((body-nodes (analyze-body-expressions body env location))
-                (return-node (first (last body-nodes)))
-                (inferred-type (if return-node (semantic-node-type return-node) 'nil)))
+      (format T " body-nodes: ~a~%  return-node: ~a~%  inferred-type: ~a  return-type: ~a" body-nodes return-node inferred-type return-type)
 
-           (format T " body-nodes: ~a~%  return-node: ~a~%  inferred-type: ~a  return-type: ~a" body-nodes return-node inferred-type return-type)
+      ;; 3. Check Types
+      (unless (equal inferred-type return-type)
+        (error 'crisp-type-error
+               :expected return-type
+               :inferred inferred-type
+               :source-location (if return-node
+                                    (semantic-node-source-location return-node)
+                                    location)))
 
-           ;; 4. Check Types
-           (unless (equal inferred-type return-type)
-             (error 'crisp-type-error
-                    :expected return-type
-                    :inferred inferred-type
-                    :source-location (if return-node
-                                         (semantic-node-source-location return-node)
-                                         location)))
-
-           ;; 5. Build and return the "blueprint"
-           (make-semantic-function
-            :name name
-            :param-list (loop for (param-name param-type) in env
-                              collect (make-semantic-param :name param-name :type param-type :source-location location))
-            :return-type return-type
-            :body (list (make-semantic-return
-                         :return-type return-type
-                         :value-node return-node
-                         :source-location (if return-node (semantic-node-source-location return-node) location)))
-            :source-location location)))
-    ;; 4. Ensure the function is popped from the stack on exit.
-    (pop *compilation-call-stack*)))
+      ;; 4. Build and return the "blueprint"
+      (make-semantic-function
+       :name name
+       :param-list (loop for (param-name param-type) in env
+                         collect (make-semantic-param :name param-name :type param-type :source-location location))
+       :return-type return-type
+       :body (list (make-semantic-return
+                    :return-type return-type
+                    :value-node return-node
+                    :source-location (if return-node (semantic-node-source-location return-node) location)))
+       :source-location location))))
 
 
 ;; ### Helpers
