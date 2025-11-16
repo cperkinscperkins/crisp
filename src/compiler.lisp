@@ -64,10 +64,6 @@
   "A hash table mapping function names (symbols) to a list of
   FUNCTION-SIGNATURE structs. This supports overloading.")
 
-(defvar *compilation-call-stack* nil
-  "A list of function names currently in the compilation stack, used to
-  detect recursion.")
-
 (defvar *call-graph* nil
   "A hash table representing the call graph of functions.
   Keys are caller function names, values are lists of callee names.")
@@ -241,10 +237,10 @@
   ;; Pass 1: Gather all function signatures first.
   (let ((*call-graph* (make-hash-table)))
     (analyze-signatures-pass forms)
+    ;; Pass 2: Now that all signatures are known, compile the function bodies.
+    (compile-forms-pass forms module builder)
     ;; After analysis, check the constructed graph for cycles.
-    (check-for-recursion-cycles))
-  ;; Pass 2: Now that all signatures are known, compile the function bodies.
-  (compile-forms-pass forms module builder))
+    (check-for-recursion-cycles)))
 
 (defun analyze-signatures-pass (forms)
   "Pass 1: Iterates through forms to find and register function signatures."
@@ -278,22 +274,22 @@
     ;; In multi-pass mode, this check prevents re-registration.
     (unless (gethash (second form) *function-table*)
       (register-function-signature form location))
-
     (let ((*current-compiling-function* (second form))
           (form-with-location (append form (list :source-location `',location))))
       (let ((expanded-form (macroexpand-1 form-with-location)))
         (generate-llvm-ir (eval expanded-form) module builder)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Recursion Cycle Detection
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 ;; Internal handlers
 ;; -----------------
 ;; *  (def-function wow () (declare (return-type int)) 7) 
 ;; *  (def-function adds (a  b ) (declare (type a b int) (return-type int)) (+ a b)) 
 ;; *  (def-function with-arrow (a b) (declare #'(int int => int)) (+ a b))
 ;; (generate-llvm-ir ...)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Recursion Cycle Detection
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun check-for-recursion-cycles ()
   "Iterates through the call graph to find any recursive cycles."
