@@ -15,32 +15,37 @@
   ;; load libllvm when exe runs, not when built.
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
   
-  ;; Get command-line arguments.
-  ;; uiop:command-line-arguments is a portable way to get them.
-  (let ((args (uiop:command-line-arguments)))
+  (let* ((all-args (uiop:command-line-arguments))
+         (flags (remove-if-not (lambda (arg) (char= (char arg 0) #\-)) all-args))
+         (files (remove-if (lambda (arg) (char= (char arg 0) #\-)) all-args))
+         (single-pass-p (member "--single-pass" flags :test #'string=)))
     
-    (unless (= (length args) 1)
-      (format *error-output* "Usage: crisp-compile <filename.crisp>~%")
+    (unless (= (length files) 1)
+      (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
       (uiop:quit 1))
       
-    (let ((filename (first args)))
+    (let ((filename (first files)))
       (let* ((module-name (pathname-name filename))
              (module (crisp.llvm-bindings:llvm-module-create module-name))
              (builder (crisp.llvm-bindings:llvm-create-builder)))
         (unwind-protect
              (handler-case
                  (progn
-                   ;; with-open-file handles the pathname string just fine.
                    (with-open-file (stream filename)
                      (format *error-output* "; Compiling ~a...~%" filename) 
-                     (let* ((;; Bind *package* so cl:read reads symbols
-                             ;; into the sandboxed :crisp-language package.
-                             *package* (find-package :crisp-language))
-                            (forms (loop for form = (read stream nil :eof)
-                                         until (eq form :eof)
-                                         collect form)))
-                       ;; Hand off the list of forms to the multi-pass compiler
-                       (crisp.compiler:compile-module forms module builder)))
+                     (if single-pass-p
+                         ;; --- SINGLE-PASS MODE ---
+                         (let ((toplevel-index 0)
+                               (*package* (find-package :crisp-language)))
+                           (loop for form = (read stream nil :eof)
+                                 until (eq form :eof)
+                                 do (let ((location (list toplevel-index)))
+                                      (crisp.compiler:compile-toplevel-form form location module builder)
+                                      (incf toplevel-index))))
+                         ;; --- MULTI-PASS MODE (DEFAULT) ---
+                         (let* ((*package* (find-package :crisp-language))
+                                (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form)))
+                           (crisp.compiler:compile-module forms module builder))))
                    
                    ;; After the loop, print the entire module.
                    (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
