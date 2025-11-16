@@ -141,6 +141,15 @@
                      (type-error-expected condition)
                      (type-error-inferred condition)))))
 
+(define-condition crisp-call-type-error (crisp-compiler-error)
+  ((message :initarg :message :reader type-error-message)
+   (expected :initarg :expected :reader type-error-expected)
+   (inferred :initarg :inferred :reader type-error-inferred))
+  (:report (lambda (condition stream)
+             (format stream "Expected ~a but got ~a."
+                     (type-error-expected condition)
+                     (type-error-inferred condition))))) 
+
 (define-condition crisp-signature-arity-error (crisp-compiler-error)
   ((expected :initarg :expected :reader arity-error-expected)
    (inferred :initarg :inferred :reader arity-error-inferred))
@@ -377,6 +386,74 @@
                 param-names)))))
 
 
+(defvar *expression-analyzers* (make-hash-table)
+  "A dispatch table mapping operator symbols to their analyzer functions.")
+
+(defmacro def-expression-analyzer (operator handler-fn)
+  "A helper macro to register an operator's analyzer function."
+  `(setf (gethash ',operator *expression-analyzers*) ',handler-fn))
+
+(defun analyze-add-expression (expr env location)
+  "Analyzes a `(+ ...)` expression."
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2))))
+         (left-type (semantic-node-type left-node))
+         (right-type (semantic-node-type right-node)))
+
+    ;; (This is a stub, a real one would be smarter)
+    (unless (and (eq left-type 'i32) (eq right-type 'i32))
+      (error 'crisp-type-error
+             :expected 'i32
+             :inferred (if (not (eq left-type 'i32)) left-type right-type)
+             :source-location location))
+
+    (make-semantic-add :type 'i32
+                       :left-arg left-node
+                       :right-arg right-node
+                       :source-location location)))
+
+(def-expression-analyzer + analyze-add-expression)
+
+(defun analyze-function-call (op expr env location)
+  "Analyzes a call to a user-defined function."
+  ;; Check for recursion first.
+  (when (member op *compilation-call-stack*)
+    (error 'crisp-recursion-error :form op :source-location (append location '(0))))
+
+  ;; 1. Analyze the arguments passed to the call.
+  (let* ((arg-forms (rest expr))
+         (arg-nodes (loop for arg-form in arg-forms
+                          for i from 1
+                          collect (analyze-expression arg-form env (append location (list i)))))
+         (arg-types (mapcar #'semantic-node-type arg-nodes))
+         ;; 2. Get the function signature(s) from the table.
+         (signatures (gethash op *function-table*))
+         ;; 3. Find the matching overload (for now, we assume one).
+         ;;    TODO: A real implementation would loop through signatures
+         ;;    and find the one that matches the arg-types.
+         (signature (first signatures)))
+
+    ;; 4. Perform Arity and Type Checking
+    (unless (= (length arg-types) (length (function-signature-parameters signature)))
+      (error 'crisp-signature-arity-error
+             :expected (length (function-signature-parameters signature))
+             :inferred (length arg-types)
+             :source-location location))
+
+    (unless (equal arg-types (function-signature-parameters signature))
+      (error 'crisp-call-type-error
+             :message (format nil "Incorrect argument types for call to '~a'." op)
+             :expected (function-signature-parameters signature)
+             :inferred arg-types
+             :source-location location))
+
+    ;; 5. Build the semantic-call node.
+    (make-semantic-call :name op
+                        :type (first (function-signature-return-types signature))
+                        :args arg-nodes
+                        :source-location location)))
+
+
 (defun analyze-parameters (params)
   "Builds the environment (a symbol table)."
   ;; For now, just a simple list.
@@ -418,69 +495,17 @@
     ;; Case 3: It's a function call, like '(+ a b)'
     ((listp expr)
      (let ((op (first expr)))
-      ;; log the fucntion table
-       (format T "*function-table*: ~a~%" *function-table*)
-       (loop for key being the hash-keys of *function-table*
-        do (format t "Key: ~a~%" key))
-
-       (cond ((eq op '+)
-              ;; Pass the appended location to the children.
-              (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-                     (right-node (analyze-expression (third expr) env (append location '(2))))
-                     (left-type (semantic-node-type left-node))
-                     (right-type (semantic-node-type right-node)))
-
-                ;; (This is a stub, a real one would be smarter)
-                (unless (and (eq left-type 'i32) (eq right-type 'i32))
-                  (error "Can only add i32 types for now!")) ; TODO: Update to condition
-
-                (make-semantic-add :type 'i32
-                                   :left-arg left-node
-                                   :right-arg right-node
-                                   :source-location location)))
-
-             ;; Check if 'op' is a known function
-             ((gethash op *function-table*)
-               (progn
-                 ;; Check for recursion first.
-                 (when (member op *compilation-call-stack*)
-                   (error 'crisp-recursion-error :form op :source-location (append location '(0))))
-
-                 ;; 1. Analyze the arguments passed to the call.
-                 (let* ((arg-forms (rest expr))
-                        (arg-nodes (loop for arg-form in arg-forms
-                                         for i from 1
-                                         collect (analyze-expression arg-form env (append location (list i)))))
-                        (arg-types (mapcar #'semantic-node-type arg-nodes))
-                        ;; 2. Get the function signature(s) from the table.
-                        (signatures (gethash op *function-table*))
-                        ;; 3. Find the matching overload (for now, we assume one).
-                        ;;    TODO: A real implementation would loop through signatures
-                        ;;    and find the one that matches the arg-types.
-                        (signature (first signatures)))
-
-                   ;; 4. Perform Arity and Type Checking
-                   (unless (= (length arg-types) (length (function-signature-parameters signature)))
-                     (error 'crisp-signature-arity-error
-                            :expected (length (function-signature-parameters signature))
-                            :inferred (length arg-types)
-                            :source-location location))
-
-                   (unless (equal arg-types (function-signature-parameters signature))
-                     (error 'crisp-type-error
-                            :message (format nil "Incorrect argument types for call to '~a'." op)
-                            :expected (function-signature-parameters signature)
-                            :inferred arg-types
-                            :source-location location))
-
-                   ;; 5. Build the semantic-call node.
-                   (make-semantic-call :name op :type (first (function-signature-return-types signature))
-                                       :args arg-nodes :source-location location))))
-
-             ;; TODO: unrecognized function ?
-             (t (error 'crisp-unsupported-form-error
-                       :form op
-                       :source-location (append location '(0)))))))
+       (let ((handler (gethash op *expression-analyzers*)))
+         (cond
+           ;; Is there a specific handler for this operator (e.g., '+')?
+           (handler (funcall handler expr env location))
+           ;; Is it a call to a known user-defined function?
+           ((gethash op *function-table*)
+            (analyze-function-call op expr env location))
+           ;; Otherwise, we don't know what this is.
+           (t (error 'crisp-unsupported-form-error
+                     :form op
+                     :source-location (append location '(0))))))))
     
     (t (error 'crisp-unsupported-form-error
               :form expr
