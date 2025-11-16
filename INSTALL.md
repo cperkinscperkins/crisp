@@ -149,11 +149,11 @@ $   ./bin/crisp-compile.exe ./tests/return_7.crisp
 
 ```
 
-Other tests: Generate some LLVM-IR
+Other tests: evaluate some Crisp code, or generate some IR
 ```
 (in-package crisp.compiler)
-(generate-llvm-ir (def-function wow () (declare (return-type int)) 7))
-(generate-llvm-ir (def-function adds (a b) (declare (type a b int) (return-type int)) (+ a b)))
+(def-function wow () (declare (return-type int)) 7)
+(def-function adds (a b) (declare (type a b int) (return-type int)) (+ a b))
 
 ;; or run the CI tests and quit after
 (load #P"./tests/run-ci.lisp")

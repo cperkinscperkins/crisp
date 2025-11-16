@@ -130,8 +130,9 @@ ERRORS
 - [x] (def-function (def-function)) illegal nesting'
 - [x] unknown function/symbol call (whack ..)
 - [x] unbound argument (+ whack adoodle)
-- macro stuff?
-- call fn with wrong number of args
+- [ ] macro stuff?
+- [ ] malformed - 
+- [x] call fn with wrong number of args
 
 
 - [x] Linux?
