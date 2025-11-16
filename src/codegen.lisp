@@ -55,83 +55,92 @@
                    (return-value (generate-expression-ir builder module var-env (semantic-return-value-node body-node))))
               (llvm-build-ret builder return-value))))))))
 
+(defgeneric generate-node-ir (node builder module var-env)
+  (:documentation "Generates LLVM IR for a single semantic node."))
+
 (defun generate-expression-ir (builder module var-env node)
   "Recursively generates IR for a single expression node."
   ;; --- TEST LOGGING ---
   (format t "~&[DEBUG] generate-expression-ir | Builder: ~a | Node: ~a~%" builder (type-of node))
-  
-  (etypecase node
-    ;; --- Literal ---
-    (semantic-literal
-     (llvm-const-int (llvm-type-for-name (semantic-literal-value-type node))
-                     (semantic-literal-value node)
-                     nil))
-    ;; --- Variable Read ---
-    (semantic-var-read
-     (let* ((var-name (semantic-var-read-name node))
-            (alloca (gethash var-name var-env))
-            (type (llvm-type-for-name (semantic-var-read-type node)))
-            (loaded-name (string-downcase (format nil "~a" var-name)))
-            (current-block (llvm-get-insert-block builder))
-            (parent-fn (llvm-get-basic-block-parent current-block)))
-       ;; --- TEST LOGGING ---
-       (format t "~&[DEBUG] Loading var '~a'. Found in env: ~a. Alloca ptr: ~a~%"
-           var-name (nth-value 1 (gethash var-name var-env)) alloca)
-       (format t "~&[DEBUG] Builder is in block ~a which belongs to function ~a~%"
-               current-block parent-fn)
-       (llvm-build-load2 builder type alloca loaded-name)))
+  (generate-node-ir node builder module var-env))
 
-    ;; --- Add ---
-    (semantic-add
-     (let ((lhs (generate-expression-ir builder module var-env (semantic-add-left-arg node)))
-           (rhs (generate-expression-ir builder module var-env (semantic-add-right-arg node))))
-       (llvm-build-add builder lhs rhs "add_tmp")))
+;; -- literal value --
+(defmethod generate-node-ir ((node semantic-literal) builder module var-env)
+  "Generates IR for a literal value."
+  (declare (ignore module var-env))
+  (llvm-const-int (llvm-type-for-name (semantic-literal-value-type node))
+                  (semantic-literal-value node)
+                  nil))
 
-    ;; --- Function Call ---
-    (semantic-call
-     (format T "~&[DEBUG] :: Generating function call to '~a'~%" (semantic-call-name node))
-     (let* ((callee-name (string-downcase (semantic-call-name node)))
-            (sig (first (gethash (semantic-call-name node) *function-table*)))
+;; -- reading a variable --
+(defmethod generate-node-ir ((node semantic-var-read) builder module var-env)
+  "Generates IR for reading a variable."
+  (declare (ignore module))
+  (let* ((var-name (semantic-var-read-name node))
+         (alloca (gethash var-name var-env))
+         (type (llvm-type-for-name (semantic-var-read-type node)))
+         (loaded-name (string-downcase (format nil "~a" var-name)))
+         (current-block (llvm-get-insert-block builder))
+         (parent-fn (llvm-get-basic-block-parent current-block)))
+    ;; --- TEST LOGGING ---
+    (format t "~&[DEBUG] Loading var '~a'. Found in env: ~a. Alloca ptr: ~a~%"
+        var-name (nth-value 1 (gethash var-name var-env)) alloca)
+    (format t "~&[DEBUG] Builder is in block ~a which belongs to function ~a~%"
+            current-block parent-fn)
+    (llvm-build-load2 builder type alloca loaded-name)))
 
-             ;; 1. Get the Lisp return type symbol (e.g. 'I32 or NIL)
-             (crisp-return-type (first (function-signature-return-types sig)))
+;; -- addition --
+(defmethod generate-node-ir ((node semantic-add) builder module var-env)
+  "Generates IR for an addition operation."
+  (let ((lhs (generate-node-ir (semantic-add-left-arg node) builder module var-env))
+        (rhs (generate-node-ir (semantic-add-right-arg node) builder module var-env)))
+    (llvm-build-add builder lhs rhs "add_tmp")))
 
-             ;; 2. Get the LLVM return type (handles NIL -> void)
-             (llvm-return-type (if crisp-return-type
-                                 (llvm-type-for-name crisp-return-type)
-                                 (llvm-void-type)))
+;; -- function call --
+(defmethod generate-node-ir ((node semantic-call) builder module var-env)
+  "Generates IR for a function call."
+  (format T "~&[DEBUG] :: Generating function call to '~a'~%" (semantic-call-name node))
+  (let* ((callee-name (string-downcase (semantic-call-name node)))
+         (sig (first (gethash (semantic-call-name node) *function-table*)))
 
-             ;; 3. Build the LLVM function *type* (the signature)
-             (param-count (length (function-signature-parameters sig)))
-             (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count))
-             (_ (loop for i from 0 for p-type in (function-signature-parameters sig)
-                      do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i)
-                               (llvm-type-for-name p-type))))
-             (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
+          ;; 1. Get the Lisp return type symbol (e.g. 'I32 or NIL)
+          (crisp-return-type (first (function-signature-return-types sig)))
 
-             ;; 4. Get the LLVM function *value* (the callable function)
-             (callee (or (llvm-get-named-function module callee-name)
-                         ;; If not in this module, declare it
-                         (llvm-add-function module callee-name llvm-fn-type)))
-             
-             (arg-nodes (semantic-call-args node))
-             (num-args (length arg-nodes))
-             (args-array (cffi:foreign-alloc 'llvm-value-ref :count num-args)))
-       ;; --- TEST LOGGING ---
-       (format t "~&[DEBUG] Calling func '~a'. Callee ptr: ~a sig: ~a crisp-return-type: ~a~%"
-           (semantic-call-name node) callee sig crisp-return-type)
-       (loop for i from 0 for arg-node in arg-nodes
-             do (let ((arg-val (generate-expression-ir builder module var-env arg-node)))
-                  ;; --- TEST LOGGING ---
-                  (format t "~&[DEBUG] Arg ~a value: ~a~%" i arg-val)
-                  (setf (cffi:mem-aref args-array 'llvm-value-ref i) arg-val)))
-       (llvm-build-call2 builder
-                           llvm-fn-type  ; <-- THE FIX (was return-type)
-                           callee
-                           args-array
-                           num-args
-                           (if crisp-return-type "call_tmp" ""))
-       ))))
+          ;; 2. Get the LLVM return type (handles NIL -> void)
+          (llvm-return-type (if crisp-return-type
+                              (llvm-type-for-name crisp-return-type)
+                              (llvm-void-type)))
+
+          ;; 3. Build the LLVM function *type* (the signature)
+          (param-count (length (function-signature-parameters sig)))
+          (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count))
+          (_ (loop for i from 0 for p-type in (function-signature-parameters sig)
+                   do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i)
+                            (llvm-type-for-name p-type))))
+          (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
+
+          ;; 4. Get the LLVM function *value* (the callable function)
+          (callee (or (llvm-get-named-function module callee-name)
+                      ;; If not in this module, declare it
+                      (llvm-add-function module callee-name llvm-fn-type)))
+          
+          (arg-nodes (semantic-call-args node))
+          (num-args (length arg-nodes))
+          (args-array (cffi:foreign-alloc 'llvm-value-ref :count num-args)))
+    ;; --- TEST LOGGING ---
+    (format t "~&[DEBUG] Calling func '~a'. Callee ptr: ~a sig: ~a crisp-return-type: ~a~%"
+        (semantic-call-name node) callee sig crisp-return-type)
+    (loop for i from 0 for arg-node in arg-nodes
+          do (let ((arg-val (generate-node-ir arg-node builder module var-env)))
+               ;; --- TEST LOGGING ---
+               (format t "~&[DEBUG] Arg ~a value: ~a~%" i arg-val)
+               (setf (cffi:mem-aref args-array 'llvm-value-ref i) arg-val)))
+    (llvm-build-call2 builder
+                        llvm-fn-type
+                        callee
+                        args-array
+                        num-args
+                        (if crisp-return-type "call_tmp" ""))))
 
 (defun llvm-type-for-name (type-name)
   "Maps a Crisp type symbol to an LLVM type."
