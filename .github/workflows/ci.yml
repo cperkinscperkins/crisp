@@ -64,6 +64,9 @@ jobs:
 
           echo "--- Running E2E: success test (def-function_primitive.crisp) ---"
           ./bin/crisp-compile tests/def-function_primitive.crisp
+
+          echo "--- Running E2E: success test --single-pass (def-function_primitive.crisp) ---"
+          ./bin/crisp-compile tests/def-function_primitive.crisp --single-pass
  
           echo "--- Running E2E: success test (multipass.crisp) ---"
           ./bin/crisp-compile tests/multipass.crisp
@@ -113,3 +116,9 @@ jobs:
 
           echo "--- Running E2E: failure test (recursion_mutual.crisp) ---"
           ! ./bin/crisp-compile tests/errors/recursion_mutual.crisp 2>&1 | grep -F "Recursion is not allowed"
+
+          cho "--- Running E2E: failure test --single-pass (recursion.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/recursion.crisp --single-pass 2>&1 | grep -F "Recursion is not allowed"
+
+          echo "--- Running E2E: failure test --single-pass (recursion_mutual.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/recursion_mutual.crisp --single-pass 2>&1 | grep -F "Recursion is not allowed"
