@@ -95,3 +95,12 @@ jobs:
 
           echo "--- Running E2E: failure test (malformed.crisp) ---"
           ! ./bin/crisp-compile tests/errors/malformed.crisp 2>&1 | grep -F "Unexpected end of file"
+
+          echo "--- Running E2E: failure test (malformed_2.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/malformed.crisp 2>&1 | grep -F "unmatched close parenthesis"
+
+          echo "--- Running E2E: failure test (recursion.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/recursion.crisp 2>&1 | grep -F "Recursion is not allowed"
+
+          echo "--- Running E2E: failure test (recursion_mutual.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/recursion_mutual.crisp 2>&1 | grep -F "Recursion is not allowed"

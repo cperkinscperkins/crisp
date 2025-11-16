@@ -1,0 +1,3 @@
+(def-function recurse (a)
+    (declare #'(int => int))
+  (recurse a))
