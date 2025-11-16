@@ -61,6 +61,12 @@ jobs:
 
           echo "--- Running E2E: success test (return_7.crisp) ---"
           ./bin/crisp-compile tests/return_7.crisp
+
+          echo "--- Running E2E: success test (def-function_primitive.crisp) ---"
+          ./bin/crisp-compile tests/def-function_primitive.crisp
+ 
+          echo "--- Running E2E: success test (multipass.crisp) ---"
+          ./bin/crisp-compile tests/multipass.crisp
           
           echo "--- Running E2E: failure test (unsupported_keyword.crisp) ---"
           # 1. Run the compiler on the bad file.

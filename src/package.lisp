@@ -84,7 +84,7 @@
   (:export #:test-llvm-hello-world
            #:def-function
            #:compile-toplevel-form
-           #:def-function
+           #:compile-module
 
            ;; laungage symbols
            #:declare
