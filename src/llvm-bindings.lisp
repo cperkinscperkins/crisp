@@ -193,3 +193,20 @@
   "Sets the subprogram for a function."
   (func :pointer)
   (sp llvm-metadata-ref))
+
+(cffi:defcfun ("LLVMDIBuilderCreateBasicType" llvm-di-builder-create-basic-type) llvm-metadata-ref
+  "Creates a new DIBasicType."
+  (builder llvm-di-builder-ref)
+  (name :string)
+  (name-len :unsigned-int)
+  (size-in-bits :uint64)
+  (encoding :unsigned-int) ; LLVMDWARFTypeEncoding
+  (flags :unsigned-int))    ; LLVMDIFlags
+
+(cffi:defcfun ("LLVMDIBuilderCreateSubroutineType" llvm-di-builder-create-subroutine-type) llvm-metadata-ref
+  "Creates a new DISubroutineType."
+  (builder llvm-di-builder-ref)
+  (file llvm-metadata-ref)
+  (parameter-types :pointer) ; Array of LLVMMetadataRef
+  (num-parameter-types :unsigned-int)
+  (flags :unsigned-int)) ; LLVMDIFlags
