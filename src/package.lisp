@@ -93,6 +93,7 @@
            #:def-function
            #:compile-toplevel-form
            #:compile-module
+           #:generate-location-map
 
            ;; laungage symbols
            #:declare

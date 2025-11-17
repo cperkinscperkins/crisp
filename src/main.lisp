@@ -53,8 +53,9 @@
                                       (incf toplevel-index)))) 
                          ;; --- MULTI-PASS MODE (DEFAULT) ---
                          (let* ((*package* (find-package :crisp-language))
-                                (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form)))
-                           (crisp.compiler:compile-module forms module builder di-builder di-compile-unit))))
+                                (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form))
+                                (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
+                           (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map))))
                    
                    ;; After the loop, print the entire module.
                    (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
