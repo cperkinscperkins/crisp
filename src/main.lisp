@@ -18,16 +18,19 @@
   (let* ((all-args (uiop:command-line-arguments))
          (flags (remove-if-not (lambda (arg) (char= (char arg 0) #\-)) all-args))
          (files (remove-if (lambda (arg) (char= (char arg 0) #\-)) all-args))
-         (single-pass-p (member "--single-pass" flags :test #'string=)))
+         (single-pass-p (member "--single-pass" flags :test #'string=))
+         (debug-p (or (member "-g" flags :test #'string=)
+                      (member "--debug" flags :test #'string=))))
     
     (unless (= (length files) 1)
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
       (uiop:quit 1))
       
     (let ((filename (first files)))
-      (let* ((module-name (pathname-name filename))
-             (module (crisp.llvm-bindings:llvm-module-create module-name))
-             (builder (crisp.llvm-bindings:llvm-create-builder)))
+      (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filename)))
+             (builder (crisp.llvm-bindings:llvm-create-builder))
+             ;; Only create the DIBuilder if the debug flag is present.
+             (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module))))
         (unwind-protect
              (handler-case
                  (progn
@@ -43,7 +46,7 @@
                                           ;; Each top-level form gets its own stack for direct recursion check.
                                           (crisp.compiler::*single-pass-call-stack* nil))
                                       (crisp.compiler:compile-toplevel-form form location module builder)
-                                      (incf toplevel-index))))
+                                      (incf toplevel-index)))) 
                          ;; --- MULTI-PASS MODE (DEFAULT) ---
                          (let* ((*package* (find-package :crisp-language))
                                 (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form)))
@@ -73,6 +76,8 @@
                  (format *error-output* "~&An unexpected error occurred: ~a~%" c)
                  (uiop:quit 1)))
           ;; Cleanup
+          (when di-builder (crisp.llvm-bindings:llvm-di-builder-finalize di-builder))
+          (when di-builder (crisp.llvm-bindings:llvm-dispose-di-builder di-builder))
           (crisp.llvm-bindings:llvm-dispose-builder builder)
           (crisp.llvm-bindings:llvm-dispose-module module)))
       (format *error-output* "; ...Compilation finished.~%"))))

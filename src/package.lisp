@@ -74,7 +74,11 @@
    #:llvm-build-alloca
    #:llvm-build-store
    #:llvm-build-load2
-   #:llvm-build-add))
+   #:llvm-build-add
+   ;; DWARF Debug Info
+   #:llvm-create-di-builder
+   #:llvm-di-builder-finalize
+   #:llvm-dispose-di-builder))
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)
