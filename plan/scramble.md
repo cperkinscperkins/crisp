@@ -136,6 +136,7 @@ ERRORS
 - [x] recursion
 - [x] mutual recursion
 - [x] call fn with wrong number of args
+- [ ] unrecognized flags
 
 
 - [x] Linux?
