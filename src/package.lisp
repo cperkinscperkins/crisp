@@ -84,7 +84,9 @@
    #:llvm-di-builder-create-function
    #:llvm-set-subprogram
    #:llvm-di-builder-create-basic-type
-   #:llvm-di-builder-create-subroutine-type))
+   #:llvm-di-builder-create-subroutine-type
+   #:llvm-builder-set-debug-location
+   #:llvm-di-builder-create-lexical-block))
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)

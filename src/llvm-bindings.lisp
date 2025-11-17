@@ -210,3 +210,18 @@
   (parameter-types :pointer) ; Array of LLVMMetadataRef
   (num-parameter-types :unsigned-int)
   (flags :unsigned-int)) ; LLVMDIFlags
+
+(cffi:defcfun ("LLVMBuilderSetDebugLocation" llvm-builder-set-debug-location) :void
+  "Sets the debug location for the next instruction."
+  (builder :pointer)
+  (line :unsigned-int)
+  (col :unsigned-int)
+  (scope llvm-metadata-ref))
+
+(cffi:defcfun ("LLVMDIBuilderCreateLexicalBlock" llvm-di-builder-create-lexical-block) llvm-metadata-ref
+  "Creates a new lexical block."
+  (builder llvm-di-builder-ref)
+  (scope llvm-metadata-ref)
+  (file llvm-metadata-ref)
+  (line :unsigned-int)
+  (column :unsigned-int))
