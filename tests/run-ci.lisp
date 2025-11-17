@@ -131,7 +131,22 @@
 
 (test-dwarf-instruction-level)
 
-;(test-compile-and-print (internal-def-function 'test-instr '() '((return-type int)) '(7) '(0)) :debug-p t)
+(defun test-dwarf-add-instruction ()
+  (format t "~&; --- Testing DWARF for Add Instruction ---~%")
+  (let* ((ir-string (with-output-to-string (s)
+                      (let ((*standard-output* s)) 
+                        (test-compile-and-print 
+                         (internal-def-function 'test-add '(a) '((type a int) (return-type int)) '((+ a 2)) '(0))
+                         :debug-p t))))
+         ;; LLVM might load the parameter 'a' into a register like %0
+         ;; So we search for the add instruction using that register.
+         (add-found (search "add i32 %a1, 2, !dbg" ir-string))
+         (ret-found (search "ret i32 %add_tmp, !dbg" ir-string)))
+    (format T "ir-string: ~a~%" ir-string)
+    (format t "~&; Test 'DWARF Add Location': ~:[FAIL~;PASS~]~%" (and add-found ret-found))))
+
+(test-dwarf-add-instruction)
+
 
 ;; yay
 (format t "~&~%*** Crisp CI Tests Passed! ***~%")
