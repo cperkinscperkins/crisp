@@ -114,8 +114,9 @@
                         (test-compile-and-print (internal-def-function 'test-dwarf '() '((return-type int)) '(7) '(0)) :debug-p t))))
          (cu-found (search "!DICompileUnit" ir-string)) 
          (dbg-found (search "define i32 @test-dwarf() !dbg" ir-string))
-         (line-found (search "line: 1" ir-string)))
-    (format t "~&; Test 'DWARF Scaffolding': ~:[FAIL~;PASS~]~%" (and cu-found dbg-found line-found))))
+         (line-found (search "line: 1" ir-string))
+         (type-found (search "!DISubroutineType" ir-string)))
+    (format t "~&; Test 'DWARF Scaffolding': ~:[FAIL~;PASS~]~%" (and cu-found dbg-found line-found type-found))))
 
 (test-dwarf-scaffolding)
 

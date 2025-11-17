@@ -82,7 +82,9 @@
    #:llvm-di-builder-create-compile-unit
    #:llvm-di-builder-create-file
    #:llvm-di-builder-create-function
-   #:llvm-set-subprogram))
+   #:llvm-set-subprogram
+   #:llvm-di-builder-create-basic-type
+   #:llvm-di-builder-create-subroutine-type))
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)

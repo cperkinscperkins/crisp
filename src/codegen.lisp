@@ -39,10 +39,23 @@
 
           ;; --- 2.5 Create Debug Info for the Function ---
           (when di-builder
-            (let* ((f "test.crisp")
-                   (d "/tmp/")
-                   (di-file (when di-compile-unit (crisp.llvm-bindings::llvm-di-builder-create-file di-builder f (length f) d (length d)))) ; Placeholder
+            (let* ((di-file (when di-compile-unit (crisp.llvm-bindings::llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
                    (line-num (if location-map (gethash fn-loc location-map) 0))
+                   ;; Create a DIBasicType for i32
+                   (di-i32-type (llvm-di-builder-create-basic-type di-builder "int" 3 32 5 0)) ; 5 = DW_ATE_signed
+                   ;; Create the DISubroutineType
+                   (di-param-types (cons di-i32-type ; Return type is the first element
+                                         (loop for param in param-nodes collect di-i32-type)))
+                   (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
+                   (_ (loop for i from 0 for type in di-param-types
+                            do (setf (cffi:mem-aref di-param-array :pointer i) type)))
+                   (di-fn-type (llvm-di-builder-create-subroutine-type
+                                di-builder
+                                di-file
+                                di-param-array
+                                (length di-param-types)
+                                0))
+                   ;; Create the DISubprogram (the function itself)
                    (di-subprogram (llvm-di-builder-create-function
                                   di-builder
                                   di-compile-unit ; Scope
@@ -50,7 +63,7 @@
                                   fn-name (length fn-name) ; LinkageName
                                   di-file
                                   line-num
-                                  (cffi:null-pointer) ; DI Type (we'll add this in 2c)
+                                  di-fn-type
                                   nil ; IsLocalToUnit
                                   t   ; IsDefinition
                                   0   ; ScopeLine
