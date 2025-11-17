@@ -125,3 +125,18 @@
   (lhs :pointer)
   (rhs :pointer)
   (name :string))
+
+;; --- Debug Info ---
+(cffi:defctype llvm-di-builder-ref :pointer)
+
+(cffi:defcfun ("LLVMCreateDIBuilder" llvm-create-di-builder) llvm-di-builder-ref
+  "Creates a new DIBuilder."
+  (M :pointer))
+
+(cffi:defcfun ("LLVMDIBuilderFinalize" llvm-di-builder-finalize) :void
+  "Constructs the DWARF metadata for the given DIBuilder."
+  (builder llvm-di-builder-ref))
+
+(cffi:defcfun ("LLVMDisposeDIBuilder" llvm-dispose-di-builder) :void
+  "Disposes of a DIBuilder. This should be called to avoid memory leaks."
+  (builder llvm-di-builder-ref))
