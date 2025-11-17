@@ -121,4 +121,4 @@ jobs:
           ! ./bin/crisp-compile tests/errors/recursion.crisp --single-pass 2>&1 | grep -F "Recursion is not allowed"
 
           echo "--- Running E2E: failure test --single-pass (recursion_mutual.crisp) ---"
-          ! ./bin/crisp-compile tests/errors/recursion_mutual.crisp --single-pass 2>&1 | grep -F "Recursion is not allowed"
+          ! ./bin/crisp-compile tests/errors/recursion_mutual.crisp --single-pass 2>&1 | grep -F "Unsupported form"

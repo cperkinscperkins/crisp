@@ -111,8 +111,14 @@ If this prints a version number (e.g., `21.1.4`), you're all set.
 If you are on Windows, then rummage around where you installed it and make sure things are ok.
 
 
-Build
------
+Build Instantly
+---------------
+```
+$ sbcl --non-interactive --load build/build.lisp
+```
+
+Build Interactively
+-------------------
 
 - from a terminal, `cd` to the `crisp` directory.
 - launch SBCL  (invoke `sbcl` from the shell)
@@ -130,11 +136,7 @@ We will
 (push *default-pathname-defaults* asdf:*central-registry*)
 (asdf:clear-system "crisp")
 (ql:quickload "crisp")
-;; (asdf:load-system "crisp")
 
-;; if you want to quickly test, this will use LLVM lib to gen IR for a small function.
-(cffi:use-foreign-library crisp.llvm-bindings::libllvm)
-(crisp.compiler:test-llvm-hello-world) 
 
 ;; to build the compiler
 (uiop::ensure-directories-exist "bin/")
@@ -149,8 +151,16 @@ $   ./bin/crisp-compile.exe ./tests/return_7.crisp
 
 ```
 
-Other tests: evaluate some Crisp code, or generate some IR
+Test interactively from SBCL
+---------------------------
 ```
+(push *default-pathname-defaults* asdf:*central-registry*)
+(asdf:clear-system "crisp")
+(ql:quickload "crisp")
+(cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
+(crisp.compiler:test-llvm-hello-world) 
+
 (in-package crisp.compiler)
 (def-function wow () (declare (return-type int)) 7)
 (def-function adds (a b) (declare (type a b int) (return-type int)) (+ a b))

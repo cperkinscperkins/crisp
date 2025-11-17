@@ -1,7 +1,8 @@
 ;; build/build.lisp
 
-;;
-;;  to use this, launch sbcl from the crisp repo root directory
+;;  sbcl --load build/build.lisp
+;;  sbcl --non-interactive --load build/build.lisp
+;;  or launch sbcl and then
 ;;  (load #P"./build/build.lisp")
 
 
@@ -22,4 +23,4 @@
 
 (uiop::ensure-directories-exist "bin/")
 (asdf:make "crisp")
-;(exit)
+(uiop:quit 0)
