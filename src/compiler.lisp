@@ -64,6 +64,10 @@
   "A hash table mapping function names (symbols) to a list of
   FUNCTION-SIGNATURE structs. This supports overloading.")
 
+(defvar *single-pass-call-stack* nil
+  "A list of function names currently in the compilation stack, used to
+  detect recursion in single-pass mode.")
+
 (defvar *call-graph* nil
   "A hash table representing the call graph of functions.
   Keys are caller function names, values are lists of callee names.")
@@ -242,6 +246,7 @@
     ;; After analysis, check the constructed graph for cycles.
     (check-for-recursion-cycles)))
 
+
 (defun analyze-signatures-pass (forms)
   "Pass 1: Iterates through forms to find and register function signatures."
   (loop for form in forms
@@ -274,22 +279,25 @@
     ;; In multi-pass mode, this check prevents re-registration.
     (unless (gethash (second form) *function-table*)
       (register-function-signature form location))
-    (let ((*current-compiling-function* (second form))
-          (form-with-location (append form (list :source-location `',location))))
-      (let ((expanded-form (macroexpand-1 form-with-location)))
-        (generate-llvm-ir (eval expanded-form) module builder)))))
+
+    (let ((*current-compiling-function* (second form)))
+      (push *current-compiling-function* *single-pass-call-stack*)
+      (unwind-protect
+           (let ((form-with-location (append form (list :source-location `',location))))
+             (let ((expanded-form (macroexpand-1 form-with-location)))
+               (generate-llvm-ir (eval expanded-form) module builder)))
+        (pop *single-pass-call-stack*)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Recursion Cycle Detection
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 ;; Internal handlers
 ;; -----------------
 ;; *  (def-function wow () (declare (return-type int)) 7) 
 ;; *  (def-function adds (a  b ) (declare (type a b int) (return-type int)) (+ a b)) 
 ;; *  (def-function with-arrow (a b) (declare #'(int int => int)) (+ a b))
 ;; (generate-llvm-ir ...)
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Recursion Cycle Detection
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun check-for-recursion-cycles ()
   "Iterates through the call graph to find any recursive cycles."
@@ -485,11 +493,15 @@
 
 (defun analyze-function-call (op expr env location)
   "Analyzes a call to a user-defined function."
-  ;; Record the dependency in the call graph for later cycle detection.
   (format T "analyze-function-call.  call-graph: ~a  current-compiling-function: ~a~%" *call-graph* *current-compiling-function*)
-  (when (and *call-graph* *current-compiling-function*)
-    (pushnew op (gethash *current-compiling-function* *call-graph*)))
-
+  (if *call-graph*
+      ;; --- Multi-pass mode ---
+      ;; Record the dependency in the call graph for later cycle detection.
+      (when *current-compiling-function*
+        (pushnew op (gethash *current-compiling-function* *call-graph*)))
+      ;; --- Single-pass mode ---
+      (when (member op *single-pass-call-stack*)
+        (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
 
   ;; 1. Analyze the arguments passed to the call.
   (let* ((arg-forms (rest expr))

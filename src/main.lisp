@@ -39,7 +39,9 @@
                                (*package* (find-package :crisp-language)))
                            (loop for form = (read stream nil :eof)
                                  until (eq form :eof)
-                                 do (let ((location (list toplevel-index)))
+                                 do (let ((location (list toplevel-index))
+                                          ;; Each top-level form gets its own stack for direct recursion check.
+                                          (crisp.compiler::*single-pass-call-stack* nil))
                                       (crisp.compiler:compile-toplevel-form form location module builder)
                                       (incf toplevel-index))))
                          ;; --- MULTI-PASS MODE (DEFAULT) ---
