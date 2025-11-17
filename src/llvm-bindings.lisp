@@ -171,3 +171,25 @@
   (sys-root-length :unsigned-int)
   (sdk :string)
   (sdk-length :unsigned-int))
+
+(cffi:defcfun ("LLVMDIBuilderCreateFunction" llvm-di-builder-create-function) llvm-metadata-ref
+  "Creates a new DISubprogram for a function."
+  (builder llvm-di-builder-ref)
+  (scope llvm-metadata-ref)
+  (name :string)
+  (name-len :unsigned-int)
+  (linkage-name :string)
+  (linkage-name-len :unsigned-int)
+  (file llvm-metadata-ref)
+  (line-no :unsigned-int)
+  (ty llvm-metadata-ref)
+  (is-local-to-unit :boolean)
+  (is-definition :boolean)
+  (scope-line :unsigned-int)
+  (flags :unsigned-int) ; LLVMDIFlags
+  (is-optimized :boolean))
+
+(cffi:defcfun ("LLVMSetSubprogram" llvm-set-subprogram) :void
+  "Sets the subprogram for a function."
+  (func :pointer)
+  (sp llvm-metadata-ref))

@@ -18,7 +18,6 @@
 
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit)
   "Top-level function to generate LLVM IR for a given semantic function."
-  (declare (ignore di-builder di-compile-unit)) ; We'll use these in the next phase
   (let* ((fn-name (string-downcase (semantic-function-name semantic-function)))
          )
     ;; --- 1. Define the Function Type ---
@@ -36,6 +35,24 @@
 
         ;; --- 2. Create the Function ---
         (let ((func (llvm-add-function module fn-name fn-type)))
+
+          ;; --- 2.5 Create Debug Info for the Function ---
+          (when di-builder
+            (let ((di-subprogram (llvm-di-builder-create-function
+                                  di-builder
+                                  di-compile-unit ; Scope
+                                  fn-name (length fn-name) ; Name
+                                  fn-name (length fn-name) ; LinkageName
+                                  (cffi:null-pointer) ; File (we'll add this in 2b)
+                                  0 ; Line Number (we'll add this in 2b)
+                                  (cffi:null-pointer) ; DI Type (we'll add this in 2c)
+                                  nil ; IsLocalToUnit
+                                  t   ; IsDefinition
+                                  0   ; ScopeLine
+                                  0   ; Flags (none)
+                                  nil ; IsOptimized
+                                  )))
+              (llvm-set-subprogram func di-subprogram)))
 
           ;; --- 3. Create the Code Block ---
           (let ((entry-block (llvm-append-basic-block func "entry"))
