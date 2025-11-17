@@ -88,24 +88,34 @@
               ;; --- 5. Generate the Body ---
               (let* ((body-node (first (semantic-function-body semantic-function)))
                      (return-value (generate-expression-ir builder module var-env di-builder di-subprogram location-map (semantic-return-value-node body-node))))
-                (llvm-build-ret builder return-value)))))))))
+                (multiple-value-bind (value di-location) (generate-expression-ir builder module var-env di-builder di-subprogram location-map (semantic-return-value-node body-node))
+                  (let ((ret-inst (llvm-build-ret builder value)))
+                    (when di-location
+                      (llvm-instruction-set-debug-loc ret-inst di-location))))))))))))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
   (:documentation "Generates LLVM IR for a single semantic node."))
 
 (defun generate-expression-ir (builder module var-env di-builder di-scope location-map node)
   "Recursively generates IR for a single expression node."
-  ;; --- TEST LOGGING ---
-  (format t "~&[DEBUG] generate-expression-ir | Builder: ~a | Node: ~a~%" builder (type-of node))
   (generate-node-ir node builder module var-env di-builder di-scope location-map))
 
 ;; -- literal value --
 (defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
   "Generates IR for a literal value."
-  (declare (ignore module var-env di-builder di-scope location-map))
-  (llvm-const-int (llvm-type-for-name (semantic-literal-value-type node))
-                  (semantic-literal-value node)
-                  nil))
+  (declare (ignore var-env))
+  (let ((result (llvm-const-int (llvm-type-for-name (semantic-literal-value-type node))
+                                (semantic-literal-value node)
+                                nil))
+        (di-location (when (and di-builder di-scope location-map)
+                       (let* ((loc (semantic-node-source-location node))
+                              (line (gethash loc location-map 0)))
+                         (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                line
+                                                                0 ; column
+                                                                di-scope
+                                                                (cffi:null-pointer)))))) ; InlinedAt
+    (values result di-location)))
 
 ;; -- reading a variable --
 (defmethod generate-node-ir ((node semantic-var-read) builder module var-env di-builder di-scope location-map)
@@ -117,25 +127,24 @@
          (loaded-name (string-downcase (format nil "~a" var-name)))
          (current-block (llvm-get-insert-block builder))
          (parent-fn (llvm-get-basic-block-parent current-block)))
-    ;; --- TEST LOGGING ---
-    (format t "~&[DEBUG] Loading var '~a'. Found in env: ~a. Alloca ptr: ~a~%"
-        var-name (nth-value 1 (gethash var-name var-env)) alloca)
-    (format t "~&[DEBUG] Builder is in block ~a which belongs to function ~a~%"
-            current-block parent-fn)
-    (llvm-build-load2 builder type alloca loaded-name)))
+    (values (llvm-build-load2 builder type alloca loaded-name)
+            nil)))
 
 ;; -- addition --
 (defmethod generate-node-ir ((node semantic-add) builder module var-env di-builder di-scope location-map)
   "Generates IR for an addition operation."
-  (let ((lhs (generate-node-ir (semantic-add-left-arg node) builder module var-env di-builder di-scope location-map))
-        (rhs (generate-node-ir (semantic-add-right-arg node) builder module var-env di-builder di-scope location-map)))
-    (llvm-build-add builder lhs rhs "add_tmp")))
+  (multiple-value-bind (lhs lhs-loc) (generate-node-ir (semantic-add-left-arg node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore lhs-loc))
+    (multiple-value-bind (rhs rhs-loc) (generate-node-ir (semantic-add-right-arg node) builder module var-env di-builder di-scope location-map)
+      (declare (ignore rhs-loc))
+      (let ((add-inst (llvm-build-add builder lhs rhs "add_tmp")))
+        ;; TODO: Add debug location for the add instruction itself
+        (values add-inst nil)))))
 
 ;; -- function call --
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
   (declare (ignore di-builder di-scope location-map))
-  (format T "~&[DEBUG] :: Generating function call to '~a'~%" (semantic-call-name node))
   (let* ((callee-name (string-downcase (semantic-call-name node)))
          (sig (first (gethash (semantic-call-name node) *function-table*)))
 
@@ -163,20 +172,17 @@
           (arg-nodes (semantic-call-args node))
           (num-args (length arg-nodes))
           (args-array (cffi:foreign-alloc 'llvm-value-ref :count num-args)))
-    ;; --- TEST LOGGING ---
-    (format t "~&[DEBUG] Calling func '~a'. Callee ptr: ~a sig: ~a crisp-return-type: ~a~%"
-        (semantic-call-name node) callee sig crisp-return-type)
     (loop for i from 0 for arg-node in arg-nodes
-          do (let ((arg-val (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)))
-               ;; --- TEST LOGGING ---
-               (format t "~&[DEBUG] Arg ~a value: ~a~%" i arg-val)
+          do (multiple-value-bind (arg-val arg-loc) (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)
+               (declare (ignore arg-loc))
                (setf (cffi:mem-aref args-array 'llvm-value-ref i) arg-val)))
-    (llvm-build-call2 builder
-                        llvm-fn-type
-                        callee
-                        args-array
-                        num-args
-                        (if crisp-return-type "call_tmp" ""))))
+    (values (llvm-build-call2 builder
+                              llvm-fn-type
+                              callee
+                              args-array
+                              num-args
+                              (if crisp-return-type "call_tmp" ""))
+            nil)))
 
 (defun llvm-type-for-name (type-name)
   "Maps a Crisp type symbol to an LLVM type."

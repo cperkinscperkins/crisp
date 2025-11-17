@@ -29,6 +29,9 @@
 (defcfun ("LLVMDisposeMessage" llvm-dispose-message) :void
   (message :pointer))
 
+(defcfun ("LLVMGetModuleContext" llvm-get-module-context) :pointer
+  (module :pointer))
+
 (defcfun ("LLVMTypeOf" llvm-type-of) :pointer
   "Obtain the type of a value."
   (val :pointer))
@@ -211,17 +214,15 @@
   (num-parameter-types :unsigned-int)
   (flags :unsigned-int)) ; LLVMDIFlags
 
-(cffi:defcfun ("LLVMBuilderSetDebugLocation" llvm-builder-set-debug-location) :void
-  "Sets the debug location for the next instruction."
-  (builder :pointer)
+(cffi:defcfun ("LLVMDIBuilderCreateDebugLocation" llvm-di-builder-create-debug-location) llvm-metadata-ref
+  "Creates a new DILocation metadata node."
+  (context :pointer)
   (line :unsigned-int)
-  (col :unsigned-int)
-  (scope llvm-metadata-ref))
-
-(cffi:defcfun ("LLVMDIBuilderCreateLexicalBlock" llvm-di-builder-create-lexical-block) llvm-metadata-ref
-  "Creates a new lexical block."
-  (builder llvm-di-builder-ref)
+  (column :unsigned-int)
   (scope llvm-metadata-ref)
-  (file llvm-metadata-ref)
-  (line :unsigned-int)
-  (column :unsigned-int))
+  (inlined-at llvm-metadata-ref))
+
+(cffi:defcfun ("LLVMInstructionSetDebugLoc" llvm-instruction-set-debug-loc) :void
+  "Sets the debug location for the given instruction."
+  (inst :pointer)
+  (loc :pointer))
