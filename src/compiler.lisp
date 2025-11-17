@@ -330,28 +330,8 @@
   (remhash node visiting)
   (setf (gethash node visited) t))
 
-
-(defun register-function-signature (form location)
-  "Extracts and registers a function's signature without analyzing its body."
-  (let* ((name (second form))
-         (params (third form))
-         (body (cdddr form))
-         (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
-         (declarations (loop for f in declare-forms append (rest f)))
-         (fn-decl (find 'function declarations :key #'car))
-         (param-types (if fn-decl
-                          (loop for type in (second fn-decl) until (string= type '=>) collect (if (eq type 'int) 'i32 type))
-                          (mapcar #'(lambda (p) 'i32) params))) ; Simplified fallback
-         (return-type (if fn-decl
-                          (analyze-return-type-from-spec (second fn-decl))
-                          (analyze-return-type-from-list declarations))))
-    (setf (gethash name *function-table*)
-          (list (make-function-signature :name name :parameters param-types :return-types (list return-type) :source-location location)))))
-
-
-(defun internal-def-function (name params declarations body location)
-  "This is the 'Semantic Analyzer' (Pass 2)."
-  (format t "Compiler: Analyzing function ~a...~%" name)
+(defun parse-function-declarations (params declarations)
+  "Parses a function's declarations and returns its environment and return type."
   (let* ((fn-decl (find 'function declarations :key #'car))
          (return-type (if fn-decl
                           (analyze-return-type-from-spec (second fn-decl))
@@ -359,7 +339,25 @@
          (env (if fn-decl
                   (analyze-environment-from-spec params (second fn-decl))
                   (analyze-environment-from-list params declarations))))
+    (values env return-type)))
 
+(defun register-function-signature (form location)
+  "Extracts and registers a function's signature without analyzing its body."
+  (let* ((name (second form))
+         (params (third form))
+         (body (cdddr form))
+         (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f)))
+    (multiple-value-bind (env return-type)
+        (parse-function-declarations params (loop for f in declare-forms append (rest f)))
+      (let ((param-types (mapcar #'second env)))
+        (setf (gethash name *function-table*)
+              (list (make-function-signature :name name :parameters param-types :return-types (list return-type) :source-location location)))))))
+
+(defun internal-def-function (name params declarations body location)
+  "This is the 'Semantic Analyzer' (Pass 2)."
+  (format t "Compiler: Analyzing function ~a...~%" name)
+  (multiple-value-bind (env return-type)
+      (parse-function-declarations params declarations)
     ;; Handle the case where a function promises a return value but has no body.
     (when (and (not (eq return-type 'nil)) (null body))
       (error 'crisp-type-error :expected return-type :inferred 'nil :source-location location))
