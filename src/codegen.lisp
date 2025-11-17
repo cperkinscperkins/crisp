@@ -36,82 +36,81 @@
 
         ;; --- 2. Create the Function ---
         (let ((func (llvm-add-function module fn-name fn-type)))
+          (let ((di-subprogram
+                  (when di-builder
+                    (let* ((di-file (when di-compile-unit (crisp.llvm-bindings::llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
+                           (line-num (if location-map (gethash fn-loc location-map) 0))
+                           ;; Create a DIBasicType for i32
+                           (di-i32-type (llvm-di-builder-create-basic-type di-builder "int" 3 32 5 0)) ; 5 = DW_ATE_signed
+                           ;; Create the DISubroutineType
+                           (di-param-types (cons di-i32-type ; Return type is the first element
+                                                 (loop for param in param-nodes collect di-i32-type)))
+                           (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
+                           (_ (loop for i from 0 for type in di-param-types
+                                    do (setf (cffi:mem-aref di-param-array :pointer i) type)))
+                           (di-fn-type (llvm-di-builder-create-subroutine-type
+                                        di-builder
+                                        di-file
+                                        di-param-array
+                                        (length di-param-types)
+                                        0))
+                           ;; Create the DISubprogram (the function itself)
+                           (subprogram (llvm-di-builder-create-function
+                                          di-builder
+                                          di-compile-unit ; Scope
+                                          fn-name (length fn-name) ; Name
+                                          fn-name (length fn-name) ; LinkageName
+                                          di-file
+                                          line-num
+                                          di-fn-type
+                                          nil ; IsLocalToUnit
+                                          t   ; IsDefinition
+                                          0   ; ScopeLine
+                                          0   ; Flags (none)
+                                          nil ; IsOptimized
+                                          )))
+                      (llvm-set-subprogram func subprogram)
+                      subprogram)))) ; Return the created subprogram
+            ;; --- 3. Create the Code Block ---
+            (let ((entry-block (llvm-append-basic-block func "entry"))
+                  (var-env (make-hash-table)))
+              (llvm-position-builder-at-end builder entry-block)
 
-          ;; --- 2.5 Create Debug Info for the Function ---
-          (when di-builder
-            (let* ((di-file (when di-compile-unit (crisp.llvm-bindings::llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
-                   (line-num (if location-map (gethash fn-loc location-map) 0))
-                   ;; Create a DIBasicType for i32
-                   (di-i32-type (llvm-di-builder-create-basic-type di-builder "int" 3 32 5 0)) ; 5 = DW_ATE_signed
-                   ;; Create the DISubroutineType
-                   (di-param-types (cons di-i32-type ; Return type is the first element
-                                         (loop for param in param-nodes collect di-i32-type)))
-                   (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
-                   (_ (loop for i from 0 for type in di-param-types
-                            do (setf (cffi:mem-aref di-param-array :pointer i) type)))
-                   (di-fn-type (llvm-di-builder-create-subroutine-type
-                                di-builder
-                                di-file
-                                di-param-array
-                                (length di-param-types)
-                                0))
-                   ;; Create the DISubprogram (the function itself)
-                   (di-subprogram (llvm-di-builder-create-function
-                                  di-builder
-                                  di-compile-unit ; Scope
-                                  fn-name (length fn-name) ; Name
-                                  fn-name (length fn-name) ; LinkageName
-                                  di-file
-                                  line-num
-                                  di-fn-type
-                                  nil ; IsLocalToUnit
-                                  t   ; IsDefinition
-                                  0   ; ScopeLine
-                                  0   ; Flags (none)
-                                  nil ; IsOptimized
-                                  )))
-              (llvm-set-subprogram func di-subprogram)))
+              ;; --- 4. Allocate and Store Parameters ---
+              (loop for i from 0
+                    for param-node in param-nodes
+                    for llvm-param = (llvm-get-param func i)
+                    do (let* ((param-name (semantic-param-name param-node))
+                              (alloca (llvm-build-alloca builder (llvm-type-for-name (semantic-param-type param-node)) (string-downcase param-name))))
+                         (llvm-build-store builder llvm-param alloca)
+                         (setf (gethash param-name var-env) alloca)))
 
-          ;; --- 3. Create the Code Block ---
-          (let ((entry-block (llvm-append-basic-block func "entry"))
-                (var-env (make-hash-table)))
-            (llvm-position-builder-at-end builder entry-block)
+              ;; --- 5. Generate the Body ---
+              (let* ((body-node (first (semantic-function-body semantic-function)))
+                     (return-value (generate-expression-ir builder module var-env di-builder di-subprogram location-map (semantic-return-value-node body-node))))
+                (llvm-build-ret builder return-value)))))))))
 
-            ;; --- 4. Allocate and Store Parameters ---
-            (loop for i from 0
-                  for param-node in param-nodes
-                  for llvm-param = (llvm-get-param func i)
-                  do (let* ((param-name (semantic-param-name param-node))
-                            (alloca (llvm-build-alloca builder (llvm-type-for-name (semantic-param-type param-node)) (string-downcase param-name))))
-                       (llvm-build-store builder llvm-param alloca)
-                       (setf (gethash param-name var-env) alloca)))
-
-            ;; --- 5. Generate the Body ---
-            (let* ((body-node (first (semantic-function-body semantic-function)))
-                   (return-value (generate-expression-ir builder module var-env (semantic-return-value-node body-node))))
-              (llvm-build-ret builder return-value))))))))
-
-(defgeneric generate-node-ir (node builder module var-env)
+(defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
   (:documentation "Generates LLVM IR for a single semantic node."))
 
-(defun generate-expression-ir (builder module var-env node)
+(defun generate-expression-ir (builder module var-env di-builder di-scope location-map node)
   "Recursively generates IR for a single expression node."
   ;; --- TEST LOGGING ---
   (format t "~&[DEBUG] generate-expression-ir | Builder: ~a | Node: ~a~%" builder (type-of node))
-  (generate-node-ir node builder module var-env))
+  (generate-node-ir node builder module var-env di-builder di-scope location-map))
 
 ;; -- literal value --
-(defmethod generate-node-ir ((node semantic-literal) builder module var-env)
+(defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
   "Generates IR for a literal value."
-  (declare (ignore module var-env))
+  (declare (ignore module var-env di-builder di-scope location-map))
   (llvm-const-int (llvm-type-for-name (semantic-literal-value-type node))
                   (semantic-literal-value node)
                   nil))
 
 ;; -- reading a variable --
-(defmethod generate-node-ir ((node semantic-var-read) builder module var-env)
+(defmethod generate-node-ir ((node semantic-var-read) builder module var-env di-builder di-scope location-map)
   "Generates IR for reading a variable."
-  (declare (ignore module))
+  (declare (ignore module di-builder di-scope location-map))
   (let* ((var-name (semantic-var-read-name node))
          (alloca (gethash var-name var-env))
          (type (llvm-type-for-name (semantic-var-read-type node)))
@@ -126,15 +125,16 @@
     (llvm-build-load2 builder type alloca loaded-name)))
 
 ;; -- addition --
-(defmethod generate-node-ir ((node semantic-add) builder module var-env)
+(defmethod generate-node-ir ((node semantic-add) builder module var-env di-builder di-scope location-map)
   "Generates IR for an addition operation."
-  (let ((lhs (generate-node-ir (semantic-add-left-arg node) builder module var-env))
-        (rhs (generate-node-ir (semantic-add-right-arg node) builder module var-env)))
+  (let ((lhs (generate-node-ir (semantic-add-left-arg node) builder module var-env di-builder di-scope location-map))
+        (rhs (generate-node-ir (semantic-add-right-arg node) builder module var-env di-builder di-scope location-map)))
     (llvm-build-add builder lhs rhs "add_tmp")))
 
 ;; -- function call --
-(defmethod generate-node-ir ((node semantic-call) builder module var-env)
+(defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
+  (declare (ignore di-builder di-scope location-map))
   (format T "~&[DEBUG] :: Generating function call to '~a'~%" (semantic-call-name node))
   (let* ((callee-name (string-downcase (semantic-call-name node)))
          (sig (first (gethash (semantic-call-name node) *function-table*)))
@@ -167,7 +167,7 @@
     (format t "~&[DEBUG] Calling func '~a'. Callee ptr: ~a sig: ~a crisp-return-type: ~a~%"
         (semantic-call-name node) callee sig crisp-return-type)
     (loop for i from 0 for arg-node in arg-nodes
-          do (let ((arg-val (generate-node-ir arg-node builder module var-env)))
+          do (let ((arg-val (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)))
                ;; --- TEST LOGGING ---
                (format t "~&[DEBUG] Arg ~a value: ~a~%" i arg-val)
                (setf (cffi:mem-aref args-array 'llvm-value-ref i) arg-val)))
