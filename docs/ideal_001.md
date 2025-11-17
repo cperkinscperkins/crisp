@@ -8664,7 +8664,7 @@ NOTE: Under consideration is just outputting full strings into a uchar buffer. T
 and no doubt attractive to Crisp users. This issue is that doing so can easily have 
 a HUGE impact on performance. On the plus side, uchar 
 output would be easily to stream out, which means it would be composable with other 
-tools (like grep and tail). This might show up with a `--debug-output=string` type of 
+tools (like grep and tail). This might show up with a `--logging-output=string` type of 
 formulation. 
 
 
@@ -8710,7 +8710,7 @@ If `<testExpression>` is not evaluable at compile time, it will lead to a compil
   (die "the index is negative? How did that happen?"))   ;; desperate times
 ```
 
-`die` is a small but critical component. If `--debug-output` was NOT elected, then 
+`die` is a small but critical component. If `--logging-output` was NOT elected, then 
 `die` simply halts the kernel.  
 But if the kernel is debugging output then its message is recorded into the debug output buffer 
 and then the kernel is halted. 
@@ -8776,7 +8776,7 @@ There are various asserts available at runtime. They are available if the debug 
 The runtime asserts always evaluation their test expression.  If it is `true`, then
 the kernel continues on unperturbed. If it is false, then `die` is called.
 
-If debug output is on (via `--debug-output`)
+If logging output is on (via `--logging-output`)
 then these asserts evaluate all their remaining expression arguments and output them into the relevant logging
 buffer subdivision before calling die to terminate the kernel execution.
 
@@ -8829,7 +8829,7 @@ Runtime Logging
 
 `(r-t-workgroup-output-if <testExpression>  <expr1> ... <exprN>)`
 
-If the kernel is compiled with the `--debug-output` flag then this macro will reduce 
+If the kernel is compiled with the `--logging-output` flag then this macro will reduce 
 `<testExpression>` across all the threads in a workgroup. If it is true in any of them,
 then the the logging occurs in just one of them. Afterwards, kernel execution continues normally.
 
@@ -8841,10 +8841,10 @@ If the compiler flag is not elected, this entire form is compiled away.
 (r-t-output <expr1> ... <exprN>)
 (r-t-output-0 <expr1> ... <exprN>)
 ```
-"r-t" stands for "run time".  If the kernel is compiled with the `--debug-output` flag then this macro will output
+"r-t" stands for "run time".  If the kernel is compiled with the `--logging-output` flag then this macro will output
 each of its expressions into the debug output memory. Note that this output will have to be retrieved by the hoisting 
 code once the kernel is done executing. 
-If the `--debug-output` flag is NOT present when the kernel is compiled, then this expression and all arguments
+If the `--logging-output` flag is NOT present when the kernel is compiled, then this expression and all arguments
 are simply skipped by the compiler. 
 
 `r-t-output` is engaged by EVERY thread.  It is not screened or limited to a single workgroup.
@@ -8892,18 +8892,18 @@ can use the [In-Memory Compilation API](#in-memory-compilation-api) to make a ha
 So You Want Debug Logging
 -------------------------
 
-### `--debug-output`  Master Switch.
+### `--logging-output`  Master Switch.
 
-The `--debug-output` flag turns ON debug logging when it is present, or off when it is not.
+The `--logging-output` flag turns ON debug logging when it is present, or off when it is not.
 
-When the `--debug-output` flag is set then the compiler alters the compilation in several ways:
+When the `--logging-output` flag is set then the compiler alters the compilation in several ways:
 - an additional `debug-vector-type` argument is added to the Kernel in the first argument position
 - every `r-t-assert` and `r-t-output` variant is actually enabled and compiled, rather than being
   stripped out
 - `maybe` `Err:` string expressions are compiled to output as well
 - those function call paths to those outputting forms ALSO have their params modified such that
 the debug vector is now in the first param position
-- `(is-debugging?)` expression evaluates to T at compile time.
+- `(is-logging?)` expression evaluates to T at compile time.
 
 The debug output vector base type is a `(vector-type ulong :compact :global :write_only)` and it must
 be setup by the host. In this part of the document we refer to this vector as "the debug buffer" or 
@@ -8916,9 +8916,9 @@ Three debug flags govern subdivision by scope, target, and call site. Two more f
 let you select which workgroups or warps are participating in the logging, and the
 logging mode.  That's a lot of terms, but the whole system is pretty straightforward.
 
-### --debug-log-scope
+### --logging-scope
 
-`--debug-log-scope=spread|dedicated`
+`--logging-scope=spread|dedicated`
 
 If the scope is "dedicated" then the entirety of the logging buffer will be available
 to one "target" which is either a workgroup or a warp (selected by target and index flags).  
@@ -8926,9 +8926,9 @@ But if the scope is "spread", then the buffer is evenly split by the number of w
 
 Default is `spread`.
 
-### --debug-log-target
+### --logging-target
 
-`--debug-log-target=workgroup|warp`
+`--logging-target=workgroup|warp`
 
 If the scope was `dedicated` then this simply specifies workgroup vs warp.
 If the scope was `spread` and `warp` is chosen, that means only one warp per workgroup
@@ -8938,39 +8938,39 @@ of the buffer.
 
 Default is `workgroup`
 
-### --debug-by-call-site
+### --logging-by-call-site
 
-`--debug-by-call-site`
+`--logging-by-call-site`
 
-This option is ONLY available with dedicated debug logging scope ( `--debug-log-scope=dedicated` ).
+This option is ONLY available with dedicated debug logging scope ( `--logging-log-scope=dedicated` ).
 With this option all the possible debug "call sites" (ie the lines that use `(maybe)` constructs
 or call `r-t-assert` etc ) up and down the call chain of the kernel are identified and counted.
 Then the debug output buffer is subdivided by call sites.  Thus each one get a little reserved
 output area for itself.
 
-### --debug-log-mode
+### --logging-mode
 
-`--debug-log-mode=first-n|last-n`
+`--logging-mode=first-n|last-n`
 
 When set to `first-n` then the messages are output into the buffer subdivision until it is full, then
 they stop. When set to `last-n`, then the buffer subdivision is treated as a circular buffer and the
 later entries overwrite the earlier ones. 
-IMPORTANT NOTE: `last-n` mode requires the debug log target be warp (`--debug-log-target=warp`).
+IMPORTANT NOTE: `last-n` mode requires the debug log target be warp (`--logging-target=warp`).
 
 Defaults to `first-n`
 
-### --debug-wg-index
+### --logging-wg-index
 
-`--debug-wg-index=0-N`
+`--logging-wg-index=0-N`
 
-This flag is only relevant if the scope is set to dedicated (`--debug-log-scope=dedicated`).
+This flag is only relevant if the scope is set to dedicated (`--logging-scope=dedicated`).
 
 When using dedicated scope Crisp needs to know which workgroup. This flag can be given
 a group number (from 0 up to the number of workgroups).
 
-### --debug-warp-index
+### --logging-warp-index
 
-`--debug-warp-index=0-N`
+`--logging-warp-index=0-N`
 
 This flag is relevant whenever the debug target has been set to `warp` (in BOTH `spread` and `dedicated` scopes).
 
@@ -8980,40 +8980,40 @@ Common Debug Flag Configurations
 -------------------------------
 
 ### Default (Low Overhead):
-- --debug-log-scope=spread
-- --debug-log-target=workgroup
+- --logging-scope=spread
+- --logging-target=workgroup
 
 Result: The buffer is split evenly, giving every workgroup a small "first-N" log slot.
 
 ### Focus on ONE Workgroup:
-- --debug-log-scope=dedicated
-- --debug-log-target=workgroup
-- --debug-wg-index=42
+- --logging-scope=dedicated
+- --logging-target=workgroup
+- --logging-wg-index=42
 
 Result: The entire buffer is given to workgroup 42 for a large "first-N" log.
 
 ### Focus on ONE Warp:
-- --debug-log-scope=dedicated
-- --debug-log-target=warp
-- --debug-wg-index=42
-- --debug-warp-index=0
+- --logging-scope=dedicated
+- --logging-target=warp
+- --logging-wg-index=42
+- --logging-warp-index=0
 
 Result: The entire buffer is given to warp 0 of workgroup 42 for a "first-N" log.
 
 ### "Last-N" (The Champagne Case):
-- --debug-log-scope=dedicated
-- --debug-log-target=warp
-- --debug-wg-index="last"
-- --debug-warp-index=0
-- --debug-log-mode=last-n
+- --logging-scope=dedicated
+- --logging-target=warp
+- --logging-wg-index="last"
+- --logging-warp-index=0
+- --logging-mode=last-n
 
 Result: The entire buffer is given to warp 0 of the "last standing" workgroup, operating in "Last-N" (rolling) mode. This is safe because target=warp.
 
 ### Call Sites
-- --debug-log-scope=dedicated
-- --debug-log-target=workgroup (or warp)
-- --debug-wg-index=42
-- --debug-subdivide-by-site
+- --logging-scope=dedicated
+- --logging-target=workgroup (or warp)
+- --logging-wg-index=42
+- --logging-subdivide-by-site
 
 Result: The buffer for the dedicated target (WG 42) is subdivided, giving each log site its own "reserved" chunk (running in "first-N" mode).
 
@@ -9215,11 +9215,11 @@ Returns the context at the place where the macro is called. Useful if you need t
 that alter behavior based on context in order to provide a predictable experience for the caller.
 
 
-### `is-debugging?`
+### `is-logging?`
 
-`(is-debugging?) => T or nil`
+`(is-logging?) => T or nil`
 
-Returns true if the file is being compiled with the `--debug-output` flag 
+Returns true if the file is being compiled with the `--logging-output` flag 
 
 
 ### `(declare (grid-level))`
@@ -9803,12 +9803,16 @@ reduce-vector.metacrisp
 Other Flags
 -----------
 
-### `--debug-output`
+### `--logging-output`
 This enables the debugging output side channel as well as enabling the runtime checks ( `r-t-check` ). When this 
 option is used, the kernel may run significantly slower. Note that the code that actually hoists
 the kernels built with this flag has to be updated as well so that the debug output side channel vector
 is created and added as an argument. It is up to the calling application to decide what to
 do with the debug output once it is retrieved. The hoisting code typically models writing it to a file.
+
+
+### `--debug` or `-g`
+When outputting LLVM-IR, include DWARF symbols
 
 ### `--hoist-unified-memory`
 If this flag is present then the memory that is prepared in the hoisting code will be
@@ -9927,7 +9931,7 @@ must be used consistently by both the tree shaking and future compilation passes
 - `-DXXXX`
 - `--IR-target`
 - `--binary-GPU-target`
-- `--debug-output`
+- `--logging-output`
 - `--math-precision`
 
 ### In Memory Compilation
