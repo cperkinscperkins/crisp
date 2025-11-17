@@ -79,19 +79,17 @@
               ;; --- 4. Allocate and Store Parameters ---
               (loop for i from 0
                     for param-node in param-nodes
-                    for llvm-param = (llvm-get-param func i)
-                    do (let* ((param-name (semantic-param-name param-node))
-                              (alloca (llvm-build-alloca builder (llvm-type-for-name (semantic-param-type param-node)) (string-downcase param-name))))
+                    for llvm-param = (llvm-get-param func i) do
+                    (let* ((param-name (semantic-param-name param-node)) (alloca (llvm-build-alloca builder (llvm-type-for-name (semantic-param-type param-node)) (string-downcase param-name))))
                          (llvm-build-store builder llvm-param alloca)
                          (setf (gethash param-name var-env) alloca)))
 
               ;; --- 5. Generate the Body ---
-              (let* ((body-node (first (semantic-function-body semantic-function)))
-                     (return-value (generate-expression-ir builder module var-env di-builder di-subprogram location-map (semantic-return-value-node body-node))))
-                (multiple-value-bind (value di-location) (generate-expression-ir builder module var-env di-builder di-subprogram location-map (semantic-return-value-node body-node))
+              (let ((body-node (first (semantic-function-body semantic-function))))
+                (multiple-value-bind (value di-location)
+                    (generate-expression-ir builder module var-env di-builder di-subprogram location-map (semantic-return-value-node body-node))
                   (let ((ret-inst (llvm-build-ret builder value)))
-                    (when di-location
-                      (llvm-instruction-set-debug-loc ret-inst di-location))))))))))))
+                    (when di-location (llvm-instruction-set-debug-loc ret-inst di-location))))))))))))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
   (:documentation "Generates LLVM IR for a single semantic node."))
@@ -136,10 +134,18 @@
   (multiple-value-bind (lhs lhs-loc) (generate-node-ir (semantic-add-left-arg node) builder module var-env di-builder di-scope location-map)
     (declare (ignore lhs-loc))
     (multiple-value-bind (rhs rhs-loc) (generate-node-ir (semantic-add-right-arg node) builder module var-env di-builder di-scope location-map)
-      (declare (ignore rhs-loc))
-      (let ((add-inst (llvm-build-add builder lhs rhs "add_tmp")))
-        ;; TODO: Add debug location for the add instruction itself
-        (values add-inst nil)))))
+      (declare (ignore rhs-loc)) ; Not using arg locations for now
+      (let ((add-inst (llvm-build-add builder lhs rhs "add_tmp"))
+            (di-location (when (and di-builder di-scope location-map)
+                           (let* ((loc (semantic-node-source-location node))
+                                  (line (gethash loc location-map 0)))
+                             (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                    line
+                                                                    0 ; column
+                                                                    di-scope
+                                                                    (cffi:null-pointer)))))) ; InlinedAt
+        (when di-location (llvm-instruction-set-debug-loc add-inst di-location))
+        (values add-inst di-location)))))
 
 ;; -- function call --
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
@@ -176,13 +182,20 @@
           do (multiple-value-bind (arg-val arg-loc) (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)
                (declare (ignore arg-loc))
                (setf (cffi:mem-aref args-array 'llvm-value-ref i) arg-val)))
-    (values (llvm-build-call2 builder
-                              llvm-fn-type
-                              callee
-                              args-array
-                              num-args
-                              (if crisp-return-type "call_tmp" ""))
-            nil)))
+    (let ((call-inst (llvm-build-call2 builder
+                                     llvm-fn-type
+                                     callee
+                                     args-array
+                                     num-args
+                                     (if crisp-return-type "call_tmp" "")))
+          (di-location (when (and di-builder di-scope location-map)
+                         (let* ((loc (semantic-node-source-location node))
+                                (line (gethash loc location-map 0)))
+                           (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                  line 0 di-scope (cffi:null-pointer))))))
+      (when di-location
+        (llvm-instruction-set-debug-loc call-inst di-location))
+      (values call-inst di-location))))
 
 (defun llvm-type-for-name (type-name)
   "Maps a Crisp type symbol to an LLVM type."
