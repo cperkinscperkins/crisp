@@ -51,6 +51,36 @@
 (test-compile-and-print
  (internal-def-function 'test-fn-arrow '(a b) '((function (int int => int))) '((+ a b)) '(2)))
 
+(defun test-location-mapping ()
+  (format t "~&; --- Testing DWARF Location Mapping ---~%")
+  (let* ((crisp-code '((def-function foo (a) (declare (return-type int)) (+ a 1))))
+         (location-map (generate-location-map crisp-code))
+         (test-passed t)
+         ;; Define the expected location->line mappings for the code above
+         (expected-mappings
+           '(((0) . 1)      ; -> (def-function ...)
+             ((0 0) . 2)    ; -> def-function
+             ((0 1) . 3)    ; -> foo
+             ((0 2) . 4)    ; -> (a)
+             ((0 2 0) . 5)  ; -> a
+             ((0 3) . 6)    ; -> (declare (return-type int))
+             ((0 3 0) . 7)  ; -> declare
+             ((0 3 1) . 8)  ; -> (return-type int)
+             ((0 4) . 9)    ; -> (+ a 1)
+             ((0 4 0) . 10) ; -> +
+             ((0 4 1) . 11) ; -> a
+             ((0 4 2) . 12) ; -> 1
+             )))
+    (dolist (mapping expected-mappings)
+      (let ((loc (car mapping))
+            (expected-line (cdr mapping)))
+        (unless (= (gethash loc location-map) expected-line)
+          (format t "~&;   [FAIL] Location ~a. Expected ~a, got ~a~%" loc expected-line (gethash loc location-map))
+          (setf test-passed nil))))
+    (format t "~&; Test 'Virtual Line Number Mapping': ~:[FAIL~;PASS~]~%" test-passed)))
+
+(test-location-mapping)
+
 ;; yay
 (format t "~&~%*** Crisp CI Tests Passed! ***~%")
 

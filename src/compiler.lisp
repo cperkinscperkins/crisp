@@ -609,3 +609,36 @@
     (semantic-var-read (semantic-var-read-source-location node))
     (semantic-add (semantic-add-source-location node))
     (semantic-call (semantic-call-source-location node))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; DWARF Location Mapping
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun walk-and-map-locations (expr location map counter)
+  "Recursively walks an S-expression, populating a map from location paths to line numbers."
+  ;; Add the current expression's location to the map
+  (setf (gethash location map) (incf counter))
+  
+  ;; For lists, recurse on children, but with a special check for `declare`.
+  (when (listp expr)
+    (loop for sub-expr in expr
+          for i from 0
+          do (setf counter
+                   (if (and (eq (first expr) 'declare) (listp sub-expr))
+                       ;; For forms inside a `declare` block (like `(return-type int)`),
+                       ;; map them but do not recurse into them.
+                       (progn
+                         (setf (gethash (append location (list i)) map) (incf counter))
+                         counter)
+                       ;; For everything else, recurse normally.
+                       (walk-and-map-locations sub-expr (append location (list i)) map counter)))))
+  counter)
+
+(defun generate-location-map (forms)
+  "Creates a map from S-expression location paths to virtual line numbers."
+  (let ((location-map (make-hash-table :test 'equal)) ; Use 'equal' for list keys
+        (line-counter 0))
+    (loop for form in forms
+          for i from 0
+          do (setf line-counter (walk-and-map-locations form (list i) location-map line-counter)))
+    location-map))
