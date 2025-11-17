@@ -16,9 +16,10 @@
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit)
+(defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
   (let* ((fn-name (string-downcase (semantic-function-name semantic-function)))
+         (fn-loc (semantic-function-source-location semantic-function))
          )
     ;; --- 1. Define the Function Type ---
     (let* ((return-type (llvm-type-for-name (semantic-function-return-type semantic-function)))
@@ -38,13 +39,17 @@
 
           ;; --- 2.5 Create Debug Info for the Function ---
           (when di-builder
-            (let ((di-subprogram (llvm-di-builder-create-function
+            (let* ((f "test.crisp")
+                   (d "/tmp/")
+                   (di-file (when di-compile-unit (crisp.llvm-bindings::llvm-di-builder-create-file di-builder f (length f) d (length d)))) ; Placeholder
+                   (line-num (if location-map (gethash fn-loc location-map) 0))
+                   (di-subprogram (llvm-di-builder-create-function
                                   di-builder
                                   di-compile-unit ; Scope
                                   fn-name (length fn-name) ; Name
                                   fn-name (length fn-name) ; LinkageName
-                                  (cffi:null-pointer) ; File (we'll add this in 2b)
-                                  0 ; Line Number (we'll add this in 2b)
+                                  di-file
+                                  line-num
                                   (cffi:null-pointer) ; DI Type (we'll add this in 2c)
                                   nil ; IsLocalToUnit
                                   t   ; IsDefinition

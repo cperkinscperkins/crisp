@@ -30,7 +30,8 @@
          (builder (llvm-create-builder))
          (di-builder (when debug-p (llvm-create-di-builder module))))
     (unwind-protect
-         (progn
+         (let ((location-map (when debug-p (generate-location-map (list semantic-fn)))))
+           (progn
            (let ((di-compile-unit (when debug-p
                                     (let* ((f "test.crisp")
                                            (d "/tmp/")
@@ -52,8 +53,8 @@
                                         nil ; debugInfoForProfiling
                                         (cffi:null-pointer) 0 ; sysroot
                                         (cffi:null-pointer) 0 ; sdk
-                                        )))))
-             (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit))
+                                        ))))) 
+             (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))
            (let ((ir-ptr (llvm-print-module-to-string module)))
              (unwind-protect
                   (format t "~a~%" (cffi:foreign-string-to-lisp ir-ptr))
@@ -61,7 +62,7 @@
       (when di-builder (llvm-di-builder-finalize di-builder))
       (when di-builder (llvm-dispose-di-builder di-builder))
       (llvm-dispose-builder builder)
-      (llvm-dispose-module module))))
+      (llvm-dispose-module module)))))
 
 ;; test the semantic analyzer and codegen path (Target #5/6)
 (format t "~&; --- Running test for (def-function ... 7) ---~%")
@@ -111,9 +112,10 @@
   (let* ((ir-string (with-output-to-string (s)
                       (let ((*standard-output* s))
                         (test-compile-and-print (internal-def-function 'test-dwarf '() '((return-type int)) '(7) '(0)) :debug-p t))))
-         (cu-found (search "!DICompileUnit" ir-string))
-         (dbg-found (search "define i32 @test-dwarf() !dbg" ir-string)))
-    (format t "~&; Test 'DWARF Scaffolding': ~:[FAIL~;PASS~]~%" (and cu-found dbg-found))))
+         (cu-found (search "!DICompileUnit" ir-string)) 
+         (dbg-found (search "define i32 @test-dwarf() !dbg" ir-string))
+         (line-found (search "line: 1" ir-string)))
+    (format t "~&; Test 'DWARF Scaffolding': ~:[FAIL~;PASS~]~%" (and cu-found dbg-found line-found))))
 
 (test-dwarf-scaffolding)
 

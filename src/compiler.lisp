@@ -236,13 +236,13 @@
 ;; Multi-Pass Orchestration
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun compile-module (forms module builder di-builder di-compile-unit)
+(defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms."
   ;; Pass 1: Gather all function signatures first.
   (let ((*call-graph* (make-hash-table)))
     (analyze-signatures-pass forms)
     ;; Pass 2: Now that all signatures are known, compile the function bodies.
-    (compile-forms-pass forms module builder di-builder di-compile-unit)
+    (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
     ;; After analysis, check the constructed graph for cycles.
     (check-for-recursion-cycles)))
 
@@ -258,18 +258,18 @@
                ;; TODO: Add handlers for with-template-type, def-struct, etc.
                ))))
 
-(defun compile-forms-pass (forms module builder di-builder di-compile-unit)
+(defun compile-forms-pass (forms module builder di-builder di-compile-unit location-map)
   "Pass 2: Iterates through forms to perform full analysis and codegen."
   (loop for form in forms
         for i from 0
         do (let ((location (list i))) ; Simplified location for now
              (cond
                ((and (consp form) (eq (car form) 'def-function))
-                (compile-toplevel-form form location module builder di-builder di-compile-unit))
+                (compile-toplevel-form form location module builder di-builder di-compile-unit location-map))
                ;; TODO: Add handlers for with-template-type, etc.
                ))))
 
-(defun compile-toplevel-form (form location module builder di-builder di-compile-unit)
+(defun compile-toplevel-form (form location module builder di-builder di-compile-unit location-map)
   "Analyzes and compiles a single top-level form (used in Pass 2)."
   (format *error-output* "c-t-f form: ~a~% location: ~a~%" form location)
   ;; For now, we only handle def-function
@@ -284,8 +284,8 @@
       (push *current-compiling-function* *single-pass-call-stack*)
       (unwind-protect
            (let ((form-with-location (append form (list :source-location `',location))))
-             (let ((expanded-form (macroexpand-1 form-with-location))) 
-               (generate-llvm-ir (eval expanded-form) module builder di-builder di-compile-unit)))
+             (let ((expanded-form (macroexpand-1 form-with-location)))
+               (generate-llvm-ir (eval expanded-form) module builder di-builder di-compile-unit location-map)))
         (pop *single-pass-call-stack*)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
