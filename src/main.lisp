@@ -26,11 +26,15 @@
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
       (uiop:quit 1))
       
-    (let ((filename (first files)))
+    (let* ((filename (first files))
+           (filepath (uiop:truename* filename)))
       (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filename)))
              (builder (crisp.llvm-bindings:llvm-create-builder))
              ;; Only create the DIBuilder if the debug flag is present.
-             (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module))))
+             (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module)))
+             (di-compile-unit (when debug-p
+                                (let ((di-file (crisp.llvm-bindings:llvm-di-builder-create-file di-builder (file-namestring filepath) (directory-namestring filepath))))
+                                  (crisp.llvm-bindings:llvm-di-builder-create-compile-unit di-builder 32768 di-file "Crisp Compiler" nil "" 0)))))
         (unwind-protect
              (handler-case
                  (progn
@@ -45,12 +49,12 @@
                                  do (let ((location (list toplevel-index))
                                           ;; Each top-level form gets its own stack for direct recursion check.
                                           (crisp.compiler::*single-pass-call-stack* nil))
-                                      (crisp.compiler:compile-toplevel-form form location module builder)
+                                      (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit)
                                       (incf toplevel-index)))) 
                          ;; --- MULTI-PASS MODE (DEFAULT) ---
                          (let* ((*package* (find-package :crisp-language))
                                 (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form)))
-                           (crisp.compiler:compile-module forms module builder))))
+                           (crisp.compiler:compile-module forms module builder di-builder di-compile-unit))))
                    
                    ;; After the loop, print the entire module.
                    (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))

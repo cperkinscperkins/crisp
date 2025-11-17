@@ -16,8 +16,9 @@
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun generate-llvm-ir (semantic-function module builder)
+(defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit)
   "Top-level function to generate LLVM IR for a given semantic function."
+  (declare (ignore di-builder di-compile-unit)) ; We'll use these in the next phase
   (let* ((fn-name (string-downcase (semantic-function-name semantic-function)))
          )
     ;; --- 1. Define the Function Type ---
