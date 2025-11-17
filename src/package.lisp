@@ -80,7 +80,9 @@
    #:llvm-di-builder-finalize
    #:llvm-dispose-di-builder
    #:llvm-di-builder-create-compile-unit
-   #:llvm-di-builder-create-file))
+   #:llvm-di-builder-create-file
+   #:llvm-di-builder-create-function
+   #:llvm-set-subprogram))
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)

@@ -111,8 +111,9 @@
   (let* ((ir-string (with-output-to-string (s)
                       (let ((*standard-output* s))
                         (test-compile-and-print (internal-def-function 'test-dwarf '() '((return-type int)) '(7) '(0)) :debug-p t))))
-         (found (search "!DICompileUnit" ir-string)))
-    (format t "~&; Test 'DWARF Scaffolding': ~:[FAIL~;PASS~]~%" found)))
+         (cu-found (search "!DICompileUnit" ir-string))
+         (dbg-found (search "define i32 @test-dwarf() !dbg" ir-string)))
+    (format t "~&; Test 'DWARF Scaffolding': ~:[FAIL~;PASS~]~%" (and cu-found dbg-found))))
 
 (test-dwarf-scaffolding)
 
