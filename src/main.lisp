@@ -33,8 +33,26 @@
              ;; Only create the DIBuilder if the debug flag is present.
              (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module)))
              (di-compile-unit (when debug-p
-                                (let ((di-file (crisp.llvm-bindings:llvm-di-builder-create-file di-builder (file-namestring filepath) (directory-namestring filepath))))
-                                  (crisp.llvm-bindings:llvm-di-builder-create-compile-unit di-builder 32768 di-file "Crisp Compiler" nil "" 0)))))
+                                (let* ((f (file-namestring filepath))
+                                      (d (directory-namestring filepath))
+                                      (flags "") ;; will eventually have to support some pass through flags.
+                                      (di-file (crisp.llvm-bindings:llvm-di-builder-create-file di-builder f (length f) d (length d))))
+                                  (crisp.llvm-bindings:llvm-di-builder-create-compile-unit 
+                                   di-builder
+                                   32768
+                                   di-file
+                                   "Crisp Compiler" (length "Crisp Compiler")
+                                   nil ; isOptimized
+                                   flags (length flags)
+                                   0   ; runtimeVersion
+                                   (cffi:null-pointer) 0 ; splitName
+                                   1   ; DW_Emission_Kind_Full
+                                   0   ; DWOId
+                                   nil ; splitDebugInlining
+                                   nil ; debugInfoForProfiling
+                                   (cffi:null-pointer) 0 ; sysroot
+                                   (cffi:null-pointer) 0 ; sdk
+                                   ))))) 
         (unwind-protect
              (handler-case
                  (progn
