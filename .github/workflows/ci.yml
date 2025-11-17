@@ -71,6 +71,20 @@ jobs:
           echo "--- Running E2E: success test (multipass.crisp) ---"
           ./bin/crisp-compile tests/multipass.crisp
 
+
+          echo "--- Running E2E: --debug success test (return_7.crisp) ---"
+          ./bin/crisp-compile tests/return_7.crisp --debug 
+
+          echo "--- Running E2E: --debug success test (def-function_primitive.crisp) ---"
+          ./bin/crisp-compile tests/def-function_primitive.crisp --debug 
+
+          echo "--- Running E2E: --debug success test --single-pass (def-function_primitive.crisp) ---"
+          ./bin/crisp-compile tests/def-function_primitive.crisp --single-pass --debug 
+ 
+          echo "--- Running E2E: --debug success test (multipass.crisp) ---"
+          ./bin/crisp-compile tests/multipass.crisp --debug 
+
+
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"
           
