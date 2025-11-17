@@ -12,6 +12,30 @@
             (crisp.compiler:error-source-location c)
             c))
 
+  (defun initialize-debug-context (di-builder filepath)
+    "Creates and returns the top-level DICompileUnit for a file."
+    (let* ((f (file-namestring filepath))
+           (d (directory-namestring filepath))
+           (flags "") ;; will eventually have to support some pass through flags.
+           (di-file (crisp.llvm-bindings:llvm-di-builder-create-file di-builder f (length f) d (length d)))
+           (producer "Crisp Compiler"))
+      (crisp.llvm-bindings:llvm-di-builder-create-compile-unit 
+       di-builder
+       32768 ; DW_LANG_user_lo
+       di-file
+       producer (length producer)
+       nil ; isOptimized
+       flags (length flags)
+       0   ; runtimeVersion
+       (cffi:null-pointer) 0 ; splitName
+       1   ; DW_Emission_Kind_Full
+       0   ; DWOId
+       nil ; splitDebugInlining
+       nil ; debugInfoForProfiling
+       (cffi:null-pointer) 0 ; sysroot
+       (cffi:null-pointer) 0 ; sdk
+       )))
+
   ;; load libllvm when exe runs, not when built.
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
   
@@ -32,27 +56,7 @@
              (builder (crisp.llvm-bindings:llvm-create-builder))
              ;; Only create the DIBuilder if the debug flag is present.
              (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module)))
-             (di-compile-unit (when debug-p
-                                (let* ((f (file-namestring filepath))
-                                      (d (directory-namestring filepath))
-                                      (flags "") ;; will eventually have to support some pass through flags.
-                                      (di-file (crisp.llvm-bindings:llvm-di-builder-create-file di-builder f (length f) d (length d))))
-                                  (crisp.llvm-bindings:llvm-di-builder-create-compile-unit 
-                                   di-builder
-                                   32768
-                                   di-file
-                                   "Crisp Compiler" (length "Crisp Compiler")
-                                   nil ; isOptimized
-                                   flags (length flags)
-                                   0   ; runtimeVersion
-                                   (cffi:null-pointer) 0 ; splitName
-                                   1   ; DW_Emission_Kind_Full
-                                   0   ; DWOId
-                                   nil ; splitDebugInlining
-                                   nil ; debugInfoForProfiling
-                                   (cffi:null-pointer) 0 ; sysroot
-                                   (cffi:null-pointer) 0 ; sdk
-                                   ))))) 
+             (di-compile-unit (when debug-p (initialize-debug-context di-builder filepath)))) 
         (unwind-protect
              (handler-case
                  (progn
