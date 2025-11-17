@@ -78,7 +78,9 @@
    ;; DWARF Debug Info
    #:llvm-create-di-builder
    #:llvm-di-builder-finalize
-   #:llvm-dispose-di-builder))
+   #:llvm-dispose-di-builder
+   #:llvm-di-builder-create-compile-unit
+   #:llvm-di-builder-create-file))
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)

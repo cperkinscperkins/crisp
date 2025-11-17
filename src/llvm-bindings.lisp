@@ -127,6 +127,7 @@
   (name :string))
 
 ;; --- Debug Info ---
+(cffi:defctype llvm-metadata-ref :pointer)
 (cffi:defctype llvm-di-builder-ref :pointer)
 
 (cffi:defcfun ("LLVMCreateDIBuilder" llvm-create-di-builder) llvm-di-builder-ref
@@ -140,3 +141,33 @@
 (cffi:defcfun ("LLVMDisposeDIBuilder" llvm-dispose-di-builder) :void
   "Disposes of a DIBuilder. This should be called to avoid memory leaks."
   (builder llvm-di-builder-ref))
+
+(cffi:defcfun ("LLVMDIBuilderCreateFile" llvm-di-builder-create-file) llvm-metadata-ref
+  "Creates a new DIFile."
+  (builder llvm-di-builder-ref)
+  (filename :string)
+  (filename-length :unsigned-int)
+  (directory :string)
+  (directory-length :unsigned-int))
+
+(cffi:defcfun ("LLVMDIBuilderCreateCompileUnit" llvm-di-builder-create-compile-unit) llvm-metadata-ref
+  "Creates a new DICompileUnit."
+  (builder llvm-di-builder-ref)
+  (lang :unsigned-int)        ; LLVMDWARFSourceLanguage
+  (file llvm-metadata-ref)
+  (producer :string)
+  (producer-length :unsigned-int)
+  (is-optimized :boolean)
+  (flags :string)
+  (flags-length :unsigned-int)
+  (runtime-ver :unsigned-int)
+  (split-name :string)
+  (split-name-length :unsigned-int)
+  (kind :unsigned-int)          ; LLVMDWARFEmissionKind
+  (dwo-id :unsigned-int)
+  (split-debug-inline :boolean)
+  (debug-info-for-profiling :boolean)
+  (sys-root :string)
+  (sys-root-length :unsigned-int)
+  (sdk :string)
+  (sdk-length :unsigned-int))

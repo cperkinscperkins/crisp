@@ -24,17 +24,42 @@
 (format t "~&; --- Running test-llvm-hello-world ---~%")
 (test-llvm-hello-world)
 
-(defun test-compile-and-print (semantic-fn)
+(defun test-compile-and-print (semantic-fn &key (debug-p nil))
   "Helper to create a module, compile a function, and print the IR."
-  (let ((module (llvm-module-create "ci_test_module"))
-        (builder (llvm-create-builder)))
+  (let* ((module (llvm-module-create "ci_test_module"))
+         (builder (llvm-create-builder))
+         (di-builder (when debug-p (llvm-create-di-builder module))))
     (unwind-protect
          (progn
-           (generate-llvm-ir semantic-fn module builder)
+           (let ((di-compile-unit (when debug-p
+                                    (let* ((f "test.crisp")
+                                           (d "/tmp/")
+                                           (di-file (llvm-di-builder-create-file di-builder f (length f) d (length d)))
+                                           (producer "Crisp Compiler")
+                                           (flags ""))
+                                       (llvm-di-builder-create-compile-unit
+                                        di-builder
+                                        32768 ; DW_LANG_user_lo
+                                        di-file
+                                        producer (length producer)
+                                        nil ; isOptimized
+                                        flags (length flags)
+                                        0   ; runtimeVersion
+                                        (cffi:null-pointer) 0 ; splitName
+                                        1   ; DW_Emission_Kind_Full
+                                        0   ; DWOId
+                                        nil ; splitDebugInlining
+                                        nil ; debugInfoForProfiling
+                                        (cffi:null-pointer) 0 ; sysroot
+                                        (cffi:null-pointer) 0 ; sdk
+                                        )))))
+             (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit))
            (let ((ir-ptr (llvm-print-module-to-string module)))
              (unwind-protect
                   (format t "~a~%" (cffi:foreign-string-to-lisp ir-ptr))
                (llvm-dispose-message ir-ptr))))
+      (when di-builder (llvm-di-builder-finalize di-builder))
+      (when di-builder (llvm-dispose-di-builder di-builder))
       (llvm-dispose-builder builder)
       (llvm-dispose-module module))))
 
@@ -80,6 +105,16 @@
     (format t "~&; Test 'Virtual Line Number Mapping': ~:[FAIL~;PASS~]~%" test-passed)))
 
 (test-location-mapping)
+
+(defun test-dwarf-scaffolding ()
+  (format t "~&; --- Testing DWARF Scaffolding Generation ---~%")
+  (let* ((ir-string (with-output-to-string (s)
+                      (let ((*standard-output* s))
+                        (test-compile-and-print (internal-def-function 'test-dwarf '() '((return-type int)) '(7) '(0)) :debug-p t))))
+         (found (search "!DICompileUnit" ir-string)))
+    (format t "~&; Test 'DWARF Scaffolding': ~:[FAIL~;PASS~]~%" found)))
+
+(test-dwarf-scaffolding)
 
 ;; yay
 (format t "~&~%*** Crisp CI Tests Passed! ***~%")
