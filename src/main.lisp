@@ -49,7 +49,7 @@
                                  do (let ((location (list toplevel-index))
                                           ;; Each top-level form gets its own stack for direct recursion check.
                                           (crisp.compiler::*single-pass-call-stack* nil))
-                                      (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit)
+                                      (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
                                       (incf toplevel-index)))) 
                          ;; --- MULTI-PASS MODE (DEFAULT) ---
                          (let* ((*package* (find-package :crisp-language))
