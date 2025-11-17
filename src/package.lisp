@@ -50,6 +50,7 @@
    #:llvm-print-module-to-string
    #:llvm-dispose-module
    #:llvm-dispose-message
+   #:llvm-get-module-context
    #:llvm-type-of
    ;; Types
    #:llvm-int32-type
@@ -83,10 +84,11 @@
    #:llvm-di-builder-create-file
    #:llvm-di-builder-create-function
    #:llvm-set-subprogram
+   #:llvm-di-builder-create-debug-location
+   #:llvm-instruction-set-debug-loc
    #:llvm-di-builder-create-basic-type
    #:llvm-di-builder-create-subroutine-type
-   #:llvm-builder-set-debug-location
-   #:llvm-di-builder-create-lexical-block))
+   #:llvm-builder-set-debug-location))
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)

@@ -120,6 +120,19 @@
 
 (test-dwarf-scaffolding)
 
+(defun test-dwarf-instruction-level ()
+  (format t "~&; --- Testing DWARF Instruction-Level Generation ---~%")
+  (let* ((ir-string (with-output-to-string (s)
+                      (let ((*standard-output* s))
+                        (test-compile-and-print (internal-def-function 'test-instr '() '((return-type int)) '(7) '(0)) :debug-p t))))
+         (found (search "ret i32 7, !dbg" ir-string)))
+    (format T "ir-string: ~a~%" ir-string)
+    (format t "~&; Test 'DWARF Instruction Location': ~:[FAIL~;PASS~]~%" found)))
+
+(test-dwarf-instruction-level)
+
+;(test-compile-and-print (internal-def-function 'test-instr '() '((return-type int)) '(7) '(0)) :debug-p t)
+
 ;; yay
 (format t "~&~%*** Crisp CI Tests Passed! ***~%")
 
