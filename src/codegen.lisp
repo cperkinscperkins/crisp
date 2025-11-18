@@ -16,6 +16,23 @@
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defun get-or-create-di-type (crisp-type di-builder di-type-cache)
+  "Gets a DIBasicType from a cache or creates it if it doesn't exist."
+  (or (gethash (crisp-type-name crisp-type) di-type-cache)
+      (let* ((name-str (string-downcase (crisp-type-name crisp-type)))
+             (encoding (ecase (crisp-type-category crisp-type)
+                         (:signed-int 5)   ; DW_ATE_signed
+                         (:unsigned-int 7) ; DW_ATE_unsigned
+                         (:float 4)))      ; DW_ATE_float
+             (di-type (llvm-di-builder-create-basic-type
+                       di-builder
+                       name-str (length name-str)
+                       (crisp-type-size crisp-type)
+                       encoding
+                       0)))
+        (setf (gethash (crisp-type-name crisp-type) di-type-cache) di-type)
+        di-type)))
+
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
   (let* ((fn-name (string-downcase (semantic-function-name semantic-function)))
@@ -38,13 +55,16 @@
         (let ((func (llvm-add-function module fn-name fn-type)))
           (let ((di-subprogram
                   (when di-builder
-                    (let* ((di-file (when di-compile-unit (crisp.llvm-bindings::llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
+                    (let* ((di-type-cache (make-hash-table))
+                           (di-file (when di-compile-unit (crisp.llvm-bindings::llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
                            (line-num (if location-map (gethash fn-loc location-map) 0))
-                           ;; Create a DIBasicType for i32
-                           (di-i32-type (llvm-di-builder-create-basic-type di-builder "int" 3 32 5 0)) ; 5 = DW_ATE_signed
                            ;; Create the DISubroutineType
-                           (di-param-types (cons di-i32-type ; Return type is the first element
-                                                 (loop for param in param-nodes collect di-i32-type)))
+                           (di-return-type (get-or-create-di-type (gethash (semantic-function-return-type semantic-function) *crisp-types*) di-builder di-type-cache))
+                           (di-param-types (cons di-return-type ; Return type is the first element
+                                                 (loop for param in param-nodes
+                                                       collect (get-or-create-di-type
+                                                                (gethash (semantic-param-type param) *crisp-types*)
+                                                                di-builder di-type-cache))))
                            (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
                            (_ (loop for i from 0 for type in di-param-types
                                     do (setf (cffi:mem-aref di-param-array :pointer i) type)))
@@ -134,8 +154,12 @@
   (multiple-value-bind (lhs lhs-loc) (generate-node-ir (semantic-add-left-arg node) builder module var-env di-builder di-scope location-map)
     (declare (ignore lhs-loc))
     (multiple-value-bind (rhs rhs-loc) (generate-node-ir (semantic-add-right-arg node) builder module var-env di-builder di-scope location-map)
-      (declare (ignore rhs-loc)) ; Not using arg locations for now
-      (let ((add-inst (llvm-build-add builder lhs rhs "add_tmp"))
+      (declare (ignore rhs-loc))
+      (let* ((result-type-name (semantic-add-type node))
+             (crisp-type (gethash result-type-name *crisp-types*))
+             (add-inst (if (eq (crisp-type-category crisp-type) :float)
+                           (llvm-build-fadd builder lhs rhs "fadd_tmp")
+                           (llvm-build-add builder lhs rhs "add_tmp")))
             (di-location (when (and di-builder di-scope location-map)
                            (let* ((loc (semantic-node-source-location node))
                                   (line (gethash loc location-map 0)))
