@@ -152,6 +152,11 @@
 (load "tests/analyzer.lisp")
 (run-analyzer-tests)
 
+;; Run internal codegen tests
+(format t "~&; --- Running internal codegen tests ---~%")
+(load "tests/codegen-tests.lisp")
+(run-codegen-tests)
+
 ;; yay
 (format t "~&~%*** Crisp CI Tests Passed! ***~%")
 

@@ -56,7 +56,7 @@
           (let ((di-subprogram
                   (when di-builder
                     (let* ((di-type-cache (make-hash-table))
-                           (di-file (when di-compile-unit (crisp.llvm-bindings::llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
+                           (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
                            (line-num (if location-map (gethash fn-loc location-map) 0))
                            ;; Create the DISubroutineType
                            (di-return-type (get-or-create-di-type (gethash (semantic-function-return-type semantic-function) *crisp-types*) di-builder di-type-cache))

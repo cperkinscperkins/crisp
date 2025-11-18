@@ -531,16 +531,24 @@
          (right-type (semantic-node-type right-node)))
 
     ;; (This is a stub, a real one would be smarter)
-    (unless (and (eq left-type 'int) (eq right-type 'int))
-      (error 'crisp-type-error
-             :expected 'int
-             :inferred (if (not (eq left-type 'int)) left-type right-type)
-             :source-location location))
-
-    (make-semantic-add :type 'int
-                       :left-arg left-node
-                       :right-arg right-node
-                       :source-location location)))
+    (cond
+      ;; Case 1: Both types are the same.
+      ((eq left-type right-type)
+       (let ((crisp-type (gethash left-type *crisp-types*)))
+         ;; Ensure they are numeric types that support addition.
+         (unless (and crisp-type (member (crisp-type-category crisp-type) '(:signed-int :unsigned-int :float)))
+           (error 'crisp-type-error
+                  :message (format nil "Operator '+' not supported for type ~a." left-type)
+                  :source-location location))
+         (make-semantic-add :type left-type
+                            :left-arg left-node
+                            :right-arg right-node
+                            :source-location location)))
+      ;; Case 2: Types are different (will be handled by type promotion later).
+      (t
+       (error 'crisp-type-error
+              :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
+              :source-location location)))))
 
 (def-expression-analyzer + analyze-add-expression)
 
