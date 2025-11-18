@@ -150,6 +150,37 @@
   (rhs :pointer)
   (name :string))
 
+;; --- Casting ---
+(defcfun ("LLVMBuildSExt" llvm-build-sext) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
+(defcfun ("LLVMBuildZExt" llvm-build-zext) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
+(defcfun ("LLVMBuildFPExt" llvm-build-fp-ext) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
+(defcfun ("LLVMBuildSIToFP" llvm-build-si-to-fp) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
+(defcfun ("LLVMBuildUIToFP" llvm-build-ui-to-fp) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
 ;; --- Debug Info ---
 (cffi:defctype llvm-metadata-ref :pointer)
 (cffi:defctype llvm-di-builder-ref :pointer)

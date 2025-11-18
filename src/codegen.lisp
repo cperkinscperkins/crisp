@@ -149,12 +149,35 @@
             nil)))
 
 ;; -- addition --
+(defun build-cast-if-needed (builder from-val from-type-name to-type-name)
+  "Builds an LLVM cast instruction if the types differ."
+  (if (eq from-type-name to-type-name)
+      from-val
+      (let* ((from-type (gethash from-type-name *crisp-types*))
+             (to-type (gethash to-type-name *crisp-types*))
+             (to-llvm-type (funcall (crisp-type-llvm-type-fn to-type))))
+        (cond
+          ;; Integer to Float
+          ((and (eq (crisp-type-category from-type) :signed-int) (eq (crisp-type-category to-type) :float))
+           (llvm-build-si-to-fp builder from-val to-llvm-type "si2fp_cast"))
+          ((and (eq (crisp-type-category from-type) :unsigned-int) (eq (crisp-type-category to-type) :float))
+           (llvm-build-ui-to-fp builder from-val to-llvm-type "ui2fp_cast"))
+          ;; Integer Extension
+          ((and (eq (crisp-type-category from-type) :signed-int) (eq (crisp-type-category to-type) :signed-int))
+           (llvm-build-sext builder from-val to-llvm-type "sext_cast"))
+          ((and (eq (crisp-type-category from-type) :unsigned-int) (eq (crisp-type-category to-type) :unsigned-int))
+           (llvm-build-zext builder from-val to-llvm-type "zext_cast"))
+          ;; Float Extension
+          ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :float))
+           (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast"))
+          (t (error "Unsupported implicit cast from ~a to ~a" from-type-name to-type-name))))))
+
 (defmethod generate-node-ir ((node semantic-add) builder module var-env di-builder di-scope location-map)
   "Generates IR for an addition operation."
   (multiple-value-bind (lhs lhs-loc) (generate-node-ir (semantic-add-left-arg node) builder module var-env di-builder di-scope location-map)
     (declare (ignore lhs-loc))
     (multiple-value-bind (rhs rhs-loc) (generate-node-ir (semantic-add-right-arg node) builder module var-env di-builder di-scope location-map)
-      (declare (ignore rhs-loc))
+      (declare (ignore rhs-loc)) 
       (let* ((result-type-name (semantic-add-type node))
              (crisp-type (gethash result-type-name *crisp-types*))
              (add-inst (if (eq (crisp-type-category crisp-type) :float)
