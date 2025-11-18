@@ -2,6 +2,13 @@
 
 (in-package :crisp.compiler)
 
+(defun run-codegen-tests ()
+  "Runs all internal tests for the code generator."
+  (test-fadd-generation)
+  (test-di-type-generation)
+  (test-promotion-casts)
+  (format t "~&; --- Codegen tests passed! ---~%"))
+
 
 
 (defun compile-crisp-file-to-string (filepath &key (debug-p nil))
@@ -45,8 +52,15 @@
     (format t "~&;     [PASS] Found DIBasicType for uint and float.~%"))
   (format t "~&;   ...test-di-type-generation PASSED~%"))
 
-  (defun run-codegen-tests ()
-  "Runs all internal tests for the code generator."
-  (test-fadd-generation)
-  (test-di-type-generation)
-  (format t "~&; --- Codegen tests passed! ---~%"))
+(defun test-promotion-casts ()
+  (format t "~&;   Testing type promotion cast generation...~%")
+  (let ((ir (compile-crisp-file-to-string "tests/promotions.crisp")))
+    (assert (search "sitofp i32" ir))
+    (format t "~&;     [PASS] Found 'sitofp' for signed int -> float promotion.~%")
+    (assert (search "uitofp i32" ir))
+    (format t "~&;     [PASS] Found 'uitofp' for unsigned int -> float promotion.~%")
+    (assert (search "sext i8" ir))
+    (format t "~&;     [PASS] Found 'sext' for signed char -> int promotion.~%")
+    (assert (search "fpext float" ir))
+    (format t "~&;     [PASS] Found 'fpext' for float -> double promotion.~%"))
+  (format t "~&;   ...test-promotion-casts PASSED~%"))
