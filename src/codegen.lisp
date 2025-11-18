@@ -170,6 +170,12 @@
           ;; Float Extension
           ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :float))
            (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast"))
+          ;; Float to Integer
+          ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :signed-int))
+           (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast"))
+          ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :unsigned-int))
+           (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast"))
+          ;; Truncation
           (t (error "Unsupported implicit cast from ~a to ~a" from-type-name to-type-name))))))
 
 (defmethod generate-node-ir ((node semantic-add) builder module var-env di-builder di-scope location-map)
@@ -197,6 +203,27 @@
                                                                     (cffi:null-pointer)))))) ; InlinedAt
         (when di-location (llvm-instruction-set-debug-loc add-inst di-location))
         (values add-inst di-location)))))
+
+(defmethod generate-node-ir ((node semantic-value-cast) builder module var-env di-builder di-scope location-map)
+  "Generates IR for a value-preserving cast."
+  (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-value-cast-arg node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore arg-loc))
+    (let* ((from-type-name (semantic-node-type (semantic-value-cast-arg node)))
+           (to-type-name (semantic-value-cast-type node))
+           (cast-val (build-cast-if-needed builder arg-val from-type-name to-type-name)))
+      ;; NOTE: This will need to be expanded to handle more `to-` conversions.
+      ;; For now, it relies on the implicit promotion logic.
+      (values cast-val nil))))
+
+(defmethod generate-node-ir ((node semantic-bitcast) builder module var-env di-builder di-scope location-map)
+  "Generates IR for a bitcast."
+  (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-bitcast-arg node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore arg-loc))
+    (let* ((to-type-name (semantic-bitcast-type node))
+           (to-llvm-type (llvm-type-for-name to-type-name))
+           (cast-val (llvm-build-bit-cast builder arg-val to-llvm-type "bitcast")))
+      (values cast-val nil))))
+
 
 ;; -- function call --
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)

@@ -273,6 +273,19 @@
   right-arg  ; The 'semantic-var-read' node for 'b'
   source-location)
 
+(defstruct semantic-value-cast
+  "Represents a value-preserving cast (e.g., to-float)."
+  type            ; The target type
+  arg             ; The node being cast
+  source-location)
+
+(defstruct semantic-bitcast
+  "Represents a bit reinterpretation cast (e.g., as-int)."
+  type            ; The target type
+  arg             ; The node being cast
+  source-location)
+
+
 (defstruct semantic-call
   "Represents a call to a user-defined function."
   name            ; The symbol name of the function being called
@@ -574,6 +587,24 @@
 
 (def-expression-analyzer + analyze-add-expression)
 
+(defun analyze-cast-expression (op arg-form env location)
+  "Analyzes a to-XXXX or as-XXXX cast expression."
+  (let* ((op-name (symbol-name op))
+         (target-type-name (intern (subseq op-name (if (alexandria:starts-with-subseq "TO-" op-name) 3 3))))
+         (target-crisp-type (gethash target-type-name *crisp-types*))
+         (arg-node (analyze-expression arg-form env (append location '(1)))))
+
+    (unless target-crisp-type
+      (error 'crisp-unknown-type-error :type-name target-type-name))
+
+    (if (alexandria:starts-with-subseq "TO-" op-name)
+        (make-semantic-value-cast :type target-type-name :arg arg-node :source-location location)
+        (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location))))
+
+(def-expression-analyzer to-int analyze-cast-expression)
+(def-expression-analyzer as-int analyze-cast-expression)
+;; We will add more of these as we add tests for them.
+
 (defun analyze-function-call (op expr env location)
   "Analyzes a call to a user-defined function."
   (format T "analyze-function-call.  call-graph: ~a  current-compiling-function: ~a~%" *call-graph* *current-compiling-function*)
@@ -673,6 +704,13 @@
            (t (error 'crisp-unsupported-form-error
                      :form op
                      :source-location (append location '(0))))))))
+
+    ;; Case 4: It might be a cast function
+    ((and (symbolp (first expr))
+          (alexandria:starts-with-subseq "TO-" (symbol-name (first expr)))
+          (= 2 (length expr)))
+     (analyze-cast-expression (first expr) (second expr) env location))
+
     
     (t (error 'crisp-unsupported-form-error
               :form expr
@@ -685,6 +723,8 @@
     (semantic-literal (semantic-literal-value-type node))
     (semantic-var-read  (semantic-var-read-type node))
     (semantic-add (semantic-add-type node))
+    (semantic-value-cast (semantic-value-cast-type node))
+    (semantic-bitcast (semantic-bitcast-type node))
     (semantic-call (semantic-call-type node))))
 
 
@@ -692,6 +732,8 @@
   (etypecase node
     (semantic-literal (semantic-literal-source-location node))
     (semantic-var-read (semantic-var-read-source-location node))
+    (semantic-value-cast (semantic-value-cast-source-location node))
+    (semantic-bitcast (semantic-bitcast-source-location node))
     (semantic-add (semantic-add-source-location node))
     (semantic-call (semantic-call-source-location node))))
 

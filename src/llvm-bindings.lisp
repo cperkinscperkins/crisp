@@ -181,6 +181,30 @@
   (dest-ty :pointer)
   (name :string))
 
+(defcfun ("LLVMBuildFPToSI" llvm-build-fp-to-si) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
+(defcfun ("LLVMBuildFPToUI" llvm-build-fp-to-ui) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
+(defcfun ("LLVMBuildTrunc" llvm-build-trunc) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
+(defcfun ("LLVMBuildBitCast" llvm-build-bit-cast) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
 ;; --- Debug Info ---
 (cffi:defctype llvm-metadata-ref :pointer)
 (cffi:defctype llvm-di-builder-ref :pointer)
