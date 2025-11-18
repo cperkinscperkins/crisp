@@ -147,6 +147,10 @@
 
 (test-dwarf-add-instruction)
 
+;; Run internal analyzer tests
+(format t "~&; --- Running internal analyzer tests ---~%")
+(load "tests/analyzer.lisp")
+(run-analyzer-tests)
 
 ;; yay
 (format t "~&~%*** Crisp CI Tests Passed! ***~%")

@@ -487,6 +487,10 @@
   (let ((found (assoc 'return-type declarations)))
     (when found
       (let ((type-name (second found)))
+        ;; Special case for #'(...) syntax which is handled elsewhere
+        (when (listp type-name)
+          (return-from analyze-return-type-from-list nil))
+        
         (cond ((null type-name) 'nil)
               ((gethash type-name *crisp-types*) type-name)
               (t (error 'crisp-unknown-type-error :type-name type-name)))))))
