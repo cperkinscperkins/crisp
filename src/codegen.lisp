@@ -176,7 +176,10 @@
           ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :unsigned-int))
            (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast"))
           ;; Truncation
-          (t (error "Unsupported implicit cast from ~a to ~a" from-type-name to-type-name))))))
+          ((and (member (crisp-type-category from-type) '(:signed-int :unsigned-int))
+                (member (crisp-type-category to-type) '(:signed-int :unsigned-int)))
+           (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
+          (t (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))
 
 (defmethod generate-node-ir ((node semantic-add) builder module var-env di-builder di-scope location-map)
   "Generates IR for an addition operation."

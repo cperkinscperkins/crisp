@@ -1,0 +1,4 @@
+;;; tests/errors/illegal_float_to_int_cast.crisp
+(def-function bad_cast (f)
+  (declare #'(float => int))
+  (to-int f))

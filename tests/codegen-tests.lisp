@@ -2,14 +2,6 @@
 
 (in-package :crisp.compiler)
 
-(defun run-codegen-tests ()
-  "Runs all internal tests for the code generator."
-  (test-fadd-generation)
-  (test-di-type-generation)
-  (test-promotion-casts)
-  (format t "~&; --- Codegen tests passed! ---~%"))
-
-
 
 (defun compile-crisp-file-to-string (filepath &key (debug-p nil))
   "Compiles a .crisp file and returns the LLVM IR as a string."
@@ -64,3 +56,24 @@
     (assert (search "fpext float" ir))
     (format t "~&;     [PASS] Found 'fpext' for float -> double promotion.~%"))
   (format t "~&;   ...test-promotion-casts PASSED~%"))
+
+(defun test-explicit-casts ()
+  (format t "~&;   Testing explicit cast generation...~%")
+  (let ((ir (compile-crisp-file-to-string "tests/casts.crisp")))
+    (assert (search "trunc i32" ir))
+    (format t "~&;     [PASS] Found 'trunc' for to-char cast.~%")
+    (assert (search "bitcast float" ir))
+    (format t "~&;     [PASS] Found 'bitcast' for as-int cast.~%")
+    (assert (search "fptosi float" ir))
+    (format t "~&;     [PASS] Found 'fptosi' for truncate cast.~%"))
+  (format t "~&;   ...test-explicit-casts PASSED~%"))
+
+;; keep this at end of file to avoid "style-warnings" in output.
+;; SBCL warns every time it sees a call to smoething not yet defined.
+(defun run-codegen-tests ()
+  "Runs all internal tests for the code generator."
+  (test-fadd-generation)
+  (test-di-type-generation)
+  (test-promotion-casts)
+  (test-explicit-casts)
+  (format t "~&; --- Codegen tests passed! ---~%"))
