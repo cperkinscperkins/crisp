@@ -132,9 +132,6 @@
 ;; Initialize the types when the compiler loads.
 (initialize-crisp-types)
 
-;; We still need a mapping for the internal representation `i32`
-(setf (gethash 'i32 *crisp-types*) (gethash 'int *crisp-types*))
-
 
 ;; EXPORTS TO CRISP LANGUAGE
 ;; ==========================
@@ -184,6 +181,11 @@
              (format stream "Type mismatch! Expected ~a but inferred ~a."
                      (type-error-expected condition)
                      (type-error-inferred condition)))))
+
+(define-condition crisp-unknown-type-error (crisp-compiler-error)
+  ((type-name :initarg :type-name :reader unknown-type-name))
+  (:report (lambda (condition stream)
+             (format stream "Unknown type '~a'." (unknown-type-name condition)))))
 
 (define-condition crisp-call-type-error (crisp-compiler-error)
   ((message :initarg :message :reader type-error-message)
@@ -450,27 +452,25 @@
 (defun analyze-return-type-from-spec (fn-spec)
   "Parses '(int int => int)' and returns 'i32'."
   (let ((arrow (member '=> fn-spec :test #'string=)))
-    (cond
-      ((and arrow (rest arrow)) ; e.g. '(=> int)
-       (let ((return-types (rest arrow)))
-         (when (> (length return-types) 1)
-           (error "Multiple return values are not yet supported."))
-         (let ((type (first return-types)))
-           (cond
-             ((eq type 'int) 'i32)
-             ((null type) 'nil) ; Handles (=> nil) for void
-             (t type)))))
-      ((and arrow (not (rest arrow))) ; e.g. '(int =>)
-       'nil)
-      (t ; No arrow
-       'nil))))
+    (if (and arrow (rest arrow)) ; e.g. '(=> int)
+        (let ((return-types (rest arrow)))
+          (when (> (length return-types) 1)
+            (error "Multiple return values are not yet supported."))
+          (let ((type-name (first return-types)))
+            (cond
+              ((null type-name) 'nil) ; Handles (=> nil) for void
+              ((gethash type-name *crisp-types*) type-name)
+              (t (error 'crisp-unknown-type-error :type-name type-name)))))
+        'nil)))
 
 (defun analyze-environment-from-spec (params fn-spec)
   "Builds the environment '((a i32) (b i32))'
    from '(a b)' and '(int int => int)'."
-  (let ((param-types (loop for type in fn-spec 
-                           until (string= type '=>) 
-                           collect (if (eq type 'int) 'i32 type))))
+  (let ((param-types (loop for type-name in fn-spec
+                           until (string= type-name '=>)
+                           collect (if (gethash type-name *crisp-types*)
+                                       type-name
+                                       (error 'crisp-unknown-type-error :type-name type-name)))))
     (format T "params: ~a  param-types: ~a~%" params param-types)
     (unless (= (length params) (length param-types)) 
       (error 'crisp-signature-arity-error
@@ -485,12 +485,11 @@
 (defun analyze-return-type-from-list (declarations)
   "Finds and returns the return-type from a (return-type ...) decl."
   (let ((found (assoc 'return-type declarations)))
-    (if found
-        (let ((type (second found)))
-          (cond ((eq type 'int) 'i32)
-                ((null type) 'nil)
-                (t type)))
-        'nil)))
+    (when found
+      (let ((type-name (second found)))
+        (cond ((null type-name) 'nil)
+              ((gethash type-name *crisp-types*) type-name)
+              (t (error 'crisp-unknown-type-error :type-name type-name)))))))
 
 (defun analyze-environment-from-list (params declarations)
   "Builds the environment from a (type ...) decl."
@@ -506,11 +505,11 @@
         (error 'crisp-signature-arity-error
                :expected (length (butlast (rest type-decl)))
                :inferred (length params)))
-      (let* ((param-names (butlast (rest type-decl) 1))
-            (param-type (first (last type-decl)))
-            (real-type (if (eq param-type 'int) 'i32 param-type)))
-        (mapcar #'(lambda (name) (list name real-type))
-                param-names)))))
+      (let* ((param-names (butlast (rest type-decl) 1)) (param-type-name (first (last type-decl))))
+        (if (gethash param-type-name *crisp-types*)
+            (mapcar #'(lambda (name) (list name param-type-name))
+                    param-names)
+            (error 'crisp-unknown-type-error :type-name param-type-name))))))
 
 
 (defvar *expression-analyzers* (make-hash-table)
@@ -528,13 +527,13 @@
          (right-type (semantic-node-type right-node)))
 
     ;; (This is a stub, a real one would be smarter)
-    (unless (and (eq left-type 'i32) (eq right-type 'i32))
+    (unless (and (eq left-type 'int) (eq right-type 'int))
       (error 'crisp-type-error
-             :expected 'i32
-             :inferred (if (not (eq left-type 'i32)) left-type right-type)
+             :expected 'int
+             :inferred (if (not (eq left-type 'int)) left-type right-type)
              :source-location location))
 
-    (make-semantic-add :type 'i32
+    (make-semantic-add :type 'int
                        :left-arg left-node
                        :right-arg right-node
                        :source-location location)))
@@ -609,7 +608,7 @@
   (cond
     ;; Case 1: It's a literal, like 7
     ((integerp expr)
-     (make-semantic-literal :value-type 'i32 :value expr :source-location location))
+     (make-semantic-literal :value-type 'int :value expr :source-location location))
 
     ;; Case 1.5: It's a keyword symbol, like :foo
     ((keywordp expr)
@@ -650,7 +649,7 @@
 (defun semantic-node-type (node)
   (etypecase node
     (semantic-literal (semantic-literal-value-type node))
-    (semantic-var-read (semantic-var-read-type node))
+    (semantic-var-read  (semantic-var-read-type node))
     (semantic-add (semantic-add-type node))
     (semantic-call (semantic-call-type node))))
 

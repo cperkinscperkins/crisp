@@ -103,6 +103,9 @@ jobs:
           echo "--- Running E2E: failure test (unknown_func_pos.crisp) ---"
           ! ./bin/crisp-compile tests/errors/unknown_func_pos.crisp 2>&1 | grep -F "Unsupported form"
 
+          echo "--- Running E2E: failure test (unknown_type.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/unknown_type.crisp 2>&1 | grep -F "Unknown type"
+
           echo "--- Running E2E: failure test (illegal_nesting.crisp) ---"
           ! ./bin/crisp-compile tests/errors/illegal_nesting.crisp 2>&1 | grep -F "Unsupported form"
 
