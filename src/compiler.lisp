@@ -589,21 +589,46 @@
 
 (defun analyze-cast-expression (op arg-form env location)
   "Analyzes a to-XXXX or as-XXXX cast expression."
+  (format t "analyze-cast-expression called with op: ~a arg-form: ~a~%" op arg-form)
   (let* ((op-name (symbol-name op))
-         (target-type-name (intern (subseq op-name (if (alexandria:starts-with-subseq "TO-" op-name) 3 3))))
+         (target-type-name
+           (cond
+             ((alexandria:starts-with-subseq "TO-" op-name) (intern (subseq op-name 3)))
+             ((alexandria:starts-with-subseq "AS-" op-name) (intern (subseq op-name 3)))
+             ;; For truncate, floor, etc., the target is always 'int' for now.
+             ;; This will need to be expanded if we support (truncate-to-long ...).
+             ((member op '(truncate floor ceil round)) 'int)
+             (t (error "Internal compiler error: analyze-cast-expression called with invalid operator ~a" op))))
          (target-crisp-type (gethash target-type-name *crisp-types*))
          (arg-node (analyze-expression arg-form env (append location '(1)))))
 
     (unless target-crisp-type
       (error 'crisp-unknown-type-error :type-name target-type-name))
 
+    (let ((source-crisp-type (gethash (semantic-node-type arg-node) *crisp-types*)))
+      (when (and (alexandria:starts-with-subseq "TO-" op-name)
+               (eq (crisp-type-category source-crisp-type) :float)
+               (member (crisp-type-category target-crisp-type) '(:signed-int :unsigned-int)))
+        (error 'crisp-type-error :message "Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead.")))
+
     (if (alexandria:starts-with-subseq "TO-" op-name)
         (make-semantic-value-cast :type target-type-name :arg arg-node :source-location location)
         (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location))))
 
-(def-expression-analyzer to-int analyze-cast-expression)
-(def-expression-analyzer as-int analyze-cast-expression)
-;; We will add more of these as we add tests for them.
+;; Register all possible `to-` and `as-` casts.
+(dolist (type-name (alexandria:hash-table-keys *crisp-types*))
+  (let* ((type-str (symbol-name type-name))
+         (to-name (intern (concatenate 'string "TO-" type-str)))
+         (as-name (intern (concatenate 'string "AS-" type-str))))
+    (format T "Registering cast analyzers for ~a and ~a~%" to-name as-name)
+    (def-expression-analyzer to-name analyze-cast-expression)
+    (def-expression-analyzer as-name analyze-cast-expression)))
+
+;; Register the special float-to-int conversion functions
+(def-expression-analyzer truncate analyze-cast-expression)
+(def-expression-analyzer floor analyze-cast-expression)
+(def-expression-analyzer ceil analyze-cast-expression)
+(def-expression-analyzer round analyze-cast-expression)
 
 (defun analyze-function-call (op expr env location)
   "Analyzes a call to a user-defined function."
@@ -693,25 +718,17 @@
     ((listp expr)
      (let ((op (first expr)))
        (format T "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
-       (let ((handler (gethash op *expression-analyzers*)))
-         (cond
-           ;; Is there a specific handler for this operator (e.g., '+')?
-           (handler (funcall handler expr env location))
-           ;; Is it a call to a known user-defined function?
-           ((gethash op *function-table*)
-            (analyze-function-call op expr env location))
-           ;; Otherwise, we don't know what this is.
-           (t (error 'crisp-unsupported-form-error
-                     :form op
-                     :source-location (append location '(0))))))))
-
-    ;; Case 4: It might be a cast function
-    ((and (symbolp (first expr))
-          (alexandria:starts-with-subseq "TO-" (symbol-name (first expr)))
-          (= 2 (length expr)))
-     (analyze-cast-expression (first expr) (second expr) env location))
-
-    
+       (cond
+         ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
+         ((gethash op *expression-analyzers*)
+          (funcall (gethash op *expression-analyzers*) expr env location))
+         ;; Case 3b: Is it a call to a known user-defined function?
+         ((gethash op *function-table*)
+          (analyze-function-call op expr env location))
+         ;; Case 3c: Otherwise, we don't know what this is.
+         (t (error 'crisp-unsupported-form-error
+                   :form op
+                   :source-location (append location '(0)))))))
     (t (error 'crisp-unsupported-form-error
               :form expr
               :source-location location))))

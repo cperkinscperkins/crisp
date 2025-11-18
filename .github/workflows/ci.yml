@@ -109,6 +109,12 @@ jobs:
           echo "--- Running E2E: failure test (illegal_promotion.crisp) ---"
           ! ./bin/crisp-compile tests/errors/illegal_promotion.crisp 2>&1 | grep -F "Type mismatch for operator '+'"
 
+          echo "--- Running E2E: failure test (illegal_float_to_int_cast.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/illegal_float_to_int_cast.crisp 2>&1 | grep -F "Invalid cast"
+
+          echo "--- Running E2E: failure test (illegal_promotion_float_int.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/illegal_promotion_float_int.crisp 2>&1 | grep -F "Type mismatch for operator '+'"
+
           echo "--- Running E2E: failure test (illegal_promotion_float_int.crisp) ---"
           ! ./bin/crisp-compile tests/errors/illegal_promotion_float_int.crisp 2>&1 | grep -F "Type mismatch for operator '+'"
 
