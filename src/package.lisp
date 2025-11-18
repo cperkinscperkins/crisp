@@ -85,6 +85,12 @@
    #:llvm-build-load2
    #:llvm-build-add
    #:llvm-build-fadd
+   ;; Casting
+   #:llvm-build-sext
+   #:llvm-build-zext
+   #:llvm-build-fp-ext
+   #:llvm-build-si-to-fp
+   #:llvm-build-ui-to-fp
    ;; DWARF Debug Info
    #:llvm-create-di-builder
    #:llvm-di-builder-finalize

@@ -523,32 +523,54 @@
   "A helper macro to register an operator's analyzer function."
   `(setf (gethash ',operator *expression-analyzers*) ',handler-fn))
 
+(defun get-promoted-type (type-a-name type-b-name)
+  "Determines the result type of a binary operation, applying promotion rules."
+  (if (eq type-a-name type-b-name)
+      type-a-name
+      (let ((type-a (gethash type-a-name *crisp-types*))
+            (type-b (gethash type-b-name *crisp-types*)))
+        (cond
+          ;; Promotion within the same category (e.g., int -> long)
+          ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
+                (> (crisp-type-size type-b) (crisp-type-size type-a)))
+           type-b-name)
+          ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
+                (> (crisp-type-size type-a) (crisp-type-size type-b)))
+           type-a-name)
+          ;; Promotion from any integer to float
+          ((and (member (crisp-type-category type-a) '(:signed-int :unsigned-int))
+                (eq (crisp-type-category type-b) :float))
+           type-b-name)
+          ((and (member (crisp-type-category type-b) '(:signed-int :unsigned-int))
+                (eq (crisp-type-category type-a) :float))
+           type-a-name)
+          ;; No other implicit promotions allowed
+          (t nil)))))
+
 (defun analyze-add-expression (expr env location)
   "Analyzes a `(+ ...)` expression."
   (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
          (right-node (analyze-expression (third expr) env (append location '(2))))
          (left-type (semantic-node-type left-node))
-         (right-type (semantic-node-type right-node)))
+         (right-type (semantic-node-type right-node))
+         (promoted-type (get-promoted-type left-type right-type)))
 
-    ;; (This is a stub, a real one would be smarter)
-    (cond
-      ;; Case 1: Both types are the same.
-      ((eq left-type right-type)
-       (let ((crisp-type (gethash left-type *crisp-types*)))
-         ;; Ensure they are numeric types that support addition.
-         (unless (and crisp-type (member (crisp-type-category crisp-type) '(:signed-int :unsigned-int :float)))
-           (error 'crisp-type-error
-                  :message (format nil "Operator '+' not supported for type ~a." left-type)
-                  :source-location location))
-         (make-semantic-add :type left-type
-                            :left-arg left-node
-                            :right-arg right-node
-                            :source-location location)))
-      ;; Case 2: Types are different (will be handled by type promotion later).
-      (t
+    (if promoted-type
+        (let ((result-crisp-type (gethash promoted-type *crisp-types*)))
+          ;; Ensure the resulting type is numeric and supports addition.
+          (unless (and result-crisp-type (member (crisp-type-category result-crisp-type)
+                                                 '(:signed-int :unsigned-int :float)))
+            (error 'crisp-type-error
+                   :message (format nil "Operator '+' not supported for types ~a and ~a." left-type right-type)
+                   :source-location location))
+          (make-semantic-add :type promoted-type
+                             :left-arg left-node
+                             :right-arg right-node
+                             :source-location location))
+        ;; If no promotion rule applies, it's a type error.
        (error 'crisp-type-error
               :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
-              :source-location location)))))
+              :source-location location))))
 
 (def-expression-analyzer + analyze-add-expression)
 
