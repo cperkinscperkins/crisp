@@ -106,6 +106,14 @@ jobs:
           echo "--- Running E2E: failure test (unknown_type.crisp) ---"
           ! ./bin/crisp-compile tests/errors/unknown_type.crisp 2>&1 | grep -F "Unknown type"
 
+          echo "--- Running E2E: failure test (illegal_promotion.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/illegal_promotion.crisp 2>&1 | grep -F "Type mismatch for operator '+'"
+
+          echo "--- Running E2E: failure test (illegal_promotion_float_int.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/illegal_promotion_float_int.crisp 2>&1 | grep -F "Type mismatch for operator '+'"
+
+
+
           echo "--- Running E2E: failure test (illegal_nesting.crisp) ---"
           ! ./bin/crisp-compile tests/errors/illegal_nesting.crisp 2>&1 | grep -F "Unsupported form"
 
