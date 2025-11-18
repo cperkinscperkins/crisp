@@ -91,6 +91,10 @@
    #:llvm-build-fp-ext
    #:llvm-build-si-to-fp
    #:llvm-build-ui-to-fp
+   #:llvm-build-fp-to-si
+   #:llvm-build-fp-to-ui
+   #:llvm-build-trunc
+   #:llvm-build-bit-cast
    ;; DWARF Debug Info
    #:llvm-create-di-builder
    #:llvm-di-builder-finalize
