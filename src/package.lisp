@@ -84,6 +84,7 @@
    #:llvm-build-store
    #:llvm-build-load2
    #:llvm-build-add
+   #:llvm-build-fadd
    ;; DWARF Debug Info
    #:llvm-create-di-builder
    #:llvm-di-builder-finalize

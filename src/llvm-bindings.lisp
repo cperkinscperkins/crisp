@@ -144,6 +144,12 @@
   (rhs :pointer)
   (name :string))
 
+(defcfun ("LLVMBuildFAdd" llvm-build-fadd) :pointer
+  (builder :pointer)
+  (lhs :pointer)
+  (rhs :pointer)
+  (name :string))
+
 ;; --- Debug Info ---
 (cffi:defctype llvm-metadata-ref :pointer)
 (cffi:defctype llvm-di-builder-ref :pointer)
