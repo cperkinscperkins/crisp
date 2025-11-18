@@ -199,6 +199,7 @@
 
 (defun llvm-type-for-name (type-name)
   "Maps a Crisp type symbol to an LLVM type."
-  (case type-name
-    (i32 (llvm-int32-type))
-    (otherwise (error "Unknown type name for LLVM: ~a" type-name))))
+  (let ((crisp-type (gethash type-name *crisp-types*)))
+    (if crisp-type
+        (funcall (crisp-type-llvm-type-fn crisp-type))
+        (error "Unknown type name for LLVM: ~a" type-name))))

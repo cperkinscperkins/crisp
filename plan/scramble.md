@@ -36,7 +36,7 @@ Target #5: Our first Crisp Expression.
 - : declaim? def-kernel ? with-template-type? def-function?
 - [x] def-function
 - [x] (def-function () (declare (return-type int)) 7) ; a function that returns 7.
-- [ ] parsing #'
+- [x] parsing #'
 - [x] macroexpansion
 - [x] walk AST, construct data struc
 - [x] walk DATA STUCT, analyze types
@@ -54,8 +54,9 @@ Target #7 - Transpile
 - [ ] update "in-progress" doc
 
 Target #8  - Continuous Integration
-- [ ] github actions. 
-- [ ] Intermediate testing? Of Lisp macros etc
+- [x] github actions. 
+- [x] Intermediate testing? Of Lisp macros etc
+- [ ] Honestly, this is ongoing. Will need a more serious test infra soon likely
 
 Target #9 - Deploy Crisp on QuickLisp
 - [ ] ?
@@ -140,13 +141,23 @@ ERRORS
 
 
 - [x] Linux?
-- [ ] DWARF
+- [x] DWARF
 - [ ] def-grid-function
 - [ ] def-kernel - case-sensitive
 - [ ] Hoisting
 - [ ] E2E Test?
 - [ ] with-template-type
+- [ ] funcction overloading
 - [ ] multiple return values
+- [ ] let with mv bindings
+- [ ] add more types
+- [ ] type promotion &c.
+- [ ] &optional &key 
+- [ ] &out
+- [ ] defmacro
+- [ ] variadic + < = etc
+- [ ] vectors
+- [ ] def-struct
 - [ ] cond  ( we can make all other divergent control flows from that: when, if, unless)
 - [ ] bool true false.  ( macros can still use T/nil ? )
 - [ ] .crisp files.  basic flag for crisp-compiler.exe

@@ -53,7 +53,15 @@
    #:llvm-get-module-context
    #:llvm-type-of
    ;; Types
+   #:llvm-void-type
+   #:llvm-int8-type
+   #:llvm-int16-type
    #:llvm-int32-type
+   #:llvm-int64-type
+   #:llvm-half-type
+   #:llvm-bfloat-type
+   #:llvm-float-type
+   #:llvm-double-type
    #:llvm-function-type
    ;; Functions
    #:llvm-add-function

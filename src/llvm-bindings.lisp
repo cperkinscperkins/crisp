@@ -38,6 +38,21 @@
 
 ;; --- Types ---
 (defcfun ("LLVMInt32Type" llvm-int32-type) :pointer)
+(defcfun ("LLVMInt8Type" llvm-int8-type) :pointer)
+(defcfun ("LLVMInt16Type" llvm-int16-type) :pointer)
+(defcfun ("LLVMInt64Type" llvm-int64-type) :pointer)
+
+(defcfun ("LLVMHalfType" llvm-half-type) :pointer
+  "Get a 16-bit floating-point type.")
+(defcfun ("LLVMBFloatType" llvm-bfloat-type) :pointer
+  "Get a 16-bit brain floating-point type.")
+(defcfun ("LLVMFloatType" llvm-float-type) :pointer
+  "Get a 32-bit floating-point type.")
+(defcfun ("LLVMDoubleType" llvm-double-type) :pointer
+  "Get a 64-bit floating-point type.")
+
+(defcfun ("LLVMVoidType" llvm-void-type) :pointer
+  "Get a void type.")
 
 (defcfun ("LLVMFunctionType" llvm-function-type) :pointer
   (return-type :pointer)

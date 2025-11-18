@@ -72,7 +72,22 @@
   "A hash table representing the call graph of functions.
   Keys are caller function names, values are lists of callee names.")
 
+(defvar *crisp-types* (make-hash-table)
+  "A hash table mapping type names (symbols) to CRISP-TYPE structs.")
+
+
 (defvar *current-compiling-function* nil)
+
+(defstruct crisp-type
+  "Represents a Crisp type."
+  (name nil :type symbol)
+  ;; The function to get the llvm-type-ref.
+  ;; We use a function so we don't have to have a live LLVM context
+  ;; when we first define all the types.
+  (llvm-type-fn nil :type function)
+  (size 0 :type integer) ; size in bits
+  (category nil :type (member :signed-int :unsigned-int :float)))
+
 
 (defstruct function-signature
   "Represents the full signature of a Crisp function."
@@ -82,6 +97,43 @@
   (source-location nil :type list)
   (is-template-p nil :type boolean)
   (template-params nil :type list))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Type System Initialization
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun initialize-crisp-types ()
+  "Populates the *crisp-types* hash table with built-in scalar types."
+  (clrhash *crisp-types*)
+  (let ((types
+          `(;; Signed Integers
+            (char   ,#'llvm-int8-type   8 :signed-int)
+            (short  ,#'llvm-int16-type  16 :signed-int)
+            (int    ,#'llvm-int32-type  32 :signed-int)
+            (long   ,#'llvm-int64-type  64 :signed-int)
+            ;; Unsigned Integers
+            (uchar  ,#'llvm-int8-type   8 :unsigned-int)
+            (ushort ,#'llvm-int16-type  16 :unsigned-int)
+            (uint   ,#'llvm-int32-type  32 :unsigned-int)
+            (ulong  ,#'llvm-int64-type  64 :unsigned-int)
+            ;; Floating Point
+            (half     ,#'llvm-half-type    16 :float)
+            (bfloat16 ,#'llvm-bfloat-type  16 :float)
+            (float    ,#'llvm-float-type   32 :float)
+            (double   ,#'llvm-double-type  64 :float))))
+    (loop for (name llvm-fn size category) in types
+          do (setf (gethash name *crisp-types*)
+                   (make-crisp-type :name name
+                                    :llvm-type-fn llvm-fn
+                                    :size size
+                                    :category category)))))
+
+;; Initialize the types when the compiler loads.
+(initialize-crisp-types)
+
+;; We still need a mapping for the internal representation `i32`
+(setf (gethash 'i32 *crisp-types*) (gethash 'int *crisp-types*))
 
 
 ;; EXPORTS TO CRISP LANGUAGE
