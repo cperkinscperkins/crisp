@@ -585,12 +585,13 @@
               :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
               :source-location location))))
 
-(def-expression-analyzer + analyze-add-expression)
+;(def-expression-analyzer + analyze-add-expression)
 
-(defun analyze-cast-expression (op arg-form env location)
+(defun analyze-cast-expression (expr env location)
   "Analyzes a to-XXXX or as-XXXX cast expression."
-  (format t "analyze-cast-expression called with op: ~a arg-form: ~a~%" op arg-form)
-  (let* ((op-name (symbol-name op))
+  (let* ((op (first expr))
+         (op-name (symbol-name op))
+         (arg-form (second expr))
          (target-type-name
            (cond
              ((alexandria:starts-with-subseq "TO-" op-name) (intern (subseq op-name 3)))
@@ -599,7 +600,7 @@
              ;; This will need to be expanded if we support (truncate-to-long ...).
              ((member op '(truncate floor ceil round)) 'int)
              (t (error "Internal compiler error: analyze-cast-expression called with invalid operator ~a" op))))
-         (target-crisp-type (gethash target-type-name *crisp-types*))
+         (target-crisp-type (gethash target-type-name *crisp-types*)) 
          (arg-node (analyze-expression arg-form env (append location '(1)))))
 
     (unless target-crisp-type
@@ -614,7 +615,7 @@
     (if (alexandria:starts-with-subseq "TO-" op-name)
         (make-semantic-value-cast :type target-type-name :arg arg-node :source-location location)
         (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location))))
-
+#|
 ;; Register all possible `to-` and `as-` casts.
 (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
   (let* ((type-str (symbol-name type-name))
@@ -629,6 +630,25 @@
 (def-expression-analyzer floor analyze-cast-expression)
 (def-expression-analyzer ceil analyze-cast-expression)
 (def-expression-analyzer round analyze-cast-expression)
+|#
+
+(defun initialize-expression-analyzers ()
+  "Populates the *expression-analyzers* hash table."
+  (clrhash *expression-analyzers*)
+  (def-expression-analyzer + analyze-add-expression)
+  ;; Register all possible `to-` and `as-` casts.
+  (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
+    (let* ((type-str (symbol-name type-name))
+           (to-name (intern (concatenate 'string "TO-" type-str)))
+           (as-name (intern (concatenate 'string "AS-" type-str))))
+      (setf (gethash to-name *expression-analyzers*) #'analyze-cast-expression)
+      (setf (gethash as-name *expression-analyzers*) #'analyze-cast-expression)))
+  ;; Register the special float-to-int conversion functions
+  (setf (gethash 'truncate *expression-analyzers*) #'analyze-cast-expression)
+  (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
+  (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
+  (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
+(initialize-expression-analyzers)
 
 (defun analyze-function-call (op expr env location)
   "Analyzes a call to a user-defined function."
