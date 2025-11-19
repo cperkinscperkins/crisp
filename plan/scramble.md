@@ -163,3 +163,11 @@ ERRORS
 - [ ] .crisp files.  basic flag for crisp-compiler.exe
 
 - [ ] SEO (even the _AIs_ can't find us, completely unsearchable today)
+
+- [ ] Testing Next Stages
+- - [ ] Rove or _Parachute_ for tests. Integrated with our GHA
+- - [ ] Prepare Intel OpenCL CPU Runtime to test kernels
+- - [ ] POCL (portable OpenCL) ??
+- - [ ] buy PC w/ GPU and hook up as Self Hosted runner. 
+- [ ] Get logging under control
+- - [ ] Log4CL.  Probably the best choice. Mostly "compiles away".   There is also Verbose
