@@ -285,6 +285,12 @@
   arg             ; The node being cast
   source-location)
 
+(defstruct semantic-fp-truncate-cast
+  "Represents a float-to-integer truncation cast."
+  type            ; The target integer type
+  arg             ; The float node being cast
+  source-location)
+
 
 (defstruct semantic-call
   "Represents a call to a user-defined function."
@@ -612,9 +618,13 @@
                (member (crisp-type-category target-crisp-type) '(:signed-int :unsigned-int)))
         (error 'crisp-type-error :message "Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead.")))
 
-    (if (alexandria:starts-with-subseq "TO-" op-name)
-        (make-semantic-value-cast :type target-type-name :arg arg-node :source-location location)
-        (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location))))
+    (cond
+      ((alexandria:starts-with-subseq "TO-" op-name)
+       (make-semantic-value-cast :type target-type-name :arg arg-node :source-location location))
+      ((eq op 'truncate)
+       (make-semantic-fp-truncate-cast :type target-type-name :arg arg-node :source-location location))
+      (t ; Default for "AS-" and other currently unhandled float-to-int ops
+       (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))
 #|
 ;; Register all possible `to-` and `as-` casts.
 (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
@@ -762,6 +772,7 @@
     (semantic-add (semantic-add-type node))
     (semantic-value-cast (semantic-value-cast-type node))
     (semantic-bitcast (semantic-bitcast-type node))
+    (semantic-fp-truncate-cast (semantic-fp-truncate-cast-type node))
     (semantic-call (semantic-call-type node))))
 
 
@@ -771,6 +782,7 @@
     (semantic-var-read (semantic-var-read-source-location node))
     (semantic-value-cast (semantic-value-cast-source-location node))
     (semantic-bitcast (semantic-bitcast-source-location node))
+    (semantic-fp-truncate-cast (semantic-fp-truncate-cast-source-location node))
     (semantic-add (semantic-add-source-location node))
     (semantic-call (semantic-call-source-location node))))
 

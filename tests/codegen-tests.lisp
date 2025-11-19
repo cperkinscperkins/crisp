@@ -64,9 +64,9 @@
     (assert (search "sext i32" ir))
     (format t "~&;     [PASS] Found 'sext' for to-char cast.~%")
     (assert (search "bitcast float" ir))
-    (format t "~&;     [PASS] Found 'bitcast' for as-int cast.~%") )
-    ;(assert (search "fptosi float" ir))
-    ;(format t "~&;     [PASS] Found 'fptosi' for truncate cast.~%"))
+    (format t "~&;     [PASS] Found 'bitcast' for as-int cast.~%")
+    (assert (search "fptosi float" ir))
+    (format t "~&;     [PASS] Found 'fptosi' for truncate cast.~%"))
   (format t "~&;   ...test-explicit-casts PASSED~%"))
 
 ;; keep this at end of file to avoid "style-warnings" in output.
