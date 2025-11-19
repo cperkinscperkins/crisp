@@ -227,6 +227,16 @@
            (cast-val (llvm-build-bit-cast builder arg-val to-llvm-type "bitcast")))
       (values cast-val nil))))
 
+(defmethod generate-node-ir ((node semantic-fp-truncate-cast) builder module var-env di-builder di-scope location-map)
+  "Generates IR for a float-to-integer truncation cast."
+  (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-fp-truncate-cast-arg node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore arg-loc))
+    (let* ((to-type-name (semantic-fp-truncate-cast-type node))
+           (to-llvm-type (llvm-type-for-name to-type-name))
+           ;; NOTE: This assumes a signed conversion. We'll need to check the
+           ;; crisp-type category to select fptosi vs fptoui in the future.
+           (cast-val (llvm-build-fp-to-si builder arg-val to-llvm-type "fptosi")))
+      (values cast-val nil))))
 
 ;; -- function call --
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
