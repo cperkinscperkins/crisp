@@ -5,7 +5,9 @@
   :version "0.0.1"
 
   ;; --- Dependencies ---
-  :depends-on ("cffi")
+  :depends-on (#:cffi
+               #:alexandria
+               #:log4cl)
 
   ;; --- File Definitions ---
   ;; load components in exactly this order

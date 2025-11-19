@@ -144,8 +144,8 @@
          (source-location (when loc-pos (nth (1+ loc-pos) body-and-location)))
          ;; The "real" body is everything before the keyword.
          (body (if loc-pos (subseq body-and-location 0 loc-pos) body-and-location)))
-    (format T "which package?: ~a ~%" *package*)             
-    (format T "name: ~a  params: ~a  body: ~a ~%source-location: ~a~%"
+    (log:debug "which package?: ~a ~%" *package*)             
+    (log:debug "name: ~a  params: ~a  body: ~a ~%source-location: ~a~%"
                name params body source-location)
     ;; Handle declarations (this part is tricky, let's simplify)
     (let* ((declare-forms
@@ -344,7 +344,7 @@
 
 (defun compile-toplevel-form (form location module builder di-builder di-compile-unit location-map)
   "Analyzes and compiles a single top-level form (used in Pass 2)."
-  (format *error-output* "c-t-f form: ~a~% location: ~a~%" form location)
+  (log:debug "Compiling top-level form at ~a: ~s" location form)
   ;; For now, we only handle def-function
   (when (and (consp form) (eq (car form) 'def-function))
     ;; In single-pass mode, the signature won't be registered yet.
@@ -374,7 +374,7 @@
 
 (defun check-for-recursion-cycles ()
   "Iterates through the call graph to find any recursive cycles."
-  (format T "check-for-recursion-cycles.  call-graph: ~a~%" *call-graph*)
+  (log:debug "Checking for recursion cycles in call graph: ~s" *call-graph*)
   (let ((visited (make-hash-table)))
     (loop for caller being the hash-keys of *call-graph*
           do (unless (gethash caller visited)
@@ -428,7 +428,7 @@
 
 (defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
-  (format t "Compiler: Analyzing function ~a...~%" name)
+  (log:info "Analyzing function ~s" name)
   (multiple-value-bind (env return-type)
       (parse-function-declarations params declarations)
     ;; Handle the case where a function promises a return value but has no body.
@@ -440,7 +440,7 @@
            (return-node (first (last body-nodes)))
            (inferred-type (if return-node (semantic-node-type return-node) 'nil)))
 
-      (format T " body-nodes: ~a~%  return-node: ~a~%  inferred-type: ~a  return-type: ~a" body-nodes return-node inferred-type return-type)
+      (log:debug "Analyzed body nodes: ~s. Return node: ~s. Inferred type: ~s. Declared return type: ~s" body-nodes return-node inferred-type return-type)
 
       ;; 3. Check Types
       (unless (equal inferred-type return-type)
@@ -490,7 +490,7 @@
                            collect (if (gethash type-name *crisp-types*)
                                        type-name
                                        (error 'crisp-unknown-type-error :type-name type-name)))))
-    (format T "params: ~a  param-types: ~a~%" params param-types)
+    (log:debug "Analyzing spec params: ~s, types: ~s" params param-types)
     (unless (= (length params) (length param-types)) 
       (error 'crisp-signature-arity-error
              :expected (length param-types) 
@@ -662,7 +662,7 @@
 
 (defun analyze-function-call (op expr env location)
   "Analyzes a call to a user-defined function."
-  (format T "analyze-function-call.  call-graph: ~a  current-compiling-function: ~a~%" *call-graph* *current-compiling-function*)
+  (log:debug "Analyzing function call to ~s. Current function: ~s" op *current-compiling-function*)
   (if *call-graph*
       ;; --- Multi-pass mode ---
       ;; Record the dependency in the call graph for later cycle detection.
@@ -720,7 +720,7 @@
 
 (defun analyze-expression (expr env location)
   "Recursively analyzes a *single* expression."
-  (format t "analyze-expression expr: ~a location: ~a~%" expr location)
+  (log:debug "analyze-expression expr: ~s location: ~s" expr location)
   ;; Handle empty body case, which `read` can return as NIL
   (when (null expr)
     (error 'crisp-unsupported-form-error :form expr :source-location location))
@@ -747,7 +747,7 @@
     ;; Case 3: It's a function call, like '(+ a b)'
     ((listp expr)
      (let ((op (first expr)))
-       (format T "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
+       (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
        (cond
          ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
          ((gethash op *expression-analyzers*)

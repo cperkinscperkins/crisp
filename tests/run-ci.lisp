@@ -9,9 +9,13 @@
 (asdf:clear-system "crisp")
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
-;; download cffi, and then load crisp.
-(ql:quickload "crisp")
+;; download dependencies, and then load crisp.
+(ql:quickload '("crisp" "log4cl"))
 (format t "~&; --- System loaded successfully.~%")
+
+(format t "~&; --- Configuring logging...~%")
+;; A sane default that prints to the console, with the root logger level set to DEBUG.
+(log:config :sane2) ;; :debug
 
 (format t "~&; --- Loading LLVM foreign library...~%")
 (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
