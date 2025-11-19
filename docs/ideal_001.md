@@ -180,6 +180,8 @@ Table of Contents
 - - Sum a Vector using Local Memory
 - - Warps & Shuffles
 - - Sum a Vector using Warps and Shuffles
+- Hardware Bit Twiddling Operations
+- Hardware Bit Packing Opoerations
 - Branching
 - - Cost of Divergent Branching
 - - Predicated Selection
@@ -4582,7 +4584,14 @@ The shuffle primitives are special hardware instructions that allow threads
 within a single warp directly exchange register values with each other without 
 using shared memory. They are very powerful and fast operations.
 
-For most NVidia hardware there are at most 32 lanes in a single warp.  Be sure the `local_work_size` used when enqueueing the kernel matches as a workgroup cannot perform shuffles outside the maximum warp range. A `(local-size :set-to 32)` declaration with a nice message can help communicate that to whoever is developing
+For most NVidia hardware there are at most 32 lanes in a single warp.  Very often workgroups
+are BIGGER than a single warp, so plan your algorithm accordingly. shuffles work across warps, not 
+workgroups. 
+
+For some algorithms, setting the workgroup size to be the same as the maximum warp size makes
+the algorithm easier to implement. But be careful if you do this, because multiple warps
+in a workgroup take up slack whenever there is a stall accessing memory.  If your workgroup
+has only one warp, that advantage is surrendered.  However, if you decide to use tha strategy then be sure the `local_work_size` used when enqueueing the kernel matches.  A `(local-size :set-to 32)` declaration with a nice message can help communicate that to whoever is developing
 the hoisting.
 
 ## in-warp
@@ -4599,13 +4608,13 @@ be used otherwise. <!-- NOTE: I don't think this has to be true at all. Maybe? -
 
 
 ### shuffle
-`(shuffle <someVar> target-lane-id)`
+`(shuffle <someVar> target-lane-id &optional (width +warp-size+))`
 The `(shuffle ...)` expression evaluates to the current value of `someVar` as it is in another thread. 
 THe target lane-id is provided directly to `shuffle`.
 
 ### shuffle-up  / shuffle-down
-`(shuffle-up <someVar> delta)`
-`(shuffle-down <someVar> delta)`
+`(shuffle-up <someVar> delta &optional (width +warp-size+))`
+`(shuffle-down <someVar> delta &optional (width +warp-size+))`
 These expressions evaluate to the current value of `someVar` in a thread that is plus or minus `delta` lanes over.
 Note that `-up` / `-down` do not necessarily have an intuitive interpretation. The direction is where the data 
 is going to, rather than the operation performed with the delta. So `shuffle-up` SUBTRACTS `delta` from the current 
@@ -4614,13 +4623,13 @@ Meanwhile, `shuffle-down` ADDS `delta` to the current lane id and return the val
 lane (ie, the data is shuffling "down" to us.) Whatever. 
 
 ### shuffle-xor
-`(shuffle-xor <someVar> lane-id-mask:ulong)`
+`(shuffle-xor <someVar> &optional lane-id-mask:ulong (width +warp-size+))`
 
 Those other shuffle operations do cool tricks. But `shuffle-xor` is where real sorcery occurs.
 
 The `(shuffle-xor ...)` expression evaluates to the current value of `someVar` as it is in one of the other threads.  
 The target lane id is calculated by taking the current thread lane id and XOR-ing with the `lane-id-mask` argument.
-`shuffle-xor` only needs to be given the name of the variable to fetch and the mask, it gets the current lane id automatically.
+`shuffle-xor` only needs to be given the name of the variable to fetch and the mask, it gets the current lane id automatically.  
 
 `shuffle-xor` is very useful for tree reducing.  See the `sum_vector_warp` example below. 
 The magic occurs in the interaction between the descending-by-half mask gotten from `dec-times-by-half` and `shuffle-xor`
@@ -4630,6 +4639,34 @@ number of steps.
 (dec-times-by-half (s (/ +warp-size+ 2)) ;;start the descent with half the warp size. ie 16 then 8, 4, 2, 1
         ... (shuffle-xor someVal s))
 ```
+
+
+### Ballot Operations
+The ballot primitives allow the warp to vote on a predicate.
+
+
+#### warp-ballot
+`(warp-ballot predicate:bool) -> uint`
+Returns a bitmask where the Nth bit is set if the Nth thread in the warp evaluated `predicate` to true.
+
+Think of `warp-ballot` as a bitwise poll of the warp. Every thread passes in a boolean (the predicate). 
+The hardware collects these booleans from all active threads simultaneously and packs 
+them into a single 32-bit integer.
+If Thread 0 says true, the 0th bit of the integer is 1.
+If Thread 1 says false, the 1st bit of the integer is 0.
+
+Each thread receives this same composite integer containing the votes of everyone in the warp.
+
+This is a very useful operation often used in conjunction with the `popcount` bit operation. (See the Bit Twiddling section)
+
+#### warp-any? / warp-all?
+`(warp-any? predicate:bool) -> bool`
+`(warp-all? predicate:bool) -> bool`
+Returns true if any (or all) active threads in the warp evaluate `predicate` to true. These are extremely fast hardware reductions.
+
+### Supported Types
+The shuffle operations natively support 32-bit types (`int`, `uint`, `float`). 
+Crisp will automatically decompose larger types (like `double`, vectors, or structs) into multiple 32-bit shuffle operations for you.
 
 Sum a Vector using Warps and Shuffles
 -------------------------------------
@@ -4700,6 +4737,171 @@ Most expedient is to make another kernel that
 employs `reduce-vec-second-stage` (see below) and then you'll have a two step solution. If you would
 like to see the hoisting code in action, then use either a continuation kernel (see above) 
 or  `def-orchestration` (see below).
+
+Bit Twiddling Operations
+========================
+
+`op-popcount`
+----------
+`(op-popcount uint) => uint`
+
+`op-popcount` counts the number of set bits in a binary integer.
+```
+(op-popcount 3) -> (op-popcount  #b00000011) -> 2
+(op-popcount 255) -> (op-popcount #b11111111) -> 8
+(op-popcount #xAA) -> (op-popcount #b10101010) -> 4
+```
+`op-popcount` is the engine of parallel prefix sums on bitmasks. When you combine `warp-ballot` (which gives you a bitmask of "who is active") with popcount (which tells you "how many people are active"), you can calculate offsets and indices in constant time without loops.
+
+`op-count-leading-zeros` / `op-count-trailing-zeros`
+---------------------------------------------
+`op-count-leading-zeros` returns the number of zero bits before the first 1 bit in a `uint`.
+This can be very handy for finding the index of the first active thread in a ballot mask. 
+
+`op-count-trailing-zeros` returnst the number of zero bits after the last 1 bit in a `uint`.
+
+In hardware these get mapped to `CLZ` and `CTZ`
+
+```
+(op-count-leading-zeros #b00000011) -> 6
+(op-count-trailing-zeros #b10101010) -> 1
+```
+
+`op-find-msb` / `op-find-lsb`
+----------------------
+`op-find-msb` returns the *index* (0-31) of the most significant bit set.
+Note: This is NOT the same as `op-count-leading-zeros`.
+It is calculated as `31 - clz(value)`.
+
+`op-find-lsb` is exactly the same as `op-count-trailing-zeros` above, and it will 
+ sometimes get mapped to `CTZ` on hardware.
+
+```
+(op-find-msb #b00001100) -> 3
+(op-find-lsb #b00001100) -> 2
+```
+
+
+`op-bit-reverse`
+------------
+Reverses the bits in a 32-bit integer.
+```
+(op-bit-reverse #xFFFF0000) -> #x0000FFFF
+```
+
+Hardware Bit Packing / Unpacking
+================================
+
+Modern GPU hardware has built-in intrinsic functions which can quickly pack and unpack values out
+of bitfields, sometimes with a loss of accuracy. If you expect to read or store these values
+from a vector or tensor exactly once then the best practice would be use Crisp derived types and 
+custom getter/setter functions. See the example for `op-pack-11` below.
+
+`op-pack-11` / `op-unpack-11`
+----------------------------
+Take three floats and store them in 32 bits by converting two of them to 11 bit floats and the third
+to a 10 bit float.  Unpacking them to normal 4-byte floats for operations
+
+```
+(op-pack-11 float-1 float-2 float-3) => uint
+(op-unpack-11 uint) => float-1 float-2 float-3
+```
+
+### Best Practice
+
+Rather than passing a vector of `uint` around, use `def-derived-type` to
+define your own type and do the packing in the setters and getters.
+
+```
+(def-derived-type my-HSL-vec (vector-type uint :compact) :subst :no)
+
+(def-function ~ (vec index)
+   (declare #'(my-HSL-vec uint => float float float))
+   (op-unpack-11 (~ vec index)))
+
+
+(def-setter ~ (vec index f1 f2 f3)
+   (declare #'(my-HSL-vec uint float float float => nil))
+   (set! (~ vec index) (op-pack-11 f1 f2 f3))))
+
+
+(def-kernel distort (hsl-scene)
+  (declare (type hsl-scene my-HSL-vec))
+  (loop-vector-stride hsl-scene (i)
+    (let ((hue sat light (~ hsl-scene i)))
+      ;; note - can someone tell me what this does? I bet it's not good.
+      ;; but, hey, it's coalesced access. So who cares? 
+      (inc! hue .3)
+      (dec! sat .2)
+      (inc! light .1)
+      (set! (~ hsl-scene i) hue sat light))))
+```
+
+`op-pack-half-2x16` / `op-unpack-half-2x16`
+------------------------------------------
+
+```
+(op-pack-half-2x16 float float) => uint
+(op-unpack-half-2x16 uint) => float float
+```
+- What it does: Packs two 32-bit floats into two 16-bit floats (half precision) inside a single `uint`.
+- Use case: Storing UV coordinates, normals, or colors where 32-bit precision is overkill but 8-bit is too low. This is probably the most widely used packing op after 8-bit color.
+
+Obviously, if you are using `half` you don't need this, you can just bit-shift and cast.
+
+`op-pack-unorm-4x8` / `op-unpack-unorm-4x8`
+-------------------------------------------
+```
+(op-pack-unorm-4x8 float float float float) => uint
+(op-unpack-unorm-4x8 uint) => float float float float
+```
+- What it does: Packs four 32-bit floats (clamped to 0.0-1.0 range) into four 8-bit unsigned integers inside a single `uint`.
+- Use case: Standard RGBA8 color data. This handles the float-to-int conversion and packing in one fast hardware instruction.
+
+`op-pack-snorm-4x8` / `op-unpack-snorm-4x8`
+------------------------------------------
+```
+(op-pack-snorm-4x8 float float float float) => uint
+(op-unpack-snorm-4x8 uint) => float float float float
+```
+- What it does: Same as above, but for SIGNED normalized values (-1.0 to 1.0).
+- Use case: Storing normals (nx, ny, nz) or vectors in 8-bit precision.
+
+`op-pack-unorm-2x16` / `op-unpack-unorm-2x16`
+---------------------------------------------
+```
+(op-pack-unorm-2x16 float float) => uint
+(op-unpack-unorm-2x16 uint) => float float
+```
+- What it does: Takes two 32-bit floats (0.0-1.0), converts them to 16-bit unsigned integers, and packs them into one 32 bit `uint`
+- Use case: High-precision texture coordinates or depth values.
+
+`op-pack-double-2x32` / `op-unpack-double-2x32`
+----------------------------------------------
+```
+(op-pack-double-2x32 uint uint) => double
+(op-unpack-double-2x32 double) => uint uint
+```
+- What it does: Packs two 32-bit unsigned integers into a single 64-bit double.
+- Use case: Mostly for passing 64-bit data through pipelines that might be restricted to 32-bit registers, or bit-casting.
+
+<!--
+
+These are used fairly common in shaders, but there is usually no hardware level unpacker for them.
+
+Plus, the "shared exponent" thing makes them more akin to the microfloat-blocks.  
+
+If we wanted to provide unpacking, we'd have to do it ourselves, likely with no hardware acceleration.
+
+For that reason, I'm keeping this out of the spec until later.
+
+`op-pack-rgb-9e5` (Shared Exponent)  Pack only.
+-----------------------------------------------
+- What it does: Packs three floats into a 32-bit integer using a shared 5-bit exponent for all three channels.
+- Use case: HDR lighting/color. It has no sign bit (positive only) but handles large dynamic ranges better than standard fixed-point. It is often an alternative to the `11-11-10` format of `op-pack-11`
+
+
+-->
 
 Branching
 =========
@@ -8571,6 +8773,7 @@ scratch vector whose length is equal to the local work size.
 
 
 
+
 Builtin GPU Functions & Constants
 =================================
 
@@ -10412,6 +10615,9 @@ control flow
 - shuffle-up
 - shuffle-down
 - shuffle-xor
+- warp-ballot
+- warp-any?
+- warp-all?
 - if / if+ / if*
 - when / when+ / when*
 - unless / unless+ / unless*
@@ -10609,6 +10815,22 @@ other
 - local-mem                 [DP]
 - global-mem :return-value  [DP] 
 - string-concat
+
+
+Hardware Operations
+-------------------
+- op-popcount
+- op-count-leading-zeros
+- op-count-trailing-zeros
+- op-find-msb
+- op-find-lsb
+- op-bit-reverse
+- op-pack-11 / op-unpack-11
+- `op-pack-half-2x16` / `op-unpack-half-2x16`
+- `op-pack-unorm-4x8` / `op-unpack-unorm-4x8`
+- `op-pack-snorm-4x8` / `op-unpack-snorm-4x8`
+- `op-pack-unorm-2x16` / `op-unpack-unorm-2x16`
+- `op-pack-double-2x32` / `op-unpack-double-2x32`
 
 
 
