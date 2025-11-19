@@ -150,8 +150,9 @@ ERRORS
 - [ ] funcction overloading
 - [ ] multiple return values
 - [ ] let with mv bindings
-- [ ] add more types
-- [ ] type promotion &c.
+- [x] add more types
+- - [ ] hardware vector types
+- [x] type promotion &c.
 - [ ] &optional &key 
 - [ ] &out
 - [ ] defmacro
@@ -170,4 +171,4 @@ ERRORS
 - - [ ] POCL (portable OpenCL) ??
 - - [ ] buy PC w/ GPU and hook up as Self Hosted runner. 
 - [ ] Get logging under control
-- - [ ] Log4CL.  Probably the best choice. Mostly "compiles away".   There is also Verbose
+- - [x] Log4CL.  Probably the best choice. Mostly "compiles away".   There is also Verbose
