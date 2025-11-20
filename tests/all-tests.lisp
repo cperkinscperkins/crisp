@@ -7,6 +7,9 @@
   ;; test package which ones to use. Since we are testing the compiler,
   ;; we want to use the compiler's versions.
   (:shadowing-import-from :crisp.compiler
+                          #:internal-def-function
+                          #:generate-llvm-ir
+                          #:generate-location-map
                           #:char #:short #:float #:double #:truncate #:floor
                           #:ceil #:round))
 
@@ -39,6 +42,26 @@
           (when di-builder (llvm-dispose-di-builder di-builder))
           (llvm-dispose-builder builder)
           (llvm-dispose-module module))))))
+
+(defun test-compile-and-print (semantic-fn &key (debug-p nil))
+  "Helper to create a module, compile a function, and return the IR string."
+  (with-output-to-string (s)
+    (let* ((module (llvm-module-create "ci_test_module"))
+           (builder (llvm-create-builder))
+           (di-builder (when debug-p (llvm-create-di-builder module))))
+      (unwind-protect
+           (let ((location-map (when debug-p (generate-location-map (list semantic-fn)))))
+             (let ((di-compile-unit (when debug-p
+                                      (let* ((f "test.crisp") (d "/tmp/") (di-file (llvm-di-builder-create-file di-builder f (length f) d (length d))) (producer "Crisp Compiler") (flags ""))
+                                        (llvm-di-builder-create-compile-unit di-builder 32768 di-file producer (length producer) nil flags (length flags) 0 (cffi:null-pointer) 0 1 0 nil nil (cffi:null-pointer) 0 (cffi:null-pointer) 0)))))
+               (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))
+             (let ((ir-ptr (llvm-print-module-to-string module)))
+               (unwind-protect (format s "~a" (cffi:foreign-string-to-lisp ir-ptr))
+                 (llvm-dispose-message ir-ptr)))))
+        (when di-builder (llvm-di-builder-finalize di-builder))
+        (when di-builder (llvm-dispose-di-builder di-builder))
+        (llvm-dispose-builder builder)
+        (llvm-dispose-module module))))
 
 (define-test (crisp-compiler fadd-generation)
   "Tests that fadd generation works correctly."
@@ -98,3 +121,41 @@
         'crisp-signature-arity-error)
   (fail (analyze-environment-from-list '(a) '((type a quux)))
         'crisp-unknown-type-error))
+
+(define-test (crisp-compiler internal-def-function-compilation)
+  "Tests the compilation path using internal-def-function."
+  (let ((ir-7 (test-compile-and-print (internal-def-function 'test-fn-7 '() '((return-type int)) '(7) '(0)))))
+    (true (search "define i32 @test-fn-7()" ir-7))
+    (true (search "ret i32 7" ir-7)))
+
+  (let ((ir-add (test-compile-and-print (internal-def-function 'test-fn-add '(a b) '((type a b int) (return-type int)) '((+ a b)) '(1)))))
+    (true (search "define i32 @test-fn-add(i32 %0, i32 %1)" ir-add))
+    (true (search "add i32" ir-add)))
+
+  (let ((ir-arrow (test-compile-and-print (internal-def-function 'test-fn-arrow '(a b) '((function (int int => int))) '((+ a b)) '(2)))))
+    (true (search "define i32 @test-fn-arrow(i32 %0, i32 %1)" ir-arrow))))
+
+(define-test (crisp-compiler dwarf-generation)
+  "Tests for DWARF debug information generation."
+  (define-test location-mapping
+    (let* ((crisp-code '((def-function foo (a) (declare (return-type int)) (+ a 1))))
+           (location-map (generate-location-map crisp-code)))
+      (is = 1 (gethash '(0) location-map))
+      (is = 5 (gethash '(0 2 0) location-map))
+      (is = 12 (gethash '(0 4 2) location-map))))
+
+  (define-test scaffolding
+    (let ((ir (test-compile-and-print (internal-def-function 'test-dwarf '() '((return-type int)) '(7) '(0)) :debug-p t)))
+      (true (search "!DICompileUnit" ir))
+      (true (search "define i32 @test-dwarf() !dbg" ir))
+      (true (search "line: 1" ir))
+      (true (search "!DISubroutineType" ir))))
+
+  (define-test instruction-location
+    (let ((ir (test-compile-and-print (internal-def-function 'test-instr '() '((return-type int)) '(7) '(0)) :debug-p t)))
+      (true (search "ret i32 7, !dbg" ir))))
+
+  (define-test add-instruction-location
+    (let ((ir (test-compile-and-print (internal-def-function 'test-add '(a) '((type a int) (return-type int)) '((+ a 2)) '(0)) :debug-p t)))
+      (true (search "add i32 %a1, 2, !dbg" ir))
+      (true (search "ret i32 %add_tmp, !dbg" ir)))))

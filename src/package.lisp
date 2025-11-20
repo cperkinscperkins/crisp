@@ -126,8 +126,7 @@
 
 
 
-  (:export #:test-llvm-hello-world
-           #:def-function
+  (:export #:def-function
            #:compile-toplevel-form
            #:compile-module
            #:generate-location-map
