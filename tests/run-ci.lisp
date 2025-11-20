@@ -10,12 +10,12 @@
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
 ;; download dependencies, and then load crisp.
-(ql:quickload '("crisp" "log4cl"))
+(ql:quickload '("crisp" "log4cl" "parachute"))
 (format t "~&; --- System loaded successfully.~%")
 
 (format t "~&; --- Configuring logging...~%")
 ;; A sane default that prints to the console, with the root logger level set to DEBUG.
-(log:config :sane2) ;; :debug
+(log:config :sane2 :debug)
 
 (format t "~&; --- Loading LLVM foreign library...~%")
 (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
@@ -156,10 +156,10 @@
 (load "tests/analyzer.lisp")
 (run-analyzer-tests)
 
-;; Run internal codegen tests
-(format t "~&; --- Running internal codegen tests ---~%")
-(load "tests/codegen-tests.lisp")
-(run-codegen-tests)
+;; Run all Parachute tests
+(format t "~&; --- Running Parachute tests ---~%")
+(load "tests/all-tests.lisp")
+(parachute:test :crisp.tests)
 
 ;; yay
 (format t "~&~%*** Crisp CI Tests Passed! ***~%")

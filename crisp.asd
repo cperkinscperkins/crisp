@@ -7,7 +7,8 @@
   ;; --- Dependencies ---
   :depends-on (#:cffi
                #:alexandria
-               #:log4cl)
+               #:log4cl
+               #:parachute)
 
   ;; --- File Definitions ---
   ;; load components in exactly this order
