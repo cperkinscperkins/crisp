@@ -132,6 +132,10 @@
            #:compile-module
            #:generate-location-map
            #:initialize-crisp-types
+           #:analyze-return-type-from-spec
+           #:analyze-environment-from-spec
+           #:analyze-return-type-from-list
+           #:analyze-environment-from-list
            #:initialize-compiler
            #:initialize-expression-analyzers
 
@@ -160,6 +164,8 @@
            #:crisp-compiler-error
            #:crisp-unexpected-eof-error
            #:crisp-type-error
+           #:crisp-unknown-type-error
+           #:crisp-signature-arity-error
            #:error-source-location
            #:type-error-expected
            #:type-error-inferred

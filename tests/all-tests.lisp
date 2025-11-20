@@ -89,7 +89,7 @@
   (is eq 'nil (analyze-return-type-from-list '((return-type nil))))
   (fail (analyze-return-type-from-list '((return-type baz)))
         'crisp-unknown-type-error)
-  (is null (analyze-return-type-from-list '((function (int => int))))))
+  (false (analyze-return-type-from-list '((function (int => int))))))
 
 (define-test (analyzer environment-from-list)
   (is equal '((a float) (b float))
