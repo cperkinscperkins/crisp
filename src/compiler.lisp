@@ -108,7 +108,7 @@
   (clrhash *crisp-types*)
   (let ((types
           `(;; Signed Integers
-            (char   ,#'llvm-int8-type   8 :signed-int)
+            (#:char   ,#'llvm-int8-type   8 :signed-int)
             (short  ,#'llvm-int16-type  16 :signed-int)
             (int    ,#'llvm-int32-type  32 :signed-int)
             (long   ,#'llvm-int64-type  64 :signed-int)
@@ -130,7 +130,7 @@
                                     :category category)))))
 
 ;; Initialize the types when the compiler loads.
-(initialize-crisp-types)
+;(initialize-crisp-types)
 
 
 ;; EXPORTS TO CRISP LANGUAGE
@@ -311,6 +311,7 @@
 
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms."
+  (log:debug "*crisp-types*: ~s and *expression-analyzers*: ~s" (alexandria:hash-table-keys *crisp-types*) (alexandria:hash-table-keys *expression-analyzers*))
   ;; Pass 1: Gather all function signatures first.
   (let ((*call-graph* (make-hash-table)))
     (analyze-signatures-pass forms)
