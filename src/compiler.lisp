@@ -108,7 +108,7 @@
   (clrhash *crisp-types*)
   (let ((types
           `(;; Signed Integers
-            (#:char   ,#'llvm-int8-type   8 :signed-int)
+            (char   ,#'llvm-int8-type   8 :signed-int)
             (short  ,#'llvm-int16-type  16 :signed-int)
             (int    ,#'llvm-int32-type  32 :signed-int)
             (long   ,#'llvm-int64-type  64 :signed-int)
@@ -650,8 +650,8 @@
   ;; Register all possible `to-` and `as-` casts.
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
     (let* ((type-str (symbol-name type-name))
-           (to-name (intern (concatenate 'string "TO-" type-str)))
-           (as-name (intern (concatenate 'string "AS-" type-str))))
+           (to-name (intern (concatenate 'string "TO-" type-str) :crisp.compiler))
+           (as-name (intern (concatenate 'string "AS-" type-str) :crisp.compiler)))
       (setf (gethash to-name *expression-analyzers*) #'analyze-cast-expression)
       (setf (gethash as-name *expression-analyzers*) #'analyze-cast-expression)))
   ;; Register the special float-to-int conversion functions
@@ -659,7 +659,7 @@
   (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
-(initialize-expression-analyzers)
+
 
 (defun analyze-function-call (op expr env location)
   "Analyzes a call to a user-defined function."

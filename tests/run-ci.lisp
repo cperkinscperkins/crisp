@@ -23,6 +23,11 @@
 ;; Switch into the compiler package
 (in-package :crisp.compiler)
 
+;; Re-initialize the compiler state that was cleared by asdf:clear-system
+(format t "~&; --- Re-initializing compiler state...~%")
+(initialize-crisp-types)
+(initialize-expression-analyzers)
+
 
 ;; basic FFI test
 (format t "~&; --- Running test-llvm-hello-world ---~%")

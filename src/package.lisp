@@ -112,6 +112,18 @@
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings)
 
+  ;; Shadow all symbols that conflict with the COMMON-LISP package.
+  ;; This ensures that when we use 'char', we mean 'crisp.compiler::char',
+  ;; not 'cl:char'.
+  (:shadow #:char
+           #:short
+           #:float
+           #:double
+           #:truncate
+           #:floor
+           #:ceil
+           #:round)
+
 
 
   (:export #:test-llvm-hello-world
@@ -120,6 +132,7 @@
            #:compile-module
            #:generate-location-map
            #:initialize-crisp-types
+           #:initialize-expression-analyzers
 
 
            ;; laungage symbols
@@ -127,7 +140,20 @@
            #:return-type
            #:type
            "|=>|"
-           #:int
+           ;; All Crisp types
+           #:char #:short #:int #:long
+           #:uchar #:ushort #:uint #:ulong
+           #:half #:bfloat16 #:float #:double
+
+           ;; All cast/conversion operators
+           #:to-char #:as-char
+           #:to-short #:as-short
+           #:to-int #:as-int
+           #:to-long #:as-long
+           #:to-float #:as-float
+           #:to-double #:as-double
+           #:truncate #:floor #:ceil #:round
+
 
            ;; error conditions
            #:crisp-compiler-error
@@ -154,7 +180,19 @@
    #:return-type
    #:type
    "|=>|"
-   #:int)
+   ;; All Crisp types
+   #:char #:short #:int #:long
+   #:uchar #:ushort #:uint #:ulong
+   #:half #:bfloat16 #:float #:double
+
+   ;; All cast/conversion operators
+   #:to-char #:as-char
+   #:to-short #:as-short
+   #:to-int #:as-int
+   #:to-long #:as-long
+   #:to-float #:as-float
+   #:to-double #:as-double
+   #:truncate #:floor #:ceil #:round)
 
   ;; --- 1. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
@@ -189,7 +227,20 @@
    #:def-orchestration #:def-qint #:def-microfloat-block
    #:def-type-alias #:def-struct
    #:declare
-   #:return-type #:type #:int
+   #:return-type #:type
+   ;; All Crisp types
+   #:char #:short #:int #:long
+   #:uchar #:ushort #:uint #:ulong
+   #:half #:bfloat16 #:float #:double
+
+   ;; All cast/conversion operators
+   #:to-char #:as-char
+   #:to-short #:as-short
+   #:to-int #:as-int
+   #:to-long #:as-long
+   #:to-float #:as-float
+   #:to-double #:as-double
+   #:truncate #:floor #:ceil #:round
 
 
    ;; Our looping constructs
