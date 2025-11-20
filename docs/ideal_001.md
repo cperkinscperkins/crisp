@@ -7847,6 +7847,58 @@ In addition to the three above, there is also `round`. This performes division a
 | (round a b) | Rounds nearest neighbor | 3, 1  | -3, -1 | 
 
 
+Hardware Supported Math Operations
+----------------------------------
+
+### `op-fma` Fused Multiply Add
+`(op-fma a b c) => ((a * b) + c)`
+
+Fused Multiply Add is a hardware accelerated multiply and add operation that performs
+only one rounding operation.  It is available for all floating point types
+ ( `half`, `bfloat16`, `float`, `double` ) as well as their hardware vector variants
+ ( `float2`, `float4` etc).
+
+Note that the Crisp compiler outputs LLVM-IR, and if using `:fast` precisions, then the
+LLVM-IR should be automatically optimized 
+if addition followed by multiplication is detected ... except when it isn't. 
+
+Use `op-fma` when you want this hardware operation, regardless of the math precision setting.
+
+### `op-saturate`  Clamp Between 0.0 and 1.0
+`(op-saturate f) => f`
+
+Clamps a floating point value to be between 0.0 and 1.0.  Works with all floating point types, 
+including the hardware vector variants.
+
+### `op-imad` Integer Multiply-Add
+`(op-imad a b c) => ((a * b) + c)`
+
+Similar to `op-fma` but for integer types (signed and unsigned).
+
+### `op-imad-sat`  Integer Multiply-Add with Saturation
+
+`(op-imad-sat a b c) =>  SATURATE(   ((a * b) + c)   )`
+
+Similar to `op-imad`, this operation not only performs the add and multiply, but also clamps the result so there
+is no integer overflow.
+
+### `op-abs-diff` Absolute Value of Difference
+
+`(op-abs-diff a b ) =>  | a - b |`
+
+Available for integer types (signed and unsigned). Takes the absolute value of a subtraction
+and avoids a branch/conditional check.
+
+### `op-min3` / `op-max3`  Min / Max of 3 Arguments
+```
+(op-min3 a b c) => f
+(op-max3 a b c) => F
+```
+This routines find the minimum or maximum between 3 values of the same type. These can be either floating point or integer types. Note that Crisp `(min a b c)` gets
+mapped to this same instruction automatically (and this is true for `max` as well), so this is redundant.  
+
+
+
 Quantized Integers
 ==================
 

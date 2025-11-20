@@ -161,6 +161,7 @@ ERRORS
 - [ ] def-struct
 - [ ] cond  ( we can make all other divergent control flows from that: when, if, unless)
 - [ ] bool true false.  ( macros can still use T/nil ? )
+- [ ] precision selections (declare / declaim / flags )
 - [ ] .crisp files.  basic flag for crisp-compiler.exe
 
 - [ ] SEO (even the _AIs_ can't find us, completely unsearchable today)
