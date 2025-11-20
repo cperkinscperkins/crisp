@@ -148,12 +148,7 @@
 
 (test-dwarf-add-instruction)
 
-;; Run internal analyzer tests
-(format t "~&; --- Running internal analyzer tests ---~%")
-(load "tests/analyzer.lisp")
-(run-analyzer-tests)
-
-;; Run internal codegen tests
+;; Run all Parachute tests
 (format t "~&; --- Running Parachute tests ---~%")
 (load "tests/all-tests.lisp")
 (parachute:test :crisp.tests)
