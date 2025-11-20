@@ -119,6 +119,8 @@
            #:compile-toplevel-form
            #:compile-module
            #:generate-location-map
+           #:initialize-crisp-types
+
 
            ;; laungage symbols
            #:declare
