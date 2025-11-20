@@ -143,9 +143,6 @@
   (initialize-crisp-types)
   (initialize-expression-analyzers))
 
-;; Initialize the types when the compiler loads.
-;(initialize-crisp-types)
-
 
 ;; EXPORTS TO CRISP LANGUAGE
 ;; ==========================
@@ -640,22 +637,8 @@
        (make-semantic-fp-truncate-cast :type target-type-name :arg arg-node :source-location location))
       (t ; Default for "AS-" and other currently unhandled float-to-int ops
        (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))
-#|
-;; Register all possible `to-` and `as-` casts.
-(dolist (type-name (alexandria:hash-table-keys *crisp-types*))
-  (let* ((type-str (symbol-name type-name))
-         (to-name (intern (concatenate 'string "TO-" type-str)))
-         (as-name (intern (concatenate 'string "AS-" type-str))))
-    (format T "Registering cast analyzers for ~a and ~a~%" to-name as-name)
-    (def-expression-analyzer to-name analyze-cast-expression)
-    (def-expression-analyzer as-name analyze-cast-expression)))
 
-;; Register the special float-to-int conversion functions
-(def-expression-analyzer truncate analyze-cast-expression)
-(def-expression-analyzer floor analyze-cast-expression)
-(def-expression-analyzer ceil analyze-cast-expression)
-(def-expression-analyzer round analyze-cast-expression)
-|#
+
 
 (defun initialize-expression-analyzers ()
   "Populates the *expression-analyzers* hash table."

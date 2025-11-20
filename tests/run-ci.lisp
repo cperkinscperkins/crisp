@@ -10,7 +10,7 @@
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
 ;; download dependencies, and then load crisp.
-(ql:quickload "crisp")
+(ql:quickload '("crisp" "parachute"))
 (format t "~&; --- System loaded successfully.~%")
 
 ;; Switch into the compiler package
@@ -18,7 +18,7 @@
 
 ;; Initialize the compiler for the test run.
 (format t "~&; --- Initializing compiler for test run...~%")
-(initialize-compiler :log-level :debug)
+(initialize-compiler :log-level :info)
 
 
 ;; basic FFI test
@@ -154,9 +154,9 @@
 (run-analyzer-tests)
 
 ;; Run internal codegen tests
-(format t "~&; --- Running internal codegen tests ---~%")
-(load "tests/codegen-tests.lisp")
-(run-codegen-tests)
+(format t "~&; --- Running Parachute tests ---~%")
+(load "tests/all-tests.lisp")
+(parachute:test :crisp.tests)
 
 ;; yay
 (format t "~&~%*** Crisp CI Tests Passed! ***~%")
