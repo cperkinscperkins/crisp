@@ -132,6 +132,7 @@
            #:compile-module
            #:generate-location-map
            #:initialize-crisp-types
+           #:initialize-compiler
            #:initialize-expression-analyzers
 
 

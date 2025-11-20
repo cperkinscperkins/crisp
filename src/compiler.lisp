@@ -129,6 +129,20 @@
                                     :size size
                                     :category category)))))
 
+
+(defun initialize-compiler (&key (log-level :info))
+  "A master initialization function for the Crisp compiler.
+  This should be called by any entry point into the system (REPL, executable, CI)."
+  ;; Load the LLVM shared library.
+  (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
+  ;; Configure the logging system.
+  (log:config :sane2 log-level)
+
+  ;; Initialize the compiler's internal state.
+  (initialize-crisp-types)
+  (initialize-expression-analyzers))
+
 ;; Initialize the types when the compiler loads.
 ;(initialize-crisp-types)
 
