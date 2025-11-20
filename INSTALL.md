@@ -157,11 +157,12 @@ Test interactively from SBCL
 (push *default-pathname-defaults* asdf:*central-registry*)
 (asdf:clear-system "crisp")
 (ql:quickload "crisp")
-(cffi:use-foreign-library crisp.llvm-bindings::libllvm)
-
-(crisp.compiler:test-llvm-hello-world) 
-
 (in-package crisp.compiler)
+(initialize-compiler :log-level :debug)
+
+(test-llvm-hello-world) 
+
+
 (def-function wow () (declare (return-type int)) 7)
 (def-function adds (a b) (declare (type a b int) (return-type int)) (+ a b))
 

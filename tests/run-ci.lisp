@@ -10,23 +10,15 @@
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
 ;; download dependencies, and then load crisp.
-(ql:quickload '("crisp" "log4cl"))
+(ql:quickload "crisp")
 (format t "~&; --- System loaded successfully.~%")
-
-(format t "~&; --- Configuring logging...~%")
-;; A sane default that prints to the console, with the root logger level set to DEBUG.
-(log:config :sane2) ;; :debug
-
-(format t "~&; --- Loading LLVM foreign library...~%")
-(cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
 ;; Switch into the compiler package
 (in-package :crisp.compiler)
 
-;; Re-initialize the compiler state that was cleared by asdf:clear-system
-(format t "~&; --- Re-initializing compiler state...~%")
-(initialize-crisp-types)
-(initialize-expression-analyzers)
+;; Initialize the compiler for the test run.
+(format t "~&; --- Initializing compiler for test run...~%")
+(initialize-compiler :log-level :debug)
 
 
 ;; basic FFI test

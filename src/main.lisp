@@ -5,9 +5,6 @@
 (defun main ()
   "Main entry point for the crisp-compile executable."
 
-  (crisp.compiler:initialize-crisp-types)
-  (crisp.compiler:initialize-expression-analyzers)
-
   (defun print-compiler-error (c filename)
     "Prints a formatted compiler error to *error-output*."
     (format *error-output* "~&~%Crisp compilation failed in ~a~@[ at ~a~]:~%  ~a~&"
@@ -39,11 +36,6 @@
        (cffi:null-pointer) 0 ; sdk
        )))
 
-  ;; load libllvm when exe runs, not when built.
-  (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
-
-  (log:config :sane2 :debug) ;; :debug
-  
   (let* ((all-args (uiop:command-line-arguments))
          (flags (remove-if-not (lambda (arg) (char= (char arg 0) #\-)) all-args))
          (files (remove-if (lambda (arg) (char= (char arg 0) #\-)) all-args))
@@ -51,6 +43,9 @@
          (debug-p (or (member "-g" flags :test #'string=)
                       (member "--debug" flags :test #'string=))))
     
+    ;; Initialize the compiler system.
+    (crisp.compiler:initialize-compiler :log-level (if debug-p :debug :info))
+
     (unless (= (length files) 1)
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
       (uiop:quit 1))
