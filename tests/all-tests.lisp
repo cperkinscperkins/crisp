@@ -7,8 +7,8 @@
   ;; test package which ones to use. Since we are testing the compiler,
   ;; we want to use the compiler's versions.
   (:shadowing-import-from :crisp.compiler
-                          #:char #:short #:float #:double
-                          #:truncate #:floor #:ceil #:round))
+                          #:char #:short #:float #:double #:truncate #:floor
+                          #:ceil #:round))
 
 (in-package :crisp.tests)
 
@@ -43,4 +43,58 @@
 (define-test (crisp-compiler fadd-generation)
   "Tests that fadd generation works correctly."
   (let ((ir (compile-crisp-file-to-string "tests/types.crisp")))
-    (true (search "fadd float" ir) "Expected to find 'fadd float' instruction.")))
+    (true (search "fadd float" ir)
+          "Expected to find 'fadd float' instruction.")))
+
+(define-test (crisp-compiler di-type-generation)
+  (let ((ir (compile-crisp-file-to-string "tests/types.crisp" :debug-p t)))
+    (true (search "!DIBasicType(name: \"uint\"" ir))
+    (true (search "!DIBasicType(name: \"float\"" ir))))
+
+(define-test (crisp-compiler promotion-casts)
+  (let ((ir (compile-crisp-file-to-string "tests/promotions.crisp")))
+    (true (search "sitofp i32" ir))
+    (true (search "uitofp i32" ir))
+    (true (search "sext i8" ir))
+    (true (search "fpext float" ir))))
+
+(define-test (crisp-compiler explicit-casts)
+  (let ((ir (compile-crisp-file-to-string "tests/casts.crisp")))
+    (true (search "sext i32" ir))
+    (true (search "bitcast float" ir))
+    (true (search "fptosi float" ir))))
+
+(define-test (crisp-compiler analyzer)
+  "Tests for the semantic analyzer.")
+
+(define-test (analyzer return-type-from-spec)
+  (is eq 'float (analyze-return-type-from-spec '(int => float)))
+  (is eq 'ulong (analyze-return-type-from-spec '(char => ulong)))
+  (is eq 'nil (analyze-return-type-from-spec '(int => nil)))
+  (is eq 'nil (analyze-return-type-from-spec '(int =>)))
+  (is eq 'nil (analyze-return-type-from-spec '(int)))
+  (fail (analyze-return-type-from-spec '(int => foobar))
+        'crisp-unknown-type-error))
+
+(define-test (analyzer environment-from-spec)
+  (is equal '((a int) (b float))
+      (analyze-environment-from-spec '(a b) '(int float => nil)))
+  (fail (analyze-environment-from-spec '(a) '(int float => nil))
+        'crisp-signature-arity-error)
+  (fail (analyze-environment-from-spec '(a) '(bar => nil))
+        'crisp-unknown-type-error))
+
+(define-test (analyzer return-type-from-list)
+  (is eq 'float (analyze-return-type-from-list '((return-type float))))
+  (is eq 'nil (analyze-return-type-from-list '((return-type nil))))
+  (fail (analyze-return-type-from-list '((return-type baz)))
+        'crisp-unknown-type-error)
+  (is null (analyze-return-type-from-list '((function (int => int))))))
+
+(define-test (analyzer environment-from-list)
+  (is equal '((a float) (b float))
+      (analyze-environment-from-list '(a b) '((type a b float))))
+  (fail (analyze-environment-from-list '(a) '((type a b int)))
+        'crisp-signature-arity-error)
+  (fail (analyze-environment-from-list '(a) '((type a quux)))
+        'crisp-unknown-type-error))
