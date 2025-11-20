@@ -6,6 +6,7 @@
   "Main entry point for the crisp-compile executable."
 
   (crisp.compiler:initialize-crisp-types)
+  (crisp.compiler:initialize-expression-analyzers)
 
   (defun print-compiler-error (c filename)
     "Prints a formatted compiler error to *error-output*."
