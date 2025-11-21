@@ -56,7 +56,7 @@ Target #7 - Transpile
 Target #8  - Continuous Integration
 - [x] github actions. 
 - [x] Intermediate testing? Of Lisp macros etc
-- [ ] Honestly, this is ongoing. Will need a more serious test infra soon likely
+- [x] Honestly, this is ongoing. Will need a more serious test infra soon likely
 
 Target #9 - Deploy Crisp on QuickLisp
 - [ ] ?
@@ -150,9 +150,12 @@ ERRORS
 - [ ] funcction overloading
 - [ ] multiple return values
 - [ ] let with mv bindings
+- [ ] first order functions & funcall
 - [x] add more types
+- - [ ] bool type decisions
 - - [ ] hardware vector types
 - [x] type promotion &c.
+- - [ ] type promotion in + ? - maybe this requires let to test
 - [ ] &optional &key 
 - [ ] &out
 - [ ] defmacro
