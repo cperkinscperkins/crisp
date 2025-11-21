@@ -1,6 +1,6 @@
 (defsystem "crisp"
   :description "A Lisp-based compiler for GPGPU programming."
-  :author "cperkinscperkins"
+  :author "Chris Perkins cperkins.mobile@gmail.com"
   :license "MIT"
   :version "0.0.1"
 
