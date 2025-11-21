@@ -21,3 +21,11 @@ Crisp is a Lisp dialect designed specifically for writing safe, performant, and 
 The complete, in-progress design document can be found in the docs directory.
 
 [View the Current Specification](./docs/ideal_001.md)
+
+## Author
+
+Designed and implemented by *Chris Perkins*.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
