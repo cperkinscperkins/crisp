@@ -680,7 +680,7 @@ they appear in an enumartion.
 
                             
 ### higher order functions
-`#'someFunction` are supported.
+`#'someFunction` are supported. But must be compile-time determinable.  See [Higher Order Functions](#higher-order-function-operations)
 
 
 
@@ -5023,6 +5023,38 @@ There is no uniform `+` or `*` variant for `select-if`.
 Higher Order Function Operations
 ================================
 
+Compile Time Resolution
+-----------------------
+
+Crisp does not support "true" higher order functions. Doing so would introduce too much divergence,
+which would destory performance.
+
+Instead, all higher order function usages must be resolveable at compile time.
+
+The flip side benefit of this is that expressions like this:
+```
+(map-stride #'op-fma (A-vec B-vec C-vec) RES-vec)
+```
+are possible to express AND and are performant. There is no actual "function call" to `op-fma`. 
+
+### Runtime Function Variables forbidden
+
+While it is possible to assign a variable to a #'function, the restrictions on compile time resolveable 
+are still in place. 
+
+For example, this will result in a compile error if `someExpr` is not determinable by the compiler to be compile time constant.
+```
+(let ((f (if someExpr #'+ #'-)))  ...)
+```
+If that was the intention, then these would work
+```
+(let ((f (if+ someExpr #'+ #'-)))  ...)
+; OR
+(let ((someExpr ...)
+      (f (if someExpr #'+ #'-)))
+  (declare (constexpr someExr)) ...)
+```
+
 Lambda No, Curry Yes
 --------------------
 Because the GPU has only one callstack per warp (not one per thread), lambda functions are 
@@ -5096,6 +5128,10 @@ so we use `compose` to combine the lookup with the check for even number.
 Given a value `x`, the `ident` function returns another function that, given any value
 returns the original `x`. 
 
+Note: This obeys the Compile Time Resolution rule. The compiler treats `(ident x)` 
+not as a dynamic function pointer, but as a direct reference to the variable `x` 
+inside the target scope. It is fully inlined and zero-overhead.
+
 map
 ---
 
@@ -5133,6 +5169,35 @@ Example:
 ...
 (map-stride #'analyze (A) EvenAnalysis FibAnalysis)
 ```
+
+
+
+Invoking Functions: `funcall`
+-----------------------------
+
+Crisp follows the Common Lisp tradition (Lisp-2) regarding function application. This means that variables and functions occupy separate namespaces.
+
+If a variable `f` holds a function (or a compile-time resolvable entity like an `ident` or `curry` result), you cannot simply invoke it as `(f x y)`. You must use `funcall`.
+
+```lisp
+;; CORRECT
+(let ((op #'+))
+  (funcall op 10 20))
+
+;; INCORRECT - Compilation Error
+(let ((op #'+))
+  (op 10 20))
+```
+
+### Why `funcall`?
+
+- Namespace Hygiene: In GPU kernels, it is extremely common to use variable names like `min`, `max`, `count`, `width`, or `index`. In a Lisp-1 (Scheme-style) language, defining a local variable named `min` would shadow the global `min` function, making it impossible to calculate a minimum value within that scope. 
+
+- Compiler Signaling: `funcall` serves as an explicit signal to the compiler: *"The target of this call is held in a variable; please trace its origin and specialize this call site."* This makes it easier for the compiler to perform the necessary Template Instantiation and inlining required for zero-cost abstractions, distinguishing these cases from static calls to global functions.
+
+### Compile-Time Resolution Still Applies
+
+The use of `funcall` does NOT imply dynamic runtime dispatch. The restriction that all functions must be resolvable at compile-time remains in effect. The compiler uses `funcall` as the insertion point for the specialized, inlined logic derived from the variable's definition.
 
 
 Shop Local, Act Global

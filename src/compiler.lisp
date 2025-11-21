@@ -266,7 +266,7 @@
 
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms."
-  (log:debug "*crisp-types*: ~s and *expression-analyzers*: ~s" (alexandria:hash-table-keys *crisp-types*) (alexandria:hash-table-keys *expression-analyzers*))
+  (log:debug "*crisp-types*: ~s~%*expression-analyzers*: ~s" (alexandria:hash-table-keys *crisp-types*) (alexandria:hash-table-keys *expression-analyzers*))
   ;; Pass 1: Gather all function signatures first.
   (let ((*call-graph* (make-hash-table)))
     (analyze-signatures-pass forms)
