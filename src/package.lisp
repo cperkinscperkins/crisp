@@ -215,7 +215,7 @@
   ;; We must "shadow" (copy) them into our package
   ;; so the user can type (if ...) instead of (cl:if ...)
   (:shadowing-import-from :common-lisp
-   #:if #:when #:unless #:cond #:case
+   #:if #:when #:unless #:cond #:case #:let
    #:let #:let*
    #:progn
    #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
@@ -227,7 +227,7 @@
   (:export
    ;; Our new "safe" built-ins
    #:if #:when #:unless #:cond #:case
-   #:let #:let*
+   #:let
    #:progn
    #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
    #:equal 

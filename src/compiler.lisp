@@ -260,6 +260,15 @@
   source-location
   )
 
+(defstruct semantic-let
+  "Represents a (let ...) expression."
+  type            ; The type of the *last* expression in the body
+  bindings        ; A list of (name . semantic-node) pairs
+  body            ; A list of semantic nodes for the body
+  source-location
+  )
+
+
 
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
@@ -552,6 +561,7 @@
               :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
               :source-location location))))
 
+
 ;(def-expression-analyzer + analyze-add-expression)
 
 (defun analyze-cast-expression (expr env location)
@@ -592,6 +602,7 @@
 (defun initialize-expression-analyzers ()
   "Populates the *expression-analyzers* hash table."
   (clrhash *expression-analyzers*)
+  (def-expression-analyzer let analyze-let-expression)
   (def-expression-analyzer + analyze-add-expression)
   ;; Register all possible `to-` and `as-` casts.
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
@@ -718,6 +729,7 @@
     (semantic-var-read  (semantic-var-read-type node))
     (semantic-add (semantic-add-type node))
     (semantic-value-cast (semantic-value-cast-type node))
+    (semantic-let (semantic-let-type node))
     (semantic-bitcast (semantic-bitcast-type node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-type node))
     (semantic-call (semantic-call-type node))))
@@ -729,6 +741,7 @@
     (semantic-var-read (semantic-var-read-source-location node))
     (semantic-value-cast (semantic-value-cast-source-location node))
     (semantic-bitcast (semantic-bitcast-source-location node))
+    (semantic-let (semantic-let-source-location node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-source-location node))
     (semantic-add (semantic-add-source-location node))
     (semantic-call (semantic-call-source-location node))))
