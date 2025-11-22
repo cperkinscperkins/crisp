@@ -41,7 +41,8 @@
 
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
-  (let* ((fn-name (string-downcase (semantic-function-name semantic-function)))
+  (let* ((fn-name (substitute #\_ #\-
+                             (string-downcase (semantic-function-name semantic-function))))
          (fn-loc (semantic-function-source-location semantic-function))
          )
     ;; --- 1. Define the Function Type ---
@@ -293,6 +294,33 @@
       (when di-location
         (llvm-instruction-set-debug-loc call-inst di-location))
       (values call-inst di-location))))
+
+(defmethod generate-node-ir ((node semantic-let) builder module var-env di-builder di-scope location-map)
+  "Generates IR for a let expression."
+  ;; Create a new environment for the let block that inherits from the outer one.
+  ;; We don't actually need to copy, we'll just add to it and the new bindings
+  ;; will shadow outer ones if names conflict.
+  (let ((let-env (alexandria:copy-hash-table var-env)))
+    ;; 1. Generate code for each binding.
+    (dolist (binding (semantic-let-bindings node))
+      (let* ((var-name (car binding))
+             (val-node (cdr binding))
+             (var-type (semantic-node-type val-node)))
+        ;; Generate the value for the initializer expression.
+        (multiple-value-bind (val-ir val-loc)
+            (generate-expression-ir builder module let-env di-builder di-scope location-map val-node)
+          (declare (ignore val-loc))
+          ;; Allocate stack space for the new variable.
+          (let ((alloca (llvm-build-alloca builder (llvm-type-for-name var-type) (string-downcase var-name))))
+            ;; Store the initial value.
+            (llvm-build-store builder val-ir alloca)
+            ;; Add the variable's pointer to our environment.
+            (setf (gethash var-name let-env) alloca)))))
+
+    ;; 2. Generate code for the body, using the extended environment.
+    ;; The result of the let is the result of the last expression in the body.
+    (loop for body-node in (semantic-let-body node)
+          finally (return (generate-expression-ir builder module let-env di-builder di-scope location-map body-node)))))
 
 (defun llvm-type-for-name (type-name)
   "Maps a Crisp type symbol to an LLVM type."
