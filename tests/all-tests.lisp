@@ -159,3 +159,33 @@
     (let ((ir (test-compile-and-print (internal-def-function 'test-add '(a) '((type a int) (return-type int)) '((+ a 2)) '(0)) :debug-p t)))
       (true (search "add i32 %a1, 2, !dbg" ir))
       (true (search "ret i32 %add_tmp, !dbg" ir)))))
+
+(define-test (analyzer let-expression)
+  "Tests the semantic analysis of a 'let' expression, including let* scoping."
+  (let* ((crisp-form '(def-function has-let (a)
+                       (declare #'(int => int))
+                       (let ((v 100)
+                             (w (+ a v))) ; <-- Depends on 'v'
+                         (+ v w))))
+         (expanded-form (macroexpand-1 crisp-form))
+         (ast (eval expanded-form)))
+
+    ;; Check the overall structure
+    (true (typep ast 'semantic-function) "The top-level AST node should be a semantic-function.")
+    (let* ((return-node (first (semantic-function-body ast)))
+           (let-node (semantic-return-value-node return-node)))
+      (true (typep return-node 'semantic-return) "The function body should contain a semantic-return.")
+      (true (typep let-node 'semantic-let) "The return value should be a semantic-let node.")
+
+      ;; Check the bindings
+      (is = 2 (length (semantic-let-bindings let-node)) "The let node should have two bindings.")
+      (let* ((binding1 (first (semantic-let-bindings let-node)))
+             (binding2 (second (semantic-let-bindings let-node))))
+        (is eq 'v (car binding1) "The first binding should be for the variable 'v'.")
+        (true (typep (cdr binding1) 'semantic-literal) "The value for 'v' should be a semantic-literal.")
+        (is eq 'w (car binding2) "The second binding should be for the variable 'w'.")
+        (true (typep (cdr binding2) 'semantic-add) "The value for 'w' should be a semantic-add node, proving let* scoping worked."))
+
+      ;; Check the body
+      (is = 1 (length (semantic-let-body let-node)) "The let body should contain one expression.")
+      (true (typep (first (semantic-let-body let-node)) 'semantic-add) "The body expression should be a semantic-add node."))))
