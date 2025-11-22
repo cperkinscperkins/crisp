@@ -170,11 +170,23 @@
            #:crisp-type-error
            #:crisp-unknown-type-error
            #:crisp-signature-arity-error
-           #:error-source-location
+           #:error-source-location           
            #:type-error-expected
            #:type-error-inferred
            #:crisp-unknown-variable
-           #:unknown-variable-name))
+           #:unknown-variable-name
+
+           ;; Semantic Node types
+           #:semantic-function #:semantic-return #:semantic-literal
+           #:semantic-param #:semantic-var-read #:semantic-add
+           #:semantic-value-cast #:semantic-bitcast
+           #:semantic-fp-truncate-cast #:semantic-call #:semantic-let
+
+           ;; Accessors for semantic nodes
+           #:semantic-function-body
+           #:semantic-return-value-node
+           #:semantic-let-bindings
+           #:semantic-let-body))
 
 (defpackage :crisp.main
   (:use :cl)

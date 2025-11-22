@@ -268,8 +268,6 @@
   source-location
   )
 
-
-
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
 ;; ---------------------------------
@@ -560,6 +558,37 @@
        (error 'crisp-type-error
               :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
               :source-location location))))
+
+(defun analyze-let-expression (expr env location)
+  "Analyzes a `(let ...)` expression."
+  (unless (and (>= (length expr) 2) (listp (cadr expr)))
+    (error "Malformed let form: ~a" expr))
+
+  (let ((binding-forms (cadr expr))
+        (body-forms (cddr expr)))
+    ;; Phase 2: Implement let* scoping by sequentially building the environment.
+    (multiple-value-bind (final-env analyzed-bindings)
+        (loop for binding in binding-forms
+              for i from 0
+              ;; The environment for the current binding analysis.
+              ;; Starts with the outer 'env', then gets updated each iteration.
+              for current-env = env then next-env
+              ;; Analyze the value expression in the current environment.
+              for val-node = (analyze-expression (cadr binding) current-env (append location '(1) (list i) '(1)))
+              ;; Create the environment for the *next* iteration by adding the new variable.
+              for next-env = (cons (list (car binding) (semantic-node-type val-node)) current-env)
+              ;; Collect the binding pair for the semantic-let node.
+              collect (cons (car binding) val-node) into bindings-list
+              ;; After the loop, return the final environment and the list of bindings.
+              finally (return (values next-env bindings-list)))
+      (let* ((analyzed-body (analyze-body-expressions body-forms final-env (append location '(2))))
+         (last-body-node (first (last analyzed-body)))
+         (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
+        (make-semantic-let :type return-type
+                           :bindings analyzed-bindings
+                           :body analyzed-body
+                           :source-location location)))))
+
 
 
 ;(def-expression-analyzer + analyze-add-expression)
