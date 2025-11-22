@@ -125,15 +125,15 @@
 (define-test (crisp-compiler internal-def-function-compilation)
   "Tests the compilation path using internal-def-function."
   (let ((ir-7 (test-compile-and-print (internal-def-function 'test-fn-7 '() '((return-type int)) '(7) '(0)))))
-    (true (search "define i32 @test-fn-7()" ir-7))
+    (true (search "define i32 @test_fn_7()" ir-7))
     (true (search "ret i32 7" ir-7)))
 
   (let ((ir-add (test-compile-and-print (internal-def-function 'test-fn-add '(a b) '((type a b int) (return-type int)) '((+ a b)) '(1)))))
-    (true (search "define i32 @test-fn-add(i32 %0, i32 %1)" ir-add))
+    (true (search "define i32 @test_fn_add(i32 %0, i32 %1)" ir-add))
     (true (search "add i32" ir-add)))
 
   (let ((ir-arrow (test-compile-and-print (internal-def-function 'test-fn-arrow '(a b) '((function (int int => int))) '((+ a b)) '(2)))))
-    (true (search "define i32 @test-fn-arrow(i32 %0, i32 %1)" ir-arrow))))
+    (true (search "define i32 @test_fn_arrow(i32 %0, i32 %1)" ir-arrow))))
 
 (define-test (crisp-compiler dwarf-generation)
   "Tests for DWARF debug information generation."
@@ -147,7 +147,7 @@
   (define-test scaffolding
     (let ((ir (test-compile-and-print (internal-def-function 'test-dwarf '() '((return-type int)) '(7) '(0)) :debug-p t)))
       (true (search "!DICompileUnit" ir))
-      (true (search "define i32 @test-dwarf() !dbg" ir))
+      (true (search "define i32 @test_dwarf() !dbg" ir))
       (true (search "line: 1" ir))
       (true (search "!DISubroutineType" ir))))
 
@@ -189,3 +189,22 @@
       ;; Check the body
       (is = 1 (length (semantic-let-body let-node)) "The let body should contain one expression.")
       (true (typep (first (semantic-let-body let-node)) 'semantic-add) "The body expression should be a semantic-add node."))))
+
+(define-test (crisp-compiler codegen)
+  "Tests for LLVM IR code generation.")
+
+(define-test (codegen let-expression)
+  "Tests that the LLVM IR for a 'let' expression is generated correctly."
+  (let* ((semantic-fn (internal-def-function 'has-let '(a)
+                                            '((type a int) (return-type int))
+                                            '((let ((v 100)) (+ a v)))
+                                            '(0)))
+         (ir (test-compile-and-print semantic-fn)))
+
+    (true (search "define i32 @has_let(i32 %0)" ir) "Function definition should be correct.")
+    (true (search "%v = alloca i32" ir) "Should allocate stack space for the 'let' variable 'v'.") ; This name is predictable
+    (true (search "store i32 100, ptr %v" ir) "Should store the initial value 100 into the allocation for 'v'.")
+    (true (search "%a = alloca i32" ir) "Should allocate stack space for the parameter 'a'.") ; This name is also predictable
+    (true (search "load i32, ptr %v" ir) "Should load the value from 'v' before using it in the addition.")
+    (true (search "load i32, ptr %a" ir) "Should load the value from 'a' before using it in the addition.")
+    (true (search "add i32" ir) "Should perform an addition.")))
