@@ -558,7 +558,7 @@ Example:
 ```
 (let ((my-svec:short3 ##(5 6 7))
       (my-dvec ##(3.0 4.0 5.1 6.0)))
-  (declare (my my-dvec double4)) 
+  (declare (type my-dvec double4)) 
   ...)
 ```
 
@@ -2993,7 +2993,6 @@ might not work like you'd expect in a language like C.
 
 
 
-
 Continuation Kernels
 --------------------
 
@@ -3331,6 +3330,218 @@ forced to return 'maybe' simply because one of its sub-functions uses it.
 ```
 
 
+`let`
+=====
+<!-- NOTE:  this section, and the one on declare should probably appear MUCH earlier in the doc -->
+
+`let` is the form for declaring variables in the scope of a function. 
+
+`(let  (<VAR-DECLARATIONS>)  <PROGN>)    => (return-type-of <PROGN>)`
+
+In Crisp `let` is like `let*` from Common Lisp. Variables are declared in order and build the
+environment together.  
+
+Unlike `let*` , Crisp `let` supports binding of multiple variables.  There is no
+`multiple-variable-bind` form in Crisp, `let` is used instead.
+
+The return value of the `let` expression is the return value(s) of the
+last expression in its closure, in its implicit `progn`.
+
+```
+(let ((sum (+ a b))
+      (diff  (- sum c))      ;; can refer to 'sum' since it was declared before.
+      (fail  (+ someNum 9))  ;; this would fail, as someNum hasn't been declared yet.
+      (someNum   0.2)        ;; is this a bfloat16, half, float or double? 
+      (otherNum:half 0.1)    ;; type included
+      (quotient remainder (/ a b)))  ;; / returns multiple values, we can bind them all
+  (declare (type someNum double))    ;; finally declare the type of someNum
+
+  (dec! diff) ;; mutable
+  (munch sum diff someNum otherNum remainder))  ;; <-- the return type of #'munch
+                                                ;; is the return type of this `let`
+```
+
+`declare`
+=========
+
+`declare` can appear as the first line in the Crisp function forms 
+( `def-function`, `def-grid-function`, `def-kernel`, `def-kernel-exact` )
+as well as `let`. 
+
+`declare` can also appear in the first position following a template declaration (`with-template-type` or `<T>` syntax)
+When it appears in a template it is used for type declarations involving type constraints.
+
+
+It is used to declare important information to the compiler, typically about the 
+function itself or the new variable closure.  The following are the valid 
+directives that can appear in `declare` when used in function or `let` bindings.
+For template usage, see the subequent section.
+
+| Name          | Example                     | Fun | Let | Description |
+|---------------|-----------------------------|-----| ----|-------------|
+| `type`        | `(type someVar int)`        | Yes | Yes | type of parameter or variable. See below for variadic example. |
+| `return-type` | `(return-type long)`        | Yes | No  | return type of a function. see below for multiple return values |
+| arrow form    | `#'(int int => float)`      | Yes | No  | declare the entire function signature in one expression |
+| `type-signature-of` | `(type-signature-of #'addInts)` | Yes | No | reuse type signature of another function as own | 
+| `use`         | `(use +image-mask+)`        | Yes | Yes | the context requires some constant storage vector / tensor |
+| `inline`      | `(inline)`                  | Yes | No  | asks that the compiler inline this function. |
+| `register`    | `(register <var0> <var1> ...)` | Yes | Yes | mark this var or parameter to be kept in register. Note that this cannot be guaranteed.|
+| `global-size` | see [Hoisting](#hoisting-and-enqueing-a-kernel)| Yes | No | communicate kernel `global_size` requirements back to hoisting code |
+| `local-size` | see [Hoisting](#hoisting-and-enqueing-a-kernel)| Yes | No | communicate kernel `workgroup_size` requirements back to hoisting code |
+| `num-groups` | see [Hoisting](#hoisting-and-enqueing-a-kernel)| Yes | No | communicate kernel enqueue requirements back to hoisting code |
+| `uniform`     | `(uniform someVar)`         | Yes | Yes | declares that some param or variable must be uniform across the workgroup.  Compiler will error if it is not. |
+| `constexpr`   | `(constexpr someVar)`       | Yes | Yes | delares that some param or variable must be compile time calculable. Compiler will error if it is not |
+| `to-uniform`  | `(to-uniform someVar)`      | No  | Yes | tells the compiler to MAKE the newly defined variable uniform across the entire workgroup. This is non-trivial. See [to-uniform](#to-uniform-) |
+| `global-mem` | `(global-mem gCounter)`      | No  | Yes | allocate memory in global memory instead of on stack. See below |
+| `local-mem`  | `(local-mem wg-counter)`     | No  | Yes | allocate memory in local shared memory instead of stack. See below |
+
+
+<!--
+The following are under consideration and have yet to be fully defined:
+
+- inline
+- not-inline
+- (critical varName 100)  // how critical is this to NOT spill. 100== never 0== ok sure.
+  the problem here is that unless we have FULL control these are promises that can't
+  be kept.  just use 'register' in the interim. 
+
+-->
+
+<!--
+This is a type function. It can be used in any position  a type could.  
+So, yes, it can appear _IN_ a declare, but not as a top level directive.
+ return-type-of | `(return-type-of #'addInts)` | Yes | No | T
+ -->
+
+### `type`
+`(declare (type a b c double))`
+`type` can be used to declare the type of parameters or variables. Note that it is
+variadic and if multiple expressions are of the same type they can simply be listed with the
+type itself being in the last position.
+
+There are other ways of declaring variable types (arrows form, colon join). 
+
+### `return-type`
+`(declare (return-type int double))`
+
+### arrow form
+
+```
+#'(int int => long)
+
+#'(int => long double)
+
+#'(int int &optional long &key clamp:float => long)
+
+#'(in-vec &out out-vec)
+```
+
+### global-mem 
+```
+(let ((gcounter 0))
+  (declare (type gcounter long) (global-mem gcounter))
+  ...
+  (atomic-inc! gcounter))
+```
+
+A variable declared with `global-mem` is not allocated by the compiler on the stack, 
+but is instead allocated in global memory. Note that it is a SINGULAR value shared by 
+ALL THREADS, not a per-thread value like a normal `let` declared variable.
+
+As such, it will require atomic operations to modify or update.  
+
+Be careful with these, as atomic operations on `global-mem` vars can incur
+a LOT of contention if every thread is expected to update it. These are best
+used if just one "leader" thread from some workgroup is expected to update.
+
+### local-mem
+```
+(let ((wg-counter 0))
+  (declare (type wg-counter long) (local-mem wg-counter))
+  ...
+  (atomic-inc! wg-counter))
+```
+
+A variable declared with `local-mem` is not allocated by the compiler on the stack,
+but is allocated in shared local memory. This means it is a singular value shared
+by every thread in the WORKGROUP. Like it's `global-mem` counterpart, these must
+be updated with atomic operations.  But, there will be significantly less 
+contention. 
+
+<!-- 
+Implementation Note: global-mem and local-mem declarations will require MORE use of the side channel mechanism.
+
+
+-->
+
+
+`declare` and templates
+-----------------------
+
+### `type-is`
+```
+(<T>
+  (declare (type-is T #'is-floating-point?))
+  ...)
+``` 
+`type-is` can appear in the `declare` block at the beginning of a template. It lets you
+leverage [type constraints](#type-constraints).
+
+### `value-is`
+```
+(<T A>
+  (declare (value-is A #'is-alignment?))
+  ...)
+```
+Also for [type constraints](#type-constraints)
+
+
+Other `declare` directives
+---------------------------
+
+### `use`
+`(declare (use +image-mask+))`
+<!-- 
+NOTE: should we constrain `use` to ONLY be in def-kernel or def-const-vec ?
+  It'd make the compiler's job easier.
+  Would it make the users code clearer?
+  Having it be usable by any sub-function is actually pretty convenient. Being
+  able to call an image convolution and not worry that it needs some luminosity mask
+  at the kernel level is nice.  
+-->
+`use` can appear in funciton or `let` contexts, but it is mostly used with `def-kernel` or 
+`def-const-vec`.  It simply declares that some context depends on a constant memory storage item.
+See [def-const-vec](#def-const-vec)
+
+### kernel-name
+`(declare (kernel-name "some_name_${T}"))`
+Used in `let-kernel` to name a continuation kernel.  See [Continuation Kernels](#continuation-kernels)
+
+### single-task
+`(declare (single-task))`
+
+Communicates back to the hoisting code that this kernel should be run on only one thread. Used in `def-kernel`
+
+### entrypoint
+`(declare (entrypoint))`
+
+For library writers. See the [entrypoint](#entrypoint-1) section
+
+For `defmacro` writers
+----------------------
+
+### grid-level / workgroup-level
+For use by `defmacro` when defining grid level operations.  See [Grid Level](#grid-level-operations)
+Also, less common, [workgroup level operations](#workgroup-level-operations)
+
+### warp-convergent / workgroup-convergent. 
+Tells the compiler this progn CANNOT be called in a divergent branch. See [the dedicated section](#declare-warp-convergent-and-declare-workgroup-convergent) on this topic.
+
+For Static Analysis
+-------------------
+
+There are a half dozen declare directives that can be declared to elect static analysis.
+Rather than list them here, see the [section dedicated to this topic](#static-analysis)
 
 
 Control Flow

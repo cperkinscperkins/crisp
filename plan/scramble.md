@@ -139,7 +139,7 @@ ERRORS
 - [x] call fn with wrong number of args
 - [ ] unrecognized flags
 
-
+LOOSE PRIORITIES
 - [x] Linux?
 - [x] DWARF
 - [ ] def-grid-function
@@ -166,13 +166,39 @@ ERRORS
 - [ ] bool true false.  ( macros can still use T/nil ? )
 - [ ] precision selections (declare / declaim / flags )
 - [ ] .crisp files.  basic flag for crisp-compiler.exe
+- [ ] SIDE CHANNEL MECHANISM.  probably sooner, rather than later. 
+
+
+SHORT TERM PLAN
+- [ ] let
+- - [ ] hella testing
+- [ ] function overloads
+- - [ ] testing
+- [ ] more let: multiple value return and bind
+- [ ] templates as macros
+- [ ] higher order functions as templates
+- [ ] need to move more of our old erstaz logging to log4cl. 
+- [ ] Side Channel / Implicit Args. Can we start this BEFORE def-kernel? 
+
+
+QUESTIONS
+- [ ] should log4CL be used ONLY for logging? Or should it be used for general compiler output 
+      like error messages and warnings and the like?
+
+
+
+
+
 
 - [ ] SEO (even the _AIs_ can't find us, completely unsearchable today)
 
 - [ ] Testing Next Stages
-- - [ ] Rove or _Parachute_ for tests. Integrated with our GHA
+- - [x] Rove or _Parachute_ for tests. Integrated with our GHA
 - - [ ] Prepare Intel OpenCL CPU Runtime to test kernels
 - - [ ] POCL (portable OpenCL) ??
 - - [ ] buy PC w/ GPU and hook up as Self Hosted runner. 
 - [ ] Get logging under control
 - - [x] Log4CL.  Probably the best choice. Mostly "compiles away".   There is also Verbose
+
+- [ ] proper bug tracker?
+- - [ ] GitHub Issues?  
