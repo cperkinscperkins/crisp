@@ -58,7 +58,11 @@ Type promotion, including errors, as documented in ideal_001.md is functional an
 
 ### let
 
-The `let` binding (which is like Common Lisp `let*`) is newly added. It is likely not fully functional yet.
+The `let` binding is now implemented and tested. It correctly supports:
+- **`let*` Semantics**: Bindings are evaluated sequentially, and each new variable is available to subsequent bindings in the same `let` form.
+- **Mutable Variables**: `let`-bound variables are allocated on the stack and can be mutated (though `set!` is not yet implemented).
+- **Single-Variable Bindings**: Forms like `(let ((x 10)) ...)` are fully supported.
+- **Known Limitation**: Multiple-value-bind `(let ((q r (/ 10 3))) ...)` is not yet implemented.
 
 ### declare
 `declare` is available as the first s-expression in the body of a `def-function`. It is
@@ -67,6 +71,3 @@ The following declarations are supported
 - `(type <var0> ... <varN> <T>)`  declare the type of a parameter(s).
 - `(return-type <T>)` declare the return type of a function.
 - `#'(<T> <U> => <V>)` declare parameter types, arrow, return type.
-
-
-
