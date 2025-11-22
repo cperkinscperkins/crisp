@@ -165,6 +165,8 @@ Test interactively from SBCL
 
 (def-function wow () (declare (return-type int)) 7)
 (def-function adds (a b) (declare (type a b int) (return-type int)) (+ a b))
+(def-function has-let (a) (declare #'(int => int)) (let ((v 100)) (+ a v)))
+
 
 ;; or run the CI tests and quit after
 (load #P"./tests/run-ci.lisp")
