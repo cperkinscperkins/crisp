@@ -49,6 +49,37 @@
 
 (define-test crisp-compiler)
 
+(defun compile-crisp-form-to-ir-string (crisp-form &key (debug-p nil))
+  "Takes a single Crisp s-expression (like a def-function form),
+  compiles it, and returns its LLVM IR as a string.
+  This is a developer utility for REPL use and testing."
+  (let* ((module (llvm-module-create "repl-module"))
+         (builder (llvm-create-builder))
+         (di-builder (when debug-p (llvm-create-di-builder module)))
+         (location-map (when debug-p (generate-location-map (list crisp-form))))
+         (di-compile-unit (when debug-p
+                            (let* ((f "repl.crisp") (d "/tmp/")
+                                   (di-file (llvm-di-builder-create-file di-builder f (length f) d (length d))))
+                              (llvm-di-builder-create-compile-unit di-builder 32768 di-file "Crisp" 5 nil "" 0 0 "" 0 1 0 nil nil "" 0 "" 0)))))
+    (unwind-protect
+         (progn
+           ;; We need to expand the macro to get the internal-def-function call,
+           ;; then eval it to run the analyzer and get the semantic-function AST.           
+           ;; We must inject the source location, just like the old tests did.
+           (let* ((form-with-location (append crisp-form (list :source-location ''(0))))
+                  (expanded-form (macroexpand-1 form-with-location))
+                  (semantic-fn (eval expanded-form)))
+             ;; Now we can call the real codegen function.
+             (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))
+           
+           ;; Finally, print the module to a string and return it.
+           (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
+      ;; Cleanup.
+      (when di-builder (llvm-di-builder-finalize di-builder))
+      (when di-builder (llvm-dispose-di-builder di-builder))
+      (llvm-dispose-builder builder)
+      (llvm-dispose-module module))))
+
 (defun compile-crisp-file-to-string (filepath &key (debug-p nil))
   "Compiles a .crisp file and returns the LLVM IR as a string."
   (with-output-to-string (s)
@@ -156,15 +187,15 @@
 
 (define-test (crisp-compiler internal-def-function-compilation)
   "Tests the compilation path using internal-def-function."
-  (let ((ir-7 (test-compile-and-print (internal-def-function 'test-fn-7 '() '((return-type int)) '(7) '(0)))))
+  (let ((ir-7 (compile-crisp-form-to-ir-string '(def-function test-fn-7 () (declare (return-type int)) 7))))
     (true (search "define i32 @test_fn_7()" ir-7))
     (true (search "ret i32 7" ir-7)))
 
-  (let ((ir-add (test-compile-and-print (internal-def-function 'test-fn-add '(a b) '((type a b int) (return-type int)) '((+ a b)) '(1)))))
+  (let ((ir-add (compile-crisp-form-to-ir-string '(def-function test-fn-add (a b) (declare (type a b int) (return-type int)) (+ a b)))))
     (true (search "define i32 @test_fn_add_int_int(i32 %0, i32 %1)" ir-add))
     (true (search "add i32" ir-add)))
 
-  (let ((ir-arrow (test-compile-and-print (internal-def-function 'test-fn-arrow '(a b) '((function (int int => int))) '((+ a b)) '(2)))))
+  (let ((ir-arrow (compile-crisp-form-to-ir-string '(def-function test-fn-arrow (a b) (declare #'(int int => int)) (+ a b)))))
     (true (search "define i32 @test_fn_arrow_int_int(i32 %0, i32 %1)" ir-arrow))))
 
 (define-test (crisp-compiler dwarf-generation)
@@ -177,6 +208,7 @@
       (is = 12 (gethash '(0 4 2) location-map))))
 
   (define-test scaffolding
+    ;(let ((ir (compile-crisp-form-to-ir-string '(def-function test-dwarf () (declare (return-type int)) 7) :debug-p t)))
     (let ((ir (test-compile-and-print (internal-def-function 'test-dwarf '() '((return-type int)) '(7) '(0)) :debug-p t)))
       (true (search "!DICompileUnit" ir))
       (true (search "define i32 @test_dwarf() !dbg" ir))
@@ -184,11 +216,11 @@
       (true (search "!DISubroutineType" ir))))
 
   (define-test instruction-location
-    (let ((ir (test-compile-and-print (internal-def-function 'test-instr '() '((return-type int)) '(7) '(0)) :debug-p t)))
+    (let ((ir (compile-crisp-form-to-ir-string '(def-function test-instr () (declare (return-type int)) 7) :debug-p t)))
       (true (search "ret i32 7, !dbg" ir))))
 
   (define-test add-instruction-location
-    (let ((ir (test-compile-and-print (internal-def-function 'test-add '(a) '((type a int) (return-type int)) '((+ a 2)) '(0)) :debug-p t)))
+    (let ((ir (compile-crisp-form-to-ir-string '(def-function test-add (a) (declare (type a int) (return-type int)) (+ a 2)) :debug-p t)))
       (true (search "add i32 %a1, 2, !dbg" ir))
       (true (search "ret i32 %add_tmp, !dbg" ir)))))
 
@@ -227,11 +259,10 @@
 
 (define-test (codegen let-expression)
   "Tests that the LLVM IR for a 'let' expression is generated correctly."
-  (let* ((semantic-fn (internal-def-function 'has-let '(a)
-                                            '((type a int) (return-type int))
-                                            '((let ((v 100)) (+ a v)))
-                                            '(0)))
-         (ir (test-compile-and-print semantic-fn)))
+  (let ((ir (compile-crisp-form-to-ir-string
+             '(def-function has-let (a) (declare #'(int => int))
+               (let ((v 100))
+                 (+ a v))))))
     (is-valid-ir ir)
 
     (true (search "define i32 @has_let_int(i32 %0)" ir) "Function definition should be correct.")
