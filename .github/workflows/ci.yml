@@ -26,7 +26,10 @@ jobs:
           
           # Now install the system packages
           sudo apt-get update
-          sudo apt-get install -y sbcl llvm-21-dev
+          sudo apt-get install -y sbcl llvm-21-dev llvm-21
+
+          # Create a symlink so 'llc' is on the path and our test can find it
+          sudo ln -s /usr/bin/llc-21 /usr/bin/llc
 
       - name: 3. Install Quicklisp
         run: |
@@ -45,9 +48,13 @@ jobs:
 
       - name: 4. Run Crisp Test Script
         run: |
-          # Run the test script. SBCL will exit with 0 on success
-          # or non-zero on error, which will pass/fail the CI step.
-          sbcl --non-interactive --load tests/run-ci.lisp
+          # We run the test script and pipe its output to 'tee' so we can see it
+          # in the CI log. We save the output to a file.
+          sbcl --non-interactive --load tests/run-ci.lisp | tee test_output.log
+
+          # Now, we explicitly check the log file for Parachute's failure summary.
+          # If "Failed: [1-9]" is found, we exit with an error, failing the CI job.
+          ! grep -E "Failed: [1-9]" test_output.log
 
       - name: 5. Build Executable
         run: |
