@@ -39,16 +39,39 @@
         (setf (gethash (crisp-type-name crisp-type) di-type-cache) di-type)
         di-type)))
 
+(defun get-llvm-return-type (return-type-names)
+  "Determines the LLVM return type from a list of Crisp type names.
+  Handles single values, void, and multiple values (by creating a struct)."
+  (cond
+    ;; Case 1: Multiple return values. Create a struct.
+    ((> (length return-type-names) 1)
+     (let* ((count (length return-type-names))
+            (type-array (cffi:foreign-alloc 'llvm-type-ref :count count)))
+       (loop for i from 0 for type-name in return-type-names
+             do (setf (cffi:mem-aref type-array 'llvm-type-ref i)
+                      (llvm-type-for-name type-name)))
+       (let ((struct-type (llvm-struct-type type-array count nil)))
+         (cffi:foreign-free type-array)
+         struct-type)))
+    ;; Case 2: Single return value.
+    ((= (length return-type-names) 1)
+     (llvm-type-for-name (first return-type-names)))
+    ;; Case 3: Should not happen, but treat as void.
+    (t (llvm-void-type))))
+
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
-  (let* ((base-name (semantic-function-name semantic-function))
+  (let* ((return-types (semantic-function-return-type semantic-function))
+         (crisp-return-type (first return-types)) ; For single-value logic for now
+         (base-name (semantic-function-name semantic-function))
          (param-types (mapcar #'semantic-param-type (semantic-function-param-list semantic-function)))
          (mangled-name (format nil "~a~{_~a~}" base-name param-types))
          (fn-name (substitute #\_ #\- (string-downcase mangled-name)))
          (fn-loc (semantic-function-source-location semantic-function))
          )
+    (log:debug "Attempting to get LLVM type for: ~s" (semantic-function-return-type semantic-function))
     ;; --- 1. Define the Function Type ---
-    (let* ((return-type (llvm-type-for-name (semantic-function-return-type semantic-function)))
+    (let* ((return-type (get-llvm-return-type return-types))
            (param-nodes (semantic-function-param-list semantic-function))
            (param-count (length param-nodes))
            ;; Create a C-style array of LLVM types for the parameters
@@ -68,7 +91,7 @@
                            (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
                            (line-num (if location-map (gethash fn-loc location-map) 0))
                            ;; Create the DISubroutineType
-                           (di-return-type (get-or-create-di-type (gethash (semantic-function-return-type semantic-function) *crisp-types*) di-builder di-type-cache))
+                           (di-return-type (get-or-create-di-type (gethash crisp-return-type *crisp-types*) di-builder di-type-cache))
                            (di-param-types (cons di-return-type ; Return type is the first element
                                                  (loop for param in param-nodes
                                                        collect (get-or-create-di-type

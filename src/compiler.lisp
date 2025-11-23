@@ -375,13 +375,13 @@
 (defun parse-function-declarations (params declarations)
   "Parses a function's declarations and returns its environment and return type."
   (let* ((fn-decl (find 'function declarations :key #'car))
-         (return-type (if fn-decl
-                          (analyze-return-type-from-spec (second fn-decl))
-                          (analyze-return-type-from-list declarations)))
+         (return-types (if fn-decl
+                           (analyze-return-type-from-spec (second fn-decl))
+                           (analyze-return-type-from-list declarations)))
          (env (if fn-decl
                   (analyze-environment-from-spec params (second fn-decl))
                   (analyze-environment-from-list params declarations))))
-    (values env return-type)))
+    (values env return-types)))
 
 (defun register-function-signature (form location)
   "Extracts and registers a function's signature without analyzing its body."
@@ -390,13 +390,12 @@
          (body (cdddr form))
          (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
          (existing-signatures (gethash name *function-table*)))
-    (multiple-value-bind (env return-type)
+    (multiple-value-bind (env return-types)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
       (let ((param-types (mapcar #'second env)))
         ;; Add the new signature to the list of existing ones.
         (setf (gethash name *function-table*)
-              (append existing-signatures
-                      (list (make-function-signature :name name :parameters param-types :return-types (list return-type) :source-location location))))))))
+              (append existing-signatures (list (make-function-signature :name name :parameters param-types :return-types return-types :source-location location))))))))
 
 (defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
@@ -404,20 +403,20 @@
   (multiple-value-bind (env return-type)
       (parse-function-declarations params declarations)
     ;; Handle the case where a function promises a return value but has no body.
-    (when (and (not (eq return-type 'nil)) (null body))
-      (error 'crisp-type-error :expected return-type :inferred 'nil :source-location location))
+    (when (and (not (equal return-type '(nil))) (null body))
+      (error 'crisp-type-error :expected return-type :inferred '(nil) :source-location location))
 
     ;; 2. Analyze the Body
     (let* ((body-nodes (analyze-body-expressions body env location))
            (return-node (first (last body-nodes)))
            (inferred-type (if return-node (semantic-node-type return-node) 'nil)))
 
-      (log:debug "Analyzed body nodes: ~s. Return node: ~s. Inferred type: ~s. Declared return type: ~s" body-nodes return-node inferred-type return-type)
+      (log:debug "Analyzed body nodes: ~s. Return node: ~s. Inferred type: ~s. Declared return type: ~s" body-nodes return-node inferred-type (first return-type))
 
       ;; 3. Check Types
-      (unless (equal inferred-type return-type)
+      (unless (equal inferred-type (first return-type))
         (error 'crisp-type-error
-               :expected return-type
+               :expected (first return-type)
                :inferred inferred-type
                :source-location (if return-node
                                     (semantic-node-source-location return-node)
@@ -430,9 +429,9 @@
                          collect (make-semantic-param :name param-name :type param-type :source-location location))
        :return-type return-type
        :body (list (make-semantic-return
-                    :return-type return-type
+                    :return-type (first return-type)
                     :value-node return-node
-                    :source-location (if return-node (semantic-node-source-location return-node) location)))
+                    :source-location (if return-node (semantic-node-source-location return-node) location))) ; TODO: Fix for MVR
        :source-location location))))
 
 
@@ -441,18 +440,16 @@
 ;; --- #'(...) Syntax Parsers ---
 
 (defun analyze-return-type-from-spec (fn-spec)
-  "Parses '(int int => int)' and returns 'i32'."
+  "Parses '(int int => int int)' and returns a list of types, e.g., '(int int)."
   (let ((arrow (member '=> fn-spec :test #'string=)))
     (if (and arrow (rest arrow)) ; e.g. '(=> int)
         (let ((return-types (rest arrow)))
-          (when (> (length return-types) 1)
-            (error "Multiple return values are not yet supported."))
-          (let ((type-name (first return-types)))
-            (cond
-              ((null type-name) 'nil) ; Handles (=> nil) for void
-              ((gethash type-name *crisp-types*) type-name)
-              (t (error 'crisp-unknown-type-error :type-name type-name)))))
-        'nil)))
+          (loop for type-name in return-types
+                collect (cond
+                          ((null type-name) 'nil) ; Handles (=> nil) for void
+                          ((gethash type-name *crisp-types*) type-name)
+                          (t (error 'crisp-unknown-type-error :type-name type-name)))))
+        '(nil))))
 
 (defun analyze-environment-from-spec (params fn-spec)
   "Builds the environment '((a i32) (b i32))'
@@ -474,17 +471,17 @@
 ;; --- (type ...) Syntax Parsers (The Fallback) ---
 
 (defun analyze-return-type-from-list (declarations)
-  "Finds and returns the return-type from a (return-type ...) decl."
+  "Finds and returns the return-type(s) from a (return-type ...) decl."
   (let ((found (assoc 'return-type declarations)))
     (when found
-      (let ((type-name (second found)))
+      (let ((type-names (rest found)))
         ;; Special case for #'(...) syntax which is handled elsewhere
-        (when (listp type-name)
+        (when (listp (first type-names))
           (return-from analyze-return-type-from-list nil))
-        
-        (cond ((null type-name) 'nil)
-              ((gethash type-name *crisp-types*) type-name)
-              (t (error 'crisp-unknown-type-error :type-name type-name)))))))
+        (loop for type-name in type-names
+              collect (cond ((null type-name) 'nil)
+                            ((gethash type-name *crisp-types*) type-name)
+                            (t (error 'crisp-unknown-type-error :type-name type-name))))))))
 
 (defun analyze-environment-from-list (params declarations)
   "Builds the environment from a (type ...) decl."

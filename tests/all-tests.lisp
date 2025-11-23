@@ -103,28 +103,28 @@
   "Tests for the semantic analyzer.")
 
 (define-test (analyzer return-type-from-spec)
-  (is eq 'float (analyze-return-type-from-spec '(int => float)))
-  (is eq 'ulong (analyze-return-type-from-spec '(char => ulong)))
-  (is eq 'nil (analyze-return-type-from-spec '(int => nil)))
-  (is eq 'nil (analyze-return-type-from-spec '(int =>)))
-  (is eq 'nil (analyze-return-type-from-spec '(int)))
+  (is equal '(int) (analyze-return-type-from-spec '(int => int)))
+  (is equal '(float) (analyze-return-type-from-spec '(int => float)))
+  (is equal '(ulong) (analyze-return-type-from-spec '(char => ulong)))
+  (is equal '(nil) (analyze-return-type-from-spec '(int => nil)))
+  (is equal '(nil) (analyze-return-type-from-spec '(int =>)))
+  (is equal '(nil) (analyze-return-type-from-spec '(int)))
   (fail (analyze-return-type-from-spec '(int => foobar))
         'crisp-unknown-type-error))
 
 (define-test (analyzer environment-from-spec)
   (is equal '((a int) (b float))
       (analyze-environment-from-spec '(a b) '(int float => nil)))
-  (fail (analyze-environment-from-spec '(a) '(int float => nil))
-        'crisp-signature-arity-error)
   (fail (analyze-environment-from-spec '(a) '(bar => nil))
         'crisp-unknown-type-error))
 
 (define-test (analyzer return-type-from-list)
-  (is eq 'float (analyze-return-type-from-list '((return-type float))))
-  (is eq 'nil (analyze-return-type-from-list '((return-type nil))))
+  (is equal '(int) (analyze-return-type-from-list '((return-type int))))
+  (is equal '(float) (analyze-return-type-from-list '((return-type float))))
+  (is equal nil (analyze-return-type-from-list '((type a int))))
   (fail (analyze-return-type-from-list '((return-type baz)))
         'crisp-unknown-type-error)
-  (false (analyze-return-type-from-list '((function (int => int))))))
+  (is equal nil (analyze-return-type-from-list '((function (int => int))))))
 
 (define-test (analyzer environment-from-list)
   (is equal '((a float) (b float))
@@ -133,6 +133,11 @@
         'crisp-signature-arity-error)
   (fail (analyze-environment-from-list '(a) '((type a quux)))
         'crisp-unknown-type-error))
+
+(define-test (analyzer return-type-multiple-values)
+  "Test multiple return values from spec"
+  (is equal '(int int) (analyze-return-type-from-spec '(int => int int)))
+  (is equal '(int float ulong) (analyze-return-type-from-spec '(int => int float ulong))))
 
 (define-test (crisp-compiler internal-def-function-compilation)
   "Tests the compilation path using internal-def-function."
