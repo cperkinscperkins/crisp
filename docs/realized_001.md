@@ -14,7 +14,7 @@ and Linux.
 
 Presently it supports the compilation of one (1) .crisp file. 
 
-It also supports two (three) flags:
+It also supports three (four) flags:
 
 ### -g / --debug
 DWARF symbols are inserted when using the `-g` or `--debug` flags.
@@ -77,6 +77,9 @@ The following declarations are supported
 - `(return-type <T>)` declare the return type of a function.
 - `#'(<T> <U> => <V>)` declare parameter types, arrow, return type.
 
+### (type a b int)
+
+### (return-type int)
 
 Errors
 ======
