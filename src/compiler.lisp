@@ -105,6 +105,12 @@
          ;; The "real" body is everything before the keyword.
          (body (if loc-pos (subseq body-and-location 0 loc-pos) body-and-location)))
     (log:debug "which package?: ~a ~%" *package*)             
+
+    ;; Eagerly register the signature for single-pass compilation scenarios.
+    ;; This ensures that when loading a file, function signatures are known
+    ;; before they are called by subsequent functions in the same file.
+    (register-function-signature `(def-function ,name ,params ,@body) source-location)
+
     (log:debug "name: ~a  params: ~a  body: ~a ~%source-location: ~a~%"
                name params body source-location)
     ;; Handle declarations (this part is tricky, let's simplify)
@@ -206,6 +212,14 @@
   value-node   ; The node for the value being returned
   source-location
   )
+
+(defstruct semantic-explicit-return
+  "Represents an explicit (return ...) form."
+  type         ; A list of types, e.g., '(int int)
+  value-nodes  ; A list of semantic nodes for the values
+  source-location
+  )
+
 
 ;; blueprint for a literal
 (defstruct semantic-literal
@@ -409,18 +423,33 @@
     ;; 2. Analyze the Body
     (let* ((body-nodes (analyze-body-expressions body env location))
            (return-node (first (last body-nodes)))
-           (inferred-type (if return-node (semantic-node-type return-node) 'nil)))
+           (inferred-types (if return-node
+                               (let ((node-type (semantic-node-type return-node)))
+                                 (if (listp node-type) node-type (list node-type)))
+                               '(nil))))
 
-      (log:debug "Analyzed body nodes: ~s. Return node: ~s. Inferred type: ~s. Declared return type: ~s" body-nodes return-node inferred-type (first return-type))
+      (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types return-type)
+      
+      (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
+           inferred-types (listp inferred-types)
+           return-type (listp return-type))
 
-      ;; 3. Check Types
-      (unless (equal inferred-type (first return-type))
-        (error 'crisp-type-error
-               :expected (first return-type)
-               :inferred inferred-type
-               :source-location (if return-node
-                                    (semantic-node-source-location return-node)
-                                    location)))
+      ;; 3. Check Types. This allows for a function returning multiple values
+      ;;    to be used in a context that expects fewer values (the extras are dropped).
+      (let* ((num-declared (length return-type))
+             (num-inferred (length inferred-types))
+             ;; Take the first N inferred types, where N is the number of declared types.
+             (inferred-subset (if (>= num-inferred num-declared)
+                                  (subseq inferred-types 0 num-declared)
+                                  inferred-types)))
+        (unless (and (>= num-inferred num-declared)
+                     (equal inferred-subset return-type))
+          (error 'crisp-type-error
+                 :expected return-type
+                 :inferred inferred-types
+                 :source-location (if return-node
+                                      (semantic-node-source-location return-node)
+                                      location))))
 
       ;; 4. Build and return the "blueprint"
       (make-semantic-function
@@ -429,7 +458,7 @@
                          collect (make-semantic-param :name param-name :type param-type :source-location location))
        :return-type return-type
        :body (list (make-semantic-return
-                    :return-type (first return-type)
+                    :return-type (first return-type) ; TODO: This is for implicit return, needs MVR review
                     :value-node return-node
                     :source-location (if return-node (semantic-node-source-location return-node) location))) ; TODO: Fix for MVR
        :source-location location))))
@@ -539,8 +568,12 @@
   "Analyzes a `(+ ...)` expression."
   (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
          (right-node (analyze-expression (third expr) env (append location '(2))))
-         (left-type (semantic-node-type left-node))
-         (right-type (semantic-node-type right-node))
+         ;; When a node's type is a list (like from a function call),
+         ;; operators like '+' only care about the first value.
+         (left-type-raw (semantic-node-type left-node))
+         (right-type-raw (semantic-node-type right-node))
+         (left-type (if (listp left-type-raw) (first left-type-raw) left-type-raw))
+         (right-type (if (listp right-type-raw) (first right-type-raw) right-type-raw))
          (promoted-type (get-promoted-type left-type right-type)))
 
     (if promoted-type
@@ -591,8 +624,18 @@
                            :source-location location)))))
 
 
+(defun analyze-return-expression (expr env location)
+  "Analyzes a `(return ...)` expression."
+  (let* ((value-forms (rest expr))
+         (value-nodes (loop for form in value-forms
+                            for i from 1
+                            collect (analyze-expression form env (append location (list i)))))
+         (return-types (mapcar #'semantic-node-type value-nodes)))
+    (make-semantic-explicit-return :type return-types
+                                   :value-nodes value-nodes
+                                   :source-location location)))
 
-;(def-expression-analyzer + analyze-add-expression)
+
 
 (defun analyze-cast-expression (expr env location)
   "Analyzes a to-XXXX or as-XXXX cast expression."
@@ -634,6 +677,7 @@
   (clrhash *expression-analyzers*)
   (def-expression-analyzer let analyze-let-expression)
   (def-expression-analyzer + analyze-add-expression)
+  (def-expression-analyzer return analyze-return-expression)
   ;; Register all possible `to-` and `as-` casts.
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
     (let* ((type-str (symbol-name type-name))
@@ -691,7 +735,7 @@
 
     ;; 5. Build the semantic-call node.
     (make-semantic-call :name op
-                        :type (first (function-signature-return-types signature))
+                        :type (function-signature-return-types signature)
                         :args arg-nodes
                         :signature signature
                         :source-location location)))
@@ -765,6 +809,7 @@
     (semantic-let (semantic-let-type node))
     (semantic-bitcast (semantic-bitcast-type node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-type node))
+    (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
     ))
 
@@ -778,6 +823,7 @@
     (semantic-let (semantic-let-source-location node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-source-location node))
     (semantic-add (semantic-add-source-location node))
+    (semantic-explicit-return (semantic-explicit-return-source-location node))
     (semantic-call (semantic-call-source-location node))
     ))
 
