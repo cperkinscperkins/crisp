@@ -71,12 +71,24 @@ jobs:
           echo "--- Running E2E: success test (multipass.crisp) ---"
           ./bin/crisp-compile tests/multipass.crisp
 
+          echo "--- Running E2E: success test (def-function-overloads.crisp) ---"
+          ./bin/crisp-compile tests/def-function-overloads.crisp
+
+          echo "--- Running E2E: success test (let-bindings.crisp) ---"
+          ./bin/crisp-compile tests/let-bindings.crisp
+
 
           echo "--- Running E2E: --debug success test (return_7.crisp) ---"
           ./bin/crisp-compile tests/return_7.crisp --debug 
 
           echo "--- Running E2E: --debug success test (def-function_primitive.crisp) ---"
           ./bin/crisp-compile tests/def-function_primitive.crisp --debug 
+
+          echo "--- Running E2E: --debug success test (def-function-overloads.crisp) ---"
+          ./bin/crisp-compile tests/def-function-overloads.crisp --debug
+
+          echo "--- Running E2E: --debug success test (let-bindings.crisp) ---"
+          ./bin/crisp-compile tests/let-bindings.crisp --debug
 
           echo "--- Running E2E: --debug success test --single-pass (def-function_primitive.crisp) ---"
           ./bin/crisp-compile tests/def-function_primitive.crisp --single-pass --debug 
