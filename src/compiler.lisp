@@ -257,6 +257,7 @@
   name            ; The symbol name of the function being called
   type            ; The return type of the function
   args            ; A list of semantic nodes for the arguments
+  signature       ; The specific FUNCTION-SIGNATURE struct that was resolved
   source-location
   )
 
@@ -695,6 +696,7 @@
     (make-semantic-call :name op
                         :type (first (function-signature-return-types signature))
                         :args arg-nodes
+                        :signature signature
                         :source-location location)))
 
 
@@ -766,7 +768,8 @@
     (semantic-let (semantic-let-type node))
     (semantic-bitcast (semantic-bitcast-type node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-type node))
-    (semantic-call (semantic-call-type node))))
+    (semantic-call (semantic-call-type node))
+    ))
 
 
 (defun semantic-node-source-location (node)
@@ -778,7 +781,8 @@
     (semantic-let (semantic-let-source-location node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-source-location node))
     (semantic-add (semantic-add-source-location node))
-    (semantic-call (semantic-call-source-location node))))
+    (semantic-call (semantic-call-source-location node))
+    ))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; DWARF Location Mapping
