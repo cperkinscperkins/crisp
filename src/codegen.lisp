@@ -41,8 +41,10 @@
 
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
-  (let* ((fn-name (substitute #\_ #\-
-                             (string-downcase (semantic-function-name semantic-function))))
+  (let* ((base-name (semantic-function-name semantic-function))
+         (param-types (mapcar #'semantic-param-type (semantic-function-param-list semantic-function)))
+         (mangled-name (format nil "~a~{_~a~}" base-name param-types))
+         (fn-name (substitute #\_ #\- (string-downcase mangled-name)))
          (fn-loc (semantic-function-source-location semantic-function))
          )
     ;; --- 1. Define the Function Type ---
@@ -249,8 +251,7 @@
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
   (declare (ignore di-builder di-scope location-map))
-  (let* ((callee-name (string-downcase (semantic-call-name node)))
-         (sig (first (gethash (semantic-call-name node) *function-table*)))
+  (let* ((sig (semantic-call-signature node))
 
           ;; 1. Get the Lisp return type symbol (e.g. 'I32 or NIL)
           (crisp-return-type (first (function-signature-return-types sig)))
@@ -266,6 +267,10 @@
           (_ (loop for i from 0 for p-type in (function-signature-parameters sig)
                    do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i)
                             (llvm-type-for-name p-type))))
+          ;; The name of the function in LLVM IR is mangled with its types
+          ;; to support overloading. e.g., add_two_int_int
+          (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node) (function-signature-parameters sig)))
+          (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
           (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
 
           ;; 4. Get the LLVM function *value* (the callable function)
