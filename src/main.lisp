@@ -46,12 +46,18 @@
   (let* ((all-args (uiop:command-line-arguments))
          (flags (remove-if-not (lambda (arg) (char= (char arg 0) #\-)) all-args))
          (files (remove-if (lambda (arg) (char= (char arg 0) #\-)) all-args))
+         (log-level-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--log-level=" f)) flags))
+         (log-level (if log-level-flag
+                        (intern (string-upcase (subseq log-level-flag (length "--log-level="))) :keyword)
+                        :info))
          (single-pass-p (member "--single-pass" flags :test #'string=))
          (debug-p (or (member "-g" flags :test #'string=)
                       (member "--debug" flags :test #'string=))))
     
     ;; Initialize the compiler system.
-    (crisp.compiler:initialize-compiler :log-level (if debug-p :debug :info))
+    ;; The -g/--debug flag now ONLY controls DWARF generation.
+    ;; Logging verbosity is controlled by --log-level.
+    (crisp.compiler:initialize-compiler :log-level log-level)
 
     (unless (= (length files) 1)
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")

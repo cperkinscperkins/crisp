@@ -1,0 +1,30 @@
+(def-function one-binding (x y)
+    (declare #'(int int => int))
+  (let ((z  13))
+    (+ x (+ y z))))
+
+(def-function two-bindings (x)
+    (declare #'(int => int))
+  (let ((y 14)
+        (z 15))
+    (+ x (+ y z))))
+
+(def-function bind-f-call (x)
+    (declare #'(int => int))
+  (let ((quite-a-bit (two-bindings x)))
+    (+ x quite-a-bit)))
+
+(def-function multi-step-progn (x)
+    (declare #'(int => int))
+  (let ((y 18))
+    (bind-f-call y)     ;; ignore return
+    (two-bindings x)))  ;; probably should check this
+
+#|
+(def-function let-with-declare (x)
+    (declare #'(int => int))
+  (let ((y 19))
+    (declare (type y int))
+    (+ x y)))
+
+|#
