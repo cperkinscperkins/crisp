@@ -816,3 +816,28 @@
           for i from 0
           do (setf line-counter (walk-and-map-locations form (list i) location-map line-counter)))
     location-map))
+
+(defun compile-crisp-form-to-ir-string (crisp-form &key (debug-p nil))
+  "Takes a single Crisp s-expression (like a def-function form),
+  compiles it, and returns its LLVM IR as a string.
+  This is a developer utility for REPL use and testing."
+  (let* ((module (llvm-module-create "repl-module"))
+         (builder (llvm-create-builder))
+         (di-builder (when debug-p (llvm-create-di-builder module)))
+         (location-map (when debug-p (generate-location-map (list crisp-form))))
+         (di-compile-unit (when debug-p
+                            (let* ((f "repl.crisp") (d "/tmp/")
+                                   (di-file (llvm-di-builder-create-file di-builder f (length f) d (length d))))
+                              (llvm-di-builder-create-compile-unit di-builder 32768 di-file "Crisp" 5 nil "" 0 0 "" 0 1 0 nil nil "" 0 "" 0)))))
+    (unwind-protect
+         (progn
+           (let* ((form-with-location (append crisp-form (list :source-location ''(0))))
+                  (expanded-form (macroexpand-1 form-with-location))
+                  (semantic-fn (eval expanded-form)))
+             (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))
+           (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
+      ;; Cleanup.
+      (when di-builder (llvm-di-builder-finalize di-builder))
+      (when di-builder (llvm-dispose-di-builder di-builder))
+      (llvm-dispose-builder builder)
+      (llvm-dispose-module module))))
