@@ -186,7 +186,10 @@
            #:semantic-function-body
            #:semantic-return-value-node
            #:semantic-let-bindings
-           #:semantic-let-body))
+           #:semantic-let-body
+
+           ;; Developer Utilities
+           #:compile-crisp-form-to-ir-string))
 
 (defpackage :crisp.main
   (:use :cl)

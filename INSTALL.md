@@ -191,7 +191,7 @@ Test interactively from SBCL
 (def-function has-let (a) (declare #'(int => int)) (let ((v 100)) (+ a v)))
 
 ;; generate some LLVM-IR from functions
-
+(compile-crisp-form-to-ir-string '(def-function wow () (declare (return-type int)) 7))
 
 ;; or run the CI tests and quit after
 (load #P"./tests/run-ci.lisp")

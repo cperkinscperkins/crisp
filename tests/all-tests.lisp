@@ -49,37 +49,6 @@
 
 (define-test crisp-compiler)
 
-(defun compile-crisp-form-to-ir-string (crisp-form &key (debug-p nil))
-  "Takes a single Crisp s-expression (like a def-function form),
-  compiles it, and returns its LLVM IR as a string.
-  This is a developer utility for REPL use and testing."
-  (let* ((module (llvm-module-create "repl-module"))
-         (builder (llvm-create-builder))
-         (di-builder (when debug-p (llvm-create-di-builder module)))
-         (location-map (when debug-p (generate-location-map (list crisp-form))))
-         (di-compile-unit (when debug-p
-                            (let* ((f "repl.crisp") (d "/tmp/")
-                                   (di-file (llvm-di-builder-create-file di-builder f (length f) d (length d))))
-                              (llvm-di-builder-create-compile-unit di-builder 32768 di-file "Crisp" 5 nil "" 0 0 "" 0 1 0 nil nil "" 0 "" 0)))))
-    (unwind-protect
-         (progn
-           ;; We need to expand the macro to get the internal-def-function call,
-           ;; then eval it to run the analyzer and get the semantic-function AST.           
-           ;; We must inject the source location, just like the old tests did.
-           (let* ((form-with-location (append crisp-form (list :source-location ''(0))))
-                  (expanded-form (macroexpand-1 form-with-location))
-                  (semantic-fn (eval expanded-form)))
-             ;; Now we can call the real codegen function.
-             (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))
-           
-           ;; Finally, print the module to a string and return it.
-           (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
-      ;; Cleanup.
-      (when di-builder (llvm-di-builder-finalize di-builder))
-      (when di-builder (llvm-dispose-di-builder di-builder))
-      (llvm-dispose-builder builder)
-      (llvm-dispose-module module))))
-
 (defun compile-crisp-file-to-string (filepath &key (debug-p nil))
   "Compiles a .crisp file and returns the LLVM IR as a string."
   (with-output-to-string (s)
@@ -105,26 +74,6 @@
           (when di-builder (llvm-dispose-di-builder di-builder))
           (llvm-dispose-builder builder)
           (llvm-dispose-module module))))))
-
-(defun test-compile-and-print (semantic-fn &key (debug-p nil))
-  "Helper to create a module, compile a function, and return the IR string."
-  (with-output-to-string (s)
-    (let* ((module (llvm-module-create "ci_test_module"))
-           (builder (llvm-create-builder))
-           (di-builder (when debug-p (llvm-create-di-builder module))))
-      (unwind-protect
-           (let ((location-map (when debug-p (generate-location-map (list semantic-fn)))))
-             (let ((di-compile-unit (when debug-p
-                                      (let* ((f "test.crisp") (d "/tmp/") (di-file (llvm-di-builder-create-file di-builder f (length f) d (length d))) (producer "Crisp Compiler") (flags ""))
-                                        (llvm-di-builder-create-compile-unit di-builder 32768 di-file producer (length producer) nil flags (length flags) 0 (cffi:null-pointer) 0 1 0 nil nil (cffi:null-pointer) 0 (cffi:null-pointer) 0)))))
-               (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))
-             (let ((ir-ptr (llvm-print-module-to-string module)))
-               (unwind-protect (format s "~a" (cffi:foreign-string-to-lisp ir-ptr))
-                 (llvm-dispose-message ir-ptr)))))
-        (when di-builder (llvm-di-builder-finalize di-builder))
-        (when di-builder (llvm-dispose-di-builder di-builder))
-        (llvm-dispose-builder builder)
-        (llvm-dispose-module module))))
 
 (define-test (crisp-compiler fadd-generation)
   "Tests that fadd generation works correctly."
@@ -208,8 +157,7 @@
       (is = 12 (gethash '(0 4 2) location-map))))
 
   (define-test scaffolding
-    ;(let ((ir (compile-crisp-form-to-ir-string '(def-function test-dwarf () (declare (return-type int)) 7) :debug-p t)))
-    (let ((ir (test-compile-and-print (internal-def-function 'test-dwarf '() '((return-type int)) '(7) '(0)) :debug-p t)))
+    (let ((ir (compile-crisp-form-to-ir-string '(def-function test-dwarf () (declare (return-type int)) 7) :debug-p t)))
       (true (search "!DICompileUnit" ir))
       (true (search "define i32 @test_dwarf() !dbg" ir))
       (true (search "line: 1" ir))
