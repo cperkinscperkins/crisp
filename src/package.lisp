@@ -131,7 +131,7 @@
 
 
 
-  (:export #:def-function
+  (:export 
            #:compile-toplevel-form
            #:compile-module
            #:generate-location-map
@@ -145,6 +145,8 @@
 
 
            ;; laungage symbols
+           #:def-function
+           #:return
            #:declare
            #:return-type
            #:type
@@ -202,6 +204,7 @@
 
   (:import-from :crisp.compiler
    #:def-function
+   #:return
    #:declare
    #:return-type
    #:type
