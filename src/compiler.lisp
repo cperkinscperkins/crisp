@@ -387,12 +387,15 @@
   (let* ((name (second form))
          (params (third form))
          (body (cdddr form))
-         (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f)))
+         (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
+         (existing-signatures (gethash name *function-table*)))
     (multiple-value-bind (env return-type)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
       (let ((param-types (mapcar #'second env)))
+        ;; Add the new signature to the list of existing ones.
         (setf (gethash name *function-table*)
-              (list (make-function-signature :name name :parameters param-types :return-types (list return-type) :source-location location)))))))
+              (append existing-signatures
+                      (list (make-function-signature :name name :parameters param-types :return-types (list return-type) :source-location location))))))))
 
 (defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
@@ -668,10 +671,12 @@
          ;; 2. Get the function signature(s) from the table.
          (signatures (gethash op *function-table*))
          ;; 3. Find the matching overload (for now, we assume one).
-         ;;    TODO: A real implementation would loop through signatures
-         ;;    and find the one that matches the arg-types.
-         (signature (first signatures)))
+         (signature (find-if (lambda (sig)
+                                (equal arg-types (function-signature-parameters sig)))
+                              signatures)))
 
+    (unless signature
+      (error "No matching function overload found for '~a' with argument types ~a." op arg-types))
     ;; 4. Perform Arity and Type Checking
     (unless (= (length arg-types) (length (function-signature-parameters signature)))
       (error 'crisp-signature-arity-error
