@@ -18,7 +18,7 @@
 
 ;; Initialize the compiler for the test run.
 (format t "~&; --- Initializing compiler for test run...~%")
-(initialize-compiler :log-level :info)
+(initialize-compiler :log-level :debug)
 
 ;; Run all Parachute tests
 (format t "~&; --- Running Parachute tests ---~%")
