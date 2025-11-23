@@ -151,21 +151,46 @@ $   ./bin/crisp-compile.exe ./tests/return_7.crisp
 
 ```
 
+Run Tests
+---------
+
+Some of the tests use `llc`/`llc.exe` to verify the generated LLVM-IR. You may need to
+install either the full build of LLVM or the clang tooling build to get that.
+
+Make sure the path to `llc` is on your `PATH`.
+
+Windows: 
+<!--
+```
+$env:PATH = "C:\Users\chrisper\Downloads\clang+llvm-21.1.5-x86_64-pc-windows-msvc\clang+llvm-21.1.5-x86_64-pc-windows-msvc\bin;" + $env:PATH
+```
+-->
+
+Linux:
+
 Test interactively from SBCL
 ---------------------------
-```
+```lisp
 (push *default-pathname-defaults* asdf:*central-registry*)
 (asdf:clear-system "crisp")
 (ql:quickload "crisp")
 (in-package crisp.compiler)
 (initialize-compiler :log-level :debug)
 
-(test-llvm-hello-world) 
+; Want to run tests?
+; first load them
+(load #P"./tests/all-tests.lisp")
+;; then run one
+(parachute:test 'crisp.tests::fadd-generation)
+; or run all the tests
+(parachute:test :crisp.tests)
 
-
+;; evaluate some functions and see their semantic layout.
 (def-function wow () (declare (return-type int)) 7)
 (def-function adds (a b) (declare (type a b int) (return-type int)) (+ a b))
 (def-function has-let (a) (declare #'(int => int)) (let ((v 100)) (+ a v)))
+
+;; generate some LLVM-IR from functions
 
 
 ;; or run the CI tests and quit after
