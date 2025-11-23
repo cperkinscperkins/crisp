@@ -170,15 +170,24 @@ LOOSE PRIORITIES
 
 
 SHORT TERM PLAN
-- [ ] let
+- [x] let
+- - [ ] declare (type ) ?
 - - [ ] hella testing
-- [ ] function overloads
-- - [ ] testing
+- [x] function overloads
+- - [x] testing
 - [ ] more let: multiple value return and bind
 - [ ] templates as macros
 - [ ] higher order functions as templates
 - [ ] need to move more of our old erstaz logging to log4cl. 
 - [ ] Side Channel / Implicit Args. Can we start this BEFORE def-kernel? 
+
+
+M-V-R
+- [ ]add a variadic (return a b c ...) so multiple values can actually be returned.
+- [x]decide how we want to support that at the LLVM-IR level
+- [ ]implement the above and add tests.
+- [ ]update "let" support so it supports the bindings. (let ((quot rem (/ a b))) ...)
+- [ ]test that.
 
 
 QUESTIONS
