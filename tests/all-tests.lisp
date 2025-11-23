@@ -15,6 +15,38 @@
 
 (in-package :crisp.tests)
 
+(defun validate-ir-with-llc (ir-string)
+  "Uses the llc command-line tool to validate LLVM IR.
+  Returns (values t nil) on success.
+  Returns (values nil error-message) on failure."
+  (handler-case
+      (uiop:with-temporary-file (:stream stream :pathname path :type "ll")
+        (write-string ir-string stream)
+        (finish-output stream) ; Ensure the file is written to disk
+        (multiple-value-bind (output error-output exit-code)
+            ;; We run llc, telling it to output to the null device.
+            ;; We only care about the exit code and any errors.
+            (uiop:run-program (list "llc" (uiop:native-namestring path)
+                                    "-o" (uiop:native-namestring (uiop:null-device-pathname)))
+                              :output nil
+                              :error-output :string
+                              :ignore-error-status t)
+          (declare (ignore output))
+          (if (zerop exit-code)
+              (values t nil) ; Success!
+              (values nil (format nil "llc verification failed with exit code ~a:~%~a" exit-code error-output)))))
+    ;; A more general fallback for other Lisp implementations
+    (error (c)
+       (if (search "No such file or directory" (princ-to-string c))
+           (values nil (format nil "llc command not found. LLVM verifier could not be run.~%  ~a" c))
+           (values nil (format nil "An error occurred while trying to run llc.~%  ~a" c))))))
+
+(defmacro is-valid-ir (ir-form &optional (description "'is-valid-ir' check"))
+  "A Parachute test that uses llc to validate generated IR."
+  `(multiple-value-bind (success-p message) (validate-ir-with-llc ,ir-form)
+     (true success-p (format nil "~a~%~:[~;~%LLVM verifier message:~%~a~]"
+                             ,description (not success-p) message))))
+
 (define-test crisp-compiler)
 
 (defun compile-crisp-file-to-string (filepath &key (debug-p nil))
@@ -129,11 +161,11 @@
     (true (search "ret i32 7" ir-7)))
 
   (let ((ir-add (test-compile-and-print (internal-def-function 'test-fn-add '(a b) '((type a b int) (return-type int)) '((+ a b)) '(1)))))
-    (true (search "define i32 @test_fn_add(i32 %0, i32 %1)" ir-add))
+    (true (search "define i32 @test_fn_add_int_int(i32 %0, i32 %1)" ir-add))
     (true (search "add i32" ir-add)))
 
   (let ((ir-arrow (test-compile-and-print (internal-def-function 'test-fn-arrow '(a b) '((function (int int => int))) '((+ a b)) '(2)))))
-    (true (search "define i32 @test_fn_arrow(i32 %0, i32 %1)" ir-arrow))))
+    (true (search "define i32 @test_fn_arrow_int_int(i32 %0, i32 %1)" ir-arrow))))
 
 (define-test (crisp-compiler dwarf-generation)
   "Tests for DWARF debug information generation."
@@ -200,8 +232,9 @@
                                             '((let ((v 100)) (+ a v)))
                                             '(0)))
          (ir (test-compile-and-print semantic-fn)))
+    (is-valid-ir ir)
 
-    (true (search "define i32 @has_let(i32 %0)" ir) "Function definition should be correct.")
+    (true (search "define i32 @has_let_int(i32 %0)" ir) "Function definition should be correct.")
     (true (search "%v = alloca i32" ir) "Should allocate stack space for the 'let' variable 'v'.") ; This name is predictable
     (true (search "store i32 100, ptr %v" ir) "Should store the initial value 100 into the allocation for 'v'.")
     (true (search "%a = alloca i32" ir) "Should allocate stack space for the parameter 'a'.") ; This name is also predictable
