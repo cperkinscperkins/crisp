@@ -23,6 +23,11 @@ DWARF symbols are inserted when using the `-g` or `--debug` flags.
 By default the compiler uses multiple passes. But with the `--single-pass` flag it will attempt
 to compile in a single pass. If using `--single-pass` all forms must be in reverse dependency order, 
 else errors (see below).
+ 
+### --log-level=<level>
+Sets the logging verbosity. Accepted levels are (from most to least verbose): `trace`, `debug`, `info`, `warn`, `error`, `fatal`.
+The default level is `info`.
+
 
 Pipeline
 ========
@@ -71,3 +76,29 @@ The following declarations are supported
 - `(type <var0> ... <varN> <T>)`  declare the type of a parameter(s).
 - `(return-type <T>)` declare the return type of a function.
 - `#'(<T> <U> => <V>)` declare parameter types, arrow, return type.
+
+
+Errors
+======
+
+- Recursion is not allowed
+- unmatched close parenthesis
+- Unexpected end of file
+- Unbound variable ___
+- Arity mismatch!
+- Type mismatch!  Expected __ but inferred ___.
+- Unsupported form __ found in functino body.
+- Invalid cast
+- Type mismatch for operator '+' 
+- Unknown type
+- Missing type declarations for parameters: ___  
+- Operator '+' not supported for types ___ and ___
+- Invalid cast: Cannot use 'to...' for float to int.
+- Incorrect argument types for call to ____
+- Unsupported value cast from ___ to ___
+- Usage: crisp-compile [flags] <filename.crisp>   
+
+
+- An unexpected error occurred: ___
+- Unknown type name for LLVM: ___
+- Internal compiler error: analyze-cast-expression called iwth invalid operator
