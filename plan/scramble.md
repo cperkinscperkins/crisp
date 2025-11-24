@@ -193,6 +193,7 @@ M-V-R
 QUESTIONS
 - [ ] should log4CL be used ONLY for logging? Or should it be used for general compiler output 
       like error messages and warnings and the like?
+- [ ] why are the log:debug and the like not showing up in Alive REPL even if the log level is set?
 
 
 

@@ -13,12 +13,21 @@
     (declare #'(int => int))
   (let ((quite-a-bit (two-bindings x)))
     (+ x quite-a-bit)))
-
+#|
 (def-function multi-step-progn (x)
     (declare #'(int => int))
   (let ((y 18))
     (bind-f-call y)     ;; ignore return
     (two-bindings x)))  ;; probably should check this
+
+(def-function m-v-r (a)
+  (declare #'(int => int int int))
+  (let ((x (+ a 19))
+        (y  (+ a 20))
+        (z (multi-step-progn a)))
+    (return x y z)))
+
+|#
 
 #|
 (def-function let-with-declare (x)
