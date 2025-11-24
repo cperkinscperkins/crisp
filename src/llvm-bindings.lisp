@@ -54,11 +54,19 @@
 (defcfun ("LLVMVoidType" llvm-void-type) :pointer
   "Get a void type.")
 
+
 (defcfun ("LLVMFunctionType" llvm-function-type) :pointer
   (return-type :pointer)
   (param-types :pointer) ; We'll pass an array of types
   (param-count :int)
   (is-var-arg :boolean))
+
+(defcfun ("LLVMStructTypeInContext" llvm-struct-type-in-context) :pointer
+  "Create a new structure type in a context."
+  (context :pointer)
+  (element-types :pointer)
+  (element-count :unsigned-int)
+  (packed :boolean))
 
 ;; --- Functions ---
 (defcfun ("LLVMAddFunction" llvm-add-function) :pointer
@@ -126,6 +134,10 @@
   (value :pointer)
   (pointer :pointer))
 
+(defcfun ("LLVMGetUndef" llvm-get-undef) :pointer
+  "Get an undefined value of a given type."
+  (type :pointer))
+
 (defcfun ("LLVMBuildLoad" llvm-build-load) :pointer
   (builder :pointer)
   (pointer :pointer)
@@ -137,6 +149,13 @@
   (pointer :pointer)
   (name :string))
   
+(defcfun ("LLVMBuildInsertValue" llvm-build-insert-value) :pointer
+  "Builds an instruction to insert a value into a struct."
+  (builder :pointer)
+  (agg-val :pointer)
+  (elt-val :pointer)
+  (index :unsigned-int)
+  (name :string))
 ;; --- Math ---
 (defcfun ("LLVMBuildAdd" llvm-build-add) :pointer
   (builder :pointer)

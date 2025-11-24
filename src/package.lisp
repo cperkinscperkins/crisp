@@ -68,6 +68,7 @@
    #:llvm-float-type
    #:llvm-double-type
    #:llvm-function-type
+   #:llvm-struct-type-in-context
    ;; Functions
    #:llvm-add-function
    #:llvm-get-named-function
@@ -88,6 +89,9 @@
    #:llvm-build-alloca
    #:llvm-build-store
    #:llvm-build-load2
+   #:llvm-build-insert-value
+   #:llvm-get-undef
+   #:llvm-build-ret-void
    #:llvm-build-add
    #:llvm-build-fadd
    ;; Casting
@@ -180,6 +184,7 @@
 
            ;; Semantic Node types
            #:semantic-function #:semantic-return #:semantic-literal
+           #:semantic-explicit-return
            #:semantic-param #:semantic-var-read #:semantic-add
            #:semantic-value-cast #:semantic-bitcast
            #:semantic-fp-truncate-cast #:semantic-call #:semantic-let
