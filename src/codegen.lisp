@@ -333,14 +333,11 @@
   "Generates IR for a function call."
   (declare (ignore di-builder di-scope location-map))
   (let* ((sig (semantic-call-signature node))
-
-          ;; 1. Get the Lisp return type symbol (e.g. 'I32 or NIL)
-          (crisp-return-type (first (function-signature-return-types sig)))
-
-          ;; 2. Get the LLVM return type (handles NIL -> void)
-          (llvm-return-type (if crisp-return-type
-                              (llvm-type-for-name crisp-return-type)
-                              (llvm-void-type)))
+         (return-type-names (function-signature-return-types sig))
+         (has-return-value (not (null (remove 'nil return-type-names))))
+         ;; 1. Get the LLVM return type (handles single, multi, and void)
+         (llvm-return-type (get-llvm-return-type (llvm-get-module-context module)
+                                                 return-type-names))
 
           ;; 3. Build the LLVM function *type* (the signature)
           (param-count (length (function-signature-parameters sig)))
@@ -371,7 +368,7 @@
                                      callee
                                      args-array
                                      num-args
-                                     (if crisp-return-type "call_tmp" "")))
+                                     (if has-return-value "call_tmp" "")))
           (di-location (when (and di-builder di-scope location-map)
                          (let* ((loc (semantic-node-source-location node))
                                 (line (gethash loc location-map 0)))
@@ -381,30 +378,47 @@
         (llvm-instruction-set-debug-loc call-inst di-location))
       (values call-inst di-location))))
 
+(defmethod generate-node-ir ((node semantic-extract-value) builder module var-env di-builder di-scope location-map)
+  "Generates IR for extracting a value from an aggregate."
+  (multiple-value-bind (agg-val agg-loc)
+      (generate-node-ir (semantic-extract-value-aggregate-node node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore agg-loc))
+    (let ((index (semantic-extract-value-index node))
+          (extract-val (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index))))
+      ;; TODO: Should this have a debug location? It corresponds to a variable binding,
+      ;; but not a distinct expression in the source.
+      (values extract-val nil))))
+
 (defmethod generate-node-ir ((node semantic-let) builder module var-env di-builder di-scope location-map)
   "Generates IR for a let expression."
   ;; Create a new environment for the let block that inherits from the outer one.
   ;; We don't actually need to copy, we'll just add to it and the new bindings
   ;; will shadow outer ones if names conflict.
-  (let ((let-env (alexandria:copy-hash-table var-env)))
+  (let ((let-env (alexandria:copy-hash-table var-env))
+        (memoized-aggregates (make-hash-table :test 'eq)))
     ;; 1. Generate code for each binding.
     (dolist (binding (semantic-let-bindings node))
       (let* ((var-name (car binding))
              (val-node (cdr binding))
-             ;; For a single `let` binding, we implicitly take the first value's type
-             ;; if the bound expression is a multi-value function call. The analyzer
-             ;; ensures the variable is typed correctly in the env, but we need to
-             ;; handle the type for the alloca instruction here.
              (llvm-type-name (get-single-value-type val-node)))
-        ;; Generate the value for the initializer expression.
-        (multiple-value-bind (val-ir val-loc)
-            (generate-expression-ir builder module let-env di-builder di-scope location-map val-node)
-          (declare (ignore val-loc))
-          ;; Allocate stack space for the new variable.
+
+        (let ((val-ir
+                (if (typep val-node 'semantic-extract-value)
+                    ;; If it's an extract, check if we've already generated the aggregate.
+                    (let* ((agg-node (semantic-extract-value-aggregate-node val-node))
+                           (agg-val (or (gethash agg-node memoized-aggregates)
+                                        ;; If not, generate and memoize it.
+                                        (let ((new-agg-val (generate-expression-ir builder module let-env di-builder di-scope location-map agg-node)))
+                                          (setf (gethash agg-node memoized-aggregates) new-agg-val)
+                                          new-agg-val)))
+                           (index (semantic-extract-value-index val-node)))
+                      (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index)))
+                    ;; Otherwise, it's a simple binding, generate as before.
+                    (generate-expression-ir builder module let-env di-builder di-scope location-map val-node))))
+
+          ;; Now that we have the correct value (val-ir), allocate and store it.
           (let ((alloca (llvm-build-alloca builder (llvm-type-for-name llvm-type-name) (string-downcase var-name))))
-            ;; Store the initial value.
             (llvm-build-store builder val-ir alloca)
-            ;; Add the variable's pointer to our environment.
             (setf (gethash var-name let-env) alloca)))))
 
     ;; 2. Generate code for the body, using the extended environment.

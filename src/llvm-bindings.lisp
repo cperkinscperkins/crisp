@@ -160,6 +160,14 @@
   (elt-val :pointer)
   (index :unsigned-int)
   (name :string))
+
+(defcfun ("LLVMBuildExtractValue" llvm-build-extract-value) :pointer
+  "Builds an instruction to extract a value from a struct."
+  (builder :pointer)
+  (agg-val :pointer)
+  (index :unsigned-int)
+  (name :string))
+
 ;; --- Math ---
 (defcfun ("LLVMBuildAdd" llvm-build-add) :pointer
   (builder :pointer)

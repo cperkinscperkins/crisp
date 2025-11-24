@@ -286,6 +286,15 @@
   source-location
   )
 
+(defstruct semantic-extract-value
+  "Represents extracting a single value from an aggregate (struct)."
+  type            ; The type of the extracted value (e.g., 'int)
+  aggregate-node  ; The semantic node for the aggregate (e.g., a semantic-call)
+  index           ; The 0-based index to extract
+  source-location
+  )
+
+
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
 ;; ---------------------------------
@@ -605,36 +614,59 @@
 
   (let ((binding-forms (cadr expr))
         (body-forms (cddr expr)))
-    ;; Phase 2: Implement let* scoping by sequentially building the environment.
+    ;; Implement let* scoping by sequentially building the environment.
     (multiple-value-bind (final-env analyzed-bindings)
-        (loop for binding in binding-forms
-              for i from 0
-              ;; The environment for the current binding analysis.
-              ;; Starts with the outer 'env', then gets updated each iteration.
-              for current-env = env then next-env
-              ;; Analyze the value expression in the current environment.
-              for val-node = (analyze-expression (cadr binding) current-env (append location '(1) (list i) '(1)))
-              ;; Create the environment for the *next* iteration by adding the new variable.
-              for next-env = (let* (;; If the value is a multi-return function call, its type is a list.
-                                    ;; For a single `let` binding, we implicitly take the first value's type.
-                                    ;; TODO: This needs expansion for `(let ((a b (func))) ...)` style destructuring.
-                                    (var-type (get-single-value-type val-node)))
-                               (cons (list (car binding) var-type) current-env))
-              ;; Collect the binding pair for the semantic-let node.
-              collect (cons (car binding) val-node) into bindings-list
-              ;; After the loop, return the final environment and the list of bindings.
-              finally (return (values next-env bindings-list)))
+        (let ((current-env env)
+              (bindings-list '()))
+          (loop for binding in binding-forms
+                for i from 0 do
+            (log:debug "Analyzing let binding form: ~s" binding)
+            (let* ((binding-vars (butlast binding 1))
+                   (init-form (first (last binding)))
+                   (init-node (analyze-expression init-form current-env (append location '(1) (list i) (list (length binding-vars)))))
+                   (init-node-types (semantic-node-type init-node)))
+
+              (cond
+                ;; Case 1: Single variable binding, e.g., (let ((z 13)))
+                ((= (length binding-vars) 1)
+                 (let* ((var-name (first binding-vars))
+                        ;; For a single binding, we implicitly take the first return value's type.
+                        (var-type (get-single-value-type init-node)))
+                   (push (cons var-name init-node) bindings-list)
+                   (setf current-env (cons (list var-name var-type) current-env))))
+
+                ;; Case 2: Multiple variable binding, e.g., (let ((x y z (m-v-r a))))
+                ((> (length binding-vars) 1)
+                 (unless (listp init-node-types)
+                   (error "Cannot destructure a single-value return into multiple variables at ~a" (semantic-node-source-location init-node)))
+                 (unless (>= (length init-node-types) (length binding-vars))
+                   (error "Not enough return values from ~a to bind ~a variables at ~a" init-form (length binding-vars) (semantic-node-source-location init-node)))
+
+                 ;; The init-node (the function call) is analyzed once.
+                 ;; We then create `extract-value` nodes for each variable.
+                 (loop for var-name in binding-vars
+                       for j from 0 do
+                   (let* ((var-type (nth j init-node-types))
+                          (extract-node (make-semantic-extract-value
+                                         :type var-type
+                                         :aggregate-node init-node
+                                         :index j
+                                         :source-location (semantic-node-source-location init-node))))
+                     (push (cons var-name extract-node) bindings-list)
+                     (setf current-env (cons (list var-name var-type) current-env)))))
+                (t (error "Malformed let binding: ~a" binding)))))
+          ;; The loop builds the bindings list in reverse, so we reverse it back.
+          (values current-env (reverse bindings-list)))
+
       (let* ((analyzed-body (analyze-body-expressions body-forms final-env (append location '(2))))
-         (last-body-node (first (last analyzed-body)))
-         (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
+             (last-body-node (first (last analyzed-body)))
+             (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
          (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
                     analyzed-bindings analyzed-body return-type)
         (make-semantic-let :type return-type
                            :bindings analyzed-bindings
                            :body analyzed-body
                            :source-location location)))))
-
-
 (defun analyze-return-expression (expr env location)
   "Analyzes a `(return ...)` expression."
   (let* ((value-forms (rest expr))
@@ -843,6 +875,7 @@
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-type node))
     (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
+    (semantic-extract-value (semantic-extract-value-type node))
     ))
 
 
@@ -857,6 +890,7 @@
     (semantic-add (semantic-add-source-location node))
     (semantic-explicit-return (semantic-explicit-return-source-location node))
     (semantic-call (semantic-call-source-location node))
+    (semantic-extract-value (semantic-extract-value-source-location node))
     ))
 
 ;; --- Helper to get the type from a node expected to be a single value ---

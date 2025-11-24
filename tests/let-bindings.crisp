@@ -20,6 +20,8 @@
     (bind-f-call y)     ;; ignore return
     (two-bindings x)))  ;; probably should check this
 
+;; multiple value bind
+
 (def-function m-v-r (a)
   (declare #'(int => int int int))
   (let ((x (+ a 19))
@@ -28,11 +30,20 @@
     (return x y z)))
 
 
+(def-function m-v-b (a)
+  (declare #'(int => int))
+  (let ((x y z (m-v-r a)))
+    ;(+ (+ (+ a x) y ) z)
+    (+ x y)))
+
+
+
+
+
 #|
 (def-function let-with-declare (x)
     (declare #'(int => int))
   (let ((y 19))
     (declare (type y int))
     (+ x y)))
-
 |#
