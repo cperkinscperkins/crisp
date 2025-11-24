@@ -91,6 +91,7 @@
    #:llvm-build-store
    #:llvm-build-load2
    #:llvm-build-insert-value
+   #:llvm-build-extract-value
    #:llvm-get-undef
    #:llvm-build-ret-void
    #:llvm-build-add
@@ -189,6 +190,7 @@
            #:semantic-param #:semantic-var-read #:semantic-add
            #:semantic-value-cast #:semantic-bitcast
            #:semantic-fp-truncate-cast #:semantic-call #:semantic-let
+           #:semantic-extract-value
 
            ;; Accessors for semantic nodes
            #:semantic-function-body

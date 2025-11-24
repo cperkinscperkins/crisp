@@ -49,7 +49,7 @@ Available Language Constructs
 Presently these features of `def-function` are NOT implemented yet:
 - `&optional` , `&key` arguments
 - `&out` arguments
-- multiple value return
+- [x] multiple value return
 - limited `(declare)`
 - ther is no enforcement of the limit to thread level operations, ie no grid level calls
 - the colon joinging var to type syntax is not yet supported ( `x:int`)
@@ -77,9 +77,12 @@ The following declarations are supported
 - `(return-type <T>)` declare the return type of a function.
 - `#'(<T> <U> => <V>)` declare parameter types, arrow, return type.
 
-### (type a b int)
+#### (type a b int)
 
-### (return-type int)
+#### (return-type int)
+
+#### arrow type notation #'(int int => int)
+
 
 Errors
 ======
@@ -100,6 +103,7 @@ Errors
 - Incorrect argument types for call to ____
 - Unsupported value cast from ___ to ___
 - Usage: crisp-compile [flags] <filename.crisp>   
+- Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead.
 
 
 - An unexpected error occurred: ___
