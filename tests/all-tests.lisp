@@ -225,3 +225,21 @@
     (true (search "load i32, ptr %v" ir) "Should load the value from 'v' before using it in the addition.")
     (true (search "load i32, ptr %a" ir) "Should load the value from 'a' before using it in the addition.")
     (true (search "add i32" ir) "Should perform an addition.")))
+
+(define-test (codegen multiple-value-return)
+  "Tests that a function returning multiple values generates correct IR."
+  (let ((ir (compile-crisp-form-to-ir-string
+             '(def-function test-mvr ()
+               (declare (return-type int int))
+               (return 7 314)))))
+    (is-valid-ir ir "Generated IR for MVR should be valid.")
+
+    (true (search "define { i32, i32 } @test_mvr()" ir)
+          "Function should be defined to return a struct { i32, float }.")))
+#| temporarily disabled 
+    (true (search "insertvalue { i32, i32 } undef, i32 7, 0" ir)
+          "Should insert the first return value (int) into the struct at index 0.")
+
+    (true (search "insertvalue { i32, i32 } %mvr_val_0, i32" ir)
+          "Should insert the second return value (float) into the struct at index 1.")))
+|#

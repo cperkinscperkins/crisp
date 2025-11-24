@@ -38,6 +38,12 @@
   (declare (return-type int)) 
  (wow-return-mv))
 
+ (def-function arrow-mv ()
+  (declare #'(=> int int))
+  (wow-return-mv))
+
+
+
 #|
 ;; this should error
 (def-function return-moar-types ()
