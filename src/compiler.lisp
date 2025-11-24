@@ -141,12 +141,15 @@
 
 (define-condition crisp-type-error (crisp-compiler-error)
   ((message :initarg :message :initform "Type mismatch!" :reader type-error-message)
-   (expected :initarg :expected :reader type-error-expected)
-   (inferred :initarg :inferred :reader type-error-inferred))
+   (expected :initarg :expected :reader type-error-expected :initform nil)
+   (inferred :initarg :inferred :reader type-error-inferred :initform nil))
   (:report (lambda (condition stream)
-             (format stream "Type mismatch! Expected ~a but inferred ~a."
-                     (type-error-expected condition)
-                     (type-error-inferred condition)))))
+             (format stream (type-error-message condition))
+             (when (or (type-error-expected condition)
+                        (type-error-inferred condition))
+                (format stream "Type mismatch! Expected ~a but inferred ~a."
+                        (type-error-expected condition)
+                        (type-error-inferred condition))))))
 
 (define-condition crisp-unknown-type-error (crisp-compiler-error)
   ((type-name :initarg :type-name :reader unknown-type-name))
@@ -670,7 +673,8 @@
       (when (and (alexandria:starts-with-subseq "TO-" op-name)
                (eq (crisp-type-category source-crisp-type) :float)
                (member (crisp-type-category target-crisp-type) '(:signed-int :unsigned-int)))
-        (error 'crisp-type-error :message "Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead."))
+        (error 'crisp-type-error :message "Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead."
+                                 :source-location location))
       
       (let ((is-value-cast (or (alexandria:starts-with-subseq "TO-" op-name)
                                ;; An 'as-' cast between two integer types or two float types is a value cast (sext/zext/fpext), not a bitcast.
