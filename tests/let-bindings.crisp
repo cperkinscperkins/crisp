@@ -13,7 +13,7 @@
     (declare #'(int => int))
   (let ((quite-a-bit (two-bindings x)))
     (+ x quite-a-bit)))
-#|
+
 (def-function multi-step-progn (x)
     (declare #'(int => int))
   (let ((y 18))
@@ -27,7 +27,6 @@
         (z (multi-step-progn a)))
     (return x y z)))
 
-|#
 
 #|
 (def-function let-with-declare (x)

@@ -379,16 +379,21 @@
       (let* ((var-name (car binding))
              (val-node (cdr binding))
              (var-type (semantic-node-type val-node)))
+        ;; If the value is a multi-return function call, its type is a list.
+        ;; For a single `let` binding, we implicitly take the first value's type.
+        ;; The analyzer already ensures the variable is typed correctly in the env,
+        ;; but we need to handle the type for the alloca instruction here.
+        (let ((llvm-type-name (if (listp var-type) (first var-type) var-type)))
         ;; Generate the value for the initializer expression.
         (multiple-value-bind (val-ir val-loc)
             (generate-expression-ir builder module let-env di-builder di-scope location-map val-node)
           (declare (ignore val-loc))
           ;; Allocate stack space for the new variable.
-          (let ((alloca (llvm-build-alloca builder (llvm-type-for-name var-type) (string-downcase var-name))))
+          (let ((alloca (llvm-build-alloca builder (llvm-type-for-name llvm-type-name) (string-downcase var-name))))
             ;; Store the initial value.
             (llvm-build-store builder val-ir alloca)
             ;; Add the variable's pointer to our environment.
-            (setf (gethash var-name let-env) alloca)))))
+            (setf (gethash var-name let-env) alloca))))))
 
     ;; 2. Generate code for the body, using the extended environment.
     ;; The result of the let is the result of the last expression in the body.

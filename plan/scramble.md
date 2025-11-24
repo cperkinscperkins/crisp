@@ -195,6 +195,9 @@ QUESTIONS
       like error messages and warnings and the like?
 - [ ] why are the log:debug and the like not showing up in Alive REPL even if the log level is set?
 
+- [ ] commutative-op-type instead of binop-type requirement for reductions? Would require users
+      to define a type constraint for their own functions.  Annoying or useful?
+
 
 
 

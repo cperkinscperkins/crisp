@@ -614,7 +614,13 @@
               ;; Analyze the value expression in the current environment.
               for val-node = (analyze-expression (cadr binding) current-env (append location '(1) (list i) '(1)))
               ;; Create the environment for the *next* iteration by adding the new variable.
-              for next-env = (cons (list (car binding) (semantic-node-type val-node)) current-env)
+              for next-env = (let* ((raw-type (semantic-node-type val-node))
+                                    ;; If the value is a multi-return function call, its type is a list.
+                                    ;; For a single `let` binding, we implicitly take the first value's type.
+                                    ;; TODO: When implementing full multiple-value-bind like `(let ((a b (func))) ...)`,
+                                    ;; this logic will need to be expanded to handle destructuring.
+                                    (var-type (if (listp raw-type) (first raw-type) raw-type)))
+                               (cons (list (car binding) var-type) current-env))
               ;; Collect the binding pair for the semantic-let node.
               collect (cons (car binding) val-node) into bindings-list
               ;; After the loop, return the final environment and the list of bindings.
@@ -622,6 +628,8 @@
       (let* ((analyzed-body (analyze-body-expressions body-forms final-env (append location '(2))))
          (last-body-node (first (last analyzed-body)))
          (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
+         (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
+                    analyzed-bindings analyzed-body return-type)
         (make-semantic-let :type return-type
                            :bindings analyzed-bindings
                            :body analyzed-body
@@ -713,7 +721,11 @@
          (arg-nodes (loop for arg-form in arg-forms
                           for i from 1
                           collect (analyze-expression arg-form env (append location (list i)))))
-         (arg-types (mapcar #'semantic-node-type arg-nodes))
+         ;; When resolving overloads, if an argument is a multi-value function call,
+         ;; its type is a list. We should only consider the first type for resolution.
+         (arg-types (mapcar (lambda (node) (let ((type (semantic-node-type node)))
+                                             (if (listp type) (first type) type)))
+                            arg-nodes))
          ;; 2. Get the function signature(s) from the table.
          (signatures (gethash op *function-table*))
          ;; 3. Find the matching overload (for now, we assume one).
@@ -736,6 +748,9 @@
              :expected (function-signature-parameters signature)
              :inferred arg-types
              :source-location location))
+
+    (log:debug "Function call '~a' matched signature with params ~a and return types ~a."
+               op (function-signature-parameters signature) (function-signature-return-types signature))
 
     ;; 5. Build the semantic-call node.
     (make-semantic-call :name op
