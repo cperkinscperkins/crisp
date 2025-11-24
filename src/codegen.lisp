@@ -39,20 +39,20 @@
         (setf (gethash (crisp-type-name crisp-type) di-type-cache) di-type)
         di-type)))
 
-(defun get-llvm-return-type (return-type-names)
+(defun get-llvm-return-type (context return-type-names)
   "Determines the LLVM return type from a list of Crisp type names.
   Handles single values, void, and multiple values (by creating a struct)."
   (cond
     ;; Case 1: Multiple return values. Create a struct.
     ((> (length return-type-names) 1)
      (let* ((count (length return-type-names))
-            (type-array (cffi:foreign-alloc 'llvm-type-ref :count count)))
+            (type-array (cffi:foreign-alloc 'llvm-type-ref :count count))
+            (packed nil))
        (loop for i from 0 for type-name in return-type-names
              do (setf (cffi:mem-aref type-array 'llvm-type-ref i)
                       (llvm-type-for-name type-name)))
-       (let ((struct-type (llvm-struct-type type-array count nil)))
-         (cffi:foreign-free type-array)
-         struct-type)))
+       (prog1 (llvm-struct-type-in-context context type-array count packed)
+         (cffi:foreign-free type-array))))
     ;; Case 2: Single return value.
     ((= (length return-type-names) 1)
      (llvm-type-for-name (first return-type-names)))
@@ -71,7 +71,7 @@
          )
     (log:debug "Attempting to get LLVM type for: ~s" (semantic-function-return-type semantic-function))
     ;; --- 1. Define the Function Type ---
-    (let* ((return-type (get-llvm-return-type return-types))
+    (let* ((return-type (get-llvm-return-type (llvm-get-module-context module) return-types))
            (param-nodes (semantic-function-param-list semantic-function))
            (param-count (length param-nodes))
            ;; Create a C-style array of LLVM types for the parameters
@@ -137,10 +137,13 @@
                          (setf (gethash param-name var-env) alloca)))
 
               ;; --- 5. Generate the Body ---
-              (let ((body-node (first (semantic-function-body semantic-function))))
+              (let* ((body-node (first (semantic-function-body semantic-function)))
+                     (is-void-return (equal return-types '(nil))))
                 (multiple-value-bind (value di-location)
-                    (generate-expression-ir builder module var-env di-builder di-subprogram location-map (semantic-return-value-node body-node))
-                  (let ((ret-inst (llvm-build-ret builder value)))
+                    (generate-expression-ir builder module var-env di-builder di-subprogram location-map body-node)
+                  (let ((ret-inst (if is-void-return
+                                      (llvm-build-ret-void builder)
+                                      (llvm-build-ret builder value))))
                     (when di-location (llvm-instruction-set-debug-loc ret-inst di-location))))))))))))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
@@ -149,6 +152,42 @@
 (defun generate-expression-ir (builder module var-env di-builder di-scope location-map node)
   "Recursively generates IR for a single expression node."
   (generate-node-ir node builder module var-env di-builder di-scope location-map))
+
+(defmethod generate-node-ir ((node semantic-return) builder module var-env di-builder di-scope location-map)
+  "Generates IR for an implicit return. The value is just the value of the inner node."
+  (generate-node-ir (semantic-return-value-node node) builder module var-env di-builder di-scope location-map))
+
+(defmethod generate-node-ir ((node semantic-explicit-return) builder module var-env di-builder di-scope location-map)
+  "Generates IR for an explicit (return ...) form."
+  (let* ((return-types (semantic-explicit-return-type node))
+         (value-nodes (semantic-explicit-return-value-nodes node)))
+    (cond
+      ;; Single return value, just generate the value.
+      ((= (length return-types) 1)
+       (generate-node-ir (first value-nodes) builder module var-env di-builder di-scope location-map))
+      ;; Multiple return values, build a struct.
+      ((> (length return-types) 1)
+       (log:debug "MVR Codegen: Building struct for types: ~s" return-types)
+       (let* ((context (llvm-get-module-context module))
+              (struct-type (get-llvm-return-type context return-types))
+              ;; Start with an undefined struct value. We will build it up.
+              (agg-val (llvm-get-undef struct-type)))
+         (log:debug "MVR Codegen: Struct type: ~s, initial undef value: ~s" struct-type agg-val)
+
+         ;; Iteratively insert each value into the aggregate.
+         ;; Each `insertvalue` returns a *new* aggregate value.
+         (loop for i from 0
+               for val-node in value-nodes
+               do (multiple-value-bind (val-ir val-loc)
+                      (generate-node-ir val-node builder module var-env di-builder di-scope location-map)
+                    (declare (ignore val-loc))
+                    (log:debug "MVR Codegen: Inserting value ~s into index ~a of aggregate ~s" val-ir i agg-val)
+                    (setf agg-val (llvm-build-insert-value builder agg-val val-ir i (format nil "mvr_val_~a" i)))))
+         (values agg-val nil)))
+      ;; No return values (void return)
+      (t (values nil nil)))))
+
+
 
 ;; -- literal value --
 (defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
@@ -220,8 +259,10 @@
     (multiple-value-bind (rhs rhs-loc) (generate-node-ir (semantic-add-right-arg node) builder module var-env di-builder di-scope location-map)
       (declare (ignore rhs-loc)) 
       (let* ((result-type-name (semantic-add-type node))
-             (lhs-type-name (semantic-node-type (semantic-add-left-arg node)))
-             (rhs-type-name (semantic-node-type (semantic-add-right-arg node)))
+             (lhs-type-raw (semantic-node-type (semantic-add-left-arg node)))
+             (rhs-type-raw (semantic-node-type (semantic-add-right-arg node)))
+             (lhs-type-name (if (listp lhs-type-raw) (first lhs-type-raw) lhs-type-raw))
+             (rhs-type-name (if (listp rhs-type-raw) (first rhs-type-raw) rhs-type-raw))
              (casted-lhs (build-cast-if-needed builder lhs lhs-type-name result-type-name))
              (casted-rhs (build-cast-if-needed builder rhs rhs-type-name result-type-name))
              (crisp-type (gethash result-type-name *crisp-types*))
@@ -236,6 +277,10 @@
                                                                     0 ; column
                                                                     di-scope
                                                                     (cffi:null-pointer)))))) ; InlinedAt
+                                                                    
+        (log:debug "Codegen for ADD: lhs-type: ~s, rhs-type: ~s, result-type: ~s"
+                   lhs-type-name rhs-type-name result-type-name)
+
         (when di-location (llvm-instruction-set-debug-loc add-inst di-location))
         (values add-inst di-location)))))
 

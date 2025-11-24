@@ -24,6 +24,7 @@
 (def-function wow-explicit-return () 
   (declare (return-type int)) 
  (return 7))
+ 
 
 (def-function wow-return-mv () 
   (declare (return-type int int)) 
@@ -36,4 +37,11 @@
 (def-function callee-returns-mv-but-us-only-one () 
   (declare (return-type int)) 
  (wow-return-mv))
- 
+
+#|
+;; this should error
+(def-function return-moar-types ()
+  (declare #'(=> int int int))
+  (wow-return-mv))
+
+|#

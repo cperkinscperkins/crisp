@@ -457,10 +457,14 @@
        :param-list (loop for (param-name param-type) in env
                          collect (make-semantic-param :name param-name :type param-type :source-location location))
        :return-type return-type
-       :body (list (make-semantic-return
-                    :return-type (first return-type) ; TODO: This is for implicit return, needs MVR review
-                    :value-node return-node
-                    :source-location (if return-node (semantic-node-source-location return-node) location))) ; TODO: Fix for MVR
+       :body (if (typep return-node 'semantic-explicit-return)
+                 (list return-node)
+                 (list (make-semantic-return
+                        :return-type (if (listp (semantic-node-type return-node))
+                                         (semantic-node-type return-node)
+                                         (list (semantic-node-type return-node)))
+                        :value-node return-node
+                        :source-location (if return-node (semantic-node-source-location return-node) location))))
        :source-location location))))
 
 
