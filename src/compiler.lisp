@@ -90,7 +90,8 @@
 
   ;; Initialize the compiler's internal state.
   (initialize-crisp-types)
-  (initialize-expression-analyzers))
+  (initialize-expression-analyzers)
+  (initialize-advisements))
 
 
 ;; EXPORTS TO CRISP LANGUAGE

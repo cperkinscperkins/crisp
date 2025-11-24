@@ -31,3 +31,29 @@
            (log:debug "let-d: ~a => ~s" ',var ,var)
            (let-d ,(rest bindings)
              ,@body)))))
+
+(defun advise-function (fn-symbol)
+  "Replaces a function's definition with a logging wrapper.
+  The wrapper logs arguments on entry and return values on exit.
+  It correctly handles multiple return values."
+  (let ((original-fn (symbol-function fn-symbol)))
+    ;; Avoid advising a function more than once.
+    (when (get fn-symbol :advised)
+      (log:warn "Function ~s is already advised. Skipping." fn-symbol)
+      (return-from advise-function))
+
+    (setf (symbol-function fn-symbol)
+          (lambda (&rest args)
+            (log:debug "-> Entering ~s with args: ~s" fn-symbol args)
+            (let ((return-vals (multiple-value-list (apply original-fn args))))
+              (log:debug "<- Exiting ~s with return: ~s" fn-symbol return-vals)
+              (values-list return-vals))))
+    (setf (get fn-symbol :advised) t)))
+
+(defun initialize-advisements ()
+  "Advises a hard-coded list of functions for debugging purposes."
+  (let ((functions-to-advise
+          ;(list #'analyze-signatures-pass ))) ; <-- Add function symbols here, e.g., 'analyze-expression
+          '()))
+    (dolist (fn-sym functions-to-advise)
+      (advise-function fn-sym))))

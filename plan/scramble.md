@@ -191,10 +191,10 @@ M-V-R
 - [ ]test that.
 
 Debugging
-- [ ] advise any function? Maybe advise-these at startup
-- [ ] let-d  that logs each binding?
+- [x] advise any function? Maybe advise-these at startup
+- [x] let-d  that logs each binding?
 - [ ] refactor generate-llvm-ir  
-- [ ] .bat to run all .crisp tests from compiler. local E2E easier
+- [x] .bat to run all .crisp tests from compiler. local E2E easier
 - [ ] dump-env to print out all the bindings in an environemnt
 - [ ] plus similar for *function-table* and others
 
