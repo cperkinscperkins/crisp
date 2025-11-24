@@ -230,16 +230,18 @@
   "Tests that a function returning multiple values generates correct IR."
   (let ((ir (compile-crisp-form-to-ir-string
              '(def-function test-mvr ()
-               (declare (return-type int int))
-               (return 7 314)))))
+               (declare (return-type int float long))
+               (return 7 3.14 (as-long 42))))))
     (is-valid-ir ir "Generated IR for MVR should be valid.")
 
-    (true (search "define { i32, i32 } @test_mvr()" ir)
-          "Function should be defined to return a struct { i32, float }.")))
-#| temporarily disabled 
-    (true (search "insertvalue { i32, i32 } undef, i32 7, 0" ir)
-          "Should insert the first return value (int) into the struct at index 0.")
-
-    (true (search "insertvalue { i32, i32 } %mvr_val_0, i32" ir)
-          "Should insert the second return value (float) into the struct at index 1.")))
-|#
+    (true (search "define { i32, float, i64 } @test_mvr()" ir)
+          "Function should be defined to return a struct { i32, float, i64 }.")
+    
+    ;; LLVM can optimize constant returns into a single `ret` instruction with an aggregate constant.
+    ;; We check for the components of the return instruction to make the test less brittle.
+    (true (search "ret { i32, float, i64 } { i32 7" ir)
+          "The return instruction should start correctly and contain the integer constant.")
+    (true (search "float 0x40091EB860000000" ir) ; Hex representation of 3.14
+          "The return instruction should contain the float constant.")
+    (true (search "i64 42 }" ir)
+          "The return instruction should contain the long constant and end correctly.")))

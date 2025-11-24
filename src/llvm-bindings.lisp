@@ -114,6 +114,10 @@
   (value :uint64)
   (sign-extend :boolean))
 
+(defcfun ("LLVMConstReal" llvm-const-real) :pointer
+  (real-type :pointer)
+  (value :double))
+
 (defcfun ("LLVMBuildRet" llvm-build-ret) :pointer
   (builder :pointer)
   (value :pointer))

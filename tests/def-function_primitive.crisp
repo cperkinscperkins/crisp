@@ -3,6 +3,10 @@
   (declare (return-type int)) 
 7)
 
+(def-function second () 
+  (declare (return-type float)) 
+8.1)
+
 (def-function adds (a b) 
   (declare (type a b int) (return-type int)) 
   (+ a b))
