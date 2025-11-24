@@ -42,6 +42,7 @@
 (defun get-llvm-return-type (context return-type-names)
   "Determines the LLVM return type from a list of Crisp type names.
   Handles single values, void, and multiple values (by creating a struct)."
+  (log:debug "get-llvm-return-type: ~s" return-type-names)
   (cond
     ;; Case 1: Multiple return values. Create a struct.
     ((> (length return-type-names) 1)
@@ -72,6 +73,7 @@
     (log:debug "Attempting to get LLVM type for: ~s" (semantic-function-return-type semantic-function))
     ;; --- 1. Define the Function Type ---
     (let* ((return-type (get-llvm-return-type (llvm-get-module-context module) return-types))
+           ;;return-type can be three different things: a single LLVM type, a struct type (for multi-return), or void
            (param-nodes (semantic-function-param-list semantic-function))
            (param-count (length param-nodes))
            ;; Create a C-style array of LLVM types for the parameters
@@ -80,11 +82,12 @@
             for param-node in param-nodes
             do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i)
                      (llvm-type-for-name (semantic-param-type param-node))))
-
+      (log:debug "finished llvm-type-for-name. Calling llvm-function-type...")
       (let ((fn-type (llvm-function-type return-type param-types-array param-count nil)))
-
+        (log:debug "finished llvm-function-type, calling llvm-add-function...")
         ;; --- 2. Create the Function ---
         (let ((func (llvm-add-function module fn-name fn-type)))
+          (log:debug "finished llvm-add-function for ~a, creating debug info..." fn-name)
           (let ((di-subprogram
                   (when di-builder
                     (let* ((di-type-cache (make-hash-table))
@@ -126,6 +129,7 @@
             ;; --- 3. Create the Code Block ---
             (let ((entry-block (llvm-append-basic-block func "entry"))
                   (var-env (make-hash-table)))
+              (log:debug "Positioning builder at entry block...")
               (llvm-position-builder-at-end builder entry-block)
 
               ;; --- 4. Allocate and Store Parameters ---
@@ -231,10 +235,13 @@
 (defun build-cast-if-needed (builder from-val from-type-name to-type-name)
   "Builds an LLVM cast instruction if the types differ."
   (if (eq from-type-name to-type-name)
-      from-val
+      (progn
+        (log:debug "build-cast-if-needed: No cast needed for ~s" from-type-name)
+        from-val)
       (let* ((from-type (gethash from-type-name *crisp-types*))
              (to-type (gethash to-type-name *crisp-types*))
              (to-llvm-type (funcall (crisp-type-llvm-type-fn to-type))))
+        (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
         (cond
           ;; Integer to Float
           ((and (eq (crisp-type-category from-type) :signed-int) (eq (crisp-type-category to-type) :float))
@@ -267,10 +274,8 @@
     (multiple-value-bind (rhs rhs-loc) (generate-node-ir (semantic-add-right-arg node) builder module var-env di-builder di-scope location-map)
       (declare (ignore rhs-loc)) 
       (let* ((result-type-name (semantic-add-type node))
-             (lhs-type-raw (semantic-node-type (semantic-add-left-arg node)))
-             (rhs-type-raw (semantic-node-type (semantic-add-right-arg node)))
-             (lhs-type-name (if (listp lhs-type-raw) (first lhs-type-raw) lhs-type-raw))
-             (rhs-type-name (if (listp rhs-type-raw) (first rhs-type-raw) rhs-type-raw))
+             (lhs-type-name (get-single-value-type (semantic-add-left-arg node)))
+             (rhs-type-name (get-single-value-type (semantic-add-right-arg node)))
              (casted-lhs (build-cast-if-needed builder lhs lhs-type-name result-type-name))
              (casted-rhs (build-cast-if-needed builder rhs rhs-type-name result-type-name))
              (crisp-type (gethash result-type-name *crisp-types*))
@@ -296,7 +301,7 @@
   "Generates IR for a value-preserving cast."
   (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-value-cast-arg node) builder module var-env di-builder di-scope location-map)
     (declare (ignore arg-loc))
-    (let* ((from-type-name (semantic-node-type (semantic-value-cast-arg node)))
+    (let* ((from-type-name (get-single-value-type (semantic-value-cast-arg node)))
            (to-type-name (semantic-value-cast-type node))
            (cast-val (build-cast-if-needed builder arg-val from-type-name to-type-name)))
       ;; NOTE: This will need to be expanded to handle more `to-` conversions.
@@ -386,12 +391,11 @@
     (dolist (binding (semantic-let-bindings node))
       (let* ((var-name (car binding))
              (val-node (cdr binding))
-             (var-type (semantic-node-type val-node)))
-        ;; If the value is a multi-return function call, its type is a list.
-        ;; For a single `let` binding, we implicitly take the first value's type.
-        ;; The analyzer already ensures the variable is typed correctly in the env,
-        ;; but we need to handle the type for the alloca instruction here.
-        (let ((llvm-type-name (if (listp var-type) (first var-type) var-type)))
+             ;; For a single `let` binding, we implicitly take the first value's type
+             ;; if the bound expression is a multi-value function call. The analyzer
+             ;; ensures the variable is typed correctly in the env, but we need to
+             ;; handle the type for the alloca instruction here.
+             (llvm-type-name (get-single-value-type val-node)))
         ;; Generate the value for the initializer expression.
         (multiple-value-bind (val-ir val-loc)
             (generate-expression-ir builder module let-env di-builder di-scope location-map val-node)
@@ -401,7 +405,7 @@
             ;; Store the initial value.
             (llvm-build-store builder val-ir alloca)
             ;; Add the variable's pointer to our environment.
-            (setf (gethash var-name let-env) alloca))))))
+            (setf (gethash var-name let-env) alloca)))))
 
     ;; 2. Generate code for the body, using the extended environment.
     ;; The result of the let is the result of the last expression in the body.
