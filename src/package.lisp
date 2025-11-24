@@ -120,8 +120,13 @@
    #:llvm-di-builder-create-subroutine-type
    #:llvm-builder-set-debug-location))
 
+(defpackage :crisp.utils
+  (:use :cl)
+  (:export #:let-d))
+
 (defpackage :crisp.compiler
-  (:use :cl :cffi :crisp.llvm-bindings)
+  (:use :cl :cffi :crisp.llvm-bindings
+        :crisp.utils)
 
   ;; Shadow all symbols that conflict with the COMMON-LISP package.
   ;; This ensures that when we use 'char', we mean 'crisp.compiler::char',
