@@ -17,3 +17,8 @@
     I think we need a better solution.  A helper function: get-single-return-type  or get-entire-return-type  
     And use THAT everywhere. rather than all these ad-hoc "first" and "car" calls.
     crisp-type-llvm-type-fn  
+
+[x] 007 illegal_float_to_int_cast.crisp    UNBOUND SLOT error. 
+   analyze-cast-expression /   (error 'crisp-type-error :message "Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead."
+                                 :source-location location)
+   
