@@ -47,6 +47,12 @@
      (true success-p (format nil "~a~%~:[~;~%LLVM verifier message:~%~a~]"
                              ,description (not success-p) message))))
 
+(defmacro is-invalid-ir (ir-form &optional (description "'is-invalid-ir' check"))
+  "A Parachute test that uses llc to validate generated IR."
+  `(multiple-value-bind (success-p message) (validate-ir-with-llc ,ir-form)
+     (true success-p (format nil "~a~%~:[~;~%LLVM verifier message:~%~a~]"
+                             ,description (not success-p) message))))
+
 (define-test crisp-compiler)
 
 (defun compile-crisp-file-to-string (filepath &key (debug-p nil))
@@ -207,6 +213,41 @@
       (is = 1 (length (semantic-let-body let-node)) "The let body should contain one expression.")
       (true (typep (first (semantic-let-body let-node)) 'semantic-add) "The body expression should be a semantic-add node."))))
 
+(define-test (analyzer let-multi-value-bind)
+  "Tests the semantic analysis of a multi-value 'let' binding."
+  ;; We need a clean function table for this test to avoid conflicts.
+  (let ((crisp.compiler::*function-table* (make-hash-table)))
+    ;; Manually register a function signature that returns multiple values.
+    (crisp.compiler::register-function-signature
+     '(def-function test-mvr () (declare #'( => int float))) nil)
+
+    (let* ((crisp-form '(def-function has-mvb ()
+                         (declare #'( => int))
+                         (let ((a b (test-mvr)))
+                           a)))
+           (expanded-form (macroexpand-1 crisp-form))
+           (ast (eval expanded-form)))
+
+      (let* ((return-node (first (semantic-function-body ast)))
+             (let-node (semantic-return-value-node return-node)))
+        (true (typep let-node 'semantic-let))
+
+        ;; Check the bindings
+        (is = 2 (length (semantic-let-bindings let-node)))
+        (let* ((binding-a (first (semantic-let-bindings let-node)))
+               (binding-b (second (semantic-let-bindings let-node)))
+               (val-node-a (cdr binding-a))
+               (val-node-b (cdr binding-b)))
+          (is eq 'a (car binding-a))
+          (true (typep val-node-a 'semantic-extract-value))
+          (is = 0 (crisp.compiler::semantic-extract-value-index val-node-a))
+          (is eq 'int (crisp.compiler::semantic-extract-value-type val-node-a))
+
+          (is eq 'b (car binding-b))
+          (true (typep val-node-b 'semantic-extract-value))
+          (is = 1 (crisp.compiler::semantic-extract-value-index val-node-b))
+          (is eq 'float (crisp.compiler::semantic-extract-value-type val-node-b)))))))
+
 (define-test (crisp-compiler codegen)
   "Tests for LLVM IR code generation.")
 
@@ -225,6 +266,51 @@
     (true (search "load i32, ptr %v" ir) "Should load the value from 'v' before using it in the addition.")
     (true (search "load i32, ptr %a" ir) "Should load the value from 'a' before using it in the addition.")
     (true (search "add i32" ir) "Should perform an addition.")))
+
+(define-test (codegen let-multi-value-bind)
+  "Tests that the LLVM IR for a multi-value 'let' bind is correct."
+  ;; To test a call between two functions, we must compile them into the same module.
+  (let* ((forms '((def-function test-mvr (x)
+                   (declare #'(int => int int))
+                   (return x (+ x 1)))
+                 (def-function test-mvr-user (a)
+                   (declare #'(int => int))
+                   (let ((v w (test-mvr a)))
+                     (+ v w)))))
+         (ir (with-output-to-string (s)
+               (let ((*standard-output* s))
+                 (let* ((module (llvm-module-create "test_mvb_module"))
+                        (builder (llvm-create-builder)))
+                   (unwind-protect
+                        (progn
+                          (compile-module forms module builder nil nil nil)
+                          (let ((ir-ptr (llvm-print-module-to-string module)))
+                            (unwind-protect (format s "~a" (cffi:foreign-string-to-lisp ir-ptr))
+                              (llvm-dispose-message ir-ptr))))
+                     (llvm-dispose-builder builder)
+                     (llvm-dispose-module module)))))))
+    (is-valid-ir ir)
+    ;; Check for the single call to the MVR function
+    (is = 1 (count-substring "call { i32, i32 } @test_mvr_int" ir)
+        "Should contain exactly one call to the multi-value return function.")
+
+    ;; Check for the extractvalue instructions
+    (true (search "%extract_0 = extractvalue { i32, i32 } %call_tmp, 0" ir))
+    (true (search "%extract_1 = extractvalue { i32, i32 } %call_tmp, 1" ir))
+
+    ;; Check that the extracted values are stored in variables 'v' and 'w'
+    (true (search "store i32 %extract_0, ptr %v" ir))
+    (true (search "store i32 %extract_1, ptr %w" ir))))
+
+(defun count-substring (substring string)
+  "Counts the number of non-overlapping occurrences of a substring."
+  (let ((count 0)
+        (len (length substring)))
+    (loop for start = (search substring string)
+          while start
+          do (incf count)
+             (setf string (subseq string (+ start len))))
+    count))
 
 (define-test (codegen multiple-value-return)
   "Tests that a function returning multiple values generates correct IR."
