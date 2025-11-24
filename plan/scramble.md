@@ -167,6 +167,7 @@ LOOSE PRIORITIES
 - [ ] precision selections (declare / declaim / flags )
 - [ ] .crisp files.  basic flag for crisp-compiler.exe
 - [ ] SIDE CHANNEL MECHANISM.  probably sooner, rather than later. 
+- [ ] Literals: use suffix ?   0.0f  INSTEAD of (type a float) in a let clause?
 
 
 SHORT TERM PLAN
@@ -183,9 +184,9 @@ SHORT TERM PLAN
 
 
 M-V-R
-- [ ]add a variadic (return a b c ...) so multiple values can actually be returned.
+- [x]add a variadic (return a b c ...) so multiple values can actually be returned.
 - [x]decide how we want to support that at the LLVM-IR level
-- [ ]implement the above and add tests.
+- [x]implement the above and add tests.
 - [ ]update "let" support so it supports the bindings. (let ((quot rem (/ a b))) ...)
 - [ ]test that.
 

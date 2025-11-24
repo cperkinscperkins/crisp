@@ -83,6 +83,7 @@
    #:llvm-build-call2
    ;; Instructions
    #:llvm-const-int
+   #:llvm-const-real
    #:llvm-build-ret
    ;; Alloca
    #:llvm-get-param

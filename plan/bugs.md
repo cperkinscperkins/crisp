@@ -7,5 +7,7 @@
        See bind-f-call in tests/let-bindings.crisp
        Also in the def-function-overloads add_three LLVM-IR gen
 
-[ ] 004 reading of 3.14 as a float literal is not working.
+[x] 004 reading of 3.14 as a float literal is not working.
 [ ] 005 reading of 314 as a long literal is not working ( defaults to int)
+        ARCHITECTURAL DECISION.  Rather then infer from return-type, 
+        we will probably use suffices on literals.  Need to document that and plan for it.

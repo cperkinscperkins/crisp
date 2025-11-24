@@ -672,15 +672,23 @@
       (when (and (alexandria:starts-with-subseq "TO-" op-name)
                (eq (crisp-type-category source-crisp-type) :float)
                (member (crisp-type-category target-crisp-type) '(:signed-int :unsigned-int)))
-        (error 'crisp-type-error :message "Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead.")))
+        (error 'crisp-type-error :message "Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead."))
+      
+      (let ((is-value-cast (or (alexandria:starts-with-subseq "TO-" op-name)
+                               ;; An 'as-' cast between two integer types or two float types is a value cast (sext/zext/fpext), not a bitcast.
+                               (and (alexandria:starts-with-subseq "AS-" op-name)
+                                    (eq (crisp-type-category source-crisp-type)
+                                        (crisp-type-category target-crisp-type))))))
 
-    (cond
-      ((alexandria:starts-with-subseq "TO-" op-name)
-       (make-semantic-value-cast :type target-type-name :arg arg-node :source-location location))
-      ((eq op 'truncate)
-       (make-semantic-fp-truncate-cast :type target-type-name :arg arg-node :source-location location))
-      (t ; Default for "AS-" and other currently unhandled float-to-int ops
-       (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))
+        (cond
+          ;; Handle `to-` casts and safe `as-` casts (like int->long)
+          (is-value-cast
+          (make-semantic-value-cast :type target-type-name :arg arg-node :source-location location))
+          ((eq op 'truncate)
+          (make-semantic-fp-truncate-cast :type target-type-name :arg arg-node :source-location location))
+          ;; Handle unsafe `as-` bit reinterpretations
+          (t ; Default for "AS-" and other currently unhandled float-to-int ops
+          (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))))
 
 
 
@@ -783,6 +791,11 @@
     ;; Case 1: It's a literal, like 7
     ((integerp expr)
      (make-semantic-literal :value-type 'int :value expr :source-location location))
+
+    ;; Case 1.1: It's a float literal, like 3.14
+    ((floatp expr)
+     ;; For now, all floating point literals default to the 'float' type.
+     (make-semantic-literal :value-type 'float :value expr :source-location location))
 
     ;; Case 1.5: It's a keyword symbol, like :foo
     ((keywordp expr)

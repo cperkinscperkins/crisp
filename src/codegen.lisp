@@ -193,9 +193,17 @@
 (defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
   "Generates IR for a literal value."
   (declare (ignore var-env))
-  (let ((result (llvm-const-int (llvm-type-for-name (semantic-literal-value-type node))
-                                (semantic-literal-value node)
-                                nil))
+  (let* ((type-name (semantic-literal-value-type node))
+         (value (semantic-literal-value node))
+         (llvm-type (llvm-type-for-name type-name))
+         (crisp-type (gethash type-name *crisp-types*))
+         (result (cond
+                   ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
+                    (llvm-const-int llvm-type value nil))
+                   ((eq (crisp-type-category crisp-type) :float)
+                    ;; CFFI requires the Lisp float to be a double for the call.
+                    (llvm-const-real llvm-type (coerce value 'double-float)))
+                   (t (error "Codegen for literal of unknown type category: ~a" type-name))))
         (di-location (when (and di-builder di-scope location-map)
                        (let* ((loc (semantic-node-source-location node))
                               (line (gethash loc location-map 0)))
