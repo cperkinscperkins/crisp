@@ -122,7 +122,9 @@
 
 (defpackage :crisp.utils
   (:use :cl)
-  (:export #:let-d))
+  (:export #:let-d
+           #:advise-function
+           #:initialize-advisements))
 
 (defpackage :crisp.compiler
   (:use :cl :cffi :crisp.llvm-bindings
