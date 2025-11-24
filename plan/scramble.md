@@ -190,6 +190,11 @@ M-V-R
 - [ ]update "let" support so it supports the bindings. (let ((quot rem (/ a b))) ...)
 - [ ]test that.
 
+Debugging
+- [ ] advise any function? Maybe advise-these at startup
+- [ ] let-d  that logs each binding?
+- [ ] refactor generate-llvm-ir  
+
 
 QUESTIONS
 - [ ] should log4CL be used ONLY for logging? Or should it be used for general compiler output 

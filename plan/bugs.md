@@ -11,3 +11,9 @@
 [ ] 005 reading of 314 as a long literal is not working ( defaults to int)
         ARCHITECTURAL DECISION.  Rather then infer from return-type, 
         we will probably use suffices on literals.  Need to document that and plan for it.
+
+[x] 006 continued fallout from llvm return type being lists.
+    (BUILD-CAST-IF-NEEDED #.(SB-SYS:INT-SAP #X00A501C0) #.(SB-SYS:INT-SAP #X00A00260) (INT) LONG)   <-- (int) is FROM  , whereas long is TO
+    I think we need a better solution.  A helper function: get-single-return-type  or get-entire-return-type  
+    And use THAT everywhere. rather than all these ad-hoc "first" and "car" calls.
+    crisp-type-llvm-type-fn  

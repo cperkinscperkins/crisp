@@ -572,12 +572,10 @@
   "Analyzes a `(+ ...)` expression."
   (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
          (right-node (analyze-expression (third expr) env (append location '(2))))
-         ;; When a node's type is a list (like from a function call),
-         ;; operators like '+' only care about the first value.
-         (left-type-raw (semantic-node-type left-node))
-         (right-type-raw (semantic-node-type right-node))
-         (left-type (if (listp left-type-raw) (first left-type-raw) left-type-raw))
-         (right-type (if (listp right-type-raw) (first right-type-raw) right-type-raw))
+         ;; Operators like '+' operate on single values. If the arguments are
+         ;; function calls that return multiple values, we take the first one.
+         (left-type (get-single-value-type left-node))
+         (right-type (get-single-value-type right-node))
          (promoted-type (get-promoted-type left-type right-type)))
 
     (if promoted-type
@@ -614,12 +612,10 @@
               ;; Analyze the value expression in the current environment.
               for val-node = (analyze-expression (cadr binding) current-env (append location '(1) (list i) '(1)))
               ;; Create the environment for the *next* iteration by adding the new variable.
-              for next-env = (let* ((raw-type (semantic-node-type val-node))
-                                    ;; If the value is a multi-return function call, its type is a list.
+              for next-env = (let* (;; If the value is a multi-return function call, its type is a list.
                                     ;; For a single `let` binding, we implicitly take the first value's type.
-                                    ;; TODO: When implementing full multiple-value-bind like `(let ((a b (func))) ...)`,
-                                    ;; this logic will need to be expanded to handle destructuring.
-                                    (var-type (if (listp raw-type) (first raw-type) raw-type)))
+                                    ;; TODO: This needs expansion for `(let ((a b (func))) ...)` style destructuring.
+                                    (var-type (get-single-value-type val-node)))
                                (cons (list (car binding) var-type) current-env))
               ;; Collect the binding pair for the semantic-let node.
               collect (cons (car binding) val-node) into bindings-list
@@ -668,7 +664,9 @@
     (unless target-crisp-type
       (error 'crisp-unknown-type-error :type-name target-type-name))
 
-    (let ((source-crisp-type (gethash (semantic-node-type arg-node) *crisp-types*)))
+    (let* ((source-type-name (get-single-value-type arg-node))
+           (source-crisp-type (gethash source-type-name *crisp-types*)))
+
       (when (and (alexandria:starts-with-subseq "TO-" op-name)
                (eq (crisp-type-category source-crisp-type) :float)
                (member (crisp-type-category target-crisp-type) '(:signed-int :unsigned-int)))
@@ -730,10 +728,8 @@
                           for i from 1
                           collect (analyze-expression arg-form env (append location (list i)))))
          ;; When resolving overloads, if an argument is a multi-value function call,
-         ;; its type is a list. We should only consider the first type for resolution.
-         (arg-types (mapcar (lambda (node) (let ((type (semantic-node-type node)))
-                                             (if (listp type) (first type) type)))
-                            arg-nodes))
+         ;; its type is a list. We only consider the first type for resolution.
+         (arg-types (mapcar #'get-single-value-type arg-nodes))
          ;; 2. Get the function signature(s) from the table.
          (signatures (gethash op *function-table*))
          ;; 3. Find the matching overload (for now, we assume one).
@@ -858,6 +854,14 @@
     (semantic-explicit-return (semantic-explicit-return-source-location node))
     (semantic-call (semantic-call-source-location node))
     ))
+
+;; --- Helper to get the type from a node expected to be a single value ---
+(defun get-single-value-type (node)
+  "Returns the type of a semantic node, assuming a single-value context.
+  If the node's type is a list (e.g., from a multi-value function call),
+  this returns the first type in the list. Otherwise, it returns the type as-is."
+  (let ((type (semantic-node-type node)))
+    (if (listp type) (first type) type)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; DWARF Location Mapping
