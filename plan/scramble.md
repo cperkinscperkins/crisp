@@ -275,3 +275,6 @@ LANGUAGE CHANGES
 
 - [ ] proper bug tracker?
 - - [ ] GitHub Issues?  
+
+- [ ] Investigate Google Antigravity: https://antigravity.google   <-- serious IDE
+- [ ] Investigate Google AI Studio: https://aistudio.google.com    <-- in-browser prototyping and "prompt engineering"
