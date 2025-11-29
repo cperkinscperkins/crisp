@@ -1874,13 +1874,25 @@ The number of dimensions is (obviously) implicit for the `cell`, `vector` and `m
 ```
 
 Creating Storage Handle Views
-------------------------------------
+------------------------------
 
-Kernels cannot dynamically allocate memory. But there are limited ways to allocate
-Storage Handles on the stack. 
+Kernels cannot dynamically allocate memory. Crisp has four different ways
+of working with and around this limitation:
 
-Additionally, scratch and implicit Storage Handles can 
-be defined using "Side Channels", see below.
+- vector literals.  Small stack-based vectors that use registers ( `:private` addres space)
+- reinterpret view. Re-use existing storage.
+- `def-const-vec`. Read-only vector in the `:constant` address space. 
+- Side Channels: "scratch" and "implicit" storage handle views.
+
+These four approaches are quite different from one another, and each has advantages
+and disadvantages. And some work well together (like declaring a vector literal or constant vec, and then reinterpreting it as a `cell` or `matrix`).
+
+We'll discuss [vector literals](#vector-literals-val0-val1-val2--valn) and 
+[reinterpret view](#reinterpret-storage---make-xxxx) in the next two sections, and
+introduce [def-const-vec](#def-const-vec) and [Side Channels](#side-channel-storage-handles) later.
+
+
+
 
 ### vector literals `#(val0 val1 val2 ... valN)`
 
@@ -2323,79 +2335,99 @@ a kernel argument, then the example hoisting code will specify that the size sho
 The size of any invocation MUST be specified. It does not have to be a compile-time constant, merely specified. 
 Note that there are several keyword symbols that can be used for the most common cases. 
 
-The invocations also support `:name` and `:comment` keys. If using `def-kernel-exact` then `:name` is REQUIRED, 
-as it will need to match a marshalling invocation.  The `:comment` key will output a comment into the hoisting code (Neat!).
-
-Lastly, note that `<TypeExpression>` can include `soa-vector` vector type specifiers.
-
+The invocations also support a  `:name` and `:msg` keys. If using `def-kernel-exact` then `:name` is REQUIRED, 
+as it will need to match a marshalling invocation.  The `:msg` key will output a comment into the hoisting code (Neat!),
+which allows you to state its intended size and purpose.
 
 
 
-### make-implicit-vector
-
-`(make-implicit-vector <VectorExpression> &optional length &key name comment)`
-
-Each invocation of `make-implicit-vector` means an additional entry will be hoisted. 
-
-In the example below, this function, if called by a kernel, would cause two additional float array pointer to 
-be hoisted, plus a pointer to a unsigned long array.  The first one would be the same length as the `A` vector argument to this function. 
-The second one's length would be the multiple of the other arguments.  Both the first and the second result
-would have their access set as `:writeable` despite the original `A` vectors `:read_only` access.
-The third result would be hoisted as a `ulong` array ptr. 
-
-
+### make-scratch-XXXX
 ```
-(def-type float-vec (vector-type float :std140 :global :read_only))
-(def-type ulong-vec (vector-type ulong :std140 :global :writeable :std140))
+;; cells
+(make-scratch-cell element-type  &key address-space  access name msg)
+(make-scratch-cell cell-type  &key address-space  access name msg)
 
-;; -- calc-final-result --
-(def-grid-function calc-final-result (x y &out A)
-  (declare #( ulong unlong &out float-vec => nil))
-  (let ((gamma-1 (make-implicit-vector A :comment "Gamma Squad should provide these"))
-        (gamma-2 (make-implicit-vector A (* x y)))
-        (haversine-3 (make-implicit-vector ulong-vec (* x x) :name "haversine")))
-      ...))
+;; vectors
+(make-scratch-vector element-type sizeExpression &key address-space align access name msg)
+(make-scratch-vector vector-type sizeExpression &key address-space align access name msg)
+
+;; soa-vectors
+(make-scratch-vector struct-type sizeExpression &key address-space align access name msg)
+(make-scratch-vector soa-vector-type sizeExpression &key address-space align access name msg)
+
+;; matrices
+(make-scratch-matrix element-type sizeExpression &key strides address-space align access name msg)
+(make-scratch-matrix matrix-type sizeExpression &key address-space align access name msg)
+
+;; tensors
+(make-scratch-tensor element-type sizeExpression  &key strides address-space align access name msg)
+(make-scratch-tensor tensor-type sizeExpression &key address-space align access name msg)
 ```
 
-### make-scratch-vector
-```
-(make-scratch-vector <VectorExpression> &optional length &key name comment)
-(make-scratch-vector T length &optional address-space &key name comment)
-```
+The `make-scratch-XXXX` routines create "scratch" side-channel memory Storage Handles. 
 
-There are two variants of `make-scratch-vector`.  One uses an existing `<VectorExpression>` which is 
-flexible for defining pretty much any type of vector.  
+Scratch memory defaults to `:local` address space,  `:read_write` access and `:std140` alignment, 
+but the defaults can be overridden by either using the `&key` arguments to the `make-scratch-XXXX` function
+or by using the second creation function of the pair that uses a Storage Handle type argument.
 
-While the second is more practical. It just needs an element type `T` and a `length` and it will
-assume a `:local` address-space vector with `:read-write` access and `:std140` alignment.  An optional 
-`address-space` argument can be provided if you need a `:global` scratch vec.
+Note that `:access` is NOT set by a Storage Handle type argument. It is always set to `:read_write` unless 
+directly overridden with the `:access` key.
 
-Remember that `:local` memory is limited, and demanding too much can limit the number of workgroups that can run simultaneously.
 
-Unlike `make-implicit-vector`, each invocation of `make-scratch-vector` doesn't necessarily result in a new kernel arg that needs to be
-enqueueed. Instead, the size expressions are gathered up and communicated back to the hoisting code and just
-one scratch vector is allocated (assuming they all have the same vector type.)
+#### `sizeExpression`
 
+The `sizeExpression` is the magic that makes these things tick.  The most useful choices
+for `sizeExpression` are the following keyword symbols that Crisp supports:
+
+- `:match-workgroup-size`  (1 per thread in group) the scratch memory allocated will match the workgroup size (ie `wg-size * sizeof(T)` where `T` is the element type)
+- `:match-num-workgroups`  (1 per group in the grid).
+- `:match-warp-size`  (1 per lane in warp)
+- `:match-warp-tile`  (1 per warp-size squared)
+- `:match-grid-size`  (1 per thread total)
+
+The above `sizeExpression` choices will automatically set the `:msg` that is sent back to the hoisting code.
+
+Alternately, the `sizeExpression` can be a compile-time known value, in which case the hoisting code will be configured with that,
+or it can be any runtime value or some other Storage Handle variable.  In these cases, this will be noted in the hoisting comment,
+but that may lack clarity. It is best ot use the `:msg` key as well.
+
+#### `sizeExpression` for matrices and tensors
+
+`:match-workgroup-size` and  `:match-grid-size` (and `:match-warp-tile`) all work well when the arity of the `local_work_size`/`global_work_size` matches
+the arity of the Storage Handle view.  If it is expected that they won't match, use a scratch `vector` and reinterpret it for your needs.
+
+Alternately, the `sizeExpression` can be a list in `(... z y x)` order. 
+
+
+#### type expression
+
+Usually this argument is a Storage Handle type, but an existing Storage Handle variable can be used as well, which 
+can make things simpler.
+
+
+#### Example 
 Below is  a simple example
 ```
 ;; -- calc_something --
 (def-kernel calc_something (A Res)
   (declare #(float-vec ulong-vec => nil))
-  (let ((intermediate (make-scratch-vector A (/ (length~ A) 2) :comment "half of size of A parameter"))
-        (otherIntermed (make-scratch-vector float (* (get-local-size) 1.5) :comment "we need half again as many threads in a workgroup")))
+  (let ((intermediate (make-scratch-vector A (/ (length~ A) 2) :msg "half of size of A parameter"))
+        (otherIntermed (make-scratch-vector float :match-workgroup-size)))
      ...))
 ```
 
 And this is an excerpt of the hoisting code that might be generated.  
 ```
- unsigned long ScratchPtrLen =   ; //      (/ (length~ A) 2)    half of size of A parameter 
-                                   // PLUS (* (get-global-linear-size) 1.5)    we need half again as many launched threads
+ unsigned long intermediateScratchLen =   ; //      (/ (length~ A) 2)    half of size of A parameter 
+ unsigned long otherIntermedScratchLen = local_work_size * sizeof(float);
  clSetKernelArg(calcSomethingKernel, 1, sizeof(void*), APtr);
  clSetKernelArg(calcSomethingKernel, 2, sizeof(unsigned long), &APtrLen);
  clSetKernelArg(calcSomethingKernel, 3, sizeof(void*), ResPtr);
  clSetKernelArg(calcSomethingKernel, 4, sizeof(unsigned long), &ResPtrLen);
- clSetKernelArg(calcSomethingKernel, 5, sizeof(void*), ScratchPtr);
- clSetKernelArg(calcSomethingKernel, 6, sizeof(unsigned long), &ScratchPtrLen);
+ clSetKernelArg(calcSomethingKernel, 5, sizeof(void*), intermediateScratchPtr);
+ clSetKernelArg(calcSomethingKernel, 6, sizeof(unsigned long), &intermediateScratchLen);
+  clSetKernelArg(calcSomethingKernel, 7, sizeof(void*), otherIntermedScratchPtr);
+ clSetKernelArg(calcSomethingKernel, 8, sizeof(unsigned long), &otherIntermedScratchLen);
  clEnqueeuNDRangeKernel( someCommandQueue, calcSomethingKernel,         
                           ...);
 ```
@@ -2407,6 +2439,44 @@ We'll need to modify the args up and down the call tree to get these "side chann
 Modifying the beginning of the arglist (of course).
 
 -->
+
+
+
+### make-implicit-XXXX
+
+```
+(make-implicit-cell <ID> cellType &key name msg)
+(make-implicit-vector <ID> vectorType &key name msg)
+(make-implicit-matrix <ID> matrixType &key name msg)
+(make-implicit-tensor <ID> tensorType &key name msg)
+```
+
+Do you think the Crisp scratch memory or debug logging systems are cool, but you could do better?
+Knock yourself out, deviant!  The `make-implicit-XXXX` allows you to Side Channel any Storage Handle for any 
+purpose.  The `<vectorType>` et al must be complete, but it doesn't otherwise need to capture any particular
+size requirement.
+
+The `<ID>` are tracked. If the Crisp compiler sees two `make-implicit-XXXX` invocations with the same
+`<ID>` for a given Storage Handle type, it will assume they are the same and only side channel enqueue one thing.
+
+In the example below, this function, if called by a kernel, would cause two additional float array pointer to 
+be hoisted, plus a pointer to a unsigned long array.  
+
+```
+(def-type float-vec (vector-type float :std140 :global :read_only))
+(def-type ulong-vec (vector-type ulong :std140 :global :writeable :std140))
+
+;; -- calc-final-result --
+(def-grid-function calc-final-result (x y &out A)
+  (declare #( ulong unlong &out float-vec => nil))
+  (let ((gamma-1 (make-implicit-vector :gamma-1 float-vec :msg "Gamma Squad should provide these"))
+        (gamma-2 (make-implicit-vector :gamma-2 float-vec))
+        (haversine-3 (make-implicit-vector ulong-vec  :name "haversine")))
+      ...))
+```
+
+
+
 
 ### Specialize Scratch Vector Routines
 
