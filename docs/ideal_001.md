@@ -329,6 +329,17 @@ In short, this system provides:
  - Safety: It makes a whole class of parallel programming errors impossible to write.
  - Clarity: It makes the code self-documenting. A `def-grid-function` is unambiguously a parallel operation.
  - Readability: It separates the high-level orchestration of a kernel from the low-level, per-thread implementation details, making complex algorithms easier to reason about.
+
+
+ Terminology: Storage Handles 
+ ============================
+ You'll see the term _"Storage Handle"_ a lot in this document.
+ A Storage Handle is any Crisp type that refers to resident memory (Global, Local, or Constant). 
+ This includes raw `storage`, structured views like `vector` and `tensor`, and `cell` references. 
+ Unlike register variables, Storage Handles refer to addressable memory locations.
+
+ We'll discuss the actual types later in the document.
+
  
 
 
@@ -411,8 +422,8 @@ Grid functions
 - can use Lisp-style naming rules (dashes ok).
 
 
-Return Vector Pattern `&out`
-============================
+Return Storage Handle Pattern `&out`
+====================================
 
 Because kernel and grid functions cannot return values, the accepted
 pattern is to pass memory to them where you want results to be recorded.
@@ -450,7 +461,7 @@ classic race condition.
 
 This is a very easy mistake to make, in all languages. For this reason, Crisp
 has the `&out` parameter list specifier.  
-Any variables after `&out` must be a `:global` vector ( or an acceptable `vector` proxy, or `soa-vector` and its proxies ).
+Any variables after `&out` must be a `:global` Storage Handle ( ie an acceptable proxy, like `vector` `soa-vector`, `cell`, `tensor` ).
 
 It is encouraged that the access is set to `:write_only` but this is not a strict requirement.  
 Importantly, regardless of the `:access` setting, within the functions scope the compiler enforces a write-only contract. 
@@ -469,7 +480,7 @@ Thus protecting you from accidentally making the race condition mistake.
     (set! (~ i B) (square (~ i A)))))
 ```
 
-If you are implementing the "return-data-via-vector-parameter" pattern,
+If you are implementing the "return-data-via-storage-handle-parameter" pattern,
 then use `&out` and enlist the compilers help in enforcing usage boundaries.
 
 
@@ -492,10 +503,9 @@ The normal practice is that the kernel function has its parameter list for incom
 needs is present in its calling interface, and it passes those arguments down to subfunctions, as appropriate. 
 
 
-There are two specialized Crisp constructs that can help with this: `make-scratch-vector` and `make-implicit-vector`.  These
-operations, discussed in detail below, allow you to "pretend" to allocate memory
-in your  kernel.   Each invocation of `make-implicit-vector` results in an extra allocation of memory appearing in the example
-hoisting code, with a matching pointer passed implicitly as a kernel argument. Uses of `make-scratch-vector` are collected
+There are two specialized categories of Crisp constructs that can help with this: `make-scratch-XXXX` and `make-implicit-XXXX` (where `XXXX` names a type of Storage Handle )  These operations, discussed in detail below, allow you to "pretend" to allocate memory
+in your  kernel.   Each invocation of `make-implicit-XXXX` results in an extra allocation of memory appearing in the example
+hoisting code, with a matching pointer passed implicitly as a kernel argument. Uses of `make-scratch-XXXX` are collected
 by the compiler and are combined into a single scratch memory pool, which is similarly added as an implicit kernel argument.  These are conveniences.  The compiler calculates the size requirements for these and outputs them to the hoisting example code, but it's ultimately up to your final hoisting code to ensure the memory is sufficient.
 
 Another side channel that adds implicit kernel arguments is the debugging communication channel, which can be enabled during compilation.
@@ -837,12 +847,12 @@ Declaring Types - Kernels
 `def-kernel` defines a kernel function. It is much the same as `def-function` with only a few differences:
 
 - `def-kernel` functions always returns NIL. It does not need to explicitly declare a return type.
-- `vector`, `matrix` and `tensor` types must be fully typed with address space, access, alignment and element type. (See Vector Types below)
+- Storage Handle types (ie `cell` `vector`, `matrix` and `tensor`)  must be fully typed with address space, access, alignment and element type. (See Storage Handle Types below)
 - `def-kernel` functions do NOT support `&key` or `&optional` arguments.
 - but it DOES support `&out` 
 - the function name for kernels MUST obey the C standard identifying rules.  Thus "do_something" is a valid name, but "do-something" is not.
 - unlike regular functions, kernel functions do NOT support overloading. Each kernel function must have a unique name.
-- `def-kernel` function has a constrained choice of accepts types for parameters. It does NOT support first order function arguments (unlike regular `def-function` and `def-grid-function`) nor can structs be passed as plain arguments (but they CAN be put in a `vector` )
+- `def-kernel` function has a constrained choice of accepts types for parameters. It does NOT support first order function arguments (unlike regular `def-function` and `def-grid-function`) nor can structs be passed as plain arguments (but they CAN be put in a Storage Handle )
 
 Like `def-function` ALL the parameters to the kernel function must have their types declared somehow. 
 
@@ -851,11 +861,11 @@ Like `def-function` ALL the parameters to the kernel function must have their ty
 ; note also that since the arguments are typed in the parameter list, we didn't need a declare directive at all. 
 ;  the return type is assumed NIL.
 
-(def-type int-result-vector (vector-type int :global :writeable :std140 1))
+(def-type int-result-cell (cell-type int :global :writeable))
 
 ;; -- add_two --
-(def-kernel add_two (a:int b:int &out result:int-result-vector)
-   (set! (~ result 0) (+ a b)))
+(def-kernel add_two (a:int b:int &out result:int-result-cell)
+   (set! (~ result) (+ a b)))
 ```
 
 `def-kernel` can be templated ( see `with-template-type` below), but in this case you MUST explicitly provide a `gen-KERNELNAME` at the top-level
@@ -865,22 +875,25 @@ for each specialized kernel you want the compiler to generate. Otherwise the com
 
 The example hoisting code that Crisp outputs will often have more arguments than the ones in the parameter list of `def-kernel`.  
 
-There are five different cases where this happens:
- - vectors
+There are four different cases where this happens:
+ - Storage Handle parameters (`cell`, `vector`, `tensor`)
  - debug communication channel
  - scratch memory
- - user defined "implicit" vectors
+ - user defined "implicit" Storage Handles
 
- Crisp lets you put vectors directly into the kernel parameter list, but in practice the hoisting code will often need to set TWO arguments: a C-style pointer
- to the data and a size argument.  The kernel will handle marshalling those separate arguments. 
+ Crisp lets you put Storage Handles directly into the kernel parameter list, 
+ but in practice the hoisting code will often need to set MULTIPLE arguments: 
+ at minimum a C-style pointer to the data and a size argument, but also strides and extants
+ for higher arity Storage Handles. 
+ The kernel will handle marshalling those separate arguments. 
 
-If the debug communication channel was elected when compiling the kernel, then the kernel will accept two additional arguments
-for the debug data channel data pointer and size.   <!-- NOTE:  we might use interprocess comm for this. update as appropriate -->
+If the debug communication channel was elected when compiling the kernel, then the kernel will accept additional arguments
+for the debug data channel data pointer and size, etc.  
 
-If the kernel or any of the functions it calls invoke `make-scratch-vector`, then then kernel
-will accept two additional arguments for the scratch memory pool and its size. 
+If the kernel or any of the functions it calls invoke `make-scratch-XXXX`, then then kernel
+will accept additional arguments for the scratch memory Storage Handle. 
 
-Similarly, every invocation of `make-implicit-vector` adds two implicit args (pointer and size) to the kernel.
+Similarly, every invocation of `make-implicit-XXXX` adds at least two implicit args to the kernel.
 
 <!-- NOTES
 clSetKernelArg : https://registry.khronos.org/OpenCL/sdk/3.0/docs/man/html/clSetKernelArg.html
@@ -894,13 +907,13 @@ Note that nearly all the args for clEnqueueNDRangeKernel revolve around the NDRa
 `def-kernel-exact` is like `def-kernel` . It can be templated and has the same restrictions.  
 But kernels defined with `def-kernel-exact` do NOT support any implicit arguments.  
 Additionally the `&out` argument specifier is not supported in the param list for `def-kernel-exact`
-Instead `def-kernel-exact` supports different marshalling functions to help create Crisp vectors, 
-including the ones required for the Crisp debug, scratch and result vectors.
+Instead `def-kernel-exact` supports different marshalling functions to help create Crisp Storage Handles, 
+including the ones required for the Crisp debug logging and scratch memory.
 
 `def-kernel-exact` is provided for users who have less control over how their kernel is hoisted and may have to instead adapt to some existing interface.
 
 #### voidp type and marshall-vector
-`def-kernel-exact` can use the `voidp` type for its arguments, but this type cannot be used in other contexts.  It can also call the `marshall-vector` function
+`def-kernel-exact` can use the `voidp` type for its arguments, but this type cannot be used in other contexts.  It can also call the `marshall-XXXX` function
 which is a function Crisp provides for making Crisp vectors from `void` pointers and byte counts. This function cannot be used in other contexts.
 
 ```
@@ -930,14 +943,14 @@ In reality even `(def-kernel k (someVector) ...)` just expands to
 ```
 
 
-#### implicit vector arguments
+#### implicit Storage Handle arguments
 
 If the kernel or any of its subfunctions use the Crisp side channel convenience functions
-like `make-scratch-vector` , `make-implicit-vector` OR if the kernel was/will be compiled with the debug logging option, then these vectors will have
+like `make-scratch-XXXX` , `make-implicit-XXXX` OR if the kernel was/will be compiled with the debug logging option, then these Storage Handles will have
 to be  explicitly passed by the host and marshalled.  
 
-- `marshall-scratch-vector`
-- `marshall-implicit-vector`
+- `marshall-scratch-XXXX`
+- `marshall-implicit-XXXX`
 - `marshall-debug-logging-vector`
 
 Note that both the metadata and the example hoisting code that the compiler outputs will have size expressions gathered 
@@ -984,9 +997,9 @@ and I have to admit, that's fairly compelling. Might have to consider it.
 A struct can contain any type that has a fixed, known size at compile time.
 This would include:
 - Scalar types (`int`, `float`, etc)
-- Small vector types (`float4` etc)
+- Hardware vector types (`float4` etc)
 - Other structs
-- Views to large data (`vector`, `tensor`, `matrix`)
+- Views to large data (`cell`, `vector`, `tensor`, `matrix`)
 
 But it excludes:
 - `functions` and `kernels`
@@ -1497,12 +1510,12 @@ Possible example:
 
     
 GPU Memory
-----------
+==========
 
-In the next section we introduce the `vector` data type. This is the only
-data type Crisp supports for passing, or making available, blocks of memory
-from the host TO the kernel. It is also the only vehicle for getting
-any data back FROM a kernel, even if it's just a single digit (see the `single-result` subsection).
+In the next section we introduce the Storage Handles (`cell`, `vector`, `tensor`). These are the only
+data types Crisp supports for passing, or making available, blocks of memory
+from the host TO the kernel. They are also the only vehicles for getting
+any data back FROM a kernel, even if it's just a single digit (see the `cell` subsection).
 
 For the kernel authors perspective there are three types of memory with
 which we need to concern ourselves: Global, Local, and Constant.
@@ -1511,7 +1524,7 @@ which we need to concern ourselves: Global, Local, and Constant.
 
 Global memory is the largest memory space available to the GPU, typically measured in gigabytes (GB). It's accessible by all threads across all workgroups and is the only memory space directly accessible by the host CPU for transferring data to and from the GPU.
 
-Any memory you prepare host-side and pass to the kernel (:readable or :read_write) will reside in global memory. Likewise, any results passed back from the kernel (&out) must also be in global memory.
+Any memory you prepare host-side and pass to the kernel (:readable or :read_write) will reside in global memory. Likewise, any results passed back from the kernel (`&out`) must also be in global memory.
 
 But global memory access is slow.
 
@@ -1539,13 +1552,13 @@ parameters, or coefficients that are shared by all threads.
 
 With Crisp you have two ways of preparing constant memory: 
 - Define and initialize it entirely at compile time using `def-constant-vector`. Kernels access it by its defined name.
-- Declare a kernel parameter as `(vector-type T :constant ...)`. The host is then responsible for allocating and initializing a read-only buffer and passing it to the kernel. The hoisting code generator will produce example code demonstrating the necessary host API calls.
+- Declare a kernel parameter as Storage Handle type with `:constant` address space. The host is then responsible for allocating and initializing a read-only buffer and passing it to the kernel. The hoisting code generator will produce example code demonstrating the necessary host API calls.
 
 
 
 
-Vectors and Storage
-------------------------
+Storage Handle Types
+====================
 
 Crisp has an internal represention called `storage`.  It is a contiguous array of bytes. 
 `storage` entities cannot have their capacity resized. 
@@ -1553,25 +1566,34 @@ All `storage` entities have their data allocated either by the host or the compi
 they cannot be dynamically allocated by the runtime. 
 
 We mention this internal represention not because you will interact directly with it, but because
-it underpins the `vector`, `soa-vector`, `matrix` and `tensor` constructs. All of them have a parent `storage`to which they provide access.
+it underpins the `cell`, `vector`, `soa-vector`, `matrix` and `tensor` constructs. All of them have a parent `storage`to which they provide access.
 
-A `vector` is a view into a parent `storage`. It provides 1D linear access. Technically a `vector`
-is a 1D `tensor`
+All these Storage Handle types are views into some parent `storage`. It is often useful to adjust the offset or size of a view to use it
+as a cursor to a section of the `storage`. 
+
+
+- `cell` : A view of one single element, type `T`
+- `vector` : provides 1D linear access.  Technically, this is a 1D `tensor`
+- `soa-vector` : Struct of Arrays. 1D linear access. See the `soa-vector` section below.
+- `matrix` : a 2D `tensor`
+- `tensor` : arity must be known at compile time. `tensor` can be any arity.  All tensors support "strides" which is how far to the next element in any of the `N` dimensions of the `tensor`
+
 
 ### Alignment
 
-Crisp supports two different alignment schemes for vectors: `:std140` and `:compact`.
+Crisp supports two different alignment schemes for Storage Handles: `:std140` and `:compact`.
 
 `:std140` always aligns on the 16 byte boundary. The full description of this standard 
 can be found here: https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#interfaces-resources-layout
 
-`:compact` alignment is contiguous with no gaps between data members. Compatible with `std::vector<T> .data()`
+`:compact` alignment is contiguous with no gaps between data members. For a `vector` that would be compatible with `std::vector<T> .data()`
 
 Note that while `:compact` is generally easier to interoperate, `:std140` is more performant on GPUs.
 
-Also note that Crisp structs are ALWAYS `:std140`, putting them in a vector does not change that. 
+Also note that Crisp structs are ALWAYS `:std140`, putting them in a Storage Handle does not change that. 
 
-### Properties
+Storage Properties
+------------------
 
  `storage` has the following immutable properties:
 | Property      | Type          |              |     Description |
@@ -1584,58 +1606,99 @@ Also note that Crisp structs are ALWAYS `:std140`, putting them in a vector does
 The `bytes` property for a `storage` is sometimes known at compile time, but is most often a runtime property.
 However the other properties are all known and evaluable at compile time. 
 
-A `vector` has these properties:
+Cell Properties
+---------------
+A `cell` has these mutable properties:
 | Property | Type    | Description |
 | ---------|---------|-------------|
-| align    |         | compile-time. one of `:std140` or `:compact` |
-| length   | ulong   | the number of elements in the `vector`. Its total bytes cannot be greater than the parent `storage` |
 | parent   | storage | address of a "parent" storage |
 | offset   | ulong   | offset into parent. |
 
+`(offset~ someCell)` `(parent~ someCell)` can be used to access (or change) the `cell` view.
+Note that out-of-bounds checks are not enabled by default. Certain compiler flags (like `--logging-output`) will enable them.
+
+These property access functions are overloadable. It would be unwise to overload them for all `cell`s. Use `def-derived-type` 
+to define your own cell type and overload those property accesses. The `~offset~` and `~parent~` functions
+can also be used, and those cannot be overloaded. 
+
+
+Vector / Matrix /Tensor Properties
+-------------------------------
+
+ `vector` and `matrix` are just the 1D and 2D variants of `tensor`
+
+Every `tensor` has these runtime properties:
+| Name     | Type        | Description |
+|----------|-------------|-------------|
+| length   | ulong       | the number of elements in the `tensor`.  |
+| parent   | vector      | address of a "parent" storage |
+| offset   | ulong       | offset into parent. |
+| num-dims | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
+| strides  | stride-type |  `vector` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
+| extants  | extants-type | `vector` the lenght of `num-dims` that tracks the extant of that particular dimension |
+
+Each of those properties can be accessed by the `XXXX~` function.
+e.g. `(length~ someTensor)` , `(parent~ someTensor)`
+
 The `align` property is known at compile-time and is immutable.  
 
-But since `vector` is just a view into some `storage`, its other properties are mutable. 
-
-Each of those properties can be accessed by the `<prop>~` function.
-e.g. `(length~ someVector)` , `(parent~ someVector)`
+But since these types are just views into some `storage`, their other properties are mutable. 
 
 These property functions for the mutable properties can be overloaded.  They can also be retrieved with `~XXXX~` (which is not overloadable).
 
-#### Settable Properties
+### Settable Properties
 
 None of the `storage` properties can be set. Also, excepting `bytes`, all the `storage` properties are compile time properties. 
 The `bytes` property on a `storage` entity is sometimes a compile time property, but usually it's a runtime property. Regardless, it cannot be changed, .
-But ALL the mutable properties on a `vector` can be set, including `length`.
+But ALL the mutable properties on the Storage Handle view can be set, including `length`.
 
 ```
 (set! (length~ someVector) 10)
-(set! (parent~ someVector) otherStorage)   
-(set! (offset~ someVector) 100)
+(set! (parent~ someMatrix) otherStorage)   
+(set! (offset~ someCell) 100)
 ```
 
 Use `def-setter` to overload the property setting function.  `~XXXX~` can also be used to get / set the respective properties
 
 
-Note that it is an error to set the `length` or `offset` of the `vector` such that it's `(length + offset) * (sizeof elementType)` is greater
+Note that it is an error to set the `length` or `offset` of any Storage Handle such that it's `(length + offset) * (sizeof elementType)` is greater
 than the `bytes` of the parent `storage`. But the checking and enforcement for these errors is NOT on by default.
 
-#### Pass Through
+### Pass Through
 
-The `storage` property accessors  `address-space~` and `access~`  can both be used directly on a `vector`. 
+The `storage` property accessors  `address-space~` and `access~`  can both be used directly on any Storage Handle type. 
 There is no reason to do `(access~ (parent~ some-vector))`.  Simply doing `(access~ some-vector)` is sufficient.
 
-### Element Access
+Element Access
+--------------
 
 - `~`
 - `~ref~`
 
-`~` is the main function for accessing elements in a vector. It can be `set!` and overloaded.
+`~` is the main function for accessing elements in a Storage Handle. It can be `set!` and overloaded.
 It would be supremely unwise to overload `~` generally. Instead use `def-derived-type` to 
-define your own vector type and overload `~` for that type. 
+define your own subtype and overload `~` for that type. 
 
 ```
+;; cell
+(~ <cell>) ;; get
+(set! (~ <cell>) <value>) ;; to  set!
+
+;; vector
 (~ <vector> <index>) ;; to get 
 (set! (~ <vector> <index>) <value>) ;; to set!
+
+;; soa-vector of point
+(x~ <soa-vec> <index>) ;; get the `x` of point at <index>
+(set! (x~ <soa-vec> <index>)  <someValue>) ;; set the `x` of the point at <index>
+
+;; matrix
+(~ <matrix> <y-index> <x-index>) ;; to get
+(set! (~ <matrix> <y-index> <x-index>)  <someValue>) ;; to set!
+
+;; tensor
+(~ <tensor> ... <z-index> <y-index> <x-index>) ;; get
+(set~ (~ <tensor> ... <z-index> <y-index> <x-index>) <someValue>)
 ```
 
 ```
@@ -1645,33 +1708,37 @@ define your own vector type and overload `~` for that type.
   (set! (~ vec 0) (* 2 elem))) ;; stores "8" into the first position of the vec.
 ```
 
- `~ref~` can also be used to get and set elements in a vector and these element
+### `~ref~`
+ `~ref~` can also be used to get and set elements in a Storage Handle and these element
 access functions cannot be overloaded.   `~ref~` is intended to be used from overloads of `~`
 
 ```
+;; example with vector
 (~ref~ <vector> <index>)  
 (set! (~ref~ <vector> <index>) <value>)
 ```
 
 
-### Helpers 
+Helper Functions
+----------------
 
-`(element-type someVector)`  a type expression that returns the type of the elements in the `vector`.
+`(element-type someStorageHandle)`  a type expression that returns the type of the elements in the Storage Handle.
 
-`(bytes someVector)`  a helper function that calculates the current number of bytes in the `vector`.
+`(bytes someStorageHandle)`  a helper function that calculates the current number of bytes in the Storage Handle.
 Note that this is NOT a passthrough. If you want the total number of bytes in the parent `storage`
-you'll need `(bytes~ (parent~ someVector))`
+you'll need `(bytes~ (parent~ someStorageHandle))`
 
 
 
-### Member Data Rules
+Member Data Rules
+-----------------
 
-A `vector` can contain any type that has a fixed, known size at compile time.
+A  Storage Handle can contain any type that has a fixed, known size at compile time.
 This would include:
 - Scalar types (`int`, `float`, etc)
 - Small vector types (`float4` etc)
 - Structs
-- Views to large data (`vector`, `tensor`, `matrix`)
+- Views to large data (`cell`, `vector`, `tensor`, `matrix`)
 
 But it excludes:
 - `storage`
@@ -1680,65 +1747,94 @@ But it excludes:
 
 
 
-### Vector Types
+Storage Handle Type Definitions
+-------------------------------
 
-Vectors are fully typed by 
+Storage Handles are completely typed by 
 - type of their element
 - `address-space` (which is one of `:global` `:local` `:private` `:constant`)
 - `access` (which is one of `:read-only` `:write-only` `:read-write` `:writable` `:readable`)
-- `align` (one of `:std140` or `:compact`)
+- `align` (one of `:std140` or `:compact`)  NOTE: `align` is not needed by the `cell` type.
+
+The `tensor` type also requires the number of dimensions to be known at compile time.
 
 Further, constant vecs (see below) also need their `length` to be fully typed.
 
 
-But none of those are necessary to specify a vector type in a parameter list.
-Therefore, there are several vector type functions available in CRISP,
+But none of those are necessary to specify a storage handle type in a parameter list.
+Therefore, there are several storage handle type functions available in CRISP,
  and they fall on a gradient, from loose to specific.   Many of the type functions here
  return incomplete types, which make them flexible. But any operation that accesses the
- actual data of the vector will, at minimum, require the element type to be specified.
+ actual data of the storage handle will, at minimum, require the element type to be specified.
 
-#### Simplest
-`(vector-type)`
-It's a `vector`.  
+### Simplest
 
-`(vector-type <element-type>)`
+No argument.
+
+```
+(cell-type)
+(vector-type)
+(matrix-type)
+(tensor-type)
+```
+
+It's a `cell`, `vector`, `matrix` or `tensor`.   
+
+### Element Type Only
+```
+(cell-type <element-type>)
+(vector-type <element-type>)
+(matrix-type <element-type>)
+(tensor-type <element-type> NumDims)
+```
+
+Unlike the other Storage Handle types, the `tensor` type doesn't have an "only element type" type
+specifier. Whenever the element-type is provided, the number of dimensions must also be provided.
+
 Example: `(vector-type float)`
 This example simply specifies that the value or parameter is a `vector` 
-with a float element type. It does not specify any particular alignment, address space, access, or size.
+with a `float` element type. It does not specify any particular alignment, address space, access, or size.
+
+Note that for the `cell` type, this is the minimum information needed to perform element access (`~`).
 
 
-#### Using Optional
-`(vector-type <element-type> &optional align address-space access length)`
+### Using Optional
+After the base element type and dimensions, the other arguments can be provided as "optional" args. 
 
+```
+(cell-type <element-type> &optional address-space access)
+(vector-type <element-type> &optional align address-space access length)
+(matrix-type <element-type> &optional align address-space access length)
+(tensor-type <element-type> NumDims &optional align address-space access length))
+```
 
 Example: `(vector-type float :compact)` 
 This example specifies a vector  of floats with `:compact` alignment. 
 It does not specify address-space,  access, or size.
 
 Note that this is the MINIMUM amount of information needed to use element access `(~ someVec i)`
-If a `vector-type` doesn't include `element-type` AND `align` then the body
+for the non-cell Storage Handle types.
+If a `XXXX-type` doesn't include `element-type` AND `align` then the body
 of the function won't compile uses of element access (`~`).
 
-The first set of type functions is actually the same as these three. 
 The `address-space`, `access` and `length` may appear in order.
 
-#### Using Keys
-`(vector-type &key element-type align address-space access length)`
-
+### Using Keys
+For the most flexibility, keys can be used.
+`(XXXX-type &key element-type num-dims align address-space access length)`
 
 Example: `(vector-type :access :writeable)`  This specifies that some vector is writeable. 
 It could be of any type, address space, alignment, or size.
 
-
-Example: `(vector-type)`  This specifies merely that something is a `vector`, but nothing else is known about it.
-
+Example: `(tensor-type)`  This specifies merely that something is a `tensor`, but nothing else is known about it.
 
 
-#### Element Type
-The element type of a vector must be an element of a fixed size known at compile time.
+
+### Element Type
+The element type of a Storage Hnadle must be an element of a fixed size known at compile time.
 It cannot be the type of a function.  Nor can it be a `storage` entity.
 
-#### Access
+### Access
 The enumeration for access has five different choices in Crisp:
 - `:read-only`
 - `:write-only`
@@ -1748,7 +1844,7 @@ The enumeration for access has five different choices in Crisp:
 
 But note that the last two are not available in the hoisting example code for loading and enqueueing the kernel
 
-#### Usage
+### Usage
 
 ```
 ;; -- count --
@@ -1760,10 +1856,12 @@ But note that the last two are not available in the hoisting example code for lo
 (vector-type float :std140 :local :read-write 100)
 ```
 
-### Vector Arguments for Kernels
+Storage Handle Arguments for Kernels
+------------------------------------
 `def-kernel` is the definition for the kernel function. 
-And any `vector` in its parameter list MUST have its element-type, align, address-space and access specified in
-its type definition. Only the size can be unspecified.
+And any Storage Handle in its parameter list MUST have its element-type, number or dimensions, align, address-space and access specified in
+its type definition. Only the size can be unspecified. (And for `cell`, `align` is not needed.)
+The number of dimensions is (obviously) implicit for the `cell`, `vector` and `matrix` types.
 
 
 ```
@@ -1775,116 +1873,96 @@ its type definition. Only the size can be unspecified.
   ...)
 ```
 
-### Creating Vectors
+Creating Storage Handle Views
+------------------------------------
 
-While the kernels cannot dynamically allocate vector memory, the kernel CAN
-declare a vector on the stack at compile time.  This vector must have a known-at-compile-time length.
+Kernels cannot dynamically allocate memory. But there are limited ways to allocate
+Storage Handles on the stack. 
+
+Additionally, scratch and implicit Storage Handles can 
+be defined using "Side Channels", see below.
+
+### vector literals `#(val0 val1 val2 ... valN)`
+
+A `vector` can be literally declared using the Lisp `#(...)` syntax.
+
+```
+(let ((small-vec #(0 1 2 someVal otherVal)))      ;;<-- ideally, type should be inferred
+  (declare (type small-vec (literal-type short))) ;; so that this is not needed.
+   ...)
+```
+A `vector` declared like this allocated using private register memory. It is highly recommended
+that this is reserved for very small vectors (no more than 32 elements), else you could incur
+a lot of register pressure.
+
+The address space for these is `:private`. If you need it, the type function `(literal-vector T)` 
+makes it easy to exactly declare the type for a vector literal.
 
 
-- `(make-vector vectorType)` will instantiate a vector of a set type. The type argument MUST include the length.
-- `(make-vector vectorType length)` length can be provided explicitly if the type doesn't specify it.
-- `(make-vector &key element-type align address-space access  length)`
-- `(make-vector parentStorage length &optional offset)` 
-- `(make-vector parentVector length &optional offset)`  ;; see below
+### reinterpret storage  . `make-XXXX` 
 
-And `#( val1, val2, ... valN)` instantiates a `vector` directly.  But note that vectors
-created this way do not have information about address space or access and
-possibly element type might be ambiguous as well. So these will typically 
-need an accompanying `declare` or similar to determine.
+If you have a Storage Handle type, it can be reinterpreted to another type
+using `make-` with the four Storage Handle types.
 
-<!-- NOTE  probably any vector directly instantiated with #(1 2 3) is
-     constant and immutable and allocated in constant/private memory address space
-     So we should say so.  
-     Or do we want to support mutability if the user want to declare
-     :global or :local ?
-     -->
+```
+(make-cell <source> <new-element-type> &key offset)
+(make-vector <source> <new-element-type> &key length offset)
+(make-matrix <source> <new-element-type> width height &key offset strides)
+(make-tensor <source> <new-element-type> <extants-list> &key offset strides)
+```
+
+A new `cell` obviously has `length=1`.  For a `vector`, if the `:length` key is not used, then the resulting 
+new `vector` will have its size calculated automatically (byte size of the original storage / new element size, minus offset).
+If the source byte size is not a multiple of the new element size, the result is truncated.
+But the other types (`tensor` and `matrix`) need to have their extants provided.
+
+The returned Storage Handle inherits the address-space, access permissions, and layout (`:compact` or `:std140`) from the source.
+
+There are some restrictions. They are enforced at compile time:
+
+- if the original and new element types don't match, then the source element type cannot be a struct type
+- if the original and new element types don't match, then the the new type also cannot be a struct type
+- if the underlying source has `:std140` layout, then reinterpretation between
+  types requires that both have the same base alignment requirement under `std140`. 
+
+The runtime will assert that the number of source bytes is sufficient for the new requirements, but this
+assertion requires compiler flags (like `--logging-output`). 
+
+`:compact` layout is generally more amenable to reinterpretation.
+
 
 ```
 (def-type vec-floats-t (vector-type float :std140 :local :read-write ))
-(def-type vec-ints-t (vector-type int :std140 :local :read-write ))
+(def-type vec-ints-t (literal-vector int))
 
 ;; -- do_things --
-(def-kernel do_things ()
-  (let ((some-ints #(1 2 3 4 5)) ;; <-- compiler will attempt to infer type, but best to declare it.
-         (hundred-floats (make-vector vec-floats-t 100))
-         (ten-floats-view (make-vector (parent~ hundred-floats) 10)))
+(def-kernel do_things (hundred-floats)
+  (declare (type hundred-floats (vecl-floats-t 100)))
+  (let ((some-ints #(0 1 2 3 4 5)) ;; <-- compiler will attempt to infer typ
+        (three-cell (make-cell some-ints 'int :offset 3))
+        (ten-floats-view (make-vector hundred-floats float :length 10)))
     (declare (type some-ints vec-ints-t))
     ...))
 
 ```
 
- `(make-vector parentVector length &optional offset)`
-Note that `make-vector` CAN take another `vector` as the parent argument. But
-there is no nesting. Instead the resulting vector will take the `storage` of the `vector` arg as a parent. 
-Similarly, expect that is `offset` property will be the net offset.
 
-#### reinterpret-view
-```
-(reinterpret-view source-vec new-type-symbol &key length offset))
-```
-
-`reinterpret-view` is a macro that takes a `vector` argument and type (`float`, `int` etc)
-and returns a new `vector`. If the optional `:length` key isn't used, then the length of the new `vector` will be calculated automatically.  The returned `vector` inherits the address-space, access permissions, and layout (`:compact` or `:std140`) from the source-vec. Only the element-type and length are changed.
-This is a casting operation and it is the callers responsibility to make sure the whole
-`vector` is funded with data. Give care when using the `:length` and `:offset` keys and if casting from a smaller 
-type to a larger one make sure there is enough source data even without using those keys.
-
-There are some restrictions though. They are enforced at compile time:
-
-- the source element type cannot be a struct type
-- the new type also cannot be a struct type
-- if the underlying source `vector` has `:std140` layout, then reinterpretation between
-  types requires that both have the same base alignment requirement under `std140`. 
-
-`:compact` layout is generally more amenable to reinterpretation.
-
-#### address space concerns for kernel instantiated vectors
-
-Inside `def-kernel` or `def-function` the only address spaces that can be used when 
-instantiating a `vector` are `:local` and `:global`. But `:global` is SLOW and should
-NOT be used unless you have good reason.
-
-`:constant` address space is the most performant, but to set up a vector with that
-you'll need to use `def-const-vec` which is covered below, or a direct instance ( `#(1 2 3)`).
-
-
-Reduce Boilerplate: Vectors Of Lenght 1: `single-result` and `set-result!`
---------------------------------------------------------------------------
-
-It is extremely common for kernels to have vectors of length 1 that have
-just a single value in the `&out` position of a kernel parameter list.
-Many kernels have muliple of these. 
-
-To make this a bit easier Crisp has  `single-result` which is type declaration,
-and `set-result!` which is a macro that makes it easier to set it without have to 
-do to the dereference to 0 or thread screen.
-
-Example:
-```
-(def-kernel count-something (... &out v)
-   (declare (type v (single-result long)))
-   ...
-   (set-result! v some-count-we-calculated))
-```
-
-Possible Implementation
-```
-(<T>
-  (def-type single-result (vector-type T :global :writeable :compact :length 1)))
-
-;; in context of when-is-last-workgroup, we screen with local id is 0
-(defmacro set-result! (result-v value)
- `(when-global-linear-id-is 0
-    (set! (~ ,result-v 0) ,value)))
-```
-
-Reduce Boilerplate: `in-vec` and `out-vec`
+Reduce Boilerplate: `in-XXXX` and `out-XXXX`
 -------------------------------------------
 
-`vector-type` declarations can be long, but for most kernel arguments there are 
- two common choices:  global readable vectors for input paramters, and global writeable vectors
-for output parrameters.  Crisp has prepared two vector `def-type` to make this easier: `in-vec` 
-and `out-vec`. Just specialize them with the element type and align and you are set.
+```
+(in-cell T)
+(out-cell T)
+(in-vec T A)
+(out-vec T A)
+(in-mat T A)
+(out-mat T A)
+```
+
+Storage Handler type declarations can be long, but for most kernel arguments there are 
+ two common choices:  global readable Storage Handles for input paramters, and global writeable Storage Handles
+for output parrameters.  Crisp has prepared pairs of `def-type` aliases to make this easier.
+ Just specialize them with the element type and align and you are set.
 
 Example:
 ```
@@ -2009,22 +2087,11 @@ full storage bytes.
 
  ### Creating
 
-`soa-vector` have parallel creation routines to `vector` and abide by the same requirements (ie length must be known at compile time).
+`soa-vector` have parallel creation routines to `vector` and abide by the same requirements.
 
-- `(make-soa-vector soaVectorType)`
-- `(make-soa-vector soaVectorType length)`
-- `(make-soa-vector &key element-type address-space access align length)`
-- `(make-soa-vector parentStorage length &optional offset)`
-- `(make-soa-vector parentVector length &optional offset)`
+- `(make-soa-vector <source> <struct-type> length &optional offset)`
 
 
- ### Reinterpreting
-
-`soa-vector` does not support any sort of reinterpret cast. But their underlying vectors
-do.  
-```
-  (let ((vector-view-of-ints (reinterpret-view (x~ point-soa-vec) 'int))) ...)
-```
 
 ### Converting between SoA and AoS vectors.
 
@@ -2121,9 +2188,8 @@ Paramter names should follow the C standard identifying rules. (ie use underscor
 (def-parameter MAX_INDEX:ulong 100) ;; 100 is default value, used when not provided by the compiler invocation.
 
 (def-parameter START_LOC 41.1)
-(declare (type START_LOC float))
-...
-(dotimes (x MAX_INDEX) ...)
+(declaim (type START_LOC float))
+
 
 
 # the compiler invocation
@@ -2166,6 +2232,15 @@ Then it, or functions it calls, can simply refer to the const-vec, like one woul
 
 ### Works with SoA
 Returning a `soa-vector` from `def-const-vec` is fully supported. 
+
+### make-vector / make-soa-vector
+```
+(make-vector vectorType size)
+(make-soa-vector soaVectorType size)
+```
+In the context of `def-const-vec` there are two additional overrides available. `make-vector`
+and `make-soa-vector`.  Both take the appropriate vector type, which allows you to define
+element type, layout, etc and a size. 
 
 
 ### Constant Vec Using Other Constant Vec
@@ -2221,32 +2296,39 @@ and
 
 ```
 
-Side Channel Vectors
---------------------
+### reinterpet for other Storage Handle types
 
-As was mentioned earlier, Crisp supports side channel vectors, which are special purpose vectors that
+`def-constant-vec` sets up vectors or soa vectors only. If you need some other Storage Handle type
+(like `matrix`) then the appropriate `make-XXXX` function to reinterpreset it.
+
+
+Side Channel Storage Handles
+----------------------------
+
+As was mentioned earlier, Crisp supports side channel Storage Handles, which are special purpose memory objects that
 can be created in the operation of your kernel. This lets you "pretend" that the kernel is allocating 
 memory, when it is actually just specifying a need for memory for some purpose and that need is expressed
 to the host in the example hoisting code or metadata that the compiler outputs.
 
 The different declarations each operate similarly. Each one results in an additional implicit argument being added to the kernel (or an additional matching "marshall" declaration appearing in a `def-kernel-exact`), plus an additionl set
-of arguments (pointer and size) output into the hoisting code, complete with a recommended expression for calculating 
+of arguments (pointer, size, strides, etc) output into the hoisting code, complete with a recommended expression for calculating 
 the correct allocation size.  
 
 Each invocation must be countable by the compiler. This means they cannot appear in loops. 
 
-The invocations take a `<VectorExpression>` as a first argument. That can be a type expression OR just some
-vector value. The "new" vector will have the same type as the source, except that its `:access` may be changed to `:read-write` if the original vector was only `:readable` or `:read_only`.   If an existing vector value is
-used, then the size will be set to be the same. This can be very handy, because if that value originates as 
+The invocations take a type expression as their first argument. The "new" Storage Hnadle will have the same type as the source, except that its `:access` may be changed to `:read-write` if the original source was only `:readable` or `:read_only`.   If an existing Storage Handle VALUE is
+used as the type expression, then the size will be set to be the same. This can be very handy, because if that value originates as 
 a kernel argument, then the example hoisting code will specify that the size should match. 
 
 The size of any invocation MUST be specified. It does not have to be a compile-time constant, merely specified. 
-This is most relevant when using `vector-type` and friends, because that type expression often elides length.
+Note that there are several keyword symbols that can be used for the most common cases. 
 
 The invocations also support `:name` and `:comment` keys. If using `def-kernel-exact` then `:name` is REQUIRED, 
 as it will need to match a marshalling invocation.  The `:comment` key will output a comment into the hoisting code (Neat!).
 
-Lastly, note that `<VectorExpression>` can include `soa-vector` vector type specifiers.
+Lastly, note that `<TypeExpression>` can include `soa-vector` vector type specifiers.
+
+
 
 
 ### make-implicit-vector

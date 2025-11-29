@@ -207,12 +207,63 @@ QUESTIONS
 - [ ] commutative-op-type instead of binop-type requirement for reductions? Would require users
       to define a type constraint for their own functions.  Annoying or useful?
 
+LANGUAGE CHANGES
+- [ ] lose declare local/global. Too complex
+- [ ] instead use (make-single-result T :global) . Might want to consider renaming 'single-result'
+- [ ] How to initialize the single-result? It has to be done by hoisting code for :global.
+      And cannot be done for :local. So maybe the user just has to (set! ) or (atomic-xchg! ) it 
+      themselves.
+- [ ] Shore up set! and atomic-ops
+- - (atomic-inc! someVar)                 <--
+- - (atomic-inc! someTensor (x y z ...))
+- - (atomic-inc! someSingleRes)           <--   hmmm. atomic-inc-result! ?
+- - atomic-set! would just be atomic-xchg!  .  
+- - (atomic-set-result! someSingleRes val)   
+- - (atomic-set! someTensor (x y z ...) val)
+- - (atomic-set! someVar val)  
+- - (set! someVar someVal)
+- - (set! (~ someTensor x y z)  val) 
+- - (set! (~ someCell) val)  <--  cell doesn't need '0'  
+- - (set-result! someSingleRes val)  ;; Q: should this compile error if :global ?
+                                     ;; A: no. It is totaly valid to (when (= id 0) (set! ...))
+
+- [ ] suggestion: rename single-result to 'cell'.  (make-cell int :local)
+- [ ] use (~ someCell) without 0 to get and set its value.
+- [ ] atomic ops should be uniform (more or less), but DO expand for tensors (atomic-op! someTensor (x y z...) <val?>)
+- [ ] (make-scratch-cell T :global &key msg) 
+      (make-scratch-vector VectorT size &key msg) 
+      (make-scratch-tensor tensorT (size size size..) &key msg)
+      IMPORTANT: is SIZE compile time calculable only?  
+              A:  No. That gets communicated back to the host. So it would be ideal that it NOT be 
+                  a random runtime value.  
+      NOTE: don't do make-scratch-matrix at this time. Use make-scratch-tensor. 
+
+ - [ ] IDEA: instead of separate functions for common topologies, flag them?
+      These are for the `size` arg.
+      :match-workgroup-size
+      :match-num-workgroups
+      :match-total-threads
+      :match-warp-size
+      :match-num-warps-per-workgroup
+      :match-total-warps
+      That way we stop the explosion of helper functions. make-scratch-cell/vector/tensor are the ONLY ones.
+       ...well, maybe tiles?
+
+      A tensor matching the above just has the total allocation that matches the total size of that thing.
+      I guess. Might need to think what it means when they don't align. (2D workgroup, 4D tensor)
+
+- [ ] TODO: go through docs changing generic Vector to Storage Handle.
+- - side channel
+- [ ] Revisit `def-constant-vector` . `def-contstant-storage` ??
+
+
 
 
 
 
 
 - [ ] SEO (even the _AIs_ can't find us, completely unsearchable today)
+- - [ ] logo
 
 - [ ] Testing Next Stages
 - - [x] Rove or _Parachute_ for tests. Integrated with our GHA
