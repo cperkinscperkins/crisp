@@ -13,11 +13,13 @@
 
 #|
  ;; this needs to be moved into our negative tests.
+ ;; do not remove this test until that happens
 (def-function type-mismatch ()
     (declare #'(=> (cell long)))
   (let ((sc (make-scratch-cell float)))
     sc))
 |#
+
 
 ;; Phase 3 and Phase 4 tests
 
@@ -42,3 +44,4 @@
 (def-function kernel (i)
     (declare #'(int => int))
   (fun-A i))
+

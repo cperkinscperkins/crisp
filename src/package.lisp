@@ -67,6 +67,7 @@
    #:llvm-bfloat-type
    #:llvm-float-type
    #:llvm-double-type
+   #:llvm-int8-ptr-type
    #:llvm-function-type
    #:llvm-struct-type-in-context
    ;; Functions

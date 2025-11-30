@@ -440,7 +440,7 @@
          (existing-signatures (gethash name *function-table*)))
     (multiple-value-bind (env return-types)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
-        (dump-env env)
+        ;(dump-env env)
       (let ((param-types (mapcar #'second env)))
         ;; Add the new signature to the list of existing ones.
         (setf (gethash name *function-table*)
@@ -514,14 +514,17 @@
 
 (defun analyze-return-type-from-spec (fn-spec)
   "Parses '(int int => int int)' and returns a list of types, e.g., '(int int)."
-  (let ((arrow (member '=> fn-spec :test #'string=)))
-    (if (and arrow (rest arrow)) ; e.g. '(=> int)
-        (let ((return-types (rest arrow)))
-          (loop for type-name in return-types
-                collect (cond
-                          ((null type-name) 'nil) ; Handles (=> nil) for void
-                          ((valid-type-p type-name) type-name)
-                          (t (error 'crisp-unknown-type-error :type-name type-name)))))
+  (let ((arrow-pos (position '=> fn-spec)))
+    (if arrow-pos
+        (let ((return-types-list (nthcdr (1+ arrow-pos) fn-spec)))
+          ;; If there's nothing after the arrow, it's a void return.
+          (if (null return-types-list)
+              '(nil)
+              (loop for type-name in return-types-list
+                    collect (cond
+                              ((null type-name) 'nil) ; Handles (=> nil) for void
+                              ((valid-type-p type-name) type-name)
+                              (t (error 'crisp-unknown-type-error :type-name type-name))))))
         '(nil))))
 
 (defun analyze-environment-from-spec (params fn-spec)
