@@ -27,6 +27,9 @@
 (defvar *originator-functions* nil
   "A hash table containing the names of all functions that directly use a side-channel originator.")
 
+(defvar *implicit-arg-map* nil
+  "A hash table mapping function names to the implicit side-channel arguments they require.")
+
 
 (defvar *crisp-types* (make-hash-table)
   "A hash table mapping type names (symbols) to CRISP-TYPE structs.")
@@ -337,15 +340,39 @@
   (log:debug "*crisp-types*: ~s~%*expression-analyzers*: ~s" (alexandria:hash-table-keys *crisp-types*) (alexandria:hash-table-keys *expression-analyzers*))
   ;; Pass 1: Gather all function signatures and build the call graph.
   (let ((*call-graph* (make-hash-table))
-        (*originator-functions* (make-hash-table)))
+        (*originator-functions* (make-hash-table))
+        (*implicit-arg-map* (make-hash-table)))
     (analyze-signatures-pass forms)
 
-    ;; TODO: This is where Phase 4 (Propagation) will go.
+    ;; Pass 1.5: Propagate implicit argument requirements up the call graph.
+    (propagate-implicit-arguments)
 
     ;; Pass 2: Now that all signatures are known, compile the function bodies.
     (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
     ;; After analysis, check the constructed graph for cycles.
     (check-for-recursion-cycles)))
+
+(defun propagate-implicit-arguments ()
+  "Phase 4: Traverses the call graph backwards from originators to find all carriers."
+  (let ((worklist '()))
+    ;; 1. Seed the map and worklist with all originator functions.
+    (loop for fn-name being the hash-keys of *originator-functions*
+          do (setf (gethash fn-name *implicit-arg-map*) '(:storage-ptr :storage-size))
+             (push fn-name worklist))
+
+    ;; 2. Process the worklist until it's empty.
+    (loop while worklist
+          do (let* ((callee (pop worklist))
+                    ;; Find all functions that call the current callee.
+                    (callers (loop for caller being the hash-keys of *call-graph*
+                                   using (hash-value callees)
+                                   when (member callee callees)
+                                     collect caller)))
+               (dolist (caller callers)
+                 ;; If this caller isn't already marked as a carrier, mark it and add to worklist.
+                 (unless (gethash caller *implicit-arg-map*)
+                   (setf (gethash caller *implicit-arg-map*) '(:storage-ptr :storage-size))
+                   (push caller worklist)))))))
 
 
 (defun shallow-analyze-body (forms)

@@ -300,6 +300,30 @@
     (is equal '(+ fun-c) (sort (copy-list (gethash 'fun-b crisp.compiler::*call-graph*)) #'string<))
     (is equal '(+ fun-d) (sort (copy-list (gethash 'fun-c crisp.compiler::*call-graph*)) #'string<))))
 
+(define-test (analyzer phase-4-propagation)
+  "Tests the backward propagation of implicit arguments through the call graph."
+  (let* ((crisp.compiler::*call-graph* (make-hash-table))
+         (crisp.compiler::*originator-functions* (make-hash-table))
+         (crisp.compiler::*implicit-arg-map* (make-hash-table)))
+
+    ;; 1. Manually set up the state from Phase 3.
+    ;;    kernel -> fun-a -> fun-b (originator) -> fun-c
+    (setf (gethash 'kernel crisp.compiler::*call-graph*) '(fun-a))
+    (setf (gethash 'fun-a crisp.compiler::*call-graph*) '(fun-b))
+    (setf (gethash 'fun-b crisp.compiler::*call-graph*) '(fun-c))
+    (setf (gethash 'fun-c crisp.compiler::*call-graph*) '(fun-d))
+    (setf (gethash 'fun-d crisp.compiler::*call-graph*) nil)
+    (setf (gethash 'fun-b crisp.compiler::*originator-functions*) t)
+
+    ;; 2. Run the propagation function.
+    (crisp.compiler::propagate-implicit-arguments)
+
+    ;; 3. Verify the results.
+    (true (gethash 'fun-b crisp.compiler::*implicit-arg-map*) "Originator fun-b should be in the map.")
+    (true (gethash 'fun-a crisp.compiler::*implicit-arg-map*) "Carrier fun-a should be in the map.")
+    (true (gethash 'kernel crisp.compiler::*implicit-arg-map*) "Carrier kernel should be in the map.")
+    (false (gethash 'fun-c crisp.compiler::*implicit-arg-map*) "Callee fun-c should NOT be in the map.")
+    (is = 3 (hash-table-count crisp.compiler::*implicit-arg-map*) "Exactly 3 functions should be in the map.")))
 
 (define-test (crisp-compiler codegen)
   "Tests for LLVM IR code generation.")
