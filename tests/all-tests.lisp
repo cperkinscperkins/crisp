@@ -116,13 +116,16 @@
   (is equal '(nil) (analyze-return-type-from-spec '(int =>)))
   (is equal '(nil) (analyze-return-type-from-spec '(int)))
   (fail (analyze-return-type-from-spec '(int => foobar))
-        'crisp-unknown-type-error))
+        'crisp-unknown-type-error)
+  (is equal '((cell long)) (analyze-return-type-from-spec '(int => (cell long)))))
 
 (define-test (analyzer environment-from-spec)
   (is equal '((a int) (b float))
       (analyze-environment-from-spec '(a b) '(int float => nil)))
   (fail (analyze-environment-from-spec '(a) '(bar => nil))
-        'crisp-unknown-type-error))
+        'crisp-unknown-type-error)
+  (is equal '((a (cell long)))
+      (analyze-environment-from-spec '(a) '((cell long) => nil))))
 
 (define-test (analyzer return-type-from-list)
   (is equal '(int) (analyze-return-type-from-list '((return-type int))))
@@ -130,6 +133,7 @@
   (is equal nil (analyze-return-type-from-list '((type a int))))
   (fail (analyze-return-type-from-list '((return-type baz)))
         'crisp-unknown-type-error)
+  (is equal '((cell long)) (analyze-return-type-from-list '((return-type (cell long)))))
   (is equal nil (analyze-return-type-from-list '((function (int => int))))))
 
 (define-test (analyzer environment-from-list)
@@ -138,7 +142,9 @@
   (fail (analyze-environment-from-list '(a) '((type a b int)))
         'crisp-signature-arity-error)
   (fail (analyze-environment-from-list '(a) '((type a quux)))
-        'crisp-unknown-type-error))
+        'crisp-unknown-type-error)
+  (fail (analyze-environment-from-list '(a) '((type a (cell long))))
+        'crisp-unknown-type-error "Parameterized types are not yet supported in (type ...) declarations."))
 
 (define-test (analyzer return-type-multiple-values)
   "Test multiple return values from spec"
@@ -247,6 +253,25 @@
           (true (typep val-node-b 'semantic-extract-value))
           (is = 1 (crisp.compiler::semantic-extract-value-index val-node-b))
           (is eq 'float (crisp.compiler::semantic-extract-value-type val-node-b)))))))
+
+(define-test (analyzer make-scratch-cell-in-def-function)
+  "Tests the semantic analysis of 'make-scratch-cell' within a function."
+  (let* ((crisp-form '(def-function test-scratch ()
+                       (declare #'(=> (cell int)))
+                       (make-scratch-cell int)))
+         (expanded-form (macroexpand-1 crisp-form))
+         (ast (eval expanded-form)))
+
+    ;; Check the overall structure
+    (true (typep ast 'semantic-function) "The top-level AST node should be a semantic-function.")
+    (is equal '((cell int)) (crisp.compiler::semantic-function-return-type ast) "The function's return type should be ((cell int)).")
+
+    (let* ((return-node (first (semantic-function-body ast)))
+           (value-node (semantic-return-value-node return-node)))
+      (true (typep return-node 'semantic-return) "The function body should contain a semantic-return.")
+      (true (typep value-node 'semantic-literal) "The return value should be a semantic-literal.")
+      (is equal '(cell int) (crisp.compiler::semantic-literal-value-type value-node) "The literal's type should be (cell int)."))))
+
 
 (define-test (crisp-compiler codegen)
   "Tests for LLVM IR code generation.")

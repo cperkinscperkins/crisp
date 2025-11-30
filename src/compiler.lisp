@@ -528,9 +528,9 @@
   "Builds the environment '((a i32) (b i32))'
    from '(a b)' and '(int int => int)'."
   (let ((param-types (loop for type-name in fn-spec
-                           until (string= type-name '=>)
-                           collect (if (gethash type-name *crisp-types*)
-                                       type-name ; Simple types must be symbols
+                           until (eq type-name '=>)
+                           collect (if (valid-type-p type-name)
+                                       type-name
                                        (error 'crisp-unknown-type-error :type-name type-name)))))
     (log:debug "Analyzing spec params: ~s, types: ~s" params param-types)
     (unless (= (length params) (length param-types)) 
@@ -548,8 +548,8 @@
   (let ((found (assoc 'return-type declarations)))
     (when found
       (let ((type-names (rest found)))
-        ;; Special case for #'(...) syntax which is handled elsewhere
-        (when (listp (first type-names))
+        ;; Special case for `(function ...)` syntax which is handled elsewhere
+        (when (eq (first type-names) 'function)
           (return-from analyze-return-type-from-list nil))
         (loop for type-name in type-names
               collect (cond ((null type-name) 'nil)
@@ -637,7 +637,7 @@
 
 (defun analyze-scratch-expression (expr env location)
   "Analyzes a `(make-scratch-cell ...)` expression.
-  For Phase 0/1, this is just a placeholder that returns its type."
+  For now, this is just a placeholder that returns its type."
   (declare (ignore env)) ; We don't use env yet.
   (unless (and (= (length expr) 2) (symbolp (cadr expr)))
     (error "Malformed make-scratch-cell form: ~a. Expected (make-scratch-cell <type>)" expr))
@@ -645,14 +645,9 @@
   (let ((inner-type (cadr expr)))
     (unless (gethash inner-type *crisp-types*)
       (error 'crisp-unknown-type-error :type-name inner-type :source-location location))
-    
-    ;; This is a temporary semantic node. It just holds the type.
-    ;; In a later phase, this will become `semantic-scratch-binding`.
     (make-semantic-literal :value-type (list 'cell inner-type)
                            :value nil ; No real value yet
                            :source-location location)))
-
-
 
 (defun analyze-let-expression (expr env location)
   "Analyzes a `(let ...)` expression."
