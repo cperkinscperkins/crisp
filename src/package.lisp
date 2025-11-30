@@ -164,9 +164,11 @@
            #:declare
            #:return-type
            #:type
-           "|=>|"
+           #:make-scratch-cell
+           #:|=>|
            ;; All Crisp types
            #:char #:short #:int #:long
+           #:cell
            #:uchar #:ushort #:uint #:ulong
            #:half #:bfloat16 #:float #:double
 
@@ -224,9 +226,11 @@
    #:declare
    #:return-type
    #:type
-   "|=>|"
+   #:make-scratch-cell
+   #:|=>|
    ;; All Crisp types
    #:char #:short #:int #:long
+   #:cell
    #:uchar #:ushort #:uint #:ulong
    #:half #:bfloat16 #:float #:double
 
@@ -275,6 +279,7 @@
    #:return-type #:type
    ;; All Crisp types
    #:char #:short #:int #:long
+   #:cell
    #:uchar #:ushort #:uint #:ulong
    #:half #:bfloat16 #:float #:double
 
