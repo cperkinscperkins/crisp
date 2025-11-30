@@ -272,6 +272,34 @@
       (true (typep value-node 'semantic-literal) "The return value should be a semantic-literal.")
       (is equal '(cell int) (crisp.compiler::semantic-literal-value-type value-node) "The literal's type should be (cell int)."))))
 
+(define-test (analyzer phase-3-reconnaissance)
+  "Tests the shallow analysis pass for building the call graph and finding originators."
+  (let* ((forms '((def-function kernel (i) (declare #'(int => int)) (fun-a i))
+                 (def-function fun-a (i) (declare #'(int => int)) (fun-b i))
+                 (def-function fun-b (i) (declare #'(int => int))
+                   (let ((sc (make-scratch-cell int)))
+                     (+ i (fun-c sc))))
+                 (def-function fun-c (sc) (declare #'((cell int) => int)) (+ 7 (fun-d sc)))
+                 (def-function fun-d (sc) (declare #'((cell int) => int)) 8)))
+         ;; We need a clean environment for this test.
+         (crisp.compiler::*function-table* (make-hash-table))
+         (crisp.compiler::*call-graph* (make-hash-table))
+         (crisp.compiler::*originator-functions* (make-hash-table)))
+
+    (crisp.compiler::analyze-signatures-pass forms)
+
+    ;; Test 1: Was the originator function correctly identified?
+    (true (gethash 'fun-b crisp.compiler::*originator-functions*)
+             "fun-b should be identified as an originator function.")
+    (is = 1 (hash-table-count crisp.compiler::*originator-functions*)
+        "There should be exactly one originator function.")
+
+    ;; Test 2: Was the call graph built correctly?
+    (is equal '(fun-a) (gethash 'kernel crisp.compiler::*call-graph*))
+    (is equal '(fun-b) (gethash 'fun-a crisp.compiler::*call-graph*))
+    (is equal '(+ fun-c) (sort (copy-list (gethash 'fun-b crisp.compiler::*call-graph*)) #'string<))
+    (is equal '(+ fun-d) (sort (copy-list (gethash 'fun-c crisp.compiler::*call-graph*)) #'string<))))
+
 
 (define-test (crisp-compiler codegen)
   "Tests for LLVM IR code generation.")
