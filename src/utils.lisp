@@ -4,9 +4,6 @@
 ;;;; Licensed under the MIT License. See LICENSE file in the project root.
 
 ;; src/utils.lisp
-(defpackage :crisp.utils
-  (:use :cl)
-  (:export #:let-d))
 
 (in-package :crisp.utils)
 
@@ -58,3 +55,16 @@
           ;'( )))
     (dolist (fn-sym functions-to-advise)
       (advise-function fn-sym))))
+
+(defun dump-env (env &key (title "Environment Dump"))
+  "Prints the contents of a semantic environment to *debug-io* in a formatted way.
+  The environment is expected to be an alist of (name type) pairs."
+  (let ((output-string
+          (with-output-to-string (s)
+            (format s "~&--- ~a ---~%" title)
+            (if (null env)
+                (format s "  (empty)~%")
+                (loop for (var-name . var-type) in env
+                      do (format s "  ~20a: ~a~%" var-name var-type)))
+            (format s "------------------------"))))
+    (log:debug "~a" output-string)))

@@ -419,6 +419,7 @@
          (existing-signatures (gethash name *function-table*)))
     (multiple-value-bind (env return-types)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
+        (dump-env env)
       (let ((param-types (mapcar #'second env)))
         ;; Add the new signature to the list of existing ones.
         (setf (gethash name *function-table*)
