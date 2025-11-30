@@ -13,15 +13,6 @@
 (cffi:defctype llvm-type-ref :pointer)
 (cffi:defctype llvm-value-ref :pointer)
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;
-;; Code Generation (Pass 3)
-;;
-;; This file takes the semantic "blueprint" from the analyzer and generates
-;; LLVM IR from it.
-;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 (defun get-or-create-di-type (crisp-type di-builder di-type-cache)
   "Gets a DIBasicType from a cache or creates it if it doesn't exist."
   (or (gethash (crisp-type-name crisp-type) di-type-cache)
@@ -39,24 +30,24 @@
         (setf (gethash (crisp-type-name crisp-type) di-type-cache) di-type)
         di-type)))
 
-(defun get-llvm-return-type (context return-type-names)
+(defun get-llvm-return-type (module return-type-names)
   "Determines the LLVM return type from a list of Crisp type names.
   Handles single values, void, and multiple values (by creating a struct)."
   (log:debug "get-llvm-return-type: ~s" return-type-names)
   (cond
     ;; Case 1: Multiple return values. Create a struct.
     ((> (length return-type-names) 1)
-     (let* ((count (length return-type-names))
+     (let* ((context (llvm-get-module-context module))
+            (count (length return-type-names))
             (type-array (cffi:foreign-alloc 'llvm-type-ref :count count))
             (packed nil))
        (loop for i from 0 for type-name in return-type-names
              do (setf (cffi:mem-aref type-array 'llvm-type-ref i)
-                      (llvm-type-for-name type-name)))
+                      (crisp-type-to-llvm-type type-name module)))
        (prog1 (llvm-struct-type-in-context context type-array count packed)
          (cffi:foreign-free type-array))))
     ;; Case 2: Single return value.
-    ((= (length return-type-names) 1)
-     (llvm-type-for-name (first return-type-names)))
+    ((= (length return-type-names) 1) (crisp-type-to-llvm-type (first return-type-names) module))
     ;; Case 3: Should not happen, but treat as void.
     (t (llvm-void-type))))
 
@@ -65,14 +56,14 @@
   (let* ((return-types (semantic-function-return-type semantic-function))
          (crisp-return-type (first return-types)) ; For single-value logic for now
          (base-name (semantic-function-name semantic-function))
-         (param-types (mapcar #'semantic-param-type (semantic-function-param-list semantic-function)))
-         (mangled-name (format nil "~a~{_~a~}" base-name param-types))
+         (param-type-specs (mapcar #'semantic-param-type (semantic-function-param-list semantic-function)))
+         (mangled-name (format nil "~a~{_~a~}" base-name (mapcar #'mangle-type-spec param-type-specs)))
          (fn-name (substitute #\_ #\- (string-downcase mangled-name)))
          (fn-loc (semantic-function-source-location semantic-function))
          )
     (log:debug "Attempting to get LLVM type for: ~s" (semantic-function-return-type semantic-function))
     ;; --- 1. Define the Function Type ---
-    (let* ((return-type (get-llvm-return-type (llvm-get-module-context module) return-types))
+    (let* ((return-type (get-llvm-return-type module return-types))
            ;;return-type can be three different things: a single LLVM type, a struct type (for multi-return), or void
            (param-nodes (semantic-function-param-list semantic-function))
            (param-count (length param-nodes))
@@ -81,7 +72,7 @@
       (loop for i from 0
             for param-node in param-nodes
             do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i)
-                     (llvm-type-for-name (semantic-param-type param-node))))
+                     (crisp-type-to-llvm-type (semantic-param-type param-node) module)))
       (log:debug "finished llvm-type-for-name. Calling llvm-function-type...")
       (let ((fn-type (llvm-function-type return-type param-types-array param-count nil)))
         (log:debug "finished llvm-function-type, calling llvm-add-function...")
@@ -136,7 +127,7 @@
               (loop for i from 0
                     for param-node in param-nodes
                     for llvm-param = (llvm-get-param func i) do
-                    (let* ((param-name (semantic-param-name param-node)) (alloca (llvm-build-alloca builder (llvm-type-for-name (semantic-param-type param-node)) (string-downcase param-name))))
+                (let* ((param-name (semantic-param-name param-node)) (alloca (llvm-build-alloca builder (crisp-type-to-llvm-type (semantic-param-type param-node) module) (string-downcase param-name))))
                          (llvm-build-store builder llvm-param alloca)
                          (setf (gethash param-name var-env) alloca)))
 
@@ -172,8 +163,7 @@
       ;; Multiple return values, build a struct.
       ((> (length return-types) 1)
        (log:debug "MVR Codegen: Building struct for types: ~s" return-types)
-       (let* ((context (llvm-get-module-context module))
-              (struct-type (get-llvm-return-type context return-types))
+       (let* ((struct-type (get-llvm-return-type module return-types))
               ;; Start with an undefined struct value. We will build it up.
               (agg-val (llvm-get-undef struct-type)))
          (log:debug "MVR Codegen: Struct type: ~s, initial undef value: ~s" struct-type agg-val)
@@ -197,17 +187,23 @@
 (defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
   "Generates IR for a literal value."
   (declare (ignore var-env))
-  (let* ((type-name (semantic-literal-value-type node))
+  (let* ((type-spec (semantic-literal-value-type node))
          (value (semantic-literal-value node))
-         (llvm-type (llvm-type-for-name type-name))
-         (crisp-type (gethash type-name *crisp-types*))
+         (llvm-type (crisp-type-to-llvm-type type-spec module))
          (result (cond
-                   ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
-                    (llvm-const-int llvm-type value nil))
-                   ((eq (crisp-type-category crisp-type) :float)
-                    ;; CFFI requires the Lisp float to be a double for the call.
-                    (llvm-const-real llvm-type (coerce value 'double-float)))
-                   (t (error "Codegen for literal of unknown type category: ~a" type-name))))
+                   ;; Handle our new cell type as a placeholder
+                   ((listp type-spec)
+                    (if (eq (first type-spec) 'cell)
+                        (llvm-get-undef llvm-type)
+                        (error "Codegen not implemented for literal of type ~a" type-spec)))
+                   ;; Handle simple types
+                   ((symbolp type-spec)
+                    (let ((crisp-type (gethash type-spec *crisp-types*)))
+                      (cond
+                        ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int)) (llvm-const-int llvm-type value nil))
+                        ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
+                        (t (error "Codegen for literal of unknown type category: ~a" type-spec)))))
+                   (t (error "Codegen not implemented for literal of type ~a" type-spec))))
         (di-location (when (and di-builder di-scope location-map)
                        (let* ((loc (semantic-node-source-location node))
                               (line (gethash loc location-map 0)))
@@ -223,13 +219,13 @@
   "Generates IR for reading a variable."
   (declare (ignore module di-builder di-scope location-map))
   (let* ((var-name (semantic-var-read-name node))
-         (alloca (gethash var-name var-env))
-         (type (llvm-type-for-name (semantic-var-read-type node)))
+         (alloca (gethash var-name var-env)))
+    (let* ((type (crisp-type-to-llvm-type (semantic-var-read-type node) module))
          (loaded-name (string-downcase (format nil "~a" var-name)))
          (current-block (llvm-get-insert-block builder))
          (parent-fn (llvm-get-basic-block-parent current-block)))
     (values (llvm-build-load2 builder type alloca loaded-name)
-            nil)))
+            nil))))
 
 ;; -- addition --
 (defun build-cast-if-needed (builder from-val from-type-name to-type-name)
@@ -312,8 +308,8 @@
   "Generates IR for a bitcast."
   (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-bitcast-arg node) builder module var-env di-builder di-scope location-map)
     (declare (ignore arg-loc))
-    (let* ((to-type-name (semantic-bitcast-type node))
-           (to-llvm-type (llvm-type-for-name to-type-name))
+    (let* ((to-type-spec (semantic-bitcast-type node))
+           (to-llvm-type (crisp-type-to-llvm-type to-type-spec module))
            (cast-val (llvm-build-bit-cast builder arg-val to-llvm-type "bitcast")))
       (values cast-val nil))))
 
@@ -321,8 +317,8 @@
   "Generates IR for a float-to-integer truncation cast."
   (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-fp-truncate-cast-arg node) builder module var-env di-builder di-scope location-map)
     (declare (ignore arg-loc))
-    (let* ((to-type-name (semantic-fp-truncate-cast-type node))
-           (to-llvm-type (llvm-type-for-name to-type-name))
+    (let* ((to-type-spec (semantic-fp-truncate-cast-type node))
+           (to-llvm-type (crisp-type-to-llvm-type to-type-spec module))
            ;; NOTE: This assumes a signed conversion. We'll need to check the
            ;; crisp-type category to select fptosi vs fptoui in the future.
            (cast-val (llvm-build-fp-to-si builder arg-val to-llvm-type "fptosi")))
@@ -335,19 +331,18 @@
   (let* ((sig (semantic-call-signature node))
          (return-type-names (function-signature-return-types sig))
          (has-return-value (not (null (remove 'nil return-type-names))))
-         ;; 1. Get the LLVM return type (handles single, multi, and void)
-         (llvm-return-type (get-llvm-return-type (llvm-get-module-context module)
-                                                 return-type-names))
+         (llvm-return-type (get-llvm-return-type module return-type-names))
 
           ;; 3. Build the LLVM function *type* (the signature)
           (param-count (length (function-signature-parameters sig)))
           (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count))
           (_ (loop for i from 0 for p-type in (function-signature-parameters sig)
                    do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i)
-                            (llvm-type-for-name p-type))))
+                            (crisp-type-to-llvm-type p-type module))))
           ;; The name of the function in LLVM IR is mangled with its types
           ;; to support overloading. e.g., add_two_int_int
-          (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node) (function-signature-parameters sig)))
+          (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
+                                (mapcar #'mangle-type-spec (function-signature-parameters sig))))
           (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
           (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
 
@@ -417,7 +412,7 @@
                     (generate-expression-ir builder module let-env di-builder di-scope location-map val-node))))
 
           ;; Now that we have the correct value (val-ir), allocate and store it.
-          (let ((alloca (llvm-build-alloca builder (llvm-type-for-name llvm-type-name) (string-downcase var-name))))
+          (let ((alloca (llvm-build-alloca builder (crisp-type-to-llvm-type llvm-type-name module) (string-downcase var-name))))
             (llvm-build-store builder val-ir alloca)
             (setf (gethash var-name let-env) alloca)))))
 
@@ -426,9 +421,34 @@
     (loop for body-node in (semantic-let-body node)
           finally (return (generate-expression-ir builder module let-env di-builder di-scope location-map body-node)))))
 
-(defun llvm-type-for-name (type-name)
-  "Maps a Crisp type symbol to an LLVM type."
-  (let ((crisp-type (gethash type-name *crisp-types*)))
-    (if crisp-type
-        (funcall (crisp-type-llvm-type-fn crisp-type))
-        (error "Unknown type name for LLVM: ~a" type-name))))
+(defun mangle-type-spec (type-spec)
+  "Creates a string representation of a type spec for name mangling."
+  (cond
+    ((symbolp type-spec) (string-downcase (symbol-name type-spec)))
+    ((listp type-spec) (format nil "~{~a~^_~}" (mapcar #'mangle-type-spec type-spec)))
+    (t (error "Cannot mangle unknown type specifier: ~a" type-spec))))
+
+(defun crisp-type-to-llvm-type (type-spec module)
+  "Resolves a Crisp type specifier (simple or parameterized) to an LLVM type."
+  (cond
+    ;; Simple type like 'int
+    ((symbolp type-spec)
+     (let ((crisp-type (gethash type-spec *crisp-types*)))
+       (unless crisp-type
+         (error "Internal codegen error: Unknown simple type ~a" type-spec))
+       (funcall (crisp-type-llvm-type-fn crisp-type))))
+    ;; Parameterized type like '(cell int)
+    ((listp type-spec)
+     (let ((base-type (first type-spec)))
+       (cond
+         ((eq base-type 'cell)
+          ;; A cell is a struct { ptr, i64 }. We must build a C array for the types.
+          (let* ((context (llvm-get-module-context module))
+                 (element-types (list (llvm-int8-ptr-type (llvm-int8-type) 0) (llvm-int64-type)))
+                 (element-count (length element-types))
+                 (type-array (cffi:foreign-alloc 'llvm-type-ref :count element-count)))
+            (loop for i from 0 for type in element-types
+                  do (setf (cffi:mem-aref type-array 'llvm-type-ref i) type))
+            (llvm-struct-type-in-context context type-array element-count nil)))
+         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
+    (t (error "Internal codegen error: Invalid type specifier ~a" type-spec))))

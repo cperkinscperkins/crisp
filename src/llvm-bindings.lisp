@@ -40,6 +40,9 @@
 (defcfun ("LLVMInt32Type" llvm-int32-type) :pointer)
 (defcfun ("LLVMInt8Type" llvm-int8-type) :pointer)
 (defcfun ("LLVMInt16Type" llvm-int16-type) :pointer)
+(defcfun ("LLVMPointerType" llvm-int8-ptr-type) :pointer
+  (type :pointer)
+  (address-space :unsigned-int))
 (defcfun ("LLVMInt64Type" llvm-int64-type) :pointer)
 
 (defcfun ("LLVMHalfType" llvm-half-type) :pointer

@@ -51,8 +51,8 @@
   "Advises a hard-coded list of functions for debugging purposes."
   (let ((functions-to-advise
           ;; Add function symbols here, e.g., 'crisp.compiler::analyze-expression
-          '( crisp.compiler::analyze-signatures-pass))) 
-          ;'( )))
+          ;'( crisp.compiler::analyze-signatures-pass))) 
+          '( )))
     (dolist (fn-sym functions-to-advise)
       (advise-function fn-sym))))
 
