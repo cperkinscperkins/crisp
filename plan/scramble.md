@@ -256,6 +256,11 @@ LANGUAGE CHANGES
 - - side channel
 - [ ] Revisit `def-constant-vector` . `def-contstant-storage` ??
 
+- [ ] Resolve `vector-type` vs. `vector` etc. 
+
+- [ ] FML - +warp-size+ is 32 throughout the doc, but ideal warp size
+            on BattleMage might be 16.  How is that set/handled?
+
 
 
 

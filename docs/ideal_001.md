@@ -883,7 +883,7 @@ There are four different cases where this happens:
 
  Crisp lets you put Storage Handles directly into the kernel parameter list, 
  but in practice the hoisting code will often need to set MULTIPLE arguments: 
- at minimum a C-style pointer to the data and a size argument, but also strides and extants
+ at minimum a C-style pointer to the data and a size argument, but also strides and extents
  for higher arity Storage Handles. 
  The kernel will handle marshalling those separate arguments. 
 
@@ -1554,7 +1554,8 @@ With Crisp you have two ways of preparing constant memory:
 - Define and initialize it entirely at compile time using `def-constant-vector`. Kernels access it by its defined name.
 - Declare a kernel parameter as Storage Handle type with `:constant` address space. The host is then responsible for allocating and initializing a read-only buffer and passing it to the kernel. The hoisting code generator will produce example code demonstrating the necessary host API calls.
 
-
+### Private Memory
+`:private`  - need to be written
 
 
 Storage Handle Types
@@ -1635,7 +1636,7 @@ Every `tensor` has these runtime properties:
 | offset   | ulong       | offset into parent. |
 | num-dims | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
 | strides  | stride-type |  `vector` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
-| extants  | extants-type | `vector` the lenght of `num-dims` that tracks the extant of that particular dimension |
+| extents  | extents-type | `vector` the lenght of `num-dims` that tracks the extent of that particular dimension |
 
 Each of those properties can be accessed by the `XXXX~` function.
 e.g. `(length~ someTensor)` , `(parent~ someTensor)`
@@ -1718,6 +1719,11 @@ access functions cannot be overloaded.   `~ref~` is intended to be used from ove
 (set! (~ref~ <vector> <index>) <value>)
 ```
 
+<!-- NOTE  Is this restriction still in effect?   -->
+The `~ref~` function is NOT supported for tensors. Also, it is very likely that if more abstract 
+tensors are supported in the future (symmetrical, sparse, etc)
+that they may have completely different affordances for access.
+
 
 Helper Functions
 ----------------
@@ -1728,7 +1734,15 @@ Helper Functions
 Note that this is NOT a passthrough. If you want the total number of bytes in the parent `storage`
 you'll need `(bytes~ (parent~ someStorageHandle))`
 
+`(num-dims-of someStorageHandle)`  returns the number of dimensions of a storage handle.
+Very useful for the `tensor` type, less so for the others.
 
+| type | dims | 
+|------|------|
+| cell   | 0 |
+| vector | 1 | 
+| matrix | 2 | 
+| tensor | N | 
 
 Member Data Rules
 -----------------
@@ -1920,15 +1934,19 @@ using `make-` with the four Storage Handle types.
 (make-cell <source> <new-element-type> &key offset)
 (make-vector <source> <new-element-type> &key length offset)
 (make-matrix <source> <new-element-type> width height &key offset strides)
-(make-tensor <source> <new-element-type> <extants-list> &key offset strides)
+(make-matrix <source> <new-element-type> width height &key (major :row) (offset 0))
+(make-tensor <source> <new-element-type> <extents-list> &key offset strides)
 ```
 
 A new `cell` obviously has `length=1`.  For a `vector`, if the `:length` key is not used, then the resulting 
 new `vector` will have its size calculated automatically (byte size of the original storage / new element size, minus offset).
 If the source byte size is not a multiple of the new element size, the result is truncated.
-But the other types (`tensor` and `matrix`) need to have their extants provided.
+But the other types (`tensor` and `matrix`) need to have their extents provided.
 
 The returned Storage Handle inherits the address-space, access permissions, and layout (`:compact` or `:std140`) from the source.
+
+For the 2D `matrix`, one of the declarations supports a `:major` key which can be `:row` or `:col`.
+Alternately, the `:strides` key can set the strides. Setting the strides directly is how to get "row major" vs "col major" (versus "plane major" etc) tensor in higher dimensions. 
 
 There are some restrictions. They are enforced at compile time:
 
@@ -2352,11 +2370,12 @@ which allows you to state its intended size and purpose.
 (make-scratch-vector vector-type sizeExpression &key address-space align access name msg)
 
 ;; soa-vectors
-(make-scratch-vector struct-type sizeExpression &key address-space align access name msg)
-(make-scratch-vector soa-vector-type sizeExpression &key address-space align access name msg)
+(make-scratch-soa-vector struct-type sizeExpression &key address-space align access name msg)
+(make-scratch-soa-vector soa-vector-type sizeExpression &key address-space align access name msg)
 
 ;; matrices
 (make-scratch-matrix element-type sizeExpression &key strides address-space align access name msg)
+(make-scratch-matrix element-type sizeExpression &key (major :row) address-space align access name msg)
 (make-scratch-matrix matrix-type sizeExpression &key address-space align access name msg)
 
 ;; tensors
@@ -2381,9 +2400,12 @@ for `sizeExpression` are the following keyword symbols that Crisp supports:
 
 - `:match-workgroup-size`  (1 per thread in group) the scratch memory allocated will match the workgroup size (ie `wg-size * sizeof(T)` where `T` is the element type)
 - `:match-num-workgroups`  (1 per group in the grid).
+- `:match-total-threads`  (1 per thread total)
 - `:match-warp-size`  (1 per lane in warp)
 - `:match-warp-tile`  (1 per warp-size squared)
-- `:match-grid-size`  (1 per thread total)
+- `:match-num-warps-per-workgroup` 
+- `:match-total-warps`  (global_size / warp-size)
+
 
 The above `sizeExpression` choices will automatically set the `:msg` that is sent back to the hoisting code.
 
@@ -2399,10 +2421,19 @@ the arity of the Storage Handle view.  If it is expected that they won't match, 
 Alternately, the `sizeExpression` can be a list in `(... z y x)` order. 
 
 
-#### type expression
+#### type expression argument
 
 Usually this argument is a Storage Handle type, but an existing Storage Handle variable can be used as well, which 
 can make things simpler.
+
+#### scratch types
+These type expressions are available:
+```
+(scratch-cell-type T &optional address-space)
+(scratch-vec-type T &optional address-space)
+(scratch-matrix-type T &optional address-space)
+(scratch-tensor-type T &optional address-space)
+```
 
 
 #### Example 
@@ -2439,64 +2470,6 @@ We'll need to modify the args up and down the call tree to get these "side chann
 Modifying the beginning of the arglist (of course).
 
 -->
-
-
-
-### make-implicit-XXXX
-
-```
-(make-implicit-cell <ID> cellType &key name msg)
-(make-implicit-vector <ID> vectorType &key name msg)
-(make-implicit-matrix <ID> matrixType &key name msg)
-(make-implicit-tensor <ID> tensorType &key name msg)
-```
-
-Do you think the Crisp scratch memory or debug logging systems are cool, but you could do better?
-Knock yourself out, deviant!  The `make-implicit-XXXX` allows you to Side Channel any Storage Handle for any 
-purpose.  The `<vectorType>` et al must be complete, but it doesn't otherwise need to capture any particular
-size requirement.
-
-The `<ID>` are tracked. If the Crisp compiler sees two `make-implicit-XXXX` invocations with the same
-`<ID>` for a given Storage Handle type, it will assume they are the same and only side channel enqueue one thing.
-
-In the example below, this function, if called by a kernel, would cause two additional float array pointer to 
-be hoisted, plus a pointer to a unsigned long array.  
-
-```
-(def-type float-vec (vector-type float :std140 :global :read_only))
-(def-type ulong-vec (vector-type ulong :std140 :global :writeable :std140))
-
-;; -- calc-final-result --
-(def-grid-function calc-final-result (x y &out A)
-  (declare #( ulong unlong &out float-vec => nil))
-  (let ((gamma-1 (make-implicit-vector :gamma-1 float-vec :msg "Gamma Squad should provide these"))
-        (gamma-2 (make-implicit-vector :gamma-2 float-vec))
-        (haversine-3 (make-implicit-vector ulong-vec  :name "haversine")))
-      ...))
-```
-
-
-
-
-### Specialize Scratch Vector Routines
-
-Many kernels routinely get scratch vectors sized for a workgroup or the number of
-groups. There are predefined macros for this, that specify the desired size.
-
-These default to `:local` address space, `:read-write` access and `:std140` layout.
-But the address space can be made `:global` with an optional argument.
-
-
-```
-(make-scratch-local-work-size T &optional address-space &key name comment)
-(make-scratch-num-groups T &optional address-space &key name comment)
-(make-scratch-num-warps T &optional address-space &key name comment) ;; <--  number of warps in a single workgroup.
-```
-There is a matching type function
-```
-(scratch-vec-type T &optional address-space)
-```
-<!-- num-warps is (ceil (get-local-work-size) (get-warp-size)) -->
 
 ### Scratch Helpers
 
@@ -2551,8 +2524,52 @@ Possible Implementation
 
 
 
-Tensors
--------
+### make-implicit-XXXX
+
+```
+(make-implicit-cell <ID> cellType &key name msg)
+(make-implicit-vector <ID> vectorType &key name msg)
+(make-implicit-matrix <ID> matrixType &key name msg)
+(make-implicit-tensor <ID> tensorType &key name msg)
+```
+
+Do you think the Crisp scratch memory or debug logging systems are cool, but you could do better?
+Knock yourself out, deviant!  The `make-implicit-XXXX` allows you to Side Channel any Storage Handle for any 
+purpose.  The `<vectorType>` et al must be complete, but it doesn't otherwise need to capture any particular
+size requirement.
+
+The `<ID>` are tracked. If the Crisp compiler sees two `make-implicit-XXXX` invocations with the same
+`<ID>` for a given Storage Handle type, it will assume they are the same and only side channel enqueue one thing.
+
+In the example below, this function, if called by a kernel, would cause two additional float array pointer to 
+be hoisted, plus a pointer to a unsigned long array.  
+
+```
+(def-type float-vec (vector-type float :std140 :global :read_only))
+(def-type ulong-vec (vector-type ulong :std140 :global :writeable :std140))
+
+;; -- calc-final-result --
+(def-grid-function calc-final-result (x y &out A)
+  (declare #( ulong unlong &out float-vec => nil))
+  (let ((gamma-1 (make-implicit-vector :gamma-1 float-vec :msg "Gamma Squad should provide these"))
+        (gamma-2 (make-implicit-vector :gamma-2 float-vec))
+        (haversine-3 (make-implicit-vector :haversine ulong-vec  :name "haversine")))
+      ...))
+```
+
+
+
+
+
+
+
+Tensors & Matrices
+------------------
+
+Tensors were introduced earlier in the [Storage Handle Types](#storage-handle-types) section.
+That section covers how to declare a `tensor-type` or `matrix-type`, how to access elements, using scratch memory and more.
+
+In this section we want to cover a few more details about tensors and matrices. 
 
 In Crisp a `vector` is always a one dimensional contiguous blocks of memory.  
 Tensors are represented by  `tensor` which is similar to a `vector` except 
@@ -2561,38 +2578,9 @@ that it has adjustable strides.
 Tensors can have their exact size determined at runtime, but the number of their dimensions (eg. 2D matrix versus 4D hypercube )
 must be known at compile time.
 
-### tensor-type
+In Crisp, a 1D `tensor` can be used nearly anywhere a `vector` can be used.
 
-Tensors are typed completely by dimensions and the complete vector-type of a parent. 
-Tensors are incompletely typed if the parent vector-type is incomplete, or absent.
 
-```
-(tensor-type) 
-(tensor-type NumDims)
-(tensor-type NumDims parentVectorType)
-; (tensor-type &key :dims :parent)  ; <-- NOTE: we don't have comparable parent key for vector-view ? Maybe define there? Or remove this?
-
-(num-dims-of someTensorViewType)
-```
-
-`num-dims-of` is a compile-time expression that returns the dimensions used to define the `tensor-type` .
- It triggers a compile-time error if the `tensor-type` doesn't contain that (it does NOT return nil).
-
- In Crisp, a 1D `tensor` can be used nearly anywhere a `vector` can be used.
-
-### Creating Tensors
-
-There are four routines for creating `tensor`s. Two for `tensor` of any dimension,
-and two for creating matrices, which are 2D `tensor`. 
-```
-(make-tensor parent len ... lenN  &key (offset 0))
-(make-tensor strideVec parentVec len ... lenN &key (offset 0))
-
-(make-matrix parent len0 len1 &key (major :row) (offset 0))
-(make-matrix parent strideVec len0 len1 &key (offset 0))
-```
-For the 2D `matrix`, one of the declarations supports a `:major` key which can be `:row` or `:col`.
-Alternately, the `strideVec` can set the strides. Setting the strides directly is how to get "row major" vs "col major" (versus "plane major" etc) tensor in higher dimensions. 
 
 
 In the example below, let's look at a 3x4 matrix `A`, with elements labeled 
@@ -2634,10 +2622,10 @@ Next, here is two different ways this matrix could be created.
 In both methods, the coordinates above are exactly the same.
 ```
 ;; Create a row-major view of a 3x4 matrix
-(make-tensor #(4 1) my-data-vec 3 4)
+(make-matrix my-data-vec int 3 4 :strides #(4 1) )
 
 ;; Create a column-major view of a 3x4 matrix
-(make-tensor #(1 3) my-data-vec 3 4)
+(make-matrix my-data-vec int 3 4 :strides #(1 3) )
 ```
 
 But, when laid out linearly, these two tensors are not the same. 
@@ -2654,39 +2642,7 @@ Lastly, the variants of these declarations that support `strideVec` should be us
 generally far simpler to use one of the other versions and let Crisp set up the stride vector for you.
 
 
-### Properties
 
-
-A `tensor` has these runtime properties:
-| Name     | Type        | Description |
-|----------|-------------|-------------|
-| length   | ulong       | the number of elements in the `tensor`.  |
-| parent   | vector      | address of a "parent" storage |
-| offset   | ulong       | offset into parent. |
-| num-dims | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
-| strides  | stride-type |  `vector` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
-| dims     | dims-type   | `vector` the lenght of `num-dims` that tracks the extant of that particular dimension
-
-Each of those properties can be accessed by the .<prop> function.
-e.g. `(length~ someTensorView)` , `(parent~ someTensorView)`
-
-
-### Element Access.  Use `~` 
-As in vectors `~` is the primary access function for getting and setting elements of a `tensor`.
-It is also the safe and correct access function because it correctly navigates to the underlying data
-using strides. 
-
-Like C++ and Python (but unlike Fortran), Crisp uses "odometer" ordering of terms.
-And the order of these terms are unaffected by the strides or whether "row major" or "col major" was elected
-for the internal layout.
-
-```
-(~ some-3D-tensor z y x)
-```
-
-The `~ref~` function is NOT supported for tensors. Also, it is very likely that if more abstract 
-tensors are supported in the future (symmetrical, sparse, etc)
-that they may have completely different affordances for access. 
 
 
 ### Overloading Element Access
@@ -2705,7 +2661,7 @@ It is uwise to overload `~` for all tensors. Use `def-derived-type` when overloa
 
 ;; and store those ints back to floats
 ;;; ~  (setter)
-(def-setter ~ (tensor index val)
+(def-setter ~ ((tensor index) val)
   (declare #(normalized-tv ulong int => nil))
   (set! (~ tensor index) (/ val 100.0)))
 
@@ -2722,18 +2678,9 @@ despite the horrible problems that might occur if done incorrect, we are making 
 (set! (~ (strides~ someTensorView) 1) 8)
 ```
 
-<!-- NOTE: I understand that the strides, will ultimately need to be mutable.  But OMG it seems like a bad idea 
+<!-- 
 
-  NOTE: does the user need to know HOW the strides will be created by Crisp? For example for a 10x10 tensor
-       the stride could be #(0 10) or #(10 0).  
-  That also maps to row major/col major. So it seems like that should be expressed somehow.
--->
-
-### Helpers 
-
-`(element-type someTensor)`  a type expression that returns the type of the elements in the `tensor`.
-
-`(bytes someTensor)`  a helper function that calculates the current number of bytes in the `tensor`.
+NOTE: removing 'identity-tensor' for now.
 
 ### identity-tensor
 
@@ -2747,6 +2694,8 @@ where all the indeces are equal, which are 1.
 (is-identity-tensor? someTensorView) ;; can be called on any tensor
 ```
 
+-->
+
 Matrices
 --------
 
@@ -2754,11 +2703,6 @@ Matrices
 
 Matrices are simply 2D tensor views. The type alias `matrix` is defined to make coding easier, but any 2D `tensor` can automatically be considered a matrix. It is not a "derived" type.
 
-In [Creating Tensors](#creating-tensors) above, two routines for creating matrices are discussed:
-```
-(make-matrix parent len0 len1 &key (major :row) (offset 0))
-(make-matrix parent strideVec len0 len1 &key (offset 0))
-```
 
 Additionally, there are special functions specifically for matrices.
 
@@ -2913,7 +2857,7 @@ not necessarily like we want them to be.
 (def-const TILE_DIM:ulong +warp-size+)
 
 ;; -- convert-layout --
-(def-function convert-layout (source-M dest-M choice &optional (scratch (make-tile-scratch (element-type source-M))))
+(def-function convert-layout (source-M dest-M choice &optional (scratch (make-scratch-matrix (element-type source-M) :match-warp-tile)))
   ;; scratch is 32x32 (+warp-size+ x +warp-size+)
   (declare #(matrix matrix matrix-layout &optional (vector-type (element-type source-M)) => nil)
             (global-size :strategy :strided))
@@ -2921,7 +2865,7 @@ not necessarily like we want them to be.
   (r-t-assert-0 (!= choice :other-layout) "??")
 
   (unless (= (get-layout source-M) choice)
-    (let ((temp-tile (make-matrix scratch TILE_DIM (+ TILE_DIM 1)))) ; Padded tile sometimes increases performance
+    (let ((temp-tile scratch))
 
       ;; This loop makes each workgroup process multiple tiles.
       (thread-stride M '(TILE_DIM TILE_DIM) (tile-idx-y tile-idx-x) 
@@ -3544,8 +3488,6 @@ For template usage, see the subequent section.
 | `uniform`     | `(uniform someVar)`         | Yes | Yes | declares that some param or variable must be uniform across the workgroup.  Compiler will error if it is not. |
 | `constexpr`   | `(constexpr someVar)`       | Yes | Yes | delares that some param or variable must be compile time calculable. Compiler will error if it is not |
 | `to-uniform`  | `(to-uniform someVar)`      | No  | Yes | tells the compiler to MAKE the newly defined variable uniform across the entire workgroup. This is non-trivial. See [to-uniform](#to-uniform-) |
-| `global-mem` | `(global-mem gCounter)`      | No  | Yes | allocate memory in global memory instead of on stack. See below |
-| `local-mem`  | `(local-mem wg-counter)`     | No  | Yes | allocate memory in local shared memory instead of stack. See below |
 
 
 <!--
@@ -3588,43 +3530,7 @@ There are other ways of declaring variable types (arrows form, colon join).
 #'(in-vec &out out-vec)
 ```
 
-### global-mem 
-```
-(let ((gcounter 0))
-  (declare (type gcounter long) (global-mem gcounter))
-  ...
-  (atomic-inc! gcounter))
-```
 
-A variable declared with `global-mem` is not allocated by the compiler on the stack, 
-but is instead allocated in global memory. Note that it is a SINGULAR value shared by 
-ALL THREADS, not a per-thread value like a normal `let` declared variable.
-
-As such, it will require atomic operations to modify or update.  
-
-Be careful with these, as atomic operations on `global-mem` vars can incur
-a LOT of contention if every thread is expected to update it. These are best
-used if just one "leader" thread from some workgroup is expected to update.
-
-### local-mem
-```
-(let ((wg-counter 0))
-  (declare (type wg-counter long) (local-mem wg-counter))
-  ...
-  (atomic-inc! wg-counter))
-```
-
-A variable declared with `local-mem` is not allocated by the compiler on the stack,
-but is allocated in shared local memory. This means it is a singular value shared
-by every thread in the WORKGROUP. Like it's `global-mem` counterpart, these must
-be updated with atomic operations.  But, there will be significantly less 
-contention. 
-
-<!-- 
-Implementation Note: global-mem and local-mem declarations will require MORE use of the side channel mechanism.
-
-
--->
 
 
 `declare` and templates
@@ -4936,7 +4842,7 @@ going to agree on a convention that the local_work_size is 64.
         (inc! sum (~ A i)))
     
     ;; Prepare local memory and store sum in it. 
-    (let ((slm (make-scratch-local-work-size long)))
+    (let ((slm (make-scratch-vector long :match-workgroup-size)))
       (in-each-thread-in-group (local-idx)
         (set! (~ slm local-idx) sum)
         
@@ -5739,7 +5645,7 @@ Possible Implementation
 ```
 ;; -- reduce-to-workgroup --
 (defmacro reduce-to-workgroup (someFunction someVar identity &key message 
-                                                             (local-scratch-vec (make-scratch-num-warps (type-of someVar) message))
+                                                             (local-scratch-vec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
                                                              return-vec)
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
@@ -5826,8 +5732,8 @@ Possible Implementation
 ```
 ;; -- reduce-to-1-second-stage -- 
 (defmacro reduce-to-1-second-stage (someFunction someVar identity out-single 
-                                    &optional (localScratchVec (make-scratch-num-warps (type-of someVar) :message message))
-                                              (globalScratchVec (make-scratch-num-groups (type-of someVar) :message message))
+                                    &optional (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
+                                              (globalScratchVec (make-scratch-vector (type-of someVar) :match-num-workgroups :address-space :global :msg message))
                                     &key message)
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
@@ -5899,7 +5805,7 @@ Possible Implementation
 ```
 ;; -- reduce-to-1-atomic --
 (defmacro reduce-to-1-atomic (someFunction someVar identity return-vec
-                              &optional (localScratchVec (make-scratch-num-warps (type-of someVar) :message message))
+                              &optional (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
                               &key message)
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
@@ -5947,7 +5853,7 @@ Possible Implementation
 ```
 ;; -- reduce-to-1-cas --
 (defmacro reduce-to-1-cas (someFunction someVar identity return-vec
-                              &optional (localScratchVec (make-scratch-num-warps (type-of someVar) :message message))
+                              &optional (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
                               &key message)
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
@@ -5999,8 +5905,8 @@ Possible Implementation
 ```
 ;; -- reduce-to-1-cont --
 (defmacro reduce-to-1-cont (someFunction someVar identity continuation-kernel-name
-                             &optional (globalScratchVec (make-scratch-num-groups (type-of someVar)))
-                                       (localScratchVec (make-scratch-num-warps (type-of someVar)))) 
+                             &optional (globalScratchVec (make-scratch-vector (type-of someVar) :match-num-workgroups :address-space :global))
+                                       (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup))) 
    (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
    (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
    `(let-kernel ((continuation-k  (l-s-v g-s-v result-vec)
@@ -6113,7 +6019,7 @@ This is what an implementation of `reduce-vec-second-stage` might look like
   ;; This kernel IS the final reduction.
   (def-grid-function reduce-vec-second-stage (someFunction intermediateVec identity
                                                &out final-result
-                                               &optional (localScratch (make-scratch-local-work-size T)))
+                                               &optional (localScratch (make-scratch-vector T :match-workgroup-size)))
     (declare #'((binop-type T) (in-vec T A) T &out (single-result T)
                                          &optional (scratch-vec-type T))
              (grid-level)
@@ -6189,7 +6095,7 @@ Possible Implementation
   (declare (value-is A #'is-alignment?))
 
   (def-grid-function reduce-vec-atomic (someFunction vec identity &out return-vec
-                                &optional (localScratchVec (make-scratch-num-warps T)))
+                                &optional (localScratchVec (make-scratch-vector T :match-num-warps-per-workgroup)))
     (declare #'((binop-type T) (in-vec T A) T &out (single-result T) &optional (scratch-vec-type T))
       (global-size :derive-from vec :strategy :strided))
 
@@ -6224,7 +6130,7 @@ Possible Implementation
   (declare (value-is A #'is-alignment?))
 
   (def-grid-function reduce-vec-cas (someFunction vec identity &out return-vec
-                                &optional (localScratchVec (make-scratch-num-warps T)))
+                                &optional (localScratchVec (make-scratch-vector T :match-num-warps-per-workgroup)))
     (declare #'((binop-type T) (in-vec T A) T &out (single-result T) &optional (scratch-vec-type T))
             (global-size :derive-from vec :strategy :strided))
 
@@ -6251,8 +6157,8 @@ Possible Implementation
   (declare (value-is A #'is-alignment?))
 
   (def-grid-function reduce-vec-cont (someFunction vec identity continuation-kernel-name
-                              &optional (localScratchVec (make-scratch-num-warps T))
-                                        (globalScratchVec (make-scratch-num-groups T)))
+                              &optional (localScratchVec (make-scratch-vector T :match-num-warps-per-workgroup))
+                                        (globalScratchVec (make-scratch-vector T :match-num-workgroups :address-space :global)))
     (declare #'((binop-type T) (in-vec T) T string &optional (scratch-vec-type T) (scratch-vec-type T :global))
                 (global-size :derive-from vec :strategy :strided))
 
@@ -6431,7 +6337,7 @@ POssible Implementation:
 
   ;; Generate the code
   `(let (;; Allocate the local memory using the name provided by the user
-          (,local-flags-var (make-scratch-local-work-size uint))
+          (,local-flags-var (make-scratch-vector uint :match-workgroup-size))
           (local-id (get-local-id))
           (global-id (get-global-id)))
 
@@ -6569,7 +6475,7 @@ What could be simpler?
 ```
 (<T A>
   (def-grid-function global-exclusive-scan-upsweep (input-vec &out output-vec block-sums
-                                    &optional (scratch-vec (make-scratch-local-work-size T)))
+                                    &optional (scratch-vec (make-scratch-vector T :match-workgroup-size)))
     (declare #'((in-vec T A) &out (out-vec T A) (out-vec T A) &optional (scratch-vector-type T))
       (global-size :derive-from input-vec :strategy :strided))
     (r-t-assert-0 (= (length~ block-sums (get-num-workgroups))) "block-sums length should be the number of workgroups")
@@ -6716,7 +6622,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
 (defmacro filter (input-vec predicateF result-vec)
   (c-t-assert (is-type-of predicateF (predicate-type (element-type input-vec))) "type mismatch between predicateF and input-vec")
   (c-t-assert (is-type-of (element-type input-vec) (element-type result-vec)) "type mismatch between input-vec and result-vec")
-  `(let ((local-wg-matches (make-scratch-local-work-size uint))
+  `(let ((local-wg-matches (make-scratch-vector uint :match-workgroup-size))
         (local-id (get-local-id))
         (global-counter 0)
         (wg-offset 0)
@@ -6836,9 +6742,9 @@ But the count in `count-vec` is correct regardless.
                &out (vector-type ulong :global :writeable :std140 1) ; Output count vector
                => nil)
              ;; Declare optional local memory buffers for the scan algorithm
-             &optional (local-flags (make-scratch-local-work-size uint))
-                       (local-scan-results (make-scratch-local-work-size uint))
-                       (local-info (make-local-scratch-vector uint 2))) ; For wg_total and wg_offset
+             &optional (local-flags (make-scratch-vector uint :match-workgroup-size))
+                       (local-scan-results (make-scratch-vector uint :match-workgroup-size))
+                       (local-info (make-scratch-vector uint 2))) ; For wg_total and wg_offset
 
     ;; first step - detect local matches
     (let ((is-a-match nil) ; Per-thread flag to store match result
@@ -7042,7 +6948,7 @@ A possible implementation might be
              #((vector-type T :global :readable) (vector-type T :global :writeable) 
                 &key #'(T => #_is-orderable?) => nil))
     (let ((N   (get-local-linear-size)) ;; should be power of 2.
-         (shared-array (make-scratch-vector T N))
+         (shared-array (make-scratch-vector T :match-workgroup-size))
          (global-id (get-global-id))
          (local-id (get-local-id)))
       (r-t-assert-0 (is-power-of-2 N) "local_work_size should be a power of 2")
@@ -7408,11 +7314,11 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
     ;; setup shared memory
     (let ((wg-size (get-local-size))
            ;; Need space to store the data chunk for this workgroup
-          (local-data-chunk (make-scratch-local-work-size T ))
+          (local-data-chunk (make-scratch-vector T :match-workgroup-size ))
            ;; Need space to store the 'digit' for each element in the chunk
-          (local-digits (make-scratch-local-work-size uint ))
+          (local-digits (make-scratch-vector uint :match-workgroup-size ))
            ;; Need space for the local scan (prefix sum) result for each thread
-          (local-scan-indices (make-scratch-local-work-size uint))
+          (local-scan-indices (make-scratch-vector uint :match-workgroup-size))
 
           (local-id (get-local-id))
           (global-id (get-global-id)))
@@ -7517,7 +7423,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
   (def-function local-rank-within-digit (local-digits ;; Input: array (size=wg_size) of digits (0-255) for each thread
                                           local-id     ;; Input: this thread's local ID
                                           ;; Optional scratch space for atomic counters
-                                          &optional (digit-counts (make-scratch-vector uint :local A 256)))
+                                          &optional (digit-counts (make-scratch-vector uint 256 :align A)))
     (declare #((vector-type uint :local) uint &optional (vector-type uint :local A 256) => uint))
 
     ;; initialize the shared counter array
@@ -7910,7 +7816,7 @@ the hardware accellerated types that have a widened accumulator, quantized integ
               (global-size :derive-from A :strategy :strided)) 
     (when-thread-is 0
       (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
-    (let ((C-scratch (make-scratch-vector A :name "dot product")))  
+    (let ((C-scratch (make-scratch-vector (length~ A) :name "dot product")))  
       (map-stride #'* (A B) C-scratch)
       (reduce-vec-atomic #'+ C-scratch 0 RESULT)))
 
@@ -9275,7 +9181,7 @@ scratch vector whose length is equal to the local work size.
   (type-is T #'is-floating-point?)
 
   (def-grid-function fuzed-softmax (input-vec &out output-vec 
-                          &optional (scratch-vec (make-scratch-local-work-size T)))
+                          &optional (scratch-vec (make-scratch-vector T :match-workgroup-size)))
     (declare #'((in-vec T A) &out (out-vec T A) &optional (scratch-vec-type T))
       (global-size :derive-from input-vec :strategy :one-thread-per))
 
@@ -10973,7 +10879,7 @@ It works by sliding a "window" (usually 2x2) across the input matrix and picking
     (r-t-assert-0 (and (= (num-cols input-M) (* win-w (num-cols output-M)))
                        (= (num-rows input-M) ( win-h (num-rows output-M))))
                        "input matrix size must be output matrix size times win dim")
-    (r-t-assert-0 (and (> win-w 0) (> win-h 0)) "window must have extant")
+    (r-t-assert-0 (and (> win-w 0) (> win-h 0)) "window must have extent")
     (thread-stride output-M :global-size (xo yo)
       (let ((x-in-start (* xo win-w))
             (y-in-start (* yo win-y))
@@ -11022,7 +10928,7 @@ not a performent version for microfloat blocks.
     (r-t-assert-0 (and (= (num-cols input-M) (* win-w (num-cols output-M)))
                        (= (num-rows input-M) (* win-h (num-rows output-M))))
                        "input matrix size must be output matrix size times win dim")
-    (r-t-assert-0 (and (> win-w 0) (> win-h 0)) "window must have extant")
+    (r-t-assert-0 (and (> win-w 0) (> win-h 0)) "window must have extent")
     (c-t-assert (when (is-quantized-int? T) (nor  (nullp zero-point) (nullp scale)))
                 "using quantized int requires :zero-point and :scale keys ")
     (thread-stride output-M :global-size (xo yo)
@@ -11279,24 +11185,29 @@ other
 - bytes  
 - `~`                             [O]
 - `~ref~`
+- cell-type
+- make-cell
 - vector-type          [KO]
-- vector-base-type     [KO]
 - make-vector          [KO]
 - soa-vector-type      [KO]
-- soa-view-type        [KO]
 - make-soa-vector      [KO]
-- make-soa-view        [KO]
 - convert-soa-to-aos
 - convert-aos-to-soa
+- make-scratch-cell
 - make-scratch-vector
-- make-scratch-local-work-size
-- make-scratch-num-groups
-- make-scratch-num-warps
+- make-scratch-matrix
+- make-scratch-tensor
+- scratch-cell-type
 - scratch-vec-type
+- scratch-matrix-type
+- scratch-tensor-type
 - load-local
 - store-global
 
+- make-implicit-cell
 - make-implicit-vector
+- make-implicit-matrix
+- make-implicit-tensor
 - marshall-vector
 - marshall-scratch-vector
 - marshall-implicit-vector
@@ -11304,11 +11215,12 @@ other
 - voidp
 - #(1 2 3)
 - use                   [DP]
+- matrix-type
 - tensor-type
 - make-tensor     [KO]
 - make-matrix          [KO]
 - num-dims-of
-- `dims~`
+- `extents~`
 - `strides~`
 - `~` for tensors
 - matrix
