@@ -165,6 +165,9 @@ Windows:
 $env:PATH = "C:\Users\chrisper\Downloads\clang+llvm-21.1.5-x86_64-pc-windows-msvc\clang+llvm-21.1.5-x86_64-pc-windows-msvc\bin;" + $env:PATH
 ```
 -->
+```
+.\tests\run-all-tests.bat
+```
 
 Linux:
 

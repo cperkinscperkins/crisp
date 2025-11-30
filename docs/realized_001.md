@@ -67,7 +67,7 @@ The `let` binding is now implemented and tested. It correctly supports:
 - **`let*` Semantics**: Bindings are evaluated sequentially, and each new variable is available to subsequent bindings in the same `let` form.
 - **Mutable Variables**: `let`-bound variables are allocated on the stack and can be mutated (though `set!` is not yet implemented).
 - **Single-Variable Bindings**: Forms like `(let ((x 10)) ...)` are fully supported.
-- **Known Limitation**: Multiple-value-bind `(let ((q r (/ 10 3))) ...)` is not yet implemented.
+- **Multiple-Variable Bindings**: Forms like `(let ((q r (/ 10 3))) ...)` are fully supported.
 
 ### declare
 `declare` is available as the first s-expression in the body of a `def-function`. It is
@@ -80,8 +80,10 @@ The following declarations are supported
 #### (type a b int)
 
 #### (return-type int)
+Also `(return-type int long)` for multiple value return.
 
 #### arrow type notation #'(int int => int)
+Also `#'(int int => int int)` for multiple value return.
 
 
 Errors

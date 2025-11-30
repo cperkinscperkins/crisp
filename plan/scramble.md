@@ -176,7 +176,7 @@ SHORT TERM PLAN
 - - [ ] hella testing
 - [x] function overloads
 - - [x] testing
-- [ ] more let: multiple value return and bind
+- [x] more let: multiple value return and bind
 - [ ] templates as macros
 - [ ] higher order functions as templates
 - [ ] need to move more of our old erstaz logging to log4cl. 
