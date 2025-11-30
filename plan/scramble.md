@@ -208,12 +208,12 @@ QUESTIONS
       to define a type constraint for their own functions.  Annoying or useful?
 
 LANGUAGE CHANGES
-- [ ] lose declare local/global. Too complex
+- [x] lose declare local/global. Too complex
 - [ ] instead use (make-single-result T :global) . Might want to consider renaming 'single-result'
 - [ ] How to initialize the single-result? It has to be done by hoisting code for :global.
       And cannot be done for :local. So maybe the user just has to (set! ) or (atomic-xchg! ) it 
       themselves.
-- [ ] Shore up set! and atomic-ops
+- [x] Shore up set! and atomic-ops
 - - (atomic-inc! someVar)                 <--
 - - (atomic-inc! someTensor (x y z ...))
 - - (atomic-inc! someSingleRes)           <--   hmmm. atomic-inc-result! ?
@@ -227,10 +227,10 @@ LANGUAGE CHANGES
 - - (set-result! someSingleRes val)  ;; Q: should this compile error if :global ?
                                      ;; A: no. It is totaly valid to (when (= id 0) (set! ...))
 
-- [ ] suggestion: rename single-result to 'cell'.  (make-cell int :local)
-- [ ] use (~ someCell) without 0 to get and set its value.
-- [ ] atomic ops should be uniform (more or less), but DO expand for tensors (atomic-op! someTensor (x y z...) <val?>)
-- [ ] (make-scratch-cell T :global &key msg) 
+- [x] suggestion: rename single-result to 'cell'.  (make-cell int :local)
+- [x] use (~ someCell) without 0 to get and set its value.
+- [x] atomic ops should be uniform (more or less), but DO expand for tensors (atomic-op! someTensor (x y z...) <val?>)
+- [x] (make-scratch-cell T :global &key msg) 
       (make-scratch-vector VectorT size &key msg) 
       (make-scratch-tensor tensorT (size size size..) &key msg)
       IMPORTANT: is SIZE compile time calculable only?  
@@ -238,7 +238,7 @@ LANGUAGE CHANGES
                   a random runtime value.  
       NOTE: don't do make-scratch-matrix at this time. Use make-scratch-tensor. 
 
- - [ ] IDEA: instead of separate functions for common topologies, flag them?
+ - [x] IDEA: instead of separate functions for common topologies, flag them?
       These are for the `size` arg.
       :match-workgroup-size
       :match-num-workgroups
@@ -252,7 +252,7 @@ LANGUAGE CHANGES
       A tensor matching the above just has the total allocation that matches the total size of that thing.
       I guess. Might need to think what it means when they don't align. (2D workgroup, 4D tensor)
 
-- [ ] TODO: go through docs changing generic Vector to Storage Handle.
+- [x] TODO: go through docs changing generic Vector to Storage Handle.
 - - side channel
 - [ ] Revisit `def-constant-vector` . `def-contstant-storage` ??
 
