@@ -15,20 +15,24 @@
 
 (defun get-or-create-di-type (crisp-type di-builder di-type-cache)
   "Gets a DIBasicType from a cache or creates it if it doesn't exist."
-  (or (gethash (crisp-type-name crisp-type) di-type-cache)
-      (let* ((name-str (string-downcase (crisp-type-name crisp-type)))
-             (encoding (ecase (crisp-type-category crisp-type)
-                         (:signed-int 5)   ; DW_ATE_signed
-                         (:unsigned-int 7) ; DW_ATE_unsigned
-                         (:float 4)))      ; DW_ATE_float
-             (di-type (llvm-di-builder-create-basic-type
-                       di-builder
-                       name-str (length name-str)
-                       (crisp-type-size crisp-type)
-                       encoding
-                       0)))
-        (setf (gethash (crisp-type-name crisp-type) di-type-cache) di-type)
-        di-type)))
+  (if crisp-type
+      ;; It's a known, simple type.
+      (or (gethash (crisp-type-name crisp-type) di-type-cache)
+          (let* ((name-str (string-downcase (crisp-type-name crisp-type)))
+                 (encoding (ecase (crisp-type-category crisp-type)
+                             (:signed-int 5)   ; DW_ATE_signed
+                             (:unsigned-int 7) ; DW_ATE_unsigned
+                             (:float 4)))      ; DW_ATE_float
+                 (di-type (llvm-di-builder-create-basic-type
+                           di-builder name-str (length name-str)
+                           (crisp-type-size crisp-type) encoding 0)))
+            (setf (gethash (crisp-type-name crisp-type) di-type-cache) di-type)
+            di-type))
+      ;; It's an unknown or parameterized type. Create a placeholder.
+      (or (gethash :unspecified di-type-cache)
+          (let ((di-type (llvm-di-builder-create-basic-type di-builder "unspecified" (length "unspecified") 0 0 0)))
+            (setf (gethash :unspecified di-type-cache) di-type)
+            di-type))))
 
 (defun get-llvm-return-type (module return-type-names)
   "Determines the LLVM return type from a list of Crisp type names.
