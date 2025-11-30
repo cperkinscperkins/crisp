@@ -21,6 +21,13 @@
   "A hash table representing the call graph of functions.
   Keys are caller function names, values are lists of callee names.")
 
+(defvar *side-channel-originators* '(make-scratch-cell)
+  "A list of function names that trigger the implicit side-channel argument passing mechanism.")
+
+(defvar *originator-functions* nil
+  "A hash table containing the names of all functions that directly use a side-channel originator.")
+
+
 (defvar *crisp-types* (make-hash-table)
   "A hash table mapping type names (symbols) to CRISP-TYPE structs.")
 
@@ -328,13 +335,60 @@
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms."
   (log:debug "*crisp-types*: ~s~%*expression-analyzers*: ~s" (alexandria:hash-table-keys *crisp-types*) (alexandria:hash-table-keys *expression-analyzers*))
-  ;; Pass 1: Gather all function signatures first.
-  (let ((*call-graph* (make-hash-table)))
+  ;; Pass 1: Gather all function signatures and build the call graph.
+  (let ((*call-graph* (make-hash-table))
+        (*originator-functions* (make-hash-table)))
     (analyze-signatures-pass forms)
+
+    ;; TODO: This is where Phase 4 (Propagation) will go.
+
     ;; Pass 2: Now that all signatures are known, compile the function bodies.
     (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
     ;; After analysis, check the constructed graph for cycles.
     (check-for-recursion-cycles)))
+
+
+(defun shallow-analyze-body (forms)
+  "Performs a shallow, recursive walk of a function's body.
+  Returns two values:
+  1. A boolean indicating if a side-channel originator was found.
+  2. A list of all unique symbols found in the 'car' of lists (potential function calls)."
+  (let ((is-originator nil)
+        (callees '()))
+    (labels ((walk (form)
+               (when (consp form)
+                 (let ((op (car form)))
+                   (if (cond
+                         ;; --- Special Forms (handle their own recursion) ---
+                         ((eq op 'declare) t) ; Ignore declare forms completely.
+                         ((member op '(let let*))
+                          ;; For let, walk the init-forms and the body.
+                          (let ((bindings (cadr form))
+                                (body (cddr form)))
+                            (dolist (binding bindings)
+                              (walk (cadr binding))) ; Walk the init-form
+                            (dolist (body-form body)
+                              (walk body-form)))
+                          t) ; Mark as handled.
+                         ((eq op 'if)
+                          (walk (cadr form))  ; Walk condition.
+                          (walk (caddr form)) ; Walk then.
+                          (when (cadddr form) (walk (cadddr form))) ; Walk else.
+                          t) ; Mark as handled.
+                         (t nil)) ; Not a special form.
+                       nil ; If a special form was handled, do nothing more.
+                       ;; --- Default Processing ---
+                       (progn
+                         (if (member op *side-channel-originators*)
+                             ;; It's an originator, set the flag and we're done with this form.
+                             (setf is-originator t)
+                             ;; Otherwise, it's a potential function call.
+                             (progn
+                               (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op))) (pushnew op callees))
+                               (dolist (sub-form (cdr form)) (walk sub-form))))))))))
+      (dolist (form forms)
+        (walk form))
+      (values is-originator callees))))
 
 
 (defun analyze-signatures-pass (forms)
@@ -344,7 +398,16 @@
         do (let ((location (list i))) ; Simplified location for now
              (cond
                ((and (consp form) (eq (car form) 'def-function))
-                (register-function-signature form location))
+                (let* ((name (second form))
+                       (body (cdddr form)))
+                  ;; 1. Register the explicit signature.
+                  (register-function-signature form location)
+                  ;; 2. Perform shallow analysis for call graph and originators.
+                  (multiple-value-bind (is-originator callees)
+                      (shallow-analyze-body body)
+                    (when is-originator
+                      (setf (gethash name *originator-functions*) t))
+                    (setf (gethash name *call-graph*) callees))))
                ;; TODO: Add handlers for with-template-type, def-struct, etc.
                ))))
 
