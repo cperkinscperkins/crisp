@@ -195,7 +195,7 @@ Debugging
 - [x] let-d  that logs each binding?
 - [ ] refactor generate-llvm-ir  
 - [x] .bat to run all .crisp tests from compiler. local E2E easier
-- [ ] dump-env to print out all the bindings in an environemnt
+- [x] dump-env to print out all the bindings in an environemnt
 - [ ] plus similar for *function-table* and others
 
 

@@ -123,6 +123,7 @@
 (defpackage :crisp.utils
   (:use :cl)
   (:export #:let-d
+           #:dump-env
            #:advise-function
            #:initialize-advisements))
 
