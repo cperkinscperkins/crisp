@@ -1,0 +1,44 @@
+;; temporary test 
+
+;; Phase 1 and Phase 2 tests
+
+(def-function call-scratch-directly ()
+    (declare #'(=> (cell long)))
+    (make-scratch-cell long))
+
+(def-function scratch-cell-bound ()
+    (declare #'(=> (cell float)))
+  (let ((sc (make-scratch-cell float)))
+    sc))
+
+#|
+ ;; this needs to be moved into our negative tests.
+(def-function type-mismatch ()
+    (declare #'(=> (cell long)))
+  (let ((sc (make-scratch-cell float)))
+    sc))
+|#
+
+;; Phase 3 and Phase 4 tests
+
+(def-function fun-D (sc)
+    (declare #'((cell int) => int))
+  ;; ignore sc for now.
+  8)
+
+(def-function fun-C (sc)
+    (declare #'((cell int) => int))
+  (+ 7 (fun-D sc)))
+
+(def-function fun-B (i)
+    (declare #'(int => int))
+  (let ((sc (make-scratch-cell int)))
+    (+ i (fun-C sc))))
+
+(def-function fun-A (i)
+    (declare #'(int => int))
+  (fun-B i))
+
+(def-function kernel (i)
+    (declare #'(int => int))
+  (fun-A i))

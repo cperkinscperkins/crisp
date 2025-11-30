@@ -296,6 +296,7 @@
    ;; Our memory tools
    #:vector #:matrix #:tensor
    #:storage ;; (or whatever we call it)
+   #:make-scratch-cell
    #:make-scratch-vector #:make-tile
    #:load-chunk #:store-chunk #:load-tile #:store-tile
    #:~ #:set! #:length~

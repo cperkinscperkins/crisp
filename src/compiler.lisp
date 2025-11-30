@@ -198,6 +198,27 @@
              (format stream "Unknown variable ~a."
                      (unknown-variable-name condition)))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Type System Helpers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun valid-type-p (type-spec)
+  "Checks if a type specifier is valid.
+  Handles simple types (e.g., 'int) and parameterized types (e.g., '(cell int))."
+  (cond
+    ;; Simple type like 'int
+    ((symbolp type-spec) (gethash type-spec *crisp-types*))
+    ;; Parameterized type like '(cell int)
+    ((listp type-spec)
+     (let ((base-type (first type-spec))
+           (params (rest type-spec)))
+       (cond
+         ;; For now, only 'cell' is a valid parameterized type base.
+         ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
+         (t nil))))
+    ;; Not a symbol or a list, so it's invalid.
+    (t nil)))
+
 ;; Sema Structs
 ;; ------------
 
@@ -439,7 +460,12 @@
            (return-node (first (last body-nodes)))
            (inferred-types (if return-node
                                (let ((node-type (semantic-node-type return-node)))
-                                 (if (listp node-type) node-type (list node-type)))
+                                 ;; If the node-type is a list, we need to distinguish between
+                                 ;; a multi-value return type like '(int int) and a single
+                                 ;; parameterized type like '(cell int).
+                                 (if (and (listp node-type) (not (valid-type-p node-type)))
+                                     node-type      ; It's a list of multiple return values, use as-is.
+                                     (list node-type))) ; It's a single value, wrap it in a list.
                                '(nil))))
 
       (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types return-type)
@@ -494,7 +520,7 @@
           (loop for type-name in return-types
                 collect (cond
                           ((null type-name) 'nil) ; Handles (=> nil) for void
-                          ((gethash type-name *crisp-types*) type-name)
+                          ((valid-type-p type-name) type-name)
                           (t (error 'crisp-unknown-type-error :type-name type-name)))))
         '(nil))))
 
@@ -504,7 +530,7 @@
   (let ((param-types (loop for type-name in fn-spec
                            until (string= type-name '=>)
                            collect (if (gethash type-name *crisp-types*)
-                                       type-name
+                                       type-name ; Simple types must be symbols
                                        (error 'crisp-unknown-type-error :type-name type-name)))))
     (log:debug "Analyzing spec params: ~s, types: ~s" params param-types)
     (unless (= (length params) (length param-types)) 
@@ -527,7 +553,7 @@
           (return-from analyze-return-type-from-list nil))
         (loop for type-name in type-names
               collect (cond ((null type-name) 'nil)
-                            ((gethash type-name *crisp-types*) type-name)
+                            ((valid-type-p type-name) type-name)
                             (t (error 'crisp-unknown-type-error :type-name type-name))))))))
 
 (defun analyze-environment-from-list (params declarations)
@@ -608,6 +634,25 @@
        (error 'crisp-type-error
               :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
               :source-location location))))
+
+(defun analyze-scratch-expression (expr env location)
+  "Analyzes a `(make-scratch-cell ...)` expression.
+  For Phase 0/1, this is just a placeholder that returns its type."
+  (declare (ignore env)) ; We don't use env yet.
+  (unless (and (= (length expr) 2) (symbolp (cadr expr)))
+    (error "Malformed make-scratch-cell form: ~a. Expected (make-scratch-cell <type>)" expr))
+  
+  (let ((inner-type (cadr expr)))
+    (unless (gethash inner-type *crisp-types*)
+      (error 'crisp-unknown-type-error :type-name inner-type :source-location location))
+    
+    ;; This is a temporary semantic node. It just holds the type.
+    ;; In a later phase, this will become `semantic-scratch-binding`.
+    (make-semantic-literal :value-type (list 'cell inner-type)
+                           :value nil ; No real value yet
+                           :source-location location)))
+
+
 
 (defun analyze-let-expression (expr env location)
   "Analyzes a `(let ...)` expression."
@@ -733,6 +778,7 @@
   (clrhash *expression-analyzers*)
   (def-expression-analyzer let analyze-let-expression)
   (def-expression-analyzer + analyze-add-expression)
+  (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
   (def-expression-analyzer return analyze-return-expression)
   ;; Register all possible `to-` and `as-` casts.
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
@@ -768,7 +814,7 @@
          ;; When resolving overloads, if an argument is a multi-value function call,
          ;; its type is a list. We only consider the first type for resolution.
          (arg-types (mapcar #'get-single-value-type arg-nodes))
-         ;; 2. Get the function signature(s) from the table.
+         ;; 2. Get the function signature(s) from the table.         
          (signatures (gethash op *function-table*))
          ;; 3. Find the matching overload (for now, we assume one).
          (signature (find-if (lambda (sig)
@@ -901,7 +947,11 @@
   If the node's type is a list (e.g., from a multi-value function call),
   this returns the first type in the list. Otherwise, it returns the type as-is."
   (let ((type (semantic-node-type node)))
-    (if (listp type) (first type) type)))
+    ;; If the type is a list, we must check if it's a single parameterized type
+    ;; (like '(cell int)') before assuming it's a list of multiple return values.
+    (if (and (listp type) (not (valid-type-p type)))
+        (first type) ; It's a multi-value list, take the first.
+        type)))      ; It's a single value (or a single parameterized type), return as-is.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; DWARF Location Mapping
