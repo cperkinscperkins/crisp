@@ -27,9 +27,8 @@
 (defvar *originator-functions* nil
   "A hash table containing the names of all functions that directly use a side-channel originator.")
 
-(defvar *implicit-arg-map* nil
+(defvar *implicit-arg-map* (make-hash-table)
   "A hash table mapping function names to the implicit side-channel arguments they require.")
-
 
 (defvar *crisp-types* (make-hash-table)
   "A hash table mapping type names (symbols) to CRISP-TYPE structs.")
@@ -101,6 +100,7 @@
   ;; Initialize the compiler's internal state.
   (initialize-crisp-types)
   (initialize-expression-analyzers)
+  (clrhash *implicit-arg-map*)
   (initialize-advisements))
 
 
@@ -341,7 +341,7 @@
   ;; Pass 1: Gather all function signatures and build the call graph.
   (let ((*call-graph* (make-hash-table))
         (*originator-functions* (make-hash-table))
-        (*implicit-arg-map* (make-hash-table)))
+        (*implicit-arg-map* (make-hash-table))) ; Rebind for a clean state per module.
     (analyze-signatures-pass forms)
 
     ;; Pass 1.5: Propagate implicit argument requirements up the call graph.
@@ -539,8 +539,16 @@
 (defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
   (log:info "Analyzing function ~s" name)
-  (multiple-value-bind (env return-type)
+  (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
+    ;; --- Phase 5: Implicit Argument Handling ---
+    ;; Check if this function is a carrier or originator.
+    (let* ((implicit-args (gethash name *implicit-arg-map*)) (implicit-env (when implicit-args
+                           ;; For now, hardcode the implicit param names and types.
+                           '((__storage_ptr ulong) (__storage_size ulong))))
+           ;; Prepend the implicit params to the environment.
+           (env (append implicit-env explicit-env)))
+
     ;; Handle the case where a function promises a return value but has no body.
     (when (and (not (equal return-type '(nil))) (null body))
       (error 'crisp-type-error :expected return-type :inferred '(nil) :source-location location))
@@ -584,7 +592,7 @@
       ;; 4. Build and return the "blueprint"
       (make-semantic-function
        :name name
-       :param-list (loop for (param-name param-type) in env
+       :param-list (loop for (param-name param-type) in env ; Use the potentially modified env
                          collect (make-semantic-param :name param-name :type param-type :source-location location))
        :return-type return-type
        :body (if (typep return-node 'semantic-explicit-return)
@@ -595,7 +603,7 @@
                                          (list (semantic-node-type return-node)))
                         :value-node return-node
                         :source-location (if return-node (semantic-node-source-location return-node) location))))
-       :source-location location))))
+       :source-location location)))))
 
 
 ;; ### Helpers
