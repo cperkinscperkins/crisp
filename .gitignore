@@ -16,3 +16,6 @@ bin/
 
 # Any local executable
 *.exe
+
+# ASDF system index
+system-index.txt

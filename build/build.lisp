@@ -10,6 +10,7 @@
 
 ;; load the crisp system using Quicklisp
 (format t "~&; --- Loading Crisp system via Quicklisp...~%")
+(require "asdf")
 ;; Tell Quicklisp to find local projects in the current directory
 (push *default-pathname-defaults* ql:*local-project-directories*)
 
