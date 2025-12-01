@@ -407,4 +407,29 @@
                (true (search "float 0x40091EB860000000" ir) ; Hex representation of 3.14
                      "The return instruction should contain the float constant.")
                (true (search "i64 42 }" ir)
-                     "The return instruction should contain the long constant and end correctly.")))
+          "The return instruction should contain the long constant and end correctly.")))
+
+(define-test (codegen make-scratch-cell)
+             "Tests that make-scratch-cell uses implicit arguments."
+             ;; Manually register the implicit args for this test function
+             ;; because compile-crisp-form-to-ir-string doesn't run the full analysis pass.
+             (setf (gethash 'test-scratch crisp.compiler::*implicit-arg-map*) '(:storage-ptr :storage-size))
+
+             (let ((ir (compile-crisp-form-to-ir-string
+                        '(def-function test-scratch ()
+                                       (declare (return-type (cell int)))
+                                       (make-scratch-cell int)))))
+               (is-valid-ir ir)
+
+               ;; Check that we are loading the implicit arguments
+               ;; Note: The exact variable names depend on how they are stored in var-env.
+               ;; internal-def-function adds them as __storage_ptr and __storage_size.
+               (true (search "load i64, ptr %__storage_ptr" ir) "Should load the storage pointer.")
+               (true (search "load i64, ptr %__storage_size" ir) "Should load the storage size.")
+
+               ;; Check for the cast from i64 to ptr
+               (true (search "inttoptr i64" ir) "Should cast the storage pointer to a pointer type.")
+
+               ;; Check that we are inserting the pointer and size into the struct
+               ;; We use a regex-like check or just check for the instruction name.
+               (true (search "insertvalue { ptr, i64 }" ir) "Should insert pointer into struct.")))

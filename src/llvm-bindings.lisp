@@ -233,6 +233,12 @@
   (dest-ty :pointer)
   (name :string))
 
+(defcfun ("LLVMBuildIntToPtr" llvm-build-int-to-ptr) :pointer
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
+
 (defcfun ("LLVMBuildBitCast" llvm-build-bit-cast) :pointer
   (builder :pointer)
   (val :pointer)

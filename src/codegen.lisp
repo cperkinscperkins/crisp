@@ -184,13 +184,9 @@
          (values agg-val nil)))
       ;; No return values (void return)
       (t (values nil nil)))))
-
-
-
 ;; -- literal value --
 (defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
   "Generates IR for a literal value."
-  (declare (ignore var-env))
   (let* ((type-spec (semantic-literal-value-type node))
          (value (semantic-literal-value node))
          (llvm-type (crisp-type-to-llvm-type type-spec module))
@@ -198,7 +194,22 @@
                    ;; Handle our new cell type as a placeholder
                    ((listp type-spec)
                     (if (eq (first type-spec) 'cell)
-                        (llvm-get-undef llvm-type)
+                        (let* ((ptr-name '__storage_ptr)
+                               (size-name '__storage_size)
+                               (ptr-alloca (gethash ptr-name var-env))
+                               (size-alloca (gethash size-name var-env)))
+                          (unless (and ptr-alloca size-alloca)
+                            (error "Missing implicit arguments for make-scratch-cell. Environment keys: ~s" (alexandria:hash-table-keys var-env)))
+                          
+                          (let* ((ptr-val (llvm-build-load2 builder (llvm-int64-type) ptr-alloca "storage_ptr_raw"))
+                                 (size-val (llvm-build-load2 builder (llvm-int64-type) size-alloca "storage_size"))
+                                 ;; Cast i64 ptr to ptr (i8*)
+                                 (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-int8-ptr-type (llvm-int8-type) 0) "storage_ptr"))
+                                 ;; Create struct
+                                 (struct-undef (llvm-get-undef llvm-type))
+                                 (struct-0 (llvm-build-insert-value builder struct-undef ptr-casted 0 "cell_ptr"))
+                                 (struct-1 (llvm-build-insert-value builder struct-0 size-val 1 "cell_size")))
+                            struct-1))
                         (error "Codegen not implemented for literal of type ~a" type-spec)))
                    ;; Handle simple types
                    ((symbolp type-spec)
