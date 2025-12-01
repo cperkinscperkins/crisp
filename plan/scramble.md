@@ -180,7 +180,9 @@ SHORT TERM PLAN
 - [ ] templates as macros
 - [ ] higher order functions as templates
 - [ ] need to move more of our old erstaz logging to log4cl. 
-- [ ] Side Channel / Implicit Args. Can we start this BEFORE def-kernel? 
+- [x] Side Channel / Implicit Args. Can we start this BEFORE def-kernel? 
+- - [ ] last test that Side Channel ptr/size is showing up in the IR of correct leves Kernel->A->(B!!!)->C->D
+- - [ ] ALSO, if scratch-cell IS passed to C and D then it is explicit, but STILL two args (not one). Damnit - forgot to handle/check this.
 
 
 M-V-R
@@ -256,7 +258,7 @@ LANGUAGE CHANGES
 - - side channel
 - [ ] Revisit `def-constant-vector` . `def-contstant-storage` ??
 
-- [ ] Resolve `vector-type` vs. `vector` etc. 
+- [ ] Resolve `vector-type` vs. `vector` etc.  UPDATE: implementation is using 'cell' not 'cell-type'
 
 - [ ] FML - +warp-size+ is 32 throughout the doc, but ideal warp size
             on BattleMage might be 16.  How is that set/handled?
