@@ -154,15 +154,14 @@ $   ./bin/crisp-compile.exe ./tests/return_7.crisp
 Run Tests
 ---------
 
-Some of the tests use `llc`/`llc.exe` to verify the generated LLVM-IR. You may need to
-install either the full build of LLVM or the clang tooling build to get that.
+Some of the tests use `clang` to verify the generated LLVM-IR. 
 
-Make sure the path to `llc` is on your `PATH`.
+Make sure `clang` is on your `PATH`.
 
 Windows: 
 <!--
 ```
-$env:PATH = "C:\Users\chrisper\Downloads\clang+llvm-21.1.5-x86_64-pc-windows-msvc\clang+llvm-21.1.5-x86_64-pc-windows-msvc\bin;" + $env:PATH
+$env:PATH = "C:\Program Files\LLVM\bin;" + $env:PATH
 ```
 -->
 ```
