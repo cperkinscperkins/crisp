@@ -87,6 +87,9 @@ jobs:
           echo "--- Running E2E: success test (scratch-cell.crisp) ---"
           ./bin/crisp-compile tests/scratch-cell.crisp
 
+          echo "--- Running E2E: success test --single-pass (scratch-cell.crisp) ---"
+          ./bin/crisp-compile tests/scratch-cell.crisp --single-pass
+
 
           echo "--- Running E2E: --debug success test (return_7.crisp) ---"
           ./bin/crisp-compile tests/return_7.crisp --debug 
@@ -101,7 +104,12 @@ jobs:
           ./bin/crisp-compile tests/let-bindings.crisp --debug
 
           echo "--- Running E2E: --debug success test (scratch-cell.crisp) ---"
-          ./bin/crisp-compile tests/scratch-cell.crisp --debug
+          ./bin/crisp-compile tests/scratch-cell.crisp --debug --single-pass  
+
+          echo "--- Running E2E: --debug --single-pass success test (scratch-cell.crisp) ---"
+          ./bin/crisp-compile tests/scratch-cell.crisp --debug --single-pass
+
+
 
           echo "--- Running E2E: --debug success test --single-pass (def-function_primitive.crisp) ---"
           ./bin/crisp-compile tests/def-function_primitive.crisp --single-pass --debug 

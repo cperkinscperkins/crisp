@@ -549,61 +549,77 @@
            ;; Prepend the implicit params to the environment.
            (env (append implicit-env explicit-env)))
 
-    ;; Handle the case where a function promises a return value but has no body.
-    (when (and (not (equal return-type '(nil))) (null body))
-      (error 'crisp-type-error :expected return-type :inferred '(nil) :source-location location))
+    ;; --- Phase 5: Single-Pass Carrier Look-ahead ---
+    ;; In single-pass mode, we need to pre-scan the body for calls to carriers.
+    (when (null *call-graph*)
+      (multiple-value-bind (_ callees) (shallow-analyze-body body)
+        (declare (ignore _))
+        (when (some (lambda (callee) (gethash callee *implicit-arg-map*)) callees)
+          (log:debug "Single-pass: Pre-scan of ~s found call to a carrier. Marking as carrier." name)
+          (setf (gethash name *implicit-arg-map*) '(:storage-ptr :storage-size)))))
 
-    ;; 2. Analyze the Body
-    (let* ((body-nodes (analyze-body-expressions body env location))
-           (return-node (first (last body-nodes)))
-           (inferred-types (if return-node
-                               (let ((node-type (semantic-node-type return-node)))
-                                 ;; If the node-type is a list, we need to distinguish between
-                                 ;; a multi-value return type like '(int int) and a single
-                                 ;; parameterized type like '(cell int).
-                                 (if (and (listp node-type) (not (valid-type-p node-type)))
-                                     node-type      ; It's a list of multiple return values, use as-is.
-                                     (list node-type))) ; It's a single value, wrap it in a list.
-                               '(nil))))
+    ;; --- Phase 5: Implicit Argument Handling ---
+    ;; Check if this function is a carrier or originator (the map may have just been updated).
+    (let* ((implicit-args (gethash name *implicit-arg-map*))
+           (implicit-env (when implicit-args
+                           '((__storage_ptr ulong) (__storage_size ulong))))
+           (env (append implicit-env explicit-env)))
 
-      (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types return-type)
-      
-      (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
-           inferred-types (listp inferred-types)
-           return-type (listp return-type))
+      ;; Handle the case where a function promises a return value but has no body.
+      (when (and (not (equal return-type '(nil))) (null body))
+        (error 'crisp-type-error :expected return-type :inferred '(nil) :source-location location))
 
-      ;; 3. Check Types. This allows for a function returning multiple values
-      ;;    to be used in a context that expects fewer values (the extras are dropped).
-      (let* ((num-declared (length return-type))
-             (num-inferred (length inferred-types))
-             ;; Take the first N inferred types, where N is the number of declared types.
-             (inferred-subset (if (>= num-inferred num-declared)
-                                  (subseq inferred-types 0 num-declared)
-                                  inferred-types)))
-        (unless (and (>= num-inferred num-declared)
-                     (equal inferred-subset return-type))
-          (error 'crisp-type-error
-                 :expected return-type
-                 :inferred inferred-types
-                 :source-location (if return-node
-                                      (semantic-node-source-location return-node)
-                                      location))))
+      ;; 2. Analyze the Body
+      (let* ((body-nodes (analyze-body-expressions body env location))
+            (return-node (first (last body-nodes)))
+            (inferred-types (if return-node
+                                (let ((node-type (semantic-node-type return-node)))
+                                  ;; If the node-type is a list, we need to distinguish between
+                                  ;; a multi-value return type like '(int int) and a single
+                                  ;; parameterized type like '(cell int).
+                                  (if (and (listp node-type) (not (valid-type-p node-type)))
+                                      node-type      ; It's a list of multiple return values, use as-is.
+                                      (list node-type))) ; It's a single value, wrap it in a list.
+                                '(nil))))
 
-      ;; 4. Build and return the "blueprint"
-      (make-semantic-function
-       :name name
-       :param-list (loop for (param-name param-type) in env ; Use the potentially modified env
-                         collect (make-semantic-param :name param-name :type param-type :source-location location))
-       :return-type return-type
-       :body (if (typep return-node 'semantic-explicit-return)
-                 (list return-node)
-                 (list (make-semantic-return
-                        :return-type (if (listp (semantic-node-type return-node))
-                                         (semantic-node-type return-node)
-                                         (list (semantic-node-type return-node)))
-                        :value-node return-node
-                        :source-location (if return-node (semantic-node-source-location return-node) location))))
-       :source-location location)))))
+        (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types return-type)
+        
+        (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
+            inferred-types (listp inferred-types)
+            return-type (listp return-type))
+
+        ;; 3. Check Types. This allows for a function returning multiple values
+        ;;    to be used in a context that expects fewer values (the extras are dropped).
+        (let* ((num-declared (length return-type))
+              (num-inferred (length inferred-types))
+              ;; Take the first N inferred types, where N is the number of declared types.
+              (inferred-subset (if (>= num-inferred num-declared)
+                                    (subseq inferred-types 0 num-declared)
+                                    inferred-types)))
+          (unless (and (>= num-inferred num-declared)
+                      (equal inferred-subset return-type))
+            (error 'crisp-type-error
+                  :expected return-type
+                  :inferred inferred-types
+                  :source-location (if return-node
+                                        (semantic-node-source-location return-node)
+                                        location))))
+
+        ;; 4. Build and return the "blueprint"
+        (make-semantic-function
+        :name name
+        :param-list (loop for (param-name param-type) in env ; Use the potentially modified env
+                          collect (make-semantic-param :name param-name :type param-type :source-location location))
+        :return-type return-type
+        :body (if (typep return-node 'semantic-explicit-return)
+                  (list return-node)
+                  (list (make-semantic-return
+                          :return-type (if (listp (semantic-node-type return-node))
+                                          (semantic-node-type return-node)
+                                          (list (semantic-node-type return-node)))
+                          :value-node return-node
+                          :source-location (if return-node (semantic-node-source-location return-node) location))))
+        :source-location location))))))
 
 
 ;; ### Helpers
@@ -738,10 +754,17 @@
 
 (defun analyze-scratch-expression (expr env location)
   "Analyzes a `(make-scratch-cell ...)` expression.
-  For now, this is just a placeholder that returns its type."
+  In single-pass mode, this marks the current function as an originator."
   (declare (ignore env)) ; We don't use env yet.
   (unless (and (= (length expr) 2) (symbolp (cadr expr)))
     (error "Malformed make-scratch-cell form: ~a. Expected (make-scratch-cell <type>)" expr))
+
+  ;; --- Phase 5: Single-Pass Originator Detection ---
+  ;; If *call-graph* is nil, we are in single-pass mode.
+  (when (null *call-graph*)
+    (log:debug "Single-pass: Found originator form in ~s. Marking it." *current-compiling-function*)
+    (setf (gethash *current-compiling-function* *implicit-arg-map*)
+          '(:storage-ptr :storage-size)))
   
   (let ((inner-type (cadr expr)))
     (unless (gethash inner-type *crisp-types*)
@@ -902,46 +925,58 @@
       (when (member op *single-pass-call-stack*)
         (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
 
-  ;; 1. Analyze the arguments passed to the call.
-  (let* ((arg-forms (rest expr))
-         (arg-nodes (loop for arg-form in arg-forms
-                          for i from 1
-                          collect (analyze-expression arg-form env (append location (list i)))))
-         ;; When resolving overloads, if an argument is a multi-value function call,
-         ;; its type is a list. We only consider the first type for resolution.
-         (arg-types (mapcar #'get-single-value-type arg-nodes))
-         ;; 2. Get the function signature(s) from the table.         
-         (signatures (gethash op *function-table*))
-         ;; 3. Find the matching overload (for now, we assume one).
-         (signature (find-if (lambda (sig)
-                                (equal arg-types (function-signature-parameters sig)))
-                              signatures)))
+  ;; --- Phase 5: Implicit Argument Handling ---
+  (let ((implicit-args-required (gethash op *implicit-arg-map*)))
+    ;; In single-pass mode, if the callee is a carrier, the caller must be too.
+    (when (and (null *call-graph*) implicit-args-required)
+      (log:debug "Single-pass: Call to carrier ~s implies caller ~s is also a carrier."
+                 op *current-compiling-function*)
+      (setf (gethash *current-compiling-function* *implicit-arg-map*) implicit-args-required))
 
-    (unless signature
-      (error "No matching function overload found for '~a' with argument types ~a." op arg-types))
-    ;; 4. Perform Arity and Type Checking
-    (unless (= (length arg-types) (length (function-signature-parameters signature)))
-      (error 'crisp-signature-arity-error
-             :expected (length (function-signature-parameters signature))
-             :inferred (length arg-types)
-             :source-location location))
+    ;; 1. Analyze the *explicit* arguments passed to the call.
+    (let* ((arg-forms (rest expr))
+           (explicit-arg-nodes (loop for arg-form in arg-forms
+                                     for i from 1
+                                     collect (analyze-expression arg-form env (append location (list i)))))
+           (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
+           ;; 2. Get the function signature(s) from the table.
+           (signatures (gethash op *function-table*))
+           ;; 3. Find the matching overload based on *explicit* arguments.
+           (signature (find-if (lambda (sig)
+                                  (equal explicit-arg-types (function-signature-parameters sig)))
+                                signatures)))
+      (unless signature
+        (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types))
 
-    (unless (equal arg-types (function-signature-parameters signature))
-      (error 'crisp-call-type-error
-             :message (format nil "Incorrect argument types for call to '~a'." op)
-             :expected (function-signature-parameters signature)
-             :inferred arg-types
-             :source-location location))
+      ;; 4. Prepend implicit arguments if required.
+      (let ((final-arg-nodes
+              (if implicit-args-required
+                  (let ((implicit-arg-nodes
+                          (loop for arg-name in '(__storage_ptr __storage_size)
+                                collect (let ((found (assoc arg-name env)))
+                                          (if found
+                                              (make-semantic-var-read :name arg-name :type (second found) :source-location location)
+                                              (error "Compiler bug: Carrier function ~s is missing implicit argument ~s in its environment."
+                                                     *current-compiling-function* arg-name))))))
+                    (append implicit-arg-nodes explicit-arg-nodes))
+                  explicit-arg-nodes)))
 
-    (log:debug "Function call '~a' matched signature with params ~a and return types ~a."
-               op (function-signature-parameters signature) (function-signature-return-types signature))
+        ;; 5. Perform Arity and Type Checking (on explicit args only)
+        (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
+          (error 'crisp-signature-arity-error
+                 :expected (length (function-signature-parameters signature))
+                 :inferred (length explicit-arg-types)
+                 :source-location location))
 
-    ;; 5. Build the semantic-call node.
-    (make-semantic-call :name op
-                        :type (function-signature-return-types signature)
-                        :args arg-nodes
-                        :signature signature
-                        :source-location location)))
+        (log:debug "Function call '~a' matched signature with params ~a and return types ~a."
+                   op (function-signature-parameters signature) (function-signature-return-types signature))
+
+        ;; 6. Build the semantic-call node with the final argument list.
+        (make-semantic-call :name op
+                            :type (function-signature-return-types signature)
+                            :args final-arg-nodes
+                            :signature signature
+                            :source-location location)))))
 
 
 (defun analyze-parameters (params)
