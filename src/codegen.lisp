@@ -126,6 +126,56 @@
          (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
       (first components)))
 
+(defun create-llvm-function-type (module return-types param-nodes)
+  "Calculates the LLVM function type, handling parameter explosion."
+  (let* ((return-type (get-llvm-return-type module return-types))
+         (expanded-param-types (mapcan (lambda (p) (get-expanded-types (semantic-param-type p) module)) param-nodes))
+         (param-count (length expanded-param-types))
+         (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
+    (loop for i from 0
+          for type in expanded-param-types
+          do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
+    (llvm-function-type return-type param-types-array param-count nil)))
+
+(defun generate-debug-info (di-builder di-compile-unit func fn-name fn-loc return-type param-nodes location-map)
+  "Generates and attaches DWARF debug info for the function."
+  (when di-builder
+    (let* ((di-type-cache (make-hash-table))
+           (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
+           (line-num (if location-map (gethash fn-loc location-map) 0))
+           (di-return-type (get-or-create-di-type (gethash return-type *crisp-types*) di-builder di-type-cache))
+           (di-param-types (cons di-return-type
+                                 (loop for param in param-nodes
+                                       collect (get-or-create-di-type
+                                                (gethash (semantic-param-type param) *crisp-types*)
+                                                di-builder di-type-cache))))
+           (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
+           (_ (loop for i from 0 for type in di-param-types
+                    do (setf (cffi:mem-aref di-param-array :pointer i) type)))
+           (di-fn-type (llvm-di-builder-create-subroutine-type
+                        di-builder di-file di-param-array (length di-param-types) 0))
+           (subprogram (llvm-di-builder-create-function
+                        di-builder di-compile-unit fn-name (length fn-name) fn-name (length fn-name)
+                        di-file line-num di-fn-type nil t 0 0 nil)))
+      (llvm-set-subprogram func subprogram)
+      subprogram)))
+
+(defun initialize-function-parameters (builder func param-nodes module var-env)
+  "Allocates stack space and stores function parameters."
+  (let ((llvm-param-index 0))
+    (loop for param-node in param-nodes
+          for param-name = (semantic-param-name param-node)
+          for type-spec = (semantic-param-type param-node)
+          do (let* ((expanded-types (get-expanded-types type-spec module))
+                    (num-expanded (length expanded-types))
+                    (components (loop for i from 0 below num-expanded
+                                      collect (llvm-get-param func (+ llvm-param-index i))))
+                    (imploded-val (implode-value builder components type-spec module))
+                    (alloca (llvm-build-alloca builder (crisp-type-to-llvm-type type-spec module) (string-downcase param-name))))
+               (llvm-build-store builder imploded-val alloca)
+               (setf (gethash param-name var-env) alloca)
+               (incf llvm-param-index num-expanded)))))
+
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
   (let* ((return-types (semantic-function-return-type semantic-function))
@@ -134,104 +184,38 @@
          (param-type-specs (mapcar #'semantic-param-type (semantic-function-param-list semantic-function)))
          (mangled-name (format nil "~a~{_~a~}" base-name (mapcar #'mangle-type-spec param-type-specs)))
          (fn-name (substitute #\_ #\- (string-downcase mangled-name)))
-         (fn-loc (semantic-function-source-location semantic-function)))
-    (log:debug "Attempting to get LLVM type for: ~s" (semantic-function-return-type semantic-function))
+         (fn-loc (semantic-function-source-location semantic-function))
+         (param-nodes (semantic-function-param-list semantic-function)))
+    
+    (log:debug "Attempting to get LLVM type for: ~s" return-types)
+
     ;; --- 1. Define the Function Type ---
-    (let* ((return-type (get-llvm-return-type module return-types))
-           ;;return-type can be three different things: a single LLVM type, a struct type (for multi-return), or void
-           (param-nodes (semantic-function-param-list semantic-function))
-           ;; Calculate total LLVM parameters using helper
-           (expanded-param-types (mapcan (lambda (p) (get-expanded-types (semantic-param-type p) module)) param-nodes))
-           (param-count (length expanded-param-types))
-           ;; Create a C-style array of LLVM types for the parameters
-           (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
+    (let ((fn-type (create-llvm-function-type module return-types param-nodes)))
       
-      ;; Fill the param types array
-      (loop for i from 0
-            for type in expanded-param-types
-            do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
+      ;; --- 2. Create the Function ---
+      (let ((func (llvm-add-function module fn-name fn-type)))
+        (log:debug "finished llvm-add-function for ~a, creating debug info..." fn-name)
+        
+        (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
+          
+          ;; --- 3. Create the Code Block ---
+          (let ((entry-block (llvm-append-basic-block func "entry"))
+                (var-env (make-hash-table)))
+            (log:debug "Positioning builder at entry block...")
+            (llvm-position-builder-at-end builder entry-block)
 
-      (log:debug "finished llvm-type-for-name. Calling llvm-function-type...")
-      (let ((fn-type (llvm-function-type return-type param-types-array param-count nil)))
-        (log:debug "finished llvm-function-type, calling llvm-add-function...")
-        ;; --- 2. Create the Function ---
-        (let ((func (llvm-add-function module fn-name fn-type)))
-          (log:debug "finished llvm-add-function for ~a, creating debug info..." fn-name)
-          (let ((di-subprogram
-                 (when di-builder
-                       (let* ((di-type-cache (make-hash-table))
-                              (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
-                              (line-num (if location-map (gethash fn-loc location-map) 0))
-                              ;; Create the DISubroutineType
-                              (di-return-type (get-or-create-di-type (gethash crisp-return-type *crisp-types*) di-builder di-type-cache))
-                              (di-param-types (cons di-return-type ; Return type is the first element
-                                                    (loop for param in param-nodes
-                                                          collect (get-or-create-di-type
-                                                                   (gethash (semantic-param-type param) *crisp-types*)
-                                                                   di-builder di-type-cache))))
-                              (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
-                              (_ (loop for i from 0 for type in di-param-types
-                                       do (setf (cffi:mem-aref di-param-array :pointer i) type)))
-                              (di-fn-type (llvm-di-builder-create-subroutine-type
-                                           di-builder
-                                           di-file
-                                           di-param-array
-                                           (length di-param-types)
-                                           0))
-                              ;; Create the DISubprogram (the function itself)
-                              (subprogram (llvm-di-builder-create-function
-                                           di-builder
-                                           di-compile-unit ; Scope
-                                           fn-name (length fn-name) ; Name
-                                           fn-name (length fn-name) ; LinkageName
-                                           di-file
-                                           line-num
-                                           di-fn-type
-                                           nil ; IsLocalToUnit
-                                           t ; IsDefinition
-                                           0 ; ScopeLine
-                                           0 ; Flags (none)
-                                           nil ; IsOptimized
-                                          )))
-                         (llvm-set-subprogram func subprogram)
-                         subprogram)))) ; Return the created subprogram
-            ;; --- 3. Create the Code Block ---
-            (let ((entry-block (llvm-append-basic-block func "entry"))
-                  (var-env (make-hash-table)))
-              (log:debug "Positioning builder at entry block...")
-              (llvm-position-builder-at-end builder entry-block)
+            ;; --- 4. Allocate and Store Parameters ---
+            (initialize-function-parameters builder func param-nodes module var-env)
 
-              ;; --- 4. Allocate and Store Parameters ---
-              (let ((llvm-param-index 0))
-                (loop for param-node in param-nodes
-                      for param-name = (semantic-param-name param-node)
-                      for type-spec = (semantic-param-type param-node)
-                      do (let* ((expanded-types (get-expanded-types type-spec module))
-                                (num-expanded (length expanded-types))
-                                ;; Collect the expanded LLVM parameters for this logical parameter
-                                (components (loop for i from 0 below num-expanded
-                                                  collect (llvm-get-param func (+ llvm-param-index i))))
-                                ;; Recombine them into a single value (struct or simple)
-                                (imploded-val (implode-value builder components type-spec module))
-                                ;; Allocate stack space for the variable
-                                (alloca (llvm-build-alloca builder (crisp-type-to-llvm-type type-spec module) (string-downcase param-name))))
-                           
-                           ;; Store the value
-                           (llvm-build-store builder imploded-val alloca)
-                           
-                           ;; Update environment and index
-                           (setf (gethash param-name var-env) alloca)
-                           (incf llvm-param-index num-expanded))))
-
-              ;; --- 5. Generate the Body ---
-              (let* ((body-node (first (semantic-function-body semantic-function)))
-                     (is-void-return (equal return-types '(nil))))
-                (multiple-value-bind (value di-location)
-                    (generate-expression-ir builder module var-env di-builder di-subprogram location-map body-node)
-                  (let ((ret-inst (if is-void-return
-                                      (llvm-build-ret-void builder)
-                                      (llvm-build-ret builder value))))
-                    (when di-location (llvm-instruction-set-debug-loc ret-inst di-location))))))))))))
+            ;; --- 5. Generate the Body ---
+            (let* ((body-node (first (semantic-function-body semantic-function)))
+                   (is-void-return (equal return-types '(nil))))
+              (multiple-value-bind (value di-location)
+                  (generate-expression-ir builder module var-env di-builder di-subprogram location-map body-node)
+                (let ((ret-inst (if is-void-return
+                                    (llvm-build-ret-void builder)
+                                    (llvm-build-ret builder value))))
+                  (when di-location (llvm-instruction-set-debug-loc ret-inst di-location)))))))))))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
   (:documentation "Generates LLVM IR for a single semantic node."))
