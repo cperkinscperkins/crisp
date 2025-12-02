@@ -97,6 +97,8 @@
    #:llvm-build-ret-void
    #:llvm-build-add
    #:llvm-build-fadd
+   #:llvm-build-struct-gep
+   #:llvm-build-struct-gep2
    ;; Casting
    #:llvm-build-sext
    #:llvm-build-zext
@@ -145,84 +147,19 @@
            #:ceil
            #:round)
 
+  (:export
+   #:compile-toplevel-form
+   #:compile-module
+   #:generate-location-map
+   #:initialize-crisp-types
+   #:analyze-return-type-from-spec
+   #:analyze-environment-from-spec
+   #:analyze-return-type-from-list
+   #:analyze-environment-from-list
+   #:initialize-compiler
+   #:initialize-expression-analyzers
 
-
-  (:export 
-           #:compile-toplevel-form
-           #:compile-module
-           #:generate-location-map
-           #:initialize-crisp-types
-           #:analyze-return-type-from-spec
-           #:analyze-environment-from-spec
-           #:analyze-return-type-from-list
-           #:analyze-environment-from-list
-           #:initialize-compiler
-           #:initialize-expression-analyzers
-
-
-           ;; laungage symbols
-           #:def-function
-           #:return
-           #:declare
-           #:return-type
-           #:type
-           #:make-scratch-cell
-           #:|=>|
-           ;; All Crisp types
-           #:char #:short #:int #:long
-           #:cell
-           #:uchar #:ushort #:uint #:ulong
-           #:half #:bfloat16 #:float #:double
-
-           ;; All cast/conversion operators
-           #:to-char #:as-char
-           #:to-short #:as-short
-           #:to-int #:as-int
-           #:to-long #:as-long
-           #:to-float #:as-float
-           #:to-double #:as-double
-           #:truncate #:floor #:ceil #:round
-
-
-           ;; error conditions
-           #:crisp-compiler-error
-           #:crisp-unexpected-eof-error
-           #:crisp-type-error
-           #:crisp-unknown-type-error
-           #:crisp-signature-arity-error
-           #:error-source-location           
-           #:type-error-expected
-           #:type-error-inferred
-           #:crisp-unknown-variable
-           #:unknown-variable-name
-
-           ;; Semantic Node types
-           #:semantic-function #:semantic-return #:semantic-literal
-           #:semantic-explicit-return
-           #:semantic-param #:semantic-var-read #:semantic-add
-           #:semantic-value-cast #:semantic-bitcast
-           #:semantic-fp-truncate-cast #:semantic-call #:semantic-let
-           #:semantic-extract-value
-
-           ;; Accessors for semantic nodes
-           #:semantic-function-body
-           #:semantic-return-value-node
-           #:semantic-let-bindings
-           #:semantic-let-body
-
-           ;; Developer Utilities
-           #:compile-crisp-form-to-ir-string))
-
-(defpackage :crisp.main
-  (:use :cl)
-
-  (:export :main))
-
-
-(defpackage :crisp-language
-  (:use) ;; <--- THIS IS KEY. It means "use nothing from Common Lisp."
-
-  (:import-from :crisp.compiler
+   ;; laungage symbols
    #:def-function
    #:return
    #:declare
@@ -243,25 +180,86 @@
    #:to-long #:as-long
    #:to-float #:as-float
    #:to-double #:as-double
-   #:truncate #:floor #:ceil #:round)
+   #:truncate #:floor #:ceil #:round
+
+   ;; error conditions
+   #:crisp-compiler-error
+   #:crisp-unexpected-eof-error
+   #:crisp-type-error
+   #:crisp-unknown-type-error
+   #:crisp-signature-arity-error
+   #:error-source-location
+   #:type-error-expected
+   #:type-error-inferred
+   #:crisp-unknown-variable
+   #:unknown-variable-name
+
+   ;; Semantic Node types
+   #:semantic-function #:semantic-return #:semantic-literal
+   #:semantic-explicit-return
+   #:semantic-param #:semantic-var-read #:semantic-add
+   #:semantic-value-cast #:semantic-bitcast
+   #:semantic-fp-truncate-cast #:semantic-call #:semantic-let
+   #:semantic-extract-value
+
+   ;; Accessors for semantic nodes
+   #:semantic-function-body
+   #:semantic-return-value-node
+   #:semantic-let-bindings
+   #:semantic-let-body
+
+   ;; Developer Utilities
+   #:compile-crisp-form-to-ir-string))
+
+(defpackage :crisp.main
+  (:use :cl)
+
+  (:export :main))
+
+
+(defpackage :crisp-language
+  (:use) ;; <--- THIS IS KEY. It means "use nothing from Common Lisp."
+
+  (:import-from :crisp.compiler
+                #:def-function
+                #:return
+                #:declare
+                #:return-type
+                #:type
+                #:make-scratch-cell
+                #:|=>|
+                ;; All Crisp types
+                #:char #:short #:int #:long
+                #:cell
+                #:uchar #:ushort #:uint #:ulong
+                #:half #:bfloat16 #:float #:double
+
+                ;; All cast/conversion operators
+                #:to-char #:as-char
+                #:to-short #:as-short
+                #:to-int #:as-int
+                #:to-long #:as-long
+                #:to-float #:as-float
+                #:to-double #:as-double
+                #:truncate #:floor #:ceil #:round)
 
   ;; --- 1. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
-   #:t #:nil
-   #:&optional #:&key #:&rest
-   #:lambda)
+                #:t #:nil
+                #:&optional #:&key #:&rest
+                #:lambda)
 
   ;; --- 2. Import *only* the "safe" CL forms ---
   ;; We must "shadow" (copy) them into our package
   ;; so the user can type (if ...) instead of (cl:if ...)
   (:shadowing-import-from :common-lisp
-   #:if #:when #:unless #:cond #:case #:let
-   #:let #:let*
-   #:progn
-   #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
-   #:equal ;; and so on...
-   #:defmacro  ;; We need defmacro to build the language
-   ) 
+                          #:if #:when #:unless #:cond #:case #:let
+                          #:let #:let*
+                          #:progn
+                          #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
+                          #:equal ;; and so on...
+                          #:defmacro ;; We need defmacro to build the language
+   )
 
   ;; --- 3. Export *all* of our Crisp primitives ---
   (:export
@@ -270,8 +268,8 @@
    #:let
    #:progn
    #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
-   #:equal 
-   #:defmacro  
+   #:equal
+   #:defmacro
 
    ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function
@@ -294,7 +292,6 @@
    #:to-double #:as-double
    #:truncate #:floor #:ceil #:round
 
-
    ;; Our looping constructs
    #:loop-vector-stride #:loop-soa-stride
    #:thread-stride #:workgroup-stride
@@ -310,6 +307,6 @@
 
    ;; Our new ops
    #:*! #:identity-of #:zero #:accum #:base
-   
+
    ;; ...and every other function we add.
    ))
