@@ -55,6 +55,77 @@
    ;; Case 3: Should not happen, but treat as void.
    (t (llvm-void-type))))
 
+(defun mangle-type-spec (type-spec)
+  "Creates a string representation of a type spec for name mangling."
+  (cond
+   ((symbolp type-spec) (string-downcase (symbol-name type-spec)))
+   ((listp type-spec) (format nil "~{~a~^_~}" (mapcar #'mangle-type-spec type-spec)))
+   (t (error "Cannot mangle unknown type specifier: ~a" type-spec))))
+
+(defun crisp-type-to-llvm-type (type-spec module)
+  "Resolves a Crisp type specifier (simple or parameterized) to an LLVM type."
+  (cond
+   ;; Simple type like 'int
+   ((symbolp type-spec)
+     (let ((crisp-type (gethash type-spec *crisp-types*)))
+       (unless crisp-type
+         (error "Internal codegen error: Unknown simple type ~a" type-spec))
+       (funcall (crisp-type-llvm-type-fn crisp-type))))
+   ;; Parameterized type like '(cell int)
+   ((listp type-spec)
+     (let ((base-type (first type-spec)))
+       (cond
+        ((eq base-type 'cell)
+          ;; A cell is a struct { ptr, i64 }.
+          ;; We use get-expanded-types to get the component types.
+          (let* ((context (llvm-get-module-context module))
+                 (element-types (get-expanded-types type-spec module))
+                 (element-count (length element-types))
+                 (type-array (cffi:foreign-alloc 'llvm-type-ref :count element-count)))
+            (loop for i from 0 for type in element-types
+                  do (setf (cffi:mem-aref type-array 'llvm-type-ref i) type))
+            (llvm-struct-type-in-context context type-array element-count nil)))
+        (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
+   (t (error "Internal codegen error: Invalid type specifier ~a" type-spec))))
+
+(defun get-expanded-types (type-spec module)
+  "Returns a list of LLVM types for a given Crisp type spec.
+   For 'cell', returns (ptr i64). For others, returns (type)."
+  (if (listp type-spec)
+      (let ((base-type (first type-spec)))
+        (cond
+         ((eq base-type 'cell)
+           (list (llvm-int8-ptr-type (llvm-int8-type) 0)
+                 (llvm-int64-type)))
+         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
+      (list (crisp-type-to-llvm-type type-spec module))))
+
+(defun explode-value (builder agg-val type-spec)
+  "Extracts components from an aggregate value if necessary.
+   Returns a list of LLVM values."
+  (if (listp type-spec)
+      (let ((base-type (first type-spec)))
+        (cond
+         ((eq base-type 'cell)
+           (list (llvm-build-extract-value builder agg-val 0 "cell_ptr")
+                 (llvm-build-extract-value builder agg-val 1 "cell_size")))
+         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
+      (list agg-val)))
+
+(defun implode-value (builder components type-spec module)
+  "Combines components into an aggregate value if necessary.
+   Returns a single LLVM value."
+  (if (listp type-spec)
+      (let ((base-type (first type-spec)))
+        (cond
+         ((eq base-type 'cell)
+           (let* ((struct-type (crisp-type-to-llvm-type type-spec module))
+                  (undef (llvm-get-undef struct-type))
+                  (val-0 (llvm-build-insert-value builder undef (first components) 0 "cell_ptr")))
+             (llvm-build-insert-value builder val-0 (second components) 1 "cell_size")))
+         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
+      (first components)))
+
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
   (let* ((return-types (semantic-function-return-type semantic-function))
@@ -69,26 +140,17 @@
     (let* ((return-type (get-llvm-return-type module return-types))
            ;;return-type can be three different things: a single LLVM type, a struct type (for multi-return), or void
            (param-nodes (semantic-function-param-list semantic-function))
-           ;; Calculate total LLVM parameters (cells explode to 2: ptr, size)
-           (param-count (loop for p in param-nodes
-                                sum (if (listp (semantic-param-type p)) 2 1)))
+           ;; Calculate total LLVM parameters using helper
+           (expanded-param-types (mapcan (lambda (p) (get-expanded-types (semantic-param-type p) module)) param-nodes))
+           (param-count (length expanded-param-types))
            ;; Create a C-style array of LLVM types for the parameters
            (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
-      (let ((idx 0))
-        (loop for param-node in param-nodes
-              for type-spec = (semantic-param-type param-node)
-              do (if (listp type-spec)
-                     ;; Explode cell into ptr and i64
-                     (progn
-                      (setf (cffi:mem-aref param-types-array 'llvm-type-ref idx) (llvm-int8-ptr-type (llvm-int8-type) 0))
-                      (incf idx)
-                      (setf (cffi:mem-aref param-types-array 'llvm-type-ref idx) (llvm-int64-type))
-                      (incf idx))
-                     ;; Simple type
-                     (progn
-                      (setf (cffi:mem-aref param-types-array 'llvm-type-ref idx)
-                        (crisp-type-to-llvm-type type-spec module))
-                      (incf idx)))))
+      
+      ;; Fill the param types array
+      (loop for i from 0
+            for type in expanded-param-types
+            do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
+
       (log:debug "finished llvm-type-for-name. Calling llvm-function-type...")
       (let ((fn-type (llvm-function-type return-type param-types-array param-count nil)))
         (log:debug "finished llvm-function-type, calling llvm-add-function...")
@@ -144,26 +206,22 @@
                 (loop for param-node in param-nodes
                       for param-name = (semantic-param-name param-node)
                       for type-spec = (semantic-param-type param-node)
-                      do (if (listp type-spec)
-                             ;; Handle cell type: Reconstruct struct from ptr and size
-                             (let* ((ptr-param (llvm-get-param func llvm-param-index))
-                                    (size-param (llvm-get-param func (1+ llvm-param-index)))
-                                    (cell-type (crisp-type-to-llvm-type type-spec module))
-                                    (alloca (llvm-build-alloca builder cell-type (string-downcase param-name)))
-                                    ;; Get pointers to struct fields
-                                    (ptr-gep (llvm-build-struct-gep2 builder cell-type alloca 0 "ptr_gep"))
-                                    (size-gep (llvm-build-struct-gep2 builder cell-type alloca 1 "size_gep")))
-                               ;; Store the exploded args into the struct fields
-                               (llvm-build-store builder ptr-param ptr-gep)
-                               (llvm-build-store builder size-param size-gep)
-                               (setf (gethash param-name var-env) alloca)
-                               (incf llvm-param-index 2))
-                             ;; Handle simple type
-                             (let* ((llvm-param (llvm-get-param func llvm-param-index))
-                                    (alloca (llvm-build-alloca builder (crisp-type-to-llvm-type type-spec module) (string-downcase param-name))))
-                               (llvm-build-store builder llvm-param alloca)
-                               (setf (gethash param-name var-env) alloca)
-                               (incf llvm-param-index)))))
+                      do (let* ((expanded-types (get-expanded-types type-spec module))
+                                (num-expanded (length expanded-types))
+                                ;; Collect the expanded LLVM parameters for this logical parameter
+                                (components (loop for i from 0 below num-expanded
+                                                  collect (llvm-get-param func (+ llvm-param-index i))))
+                                ;; Recombine them into a single value (struct or simple)
+                                (imploded-val (implode-value builder components type-spec module))
+                                ;; Allocate stack space for the variable
+                                (alloca (llvm-build-alloca builder (crisp-type-to-llvm-type type-spec module) (string-downcase param-name))))
+                           
+                           ;; Store the value
+                           (llvm-build-store builder imploded-val alloca)
+                           
+                           ;; Update environment and index
+                           (setf (gethash param-name var-env) alloca)
+                           (incf llvm-param-index num-expanded))))
 
               ;; --- 5. Generate the Body ---
               (let* ((body-node (first (semantic-function-body semantic-function)))
@@ -369,7 +427,6 @@
            (cast-val (llvm-build-fp-to-si builder arg-val to-llvm-type "fptosi")))
       (values cast-val nil))))
 
-;; -- function call --
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
   (declare (ignore di-builder di-scope location-map))
@@ -379,74 +436,55 @@
          (llvm-return-type (get-llvm-return-type module return-type-names))
 
          ;; 3. Build the LLVM function *type* (the signature)
-         ;; We need to calculate the exploded parameter count
          (param-nodes (function-signature-parameters sig))
-         (param-count (loop for p in param-nodes
-                              sum (if (listp p) 2 1)))
-         (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count))
-         (_ (let ((idx 0))
-              (loop for p-type in param-nodes
-                    do (if (listp p-type)
-                           ;; Explode cell into ptr and i64
-                           (progn
-                            (setf (cffi:mem-aref param-types-array 'llvm-type-ref idx) (llvm-int8-ptr-type (llvm-int8-type) 0))
-                            (incf idx)
-                            (setf (cffi:mem-aref param-types-array 'llvm-type-ref idx) (llvm-int64-type))
-                            (incf idx))
-                           ;; Simple type
-                           (progn
-                            (setf (cffi:mem-aref param-types-array 'llvm-type-ref idx)
-                              (crisp-type-to-llvm-type p-type module))
-                            (incf idx))))))
-         ;; The name of the function in LLVM IR is mangled with its types
-         ;; to support overloading. e.g., add_two_int_int
-         (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
-                         (mapcar #'mangle-type-spec (function-signature-parameters sig))))
-         (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
-         (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
+         (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-nodes))
+         (param-count (length expanded-param-types))
+         (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
+    
+    ;; Fill param types array
+    (loop for i from 0
+          for type in expanded-param-types
+          do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
 
-         ;; 4. Get the LLVM function *value* (the callable function)
-         (callee (or (llvm-get-named-function module callee-name)
-                     ;; If not in this module, declare it
-                     (llvm-add-function module callee-name llvm-fn-type)))
+    (let* (;; The name of the function in LLVM IR is mangled with its types
+           (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
+                           (mapcar #'mangle-type-spec (function-signature-parameters sig))))
+           (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
+           (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
 
-         (arg-nodes (semantic-call-args node))
-         (args-array (cffi:foreign-alloc 'llvm-value-ref :count param-count)))
-    (let ((idx 0))
-      (loop for arg-node in arg-nodes
-            for param-type in param-nodes
-            do (multiple-value-bind (arg-val arg-loc) (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)
-                 (declare (ignore arg-loc))
-                 (if (listp param-type)
-                     ;; Explode cell argument
-                     (progn
-                      ;; Extract ptr
-                      (let ((ptr-val (llvm-build-extract-value builder arg-val 0 "cell_ptr")))
-                        (setf (cffi:mem-aref args-array 'llvm-value-ref idx) ptr-val)
-                        (incf idx))
-                      ;; Extract size
-                      (let ((size-val (llvm-build-extract-value builder arg-val 1 "cell_size")))
-                        (setf (cffi:mem-aref args-array 'llvm-value-ref idx) size-val)
-                        (incf idx)))
-                     ;; Simple argument
-                     (progn
-                      (setf (cffi:mem-aref args-array 'llvm-value-ref idx) arg-val)
-                      (incf idx))))))
+           ;; 4. Get the LLVM function *value* (the callable function)
+           (callee (or (llvm-get-named-function module callee-name)
+                       ;; If not in this module, declare it
+                       (llvm-add-function module callee-name llvm-fn-type)))
 
-    (let ((call-inst (llvm-build-call2 builder
-                                       llvm-fn-type
-                                       callee
-                                       args-array
-                                       param-count
-                                       (if has-return-value "call_tmp" "")))
-          (di-location (when (and di-builder di-scope location-map)
-                             (let* ((loc (semantic-node-source-location node))
-                                    (line (gethash loc location-map 0)))
-                               (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                      line 0 di-scope (cffi:null-pointer))))))
-      (when di-location
-            (llvm-instruction-set-debug-loc call-inst di-location))
-      (values call-inst di-location))))
+           (arg-nodes (semantic-call-args node))
+           (args-array (cffi:foreign-alloc 'llvm-value-ref :count param-count)))
+      
+      (let ((idx 0))
+        (loop for arg-node in arg-nodes
+              for param-type in param-nodes
+              do (multiple-value-bind (arg-val arg-loc) (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)
+                   (declare (ignore arg-loc))
+                   ;; Use explode-value to handle both simple and complex types uniformly
+                   (let ((exploded-vals (explode-value builder arg-val param-type)))
+                     (dolist (val exploded-vals)
+                       (setf (cffi:mem-aref args-array 'llvm-value-ref idx) val)
+                       (incf idx))))))
+
+      (let ((call-inst (llvm-build-call2 builder
+                                         llvm-fn-type
+                                         callee
+                                         args-array
+                                         param-count
+                                         (if has-return-value "call_tmp" "")))
+            (di-location (when (and di-builder di-scope location-map)
+                               (let* ((loc (semantic-node-source-location node))
+                                      (line (gethash loc location-map 0)))
+                                 (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                        line 0 di-scope (cffi:null-pointer))))))
+        (when di-location
+              (llvm-instruction-set-debug-loc call-inst di-location))
+        (values call-inst di-location)))))
 
 (defmethod generate-node-ir ((node semantic-extract-value) builder module var-env di-builder di-scope location-map)
   "Generates IR for extracting a value from an aggregate."
@@ -495,35 +533,3 @@
     ;; The result of the let is the result of the last expression in the body.
     (loop for body-node in (semantic-let-body node)
           finally (return (generate-expression-ir builder module let-env di-builder di-scope location-map body-node)))))
-
-(defun mangle-type-spec (type-spec)
-  "Creates a string representation of a type spec for name mangling."
-  (cond
-   ((symbolp type-spec) (string-downcase (symbol-name type-spec)))
-   ((listp type-spec) (format nil "~{~a~^_~}" (mapcar #'mangle-type-spec type-spec)))
-   (t (error "Cannot mangle unknown type specifier: ~a" type-spec))))
-
-(defun crisp-type-to-llvm-type (type-spec module)
-  "Resolves a Crisp type specifier (simple or parameterized) to an LLVM type."
-  (cond
-   ;; Simple type like 'int
-   ((symbolp type-spec)
-     (let ((crisp-type (gethash type-spec *crisp-types*)))
-       (unless crisp-type
-         (error "Internal codegen error: Unknown simple type ~a" type-spec))
-       (funcall (crisp-type-llvm-type-fn crisp-type))))
-   ;; Parameterized type like '(cell int)
-   ((listp type-spec)
-     (let ((base-type (first type-spec)))
-       (cond
-        ((eq base-type 'cell)
-          ;; A cell is a struct { ptr, i64 }. We must build a C array for the types.
-          (let* ((context (llvm-get-module-context module))
-                 (element-types (list (llvm-int8-ptr-type (llvm-int8-type) 0) (llvm-int64-type)))
-                 (element-count (length element-types))
-                 (type-array (cffi:foreign-alloc 'llvm-type-ref :count element-count)))
-            (loop for i from 0 for type in element-types
-                  do (setf (cffi:mem-aref type-array 'llvm-type-ref i) type))
-            (llvm-struct-type-in-context context type-array element-count nil)))
-        (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
-   (t (error "Internal codegen error: Invalid type specifier ~a" type-spec))))
