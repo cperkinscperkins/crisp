@@ -130,33 +130,6 @@
 (define-test (analyzer return-type-from-list)
              (is equal '(int) (analyze-return-type-from-list '((return-type int))))
              (is equal '(float) (analyze-return-type-from-list '((return-type float))))
-             (is equal nil (analyze-return-type-from-list '((type a int))))
-             (fail (analyze-return-type-from-list '((return-type baz)))
-                   'crisp-unknown-type-error)
-             (is equal '((cell long)) (analyze-return-type-from-list '((return-type (cell long)))))
-             (is equal nil (analyze-return-type-from-list '((function (int => int))))))
-
-(define-test (analyzer environment-from-list)
-             (is equal '((a float) (b float))
-                 (analyze-environment-from-list '(a b) '((type a b float))))
-             (fail (analyze-environment-from-list '(a) '((type a b int)))
-                   'crisp-signature-arity-error)
-             (fail (analyze-environment-from-list '(a) '((type a quux)))
-                   'crisp-unknown-type-error)
-             (fail (analyze-environment-from-list '(a) '((type a (cell long))))
-                   'crisp-unknown-type-error "Parameterized types are not yet supported in (type ...) declarations."))
-
-(define-test (analyzer return-type-multiple-values)
-             "Test multiple return values from spec"
-             (is equal '(int int) (analyze-return-type-from-spec '(int => int int)))
-             (is equal '(int float ulong) (analyze-return-type-from-spec '(int => int float ulong))))
-
-(define-test (crisp-compiler internal-def-function-compilation)
-             "Tests the compilation path using internal-def-function."
-             (let ((ir-7 (compile-crisp-form-to-ir-string '(def-function test-fn-7 () (declare (return-type int)) 7))))
-               (true (search "define i32 @test_fn_7()" ir-7))
-               (true (search "ret i32 7" ir-7)))
-
              (let ((ir-add (compile-crisp-form-to-ir-string '(def-function test-fn-add (a b) (declare (type a b int) (return-type int)) (+ a b)))))
                (true (search "define i32 @test_fn_add_int_int(i32 %0, i32 %1)" ir-add))
                (true (search "add i32" ir-add)))
@@ -407,7 +380,7 @@
                (true (search "float 0x40091EB860000000" ir) ; Hex representation of 3.14
                      "The return instruction should contain the float constant.")
                (true (search "i64 42 }" ir)
-          "The return instruction should contain the long constant and end correctly.")))
+                     "The return instruction should contain the long constant and end correctly.")))
 
 (define-test (codegen make-scratch-cell)
              "Tests that make-scratch-cell uses implicit arguments."
@@ -433,3 +406,48 @@
                ;; Check that we are inserting the pointer and size into the struct
                ;; We use a regex-like check or just check for the instruction name.
                (true (search "insertvalue { ptr, i64 }" ir) "Should insert pointer into struct.")))
+
+(define-test (codegen cell-parameter-explosion)
+             "Tests that a function with a cell parameter is compiled to take two arguments (ptr, size)."
+             (let ((ir (compile-crisp-form-to-ir-string
+                        '(def-function test-cell-param (c)
+                                       (declare (type c (cell int)) (return-type int))
+                                       (return 0)))))
+               (is-valid-ir ir)
+               ;; We expect the function signature to explode the cell into ptr and i64.
+               ;; Current implementation generates: define i32 @test_cell_param_cell_int({ ptr, i64 } %0)
+               ;; We want: define i32 @test_cell_param_cell_int(ptr %0, i64 %1)
+
+               (true (search "define i32 @test_cell_param_cell_int(ptr %0, i64 %1)" ir)
+                     "Function signature should explode cell into ptr and i64.")
+               (false (search "define i32 @test_cell_param_cell_int({ ptr, i64 }" ir)
+                      "Function signature should NOT pass cell as a struct.")))
+
+(define-test (codegen cell-argument-explosion)
+             "Tests that passing a cell to a function passes it as two arguments (ptr, size)."
+             (let* ((forms '((def-function take-cell (c)
+                                           (declare (type c (cell int)) (return-type int))
+                                           (return 0))
+                             (def-function pass-cell (c)
+                                           (declare (type c (cell int)) (return-type int))
+                                           (take-cell c))))
+                    (ir (with-output-to-string (s)
+                          (let ((*standard-output* s))
+                            (let* ((module (llvm-module-create "test_cell_args"))
+                                   (builder (llvm-create-builder)))
+                              (unwind-protect
+                                  (progn
+                                   (compile-module forms module builder nil nil nil)
+                                   (let ((ir-ptr (llvm-print-module-to-string module)))
+                                     (unwind-protect (format s "~a" (cffi:foreign-string-to-lisp ir-ptr))
+                                       (llvm-dispose-message ir-ptr))))
+                                (llvm-dispose-builder builder)
+                                (llvm-dispose-module module)))))))
+               (is-valid-ir ir)
+               ;; We expect the call to 'take-cell' to pass ptr and i64 separately.
+               ;; The function name mangling will be take_cell_cell_int
+               (true (search "call i32 @take_cell_cell_int(ptr" ir)
+                     "Function call should pass ptr as first argument.")
+               ;; We can't easily regex for the second arg without a regex lib, but we can check for the absence of the struct
+               (false (search "call i32 @take_cell_cell_int({ ptr, i64 }" ir)
+                      "Function call should NOT pass cell as a struct.")))

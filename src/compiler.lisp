@@ -687,8 +687,9 @@
         (error 'crisp-signature-arity-error
                :expected (length (butlast (rest type-decl)))
                :inferred (length params)))
-      (let* ((param-names (butlast (rest type-decl) 1)) (param-type-name (first (last type-decl))))
-        (if (gethash param-type-name *crisp-types*)
+      (let* ((param-names (butlast (rest type-decl) 1)) 
+             (param-type-name (first (last type-decl))))
+        (if (valid-type-p param-type-name)
             (mapcar #'(lambda (name) (list name param-type-name))
                     param-names)
             (error 'crisp-unknown-type-error :type-name param-type-name))))))
