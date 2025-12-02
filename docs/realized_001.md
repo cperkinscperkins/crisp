@@ -37,6 +37,7 @@ The compiler
 - macroexpands
 - builds an AST with all semantic structures
 - walks the semantic node tree to generate LLVM-IR
+- Side Channels are supported (for the cell datatype, which is WIP)
 - DWARF markup is also supported
 
 
@@ -80,34 +81,56 @@ The following declarations are supported
 #### (type a b int)
 
 #### (return-type int)
-Also `(return-type int long)` for multiple value return.
-
-#### arrow type notation #'(int int => int)
 Also `#'(int int => int int)` for multiple value return.
 
 
 Errors
 ======
 
-- Recursion is not allowed
-- unmatched close parenthesis
-- Unexpected end of file
-- Unbound variable ___
-- Arity mismatch!
-- Type mismatch!  Expected __ but inferred ___.
-- Unsupported form __ found in functino body.
-- Invalid cast
-- Type mismatch for operator '+' 
-- Unknown type
-- Missing type declarations for parameters: ___  
+### General Errors
+- A Crisp compilation error occurred at (location).
+- Unexpected end of file. This usually means a parenthesis or quote is missing.
+- Unknown variable ___
+- Unsupported form ___ found in function body.
+- Recursion is not allowed. Call to ___ is recursive.
+
+### Type System Errors
+- Type mismatch! Expected ___ but inferred ___.
+- Unknown type '___'.
+- Expected ___ but got ___.
+- Arity mismatch! Function param list has ___ arguments but type signature declared ___.
+- Missing type declarations for parameters: ___
 - Operator '+' not supported for types ___ and ___
-- Invalid cast: Cannot use 'to...' for float to int.
-- Incorrect argument types for call to ____
-- Unsupported value cast from ___ to ___
-- Usage: crisp-compile [flags] <filename.crisp>   
+- Type mismatch for operator '+'. Cannot add ___ and ___ without explicit cast.
+- No matching function overload found for '___' with argument types ___.
+
+### Malformed Code Errors
+- Malformed make-scratch-cell form: ___. Expected (make-scratch-cell <type>)
+- Malformed let form: ___
+- Malformed let binding: ___
+- Cannot destructure a single-value return into multiple variables at ___
+- Not enough return values from ___ to bind ___ variables at ___
+
+### Cast & Conversion Errors
 - Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead.
+- Unsupported value cast from ___ to ___
 
+### Internal Compiler/Codegen Errors
+- Internal compiler error: analyze-cast-expression called with invalid operator ___
+- Compiler bug: Carrier function ___ is missing implicit argument ___ in its environment.
+- Missing implicit arguments for make-scratch-cell. Environment keys: ___
+- Codegen not implemented for literal of type ___
+- Codegen for literal of unknown type category: ___
+- Cannot mangle unknown type specifier: ___
+- Internal codegen error: Unknown simple type ___
+- Internal codegen error: Unknown parameterized type ___
+- Internal codegen error: Invalid type specifier ___
 
-- An unexpected error occurred: ___
-- Unknown type name for LLVM: ___
-- Internal compiler error: analyze-cast-expression called iwth invalid operator
+Line Numbering
+==============
+
+As a Lisp, what with all the macroexpansion and code conversion, line numbers don't
+"line up" (pun intended) like they do in C/C++/Rust etc. Crisp uses a s-expression
+counting system. You'll see error messages with locations like: (2 3 0 5 8) which means
+the error is in the 2nd s-expression, 3rd s-expression, 0th s-expression, 5th s-expression,
+8th s-expression of the tree.  It's essentially a branch-and-leaf counting system.  Enjoy.
