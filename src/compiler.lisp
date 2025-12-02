@@ -529,92 +529,97 @@
         (setf (gethash name *function-table*)
           (append existing-signatures (list (make-function-signature :name name :parameters param-types :return-types return-types :source-location location))))))))
 
+(defun inject-implicit-arguments (name explicit-env)
+  "Injects implicit arguments into the environment if the function is a carrier."
+  (let* ((implicit-args (gethash name *implicit-arg-map*))
+         (implicit-env (when implicit-args
+                         '((__storage_ptr ulong) (__storage_size ulong)))))
+    (append implicit-env explicit-env)))
+
+(defun scan-for-carriers (name body)
+  "Performs a single-pass look-ahead to detect if the function is a carrier."
+  (when (null *call-graph*)
+    (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
+      (when (or is-originator (some (lambda (callee)
+                                      (or (gethash callee *implicit-arg-map*)
+                                          (member callee *side-channel-originators*)))
+                                    callees))
+        (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
+        (setf (gethash name *implicit-arg-map*) '(:storage-ptr :storage-size))))))
+
+(defun validate-return-types (name body env declared-return-types location)
+  "Analyzes the function body and validates return types."
+  ;; Handle the case where a function promises a return value but has no body.
+  (when (and (not (equal declared-return-types '(nil))) (null body))
+    (error 'crisp-type-error :expected declared-return-types :inferred '(nil) :source-location location))
+
+  (let* ((body-nodes (analyze-body-expressions body env location))
+         (return-node (first (last body-nodes)))
+         (inferred-types (if return-node
+                             (let ((node-type (semantic-node-type return-node)))
+                               ;; If the node-type is a list, we need to distinguish between
+                               ;; a multi-value return type like '(int int) and a single
+                               ;; parameterized type like '(cell int).
+                               (if (and (listp node-type) (not (valid-type-p node-type)))
+                                   node-type ; It's a list of multiple return values, use as-is.
+                                   (list node-type))) ; It's a single value, wrap it in a list.
+                             '(nil))))
+
+    (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types declared-return-types)
+
+    (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
+               inferred-types (listp inferred-types)
+               declared-return-types (listp declared-return-types))
+
+    ;; Check Types. This allows for a function returning multiple values
+    ;; to be used in a context that expects fewer values (the extras are dropped).
+    (let* ((num-declared (length declared-return-types))
+           (num-inferred (length inferred-types))
+           ;; Take the first N inferred types, where N is the number of declared types.
+           (inferred-subset (if (>= num-inferred num-declared)
+                                (subseq inferred-types 0 num-declared)
+                                inferred-types)))
+      (unless (and (>= num-inferred num-declared)
+                   (equal inferred-subset declared-return-types))
+        (error 'crisp-type-error
+          :expected declared-return-types
+          :inferred inferred-types
+          :source-location (if return-node
+                               (semantic-node-source-location return-node)
+                               location))))
+    body-nodes))
+
 (defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
   (log:info "Analyzing function ~s" name)
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
-    ;; --- Phase 5: Implicit Argument Handling ---
-    ;; Check if this function is a carrier or originator.
-    (let* ((implicit-args (gethash name *implicit-arg-map*)) (implicit-env (when implicit-args
-                                                                                 ;; For now, hardcode the implicit param names and types.
-                                                                                 '((__storage_ptr ulong) (__storage_size ulong))))
-                                                             ;; Prepend the implicit params to the environment.
-                                                             (env (append implicit-env explicit-env)))
+    
+    ;; 1. Single-Pass Carrier Look-ahead
+    (scan-for-carriers name body)
 
-      ;; --- Phase 5: Single-Pass Carrier Look-ahead ---
-      ;; In single-pass mode, we need to pre-scan the body for calls to carriers.
-      (when (null *call-graph*)
-            (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
-              (when (or is-originator (some (lambda (callee)
-                                              (or (gethash callee *implicit-arg-map*)
-                                                  (member callee *side-channel-originators*))) ; <--- FIXED: Check for originators too!
-                                        callees))
-                    (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
-                    (setf (gethash name *implicit-arg-map*) '(:storage-ptr :storage-size)))))
+    ;; 2. Implicit Argument Handling
+    (let ((env (inject-implicit-arguments name explicit-env)))
 
-      ;; --- Phase 5: Implicit Argument Handling (Re-check) ---
-      ;; Check if this function is a carrier or originator (the map may have just been updated).
-      (let* ((implicit-args (gethash name *implicit-arg-map*))
-             (implicit-env (when implicit-args
-                                 '((__storage_ptr ulong) (__storage_size ulong))))
-             (env (append implicit-env explicit-env)))
-
-        ;; Handle the case where a function promises a return value but has no body.
-        (when (and (not (equal return-type '(nil))) (null body))
-              (error 'crisp-type-error :expected return-type :inferred '(nil) :source-location location))
-
-        ;; 2. Analyze the Body
-        (let* ((body-nodes (analyze-body-expressions body env location))
-               (return-node (first (last body-nodes)))
-               (inferred-types (if return-node
-                                   (let ((node-type (semantic-node-type return-node)))
-                                     ;; If the node-type is a list, we need to distinguish between
-                                     ;; a multi-value return type like '(int int) and a single
-                                     ;; parameterized type like '(cell int).
-                                     (if (and (listp node-type) (not (valid-type-p node-type)))
-                                         node-type ; It's a list of multiple return values, use as-is.
-                                         (list node-type))) ; It's a single value, wrap it in a list.
-                                   '(nil))))
-
-          (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types return-type)
-
-          (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
-                     inferred-types (listp inferred-types)
-                     return-type (listp return-type))
-
-          ;; 3. Check Types. This allows for a function returning multiple values
-          ;;    to be used in a context that expects fewer values (the extras are dropped).
-          (let* ((num-declared (length return-type))
-                 (num-inferred (length inferred-types))
-                 ;; Take the first N inferred types, where N is the number of declared types.
-                 (inferred-subset (if (>= num-inferred num-declared)
-                                      (subseq inferred-types 0 num-declared)
-                                      inferred-types)))
-            (unless (and (>= num-inferred num-declared)
-                         (equal inferred-subset return-type))
-              (error 'crisp-type-error
-                :expected return-type
-                :inferred inferred-types
-                :source-location (if return-node
-                                     (semantic-node-source-location return-node)
-                                     location))))
-
-          ;; 4. Build and return the "blueprint"
-          (make-semantic-function
-           :name name
-           :param-list (loop for (param-name param-type) in env ; Use the potentially modified env
-                             collect (make-semantic-param :name param-name :type param-type :source-location location))
-           :return-type return-type
-           :body (if (typep return-node 'semantic-explicit-return)
-                     (list return-node)
-                     (list (make-semantic-return
-                            :return-type (if (listp (semantic-node-type return-node))
-                                             (semantic-node-type return-node)
-                                             (list (semantic-node-type return-node)))
-                            :value-node return-node
-                            :source-location (if return-node (semantic-node-source-location return-node) location))))
-           :source-location location))))))
+      ;; 3. Analyze Body and Validate Return Types
+      (let ((body-nodes (validate-return-types name body env return-type location)))
+        
+        ;; 4. Build and return the "blueprint"
+        (let ((return-node (first (last body-nodes))))
+           (make-semantic-function
+            :name name
+            :param-list (loop for (param-name param-type) in env
+                              collect (make-semantic-param :name param-name :type param-type :source-location location))
+            :return-type return-type
+            :body (if (typep return-node 'semantic-explicit-return)
+                      (list return-node)
+                      (list (make-semantic-return
+                             :return-type (if (listp (semantic-node-type return-node))
+                                              (semantic-node-type return-node)
+                                              (list (semantic-node-type return-node)))
+                             :value-node return-node
+                             :source-location (if return-node (semantic-node-source-location return-node) location))))
+            :source-location location))))))
 
 
 ;; ### Helpers
