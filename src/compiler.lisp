@@ -35,6 +35,11 @@
 
 
 (defvar *current-compiling-function* nil)
+(defvar *current-module* nil)
+(defvar *current-builder* nil)
+(defvar *current-di-builder* nil)
+(defvar *current-di-compile-unit* nil)
+(defvar *current-location-map* nil)
 
 (defstruct crisp-type
   "Represents a Crisp type."
@@ -123,7 +128,7 @@
     (register-function-signature `(def-function ,name ,params ,@body) source-location)
 
     (log:debug "name: ~a  params: ~a  body: ~a ~%source-location: ~a~%"
-               name params body source-location)
+      name params body source-location)
     ;; Handle declarations (this part is tricky, let's simplify)
     (let* ((declare-forms
             (loop for form in body
@@ -133,11 +138,11 @@
            (body-forms (nthcdr (length declare-forms) body)))
 
       `(internal-def-function
-        ',name
-        ',params
-        ',declarations ;  '(((type a b int)) ((return-type int)))
-        ',body-forms ;  '((+ a b))
-        ,source-location))))
+         ',name
+         ',params
+         ',declarations ;  '(((type a b int)) ((return-type int)))
+         ',body-forms ;  '((+ a b))
+         ,source-location))))
 
 
 ;; INTERNAL TO COMPILER
@@ -411,36 +416,57 @@
       (values is-originator callees))))
 
 
+(defun walk-code-forms (forms visitor-fn)
+  "Walks top-level forms, handling macros and progn, and calling visitor-fn on def-function."
+  (labels ((walk (form location)
+                 (cond
+                  ;; Case 1: def-function -> Visit it
+                  ((and (consp form) (eq (car form) 'def-function))
+                    (funcall visitor-fn form location))
+
+                  ;; Case 2: progn -> Recurse
+                  ((and (consp form) (eq (car form) 'progn))
+                    (loop for sub-form in (cdr form)
+                          for i from 0
+                          do (walk sub-form (append location (list i)))))
+
+                  ;; Case 3: Macro -> Expand and Recurse
+                  ((and (consp form) (symbolp (car form)) (macro-function (car form)))
+                    (walk (macroexpand-1 form) location))
+
+                  ;; Case 4: Other -> Eval (for side effects like defmacro, register-template)
+                  (t
+                    (eval form)))))
+
+    (loop for form in forms
+          for i from 0
+          do (walk form (list i)))))
+
 (defun analyze-signatures-pass (forms)
   "Pass 1: Iterates through forms to find and register function signatures."
-  (loop for form in forms
-        for i from 0
-        do (let ((location (list i))) ; Simplified location for now
-             (cond
-              ((and (consp form) (eq (car form) 'def-function))
-                (let* ((name (second form))
-                       (body (cdddr form)))
-                  ;; 1. Register the explicit signature.
-                  (register-function-signature form location)
-                  ;; 2. Perform shallow analysis for call graph and originators.
-                  (multiple-value-bind (is-originator callees)
-                      (shallow-analyze-body body)
-                    (when is-originator
-                          (setf (gethash name *originator-functions*) t))
-                    (setf (gethash name *call-graph*) callees))))
-              ;; TODO: Add handlers for with-template-type, def-struct, etc.
-               ))))
+  (walk-code-forms forms
+                   (lambda (form location)
+                     (let* ((name (second form))
+                            (body (cdddr form)))
+                       ;; 1. Register the explicit signature.
+                       (register-function-signature form location)
+                       ;; 2. Perform shallow analysis for call graph and originators.
+                       (multiple-value-bind (is-originator callees)
+                           (shallow-analyze-body body)
+                         (when is-originator
+                               (setf (gethash name *originator-functions*) t))
+                         (setf (gethash name *call-graph*) callees))))))
 
 (defun compile-forms-pass (forms module builder di-builder di-compile-unit location-map)
   "Pass 2: Iterates through forms to perform full analysis and codegen."
-  (loop for form in forms
-        for i from 0
-        do (let ((location (list i))) ; Simplified location for now
-             (cond
-              ((and (consp form) (eq (car form) 'def-function))
-                (compile-toplevel-form form location module builder di-builder di-compile-unit location-map))
-              ;; TODO: Add handlers for with-template-type, etc.
-               ))))
+  (let ((*current-module* module)
+        (*current-builder* builder)
+        (*current-di-builder* di-builder)
+        (*current-di-compile-unit* di-compile-unit)
+        (*current-location-map* location-map))
+    (walk-code-forms forms
+                     (lambda (form location)
+                       (compile-toplevel-form form location module builder di-builder di-compile-unit location-map)))))
 
 (defun compile-toplevel-form (form location module builder di-builder di-compile-unit location-map)
   "Analyzes and compiles a single top-level form (used in Pass 2)."
@@ -533,25 +559,25 @@
   "Injects implicit arguments into the environment if the function is a carrier."
   (let* ((implicit-args (gethash name *implicit-arg-map*))
          (implicit-env (when implicit-args
-                         '((__storage_ptr ulong) (__storage_size ulong)))))
+                             '((__storage_ptr ulong) (__storage_size ulong)))))
     (append implicit-env explicit-env)))
 
 (defun scan-for-carriers (name body)
   "Performs a single-pass look-ahead to detect if the function is a carrier."
   (when (null *call-graph*)
-    (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
-      (when (or is-originator (some (lambda (callee)
-                                      (or (gethash callee *implicit-arg-map*)
-                                          (member callee *side-channel-originators*)))
-                                    callees))
-        (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
-        (setf (gethash name *implicit-arg-map*) '(:storage-ptr :storage-size))))))
+        (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
+          (when (or is-originator (some (lambda (callee)
+                                          (or (gethash callee *implicit-arg-map*)
+                                              (member callee *side-channel-originators*)))
+                                      callees))
+                (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
+                (setf (gethash name *implicit-arg-map*) '(:storage-ptr :storage-size))))))
 
 (defun validate-return-types (name body env declared-return-types location)
   "Analyzes the function body and validates return types."
   ;; Handle the case where a function promises a return value but has no body.
   (when (and (not (equal declared-return-types '(nil))) (null body))
-    (error 'crisp-type-error :expected declared-return-types :inferred '(nil) :source-location location))
+        (error 'crisp-type-error :expected declared-return-types :inferred '(nil) :source-location location))
 
   (let* ((body-nodes (analyze-body-expressions body env location))
          (return-node (first (last body-nodes)))
@@ -568,8 +594,8 @@
     (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types declared-return-types)
 
     (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
-               inferred-types (listp inferred-types)
-               declared-return-types (listp declared-return-types))
+      inferred-types (listp inferred-types)
+      declared-return-types (listp declared-return-types))
 
     ;; Check Types. This allows for a function returning multiple values
     ;; to be used in a context that expects fewer values (the extras are dropped).
@@ -594,7 +620,7 @@
   (log:info "Analyzing function ~s" name)
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
-    
+
     ;; 1. Single-Pass Carrier Look-ahead
     (scan-for-carriers name body)
 
@@ -603,10 +629,10 @@
 
       ;; 3. Analyze Body and Validate Return Types
       (let ((body-nodes (validate-return-types name body env return-type location)))
-        
+
         ;; 4. Build and return the "blueprint"
         (let ((return-node (first (last body-nodes))))
-           (make-semantic-function
+          (make-semantic-function
             :name name
             :param-list (loop for (param-name param-type) in env
                               collect (make-semantic-param :name param-name :type param-type :source-location location))
@@ -614,11 +640,11 @@
             :body (if (typep return-node 'semantic-explicit-return)
                       (list return-node)
                       (list (make-semantic-return
-                             :return-type (if (listp (semantic-node-type return-node))
-                                              (semantic-node-type return-node)
-                                              (list (semantic-node-type return-node)))
-                             :value-node return-node
-                             :source-location (if return-node (semantic-node-source-location return-node) location))))
+                              :return-type (if (listp (semantic-node-type return-node))
+                                               (semantic-node-type return-node)
+                                               (list (semantic-node-type return-node)))
+                              :value-node return-node
+                              :source-location (if return-node (semantic-node-source-location return-node) location))))
             :source-location location))))))
 
 
@@ -774,6 +800,27 @@
                            :value nil ; No real value yet
                            :source-location location)))
 
+(defun analyze-progn-expression (expr env location)
+  "Analyzes a `(progn ...)` expression."
+  (let ((body (cdr expr))
+        (last-node nil))
+    (dolist (form body)
+      (setf last-node (analyze-expression form env location)))
+    ;; Return the last node, or a void literal if empty
+    (or last-node
+        (make-semantic-literal :value-type 'void :value nil :source-location location))))
+
+(defun analyze-nested-def-function (expr env location)
+  "Analyzes a nested `(def-function ...)` expression (e.g. from a template)."
+  (unless (and *current-module* *current-builder*)
+    (error "Cannot compile nested def-function without active LLVM context."))
+
+  ;; Compile the function as a top-level form
+  (compile-toplevel-form expr location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)
+
+  ;; Return a void literal so it doesn't affect the expression value
+  (make-semantic-literal :value-type 'void :value nil :source-location location))
+
 (defun analyze-let-expression (expr env location)
   "Analyzes a `(let ...)` expression."
   (unless (and (>= (length expr) 2) (listp (cadr expr)))
@@ -815,10 +862,10 @@
                              for j from 0 do
                                (let* ((var-type (nth j init-node-types))
                                       (extract-node (make-semantic-extract-value
-                                                     :type var-type
-                                                     :aggregate-node init-node
-                                                     :index j
-                                                     :source-location (semantic-node-source-location init-node))))
+                                                      :type var-type
+                                                      :aggregate-node init-node
+                                                      :index j
+                                                      :source-location (semantic-node-source-location init-node))))
                                  (push (cons var-name extract-node) bindings-list)
                                  (setf current-env (cons (list var-name var-type) current-env)))))
                      (t (error "Malformed let binding: ~a" binding)))))
@@ -829,7 +876,7 @@
              (last-body-node (first (last analyzed-body)))
              (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
         (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
-                   analyzed-bindings analyzed-body return-type)
+          analyzed-bindings analyzed-body return-type)
         (make-semantic-let :type return-type
                            :bindings analyzed-bindings
                            :body analyzed-body
@@ -893,8 +940,9 @@
 
 (defun initialize-expression-analyzers ()
   "Populates the *expression-analyzers* hash table."
-  (clrhash *expression-analyzers*)
-  (def-expression-analyzer let analyze-let-expression)
+  (clrhash *expression-analyzers*)  (def-expression-analyzer let analyze-let-expression)
+  (def-expression-analyzer progn analyze-progn-expression)
+  (def-expression-analyzer def-function analyze-nested-def-function)
   (def-expression-analyzer + analyze-add-expression)
   (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
   (def-expression-analyzer return analyze-return-expression)
@@ -929,7 +977,7 @@
     ;; In single-pass mode, if the callee is a carrier, the caller must be too.
     (when (and (null *call-graph*) implicit-args-required)
           (log:debug "Single-pass: Call to carrier ~s implies caller ~s is also a carrier."
-                     op *current-compiling-function*)
+            op *current-compiling-function*)
           (setf (gethash *current-compiling-function* *implicit-arg-map*) implicit-args-required))
 
     ;; 1. Analyze the *explicit* arguments passed to the call.
@@ -968,7 +1016,7 @@
             :source-location location))
 
         (log:debug "Function call '~a' matched signature with params ~a and return types ~a."
-                   op (function-signature-parameters signature) (function-signature-return-types signature))
+          op (function-signature-parameters signature) (function-signature-return-types signature))
 
         ;; 6. Build the semantic-call node with the final argument list.
         (make-semantic-call :name op
@@ -1021,22 +1069,22 @@
              :source-location location))))
 
    ;; Case 3: It's a function call, like '(+ a b)'
-   ((listp expr)     (let ((op (first expr)))
-       (log:info "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
-       (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
-       (cond        ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
-        ((gethash op *expression-analyzers*)
-          (funcall (gethash op *expression-analyzers*) expr env location))
-        ;; Case 3b: Is it a macro?
-        ((macro-function op)
-         (analyze-expression (macroexpand-1 expr) env location))
-        ;; Case 3c: Is it a call to a known user-defined function?
-        ((gethash op *function-table*)
-          (analyze-function-call op expr env location))
-        ;; Case 3c: Otherwise, we don't know what this is.
-        (t (error 'crisp-unsupported-form-error
-             :form op
-             :source-location (append location '(0)))))))
+   ((listp expr) (let ((op (first expr)))
+                   (log:info "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
+                   (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
+                   (cond ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
+                        ((gethash op *expression-analyzers*)
+                          (funcall (gethash op *expression-analyzers*) expr env location))
+                        ;; Case 3b: Is it a macro?
+                        ((macro-function op)
+                          (analyze-expression (macroexpand-1 expr) env location))
+                        ;; Case 3c: Is it a call to a known user-defined function?
+                        ((gethash op *function-table*)
+                          (analyze-function-call op expr env location))
+                        ;; Case 3c: Otherwise, we don't know what this is.
+                        (t (error 'crisp-unsupported-form-error
+                             :form op
+                             :source-location (append location '(0)))))))
    (t (error 'crisp-unsupported-form-error
         :form expr
         :source-location location))))
