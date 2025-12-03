@@ -451,3 +451,7 @@
                ;; We can't easily regex for the second arg without a regex lib, but we can check for the absence of the struct
                (false (search "call i32 @take_cell_cell_int({ ptr, i64 }" ir)
                       "Function call should NOT pass cell as a struct.")))
+
+
+(define-test template-macro-exists
+             (true (macro-function 'crisp.compiler::with-template-type) "with-template-type should be a defined macro"))

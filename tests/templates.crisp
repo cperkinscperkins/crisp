@@ -1,0 +1,78 @@
+(with-template-type (T)
+  (def-function add-two (a b)
+     (declare #'(T T => T))
+    (+ a b)))
+#|
+;; explicitly instantiate the template
+(def-function add-three (a b c)
+     (declare #'(int int int => int))
+    (gen-add-two int)
+    (+ a (add-two b c)))
+
+;; templated kernels and def-grid-function can be instantiated via gen- 
+;; at the top level of a .crisp file.
+;; but what about regular functions and other def- forms?
+
+(gen-add-two float)
+
+(def-function add-three (a b c)
+     (declare #'(float float float => float))
+    (+ a (add-two b c)))
+
+
+;; template instantiation with type inference
+(def-function add-three (a b c)
+     (declare #'(long long long => long))
+    (+ a (add-two b c)))
+
+;; wrap multiple functions in a template
+(with-template-type (T)
+  (def-function also-add-two (a b)
+     (declare #'(T T => T))
+    (+ a b))
+
+  (def-function and-again-add-two (a b)
+     (declare #'(T T => T))
+    (+ a b)))
+
+(def-function add-four (a b c d)
+     (declare #'(int int int int => int))
+     (gen-also-add-two int)
+     (gen-and-again-add-two int)
+    (+ (also-add-two a b) (and-again-add-two c d)))
+
+(def-function add-four (a b c d)
+     (declare #'(long long long long => long))
+    (+ (also-add-two a b) (and-again-add-two c d)))
+
+
+;; templates and overloading
+(with-template-type (T)
+  (def-function add-some (a b)
+     (declare #'(T T => T))
+    (+ a b)))
+
+(with-template-type (T)
+  (def-function add-some (a b c)
+     (declare #'(T T T => T))
+    (+ a b c)))
+
+;; will the overloading be a challenge for inference?
+(def-function call-add-some (a b c)
+     (declare #'(long long long => long))
+    (add-some a b c))
+
+
+;; As if it's not hard enough.
+
+(<T>
+ (def-function add-two-ish (a b)
+    (declare #'(T T => T))
+    (+ a b)))
+
+(<T U>
+ (def-function add-two-diff (a b)
+    (declare #'(T U => T))
+    (+ a b)))
+
+|#
