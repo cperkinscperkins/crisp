@@ -66,11 +66,11 @@ Value: The expanded form (or T).")
                               (register-template ',name ',params ',constraints ',form ',signature))
 
                             ;; Define the generator macro: (gen-NAME ...)
-                            (defmacro ,(intern (format nil "GEN-~a" name)) (&rest concrete-types)
-                              `(instantiate-template ',',name ',concrete-types))
+                            (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
+                              (instantiate-template ',name concrete-types))
 
                             ;; Define the type helper macro: (NAME-type ...)
-                            (defmacro ,(intern (format nil "~a-TYPE" name)) (&rest concrete-types)
+                            (defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
                               `(get-template-signature ',',name ',concrete-types)))))))))
 
 ;;; ----------------------------------------------------------------------------

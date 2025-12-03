@@ -2,13 +2,13 @@
   (def-function add-two (a b)
      (declare #'(T T => T))
     (+ a b)))
-#|
+
 ;; explicitly instantiate the template
 (def-function add-three (a b c)
      (declare #'(int int int => int))
     (gen-add-two int)
     (+ a (add-two b c)))
-
+#|
 ;; templated kernels and def-grid-function can be instantiated via gen- 
 ;; at the top level of a .crisp file.
 ;; but what about regular functions and other def- forms?

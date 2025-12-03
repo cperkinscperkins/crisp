@@ -161,6 +161,7 @@
 
    ;; laungage symbols
    #:def-function
+   #:with-template-type
    #:return
    #:declare
    #:return-type

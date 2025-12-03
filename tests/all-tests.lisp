@@ -455,3 +455,49 @@
 
 (define-test template-macro-exists
              (true (macro-function 'crisp.compiler::with-template-type) "with-template-type should be a defined macro"))
+
+(define-test gen-macro-creation
+             (let ((form '(with-template-type (T)
+                                              (def-function test-gen-macro (x)
+                                                            (declare #'(T => T))
+                                                            x))))
+               (eval form)
+               (true (macro-function (intern "GEN-TEST-GEN-MACRO")) "gen-test-gen-macro should be defined")
+               (true (macro-function (intern "TEST-GEN-MACRO-TYPE")) "test-gen-macro-type should be defined")))
+
+(define-test template-instantiation
+             (let ((form '(with-template-type (T)
+                                              (def-function test-instantiation (x)
+                                                            (declare #'(T => T))
+                                                            x))))
+               (eval form)
+               (let* ((gen-form '(gen-test-instantiation int))
+                      (expanded (macroexpand-1 gen-form)))
+                 ;; Expanded form should be (PROGN (DEF-FUNCTION TEST-INSTANTIATION (X) (DECLARE #'(INT => INT)) X))
+                 ;; Note: The exact structure depends on implementation, but it should contain DEF-FUNCTION with substituted types.
+                 (true (listp expanded))
+                 (is eq 'progn (first expanded))
+                 (let ((def-func (second expanded)))
+                   (is eq 'def-function (first def-func))
+                   (is eq 'test-instantiation (second def-func))
+                   (let ((decl (find-if (lambda (x) (and (listp x) (eq (first x) 'declare))) (cdddr def-func))))
+                     (true decl "Should have a declaration")
+                     (let ((sig (second decl)))
+                       ;; Signature should be (INT => INT)
+                       (is equal '(function (int => int)) sig)))))))
+
+(define-test reader-macro-reading
+             (let ((input "(<T> (def-function test-reader (x) (declare #'(T => T)) x))"))
+               (let ((form (read-from-string input)))
+                 ;; Form should be (|<T>| (def-function ...))
+                 ;; And |<T>| should be a macro that expands to (with-template-type (T) ...)
+                 (true (listp form))
+                 (let ((macro-symbol (first form)))
+                   (true (symbolp macro-symbol))
+                   (is string= "<T>" (symbol-name macro-symbol))
+                   (true (macro-function macro-symbol) "|<T>| should be a defined macro")
+
+                   ;; Check expansion
+                   (let ((expanded (macroexpand-1 form)))
+                     (is eq 'with-template-type (first expanded))
+                     (is equal '(T) (second expanded)))))))

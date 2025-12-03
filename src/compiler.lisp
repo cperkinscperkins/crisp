@@ -1021,14 +1021,16 @@
              :source-location location))))
 
    ;; Case 3: It's a function call, like '(+ a b)'
-   ((listp expr)
-     (let ((op (first expr)))
+   ((listp expr)     (let ((op (first expr)))
+       (log:info "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
        (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
-       (cond
-        ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
+       (cond        ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
         ((gethash op *expression-analyzers*)
           (funcall (gethash op *expression-analyzers*) expr env location))
-        ;; Case 3b: Is it a call to a known user-defined function?
+        ;; Case 3b: Is it a macro?
+        ((macro-function op)
+         (analyze-expression (macroexpand-1 expr) env location))
+        ;; Case 3c: Is it a call to a known user-defined function?
         ((gethash op *function-table*)
           (analyze-function-call op expr env location))
         ;; Case 3c: Otherwise, we don't know what this is.
