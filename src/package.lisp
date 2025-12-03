@@ -31,7 +31,7 @@
 ;;;    - It IMPORTs the core language symbols (`def-function`, `declare`, etc.)
 ;;;      *from* `:crisp.compiler`.
 ;;;
-;;; This design breaks the circular dependency we had before.
+;;; This design breaks any circular dependencies.
 ;;;
 ;;; --- The Compilation Flow ---
 ;;; 1. `crisp.main` binds `*package*` to the `:crisp-language` package.
