@@ -8258,7 +8258,7 @@ This routines find the minimum or maximum between 3 values of the same type. The
 mapped to this same instruction automatically (and this is true for `max` as well), so this is redundant.  
 
 
-### `op-rsqrt-approx`
+### `op-rsqrt-approx` (Reciprocal Square Root)
 ```
 (op-rsqrt-approx x) => float
 ```
@@ -8268,12 +8268,62 @@ Most users shouldn't need or use this.  Just choose `(precision fast)` and go ab
 This op uses the hardware's Special Function Unit (SFU) lookup table to return a value that 
 is close to the true mathematical result, but much faster to compute.
 - Input: x (a float).
-- Output: A float value $y \approx 1/\sqrt{x}$.
+- Output: A float value $y \approx 1/\sqrt{x}$.   
+- Use: Normalizing vectors. `normalize(v) = v * rsqrt(dot(v, v))`
 
 The approximation usually has an error of around $2^{-22}$ (for 32-bit floats on modern GPUs), 
 which equates to about 22 bits of precision. This is surprisingly good—enough for lighting calculations, 
 normalizing vectors, or Monte Carlo simulations—but not enough for scientific simulation or accumulated physics.
 
+
+### `op-rcp-approx` (Reciprocal)
+```
+(op-rcp-approx x) => float
+```
+ - Input: `x` (floating point)
+ - Output: $\approx 1/x$
+ - Use: Fast division. a / b can be compiled as a * op-rcp-approx(b)
+
+### `op-log2-approx` (Base-2 Logarithm)
+
+```
+(op-log2-approx x:float) => float
+```
+- Input: `x` as some floating point type
+- Output: $\approx \log_2(x)$
+- Use: Lighting calculations (gamma correction), entropy encoding, power calculation
+
+### `op-exp2-approx` (Base-2 Exponential)
+
+```
+(op-exp2-approx x) => float
+```
+- Input: `x` as some floating point type
+- Output: $\approx 2^x$
+- Use: The inverse of log2. Combined with log2, it calculates generic powers: $x^y = 2^{y \cdot \log_2(x)}$.
+
+### `op-sin-approx` 
+```
+(op-sin-approx x) => float
+```
+- Input: x (radians, floating point) 
+- Output: $\approx \sin(x)$ 
+- Use: Rotations, waves, procedural generation.
+
+### `op-cos-approx`
+```
+(op-cos-approx x) => 
+```
+- Input: `x` (radians, flaoting point) 
+- Output: $\approx \cos(x)$
+
+### `op-sincos-approx`
+```
+(op-sincos-approx x) => float float
+```
+- Input: `x` (radians, floating point)
+- Output: Returns two values: $\approx \sin(x)$ and $\approx \cos(x)$.
+- Use: Calculating both sine and cosine for the same angle (e.g., rotation matrices). This often compiles to a single hardware instruction.
 
 Quantized Integers
 ==================
