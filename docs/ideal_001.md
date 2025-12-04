@@ -1616,7 +1616,7 @@ A `cell` has these mutable properties:
 | offset   | ulong   | offset into parent. |
 
 `(offset~ someCell)` `(parent~ someCell)` can be used to access (or change) the `cell` view.
-Note that out-of-bounds checks are not enabled by default. Certain compiler flags (like `--logging-output`) will enable them.
+Note that out-of-bounds checks are not enabled by default. Certain compiler flags (like `--runtime-checks`) will enable them.
 
 These property access functions are overloadable. It would be unwise to overload them for all `cell`s. Use `def-derived-type` 
 to define your own cell type and overload those property accesses. The `~offset~` and `~parent~` functions
@@ -1956,7 +1956,7 @@ There are some restrictions. They are enforced at compile time:
   types requires that both have the same base alignment requirement under `std140`. 
 
 The runtime will assert that the number of source bytes is sufficient for the new requirements, but this
-assertion requires compiler flags (like `--logging-output`). 
+assertion requires compiler flags (like `--runtime-checks`). 
 
 `:compact` layout is generally more amenable to reinterpretation.
 
@@ -8258,6 +8258,22 @@ This routines find the minimum or maximum between 3 values of the same type. The
 mapped to this same instruction automatically (and this is true for `max` as well), so this is redundant.  
 
 
+### `op-rsqrt-approx`
+```
+(op-rsqrt-approx x) => float
+```
+Most users shouldn't need or use this.  Just choose `(precision fast)` and go about your business.
+
+`op-rsrt-approx` calculates an approximation of the reciprocal square root ($1/\sqrt{x}$)
+This op uses the hardware's Special Function Unit (SFU) lookup table to return a value that 
+is close to the true mathematical result, but much faster to compute.
+- Input: x (a float).
+- Output: A float value $y \approx 1/\sqrt{x}$.
+
+The approximation usually has an error of around $2^{-22}$ (for 32-bit floats on modern GPUs), 
+which equates to about 22 bits of precision. This is surprisingly good—enough for lighting calculations, 
+normalizing vectors, or Monte Carlo simulations—but not enough for scientific simulation or accumulated physics.
+
 
 Quantized Integers
 ==================
@@ -9868,6 +9884,11 @@ that alter behavior based on context in order to provide a predictable experienc
 
 Returns true if the file is being compiled with the `--logging-output` flag 
 
+### `is-runtime-checking?`
+`(is-runtime-checking?) => T or nil`
+
+Returns true if the file is being compiled with the `--runtime-checks` flag
+
 
 ### `(declare (grid-level))`
 
@@ -10450,6 +10471,12 @@ reduce-vector.metacrisp
 Other Flags
 -----------
 
+### `--runtime-checks`
+This flag enables various runtime checks that Crips is able to generate. Bounds checks, etc. 
+The exact checks are documented in thei relevant sections. <!-- NOTE: gather them up --> 
+In the initial implementation, this flag is useless without also enabling `--logging-output` and the
+compiler will emit an error if that flag is not also elected. 
+
 ### `--logging-output`
 This enables the debugging output side channel as well as enabling the runtime checks ( `r-t-check` ). When this 
 option is used, the kernel may run significantly slower. Note that the code that actually hoists
@@ -10579,6 +10606,7 @@ must be used consistently by both the tree shaking and future compilation passes
 - `--IR-target`
 - `--binary-GPU-target`
 - `--logging-output`
+- `--runtime-checks`
 - `--math-precision`
 
 ### In Memory Compilation
