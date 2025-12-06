@@ -40,6 +40,7 @@
 (defvar *current-di-builder* nil)
 (defvar *current-di-compile-unit* nil)
 (defvar *current-location-map* nil)
+(defvar *allow-nested-def-function* nil)
 
 (defstruct crisp-type
   "Represents a Crisp type."
@@ -812,14 +813,25 @@
 
 (defun analyze-nested-def-function (expr env location)
   "Analyzes a nested `(def-function ...)` expression (e.g. from a template)."
+  (unless *allow-nested-def-function*
+    (error "Unsupported form 'DEF-FUNCTION' found in function body."))
+
   (unless (and *current-module* *current-builder*)
     (error "Cannot compile nested def-function without active LLVM context."))
-
+  
   ;; Compile the function as a top-level form
   (compile-toplevel-form expr location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)
-
+  
   ;; Return a void literal so it doesn't affect the expression value
   (make-semantic-literal :value-type 'void :value nil :source-location location))
+
+(defun analyze-template-instantiation (expr env location)
+  "Analyzes a `(template-instantiation ...)` form, allowing nested def-functions."
+  (let ((*allow-nested-def-function* t)
+        (body (second expr)))
+    ;; The body is typically a PROGN or a single form.
+    ;; We analyze it recursively.
+    (analyze-expression body env location)))
 
 (defun analyze-let-expression (expr env location)
   "Analyzes a `(let ...)` expression."
@@ -940,9 +952,11 @@
 
 (defun initialize-expression-analyzers ()
   "Populates the *expression-analyzers* hash table."
-  (clrhash *expression-analyzers*)  (def-expression-analyzer let analyze-let-expression)
+  (clrhash *expression-analyzers*)
+  (def-expression-analyzer let analyze-let-expression)
   (def-expression-analyzer progn analyze-progn-expression)
   (def-expression-analyzer def-function analyze-nested-def-function)
+  (def-expression-analyzer template-instantiation analyze-template-instantiation)
   (def-expression-analyzer + analyze-add-expression)
   (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
   (def-expression-analyzer return analyze-return-expression)

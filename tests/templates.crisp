@@ -3,6 +3,7 @@
      (declare #'(T T => T))
     (+ a b)))
 
+
 ;; explicitly instantiate the template
 (def-function add-three (a b c)
      (declare #'(int int int => int))

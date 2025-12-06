@@ -63,11 +63,9 @@ Value: The expanded form (or T).")
                           `(progn
                             ;; Register the template at compile/load time
                             (eval-when (:compile-toplevel :load-toplevel :execute)
-                              (register-template ',name ',params ',constraints ',form ',signature))
-
-                            ;; Define the generator macro: (gen-NAME ...)
+                              (register-template ',name ',params ',constraints ',form ',signature))                            ;; Define the generator macro: (gen-NAME ...)
                             (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
-                              (instantiate-template ',name concrete-types))
+                              `(template-instantiation ,(instantiate-template ',name concrete-types)))
 
                             ;; Define the type helper macro: (NAME-type ...)
                             (defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)

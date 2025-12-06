@@ -19,3 +19,6 @@ bin/
 
 # ASDF system index
 system-index.txt
+
+# Scratch
+docs/convo.md
