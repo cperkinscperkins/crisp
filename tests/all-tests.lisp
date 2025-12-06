@@ -495,9 +495,35 @@
                  (let ((macro-symbol (first form)))
                    (true (symbolp macro-symbol))
                    (is string= "<T>" (symbol-name macro-symbol))
-                   (true (macro-function macro-symbol) "|<T>| should be a defined macro")
-
-                   ;; Check expansion
+                   (true (macro-function macro-symbol) "|<T>| should be a defined macro")                   ;; Check expansion
                    (let ((expanded (macroexpand-1 form)))
                      (is eq 'with-template-type (first expanded))
                      (is equal '(T) (second expanded)))))))
+
+(define-test reader-macro-conflict
+  ;; Test that the reader macro doesn't break standard symbols or operators
+  (let ((input "(< a b) (string< \"a\" \"b\") (<= a b) (<< a 1)"))
+    (let ((forms (read-from-string (format nil "(~a)" input))))
+      ;; Should read as ((< a b) (string< "a" "b") (<= a b) (<< a 1))
+      (true (listp forms))
+      (is = 4 (length forms))
+      
+      ;; Check < operator
+      (let ((op1 (first (first forms))))
+        (is string= "<" (symbol-name op1))
+        (false (macro-function op1) "< should not be a macro"))
+      
+      ;; Check string< symbol
+      (let ((op2 (first (second forms))))
+        (is string= "STRING<" (symbol-name op2))
+        (false (macro-function op2) "string< should not be a macro"))
+      
+      ;; Check <= operator
+      (let ((op3 (first (third forms))))
+        (is string= "<=" (symbol-name op3))
+        (false (macro-function op3) "<= should not be a macro"))
+        
+      ;; Check << operator
+      (let ((op4 (first (fourth forms))))
+        (is string= "<<" (symbol-name op4))
+        (false (macro-function op4) "<< should not be a macro")))))
