@@ -129,7 +129,7 @@
     (register-function-signature `(def-function ,name ,params ,@body) source-location)
 
     (log:debug "name: ~a  params: ~a  body: ~a ~%source-location: ~a~%"
-      name params body source-location)
+               name params body source-location)
     ;; Handle declarations (this part is tricky, let's simplify)
     (let* ((declare-forms
             (loop for form in body
@@ -139,11 +139,11 @@
            (body-forms (nthcdr (length declare-forms) body)))
 
       `(internal-def-function
-         ',name
-         ',params
-         ',declarations ;  '(((type a b int)) ((return-type int)))
-         ',body-forms ;  '((+ a b))
-         ,source-location))))
+        ',name
+        ',params
+        ',declarations ;  '(((type a b int)) ((return-type int)))
+        ',body-forms ;  '((+ a b))
+        ,source-location))))
 
 
 ;; INTERNAL TO COMPILER
@@ -595,8 +595,8 @@
     (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types declared-return-types)
 
     (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
-      inferred-types (listp inferred-types)
-      declared-return-types (listp declared-return-types))
+               inferred-types (listp inferred-types)
+               declared-return-types (listp declared-return-types))
 
     ;; Check Types. This allows for a function returning multiple values
     ;; to be used in a context that expects fewer values (the extras are dropped).
@@ -634,19 +634,19 @@
         ;; 4. Build and return the "blueprint"
         (let ((return-node (first (last body-nodes))))
           (make-semantic-function
-            :name name
-            :param-list (loop for (param-name param-type) in env
-                              collect (make-semantic-param :name param-name :type param-type :source-location location))
-            :return-type return-type
-            :body (if (typep return-node 'semantic-explicit-return)
-                      (list return-node)
-                      (list (make-semantic-return
-                              :return-type (if (listp (semantic-node-type return-node))
-                                               (semantic-node-type return-node)
-                                               (list (semantic-node-type return-node)))
-                              :value-node return-node
-                              :source-location (if return-node (semantic-node-source-location return-node) location))))
-            :source-location location))))))
+           :name name
+           :param-list (loop for (param-name param-type) in env
+                             collect (make-semantic-param :name param-name :type param-type :source-location location))
+           :return-type return-type
+           :body (if (typep return-node 'semantic-explicit-return)
+                     (list return-node)
+                     (list (make-semantic-return
+                            :return-type (if (listp (semantic-node-type return-node))
+                                             (semantic-node-type return-node)
+                                             (list (semantic-node-type return-node)))
+                            :value-node return-node
+                            :source-location (if return-node (semantic-node-source-location return-node) location))))
+           :source-location location))))))
 
 
 ;; ### Helpers
@@ -818,12 +818,17 @@
 
   (unless (and *current-module* *current-builder*)
     (error "Cannot compile nested def-function without active LLVM context."))
-  
+
   ;; Compile the function as a top-level form
   (compile-toplevel-form expr location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)
-  
+
   ;; Return a void literal so it doesn't affect the expression value
   (make-semantic-literal :value-type 'void :value nil :source-location location))
+
+(defmacro template-instantiation (&body body)
+  "Wrapper to allow nested def-functions during template instantiation.
+   At top-level, it expands to PROGN to allow evaluation."
+  `(progn ,@body))
 
 (defun analyze-template-instantiation (expr env location)
   "Analyzes a `(template-instantiation ...)` form, allowing nested def-functions."
@@ -874,10 +879,10 @@
                              for j from 0 do
                                (let* ((var-type (nth j init-node-types))
                                       (extract-node (make-semantic-extract-value
-                                                      :type var-type
-                                                      :aggregate-node init-node
-                                                      :index j
-                                                      :source-location (semantic-node-source-location init-node))))
+                                                     :type var-type
+                                                     :aggregate-node init-node
+                                                     :index j
+                                                     :source-location (semantic-node-source-location init-node))))
                                  (push (cons var-name extract-node) bindings-list)
                                  (setf current-env (cons (list var-name var-type) current-env)))))
                      (t (error "Malformed let binding: ~a" binding)))))
@@ -888,7 +893,7 @@
              (last-body-node (first (last analyzed-body)))
              (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
         (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
-          analyzed-bindings analyzed-body return-type)
+                   analyzed-bindings analyzed-body return-type)
         (make-semantic-let :type return-type
                            :bindings analyzed-bindings
                            :body analyzed-body
@@ -991,7 +996,7 @@
     ;; In single-pass mode, if the callee is a carrier, the caller must be too.
     (when (and (null *call-graph*) implicit-args-required)
           (log:debug "Single-pass: Call to carrier ~s implies caller ~s is also a carrier."
-            op *current-compiling-function*)
+                     op *current-compiling-function*)
           (setf (gethash *current-compiling-function* *implicit-arg-map*) implicit-args-required))
 
     ;; 1. Analyze the *explicit* arguments passed to the call.
@@ -1030,7 +1035,7 @@
             :source-location location))
 
         (log:debug "Function call '~a' matched signature with params ~a and return types ~a."
-          op (function-signature-parameters signature) (function-signature-return-types signature))
+                   op (function-signature-parameters signature) (function-signature-return-types signature))
 
         ;; 6. Build the semantic-call node with the final argument list.
         (make-semantic-call :name op
