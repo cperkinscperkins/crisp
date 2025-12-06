@@ -87,15 +87,16 @@ Value: The expanded form (or T).")
                                       (length concrete-types)))
                        templates)))
       (unless matches
-        (error "No template for ~a matches the provided type arguments: ~a" name concrete-types))
-
-      ;; Instantiate all matches
+        (error "No template for ~a matches the provided type arguments: ~a" name concrete-types))      ;; Instantiate all matches
       `(progn
         ,@(loop for tmpl in matches
                 for key = (cons name concrete-types)
-                  unless (gethash key *instantiated-templates*)
+                ;; We do NOT check *instantiated-templates* here because the compiler
+                ;; runs in multiple passes (signature analysis + codegen).
+                ;; If we suppress output, the second pass sees nothing and generates no code.
+                ;; The compiler handles duplicate definitions safely.
                 collect (let ((substitutions (pairlis (template-data-parameters tmpl) concrete-types)))
-                          ;; Mark as instantiated to avoid recursion/duplication
+                          ;; Mark as instantiated (optional, for other purposes)
                           (setf (gethash key *instantiated-templates*) t)
 
                           ;; Perform substitution on the body
