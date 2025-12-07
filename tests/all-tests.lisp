@@ -10,6 +10,7 @@
                           #:internal-def-function
                           #:generate-llvm-ir
                           #:generate-location-map
+                          #:visit-toplevel-form
                           #:char #:short #:float #:double #:truncate #:floor
                           #:ceil #:round))
 
@@ -472,7 +473,7 @@
                                                             x))))
                (eval form)
                (let* ((gen-form '(gen-test-instantiation int))
-                      (expanded (macroexpand-1 gen-form)))                 ;; Expanded form should be (TEMPLATE-INSTANTIATION (PROGN (DEF-FUNCTION ...)))
+                      (expanded (macroexpand-1 gen-form))) ;; Expanded form should be (TEMPLATE-INSTANTIATION (PROGN (DEF-FUNCTION ...)))
                  (true (listp expanded))
                  (is eq (intern "TEMPLATE-INSTANTIATION" :crisp.compiler) (first expanded))
                  (let* ((progn-form (second expanded))
@@ -495,35 +496,86 @@
                  (let ((macro-symbol (first form)))
                    (true (symbolp macro-symbol))
                    (is string= "<T>" (symbol-name macro-symbol))
-                   (true (macro-function macro-symbol) "|<T>| should be a defined macro")                   ;; Check expansion
+                   (true (macro-function macro-symbol) "|<T>| should be a defined macro") ;; Check expansion
                    (let ((expanded (macroexpand-1 form)))
                      (is eq 'with-template-type (first expanded))
                      (is equal '(T) (second expanded)))))))
 
 (define-test reader-macro-conflict
-  ;; Test that the reader macro doesn't break standard symbols or operators
-  (let ((input "(< a b) (string< \"a\" \"b\") (<= a b) (<< a 1)"))
-    (let ((forms (read-from-string (format nil "(~a)" input))))
-      ;; Should read as ((< a b) (string< "a" "b") (<= a b) (<< a 1))
-      (true (listp forms))
-      (is = 4 (length forms))
-      
-      ;; Check < operator
-      (let ((op1 (first (first forms))))
-        (is string= "<" (symbol-name op1))
-        (false (macro-function op1) "< should not be a macro"))
-      
-      ;; Check string< symbol
-      (let ((op2 (first (second forms))))
-        (is string= "STRING<" (symbol-name op2))
-        (false (macro-function op2) "string< should not be a macro"))
-      
-      ;; Check <= operator
-      (let ((op3 (first (third forms))))
-        (is string= "<=" (symbol-name op3))
-        (false (macro-function op3) "<= should not be a macro"))
-        
-      ;; Check << operator
-      (let ((op4 (first (fourth forms))))
-        (is string= "<<" (symbol-name op4))
-        (false (macro-function op4) "<< should not be a macro")))))
+             ;; Test that the reader macro doesn't break standard symbols or operators
+             (let ((input "(< a b) (string< \"a\" \"b\") (<= a b) (<< a 1)"))
+               (let ((forms (read-from-string (format nil "(~a)" input))))
+                 ;; Should read as ((< a b) (string< "a" "b") (<= a b) (<< a 1))
+                 (true (listp forms))
+                 (is = 4 (length forms))
+
+                 ;; Check < operator
+                 (let ((op1 (first (first forms))))
+                   (is string= "<" (symbol-name op1))
+                   (false (macro-function op1) "< should not be a macro"))
+
+                 ;; Check string< symbol
+                 (let ((op2 (first (second forms))))
+                   (is string= "STRING<" (symbol-name op2))
+                   (false (macro-function op2) "string< should not be a macro"))
+
+                 ;; Check <= operator
+                 (let ((op3 (first (third forms))))
+                   (is string= "<=" (symbol-name op3))
+                   (false (macro-function op3) "<= should not be a macro"))
+
+                 ;; Check << operator
+                 (let ((op4 (first (fourth forms))))
+                   (is string= "<<" (symbol-name op4))
+                   (false (macro-function op4) "<< should not be a macro")))))
+(define-test (crisp-compiler visit-toplevel-form-check)
+             "Verifies that visit-toplevel-form correctly recursively visits nodes."
+             (let ((visited-paths '()))
+               (visit-toplevel-form
+                '(progn
+                  (def-function f1 () nil)
+                  (progn
+                   (def-function f2 () nil)))
+                '(0)
+                (lambda (form loc)
+                  (push (list (second form) loc) visited-paths)))
+               ;; We expect:
+               ;; 1. f1 at (0 0)
+               ;; 2. f2 at (0 1 0)
+               ;; Since we push to a list, they will be in reverse order.
+               (true (equal visited-paths '((f2 (0 1 0)) (f1 (0 0))))
+                     (format nil "Expected traversal paths to match, got: ~a" visited-paths))))
+
+(define-test (crisp-compiler template-instantiation-hook-check)
+             "Verifies that the template hook is correctly set up."
+             ;; 1. It should be initialized (non-nil)
+             (true crisp.compiler::*template-instantiator-fn*
+                   "Template hook should be initialized.")
+
+             ;; 2. It should be equal to #'ensure-template-instantiation
+             (is eq #'crisp.compiler::ensure-template-instantiation crisp.compiler::*template-instantiator-fn*))
+
+(define-test (crisp-compiler parse-function-declarations-check)
+  "Verifies the unified function signature parsing logic."
+  
+  ;; Case 1: #'(...) syntax (Modern)
+  (multiple-value-bind (env return-types)
+      (crisp.compiler::parse-function-declarations '(a b) 
+        '((function (int float => int))))
+    (is equal '((a int) (b float)) env)
+    (is equal '(int) return-types))
+
+  ;; Case 2: Legacy (type ...) and (return-type ...) syntax
+  ;; Note: Legacy parser currently assumes all params match the list in (type names... type)
+  (multiple-value-bind (env return-types)
+      (crisp.compiler::parse-function-declarations '(x y) 
+        '((type x y int) (return-type int)))
+    (is equal '((x int) (y int)) env)
+    (is equal '(int) return-types))
+    
+  ;; Case 3: Mixed (Function spec takes precedence)
+  (multiple-value-bind (env return-types)
+      (crisp.compiler::parse-function-declarations '(a) 
+        '((function (float => float)) (type a int)))
+    (is equal '((a float)) env)
+    (is equal '(float) return-types)))

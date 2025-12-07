@@ -137,8 +137,8 @@ Value: The expanded form (or T).")
                             raw-sig))
                    (params (template-data-parameters tmpl)) ; e.g. (T)
                    ;; sig is now (T T => T). We want (T T).
-                   (sig-params (when sig (butlast sig 2)))) 
-              
+                   (sig-params (when sig (butlast sig 2))))
+
               ;; 1. Check arity match between args and signature params
               (when (and sig-params (= (length sig-params) (length argument-types)))
                     (let ((inference-map (make-hash-table)))
@@ -173,8 +173,25 @@ Value: The expanded form (or T).")
                               nil)))))))))
 
 
-;;; ----------------------------------------------------------------------------
-;;; Reader Macro: <...>
+;;
+(defun ensure-template-instantiation (name explicit-arg-types compiler-callback)
+  "Called by the compiler to auto-instantiate templates.
+   compiler-callback is (lambda (form location) ...)"
+  (let ((inferred-types (try-infer-template-types name explicit-arg-types)))
+    (when inferred-types
+          (log:info "Auto-specializing template ~a for types ~a" name inferred-types)
+          ;; 1. Instantiate the template
+          (let ((instantiated-code (instantiate-template name inferred-types)))
+            ;; 2. Compile the instantiated code (it's a PROGN of DEF-FUNCTIONs)
+            (loop for form in (rest instantiated-code) ; skip 'progn
+                  do (funcall compiler-callback form nil)))))) ; location is nil for generated code
+
+
+(defun initialize-templates ()
+  "Initializes the template system and hooks into the compiler."
+  (setf crisp.compiler::*template-instantiator-fn* #'ensure-template-instantiation)
+  (log:info "Template system initialized."))
+
 ;;; ----------------------------------------------------------------------------
 
 (eval-when (:compile-toplevel :load-toplevel :execute)

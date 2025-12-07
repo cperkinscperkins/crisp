@@ -158,6 +158,7 @@
    #:analyze-environment-from-list
    #:initialize-compiler
    #:initialize-expression-analyzers
+   #:initialize-templates
 
    ;; laungage symbols
    #:def-function
@@ -257,7 +258,7 @@
                           #:if #:when #:unless #:cond #:case #:let
                           #:let #:let*
                           #:progn
-                          #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=                          #:equal ;; and so on...
+                          #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal ;; and so on...
                           #:defmacro ;; We need defmacro to build the language
    )
 

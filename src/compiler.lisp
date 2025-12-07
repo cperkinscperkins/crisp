@@ -21,6 +21,12 @@
         "A hash table representing the call graph of functions.
   Keys are caller function names, values are lists of callee names.")
 
+
+(defvar *template-instantiator-fn* nil
+        "Hook for template instantiation.
+   Called as (funcall *template-instantiator-fn* name arg-types callback).
+   The callback is (funcall callback form location).")
+
 (defvar *side-channel-originators* '(make-scratch-cell)
         "A list of function names that trigger the implicit side-channel argument passing mechanism.")
 
@@ -107,7 +113,12 @@
   (initialize-crisp-types)
   (initialize-expression-analyzers)
   (clrhash *implicit-arg-map*)
-  (initialize-advisements))
+  (initialize-advisements)
+
+  ;; Auto-initialize templates if available (runtime check)
+  (if (fboundp 'initialize-templates)
+      (funcall 'initialize-templates)
+      (log:warn "Template system not loaded/initialized.")))
 
 
 ;; EXPORTS TO CRISP LANGUAGE
@@ -417,31 +428,51 @@
       (values is-originator callees))))
 
 
+(defun visit-toplevel-form (form location visitor-fn)
+  "Recursively visits a top-level form, handling macros and progn.
+   Visitor-fn is called as (visitor-fn form location) for def-function forms.
+   Other forms are evaluated if they are not special forms handled by the walker."
+  (cond
+   ;; Case 1: def-function -> Visit it
+   ((and (consp form) (eq (car form) 'def-function))
+     (funcall visitor-fn form location))
+
+   ;; Case 2: progn -> Recurse
+   ((and (consp form) (eq (car form) 'progn))
+     (loop for sub-form in (cdr form)
+           for i from 0
+           do (visit-toplevel-form sub-form (append location (list i)) visitor-fn)))
+
+   ;; Case 3: Macro -> Expand and Recurse
+   ((and (consp form) (symbolp (car form)) (macro-function (car form)))
+     (visit-toplevel-form (macroexpand-1 form) location visitor-fn))
+
+   ;; Case 4: Other -> Eval (for side effects like defmacro, register-template)
+   (t
+     (eval form))))
+
+(defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
+  "Compiles a single def-function form."
+  ;; In single-pass mode, the signature won't be registered yet.
+  ;; We check and register it here to ensure forward calls work.
+  ;; In multi-pass mode, this check prevents re-registration.
+  (unless (gethash (second form) *function-table*)
+    (register-function-signature form location))
+
+  (let ((*current-compiling-function* (second form)))
+    (push *current-compiling-function* *single-pass-call-stack*)
+    (unwind-protect
+        (let ((form-with-location (append form (list :source-location `',location))))
+          (let ((expanded-form (macroexpand-1 form-with-location)))
+            (generate-llvm-ir (eval expanded-form) module builder di-builder di-compile-unit location-map)))
+      (pop *single-pass-call-stack*))))
+
 (defun walk-code-forms (forms visitor-fn)
   "Walks top-level forms, handling macros and progn, and calling visitor-fn on def-function."
-  (labels ((walk (form location)
-                 (cond
-                  ;; Case 1: def-function -> Visit it
-                  ((and (consp form) (eq (car form) 'def-function))
-                    (funcall visitor-fn form location))
+  (loop for form in forms
+        for i from 0
+        do (visit-toplevel-form form (list i) visitor-fn)))
 
-                  ;; Case 2: progn -> Recurse
-                  ((and (consp form) (eq (car form) 'progn))
-                    (loop for sub-form in (cdr form)
-                          for i from 0
-                          do (walk sub-form (append location (list i)))))
-
-                  ;; Case 3: Macro -> Expand and Recurse
-                  ((and (consp form) (symbolp (car form)) (macro-function (car form)))
-                    (walk (macroexpand-1 form) location))
-
-                  ;; Case 4: Other -> Eval (for side effects like defmacro, register-template)
-                  (t
-                    (eval form)))))
-
-    (loop for form in forms
-          for i from 0
-          do (walk form (list i)))))
 
 (defun analyze-signatures-pass (forms)
   "Pass 1: Iterates through forms to find and register function signatures."
@@ -472,40 +503,15 @@
 (defun compile-toplevel-form (form location module builder di-builder di-compile-unit location-map)
   "Analyzes and compiles a single top-level form (used in Pass 2)."
   (log:debug "Compiling top-level form at ~a: ~s" location form)
-  
+
   (let ((*current-module* module)
         (*current-builder* builder)
         (*current-di-builder* di-builder)
         (*current-di-compile-unit* di-compile-unit)
         (*current-location-map* location-map))
-  (cond
-   ;; Case 1: def-function -> Compile it
-   ((and (consp form) (eq (car form) 'def-function))
-     ;; In single-pass mode, the signature won't be registered yet.
-     ;; We check and register it here to ensure forward calls work.
-     ;; In multi-pass mode, this check prevents re-registration.
-     (unless (gethash (second form) *function-table*)
-       (register-function-signature form location))
-
-     (let ((*current-compiling-function* (second form)))
-       (push *current-compiling-function* *single-pass-call-stack*)
-       (unwind-protect
-           (let ((form-with-location (append form (list :source-location `',location))))
-             (let ((expanded-form (macroexpand-1 form-with-location)))
-               (generate-llvm-ir (eval expanded-form) module builder di-builder di-compile-unit location-map)))
-         (pop *single-pass-call-stack*))))
-
-   ;; Case 2: progn -> Recurse
-   ((and (consp form) (eq (car form) 'progn))
-     (loop for sub-form in (cdr form)
-           for i from 0
-           do (compile-toplevel-form sub-form (append location (list i)) module builder di-builder di-compile-unit location-map)))
-
-   ;; Case 3: Macro -> Expand and Recurse
-   ((and (consp form) (symbolp (car form)) (macro-function (car form)))
-     (compile-toplevel-form (macroexpand-1 form) location module builder di-builder di-compile-unit location-map))   ;; Case 4: Other -> Eval (for side effects like defmacro, register-template, eval-when)
-   (t
-     (eval form)))))
+    (visit-toplevel-form form location
+                         (lambda (form location)
+                           (compile-def-function form location module builder di-builder di-compile-unit location-map)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Recursion Cycle Detection
@@ -1030,27 +1036,19 @@
            (signature (find-if (lambda (sig)
                                  (equal explicit-arg-types (function-signature-parameters sig)))
                           signatures)))
-      
+
       (unless signature
-        ;; Attempt Auto-Template Specialization
-        (let ((inferred-types (try-infer-template-types op explicit-arg-types)))
-          (if inferred-types
-              (progn
-                (log:info "Auto-specializing template ~a for types ~a" op inferred-types)
-                ;; 1. Instantiate the template
-                (let ((instantiated-code (instantiate-template op inferred-types)))
-                  ;; 2. Compile the instantiated code (it's a PROGN of DEF-FUNCTIONs)
-                  (loop for form in (rest instantiated-code) ; skip 'progn
-                        do (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
-                
-                ;; 3. Retry lookup
-                (setf signatures (gethash op *function-table*))
-                (setf signature (find-if (lambda (sig)
-                                           (equal explicit-arg-types (function-signature-parameters sig)))
-                                     signatures)))
-              
-              ;; If inference failed, or no template found
-              nil))
+        ;; Attempt Auto-Template Specialization via Hook
+        (when *template-instantiator-fn*
+              (funcall *template-instantiator-fn* op explicit-arg-types
+                (lambda (form location)
+                  (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
+
+              ;; Retry lookup
+              (setf signatures (gethash op *function-table*))
+              (setf signature (find-if (lambda (sig)
+                                         (equal explicit-arg-types (function-signature-parameters sig)))
+                                  signatures)))
 
         (unless signature
           (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types)))
@@ -1084,7 +1082,6 @@
                             :args final-arg-nodes
                             :signature signature
                             :source-location location)))))
-
 
 (defun analyze-parameters (params)
   "Builds the environment (a symbol table)."
@@ -1150,7 +1147,6 @@
         :form expr
         :source-location location))))
 
-
 ;; --- Helper to get the type from any node ---
 (defun semantic-node-type (node)
   (etypecase node
@@ -1164,7 +1160,6 @@
     (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
     (semantic-extract-value (semantic-extract-value-type node))))
-
 
 (defun semantic-node-source-location (node)
   (etypecase node
