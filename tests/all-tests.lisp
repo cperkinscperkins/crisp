@@ -451,3 +451,79 @@
                ;; We can't easily regex for the second arg without a regex lib, but we can check for the absence of the struct
                (false (search "call i32 @take_cell_cell_int({ ptr, i64 }" ir)
                       "Function call should NOT pass cell as a struct.")))
+
+
+(define-test template-macro-exists
+             (true (macro-function 'crisp.compiler::with-template-type) "with-template-type should be a defined macro"))
+
+(define-test gen-macro-creation
+             (let ((form '(with-template-type (T)
+                                              (def-function test-gen-macro (x)
+                                                            (declare #'(T => T))
+                                                            x))))
+               (eval form)
+               (true (macro-function (intern "GEN-TEST-GEN-MACRO")) "gen-test-gen-macro should be defined")
+               (true (macro-function (intern "TEST-GEN-MACRO-TYPE")) "test-gen-macro-type should be defined")))
+
+(define-test template-instantiation
+             (let ((form '(with-template-type (T)
+                                              (def-function test-instantiation (x)
+                                                            (declare #'(T => T))
+                                                            x))))
+               (eval form)
+               (let* ((gen-form '(gen-test-instantiation int))
+                      (expanded (macroexpand-1 gen-form)))                 ;; Expanded form should be (TEMPLATE-INSTANTIATION (PROGN (DEF-FUNCTION ...)))
+                 (true (listp expanded))
+                 (is eq (intern "TEMPLATE-INSTANTIATION" :crisp.compiler) (first expanded))
+                 (let* ((progn-form (second expanded))
+                        (def-func (second progn-form)))
+                   (is eq 'progn (first progn-form))
+                   (is eq 'def-function (first def-func))
+                   (is eq 'test-instantiation (second def-func))
+                   (let ((decl (find-if (lambda (x) (and (listp x) (eq (first x) 'declare))) (cdddr def-func))))
+                     (true decl "Should have a declaration")
+                     (let ((sig (second decl)))
+                       ;; Signature should be (INT => INT)
+                       (is equal '(function (int => int)) sig)))))))
+
+(define-test reader-macro-reading
+             (let ((input "(<T> (def-function test-reader (x) (declare #'(T => T)) x))"))
+               (let ((form (read-from-string input)))
+                 ;; Form should be (|<T>| (def-function ...))
+                 ;; And |<T>| should be a macro that expands to (with-template-type (T) ...)
+                 (true (listp form))
+                 (let ((macro-symbol (first form)))
+                   (true (symbolp macro-symbol))
+                   (is string= "<T>" (symbol-name macro-symbol))
+                   (true (macro-function macro-symbol) "|<T>| should be a defined macro")                   ;; Check expansion
+                   (let ((expanded (macroexpand-1 form)))
+                     (is eq 'with-template-type (first expanded))
+                     (is equal '(T) (second expanded)))))))
+
+(define-test reader-macro-conflict
+  ;; Test that the reader macro doesn't break standard symbols or operators
+  (let ((input "(< a b) (string< \"a\" \"b\") (<= a b) (<< a 1)"))
+    (let ((forms (read-from-string (format nil "(~a)" input))))
+      ;; Should read as ((< a b) (string< "a" "b") (<= a b) (<< a 1))
+      (true (listp forms))
+      (is = 4 (length forms))
+      
+      ;; Check < operator
+      (let ((op1 (first (first forms))))
+        (is string= "<" (symbol-name op1))
+        (false (macro-function op1) "< should not be a macro"))
+      
+      ;; Check string< symbol
+      (let ((op2 (first (second forms))))
+        (is string= "STRING<" (symbol-name op2))
+        (false (macro-function op2) "string< should not be a macro"))
+      
+      ;; Check <= operator
+      (let ((op3 (first (third forms))))
+        (is string= "<=" (symbol-name op3))
+        (false (macro-function op3) "<= should not be a macro"))
+        
+      ;; Check << operator
+      (let ((op4 (first (fourth forms))))
+        (is string= "<<" (symbol-name op4))
+        (false (macro-function op4) "<< should not be a macro")))))

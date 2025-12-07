@@ -147,9 +147,9 @@ LOOSE PRIORITIES
 - [ ] Hoisting
 - [ ] E2E Test?
 - [ ] with-template-type
-- [ ] funcction overloading
-- [ ] multiple return values
-- [ ] let with mv bindings
+- [x] funcction overloading
+- [x] multiple return values
+- [x] let with mv bindings
 - [ ] first order functions & funcall
 - [x] add more types
 - - [ ] bool type decisions
@@ -165,8 +165,8 @@ LOOSE PRIORITIES
 - [ ] cond  ( we can make all other divergent control flows from that: when, if, unless)
 - [ ] bool true false.  ( macros can still use T/nil ? )
 - [ ] precision selections (declare / declaim / flags )
-- [ ] .crisp files.  basic flag for crisp-compiler.exe
-- [ ] SIDE CHANNEL MECHANISM.  probably sooner, rather than later. 
+- [x] .crisp files.  basic flag for crisp-compiler.exe
+- [x] SIDE CHANNEL MECHANISM.  probably sooner, rather than later. 
 - [ ] Literals: use suffix ?   0.0f  INSTEAD of (type a float) in a let clause?
 
 
@@ -181,21 +181,21 @@ SHORT TERM PLAN
 - [ ] higher order functions as templates
 - [ ] need to move more of our old erstaz logging to log4cl. 
 - [x] Side Channel / Implicit Args. Can we start this BEFORE def-kernel? 
-- - [ ] last test that Side Channel ptr/size is showing up in the IR of correct leves Kernel->A->(B!!!)->C->D
-- - [ ] ALSO, if scratch-cell IS passed to C and D then it is explicit, but STILL two args (not one). Damnit - forgot to handle/check this.
+- - [x] last test that Side Channel ptr/size is showing up in the IR of correct leves Kernel->A->(B!!!)->C->D
+- - [x] ALSO, if scratch-cell IS passed to C and D then it is explicit, but STILL two args (not one). Damnit - forgot to handle/check this.
 
 
 M-V-R
 - [x]add a variadic (return a b c ...) so multiple values can actually be returned.
 - [x]decide how we want to support that at the LLVM-IR level
 - [x]implement the above and add tests.
-- [ ]update "let" support so it supports the bindings. (let ((quot rem (/ a b))) ...)
-- [ ]test that.
+- [x]update "let" support so it supports the bindings. (let ((quot rem (/ a b))) ...)
+- [x]test that.
 
 Debugging
 - [x] advise any function? Maybe advise-these at startup
 - [x] let-d  that logs each binding?
-- [ ] refactor generate-llvm-ir  
+- [x] refactor generate-llvm-ir  
 - [x] .bat to run all .crisp tests from compiler. local E2E easier
 - [x] dump-env to print out all the bindings in an environemnt
 - [ ] plus similar for *function-table* and others
