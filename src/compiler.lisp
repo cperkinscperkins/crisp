@@ -1120,7 +1120,8 @@
                         ((macro-function op)
                           (analyze-expression (macroexpand-1 expr) env location))
                         ;; Case 3c: Is it a call to a known user-defined function?
-                        ((gethash op *function-table*)
+                        ((or (gethash op *function-table*)
+                             (gethash op *template-registry*))
                           (analyze-function-call op expr env location))
                         ;; Case 3c: Otherwise, we don't know what this is.
                         (t (error 'crisp-unsupported-form-error

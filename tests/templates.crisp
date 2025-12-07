@@ -26,7 +26,7 @@
      (declare #'(long long long => long))
     (+ a (add-two b c)))
 
-#|
+
 ;; wrap multiple functions in a template
 (with-template-type (T)
   (def-function also-add-two (a b)
@@ -64,7 +64,7 @@
      (declare #'(long long long => long))
     (add-some a b c))
 
-
+#|
 ;; As if it's not hard enough.
 
 (<T>
