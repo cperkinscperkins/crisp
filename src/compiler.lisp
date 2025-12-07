@@ -472,21 +472,40 @@
 (defun compile-toplevel-form (form location module builder di-builder di-compile-unit location-map)
   "Analyzes and compiles a single top-level form (used in Pass 2)."
   (log:debug "Compiling top-level form at ~a: ~s" location form)
-  ;; For now, we only handle def-function
-  (when (and (consp form) (eq (car form) 'def-function))
-        ;; In single-pass mode, the signature won't be registered yet.
-        ;; We check and register it here to ensure forward calls work.
-        ;; In multi-pass mode, this check prevents re-registration.
-        (unless (gethash (second form) *function-table*)
-          (register-function-signature form location))
+  
+  (let ((*current-module* module)
+        (*current-builder* builder)
+        (*current-di-builder* di-builder)
+        (*current-di-compile-unit* di-compile-unit)
+        (*current-location-map* location-map))
+  (cond
+   ;; Case 1: def-function -> Compile it
+   ((and (consp form) (eq (car form) 'def-function))
+     ;; In single-pass mode, the signature won't be registered yet.
+     ;; We check and register it here to ensure forward calls work.
+     ;; In multi-pass mode, this check prevents re-registration.
+     (unless (gethash (second form) *function-table*)
+       (register-function-signature form location))
 
-        (let ((*current-compiling-function* (second form)))
-          (push *current-compiling-function* *single-pass-call-stack*)
-          (unwind-protect
-              (let ((form-with-location (append form (list :source-location `',location))))
-                (let ((expanded-form (macroexpand-1 form-with-location)))
-                  (generate-llvm-ir (eval expanded-form) module builder di-builder di-compile-unit location-map)))
-            (pop *single-pass-call-stack*)))))
+     (let ((*current-compiling-function* (second form)))
+       (push *current-compiling-function* *single-pass-call-stack*)
+       (unwind-protect
+           (let ((form-with-location (append form (list :source-location `',location))))
+             (let ((expanded-form (macroexpand-1 form-with-location)))
+               (generate-llvm-ir (eval expanded-form) module builder di-builder di-compile-unit location-map)))
+         (pop *single-pass-call-stack*))))
+
+   ;; Case 2: progn -> Recurse
+   ((and (consp form) (eq (car form) 'progn))
+     (loop for sub-form in (cdr form)
+           for i from 0
+           do (compile-toplevel-form sub-form (append location (list i)) module builder di-builder di-compile-unit location-map)))
+
+   ;; Case 3: Macro -> Expand and Recurse
+   ((and (consp form) (symbolp (car form)) (macro-function (car form)))
+     (compile-toplevel-form (macroexpand-1 form) location module builder di-builder di-compile-unit location-map))   ;; Case 4: Other -> Eval (for side effects like defmacro, register-template, eval-when)
+   (t
+     (eval form)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Recursion Cycle Detection
