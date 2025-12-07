@@ -20,12 +20,13 @@
      (declare #'(float float float => float))
     (+ a (add-two b c)))
 
-#|
+
 ;; template instantiation with type inference
 (def-function add-three (a b c)
      (declare #'(long long long => long))
     (+ a (add-two b c)))
 
+#|
 ;; wrap multiple functions in a template
 (with-template-type (T)
   (def-function also-add-two (a b)

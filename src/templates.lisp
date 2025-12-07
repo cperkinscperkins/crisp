@@ -63,7 +63,7 @@ Value: The expanded form (or T).")
                           `(progn
                             ;; Register the template at compile/load time
                             (eval-when (:compile-toplevel :load-toplevel :execute)
-                              (register-template ',name ',params ',constraints ',form ',signature))                            ;; Define the generator macro: (gen-NAME ...)
+                              (register-template ',name ',params ',constraints ',form ',signature)) ;; Define the generator macro: (gen-NAME ...)
                             (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
                               `(template-instantiation ,(instantiate-template ',name concrete-types)))
 
@@ -87,14 +87,14 @@ Value: The expanded form (or T).")
                                       (length concrete-types)))
                        templates)))
       (unless matches
-        (error "No template for ~a matches the provided type arguments: ~a" name concrete-types))      ;; Instantiate all matches
+        (error "No template for ~a matches the provided type arguments: ~a" name concrete-types)) ;; Instantiate all matches
       `(progn
         ,@(loop for tmpl in matches
                 for key = (cons name concrete-types)
-                ;; We do NOT check *instantiated-templates* here because the compiler
-                ;; runs in multiple passes (signature analysis + codegen).
-                ;; If we suppress output, the second pass sees nothing and generates no code.
-                ;; The compiler handles duplicate definitions safely.
+                  ;; We do NOT check *instantiated-templates* here because the compiler
+                  ;; runs in multiple passes (signature analysis + codegen).
+                  ;; If we suppress output, the second pass sees nothing and generates no code.
+                  ;; The compiler handles duplicate definitions safely.
                 collect (let ((substitutions (pairlis (template-data-parameters tmpl) concrete-types)))
                           ;; Mark as instantiated (optional, for other purposes)
                           (setf (gethash key *instantiated-templates*) t)
@@ -108,15 +108,70 @@ Value: The expanded form (or T).")
     (unless templates
       (error "No template found for ~a" name))
 
-    (let ((match (find-if (lambda (t-data)
-                            (= (length (template-data-parameters t-data))
-                              (length concrete-types)))
-                     templates)))
-      (unless match
+    ;; Find matching templates by arity of type parameters
+    (let ((matches (remove-if-not (lambda (t-data)
+                                    (= (length (template-data-parameters t-data))
+                                      (length concrete-types)))
+                       templates)))
+      (unless matches
         (error "No template for ~a matches the provided type arguments: ~a" name concrete-types))
 
-      (let ((substitutions (pairlis (template-data-parameters match) concrete-types)))
-        (sublis substitutions (template-data-signature match))))))
+      ;; For now, just take the first match's signature and substitute
+      (let* ((tmpl (first matches))
+             (substitutions (pairlis (template-data-parameters tmpl) concrete-types))
+             (sig (template-data-signature tmpl)))
+        (when sig
+              (sublis substitutions sig))))))
+
+(defun try-infer-template-types (name argument-types)
+  "Attempts to infer template parameters for 'name' given 'argument-types'.
+   Returns a list of concrete types if successful, or NIL."
+  (let ((templates (gethash name *template-registry*)))
+    (unless templates (return-from try-infer-template-types nil))
+
+    (loop for tmpl in templates do
+            (let* ((raw-sig (template-data-signature tmpl))
+                   ;; Unwrap (FUNCTION ...) if present
+                   (sig (if (and (listp raw-sig) (eq (first raw-sig) 'COMMON-LISP:FUNCTION))
+                            (second raw-sig)
+                            raw-sig))
+                   (params (template-data-parameters tmpl)) ; e.g. (T)
+                   ;; sig is now (T T => T). We want (T T).
+                   (sig-params (when sig (butlast sig 2)))) 
+              
+              ;; 1. Check arity match between args and signature params
+              (when (and sig-params (= (length sig-params) (length argument-types)))
+                    (let ((inference-map (make-hash-table)))
+                      (block inference-loop
+                        (loop for sig-param in sig-params
+                              for arg-type in argument-types
+                              do (cond
+                                  ;; Case A: sig-param is a template parameter (e.g. T)
+                                  ((member sig-param params)
+                                    (let ((existing (gethash sig-param inference-map)))
+                                      (if existing
+                                          ;; Must match exactly (no promotion)
+                                          (unless (eq existing arg-type)
+                                            (return-from inference-loop nil))
+                                          ;; First time seeing this param, record it
+                                          (setf (gethash sig-param inference-map) arg-type))))
+
+                                  ;; Case B: sig-param is a concrete type (e.g. int)
+                                  ((valid-type-p sig-param)
+                                    (unless (eq sig-param arg-type)
+                                      (return-from inference-loop nil)))
+
+                                  ;; Case C: Unknown?
+                                  (t (return-from inference-loop nil))))
+
+                        ;; If we get here, all args matched consistent types.
+                        ;; Ensure all template parameters were inferred.
+                        (let ((concrete-types (loop for p in params
+                                                    collect (gethash p inference-map))))
+                          (if (every #'identity concrete-types)
+                              (return-from try-infer-template-types concrete-types)
+                              nil)))))))))
+
 
 ;;; ----------------------------------------------------------------------------
 ;;; Reader Macro: <...>

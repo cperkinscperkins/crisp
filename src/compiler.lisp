@@ -1011,8 +1011,30 @@
            (signature (find-if (lambda (sig)
                                  (equal explicit-arg-types (function-signature-parameters sig)))
                           signatures)))
+      
       (unless signature
-        (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types))
+        ;; Attempt Auto-Template Specialization
+        (let ((inferred-types (try-infer-template-types op explicit-arg-types)))
+          (if inferred-types
+              (progn
+                (log:info "Auto-specializing template ~a for types ~a" op inferred-types)
+                ;; 1. Instantiate the template
+                (let ((instantiated-code (instantiate-template op inferred-types)))
+                  ;; 2. Compile the instantiated code (it's a PROGN of DEF-FUNCTIONs)
+                  (loop for form in (rest instantiated-code) ; skip 'progn
+                        do (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
+                
+                ;; 3. Retry lookup
+                (setf signatures (gethash op *function-table*))
+                (setf signature (find-if (lambda (sig)
+                                           (equal explicit-arg-types (function-signature-parameters sig)))
+                                     signatures)))
+              
+              ;; If inference failed, or no template found
+              nil))
+
+        (unless signature
+          (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types)))
 
       ;; 4. Prepend implicit arguments if required.
       (let ((final-arg-nodes
