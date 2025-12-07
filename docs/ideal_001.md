@@ -331,15 +331,15 @@ In short, this system provides:
  - Readability: It separates the high-level orchestration of a kernel from the low-level, per-thread implementation details, making complex algorithms easier to reason about.
 
 
- Terminology Storage Handles 
- ============================
+Terminology Storage Handles 
+============================
 
- You'll see the term _"Storage Handle"_ a lot in this document.
- A Storage Handle is any Crisp type that refers to resident memory (Global, Local, or Constant). 
- This includes raw `storage`, structured views like `vector` and `tensor`, and `cell` references. 
- Unlike register variables, Storage Handles refer to addressable memory locations.
+You'll see the term _"Storage Handle"_ a lot in this document.
+A Storage Handle is any Crisp type that refers to resident memory (Global, Local, or Constant). 
+This includes raw `storage`, structured views like `vector` and `tensor`, and `cell` references. 
+Unlike register variables, Storage Handles refer to addressable memory locations.
 
- We'll discuss the actual types later in the document.
+We'll discuss the actual types later in the document.
 
  
 
