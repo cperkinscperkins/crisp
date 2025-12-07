@@ -1,0 +1,8 @@
+(with-template-type (T)
+  (def-function process-two-cells (c1 c2)
+     (declare #'(T T => T))
+    c1))
+
+(def-function test-composite-inference-fail (x y)
+     (declare #'((cell int) (cell int) => (cell int)))
+    (process-two-cells x y))

@@ -151,14 +151,14 @@ Value: The expanded form (or T).")
                                     (let ((existing (gethash sig-param inference-map)))
                                       (if existing
                                           ;; Must match exactly (no promotion)
-                                          (unless (eq existing arg-type)
+                                          (unless (equal existing arg-type)
                                             (return-from inference-loop nil))
                                           ;; First time seeing this param, record it
                                           (setf (gethash sig-param inference-map) arg-type))))
 
                                   ;; Case B: sig-param is a concrete type (e.g. int)
                                   ((valid-type-p sig-param)
-                                    (unless (eq sig-param arg-type)
+                                    (unless (equal sig-param arg-type)
                                       (return-from inference-loop nil)))
 
                                   ;; Case C: Unknown?
