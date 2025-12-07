@@ -11511,7 +11511,7 @@ lisp
 ```
 
 
-
+<!--
 
 To Do
 -----
@@ -11756,7 +11756,9 @@ x lose make-vector and gen-make- and use make-scratch-vector instead. Defaults t
 - concepts / type classes / type collections.  microfloats and quantized integers
   seem like they should be leveraging a generalizable pattern.
 
-<!-- PUT THIS LITTLE SUMMARY ON MEMORY SOMEPLACE -->
+  -->
+
+<!-- PUT THIS LITTLE SUMMARY ON MEMORY SOMEPLACE 
 Memory
 ------
 
@@ -11771,3 +11773,4 @@ There are five different categories we need to consider:
 - **Private:** Managed by the compiler. This is for per-thread variables, analogous to a CPU stack.
 
 
+-->
