@@ -1,3 +1,15 @@
+<script>
+  MathJax = {
+    tex: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']]
+    }
+  };
+</script>
+<script id="MathJax-script" async
+  src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js">
+</script>
+
+
 CRISP - Lisp for developing GPU Kernels
 =======================================
 
@@ -2732,7 +2744,7 @@ These utility functions return the number of columns or rows of the matrix.
 
 ### get-layout
 ```
-`(get-layout M:matrix) => :row-major or :col-major or :other-layout
+(get-layout M:matrix) => :row-major or :col-major or :other-layout
 ```
 
 `get-layout` analyses the strides of some 2D matrix and returns a value from the
