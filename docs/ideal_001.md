@@ -2109,18 +2109,18 @@ full storage bytes.
  - Scalar types (`int`, `float`, etc)
  - Small vector types ( `float4` etc)
 
- Unlike regular structs, they cannot include other structs or views.
- This rule is in place to prevent overly complex nested SoA layouts and to ensure a simple, predictable memory model that maps efficiently to the hardware.
+Unlike regular structs, they cannot include other structs or views.
+This rule is in place to prevent overly complex nested SoA layouts and to ensure a simple, predictable memory model that maps efficiently to the hardware.
 
- ### Defining 
- 
- ```
- (soa-vector-type <element-type> &optional address-space access align length)
+### Defining 
 
- (soa-vector-type &key element-type address-space access align length)
- ```
+```
+(soa-vector-type <element-type> &optional address-space access align length)
 
- ### Creating
+(soa-vector-type &key element-type address-space access align length)
+```
+
+### Creating
 
 `soa-vector` have parallel creation routines to `vector` and abide by the same requirements.
 
@@ -2172,10 +2172,10 @@ Possible Implementation
 
 
 
- ### C++ / Python interop
+### C++ / Python interop
 
- The hoisting code that the compiler generates includes helper functions that give the same property-to-vector and property-index-to-element 
- access that Crisp enjoys, making it easy to initialize or inspect data and interoperate with Crisp kernels.
+The hoisting code that the compiler generates includes helper functions that give the same property-to-vector and property-index-to-element 
+access that Crisp enjoys, making it easy to initialize or inspect data and interoperate with Crisp kernels.
 
 
 
