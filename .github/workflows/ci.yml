@@ -1,4 +1,4 @@
-# .github/workflows/ci.yml
+﻿# .github/workflows/ci.yml
 name: Crisp CI
 
 on: [push, pull_request]
@@ -118,6 +118,32 @@ jobs:
           ./bin/crisp-compile tests/multipass.crisp --debug 
 
 
+          echo "--- Running E2E: success test (templates.crisp) ---"
+          ./bin/crisp-compile tests/templates.crisp
+
+          echo "--- Running E2E: success test --single-pass (templates.crisp) ---"
+          ./bin/crisp-compile tests/templates.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (templates.crisp) ---"
+          ./bin/crisp-compile tests/templates.crisp --debug
+
+          echo "--- Running E2E: success test --debug --single-pass (templates.crisp) ---"
+          ./bin/crisp-compile tests/templates.crisp --debug --single-pass
+
+
+          echo "--- Running E2E: success test (templates_composite.crisp) ---"
+          ./bin/crisp-compile tests/templates_composite.crisp
+
+          echo "--- Running E2E: success test --single-pass (templates_composite.crisp) ---"
+          ./bin/crisp-compile tests/templates_composite.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (templates_composite.crisp) ---"
+          ./bin/crisp-compile tests/templates_composite.crisp --debug
+
+          echo "--- Running E2E: success test --debug --single-pass (templates_composite.crisp) ---"
+          ./bin/crisp-compile tests/templates_composite.crisp --debug --single-pass
+
+
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"
           
@@ -183,9 +209,11 @@ jobs:
 
           echo "--- Running E2E: failure test --single-pass (recursion.crisp) ---"
           ! ./bin/crisp-compile tests/errors/recursion.crisp --single-pass 2>&1 | grep -F "Recursion is not allowed"
-
           echo "--- Running E2E: failure test --single-pass (recursion_mutual.crisp) ---"
           ! ./bin/crisp-compile tests/errors/recursion_mutual.crisp --single-pass 2>&1 | grep -F "Unsupported form"
+
+          echo "--- Running E2E: failure test (template_type_mismatch.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/template_type_mismatch.crisp 2>&1 | grep -F "Type mismatch!"
 
           echo "--- Running E2E: failure test (scratch_cell_leak.crisp) ---"
           ! ./bin/crisp-compile tests/errors/scratch_cell_leak.crisp 2>&1 | grep -F "Type mismatch"

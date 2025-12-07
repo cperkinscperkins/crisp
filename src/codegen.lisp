@@ -140,9 +140,8 @@
 (defun generate-debug-info (di-builder di-compile-unit func fn-name fn-loc return-type param-nodes location-map)
   "Generates and attaches DWARF debug info for the function."
   (when di-builder
-    (let* ((di-type-cache (make-hash-table))
-           (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
-           (line-num (if location-map (gethash fn-loc location-map) 0))
+    (let* ((di-type-cache (make-hash-table))           (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
+           (line-num (if location-map (or (gethash fn-loc location-map) 0) 0))
            (di-return-type (get-or-create-di-type (gethash return-type *crisp-types*) di-builder di-type-cache))
            (di-param-types (cons di-return-type
                                  (loop for param in param-nodes

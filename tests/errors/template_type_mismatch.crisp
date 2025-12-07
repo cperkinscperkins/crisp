@@ -1,0 +1,15 @@
+
+;; This should fail because add-two-diff expects (T U) -> U
+;; We declare it as (long int) -> long.
+;; T=long, U=int.
+;; Return type should be U (int), but we declared it as long.
+;; Or simply that the template body instantiation types don't match the signature.
+
+(<T U>
+ (def-function add-two-diff (a b)
+    (declare #'(T U => U))
+    (+ a b)))
+
+(def-function another-add-two-diff (a b)
+     (declare #'(long int => long))
+    (add-two-diff a b))

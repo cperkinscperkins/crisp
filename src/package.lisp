@@ -161,6 +161,7 @@
 
    ;; laungage symbols
    #:def-function
+   #:with-template-type
    #:return
    #:declare
    #:return-type
@@ -256,12 +257,38 @@
                           #:if #:when #:unless #:cond #:case #:let
                           #:let #:let*
                           #:progn
-                          #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
-                          #:equal ;; and so on...
+                          #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=                          #:equal ;; and so on...
                           #:defmacro ;; We need defmacro to build the language
    )
 
-  ;; --- 3. Export *all* of our Crisp primitives ---
+  ;; --- 3. Import from CRISP.COMPILER ---
+  (:import-from :crisp.compiler
+                #:def-function
+                #:with-template-type
+                #:return
+                #:declare
+                #:return-type
+                #:type
+                #:make-scratch-cell
+                #:|=>|
+                ;; Types
+                #:char #:short #:int #:long
+                #:cell
+                #:uchar #:ushort #:uint #:ulong
+                #:half #:bfloat16 #:float #:double
+                ;; Casts
+                #:to-char #:as-char
+                #:to-short #:as-short
+                #:to-int #:as-int
+                #:to-long #:as-long
+                #:to-float #:as-float
+                #:to-double #:as-double
+                #:truncate #:floor #:ceil #:round
+                ;; Errors
+                #:crisp-compiler-error
+                #:crisp-type-error)
+
+  ;; --- 4. Export *all* of our Crisp primitives ---
   (:export
    ;; Our new "safe" built-ins
    #:if #:when #:unless #:cond #:case
