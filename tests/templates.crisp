@@ -64,7 +64,7 @@
      (declare #'(long long long => long))
     (add-some a b c))
 
-#|
+
 ;; As if it's not hard enough.
 
 (<T>
@@ -72,9 +72,23 @@
     (declare #'(T T => T))
     (+ a b)))
 
+(def-function call-add-two-ish (a b)
+     (declare #'(int int => int))
+    (add-two-ish a b))
+
+
 (<T U>
  (def-function add-two-diff (a b)
-    (declare #'(T U => T))
+    (declare #'(T U => U))
     (+ a b)))
+
+(def-function call-add-two-diff (a b)
+     (declare #'(int long => long))
+    (add-two-diff a b))
+
+#|  This correctly fails with a Type mismatch!  error.
+(def-function another-add-two-diff (a b)
+     (declare #'(long int => long))
+    (add-two-diff a b))
 
 |#
