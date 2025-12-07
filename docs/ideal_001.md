@@ -331,7 +331,7 @@ In short, this system provides:
  - Readability: It separates the high-level orchestration of a kernel from the low-level, per-thread implementation details, making complex algorithms easier to reason about.
 
 
-Terminology Storage Handles 
+Terminology: Storage Handles 
 ============================
 
 You'll see the term _"Storage Handle"_ a lot in this document.
@@ -1633,6 +1633,7 @@ Vector / Matrix /Tensor Properties
  `vector` and `matrix` are just the 1D and 2D variants of `tensor`
 
 Every `tensor` has these runtime properties:
+
 | Name     | Type        | Description |
 |----------|-------------|-------------|
 | length   | ulong       | the number of elements in the `tensor`.  |
