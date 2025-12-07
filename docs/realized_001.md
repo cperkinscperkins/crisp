@@ -55,6 +55,16 @@ Presently these features of `def-function` are NOT implemented yet:
 - ther is no enforcement of the limit to thread level operations, ie no grid level calls
 - the colon joinging var to type syntax is not yet supported ( `x:int`)
 
+### with-template-type   also (<T U> ...)
+Yes, you read that right. Templating is now available in Crisp. Fully working for the 
+types we support. 
+
+At the moment only `def-function` can be wrapped. 
+
+#### gen-XXXX   
+The `gen-XXXX` form is available for anything you template. Can be used at the top of the .crisp file,
+or in a def-function body.
+
 ### Basic Numeric Types
 `int` `long` `half` `float` etc etc as documented in ideal_001.md are all supported E2E
 
@@ -82,6 +92,15 @@ The following declarations are supported
 
 #### (return-type int)
 Also `#'(int int => int int)` for multiple value return.
+
+
+
+### cell & make-scratch-cell
+The `cell` Storage Handle data type is available as a composit type (only).
+It is just a placeholder for now, and cannot do actual work. 
+`make-scratch-cell` is similarly available and non-functioning.
+
+
 
 
 Errors
