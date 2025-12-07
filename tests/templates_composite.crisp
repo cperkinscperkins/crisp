@@ -1,8 +1,29 @@
+;; basic test of cell template
 (with-template-type (T)
   (def-function process-two-cells (c1 c2)
      (declare #'(T T => T))
     c1))
 
+;; inference. 
 (def-function test-composite-inference-fail (x y)
      (declare #'((cell int) (cell int) => (cell int)))
     (process-two-cells x y))
+
+;; template that calls template
+(with-template-type (T)
+  (def-function more-cells (c1 c2)
+     (declare #'((cell T) (cell T) => (cell T)))
+    (process-two-cells c1 c2)))
+
+;; explicit template application
+(def-function test-composite-explicit (x y)
+     (declare #'((cell int) (cell int) => (cell int)))
+     (gen-more-cells int)
+    (more-cells x y))
+
+;; inference. 
+(def-function test-composite-inference-success (x y)
+     (declare #'((cell int) (cell int) => (cell int)))
+    (more-cells x y))
+
+    
