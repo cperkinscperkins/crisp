@@ -86,9 +86,3 @@
      (declare #'(int long => long))
     (add-two-diff a b))
 
-#|  This correctly fails with a Type mismatch!  error.
-(def-function another-add-two-diff (a b)
-     (declare #'(long int => long))
-    (add-two-diff a b))
-
-|#
