@@ -333,6 +333,7 @@ In short, this system provides:
 
  Terminology: Storage Handles 
  ============================
+ 
  You'll see the term _"Storage Handle"_ a lot in this document.
  A Storage Handle is any Crisp type that refers to resident memory (Global, Local, or Constant). 
  This includes raw `storage`, structured views like `vector` and `tensor`, and `cell` references. 
@@ -1597,6 +1598,7 @@ Storage Properties
 ------------------
 
  `storage` has the following immutable properties:
+
 | Property      | Type          |              |     Description |
 | --------------|---------------|--------------|-----------------|
 | bytes         | ulong         | runtime      | the number of bytes in the `storage`. This is immutable.|
@@ -1609,7 +1611,9 @@ However the other properties are all known and evaluable at compile time.
 
 Cell Properties
 ---------------
+
 A `cell` has these mutable properties:
+
 | Property | Type    | Description |
 | ---------|---------|-------------|
 | parent   | storage | address of a "parent" storage |
@@ -2900,7 +2904,7 @@ A **Type Constructor** is a function that takes a type as an argument and return
 
 ```
 (with-template-type (T)
-   (def-type anotherGlobalVecT (vector-type T :global)))
+  (def-type anotherGlobalVecT (vector-type T :global)))
 
 ;; -- count-ints --
 (def-function count-ints (v)

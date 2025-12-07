@@ -177,12 +177,17 @@ SHORT TERM PLAN
 - [x] function overloads
 - - [x] testing
 - [x] more let: multiple value return and bind
-- [ ] templates as macros
+- [x] templates as macros
 - [ ] higher order functions as templates
+      binop-type ? 
 - [ ] need to move more of our old erstaz logging to log4cl. 
 - [x] Side Channel / Implicit Args. Can we start this BEFORE def-kernel? 
 - - [x] last test that Side Channel ptr/size is showing up in the IR of correct leves Kernel->A->(B!!!)->C->D
 - - [x] ALSO, if scratch-cell IS passed to C and D then it is explicit, but STILL two args (not one). Damnit - forgot to handle/check this.
+- [ ] Crisp IR. Some operations (async loading mostly) are not available in LLVM-IR and require
+      target platform intrinsics to be supported.  We should probably generalize this sooner rather than later.
+      I'm not keen on having a whole IR.  Maybe we start with op-fma or something as POC?
+      Would require `--ir-target=SPIRV` or `--ir-target=PTX` at minimum.
 
 
 M-V-R
@@ -271,6 +276,9 @@ LANGUAGE CHANGES
 
 - [ ] SEO (even the _AIs_ can't find us, completely unsearchable today)
 - - [ ] logo
+- - [x] add google site verification  
+- - [ ] should now be discoverable at : https://cperkinscperkins.github.io/crisp/
+- - [ ] check at https://search.google.com/search-console?resource_id=https%3A%2F%2Fcperkinscperkins.github.io%2Fcrisp%2F
 
 - [ ] Testing Next Stages
 - - [x] Rove or _Parachute_ for tests. Integrated with our GHA
