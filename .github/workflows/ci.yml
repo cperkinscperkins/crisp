@@ -144,6 +144,16 @@ jobs:
           ./bin/crisp-compile tests/templates_composite.crisp --debug --single-pass
 
 
+          echo "--- Running E2E: success test (higher-order-functions.crisp) ---"
+          ./bin/crisp-compile tests/higher-order-functions.crisp
+
+          echo "--- Running E2E: success test --single-pass (higher-order-functions.crisp) ---"
+          ./bin/crisp-compile tests/higher-order-functions.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (higher-order-functions.crisp) ---"
+          ./bin/crisp-compile tests/higher-order-functions.crisp --debug
+
+
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"
           
@@ -217,3 +227,6 @@ jobs:
 
           echo "--- Running E2E: failure test (scratch_cell_leak.crisp) ---"
           ! ./bin/crisp-compile tests/errors/scratch_cell_leak.crisp 2>&1 | grep -F "Type mismatch"
+
+          echo '--- Running E2E: Phase 4 (functions_as_args.crisp) ---'
+          ./bin/crisp-compile tests/functions_as_args.crisp

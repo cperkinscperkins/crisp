@@ -13,12 +13,12 @@
 (defun is-whitespace (char)
   (member char '(#\Space #\Tab #\Newline #\Return)))
 
-(defun find-fuzzy-match (text search-pattern)
-  "Finds the start and end indices of search-pattern in text, ignoring whitespace differences.
+(defun find-next-fuzzy-match (text search-pattern start-offset)
+  "Finds the start and end indices of search-pattern in text, starting from start-offset, ignoring whitespace differences.
    Returns (values start-index end-index) or (values nil nil)."
   (let ((t-len (length text))
         (p-len (length search-pattern)))
-    (loop for i from 0 below t-len do
+    (loop for i from start-offset below t-len do
             (block match-attempt
               (let ((t-idx i)
                     (p-idx 0))
@@ -30,18 +30,10 @@
                              ;; Consume whitespace in pattern
                              (loop while (and (< p-idx p-len) (is-whitespace (char search-pattern p-idx)))
                                    do (incf p-idx))
-                             ;; Consume whitespace in text (must have at least one if pattern had one?)
-                             ;; Actually, let's say pattern whitespace matches 1+ whitespace in text.
-                             ;; Or maybe 0+? Let's go with 0+ to be safe, but usually it implies separation.
-                             ;; Let's try 0+ for maximum flexibility, but that might be too loose.
-                             ;; Let's stick to: Pattern whitespace matches 1+ Text whitespace.
+                             ;; Consume whitespace in text
                              (let ((found-ws nil))
                                (loop while (and (< t-idx t-len) (is-whitespace (char text t-idx)))
-                                     do (setf found-ws t) (incf t-idx))
-                               ;; If we didn't find whitespace in text but pattern had it, is that a mismatch?
-                               ;; For "fuzzy" matching, maybe yes.
-                               ;; But let's say we just skipped pattern whitespace.
-                   ))
+                                     do (setf found-ws t) (incf t-idx))))
 
                            ;; Case 2: Non-whitespace char -> Must match exactly
                            (t
@@ -49,8 +41,21 @@
                                  (progn (incf t-idx) (incf p-idx))
                                  (return-from match-attempt nil))))))
                 ;; If we got here, we matched the whole pattern!
-                (return-from find-fuzzy-match (values i t-idx))))))
+                (return-from find-next-fuzzy-match (values i t-idx))))))
   (values nil nil))
+
+(defun find-all-matches (text search-pattern)
+  "Returns a list of (start end) pairs for all matches."
+  (let ((matches '())
+        (current-offset 0))
+    (loop
+     (multiple-value-bind (start end) (find-next-fuzzy-match text search-pattern current-offset)
+       (if start
+           (progn
+            (push (list start end) matches)
+            (setf current-offset end)) ; Continue searching after the match
+           (return))))
+    (nreverse matches)))
 
 (defun apply-patch (patch-file)
   (let* ((patch-spec (with-open-file (in patch-file) (read in)))
@@ -64,20 +69,29 @@
       (format t "Error: Target file ~a not found.~%" target-file)
       (uiop:quit 1))
 
-    (let ((content (read-file-content target-file)))
-      (multiple-value-bind (start end) (find-fuzzy-match content search-str)
-        (if (and start end)
-            (let ((new-content (concatenate 'string
-                                 (subseq content 0 start)
-                                 replace-str
-                                 (subseq content end))))
-              (write-file-content target-file new-content)
-              (format t "Patch applied successfully!~%")
-              (uiop:quit 0))
-            (progn
-             (format t "Error: Could not find search block in target file.~%")
-             (format t "Search block was:~%~a~%" search-str)
-             (uiop:quit 1)))))))
+    (let* ((content (read-file-content target-file))
+           (matches (find-all-matches content search-str))
+           (match-count (length matches)))
+
+      (cond
+       ((= match-count 1)
+         (let* ((match (first matches))
+                (start (first match))
+                (end (second match))
+                (new-content (concatenate 'string
+                               (subseq content 0 start)
+                               replace-str
+                               (subseq content end))))
+           (write-file-content target-file new-content)
+           (format t "Patch applied successfully!~%")
+           (uiop:quit 0)))
+       ((= match-count 0)
+         (format t "Error: Could not find search block in target file.~%")
+         (format t "Search block was:~%~a~%" search-str)
+         (uiop:quit 1))
+       (t
+         (format t "Error: Found ~a matches for search block. Patch must be unique.~%" match-count)
+         (uiop:quit 1))))))
 
 (defun main ()
   (let ((args (uiop:command-line-arguments)))

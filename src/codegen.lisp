@@ -85,6 +85,9 @@
             (loop for i from 0 for type in element-types
                   do (setf (cffi:mem-aref type-array 'llvm-type-ref i) type))
             (llvm-struct-type-in-context context type-array element-count nil)))
+        ((or (eq base-type :function-type) (eq base-type :function-literal))
+          ;; Functions are passed as opaque pointers (void* / i8*)
+          (llvm-int8-ptr-type (llvm-int8-type) 0))
         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
    (t (error "Internal codegen error: Invalid type specifier ~a" type-spec))))
 
@@ -97,6 +100,8 @@
          ((eq base-type 'cell)
            (list (llvm-int8-ptr-type (llvm-int8-type) 0)
                  (llvm-int64-type)))
+         ((or (eq base-type :function-type) (eq base-type :function-literal))
+           (list (crisp-type-to-llvm-type type-spec module)))
          (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
       (list (crisp-type-to-llvm-type type-spec module))))
 
@@ -109,6 +114,8 @@
          ((eq base-type 'cell)
            (list (llvm-build-extract-value builder agg-val 0 "cell_ptr")
                  (llvm-build-extract-value builder agg-val 1 "cell_size")))
+         ((or (eq base-type :function-type) (eq base-type :function-literal))
+           (list agg-val))
          (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
       (list agg-val)))
 
@@ -123,6 +130,8 @@
                   (undef (llvm-get-undef struct-type))
                   (val-0 (llvm-build-insert-value builder undef (first components) 0 "cell_ptr")))
              (llvm-build-insert-value builder val-0 (second components) 1 "cell_size")))
+         ((or (eq base-type :function-type) (eq base-type :function-literal))
+           (first components))
          (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
       (first components)))
 
@@ -140,24 +149,24 @@
 (defun generate-debug-info (di-builder di-compile-unit func fn-name fn-loc return-type param-nodes location-map)
   "Generates and attaches DWARF debug info for the function."
   (when di-builder
-    (let* ((di-type-cache (make-hash-table))           (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
-           (line-num (if location-map (or (gethash fn-loc location-map) 0) 0))
-           (di-return-type (get-or-create-di-type (gethash return-type *crisp-types*) di-builder di-type-cache))
-           (di-param-types (cons di-return-type
-                                 (loop for param in param-nodes
-                                       collect (get-or-create-di-type
-                                                (gethash (semantic-param-type param) *crisp-types*)
-                                                di-builder di-type-cache))))
-           (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
-           (_ (loop for i from 0 for type in di-param-types
-                    do (setf (cffi:mem-aref di-param-array :pointer i) type)))
-           (di-fn-type (llvm-di-builder-create-subroutine-type
-                        di-builder di-file di-param-array (length di-param-types) 0))
-           (subprogram (llvm-di-builder-create-function
-                        di-builder di-compile-unit fn-name (length fn-name) fn-name (length fn-name)
-                        di-file line-num di-fn-type nil t 0 0 nil)))
-      (llvm-set-subprogram func subprogram)
-      subprogram)))
+        (let* ((di-type-cache (make-hash-table)) (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
+                                                 (line-num (if location-map (or (gethash fn-loc location-map) 0) 0))
+                                                 (di-return-type (get-or-create-di-type (gethash return-type *crisp-types*) di-builder di-type-cache))
+                                                 (di-param-types (cons di-return-type
+                                                                       (loop for param in param-nodes
+                                                                             collect (get-or-create-di-type
+                                                                                      (gethash (semantic-param-type param) *crisp-types*)
+                                                                                      di-builder di-type-cache))))
+                                                 (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
+                                                 (_ (loop for i from 0 for type in di-param-types
+                                                          do (setf (cffi:mem-aref di-param-array :pointer i) type)))
+                                                 (di-fn-type (llvm-di-builder-create-subroutine-type
+                                                              di-builder di-file di-param-array (length di-param-types) 0))
+                                                 (subprogram (llvm-di-builder-create-function
+                                                              di-builder di-compile-unit fn-name (length fn-name) fn-name (length fn-name)
+                                                              di-file line-num di-fn-type nil t 0 0 nil)))
+          (llvm-set-subprogram func subprogram)
+          subprogram)))
 
 (defun initialize-function-parameters (builder func param-nodes module var-env)
   "Allocates stack space and stores function parameters."
@@ -185,18 +194,18 @@
          (fn-name (substitute #\_ #\- (string-downcase mangled-name)))
          (fn-loc (semantic-function-source-location semantic-function))
          (param-nodes (semantic-function-param-list semantic-function)))
-    
+
     (log:debug "Attempting to get LLVM type for: ~s" return-types)
 
     ;; --- 1. Define the Function Type ---
     (let ((fn-type (create-llvm-function-type module return-types param-nodes)))
-      
+
       ;; --- 2. Create the Function ---
       (let ((func (llvm-add-function module fn-name fn-type)))
         (log:debug "finished llvm-add-function for ~a, creating debug info..." fn-name)
-        
+
         (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
-          
+
           ;; --- 3. Create the Code Block ---
           (let ((entry-block (llvm-append-basic-block func "entry"))
                 (var-env (make-hash-table)))
@@ -261,27 +270,32 @@
   (let* ((type-spec (semantic-literal-value-type node))
          (value (semantic-literal-value node))
          (llvm-type (crisp-type-to-llvm-type type-spec module))
-         (result (cond
-                  ;; Handle our new cell type as a placeholder
+         (result (cond                  ;; Handle parameterized types
                   ((listp type-spec)
-                    (if (eq (first type-spec) 'cell)
-                        (let* ((ptr-name '__storage_ptr)
-                               (size-name '__storage_size)
-                               (ptr-alloca (gethash ptr-name var-env))
-                               (size-alloca (gethash size-name var-env)))
-                          (unless (and ptr-alloca size-alloca)
-                            (error "Missing implicit arguments for make-scratch-cell. Environment keys: ~s" (alexandria:hash-table-keys var-env)))
+                    (let ((base-type (first type-spec)))
+                      (cond
+                       ((or (eq base-type :function-literal) (eq base-type :function-type))
+                         ;; For zero-cost abstraction, we don't emit a real function pointer.
+                         ;; The type system tracks the identity, but at runtime it's a ghost.
+                         (llvm-get-undef llvm-type))
+                       ((eq base-type 'cell)
+                         (let* ((ptr-name '__storage_ptr)
+                                (size-name '__storage_size)
+                                (ptr-alloca (gethash ptr-name var-env))
+                                (size-alloca (gethash size-name var-env)))
+                           (unless (and ptr-alloca size-alloca)
+                             (error "Missing implicit arguments for make-scratch-cell. Environment keys: ~s" (alexandria:hash-table-keys var-env)))
 
-                          (let* ((ptr-val (llvm-build-load2 builder (llvm-int64-type) ptr-alloca "storage_ptr_raw"))
-                                 (size-val (llvm-build-load2 builder (llvm-int64-type) size-alloca "storage_size"))
-                                 ;; Cast i64 ptr to ptr (i8*)
-                                 (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-int8-ptr-type (llvm-int8-type) 0) "storage_ptr"))
-                                 ;; Create struct
-                                 (struct-undef (llvm-get-undef llvm-type))
-                                 (struct-0 (llvm-build-insert-value builder struct-undef ptr-casted 0 "cell_ptr"))
-                                 (struct-1 (llvm-build-insert-value builder struct-0 size-val 1 "cell_size")))
-                            struct-1))
-                        (error "Codegen not implemented for literal of type ~a" type-spec)))
+                           (let* ((ptr-val (llvm-build-load2 builder (llvm-int64-type) ptr-alloca "storage_ptr_raw"))
+                                  (size-val (llvm-build-load2 builder (llvm-int64-type) size-alloca "storage_size"))
+                                  ;; Cast i64 ptr to ptr (i8*)
+                                  (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-int8-ptr-type (llvm-int8-type) 0) "storage_ptr"))
+                                  ;; Create struct
+                                  (struct-undef (llvm-get-undef llvm-type))
+                                  (struct-0 (llvm-build-insert-value builder struct-undef ptr-casted 0 "cell_ptr"))
+                                  (struct-1 (llvm-build-insert-value builder struct-0 size-val 1 "cell_size")))
+                             struct-1)))
+                       (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
                   ;; Handle simple types
                   ((symbolp type-spec)
                     (let ((crisp-type (gethash type-spec *crisp-types*)))
@@ -423,7 +437,7 @@
          (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-nodes))
          (param-count (length expanded-param-types))
          (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
-    
+
     ;; Fill param types array
     (loop for i from 0
           for type in expanded-param-types
@@ -442,7 +456,7 @@
 
            (arg-nodes (semantic-call-args node))
            (args-array (cffi:foreign-alloc 'llvm-value-ref :count param-count)))
-      
+
       (let ((idx 0))
         (loop for arg-node in arg-nodes
               for param-type in param-nodes
@@ -516,3 +530,66 @@
     ;; The result of the let is the result of the last expression in the body.
     (loop for body-node in (semantic-let-body node)
           finally (return (generate-expression-ir builder module let-env di-builder di-scope location-map body-node)))))
+
+(defmethod generate-node-ir ((node semantic-funcall) builder module var-env di-builder di-scope location-map)
+  "Generates IR for an indirect function call (funcall)."
+  (declare (ignore di-builder di-scope location-map))
+  (let* ((func-node (semantic-funcall-func-node node))
+         (func-type-spec (semantic-node-type func-node)) ; (:function-type (ret) :params (p1 p2)) or literals
+         (return-type-names (semantic-funcall-type node)) ; (int)
+         (has-return-value (not (null (remove 'nil return-type-names))))
+         (llvm-return-type (get-llvm-return-type module return-type-names))
+
+         ;; Extract param types from the function type descriptor
+         (param-types (cond
+                       ((and (listp func-type-spec) (eq (first func-type-spec) :function-type))
+                         (getf (cddr func-type-spec) :params))
+                       ((and (listp func-type-spec) (eq (first func-type-spec) :function-literal))
+                         ;; For literals, we rely on analyze-funcall-expression having verified constraints.
+                         ;; We can get the params from the funcall arg types (which match the signature).
+                         (mapcar #'semantic-node-type (semantic-funcall-args node)))
+                       (t (error "Codegen error: Invalid function type for funcall: ~a" func-type-spec))))
+
+         ;; Build LLVM function type
+         (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-types))
+         (param-count (length expanded-param-types))
+         (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
+
+    ;; Fill param types array
+    (loop for i from 0
+          for type in expanded-param-types
+          do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
+
+    (let* ((llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
+
+           ;; Generate the function pointer
+           (callee (generate-node-ir func-node builder module var-env di-builder di-scope location-map))
+
+           (arg-nodes (semantic-funcall-args node))
+           (args-array (cffi:foreign-alloc 'llvm-value-ref :count param-count)))
+
+      ;; Generate arguments
+      (let ((idx 0))
+        (loop for arg-node in arg-nodes
+              for param-type in param-types
+              do (multiple-value-bind (arg-val arg-loc) (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)
+                   (declare (ignore arg-loc))
+                   (let ((exploded-vals (explode-value builder arg-val param-type)))
+                     (dolist (val exploded-vals)
+                       (setf (cffi:mem-aref args-array 'llvm-value-ref idx) val)
+                       (incf idx))))))
+
+      (let ((call-inst (llvm-build-call2 builder
+                                         llvm-fn-type
+                                         callee
+                                         args-array
+                                         param-count
+                                         (if has-return-value "funcall_tmp" "")))
+            (di-location (when (and di-builder di-scope location-map)
+                               (let* ((loc (semantic-node-source-location node))
+                                      (line (gethash loc location-map 0)))
+                                 (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                        line 0 di-scope (cffi:null-pointer))))))
+        (when di-location
+              (llvm-instruction-set-debug-loc call-inst di-location))
+        (values call-inst di-location)))))

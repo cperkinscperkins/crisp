@@ -258,6 +258,7 @@
                           #:if #:when #:unless #:cond #:case #:let
                           #:let #:let*
                           #:progn
+                          #:funcall
                           #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal ;; and so on...
                           #:defmacro ;; We need defmacro to build the language
    )
