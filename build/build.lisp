@@ -19,6 +19,8 @@
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
 ;; download cffi, and then load crisp.
+;; Force recompilation to ensure no stale FASLs with bad encodings persist
+(asdf:load-system "crisp" :force t)
 (ql:quickload "crisp")
 (format t "~&; --- System loaded successfully.~%")
 
