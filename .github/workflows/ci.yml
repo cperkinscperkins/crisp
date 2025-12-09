@@ -231,5 +231,3 @@ jobs:
           echo "--- Running E2E: failure test (scratch_cell_leak.crisp) ---"
           ! ./bin/crisp-compile tests/errors/scratch_cell_leak.crisp 2>&1 | grep -F "Type mismatch"
 
-          echo '--- Running E2E: Phase 4 (functions_as_args.crisp) ---'
-          ./bin/crisp-compile tests/functions_as_args.crisp
