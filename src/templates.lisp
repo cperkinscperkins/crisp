@@ -251,7 +251,9 @@ Value: The expanded form (or T).")
       (setf (gethash key *instantiated-templates*) t)
 
       ;; Perform substitution on the body
-      ;; WRAPPED IN PROGN TO SATISFY UNIT TEST EXPECTATIONS
+      ;; NOTE: This is wrapped in PROGN to satisfy unit test expectations
+        ;; (specifically CRISP.TESTS::TEMPLATE-INSTANTIATION checks for this structure).
+        ;; It also ensures that the returned form is a single S-expression.
       `(progn ,(sublis substitutions (template-data-body tmpl))))))
 
 (defun try-infer-template-types (name argument-types)
