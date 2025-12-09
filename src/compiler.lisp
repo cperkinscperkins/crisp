@@ -1,4 +1,4 @@
-;;;; Crisp - Lisp for Developing GPU Kernels
+﻿;;;; Crisp - Lisp for Developing GPU Kernels
 ;;;; Copyright (c) 2025 Christopher Perkins
 ;;;;
 ;;;; Licensed under the MIT License. See LICENSE file in the project root.
@@ -72,6 +72,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Type System Initialization
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defvar *expression-analyzers* (make-hash-table)
+        "A dispatch table mapping operator symbols to their analyzer functions.")
+
+(defmacro def-expression-analyzer (operator handler-fn)
+  "A helper macro to register an operator's analyzer function."
+  `(setf (gethash ',operator *expression-analyzers*) ',handler-fn))
 
 (defun initialize-crisp-types ()
   "Populates the *crisp-types* hash table with built-in scalar types."
@@ -229,22 +236,96 @@
 ;; Type System Helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+
 (defun valid-type-p (type-spec)
   "Checks if a type specifier is valid.
-  Handles simple types (e.g., 'int) and parameterized types (e.g., '(cell int))."
+  Handles simple types, parameterized types, and function literals/types."
   (cond
-   ;; Simple type like 'int
+   ;; Standard types
    ((symbolp type-spec) (gethash type-spec *crisp-types*))
+   ;; Function Type Literal: (:function-literal +)
+   ((and (listp type-spec) (eq (first type-spec) :function-literal))
+     (and (= (length type-spec) 2) (symbolp (second type-spec))))
+   ;; Function Type Descriptor: (:function-type (int) :params (int int))
+   ((and (listp type-spec) (eq (first type-spec) :function-type))
+     t) ;; Relaxed check for now, assumed constructed correctly by parser.
    ;; Parameterized type like '(cell int)
    ((listp type-spec)
      (let ((base-type (first type-spec))
            (params (rest type-spec)))
        (cond
-        ;; For now, only 'cell' is a valid parameterized type base.
         ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
         (t nil))))
-   ;; Not a symbol or a list, so it's invalid.
    (t nil)))
+
+
+(defun analyze-function-literal (expr env location)
+  "Analyzes a (function name) form, e.g., #'foo."
+  (let ((fn-name (second expr)))
+    ;; Check if the function exists (simplistic check for now)
+    (unless (or (fboundp fn-name) (gethash fn-name *function-table*))
+      (log:warn "Function literal ~a refers to unknown function (at compile time)." fn-name))
+
+    (make-semantic-literal
+     :value-type `(:function-literal ,fn-name)
+     :value fn-name
+     :source-location location)))
+
+
+(defun initialize-expression-analyzers ()
+  "Registers all expression analyzers."
+  (clrhash *expression-analyzers*)
+  (def-expression-analyzer + analyze-add-expression)
+  (def-expression-analyzer - analyze-sub-expression)
+  (def-expression-analyzer * analyze-mul-expression)
+  (def-expression-analyzer / analyze-div-expression)
+  (def-expression-analyzer < analyze-lt-expression)
+  (def-expression-analyzer > analyze-gt-expression)
+  (def-expression-analyzer <= analyze-le-expression)
+  (def-expression-analyzer >= analyze-ge-expression)
+  (def-expression-analyzer = analyze-eq-expression)
+  (def-expression-analyzer /= analyze-neq-expression)
+
+  (def-expression-analyzer function analyze-function-literal)
+  (def-expression-analyzer common-lisp:function analyze-function-literal)
+  (def-expression-analyzer funcall analyze-funcall-expression)
+
+  (def-expression-analyzer set! analyze-set!-expression)
+  (def-expression-analyzer let analyze-let-expression)
+  (def-expression-analyzer let* analyze-let-expression)
+  (def-expression-analyzer progn analyze-progn-expression) ;; NEW
+
+  (def-expression-analyzer atomic-add! analyze-atomic-add!-expression)
+  (def-expression-analyzer to analyze-value-cast-expression)
+  (def-expression-analyzer as analyze-bitcast-expression)
+  (def-expression-analyzer as-bits analyze-bitcast-expression) ;; alias
+  (def-expression-analyzer inc! analyze-inc!-expression)
+  (def-expression-analyzer dec! analyze-dec!-expression)
+  (def-expression-analyzer if analyze-if-expression)
+  (def-expression-analyzer when analyze-when-expression)
+  (def-expression-analyzer unless analyze-unless-expression)
+  (def-expression-analyzer return analyze-return-expression)
+  (def-expression-analyzer aref analyze-aref-expression)
+  ;; ~ is an alias for aref
+  (def-expression-analyzer ~ analyze-aref-expression)
+
+  ;; From duplicate definition:
+  (def-expression-analyzer def-function analyze-nested-def-function)
+  (def-expression-analyzer template-instantiation analyze-template-instantiation)
+  (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
+
+  ;; Register all possible `to-` and `as-` casts.
+  (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
+    (let* ((type-str (symbol-name type-name))
+           (to-name (intern (concatenate 'string "TO-" type-str) :crisp.compiler))
+           (as-name (intern (concatenate 'string "AS-" type-str) :crisp.compiler)))
+      (setf (gethash to-name *expression-analyzers*) #'analyze-cast-expression)
+      (setf (gethash as-name *expression-analyzers*) #'analyze-cast-expression)))
+  ;; Register the special float-to-int conversion functions
+  (setf (gethash 'truncate *expression-analyzers*) #'analyze-cast-expression)
+  (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
+  (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
+  (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
 
 ;; Sema Structs
 ;; ------------
@@ -295,6 +376,42 @@
   right-arg ; The 'semantic-var-read' node for 'b'
   source-location)
 
+(defstruct semantic-sub
+  type left-arg right-arg source-location)
+
+(defstruct semantic-mul
+  type left-arg right-arg source-location)
+
+(defstruct semantic-div
+  type left-arg right-arg source-location)
+
+(defstruct semantic-lt
+  type left-arg right-arg source-location)
+
+(defstruct semantic-gt
+  type left-arg right-arg source-location)
+
+(defstruct semantic-le
+  type left-arg right-arg source-location)
+
+(defstruct semantic-ge
+  type left-arg right-arg source-location)
+
+(defstruct semantic-eq
+  type left-arg right-arg source-location)
+
+(defstruct semantic-neq
+  type left-arg right-arg source-location)
+
+(defstruct semantic-if
+  type condition-node then-node else-node source-location)
+
+(defstruct semantic-set!
+  name value-node source-location)
+
+(defstruct semantic-aref
+  type array-node index-node source-location)
+
 (defstruct semantic-value-cast
   "Represents a value-preserving cast (e.g., to-float)."
   type ; The target type
@@ -320,6 +437,13 @@
   type ; The return type of the function
   args ; A list of semantic nodes for the arguments
   signature ; The specific FUNCTION-SIGNATURE struct that was resolved
+  source-location)
+
+(defstruct semantic-funcall
+  "Represents a 'funcall' form."
+  func-node ; The semantic node for the function expression (e.g. var-read or literal)
+  type ; The return type of the call
+  args ; A list of semantic nodes for arguments
   source-location)
 
 (defstruct semantic-let
@@ -457,15 +581,16 @@
   ;; We check and register it here to ensure forward calls work.
   ;; In multi-pass mode, this check prevents re-registration.
   (unless (gethash (second form) *function-table*)
-    (register-function-signature form location))
-
-  (let ((*current-compiling-function* (second form)))
-    (push *current-compiling-function* *single-pass-call-stack*)
-    (unwind-protect
-        (let ((form-with-location (append form (list :source-location `',location))))
-          (let ((expanded-form (macroexpand-1 form-with-location)))
-            (generate-llvm-ir (eval expanded-form) module builder di-builder di-compile-unit location-map)))
-      (pop *single-pass-call-stack*))))
+    (register-function-signature form location)) (let ((*current-compiling-function* (second form)))
+                                                   (push *current-compiling-function* *single-pass-call-stack*)
+                                                   (unwind-protect
+                                                       (let ((form-with-location (append form (list :source-location `',location))))
+                                                         (let ((expanded-form (macroexpand-1 form-with-location)))
+                                                           ;; Handle implicit templates which return nil
+                                                           (let ((semantic-node (eval expanded-form)))
+                                                             (when semantic-node
+                                                                   (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))))
+                                                     (pop *single-pass-call-stack*))))
 
 (defun walk-code-forms (forms visitor-fn)
   "Walks top-level forms, handling macros and progn, and calling visitor-fn on def-function."
@@ -647,6 +772,35 @@
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
 
+    ;; 0. Implicit Template Detection
+    (let ((implicit-args (loop for (pname ptype) in explicit-env
+                                 when (and (listp ptype) (eq (first ptype) :function-type))
+                               collect (list pname ptype))))
+      (when implicit-args
+            (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
+            ;; REMOVE from function table because register-function-signature already put it there!
+            (remhash name *function-table*)
+
+            ;; Convert to template
+            (let* ((template-params (loop for i from 0 repeat (length implicit-args) collect (intern (format nil "<IMPLICIT-F-~a>" i))))
+                   (subst-map (loop for (pname ptype) in implicit-args
+                                    for tparam in template-params
+                                    collect (cons pname tparam)))
+                   ;; Reconstruct environment with template params
+                   (new-env (loop for (pname ptype) in explicit-env
+                                  collect (let ((match (assoc pname subst-map)))
+                                            (if match
+                                                (list pname (cdr match))
+                                                (list pname ptype)))))
+                   ;; Construct signature for inference
+                   (signature-list (append (mapcar #'second new-env) '(=>) return-type))
+                   ;; Reconstruct body form using signature
+                   (new-def-form `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
+
+              (log:info "Registering implicit template ~a with params ~a" name template-params)
+              (register-template name template-params nil new-def-form signature-list)
+              (return-from internal-def-function nil))))
+
     ;; 1. Single-Pass Carrier Look-ahead
     (scan-for-carriers name body)
 
@@ -678,36 +832,53 @@
 
 ;; --- #'(...) Syntax Parsers ---
 
+
+(defun parse-type-specifier (spec)
+  "Parses a single type specifier, handling basic types, parameterized types,
+   and function types like #'(int => int)."
+  (cond
+   ;; Standard symbol: e.g. 'int'
+   ((valid-type-p spec) spec)
+   ;; Function Type: #'(int => int) or (function int => int)
+   ((and (listp spec) (member (first spec) '(function common-lisp:function)))
+     ;; Recursively parse the function signature? 
+     ;; For now, let's just create a :function-type descriptor.
+     (let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
+       `(:function-type ,(analyze-return-type-from-spec sig)
+                        :params ,(mapcar #'parse-type-specifier
+                                   (subseq sig 0 (position '=> sig))))))
+   ;; List but not a function? Maybe a parameterized type like '(cell int)
+   ((and (listp spec) (valid-type-p spec))
+     spec)
+   ;; Unknown?
+   (t (error 'crisp-unknown-type-error :type-name spec))))
+
 (defun analyze-return-type-from-spec (fn-spec)
-  "Parses '(int int => int int)' and returns a list of types, e.g., '(int int)."
+  "Parses '(int int => int int)' and returns a list of types."
   (let ((arrow-pos (position '=> fn-spec)))
     (if arrow-pos
         (let ((return-types-list (nthcdr (1+ arrow-pos) fn-spec)))
-          ;; If there's nothing after the arrow, it's a void return.
           (if (null return-types-list)
               '(nil)
-              (loop for type-name in return-types-list
+              (loop for type-spec in return-types-list
                     collect (cond
-                             ((null type-name) 'nil) ; Handles (=> nil) for void
-                             ((valid-type-p type-name) type-name)
-                             (t (error 'crisp-unknown-type-error :type-name type-name))))))
+                             ((null type-spec) 'nil)
+                             (t (parse-type-specifier type-spec))))))
         '(nil))))
 
 (defun analyze-environment-from-spec (params fn-spec)
-  "Builds the environment '((a i32) (b i32))'
-   from '(a b)' and '(int int => int)'."
-  (let ((param-types (loop for type-name in fn-spec
-                           until (eq type-name '=>)
-                           collect (if (valid-type-p type-name)
-                                       type-name
-                                       (error 'crisp-unknown-type-error :type-name type-name)))))
-    (log:debug "Analyzing spec params: ~s, types: ~s" params param-types)
-    (unless (= (length params) (length param-types))
-      (error 'crisp-signature-arity-error
-        :expected (length param-types)
-        :inferred (length params)
-        :source-location nil)) ; Can't get location easily here yet
-    (mapcar #'list params param-types)))
+  "Builds the environment from the signature."
+  (let ((arrow-pos (position '=> fn-spec)))
+    (let ((param-type-specs (subseq fn-spec 0 (or arrow-pos (length fn-spec)))))
+      (log:debug "Analyzing spec params: ~s, specs: ~s" params param-type-specs)
+      (unless (= (length params) (length param-type-specs))
+        (error 'crisp-signature-arity-error
+          :expected (length param-type-specs)
+          :inferred (length params)
+          :source-location nil))
+      (loop for p in params
+            for ts in param-type-specs
+            collect (list p (parse-type-specifier ts))))))
 
 
 ;; --- (type ...) Syntax Parsers (The Fallback) ---
@@ -746,13 +917,6 @@
                   param-names)
                 (error 'crisp-unknown-type-error :type-name param-type-name))))))
 
-
-(defvar *expression-analyzers* (make-hash-table)
-        "A dispatch table mapping operator symbols to their analyzer functions.")
-
-(defmacro def-expression-analyzer (operator handler-fn)
-  "A helper macro to register an operator's analyzer function."
-  `(setf (gethash ',operator *expression-analyzers*) ',handler-fn))
 
 (defun get-promoted-type (type-a-name type-b-name)
   "Determines the result type of a binary operation, applying promotion rules."
@@ -793,17 +957,117 @@
           ;; Ensure the resulting type is numeric and supports addition.
           (unless (and result-crisp-type (member (crisp-type-category result-crisp-type)
                                                  '(:signed-int :unsigned-int :float)))
+            ;; If no promotion rule applies, it's a type error.
             (error 'crisp-type-error
-              :message (format nil "Operator '+' not supported for types ~a and ~a." left-type right-type)
+              :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
               :source-location location))
-          (make-semantic-add :type promoted-type
-                             :left-arg left-node
-                             :right-arg right-node
-                             :source-location location))
-        ;; If no promotion rule applies, it's a type error.
+          (make-semantic-add :type promoted-type :left-arg left-node :right-arg right-node :source-location location))
         (error 'crisp-type-error
           :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
           :source-location location))))
+
+(defun analyze-sub-expression (expr env location)
+  "Analyzes a `(- ...)` expression."
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2))))
+         (left-type (get-single-value-type left-node))
+         (right-type (get-single-value-type right-node))
+         (promoted-type (get-promoted-type left-type right-type)))
+    (if promoted-type
+        (make-semantic-sub :type promoted-type :left-arg left-node :right-arg right-node :source-location location)
+        (error 'crisp-type-error :message "Type mismatch for '-'" :source-location location))))
+
+(defun analyze-mul-expression (expr env location)
+  "Analyzes a `(* ...)` expression."
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2))))
+         (left-type (get-single-value-type left-node))
+         (right-type (get-single-value-type right-node))
+         (promoted-type (get-promoted-type left-type right-type)))
+    (if promoted-type
+        (make-semantic-mul :type promoted-type :left-arg left-node :right-arg right-node :source-location location)
+        (error 'crisp-type-error :message "Type mismatch for '*'" :source-location location))))
+
+(defun analyze-div-expression (expr env location)
+  "Analyzes a `(/ ...)` expression."
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2))))
+         (left-type (get-single-value-type left-node))
+         (right-type (get-single-value-type right-node))
+         (promoted-type (get-promoted-type left-type right-type)))
+    (if promoted-type
+        (make-semantic-div :type promoted-type :left-arg left-node :right-arg right-node :source-location location)
+        (error 'crisp-type-error :message "Type mismatch for '/'" :source-location location))))
+
+(defun analyze-lt-expression (expr env location)
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2)))))
+    (make-semantic-lt :type 'int :left-arg left-node :right-arg right-node :source-location location)))
+
+(defun analyze-gt-expression (expr env location)
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2)))))
+    (make-semantic-gt :type 'int :left-arg left-node :right-arg right-node :source-location location)))
+
+(defun analyze-le-expression (expr env location)
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2)))))
+    (make-semantic-le :type 'int :left-arg left-node :right-arg right-node :source-location location)))
+
+(defun analyze-ge-expression (expr env location)
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2)))))
+    (make-semantic-ge :type 'int :left-arg left-node :right-arg right-node :source-location location)))
+
+(defun analyze-eq-expression (expr env location)
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2)))))
+    (make-semantic-eq :type 'int :left-arg left-node :right-arg right-node :source-location location)))
+
+(defun analyze-neq-expression (expr env location)
+  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+         (right-node (analyze-expression (third expr) env (append location '(2)))))
+    (make-semantic-neq :type 'int :left-arg left-node :right-arg right-node :source-location location)))
+
+(defun analyze-if-expression (expr env location)
+  (let* ((cond-node (analyze-expression (second expr) env (append location '(1))))
+         (then-node (analyze-expression (third expr) env (append location '(2))))
+         (else-node (if (fourth expr) (analyze-expression (fourth expr) env (append location '(3))) nil)))
+    (make-semantic-if :type (semantic-node-type then-node)
+                      :condition-node cond-node
+                      :then-node then-node
+                      :else-node else-node
+                      :source-location location)))
+
+(defun analyze-when-expression (expr env location)
+  (let ((cond-node (analyze-expression (second expr) env (append location '(1))))
+        (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
+    (make-semantic-if :type 'void :condition-node cond-node :then-node body-node :else-node nil :source-location location)))
+
+(defun analyze-unless-expression (expr env location)
+  (let ((cond-node (analyze-expression (second expr) env (append location '(1))))
+        (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
+    (make-semantic-if :type 'void :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
+
+(defun analyze-set!-expression (expr env location)
+  (let* ((var-name (second expr))
+         (val-node (analyze-expression (third expr) env (append location '(2)))))
+    (make-semantic-set! :name var-name :value-node val-node :source-location location)))
+
+(defun analyze-aref-expression (expr env location)
+  (let* ((array-node (analyze-expression (second expr) env (append location '(1))))
+         (index-node (analyze-expression (third expr) env (append location '(2)))))
+    (make-semantic-aref :type (if (listp (semantic-node-type array-node)) (second (semantic-node-type array-node)) 'int)
+                        :array-node array-node
+                        :index-node index-node
+                        :source-location location)))
+
+(defun analyze-inc!-expression (expr env location)
+  (error "inc! not implemented"))
+(defun analyze-dec!-expression (expr env location)
+  (error "dec! not implemented"))
+(defun analyze-atomic-add!-expression (expr env location)
+  (error "atomic-add! not implemented"))
 
 (defun analyze-scratch-expression (expr env location)
   "Analyzes a `(make-scratch-cell ...)` expression.
@@ -923,6 +1187,7 @@
                            :bindings analyzed-bindings
                            :body analyzed-body
                            :source-location location)))))
+
 (defun analyze-return-expression (expr env location)
   "Analyzes a `(return ...)` expression."
   (let* ((value-forms (rest expr))
@@ -980,108 +1245,158 @@
            (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))))
 
 
-(defun initialize-expression-analyzers ()
-  "Populates the *expression-analyzers* hash table."
-  (clrhash *expression-analyzers*)
-  (def-expression-analyzer let analyze-let-expression)
-  (def-expression-analyzer progn analyze-progn-expression)
-  (def-expression-analyzer def-function analyze-nested-def-function)
-  (def-expression-analyzer template-instantiation analyze-template-instantiation)
-  (def-expression-analyzer + analyze-add-expression)
-  (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
-  (def-expression-analyzer return analyze-return-expression)
-  ;; Register all possible `to-` and `as-` casts.
-  (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
-    (let* ((type-str (symbol-name type-name))
-           (to-name (intern (concatenate 'string "TO-" type-str) :crisp.compiler))
-           (as-name (intern (concatenate 'string "AS-" type-str) :crisp.compiler)))
-      (setf (gethash to-name *expression-analyzers*) #'analyze-cast-expression)
-      (setf (gethash as-name *expression-analyzers*) #'analyze-cast-expression)))
-  ;; Register the special float-to-int conversion functions
-  (setf (gethash 'truncate *expression-analyzers*) #'analyze-cast-expression)
-  (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
-  (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
-  (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
+(defun types-compatible-p (arg-type param-type)
+  "Checks if an argument type is compatible with a parameter type."
+  (or (equal arg-type param-type)
+      (and (listp arg-type) (eq (first arg-type) :function-literal)
+           (listp param-type) (eq (first param-type) :function-type)
+           ;; Verify signature match
+           (let* ((literal-name (second arg-type))
+                  (expected-ret (second param-type))
+                  (expected-params (getf (cddr param-type) :params))
+                  (sigs (gethash literal-name *function-table*)))
+             ;; Find ANY signature of literal-name that matches the expected type
+             (some (lambda (sig)
+                     (and (equal (function-signature-return-types sig) expected-ret)
+                          (equal (function-signature-parameters sig) expected-params)))
+                 sigs)))))
 
+(defun types-list-compatible-p (arg-types param-types)
+  "Checks if a list of argument types is compatible with a list of parameter types."
+  (and (= (length arg-types) (length param-types))
+       (every #'types-compatible-p arg-types param-types)))
 
 (defun analyze-function-call (op expr env location)
   "Analyzes a call to a user-defined function."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op *current-compiling-function*)
   (if *call-graph*
-      ;; --- Multi-pass mode ---
-      ;; Record the dependency in the call graph for later cycle detection.
       (when *current-compiling-function*
             (pushnew op (gethash *current-compiling-function* *call-graph*)))
-      ;; --- Single-pass mode ---
       (when (member op *single-pass-call-stack*)
             (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
 
-  ;; --- Phase 5: Implicit Argument Handling ---
   (let ((implicit-args-required (gethash op *implicit-arg-map*)))
-    ;; In single-pass mode, if the callee is a carrier, the caller must be too.
     (when (and (null *call-graph*) implicit-args-required)
-          (log:debug "Single-pass: Call to carrier ~s implies caller ~s is also a carrier."
-                     op *current-compiling-function*)
           (setf (gethash *current-compiling-function* *implicit-arg-map*) implicit-args-required))
 
-    ;; 1. Analyze the *explicit* arguments passed to the call.
     (let* ((arg-forms (rest expr))
            (explicit-arg-nodes (loop for arg-form in arg-forms
                                      for i from 1
                                      collect (analyze-expression arg-form env (append location (list i)))))
            (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
-           ;; 2. Get the function signature(s) from the table.
            (signatures (gethash op *function-table*))
-           ;; 3. Find the matching overload based on *explicit* arguments.
            (signature (find-if (lambda (sig)
-                                 (equal explicit-arg-types (function-signature-parameters sig)))
-                          signatures)))
+                                 (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
+                          signatures)))      (unless signature
+        (when *template-instantiator-fn*
+              (loop repeat 3 until signature do
+                    (if (funcall *template-instantiator-fn* op explicit-arg-types
+                          (lambda (form location)
+                            (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
+                        (progn
+                          (setf signatures (gethash op *function-table*))
+                          (setf signature (find-if (lambda (sig)
+                                                     (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
+                                              signatures)))
+                        (return))))
 
       (unless signature
-        ;; Attempt Auto-Template Specialization via Hook
-        (when *template-instantiator-fn*
-              (funcall *template-instantiator-fn* op explicit-arg-types
-                (lambda (form location)
-                  (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
+        (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types)))
 
-              ;; Retry lookup
-              (setf signatures (gethash op *function-table*))
-              (setf signature (find-if (lambda (sig)
-                                         (equal explicit-arg-types (function-signature-parameters sig)))
-                                  signatures)))
+    (let ((final-arg-nodes
+           (if implicit-args-required
+               (let ((implicit-arg-nodes
+                      (loop for arg-name in '(__storage_ptr __storage_size)
+                            collect (let ((found (assoc arg-name env)))
+                                      (if found
+                                          (make-semantic-var-read :name arg-name :type (second found) :source-location location)
+                                          (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
+                                            *current-compiling-function* arg-name))))))
+                 (append implicit-arg-nodes explicit-arg-nodes))
+               explicit-arg-nodes)))
 
-        (unless signature
-          (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types)))
+      (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
+        (error 'crisp-signature-arity-error
+          :expected (length (function-signature-parameters signature))
+          :inferred (length explicit-arg-types)
+          :source-location location))
 
-      ;; 4. Prepend implicit arguments if required.
-      (let ((final-arg-nodes
-             (if implicit-args-required
-                 (let ((implicit-arg-nodes
-                        (loop for arg-name in '(__storage_ptr __storage_size)
-                              collect (let ((found (assoc arg-name env)))
-                                        (if found
-                                            (make-semantic-var-read :name arg-name :type (second found) :source-location location)
-                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s in its environment."
-                                              *current-compiling-function* arg-name))))))
-                   (append implicit-arg-nodes explicit-arg-nodes))
-                 explicit-arg-nodes)))
+      (make-semantic-call :name op
+                          :type (function-signature-return-types signature)
+                          :args final-arg-nodes
+                          :signature signature
+                          :source-location location)))))
 
-        ;; 5. Perform Arity and Type Checking (on explicit args only)
-        (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
-          (error 'crisp-signature-arity-error
-            :expected (length (function-signature-parameters signature))
-            :inferred (length explicit-arg-types)
-            :source-location location))
+(defun analyze-funcall-expression (expr env location)
+  "Analyzes a (funcall f args...) form."
+  (let* ((func-expr (second expr))
+         (args-exprs (cddr expr))
+         (func-node (analyze-expression func-expr env location))
+         (func-type (semantic-node-type func-node)))
 
-        (log:debug "Function call '~a' matched signature with params ~a and return types ~a."
-                   op (function-signature-parameters signature) (function-signature-return-types signature))
+    ;; Check if the function expression resolved to a function type or literal.
+    ;; e.g. (:function-type (int) :params (int int)) 
+    ;; or (:function-literal +)
 
-        ;; 6. Build the semantic-call node with the final argument list.
-        (make-semantic-call :name op
-                            :type (function-signature-return-types signature)
-                            :args final-arg-nodes
-                            :signature signature
-                            :source-location location)))))
+    (let ((signature-return-type nil)
+          (signature-params nil))
+
+      (cond
+       ;; Case 1: Function Type (e.g. from a parameter)
+       ((and (listp func-type) (eq (first func-type) :function-type))
+         (setf signature-return-type (second func-type)) ; (int)
+         (setf signature-params (getf (cddr func-type) :params))) ;; Case 2: Function Literal (e.g. #'+)
+       ((and (listp func-type) (eq (first func-type) :function-literal))
+         (let ((name (second func-type)))
+           ;; Sub-case 2a: It is a primitive/special-form with an analyzer (e.g. +)
+           (when (gethash name *expression-analyzers*)
+                 ;; Re-dispatch as if it were a direct call: (+ a b)
+                 (let ((new-expr (cons name args-exprs)))
+                   (return-from analyze-funcall-expression
+                                (funcall (gethash name *expression-analyzers*) new-expr env location))))
+
+           ;; Sub-case 2b: It is a user function. Lower to direct semantic-call.
+           (let* ((arg-nodes (loop for arg in args-exprs collect (analyze-expression arg env location)))
+                  (arg-types (mapcar #'semantic-node-type arg-nodes))
+                  (signatures (gethash name *function-table*))
+                  (match (find-if (lambda (sig)
+                                    (equal arg-types (function-signature-parameters sig)))
+                             signatures)))
+             (unless match
+               (error "No matching signature for funcall of literal ~a with types ~a. Table count: ~a" name arg-types (hash-table-count *function-table*)))
+
+             (return-from analyze-funcall-expression
+                          (make-semantic-call
+                           :name name
+                           :type (function-signature-return-types match)
+                           :args arg-nodes
+                           :signature match
+                           :source-location location)))))
+
+       (t
+         (error "First argument to funcall must be a function type or literal. Got ~a" func-type)))
+
+      ;; Continued Case 1 logic (Function Type)
+      ;; Verify argument count
+      (unless (= (length args-exprs) (length signature-params))
+        (error 'crisp-signature-arity-error :expected (length signature-params) :inferred (length args-exprs)))
+
+      ;; Analyze and check arguments
+      (let ((arg-nodes
+             (loop for arg-expr in args-exprs
+                   for expected-type in signature-params
+                   for i from 0
+                   collect (let ((node (analyze-expression arg-expr env location)))
+                             ;; Type check
+                             (unless (equal (semantic-node-type node) expected-type)
+                               (error 'crisp-type-error :expected expected-type :inferred (semantic-node-type node) :source-location location))
+                             node))))
+
+        (make-semantic-funcall
+         :func-node func-node
+         :type signature-return-type ; e.g. (int)
+         :args arg-nodes
+         :source-location location)))))
 
 (defun analyze-parameters (params)
   "Builds the environment (a symbol table)."
@@ -1136,6 +1451,7 @@
                         ((macro-function op)
                           (analyze-expression (macroexpand-1 expr) env location))
                         ;; Case 3c: Is it a call to a known user-defined function?
+                        ;; Also check implicit *template-registry* for overloading
                         ((or (gethash op *function-table*)
                              (gethash op *template-registry*))
                           (analyze-function-call op expr env location))
@@ -1153,12 +1469,25 @@
     (semantic-literal (semantic-literal-value-type node))
     (semantic-var-read (semantic-var-read-type node))
     (semantic-add (semantic-add-type node))
+    (semantic-sub (semantic-sub-type node))
+    (semantic-mul (semantic-mul-type node))
+    (semantic-div (semantic-div-type node))
+    (semantic-lt 'int)
+    (semantic-gt 'int)
+    (semantic-le 'int)
+    (semantic-ge 'int)
+    (semantic-eq 'int)
+    (semantic-neq 'int)
+    (semantic-if (semantic-if-type node))
+    (semantic-set! (semantic-node-type (semantic-set!-value-node node)))
+    (semantic-aref (semantic-aref-type node))
     (semantic-value-cast (semantic-value-cast-type node))
     (semantic-let (semantic-let-type node))
     (semantic-bitcast (semantic-bitcast-type node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-type node))
     (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
+    (semantic-funcall (semantic-funcall-type node))
     (semantic-extract-value (semantic-extract-value-type node))))
 
 (defun semantic-node-source-location (node)
@@ -1170,8 +1499,21 @@
     (semantic-let (semantic-let-source-location node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-source-location node))
     (semantic-add (semantic-add-source-location node))
+    (semantic-sub (semantic-sub-source-location node))
+    (semantic-mul (semantic-mul-source-location node))
+    (semantic-div (semantic-div-source-location node))
+    (semantic-lt (semantic-lt-source-location node))
+    (semantic-gt (semantic-gt-source-location node))
+    (semantic-le (semantic-le-source-location node))
+    (semantic-ge (semantic-ge-source-location node))
+    (semantic-eq (semantic-eq-source-location node))
+    (semantic-neq (semantic-neq-source-location node))
+    (semantic-if (semantic-if-source-location node))
+    (semantic-set! (semantic-set!-source-location node))
+    (semantic-aref (semantic-aref-source-location node))
     (semantic-explicit-return (semantic-explicit-return-source-location node))
     (semantic-call (semantic-call-source-location node))
+    (semantic-funcall (semantic-funcall-source-location node))
     (semantic-extract-value (semantic-extract-value-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
@@ -1243,3 +1585,4 @@
       (when di-builder (llvm-dispose-di-builder di-builder))
       (llvm-dispose-builder builder)
       (llvm-dispose-module module))))
+  
