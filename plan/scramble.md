@@ -178,7 +178,7 @@ SHORT TERM PLAN
 - - [x] testing
 - [x] more let: multiple value return and bind
 - [x] templates as macros
-- [ ] higher order functions as templates
+- [x] higher order functions as templates
       binop-type ? 
 - [ ] need to move more of our old erstaz logging to log4cl. 
 - [x] Side Channel / Implicit Args. Can we start this BEFORE def-kernel? 
@@ -188,6 +188,12 @@ SHORT TERM PLAN
       target platform intrinsics to be supported.  We should probably generalize this sooner rather than later.
       I'm not keen on having a whole IR.  Maybe we start with op-fma or something as POC?
       Would require `--ir-target=SPIRV` or `--ir-target=PTX` at minimum.
+
+- [ ] defmacro - Get it in now. Shouldn't be difficult, paves way to "crisp in crisp"
+- [ ] conditionals - LLVM Blocks and branches. Will be needed for "crisp-in-crisp" vectors etc.
+- [ ] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
+- [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
+- [ ] def-kernel  <-- 
 
 
 M-V-R

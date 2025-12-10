@@ -100,7 +100,14 @@ The `cell` Storage Handle data type is available as a composit type (only).
 It is just a placeholder for now, and cannot do actual work. 
 `make-scratch-cell` is similarly available and non-functioning.
 
+### Higher Order Functions
+Functions can be passed as arguments to other functions. And, for this, the signature
+of one function can be nested in that of another.  #'(#'(int => int) int => int)
+Functinos that take other functions as parameters are automatically templated 
+and "calling" them results in the template being specialized.
 
+`funcall` is working as well:
+`(funcall #'+ 1 2 )`
 
 
 Errors
