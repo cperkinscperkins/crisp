@@ -1,0 +1,93 @@
+## Output Targeting Options
+
+
+### `--output-dir=<DIRECTORY_PATH>`
+
+Where the output of the crisp compiler should go. If not provided it is assumed to be the current working directory.
+
+### `--output-base=<NAME>`
+
+This base name will be used for all outputs, with the file extension uniquely identifying them.
+If not provided the base name is the name of the last .crisp file passed to the compiler (minus any extension).
+
+### `--transpile-to=<ID>`
+
+The compiler will transpile the .crisp file to some other Kernel language. At the moment `oclc` is the only supported
+transpilation target.
+
+| ID       | Extension |  Description       |
+|----------|-----------|--------------------|
+| `oclc`   | `c`       | OpenCL C           | 
+
+### `--ir-target=<ID>`
+
+This flag can be used repeatedly, each occurrence with a different ID. The compiler will compile the .crisp files 
+to an IR (Intermediate Representation) file. One file per occurrence of the `--ir-target` flag.
+`ID` can be one of
+
+| ID       | Extension |  Description       |
+|----------|-----------|--------------------|
+| `ptx`    | `ptx`     | CUDA Parallel Thread Execution IR |
+| `spv`    | `spv`     | Khronos SPIR-V IR  |
+
+### `--binary-gpu-target=<ID>`
+
+This flag can be used repeatedly, each occurrence with a different ID. The compiler will compile the .crisp files to a different binary file for each binary target. The binary file name will be `<output-base-name>_<ID>.<extension>`
+
+`ID` can be one of
+| ID      | Extension |  Description       |
+|---------|-----------|--------------------|
+| `sm_90` | `cubin`   | NVidia             |
+| `pvc`   | `bin`     | Intel PonteVechio  |
+
+
+### `--fat-binary`
+
+This flag requires that the `--binary-gpu-target` flag also be used, or it is ignored.
+Whe present the binaries that Crisp produces will be  fat binaries and will also contain the matching IR code (PTX or SPIR-V).
+
+### `--hoist=<ID>` 
+
+This flag can be used repeatedly, each occurrence with a different ID. The compiler will generate a hoisting example code files for each occurence.
+The hoist options are paired against their matching IR and Binary targets automatically. You'll get a warning from the compiler if it detects
+incompatible pairings.  Note that if outputting BOTH binary and IR targets then the hoisting code will demonstrate both.
+
+The hoist file name will be `<output-base-name>_hoist_<ID>.<extension>`
+
+`ID` can be one of
+| ID              | Extension |  Description       |
+|-----------------|-----------|--------------------|
+| `OpenCL`        | `cpp`     | OpenCL 3.0 API     |
+| `L0`            | `cpp`     | LevelZero 1.9 API  |
+| `CUDA`          | `cpp`     | CUDA 12 API        |
+| `PyOpenCL`      | `py`      | PyOpenCL           |
+| `PyLevelZero`   | `py`      | Python LevelZero   |
+| `PyCUDA`        | `py`      | PyCUDA             |
+
+There are other flags that interoperate with the hoisting, such as `--hoist-unified-memory` and `--hoist-dynamic`
+
+### `--metadata`
+
+If this flag is present, the compiler will output a metadata file. This file has a lot of the necessary 
+hoisting information about the kernels and their arguments and 
+can be parsed programmatically if desired.
+
+### Example
+```
+$ crisp.exe --output-base=v_add --ir-target=spv --hoist=L0 ../vector-add.crisp
+$ ls
+v_add.spv
+v_add_hoist_L0.cpp
+```
+
+```
+$ crisp.exe  --binary-gpu-target=sm_90 --binary-gpu-target=pvc --hoist=CUDA --hoist=PyLevelZero --metadata ../reduce-vector.crisp
+$ ls
+reduce-vector_sm_90.cubin
+reduce-vector_pvc.bin
+reduce-vector_hoist_CUDA.cpp
+reduce-vector_hoist_PyLevelZero.py
+reduce-vector.metacrisp
+
+```
+
