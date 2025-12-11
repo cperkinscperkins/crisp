@@ -37,7 +37,9 @@
 ;; --- Types ---
 (defcfun ("LLVMInt32Type" llvm-int32-type) :pointer)
 (defcfun ("LLVMInt8Type" llvm-int8-type) :pointer)
+(defcfun ("LLVMInt1Type" llvm-int1-type) :pointer)
 (defcfun ("LLVMInt16Type" llvm-int16-type) :pointer)
+
 (defcfun ("LLVMPointerType" llvm-int8-ptr-type) :pointer
          (type :pointer)
          (address-space :unsigned-int))
@@ -89,6 +91,10 @@
 (defcfun ("LLVMAppendBasicBlock" llvm-append-basic-block) :pointer
          (function :pointer)
          (name :string))
+
+(defcfun ("LLVMGetBasicBlockTerminator" llvm-get-basic-block-terminator) :pointer
+         (block :pointer))
+
 
 ;; --- Builder ---
 (defcfun ("LLVMCreateBuilder" llvm-create-builder) :pointer)

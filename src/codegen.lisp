@@ -671,4 +671,67 @@
                                                                         line 0 di-scope (cffi:null-pointer))))))
         (when di-location
               (llvm-instruction-set-debug-loc call-inst di-location))
-        (values call-inst di-location)))))
+        (values call-inst di-location)))));; --- IF ---
+(defun terminator-p (block)
+  "Checks if a basic block already has a terminator instruction."
+  (not (cffi:null-pointer-p (llvm-get-basic-block-terminator block))))
+
+(defmethod generate-node-ir ((node semantic-if) builder module var-env di-builder di-scope location-map)
+  "Generates IR for an if expression."
+  ;; 1. Evaluate the condition
+  (multiple-value-bind (cond-val cond-loc)
+      (generate-node-ir (semantic-if-condition-node node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore cond-loc))
+    ;; Condition must be i1 (boolean) for cond_br.
+    ;; Our language uses i32, so we truncate.
+    ;; Note: In strict LLVM, 0 is false, non-zero is usually true. Truncating blindly might lose info
+    ;; if the value is like 2 (binary 10), trunc to i1 is 0 (false)!
+    ;; Correct logic: icmp ne %val, 0
+    (let ((cond-bool (llvm-build-icmp builder +llvm-int-ne+ cond-val (llvm-const-int (llvm-int32-type) 0 nil) "ifcond")))
+
+      (let ((then-block (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "then"))
+            (else-block (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "else"))
+            (merge-block (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "ifcont"))
+
+            ;; Determine result type and allocate scratch space if needed (alloca trick)
+            (result-type-spec (semantic-node-type node)))
+
+        ;; Note: The result type might be 'void (nil).
+        (let ((result-alloca
+               (unless (or (null result-type-spec) (eq result-type-spec :void))
+                 (let ((type (crisp-type-to-llvm-type result-type-spec module)))
+                   (llvm-build-alloca builder type "if_result")))))
+
+          ;; --- Create Conditional Branch ---
+          (llvm-build-cond-br builder cond-bool then-block else-block)
+
+          ;; --- Then Block ---
+          (llvm-position-builder-at-end builder then-block)
+          (multiple-value-bind (then-val then-loc)
+              (generate-node-ir (semantic-if-then-node node) builder module var-env di-builder di-scope location-map)
+            (declare (ignore then-loc))
+            (when result-alloca
+                  (llvm-build-store builder then-val result-alloca)))
+
+          (unless (terminator-p (llvm-get-insert-block builder))
+            (llvm-build-br builder merge-block))
+
+          ;; --- Else Block ---
+          (llvm-position-builder-at-end builder else-block)
+          (if (semantic-if-else-node node)
+              (multiple-value-bind (else-val else-loc)
+                  (generate-node-ir (semantic-if-else-node node) builder module var-env di-builder di-scope location-map)
+                (declare (ignore else-loc))
+                (when result-alloca
+                      (llvm-build-store builder else-val result-alloca)))
+              ;; No else clause. If result expected, this is undefined behavior or nil.
+              nil)
+          (unless (terminator-p (llvm-get-insert-block builder))
+            (llvm-build-br builder merge-block))
+
+          ;; --- Merge Block ---
+          (llvm-position-builder-at-end builder merge-block)
+          (if result-alloca
+              (let ((loaded-val (llvm-build-load2 builder (crisp-type-to-llvm-type result-type-spec module) result-alloca "ifresult")))
+                (values loaded-val nil))
+              (values nil nil)))))))
