@@ -157,6 +157,19 @@ jobs:
           ./bin/crisp-compile tests/higher-order-functions.crisp --debug
 
 
+          echo "--- Running E2E: success test (defmacro-01.crisp) ---"
+          ./bin/crisp-compile tests/defmacro-01.crisp
+
+          echo "--- Running E2E: success test --single-pass (defmacro-01.crisp) ---"
+          ./bin/crisp-compile tests/defmacro-01.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (defmacro-01.crisp) ---"
+          ./bin/crisp-compile tests/defmacro-01.crisp --debug
+
+          echo "--- Running E2E: success test --debug --single-pass (defmacro-01.crisp) ---"
+          ./bin/crisp-compile tests/defmacro-01.crisp --debug --single-pass
+
+
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"
           
