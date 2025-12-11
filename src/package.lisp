@@ -145,7 +145,10 @@
            #:truncate
            #:floor
            #:ceil
-           #:round)
+           #:round
+
+           ;; We enable Unified Let by defining our own let macro
+           #:let)
 
   (:export
    #:compile-toplevel-form
@@ -169,6 +172,10 @@
    #:type
    #:make-scratch-cell
    #:|=>|
+
+   ;; New Unified Let
+   #:let
+
    ;; All Crisp types
    #:char #:short #:int #:long
    #:cell
@@ -243,7 +250,12 @@
                 #:to-long #:as-long
                 #:to-float #:as-float
                 #:to-double #:as-double
-                #:truncate #:floor #:ceil #:round)  ;; --- 1. Import *only* the "safe" CL data symbols ---
+                #:truncate #:floor #:ceil #:round
+
+                ;; NEW: Unified Let from Compiler
+                #:let)
+
+  ;; --- 1. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
                 #:t #:nil
                 #:&optional #:&key #:&rest #:&body
@@ -253,8 +265,8 @@
   ;; We must "shadow" (copy) them into our package
   ;; so the user can type (if ...) instead of (cl:if ...)
   (:shadowing-import-from :common-lisp
-                          #:if #:when #:unless #:cond #:case #:let
-                          #:let #:let*
+                          #:if #:when #:unless #:cond #:case
+                          ;; We do NOT import let/let* because we have our own
                           #:progn
                           #:funcall
                           #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal ;; and so on...
@@ -276,8 +288,7 @@
 
                           ;; Predicates
                           #:null #:atom #:consp #:listp #:symbolp
-                          #:not #:and #:or
-   )
+                          #:not #:and #:or)
 
   ;; --- 3. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
@@ -310,11 +321,22 @@
   (:export
    ;; Our new "safe" built-ins
    #:if #:when #:unless #:cond #:case
-   #:let
+   #:let ;; Now exported from CRISP.COMPILER via import above
    #:progn
    #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
    #:equal
    #:defmacro
+
+   ;; Macro Meta-Utilites
+   #:&body
+   #:list #:list* #:cons
+   #:car #:cdr #:first #:rest
+   #:second #:third #:fourth #:fifth #:sixth #:seventh #:eighth #:ninth #:tenth
+   #:nth #:reverse #:append #:length
+   #:mapcar #:mapc
+   #:gensym #:intern #:symbol-name #:string #:concatenate #:format
+   #:null #:atom #:consp #:listp #:symbolp
+   #:not #:and #:or
 
    ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function
