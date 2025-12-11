@@ -1266,6 +1266,33 @@
   (and (= (length arg-types) (length param-types))
        (every #'types-compatible-p arg-types param-types)))
 
+(defun resolve-best-signature (op explicit-arg-types)
+  "Finds the best matching function signature for the given operator and argument types.
+   Attempts template instantiation if no immediate match is found."
+  (let ((signatures (gethash op *function-table*))
+        (signature nil))
+    (setf signature (find-if (lambda (sig)
+                               (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
+                        signatures))
+
+    (unless signature
+      (when *template-instantiator-fn*
+        (loop repeat 3 until signature do
+          (if (funcall *template-instantiator-fn* op explicit-arg-types
+                (lambda (form location)
+                  (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
+              (progn
+                (setf signatures (gethash op *function-table*))
+                (setf signature (find-if (lambda (sig)
+                                           (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
+                                    signatures)))
+              (return)))))
+    
+    (unless signature
+      (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types))
+    
+    signature))
+
 (defun analyze-function-call (op expr env location)
   "Analyzes a call to a user-defined function."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op *current-compiling-function*)
@@ -1284,48 +1311,31 @@
                                      for i from 1
                                      collect (analyze-expression arg-form env (append location (list i)))))
            (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
-           (signatures (gethash op *function-table*))
-           (signature (find-if (lambda (sig)
-                                 (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
-                          signatures)))      (unless signature
-        (when *template-instantiator-fn*
-              (loop repeat 3 until signature do
-                    (if (funcall *template-instantiator-fn* op explicit-arg-types
-                          (lambda (form location)
-                            (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
-                        (progn
-                          (setf signatures (gethash op *function-table*))
-                          (setf signature (find-if (lambda (sig)
-                                                     (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
-                                              signatures)))
-                        (return))))
+           (signature (resolve-best-signature op explicit-arg-types)))
 
-      (unless signature
-        (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types)))
+      (let ((final-arg-nodes
+             (if implicit-args-required
+                 (let ((implicit-arg-nodes
+                        (loop for arg-name in '(__storage_ptr __storage_size)
+                              collect (let ((found (assoc arg-name env)))
+                                        (if found
+                                            (make-semantic-var-read :name arg-name :type (second found) :source-location location)
+                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
+                                              *current-compiling-function* arg-name))))))
+                   (append implicit-arg-nodes explicit-arg-nodes))
+                 explicit-arg-nodes)))
 
-    (let ((final-arg-nodes
-           (if implicit-args-required
-               (let ((implicit-arg-nodes
-                      (loop for arg-name in '(__storage_ptr __storage_size)
-                            collect (let ((found (assoc arg-name env)))
-                                      (if found
-                                          (make-semantic-var-read :name arg-name :type (second found) :source-location location)
-                                          (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
-                                            *current-compiling-function* arg-name))))))
-                 (append implicit-arg-nodes explicit-arg-nodes))
-               explicit-arg-nodes)))
+        (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
+          (error 'crisp-signature-arity-error
+            :expected (length (function-signature-parameters signature))
+            :inferred (length explicit-arg-types)
+            :source-location location))
 
-      (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
-        (error 'crisp-signature-arity-error
-          :expected (length (function-signature-parameters signature))
-          :inferred (length explicit-arg-types)
-          :source-location location))
-
-      (make-semantic-call :name op
-                          :type (function-signature-return-types signature)
-                          :args final-arg-nodes
-                          :signature signature
-                          :source-location location)))))
+        (make-semantic-call :name op
+                            :type (function-signature-return-types signature)
+                            :args final-arg-nodes
+                            :signature signature
+                            :source-location location)))))
 
 (defun analyze-funcall-expression (expr env location)
   "Analyzes a (funcall f args...) form."
