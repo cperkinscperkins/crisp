@@ -243,12 +243,10 @@
                 #:to-long #:as-long
                 #:to-float #:as-float
                 #:to-double #:as-double
-                #:truncate #:floor #:ceil #:round)
-
-  ;; --- 1. Import *only* the "safe" CL data symbols ---
+                #:truncate #:floor #:ceil #:round)  ;; --- 1. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
                 #:t #:nil
-                #:&optional #:&key #:&rest
+                #:&optional #:&key #:&rest #:&body
                 #:lambda)
 
   ;; --- 2. Import *only* the "safe" CL forms ---
@@ -261,6 +259,24 @@
                           #:funcall
                           #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal ;; and so on...
                           #:defmacro ;; We need defmacro to build the language
+   )
+
+  ;; --- 2.5 Macro Meta-Language Utilities (See docs/defmacro-utils.md) ---
+  ;; Use shadowing import for symbols that are standard CL but we want in Crisp
+  (:shadowing-import-from :common-lisp
+                          ;; Manipulating Lists
+                          #:list #:list* #:cons
+                          #:car #:cdr #:first #:rest
+                          #:second #:third #:fourth #:fifth #:sixth #:seventh #:eighth #:ninth #:tenth
+                          #:nth #:reverse #:append #:length
+                          #:mapcar #:mapc
+
+                          ;; Creating Symbols/Strings
+                          #:gensym #:intern #:symbol-name #:string #:concatenate #:format
+
+                          ;; Predicates
+                          #:null #:atom #:consp #:listp #:symbolp
+                          #:not #:and #:or
    )
 
   ;; --- 3. Import from CRISP.COMPILER ---
