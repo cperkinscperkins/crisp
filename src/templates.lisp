@@ -119,27 +119,18 @@ Value: The expanded form (or T).")
              (equal existing arg-type)
              (progn (setf (gethash sig-type inference-map) arg-type) t))))
 
-     ;; 2. Function Type Pattern (:function-type ret :params (p1...))
-     ((and (listp sig-type) (eq (first sig-type) :function-type))
-       (cond
-        ;; 2a. Matching against a Function Literal (:function-literal name)
-        ((and (listp arg-type) (eq (first arg-type) :function-literal))
-          (let* ((name (second arg-type))
-                 (signatures (gethash name *function-table*)))
-            (loop for sig in signatures
-                    ;; Try to match this overload
-                    ;; Note: We clone the map to avoid polluting it with partial matches from failed overloads
-                    when (match-function-signature sig-type sig inference-map template-params)
-                    return t))) ;; Found a matching overload
+     ;; 2. Match Function Literal against a Function Type Pattern
+     ;; Special Case: Only if we are looking for a function type and find a literal func-name.
+     ((and (listp sig-type) (eq (first sig-type) :function-type)
+           (listp arg-type) (eq (first arg-type) :function-literal))
+       (let* ((name (second arg-type))
+              (signatures (gethash name *function-table*)))
+         (loop for sig in signatures
+               ;; Try to match this overload
+               when (match-function-signature sig-type sig inference-map template-params)
+               return t)))
 
-        ;; 2b. Matching against another Function Type (nested)
-        ((and (listp arg-type) (eq (first arg-type) :function-type))
-          ;; Structure match logic... treat as list match (Case 3)
-          (match-list-structure sig-type arg-type inference-map template-params))
-
-        (t nil)))
-
-     ;; 3. Generic List Pattern (e.g. (vector T))
+     ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
      ((listp sig-type)
        (match-list-structure sig-type arg-type inference-map template-params))
 
