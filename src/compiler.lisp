@@ -766,6 +766,37 @@
                                location))))
     body-nodes))
 
+(defun detect-and-register-implicit-template (name explicit-env return-type params body)
+  "Detects if a function is an implicit template (e.g. has function-type args),
+   and if so, registers it as a template and returns T. Otherwise returns NIL."
+  (let ((implicit-args (loop for (pname ptype) in explicit-env
+                               when (and (listp ptype) (eq (first ptype) :function-type))
+                             collect (list pname ptype))))
+    (when implicit-args
+      (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
+      ;; REMOVE from function table because register-function-signature already put it there!
+      (remhash name *function-table*)
+
+      ;; Convert to template
+      (let* ((template-params (loop for i from 0 repeat (length implicit-args) collect (intern (format nil "<IMPLICIT-F-~a>" i))))
+             (subst-map (loop for (pname ptype) in implicit-args
+                              for tparam in template-params
+                              collect (cons pname tparam)))
+             ;; Reconstruct environment with template params
+             (new-env (loop for (pname ptype) in explicit-env
+                            collect (let ((match (assoc pname subst-map)))
+                                      (if match
+                                          (list pname (cdr match))
+                                          (list pname ptype)))))
+             ;; Construct signature for inference
+             (signature-list (append (mapcar #'second new-env) '(=>) return-type))
+             ;; Reconstruct body form using signature
+             (new-def-form `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
+
+        (log:info "Registering implicit template ~a with params ~a" name template-params)
+        (register-template name template-params nil new-def-form signature-list)
+        t))))
+
 (defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
   (log:info "Analyzing function ~s" name)
@@ -773,33 +804,8 @@
       (parse-function-declarations params declarations)
 
     ;; 0. Implicit Template Detection
-    (let ((implicit-args (loop for (pname ptype) in explicit-env
-                                 when (and (listp ptype) (eq (first ptype) :function-type))
-                               collect (list pname ptype))))
-      (when implicit-args
-            (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
-            ;; REMOVE from function table because register-function-signature already put it there!
-            (remhash name *function-table*)
-
-            ;; Convert to template
-            (let* ((template-params (loop for i from 0 repeat (length implicit-args) collect (intern (format nil "<IMPLICIT-F-~a>" i))))
-                   (subst-map (loop for (pname ptype) in implicit-args
-                                    for tparam in template-params
-                                    collect (cons pname tparam)))
-                   ;; Reconstruct environment with template params
-                   (new-env (loop for (pname ptype) in explicit-env
-                                  collect (let ((match (assoc pname subst-map)))
-                                            (if match
-                                                (list pname (cdr match))
-                                                (list pname ptype)))))
-                   ;; Construct signature for inference
-                   (signature-list (append (mapcar #'second new-env) '(=>) return-type))
-                   ;; Reconstruct body form using signature
-                   (new-def-form `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
-
-              (log:info "Registering implicit template ~a with params ~a" name template-params)
-              (register-template name template-params nil new-def-form signature-list)
-              (return-from internal-def-function nil))))
+    (when (detect-and-register-implicit-template name explicit-env return-type params body)
+      (return-from internal-def-function nil))
 
     ;; 1. Single-Pass Carrier Look-ahead
     (scan-for-carriers name body)
