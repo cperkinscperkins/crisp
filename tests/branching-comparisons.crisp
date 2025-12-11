@@ -1,0 +1,10 @@
+;; Test: Branching Comparisons 
+;; Testing direct return of boolean (int) values.
+
+(def-function test-lt (a b) (declare #'(int int => int)) (< a b))
+(def-function test-gt (a b) (declare #'(int int => int)) (> a b))
+(def-function test-le (a b) (declare #'(int int => int)) (<= a b))
+(def-function test-ge (a b) (declare #'(int int => int)) (>= a b))
+(def-function test-eq (a b) (declare #'(int int => int)) (= a b))
+(def-function test-neq (a b) (declare #'(int int => int)) (/= a b))
+

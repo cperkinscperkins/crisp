@@ -9,41 +9,9 @@
 ;;; ---
 ;;; Package Architecture Note
 ;;;
-;;; This file defines all packages for the Crisp system. The package
-;;; definitions are ordered carefully to resolve dependencies.
-;;;
-;;; The most complex interaction is between `:crisp.compiler` and
-;;; `:crisp-language`. The goal is to create a "protected" user
-;;; environment (`:crisp-language`) while the compiler implementation
-;;; lives in its own package (`:crisp.compiler`).
-;;;
-;;; 1. :crisp.compiler
-;;;    - This is the "implementation" package.
-;;;    - It contains all internal logic (analyzers, codegen, etc.).
-;;;    - It is the *source of truth* for core language symbols.
-;;;      It defines and EXPORTS symbols like `def-function`, `declare`,
-;;;      `return-type`, and `int`.
-;;;
-;;; 2. :crisp-language
-;;;    - This is the "user sandbox" package.
-;;;    - It `(:use)`s *nothing* from Common Lisp.
-;;;    - It SHADOWING-IMPORTs "safe" CL symbols (+, if, defmacro).
-;;;    - It IMPORTs the core language symbols (`def-function`, `declare`, etc.)
-;;;      *from* `:crisp.compiler`.
-;;;
-;;; This design breaks any circular dependencies.
-;;;
-;;; --- The Compilation Flow ---
-;;; 1. `crisp.main` binds `*package*` to the `:crisp-language` package.
-;;; 2. We read the user's .crisp file. All symbols (like `def-function`)
-;;;    are read into the `:crisp-language` package.
-;;; 3. The compiler's internal functions (in `:crisp.compiler`) can now
-;;;    use direct `(eq ...)` checks, because the symbols they check
-;;;    against (e.g., `'declare`) are the *exact same symbols* that
-;;;    `:crisp-language` imported.
-;;;
-;;; This ensures that `crisp-language::declare` is `eq` to
-;;; `crisp.compiler::declare`, solving all our package-mismatch errors.
+;;; This file defines all packages for the Crisp system.
+;;; 1. :crisp.compiler - Implementation source of truth.
+;;; 2. :crisp-language - User sandbox.
 ;;; ---
 
 
@@ -59,24 +27,21 @@
    #:llvm-type-of
    ;; Types
    #:llvm-void-type
-   #:llvm-int8-type
-   #:llvm-int16-type
-   #:llvm-int32-type
-   #:llvm-int64-type
-   #:llvm-half-type
-   #:llvm-bfloat-type
-   #:llvm-float-type
-   #:llvm-double-type
+   #:llvm-int32-type #:llvm-int8-type #:llvm-int16-type #:llvm-int64-type #:llvm-int1-type
    #:llvm-int8-ptr-type
+   #:llvm-half-type #:llvm-bfloat-type #:llvm-float-type #:llvm-double-type
+   #:llvm-void-type
    #:llvm-function-type
    #:llvm-struct-type-in-context
+
    ;; Functions
    #:llvm-add-function
-   #:llvm-get-named-function
    #:llvm-get-insert-block
    #:llvm-get-basic-block-parent
-   ;; Basic Blocks
+   #:llvm-get-named-function
    #:llvm-append-basic-block
+   #:llvm-get-basic-block-terminator
+
    ;; Builder
    #:llvm-create-builder
    #:llvm-position-builder-at-end
@@ -97,6 +62,20 @@
    #:llvm-build-ret-void
    #:llvm-build-add
    #:llvm-build-fadd
+   #:llvm-build-icmp
+   #:llvm-build-fcmp
+   #:llvm-build-br
+   #:llvm-build-cond-br
+   #:llvm-build-phi
+   #:llvm-add-incoming
+
+   ;; Predicates
+   #:+llvm-int-eq+ #:+llvm-int-ne+
+   #:+llvm-int-ugt+ #:+llvm-int-uge+ #:+llvm-int-ult+ #:+llvm-int-ule+
+   #:+llvm-int-sgt+ #:+llvm-int-sge+ #:+llvm-int-slt+ #:+llvm-int-sle+
+   #:+llvm-real-oeq+ #:+llvm-real-ogt+ #:+llvm-real-oge+ #:+llvm-real-olt+
+   #:+llvm-real-ole+ #:+llvm-real-one+
+
    #:llvm-build-struct-gep
    #:llvm-build-struct-gep2
    ;; Casting
@@ -136,8 +115,6 @@
         :crisp.utils)
 
   ;; Shadow all symbols that conflict with the COMMON-LISP package.
-  ;; This ensures that when we use 'char', we mean 'crisp.compiler::char',
-  ;; not 'cl:char'.
   (:shadow #:char
            #:short
            #:float
@@ -148,7 +125,9 @@
            #:round
 
            ;; We enable Unified Let by defining our own let macro
-           #:let)
+           #:let
+           ;; We enable custom Branching by defining our own macros
+           #:when #:unless #:cond)
 
   (:export
    #:compile-toplevel-form
@@ -171,7 +150,7 @@
    #:return-type
    #:type
    #:make-scratch-cell
-   #:|=>|
+   #:|=>| ;; Correct arrow
 
    ;; New Unified Let
    #:let
@@ -218,7 +197,10 @@
    #:semantic-let-body
 
    ;; Developer Utilities
-   #:compile-crisp-form-to-ir-string))
+   #:compile-crisp-form-to-ir-string
+
+   ;; Macros
+   #:when #:unless #:cond #:if+ #:else))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -229,14 +211,17 @@
 (defpackage :crisp-language
   (:use) ;; <--- THIS IS KEY. It means "use nothing from Common Lisp."
 
+  ;; --- 1. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
                 #:def-function
                 #:return
                 #:declare
+                #:with-template-type
                 #:return-type
                 #:type
                 #:make-scratch-cell
                 #:|=>|
+
                 ;; All Crisp types
                 #:char #:short #:int #:long
                 #:cell
@@ -253,90 +238,55 @@
                 #:truncate #:floor #:ceil #:round
 
                 ;; NEW: Unified Let from Compiler
-                #:let)
+                #:let
 
-  ;; --- 1. Import *only* the "safe" CL data symbols ---
+                ;; NEW: Branching Macros
+                #:when #:unless #:cond #:if+ #:else)
+
+  ;; --- 2. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
                 #:t #:nil
                 #:&optional #:&key #:&rest #:&body
                 #:lambda)
 
-  ;; --- 2. Import *only* the "safe" CL forms ---
+  ;; --- 3. Import *only* the "safe" CL forms ---
   ;; We must "shadow" (copy) them into our package
-  ;; so the user can type (if ...) instead of (cl:if ...)
   (:shadowing-import-from :common-lisp
-                          #:if #:when #:unless #:cond #:case
+                          #:if #:case ;; We keep IF and CASE as CL symbols for now
                           ;; We do NOT import let/let* because we have our own
+                          ;; We do NOT import when/unless/cond because we have our own
                           #:progn
                           #:funcall
                           #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal ;; and so on...
                           #:defmacro ;; We need defmacro to build the language
    )
 
-  ;; --- 2.5 Macro Meta-Language Utilities (See docs/defmacro-utils.md) ---
-  ;; Use shadowing import for symbols that are standard CL but we want in Crisp
+  ;; --- 4. Macro Meta-Language Utilities ---
   (:shadowing-import-from :common-lisp
-                          ;; Manipulating Lists
-                          #:list #:list* #:cons
                           #:car #:cdr #:first #:rest
                           #:second #:third #:fourth #:fifth #:sixth #:seventh #:eighth #:ninth #:tenth
                           #:nth #:reverse #:append #:length
-                          #:mapcar #:mapc
+                          #:mapcar #:mapc)
 
-                          ;; Creating Symbols/Strings
-                          #:gensym #:intern #:symbol-name #:string #:concatenate #:format
-
-                          ;; Predicates
-                          #:null #:atom #:consp #:listp #:symbolp
-                          #:not #:and #:or)
-
-  ;; --- 3. Import from CRISP.COMPILER ---
-  (:import-from :crisp.compiler
-                #:def-function
-                #:with-template-type
-                #:return
-                #:declare
-                #:return-type
-                #:type
-                #:make-scratch-cell
-                #:|=>|
-                ;; Types
-                #:char #:short #:int #:long
-                #:cell
-                #:uchar #:ushort #:uint #:ulong
-                #:half #:bfloat16 #:float #:double
-                ;; Casts
-                #:to-char #:as-char
-                #:to-short #:as-short
-                #:to-int #:as-int
-                #:to-long #:as-long
-                #:to-float #:as-float
-                #:to-double #:as-double
-                #:truncate #:floor #:ceil #:round
-                ;; Errors
-                #:crisp-compiler-error
-                #:crisp-type-error)
-
-  ;; --- 4. Export *all* of our Crisp primitives ---
   (:export
-   ;; Our new "safe" built-ins
-   #:if #:when #:unless #:cond #:case
-   #:let ;; Now exported from CRISP.COMPILER via import above
-   #:progn
-   #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
-   #:equal
+   ;; Export everything we imported
+   #:def-function #:return #:declare #:return-type #:type
+   #:char #:short #:int #:long #:float #:double #:half #:bfloat16
+   #:cell
+   #:uchar #:ushort #:uint #:ulong
+   #:to-char #:to-short #:to-int #:to-long #:to-float #:to-double #:as-char #:as-short #:as-int #:as-long #:as-float #:as-double
+   #:truncate #:floor #:ceil #:round
+
+   #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
+   #:if+ #:else
+   #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal
    #:defmacro
 
-   ;; Macro Meta-Utilites
-   #:&body
-   #:list #:list* #:cons
    #:car #:cdr #:first #:rest
    #:second #:third #:fourth #:fifth #:sixth #:seventh #:eighth #:ninth #:tenth
-   #:nth #:reverse #:append #:length
-   #:mapcar #:mapc
+   #:nth #:reverse #:append #:length #:mapcar #:mapc
    #:gensym #:intern #:symbol-name #:string #:concatenate #:format
-   #:null #:atom #:consp #:listp #:symbolp
-   #:not #:and #:or
+   #:null #:atom #:consp #:listp #:symbolp #:not #:and #:or
 
    ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function
@@ -350,30 +300,18 @@
    #:uchar #:ushort #:uint #:ulong
    #:half #:bfloat16 #:float #:double
 
-   ;; All cast/conversion operators
-   #:to-char #:as-char
-   #:to-short #:as-short
-   #:to-int #:as-int
-   #:to-long #:as-long
-   #:to-float #:as-float
-   #:to-double #:as-double
-   #:truncate #:floor #:ceil #:round
-
-   ;; Our looping constructs
+   ;; Loops
    #:loop-vector-stride #:loop-soa-stride
    #:thread-stride #:workgroup-stride
    #:dotimes #:dotimes*
 
-   ;; Our memory tools
+   ;; Memory
    #:vector #:matrix #:tensor
-   #:storage ;; (or whatever we call it)
+   #:storage
    #:make-scratch-cell
    #:make-scratch-vector #:make-tile
    #:load-chunk #:store-chunk #:load-tile #:store-tile
    #:~ #:set! #:length~
 
-   ;; Our new ops
-   #:*! #:identity-of #:zero #:accum #:base
-
-   ;; ...and every other function we add.
-   ))
+   ;; Ops
+   #:*! #:identity-of #:zero #:accum #:base))
