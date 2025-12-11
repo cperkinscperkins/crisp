@@ -169,6 +169,18 @@ jobs:
           echo "--- Running E2E: success test --debug --single-pass (defmacro-01.crisp) ---"
           ./bin/crisp-compile tests/defmacro-01.crisp --debug --single-pass
 
+          echo "--- Running E2E: success test (let-unified.crisp) ---"
+          ./bin/crisp-compile tests/let-unified.crisp
+
+          echo "--- Running E2E: success test --single-pass (let-unified.crisp) ---"
+          ./bin/crisp-compile tests/let-unified.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (let-unified.crisp) ---"
+          ./bin/crisp-compile tests/let-unified.crisp --debug
+
+          echo "--- Running E2E: success test --debug --single-pass (let-unified.crisp) ---"
+          ./bin/crisp-compile tests/let-unified.crisp --debug --single-pass
+
 
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"

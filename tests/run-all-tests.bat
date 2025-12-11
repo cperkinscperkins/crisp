@@ -49,7 +49,7 @@ REM ---------------------------------------------------
 echo.
 echo [2/3] Running Single-Pass Tests...
 
-set SINGLE_PASS_TESTS=tests\def-function_primitive.crisp tests\scratch-cell.crisp tests\templates.crisp tests\templates_composite.crisp tests\defmacro-01.crisp
+set SINGLE_PASS_TESTS=tests\def-function_primitive.crisp tests\scratch-cell.crisp tests\templates.crisp tests\templates_composite.crisp tests\defmacro-01.crisp tests\let-unified.crisp
 
 for %%f in (%SINGLE_PASS_TESTS%) do (
     echo.
