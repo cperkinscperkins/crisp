@@ -1,0 +1,25 @@
+;; Test: Unified Let Behavior
+
+(def-function temp-truncate (a b)
+  (declare #'(int int => int int))
+  (return (+ a 1) (+ b 2)))
+
+;; 1. Standard Kernel Let (analyzed by compiler)
+(def-function kernel-let (a)
+  (declare #'(int => int))
+  (let ((b 1)
+        (c b) ;; Sequential check: c should be 1
+        (q r (temp-truncate 10 3))) ;; Destructuring check
+    (+ (+ a c) q))) ;; a + 1 + 11 (if temp-truncate 10 3 -> 11, 5)
+
+;; 2. Macro Let (expanded by Lisp host)
+(defmacro macro-let-expander (val)
+  (let ((x 10)
+        (y x) ;; Sequential check w/in macro logic: y should be 10
+        (q r (floor val 2))) ;; Destructuring w/in macro logic
+    ;; We return a form that uses these calculated values
+    `(+ ,y ,q)))
+
+(def-function use-macro-let ()
+  (declare #'(=> int))
+  (macro-let-expander 7)) ;; floor 7 2 -> 3. Result: 10 + 3 = 13.

@@ -145,7 +145,10 @@
            #:truncate
            #:floor
            #:ceil
-           #:round)
+           #:round
+
+           ;; We enable Unified Let by defining our own let macro
+           #:let)
 
   (:export
    #:compile-toplevel-form
@@ -169,6 +172,10 @@
    #:type
    #:make-scratch-cell
    #:|=>|
+
+   ;; New Unified Let
+   #:let
+
    ;; All Crisp types
    #:char #:short #:int #:long
    #:cell
@@ -243,25 +250,45 @@
                 #:to-long #:as-long
                 #:to-float #:as-float
                 #:to-double #:as-double
-                #:truncate #:floor #:ceil #:round)
+                #:truncate #:floor #:ceil #:round
+
+                ;; NEW: Unified Let from Compiler
+                #:let)
 
   ;; --- 1. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
                 #:t #:nil
-                #:&optional #:&key #:&rest
+                #:&optional #:&key #:&rest #:&body
                 #:lambda)
 
   ;; --- 2. Import *only* the "safe" CL forms ---
   ;; We must "shadow" (copy) them into our package
   ;; so the user can type (if ...) instead of (cl:if ...)
   (:shadowing-import-from :common-lisp
-                          #:if #:when #:unless #:cond #:case #:let
-                          #:let #:let*
+                          #:if #:when #:unless #:cond #:case
+                          ;; We do NOT import let/let* because we have our own
                           #:progn
                           #:funcall
                           #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal ;; and so on...
                           #:defmacro ;; We need defmacro to build the language
    )
+
+  ;; --- 2.5 Macro Meta-Language Utilities (See docs/defmacro-utils.md) ---
+  ;; Use shadowing import for symbols that are standard CL but we want in Crisp
+  (:shadowing-import-from :common-lisp
+                          ;; Manipulating Lists
+                          #:list #:list* #:cons
+                          #:car #:cdr #:first #:rest
+                          #:second #:third #:fourth #:fifth #:sixth #:seventh #:eighth #:ninth #:tenth
+                          #:nth #:reverse #:append #:length
+                          #:mapcar #:mapc
+
+                          ;; Creating Symbols/Strings
+                          #:gensym #:intern #:symbol-name #:string #:concatenate #:format
+
+                          ;; Predicates
+                          #:null #:atom #:consp #:listp #:symbolp
+                          #:not #:and #:or)
 
   ;; --- 3. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
@@ -294,11 +321,22 @@
   (:export
    ;; Our new "safe" built-ins
    #:if #:when #:unless #:cond #:case
-   #:let
+   #:let ;; Now exported from CRISP.COMPILER via import above
    #:progn
    #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>=
    #:equal
    #:defmacro
+
+   ;; Macro Meta-Utilites
+   #:&body
+   #:list #:list* #:cons
+   #:car #:cdr #:first #:rest
+   #:second #:third #:fourth #:fifth #:sixth #:seventh #:eighth #:ninth #:tenth
+   #:nth #:reverse #:append #:length
+   #:mapcar #:mapc
+   #:gensym #:intern #:symbol-name #:string #:concatenate #:format
+   #:null #:atom #:consp #:listp #:symbolp
+   #:not #:and #:or
 
    ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function

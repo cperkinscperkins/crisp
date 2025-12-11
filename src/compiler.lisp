@@ -49,8 +49,6 @@
 (defvar *allow-nested-def-function* nil)
 
 
-
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Type System Initialization
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -103,6 +101,12 @@
   (initialize-expression-analyzers)
   (clrhash *implicit-arg-map*)
   (initialize-advisements)
+
+  ;; Bind shadowed symbols to their CL equivalents so they work in macros
+  (setf (symbol-function 'truncate) #'cl:truncate)
+  (setf (symbol-function 'floor) #'cl:floor)
+  (setf (symbol-function 'ceil) #'cl:ceiling)
+  (setf (symbol-function 'round) #'cl:round)
 
   ;; Auto-initialize templates if available (runtime check)
   (if (fboundp 'initialize-templates)
@@ -755,29 +759,29 @@
                                when (and (listp ptype) (eq (first ptype) :function-type))
                              collect (list pname ptype))))
     (when implicit-args
-      (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
-      ;; REMOVE from function table because register-function-signature already put it there!
-      (remhash name *function-table*)
+          (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
+          ;; REMOVE from function table because register-function-signature already put it there!
+          (remhash name *function-table*)
 
-      ;; Convert to template
-      (let* ((template-params (loop for i from 0 repeat (length implicit-args) collect (intern (format nil "<IMPLICIT-F-~a>" i))))
-             (subst-map (loop for (pname ptype) in implicit-args
-                              for tparam in template-params
-                              collect (cons pname tparam)))
-             ;; Reconstruct environment with template params
-             (new-env (loop for (pname ptype) in explicit-env
-                            collect (let ((match (assoc pname subst-map)))
-                                      (if match
-                                          (list pname (cdr match))
-                                          (list pname ptype)))))
-             ;; Construct signature for inference
-             (signature-list (append (mapcar #'second new-env) '(=>) return-type))
-             ;; Reconstruct body form using signature
-             (new-def-form `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
+          ;; Convert to template
+          (let* ((template-params (loop for i from 0 repeat (length implicit-args) collect (intern (format nil "<IMPLICIT-F-~a>" i))))
+                 (subst-map (loop for (pname ptype) in implicit-args
+                                  for tparam in template-params
+                                  collect (cons pname tparam)))
+                 ;; Reconstruct environment with template params
+                 (new-env (loop for (pname ptype) in explicit-env
+                                collect (let ((match (assoc pname subst-map)))
+                                          (if match
+                                              (list pname (cdr match))
+                                              (list pname ptype)))))
+                 ;; Construct signature for inference
+                 (signature-list (append (mapcar #'second new-env) '(=>) return-type))
+                 ;; Reconstruct body form using signature
+                 (new-def-form `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
 
-        (log:info "Registering implicit template ~a with params ~a" name template-params)
-        (register-template name template-params nil new-def-form signature-list)
-        t))))
+            (log:info "Registering implicit template ~a with params ~a" name template-params)
+            (register-template name template-params nil new-def-form signature-list)
+            t))))
 
 (defun internal-def-function (name params declarations body location)
   "This is the 'Semantic Analyzer' (Pass 2)."
@@ -787,7 +791,7 @@
 
     ;; 0. Implicit Template Detection
     (when (detect-and-register-implicit-template name explicit-env return-type params body)
-      (return-from internal-def-function nil))
+          (return-from internal-def-function nil))
 
     ;; 1. Single-Pass Carrier Look-ahead
     (scan-for-carriers name body)
@@ -1129,40 +1133,53 @@
           (loop for binding in binding-forms
                 for i from 0 do
                   (log:debug "Analyzing let binding form: ~s" binding)
-                  (let* ((binding-vars (butlast binding 1))
-                         (init-form (first (last binding)))
-                         (init-node (analyze-expression init-form current-env (append location '(1) (list i) (list (length binding-vars)))))
-                         (init-node-types (semantic-node-type init-node)))
 
-                    (cond
-                     ;; Case 1: Single variable binding, e.g., (let ((z 13)))
-                     ((= (length binding-vars) 1)
-                       (let* ((var-name (first binding-vars))
-                              ;; For a single binding, we implicitly take the first return value's type.
-                              (var-type (get-single-value-type init-node)))
-                         (push (cons var-name init-node) bindings-list)
-                         (setf current-env (cons (list var-name var-type) current-env))))
+                  ;; Determine if this is a "flat" MVB binding like (a b (val))
+                  ;; or a standard nested binding like ((a b) (val)) or (a (val)).
+                  (let ((is-flat-mvb (and (> (length binding) 2)
+                                          (not (listp (first binding))))))
 
-                     ;; Case 2: Multiple variable binding, e.g., (let ((x y z (m-v-r a))))
-                     ((> (length binding-vars) 1)
-                       (unless (listp init-node-types)
-                         (error "Cannot destructure a single-value return into multiple variables at ~a" (semantic-node-source-location init-node)))
-                       (unless (>= (length init-node-types) (length binding-vars))
-                         (error "Not enough return values from ~a to bind ~a variables at ~a" init-form (length binding-vars) (semantic-node-source-location init-node)))
+                    (let* ((binding-vars (if is-flat-mvb
+                                             (butlast binding)
+                                             (if (and (= (length binding) 2) (listp (first binding)))
+                                                 (first binding)
+                                                 (list (first binding)))))
+                           (init-form (first (last binding)))
+                           ;; Analyze the value form
+                           (init-node (analyze-expression init-form current-env
+                                                          (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1)))))
+                           (init-node-types (semantic-node-type init-node)))
 
-                       ;; The init-node (the function call) is analyzed once.
-                       ;; We then create `extract-value` nodes for each variable.
-                       (loop for var-name in binding-vars
-                             for j from 0 do
-                               (let* ((var-type (nth j init-node-types))
-                                      (extract-node (make-semantic-extract-value
-                                                     :type var-type
-                                                     :aggregate-node init-node
-                                                     :index j
-                                                     :source-location (semantic-node-source-location init-node))))
-                                 (push (cons var-name extract-node) bindings-list)
-                                 (setf current-env (cons (list var-name var-type) current-env)))))
-                     (t (error "Malformed let binding: ~a" binding)))))
+                      (cond
+                       ;; Case 1: Single variable binding (standard let)
+                       ((= (length binding-vars) 1)
+                         (let* ((var-name (first binding-vars))
+                                ;; For a single binding, we implicitly take the first return value's type.
+                                (var-type (get-single-value-type init-node)))
+                           (push (cons var-name init-node) bindings-list)
+                           (setf current-env (cons (list var-name var-type) current-env))))
+
+                       ;; Case 2: Multiple variable binding (destructuring)
+                       ((> (length binding-vars) 1)
+                         (unless (listp init-node-types)
+                           (error "Cannot destructure a single-value return into multiple variables at ~a. Got type ~a for binding ~a."
+                             (semantic-node-source-location init-node) init-node-types binding))
+                         (unless (>= (length init-node-types) (length binding-vars))
+                           (error "Not enough return values from ~a to bind ~a variables at ~a" init-form (length binding-vars) (semantic-node-source-location init-node)))
+
+                         ;; The init-node (the function call) is analyzed once.
+                         ;; We then create `extract-value` nodes for each variable.
+                         (loop for var-name in binding-vars
+                               for j from 0 do
+                                 (let* ((var-type (nth j init-node-types))
+                                        (extract-node (make-semantic-extract-value
+                                                       :type var-type
+                                                       :aggregate-node init-node
+                                                       :index j
+                                                       :source-location (semantic-node-source-location init-node))))
+                                   (push (cons var-name extract-node) bindings-list)
+                                   (setf current-env (cons (list var-name var-type) current-env)))))
+                       (t (error "Malformed let binding: ~a" binding))))))
           ;; The loop builds the bindings list in reverse, so we reverse it back.
           (values current-env (reverse bindings-list)))
 
@@ -1265,20 +1282,20 @@
 
     (unless signature
       (when *template-instantiator-fn*
-        (loop repeat 3 until signature do
-          (if (funcall *template-instantiator-fn* op explicit-arg-types
-                (lambda (form location)
-                  (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
-              (progn
-                (setf signatures (gethash op *function-table*))
-                (setf signature (find-if (lambda (sig)
-                                           (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
-                                    signatures)))
-              (return)))))
-    
+            (loop repeat 3 until signature do
+                    (if (funcall *template-instantiator-fn* op explicit-arg-types
+                          (lambda (form location)
+                            (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
+                        (progn
+                         (setf signatures (gethash op *function-table*))
+                         (setf signature (find-if (lambda (sig)
+                                                    (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
+                                             signatures)))
+                        (return)))))
+
     (unless signature
       (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types))
-    
+
     signature))
 
 (defun analyze-function-call (op expr env location)
@@ -1583,4 +1600,3 @@
       (when di-builder (llvm-dispose-di-builder di-builder))
       (llvm-dispose-builder builder)
       (llvm-dispose-module module))))
-

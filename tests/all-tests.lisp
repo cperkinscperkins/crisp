@@ -12,7 +12,8 @@
                           #:generate-location-map
                           #:visit-toplevel-form
                           #:char #:short #:float #:double #:truncate #:floor
-                          #:ceil #:round))
+                          #:ceil #:round
+                          #:let))
 
 (in-package :crisp.tests)
 
@@ -556,26 +557,26 @@
              (is eq #'crisp.compiler::ensure-template-instantiation crisp.compiler::*template-instantiator-fn*))
 
 (define-test (crisp-compiler parse-function-declarations-check)
-  "Verifies the unified function signature parsing logic."
-  
-  ;; Case 1: #'(...) syntax (Modern)
-  (multiple-value-bind (env return-types)
-      (crisp.compiler::parse-function-declarations '(a b) 
-        '((function (int float => int))))
-    (is equal '((a int) (b float)) env)
-    (is equal '(int) return-types))
+             "Verifies the unified function signature parsing logic."
 
-  ;; Case 2: Legacy (type ...) and (return-type ...) syntax
-  ;; Note: Legacy parser currently assumes all params match the list in (type names... type)
-  (multiple-value-bind (env return-types)
-      (crisp.compiler::parse-function-declarations '(x y) 
-        '((type x y int) (return-type int)))
-    (is equal '((x int) (y int)) env)
-    (is equal '(int) return-types))
-    
-  ;; Case 3: Mixed (Function spec takes precedence)
-  (multiple-value-bind (env return-types)
-      (crisp.compiler::parse-function-declarations '(a) 
-        '((function (float => float)) (type a int)))
-    (is equal '((a float)) env)
-    (is equal '(float) return-types)))
+             ;; Case 1: #'(...) syntax (Modern)
+             (multiple-value-bind (env return-types)
+                 (crisp.compiler::parse-function-declarations '(a b)
+                                                              '((function (int float => int))))
+               (is equal '((a int) (b float)) env)
+               (is equal '(int) return-types))
+
+             ;; Case 2: Legacy (type ...) and (return-type ...) syntax
+             ;; Note: Legacy parser currently assumes all params match the list in (type names... type)
+             (multiple-value-bind (env return-types)
+                 (crisp.compiler::parse-function-declarations '(x y)
+                                                              '((type x y int) (return-type int)))
+               (is equal '((x int) (y int)) env)
+               (is equal '(int) return-types))
+
+             ;; Case 3: Mixed (Function spec takes precedence)
+             (multiple-value-bind (env return-types)
+                 (crisp.compiler::parse-function-declarations '(a)
+                                                              '((function (float => float)) (type a int)))
+               (is equal '((a float)) env)
+               (is equal '(float) return-types)))
