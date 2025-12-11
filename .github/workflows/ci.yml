@@ -181,6 +181,19 @@ jobs:
           echo "--- Running E2E: success test --debug --single-pass (let-unified.crisp) ---"
           ./bin/crisp-compile tests/let-unified.crisp --debug --single-pass
 
+          echo "--- Running E2E: success test (branching-comparisons.crisp) ---"
+          ./bin/crisp-compile tests/branching-comparisons.crisp
+
+          echo "--- Running E2E: success test --single-pass (branching-comparisons.crisp) ---"
+          ./bin/crisp-compile tests/branching-comparisons.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (branching-comparisons.crisp) ---"
+          ./bin/crisp-compile tests/branching-comparisons.crisp --debug
+
+          echo "--- Running E2E: success test --debug --single-pass (branching-comparisons.crisp) ---"
+          ./bin/crisp-compile tests/branching-comparisons.crisp --debug --single-pass
+
+
 
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"

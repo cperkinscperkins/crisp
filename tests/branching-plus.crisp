@@ -1,0 +1,16 @@
+;; Test: Branching + Variants (Compile Time)
+
+(def-function test-if-plus-true (a)
+  (declare #'(int => int))
+  (if+ (> 10 5)
+       a
+       0))
+
+(def-function test-if-plus-false (a)
+  (declare #'(int => int))
+  (if+ (< 10 5)
+       0
+       a))
+
+;; Since we can't easily test *compilation failure* in a standard run,
+;; we test the success paths here.

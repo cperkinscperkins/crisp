@@ -123,6 +123,10 @@
          (builder :pointer)
          (value :pointer))
 
+(defcfun ("LLVMBuildRetVoid" llvm-build-ret-void) :pointer
+         (builder :pointer))
+
+
 ;; --- Parameters ---
 (defcfun ("LLVMGetParam" llvm-get-param) :pointer
          (function :pointer)
@@ -256,6 +260,73 @@
          (idx :unsigned-int)
          (name :string))
 
+
+;; --- Comparisons ---
+(defcfun ("LLVMBuildICmp" llvm-build-icmp) :pointer
+         (builder :pointer)
+         (op :unsigned-int) ;; LLVMIntPredicate
+         (lhs :pointer)
+         (rhs :pointer)
+         (name :string))
+
+(defcfun ("LLVMBuildFCmp" llvm-build-fcmp) :pointer
+         (builder :pointer)
+         (op :unsigned-int) ;; LLVMRealPredicate
+         (lhs :pointer)
+         (rhs :pointer)
+         (name :string))
+
+;; LLVMIntPredicate
+(defconstant +llvm-int-eq+ 32)
+(defconstant +llvm-int-ne+ 33)
+(defconstant +llvm-int-ugt+ 34)
+(defconstant +llvm-int-uge+ 35)
+(defconstant +llvm-int-ult+ 36)
+(defconstant +llvm-int-ule+ 37)
+(defconstant +llvm-int-sgt+ 38)
+(defconstant +llvm-int-sge+ 39)
+(defconstant +llvm-int-slt+ 40)
+(defconstant +llvm-int-sle+ 41)
+
+;; LLVMRealPredicate
+(defconstant +llvm-real-oeq+ 1)
+(defconstant +llvm-real-ogt+ 2)
+(defconstant +llvm-real-oge+ 3)
+(defconstant +llvm-real-olt+ 4)
+(defconstant +llvm-real-ole+ 5)
+(defconstant +llvm-real-one+ 6)
+(defconstant +llvm-real-ord+ 7)
+(defconstant +llvm-real-uno+ 8)
+(defconstant +llvm-real-ueq+ 9)
+(defconstant +llvm-real-ugt+ 10)
+(defconstant +llvm-real-uge+ 11)
+(defconstant +llvm-real-ult+ 12)
+(defconstant +llvm-real-ule+ 13)
+(defconstant +llvm-real-une+ 14)
+
+;; --- Branching ---
+(defcfun ("LLVMBuildBr" llvm-build-br) :pointer
+         (builder :pointer)
+         (dest :pointer))
+
+(defcfun ("LLVMBuildCondBr" llvm-build-cond-br) :pointer
+         (builder :pointer)
+         (if :pointer)
+         (then :pointer)
+         (else :pointer))
+
+(defcfun ("LLVMBuildPhi" llvm-build-phi) :pointer
+         "Builds a PHI node."
+         (builder :pointer)
+         (type :pointer)
+         (name :string))
+
+(defcfun ("LLVMAddIncoming" llvm-add-incoming) :void
+         "Adds incoming values to a PHI node."
+         (phi-node :pointer)
+         (incoming-values :pointer)
+         (incoming-blocks :pointer)
+         (count :unsigned-int))
 
 ;; --- Debug Info ---
 (cffi:defctype llvm-metadata-ref :pointer)

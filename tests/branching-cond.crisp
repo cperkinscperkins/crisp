@@ -1,0 +1,17 @@
+;; Test: Branching Cond
+
+(def-function test-cond (a)
+  (declare #'(int => int))
+  (cond
+   ((< a 10) 10)
+   ((> a 20) 20)
+   (else a)))
+
+(def-function test-cond-nested (a)
+  (declare #'(int => int))
+  (cond
+   ((< a 10) 
+     (cond 
+      ((< a 5) 0)
+      (else 5)))
+   (else a)))

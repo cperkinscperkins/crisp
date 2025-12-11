@@ -1,0 +1,19 @@
+;; Test: Branching If (Macro)
+
+(def-function test-if (a)
+  (declare #'(int => int))
+  (if (< a 10)
+      10
+      20))
+
+(def-function test-when (a)
+  (declare #'(int => int))
+  (when (< a 10)
+    (return 10))
+  (return a))
+
+(def-function test-unless (a)
+  (declare #'(int => int))
+  (unless (> a 10)
+    (return 10))
+  (return a))

@@ -97,6 +97,20 @@
    #:llvm-build-ret-void
    #:llvm-build-add
    #:llvm-build-fadd
+   #:llvm-build-icmp
+   #:llvm-build-fcmp
+   #:llvm-build-br
+   #:llvm-build-cond-br
+   #:llvm-build-phi
+   #:llvm-add-incoming
+
+   ;; Predicates
+   #:+llvm-int-eq+ #:+llvm-int-ne+
+   #:+llvm-int-ugt+ #:+llvm-int-uge+ #:+llvm-int-ult+ #:+llvm-int-ule+
+   #:+llvm-int-sgt+ #:+llvm-int-sge+ #:+llvm-int-slt+ #:+llvm-int-sle+
+   #:+llvm-real-oeq+ #:+llvm-real-ogt+ #:+llvm-real-oge+ #:+llvm-real-olt+
+   #:+llvm-real-ole+ #:+llvm-real-one+
+
    #:llvm-build-struct-gep
    #:llvm-build-struct-gep2
    ;; Casting

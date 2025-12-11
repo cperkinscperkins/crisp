@@ -270,40 +270,40 @@
   (let* ((type-spec (semantic-literal-value-type node))
          (value (semantic-literal-value node))
          (llvm-type (crisp-type-to-llvm-type type-spec module))
-         (result (cond                  ;; Handle parameterized types
-                  ((listp type-spec)
-                    (let ((base-type (first type-spec)))
-                      (cond
-                       ((or (eq base-type :function-literal) (eq base-type :function-type))
-                         ;; For zero-cost abstraction, we don't emit a real function pointer.
-                         ;; The type system tracks the identity, but at runtime it's a ghost.
-                         (llvm-get-undef llvm-type))
-                       ((eq base-type 'cell)
-                         (let* ((ptr-name '__storage_ptr)
-                                (size-name '__storage_size)
-                                (ptr-alloca (gethash ptr-name var-env))
-                                (size-alloca (gethash size-name var-env)))
-                           (unless (and ptr-alloca size-alloca)
-                             (error "Missing implicit arguments for make-scratch-cell. Environment keys: ~s" (alexandria:hash-table-keys var-env)))
+         (result (cond ;; Handle parameterized types
+                      ((listp type-spec)
+                        (let ((base-type (first type-spec)))
+                          (cond
+                           ((or (eq base-type :function-literal) (eq base-type :function-type))
+                             ;; For zero-cost abstraction, we don't emit a real function pointer.
+                             ;; The type system tracks the identity, but at runtime it's a ghost.
+                             (llvm-get-undef llvm-type))
+                           ((eq base-type 'cell)
+                             (let* ((ptr-name '__storage_ptr)
+                                    (size-name '__storage_size)
+                                    (ptr-alloca (gethash ptr-name var-env))
+                                    (size-alloca (gethash size-name var-env)))
+                               (unless (and ptr-alloca size-alloca)
+                                 (error "Missing implicit arguments for make-scratch-cell. Environment keys: ~s" (alexandria:hash-table-keys var-env)))
 
-                           (let* ((ptr-val (llvm-build-load2 builder (llvm-int64-type) ptr-alloca "storage_ptr_raw"))
-                                  (size-val (llvm-build-load2 builder (llvm-int64-type) size-alloca "storage_size"))
-                                  ;; Cast i64 ptr to ptr (i8*)
-                                  (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-int8-ptr-type (llvm-int8-type) 0) "storage_ptr"))
-                                  ;; Create struct
-                                  (struct-undef (llvm-get-undef llvm-type))
-                                  (struct-0 (llvm-build-insert-value builder struct-undef ptr-casted 0 "cell_ptr"))
-                                  (struct-1 (llvm-build-insert-value builder struct-0 size-val 1 "cell_size")))
-                             struct-1)))
-                       (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
-                  ;; Handle simple types
-                  ((symbolp type-spec)
-                    (let ((crisp-type (gethash type-spec *crisp-types*)))
-                      (cond
-                       ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int)) (llvm-const-int llvm-type value nil))
-                       ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
-                       (t (error "Codegen for literal of unknown type category: ~a" type-spec)))))
-                  (t (error "Codegen not implemented for literal of type ~a" type-spec))))
+                               (let* ((ptr-val (llvm-build-load2 builder (llvm-int64-type) ptr-alloca "storage_ptr_raw"))
+                                      (size-val (llvm-build-load2 builder (llvm-int64-type) size-alloca "storage_size"))
+                                      ;; Cast i64 ptr to ptr (i8*)
+                                      (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-int8-ptr-type (llvm-int8-type) 0) "storage_ptr"))
+                                      ;; Create struct
+                                      (struct-undef (llvm-get-undef llvm-type))
+                                      (struct-0 (llvm-build-insert-value builder struct-undef ptr-casted 0 "cell_ptr"))
+                                      (struct-1 (llvm-build-insert-value builder struct-0 size-val 1 "cell_size")))
+                                 struct-1)))
+                           (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
+                      ;; Handle simple types
+                      ((symbolp type-spec)
+                        (let ((crisp-type (gethash type-spec *crisp-types*)))
+                          (cond
+                           ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int)) (llvm-const-int llvm-type value nil))
+                           ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
+                           (t (error "Codegen for literal of unknown type category: ~a" type-spec)))))
+                      (t (error "Codegen not implemented for literal of type ~a" type-spec))))
          (di-location (when (and di-builder di-scope location-map)
                             (let* ((loc (semantic-node-source-location node))
                                    (line (gethash loc location-map 0)))
@@ -392,6 +392,85 @@
 
         (when di-location (llvm-instruction-set-debug-loc add-inst di-location))
         (values add-inst di-location)))))
+
+;; -- comparisons --
+(defun generate-comparison-ir (builder module var-env di-builder di-scope location-map node op-node-int op-node-float)
+  "Helper to generate IR for comparison operators (<, >, =, etc)."
+  (let ((lhs-node (funcall (first (function-signature-parameters (semantic-node-type node))) node))
+        ;; Oops, semantic-lt etc don't store signature effectively in common way, 
+        ;; but they do store left-arg and right-arg. Let's assume standard accessors.
+        (left-arg (slot-value node 'left-arg))
+        (right-arg (slot-value node 'right-arg)))
+
+    (multiple-value-bind (lhs lhs-loc) (generate-node-ir left-arg builder module var-env di-builder di-scope location-map)
+      (declare (ignore lhs-loc))
+      (multiple-value-bind (rhs rhs-loc) (generate-node-ir right-arg builder module var-env di-builder di-scope location-map)
+        (declare (ignore rhs-loc))
+        (let* ((lhs-type-name (get-single-value-type left-arg))
+               (rhs-type-name (get-single-value-type right-arg))
+               ;; Determine common type (promote to float if mixed, else largest int)
+               ;; For simplicity, we enforce strict typing or assume implicit cast logic is handled by semantic analysis?
+               ;; Semantic analysis usually inserts casts. Let's assume types match or casts are explicit.
+               ;; BUT wait, semantic-add handles implicit casts. Let's reuse build-cast-if-needed logic if possible.
+               ;; Wait, semantic-lt structure: type, left-arg, right-arg.
+               ;; But type is 'int (result). We need args types.
+               (lhs-crisp-type (gethash lhs-type-name *crisp-types*))
+               (cmp-inst
+                (cond
+                 ((member (crisp-type-category lhs-crisp-type) '(:signed-int :unsigned-int))
+                   (llvm-build-icmp builder op-node-int lhs rhs "icmp_tmp"))
+                 ((eq (crisp-type-category lhs-crisp-type) :float)
+                   (llvm-build-fcmp builder op-node-float lhs rhs "fcmp_tmp"))
+                 (t (error "Unsupported comparison type: ~a" lhs-type-name)))))
+
+          ;; Convert i1 result to i32 (0 or 1) because Crisp uses int for booleans
+          (let ((result (llvm-build-zext builder cmp-inst (llvm-int32-type) "bool_ext")))
+            (values result nil)))))))
+
+;; Redefining to be more generic and careful about accessors
+(defmacro def-comparison-codegen (type-name int-pred float-pred accessor-prefix)
+  (let ((left-accessor (intern (format nil "~a-LEFT-ARG" accessor-prefix)))
+        (right-accessor (intern (format nil "~a-RIGHT-ARG" accessor-prefix))))
+    `(defmethod generate-node-ir ((node ,type-name) builder module var-env di-builder di-scope location-map)
+       (multiple-value-bind (lhs lhs-loc) (generate-node-ir (,left-accessor node) builder module var-env di-builder di-scope location-map)
+         (declare (ignore lhs-loc))
+         (multiple-value-bind (rhs rhs-loc) (generate-node-ir (,right-accessor node) builder module var-env di-builder di-scope location-map)
+           (declare (ignore rhs-loc))
+           (let* ((lhs-type-name (get-single-value-type (,left-accessor node)))
+                  (lhs-type (gethash lhs-type-name *crisp-types*))
+                  ;; Determine predicate based on type. Note: Signed vs Unsigned integers might need different predicates!
+                  ;; This is a simplification. Ideally semantic analysis distinguishes signed/unsigned ops
+                  ;; or we check the type category here.
+                  (is-unsigned (eq (crisp-type-category lhs-type) :unsigned-int))
+                  (int-pred-val ,int-pred)
+                  ;; Adjust for unsigned if needed (e.g., UGT vs SGT)
+                  (final-int-pred (if is-unsigned
+                                      (case int-pred-val
+                                        (,+llvm-int-sgt+ ,+llvm-int-ugt+)
+                                        (,+llvm-int-sge+ ,+llvm-int-uge+)
+                                        (,+llvm-int-slt+ ,+llvm-int-ult+)
+                                        (,+llvm-int-sle+ ,+llvm-int-ule+)
+                                        (t int-pred-val))
+                                      int-pred-val))
+
+                  (cmp-inst
+                   (cond
+                    ((member (crisp-type-category lhs-type) '(:signed-int :unsigned-int))
+                      (llvm-build-icmp builder final-int-pred lhs rhs "icmp_tmp"))
+                    ((eq (crisp-type-category lhs-type) :float)
+                      (llvm-build-fcmp builder ,float-pred lhs rhs "fcmp_tmp"))
+                    (t (error "Unsupported comparison type: ~a" lhs-type-name)))))
+
+             (let ((result (llvm-build-zext builder cmp-inst (llvm-int32-type) "bool_ext")))
+               (values result nil))))))))
+
+(def-comparison-codegen semantic-eq +llvm-int-eq+ +llvm-real-oeq+ "SEMANTIC-EQ")
+(def-comparison-codegen semantic-neq +llvm-int-ne+ +llvm-real-one+ "SEMANTIC-NEQ")
+(def-comparison-codegen semantic-lt +llvm-int-slt+ +llvm-real-olt+ "SEMANTIC-LT")
+(def-comparison-codegen semantic-le +llvm-int-sle+ +llvm-real-ole+ "SEMANTIC-LE")
+(def-comparison-codegen semantic-gt +llvm-int-sgt+ +llvm-real-ogt+ "SEMANTIC-GT")
+(def-comparison-codegen semantic-ge +llvm-int-sge+ +llvm-real-oge+ "SEMANTIC-GE")
+
 
 (defmethod generate-node-ir ((node semantic-value-cast) builder module var-env di-builder di-scope location-map)
   "Generates IR for a value-preserving cast."
