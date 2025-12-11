@@ -109,6 +109,28 @@ and "calling" them results in the template being specialized.
 `funcall` is working as well:
 `(funcall #'+ 1 2 )`
 
+### defmacro
+Ladies and Gentlemen, gather round.  Crisp now supports defmacro !!  Whoo boy. 
+
+It's a tiny bit funky-funky. You use Common Lisp inside defmacro to generate Crisp.
+
+I know, seems weird. But, hey, it took 20 minutes. And this is exactly why we are building
+with SBCL and Common Lisp in the first place. A 6-month lift was just gotten for free.
+
+Note: inside defmacro, use the Crisp `let` form.  The one that is sequential and supports 
+multiple variable bindings.  The Common Lisp `let` and `let*` forms are not supported.
+
+The document defmacro-utils.md documents exactly which Common Lisp forms are supported.
+
+
+### if / when / unless / cond  <--  CONDITIONALS
+Conditionals are now supported. Codegen included.
+
+Note that default clause of `cond` is NOT `T` like in Common Lisp, it is `else` (like in some Scheme dialects).
+
+Also note that the compile-time predicate check `if+`, `when+`, `unless+`, and `cond+` are FULLY implemented.  Yes!!
+
+But the `*` variants for uniformity are not yet implemented. 
 
 Errors
 ======

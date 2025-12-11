@@ -1,0 +1,17 @@
+;; Test: Defmacro using Cond (Branching Check)
+;; Verifies that the custom 'cond' macro (with else) works inside defmacro (host execution).
+
+(defmacro macro-with-cond (val)
+  (cond
+    ((< val 10) 100)
+    (else 200)))
+
+(def-function test-macro-cond-true (a)
+  (declare #'(int => int))
+  ;; (macro-with-cond 5) -> cond (< 5 10) is true -> returns 100
+  (+ a (macro-with-cond 5)))
+
+(def-function test-macro-cond-else (a)
+  (declare #'(int => int))
+  ;; (macro-with-cond 20) -> cond (< 20 10) is false -> else -> returns 200
+  (+ a (macro-with-cond 20)))

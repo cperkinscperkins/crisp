@@ -1505,7 +1505,7 @@ Possible example:
 ;; -- get-unsigned-type --
 (def-type-function get-unsigned-type (InputType)
   (cond ((<= (sizeof InputType) (sizeof uint)) 'uint)
-        (T 'ulong)))
+        (else 'ulong)))
 ```
 
 
@@ -5298,6 +5298,10 @@ They each operate similarly: first evalute a predicate expression, and if true, 
 some consequent. With variations for multiple checks, multiple statements, etc.  
 ( `unless` checks the predicate for being `false`, not `true`).
 
+### `cond` default
+The default case for `cond` is not `T` like it is in Common Lisp. That would be too confusing 
+with the very common `T` used for templating.  Instead in Crisp, `cond` uses `else` as the default case.
+
 ### + variant
 The `+` variant exists as well (`if+`, `when+`, `unless+`, `cond+`). 
 This variant checks that the predicate expression is compile time calculable. It wil error if it is not.
@@ -7425,7 +7429,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
 (def-type-function get-unsigned-type (T)
   ;; Helper to determine the corresponding unsigned integer type
   (cond ((<= (sizeof T) (sizeof uint)) 'uint)
-        (T 'ulong)))
+        (else 'ulong)))
 
 ;;
 ;; radix-transform
@@ -7469,7 +7473,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
                  (logxor as-uint msb-mask)))))
 
         ;; Should not be reached if T is numeric
-        (T (c-t-error "Unsupported type for radix_transform"))))))
+        (else (c-t-error "Unsupported type for radix_transform"))))))
 
 ;;
 ;; local-rank-within-digit
