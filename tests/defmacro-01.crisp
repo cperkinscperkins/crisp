@@ -1,0 +1,24 @@
+(defmacro add-extra (a b)
+  `(+ 1 (+ ,a ,b)))
+
+(def-function more-than-you-think (a b)
+  (declare #'(int int => int))
+  (add-extra a b))
+
+(def-function ensure-binding (a b)
+  (declare #'(int int => int))
+  (let ((c (add-extra a b)))
+    c))
+
+;; how can we stop someone from using abusable reader macros?
+;; don't want defmacro to be a vehicle to execute arbitrary code
+
+(defmacro def-reverse-args (name args &body body)
+  ;; this is Common Lisp. Should it be? Do we need to export this in 
+  ;; package?  How would we do that for macro use only? 
+  ;; Do we need to worry about let* vs let? Which is different than
+  ;; Crisp's let.  
+  (let ((new-args (reverse args)))
+  
+    ;; this is Crisp
+    `(def-function ,name ,new-args ,@body)))
