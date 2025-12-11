@@ -189,8 +189,10 @@ SHORT TERM PLAN
       I'm not keen on having a whole IR.  Maybe we start with op-fma or something as POC?
       Would require `--ir-target=SPIRV` or `--ir-target=PTX` at minimum.
 
-- [ ] defmacro - Get it in now. Shouldn't be difficult, paves way to "crisp in crisp"
-- [ ] conditionals - LLVM Blocks and branches. Will be needed for "crisp-in-crisp" vectors etc.
+- [x] defmacro - Get it in now. Shouldn't be difficult, paves way to "crisp in crisp"
+- [x] conditionals - LLVM Blocks and branches. Will be needed for "crisp-in-crisp" vectors etc.
+- - [ ] anaphoric support
+- - [ ] star `*` variants
 - [ ] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - [ ] def-kernel  <-- 
