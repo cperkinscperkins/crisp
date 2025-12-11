@@ -13,7 +13,10 @@
                           #:visit-toplevel-form
                           #:char #:short #:float #:double #:truncate #:floor
                           #:ceil #:round
-                          #:let))
+                          #:ceil #:round
+                          #:let)
+  (:shadowing-import-from :common-lisp #:cond #:when #:unless))
+
 
 (in-package :crisp.tests)
 

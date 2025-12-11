@@ -23,33 +23,63 @@
    When compiling Kernels, the Crisp Compiler intercepts the 'let' symbol
    directly and uses its own semantic analyzer, ignoring this macro."
 
-  (cond
-   ;; Base Case: No bindings left -> just the body (in a progn)
-   ((null bindings)
+  (cl:cond
+    ;; Base Case: No bindings left -> just the body (in a progn)
+    ((null bindings)
      `(progn ,@body))
 
-   ;; Recursive Case: Process one binding
-   (t
+    ;; Recursive Case: Process one binding
+    (t
      (cl:let* ((binding (first bindings))
                (rest-bindings (rest bindings)))
-       (cond
-        ;; Case 1: Explicit Destructuring -> ((a b) (values 1 2))
-        ((and (listp binding) (listp (first binding)))
+       (cl:cond
+         ;; Case 1: Explicit Destructuring -> ((a b) (values 1 2))
+         ((and (listp binding) (listp (first binding)))
           (cl:let ((vars (first binding))
                    (val-form (second binding)))
             `(multiple-value-bind ,vars ,val-form
                (let ,rest-bindings ,@body))))
 
-        ;; Case 2: Flattened Destructuring -> (a b (values 1 2))
-        ((and (listp binding) (> (length binding) 2))
+         ;; Case 2: Flattened Destructuring -> (a b (values 1 2))
+         ((and (listp binding) (> (length binding) 2))
           (cl:let* ((vars (butlast binding))
                     (val-form (first (last binding))))
             `(multiple-value-bind ,vars ,val-form
                (let ,rest-bindings ,@body))))
 
-        ;; Case 3: Standard Binding -> (a 1) or (a) or a
-        (t
+         ;; Case 3: Standard Binding -> (a 1) or (a) or a
+         (t
           ;; Normalize 'a' to '(a nil)' and '(a)' to '(a nil)' if needed, 
           ;; but CL:LET* handles (a) and a natively.
           `(cl:let* (,binding)
              (let ,rest-bindings ,@body))))))))
+;; --- Branching Macros ---
+
+(defmacro when (test &body body)
+  `(if ,test (progn ,@body)))
+
+(defmacro unless (test &body body)
+  `(if (not ,test) (progn ,@body)))
+
+(defmacro cond (&rest clauses)
+  (if (null clauses)
+      nil
+      (let* ((clause (first clauses))
+             (rest (rest clauses))
+             (test (first clause))
+             (forms (rest clause)))
+        (if (or (eq test 'else) (eq test t))
+            `(progn ,@forms)
+            `(if ,test
+                 (progn ,@forms)
+                 (cond ,@rest))))))
+
+(defmacro if+ (test then &optional else)
+  "Compile-time conditional. Evaluates TEST at macro-expansion time.
+   Errors if TEST cannot be evaluated (e.g. relies on runtime values)."
+  (cl:let ((val (handler-case (eval test)
+                  (error (e)
+                    (error "IF+ condition failed to evaluate at compile time: ~s.~%Error: ~a" test e)))))
+    (if val
+        then
+        else)))

@@ -181,6 +181,37 @@ jobs:
           echo "--- Running E2E: success test --debug --single-pass (let-unified.crisp) ---"
           ./bin/crisp-compile tests/let-unified.crisp --debug --single-pass
 
+          echo "--- Running E2E: success test (branching-comparisons.crisp) ---"
+          ./bin/crisp-compile tests/branching-comparisons.crisp
+
+          echo "--- Running E2E: success test --single-pass (branching-comparisons.crisp) ---"
+          ./bin/crisp-compile tests/branching-comparisons.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (branching-comparisons.crisp) ---"
+          ./bin/crisp-compile tests/branching-comparisons.crisp --debug
+
+          echo "--- Running E2E: success test --debug --single-pass (branching-comparisons.crisp) ---"
+          ./bin/crisp-compile tests/branching-comparisons.crisp --debug --single-pass
+
+          echo "--- Running E2E: success test (branching-if.crisp) ---"
+          ./bin/crisp-compile tests/branching-if.crisp
+
+          echo "--- Running E2E: success test --debug (branching-if.crisp) ---"
+          ./bin/crisp-compile tests/branching-if.crisp --debug
+
+          echo "--- Running E2E: success test (branching-cond.crisp) ---"
+          ./bin/crisp-compile tests/branching-cond.crisp
+
+          echo "--- Running E2E: success test --debug (branching-cond.crisp) ---"
+          ./bin/crisp-compile tests/branching-cond.crisp --debug
+
+          echo "--- Running E2E: success test (branching-plus.crisp) ---"
+          ./bin/crisp-compile tests/branching-plus.crisp
+
+          echo "--- Running E2E: success test --debug (branching-plus.crisp) ---"
+          ./bin/crisp-compile tests/branching-plus.crisp --debug
+
+
 
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"
@@ -255,4 +286,7 @@ jobs:
 
           echo "--- Running E2E: failure test (scratch_cell_leak.crisp) ---"
           ! ./bin/crisp-compile tests/errors/scratch_cell_leak.crisp 2>&1 | grep -F "Type mismatch"
+
+          echo "--- Running E2E: failure test (branching-plus-error.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/branching-plus-error.crisp 2>&1 | grep -F "IF+ condition failed to evaluate at compile time"
 
