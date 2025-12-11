@@ -48,25 +48,7 @@
 (defvar *current-location-map* nil)
 (defvar *allow-nested-def-function* nil)
 
-(defstruct crisp-type
-  "Represents a Crisp type."
-  (name nil :type symbol)
-  ;; The function to get the llvm-type-ref.
-  ;; We use a function so we don't have to have a live LLVM context
-  ;; when we first define all the types.
-  (llvm-type-fn nil :type function)
-  (size 0 :type integer) ; size in bits
-  (category nil :type (member :signed-int :unsigned-int :float)))
 
-
-(defstruct function-signature
-  "Represents the full signature of a Crisp function."
-  (name nil :type symbol)
-  (parameters nil :type list)
-  (return-types nil :type list)
-  (source-location nil :type list)
-  (is-template-p nil :type boolean)
-  (template-params nil :type list))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
