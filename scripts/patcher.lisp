@@ -57,6 +57,19 @@
            (return))))
     (nreverse matches)))
 
+
+(defun validate-lisp-syntax (content)
+  "Checks if the content is valid Lisp syntax by reading it.
+   Returns (values T nil) if valid, or (values NIL error-message) if invalid."
+  (handler-case
+      (let ((*read-eval* nil)) ;; Safety: Don't evaluate #.
+        (with-input-from-string (in content)
+          (loop for expr = (read in nil :eof)
+                until (eq expr :eof)))
+        (values t nil))
+    (error (c)
+      (values nil (format nil "~a" c)))))
+
 (defun apply-patch (patch-file)
   (let* ((patch-spec (with-open-file (in patch-file) (read in)))
          (target-file (getf patch-spec :file))
@@ -82,9 +95,19 @@
                                (subseq content 0 start)
                                replace-str
                                (subseq content end))))
-           (write-file-content target-file new-content)
-           (format t "Patch applied successfully!~%")
-           (uiop:quit 0)))
+
+           ;; Integrity Check
+           (multiple-value-bind (validp error-msg) (validate-lisp-syntax new-content)
+             (if validp
+                 (progn
+                  (write-file-content target-file new-content)
+                  (format t "Patch applied successfully!~%")
+                  (uiop:quit 0))
+                 (progn
+                  (format t "Error: Patch integrity check failed!~%")
+                  (format t "The resulting file would have invalid syntax: ~a~%" error-msg)
+                  (format t "Patch NOT applied.~%")
+                  (uiop:quit 1))))))
        ((= match-count 0)
          (format t "Error: Could not find search block in target file.~%")
          (format t "Search block was:~%~a~%" search-str)
