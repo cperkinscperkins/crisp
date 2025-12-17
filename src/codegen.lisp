@@ -755,3 +755,10 @@
           do (let ((val (generate-node-ir arg builder module var-env di-builder di-scope location-map)))
                (setf agg-val (llvm-build-insert-value builder agg-val val field-idx (format nil "insert_~a" field-name)))))
     (values agg-val nil)))
+
+(defmethod generate-node-ir ((node semantic-extract-value) builder module var-env di-builder di-scope location-map)
+  "Generates IR for extracting a value from an aggregate."
+  (let* ((agg-node (semantic-extract-value-aggregate-node node))
+         (index (semantic-extract-value-index node))
+         (agg-val (generate-node-ir agg-node builder module var-env di-builder di-scope location-map)))
+    (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index))))

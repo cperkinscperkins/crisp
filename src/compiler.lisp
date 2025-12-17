@@ -190,7 +190,17 @@
       (eval-when (:compile-toplevel :load-toplevel :execute)
         (register-struct-definition ',name ',parsed-members))
       (def-function ,constructor-name ,parsed-members
-        (return (%construct-struct ,name ,@param-names))))))
+        (return (%construct-struct ,name ,@param-names)))
+      ,@(loop for (member-name member-type) in parsed-members
+              for i from 0
+              collect
+                `(def-function ,(intern (format nil "~a~~" member-name)) ((obj ,name))
+                   (return (%extract-struct-member obj ,i))))
+      ,@(loop for (member-name member-type) in parsed-members
+              for i from 0
+              collect
+                `(def-function ,(intern (format nil "~~~a~~" member-name)) ((obj ,name))
+                   (return (%extract-struct-member obj ,i)))))))
 
 
 ;; INTERNAL TO COMPILER
@@ -507,6 +517,7 @@
   (def-expression-analyzer template-instantiation analyze-template-instantiation)
   (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
   (def-expression-analyzer %construct-struct analyze-struct-construction)
+  (def-expression-analyzer %extract-struct-member analyze-extract-struct-member-expression)
 
   ;; Register all possible `to-` and `as-` casts.
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
@@ -1265,6 +1276,48 @@
   "Analyzes a `%construct-struct` expression."
   (analyze-struct-construction expr env location))
 
+(defun analyze-extract-struct-member-expression (expr env location)
+  "Analyzes a `%extract-struct-member` expression.
+   Form: (%extract-struct-member object-node index-literal)"
+  (let* ((obj-node (analyze-expression (second expr) env (append location '(1))))
+         (index (third expr)) ;; Expecting a raw integer literal from the macro expansion
+         (obj-type (semantic-node-type obj-node)))
+
+    (unless (symbolp obj-type)
+      (error "Cannot extract member from non-struct type ~a" obj-type))
+
+    (let ((struct-def (gethash obj-type *crisp-structs*)))
+      (unless struct-def
+        (error "Unknown struct type ~a in extraction." obj-type))
+
+      (let* ((padded-members (crisp-struct-definition-padded-members struct-def))
+             ;; We need to map the "logical" index i to the "physical" index in the padded struct.
+             ;; However, our macro passes the 'logical' index.
+             ;; But wait, the macro loop `for i from 0` matches `parsed-members`.
+             ;; `padded-members` has EXTRA fields. We need to find the Nth *non-padding* member.
+             ;; Let's iterate padded-members to find the Nth logical member's actual index.
+             (physical-index -1)
+             (logical-count -1)
+             (target-member-type nil))
+
+        (loop for m in padded-members
+              for idx from 0
+              do (unless (alexandria:starts-with-subseq "_PAD" (symbol-name (first m)))
+                   (incf logical-count)
+                   (when (= logical-count index)
+                         (setf physical-index idx)
+                         (setf target-member-type (second m))
+                         (return))))
+
+        (when (= physical-index -1)
+              (error "Invalid member index ~a for struct ~a" index obj-type))
+
+        (make-semantic-extract-value
+          :type target-member-type
+          :aggregate-node obj-node
+          :index physical-index
+          :source-location location)))))
+
 
 (defun analyze-if-expression (expr env location)
   (let* ((cond-node (analyze-expression (second expr) env (append location '(1))))
@@ -1444,7 +1497,8 @@
          (value-nodes (loop for form in value-forms
                             for i from 1
                             collect (analyze-expression form env (append location (list i)))))
-         (return-types (mapcar #'semantic-node-type value-nodes)))
+         (return-types (loop for node in value-nodes
+                               append (alexandria:ensure-list (semantic-node-type node)))))
     (make-semantic-explicit-return :type return-types
                                    :value-nodes value-nodes
                                    :source-location location)))
@@ -1733,9 +1787,21 @@
      (let ((found (assoc expr env)))
        (if found
            (make-semantic-var-read :name expr :type (second found) :source-location location)
-           (error 'crisp-unknown-variable
-             :name expr
-             :source-location location))))
+           ;; If not found, check for dot-syntax sugar (e.g. p.x~)
+           (let* ((name-str (symbol-name expr))
+                  (dot-pos (position #\. name-str :from-end t)))
+             (if dot-pos
+                 ;; Split into (member object) e.g. (x~ p)
+                 (let* ((obj-name (subseq name-str 0 dot-pos))
+                        (member-name (subseq name-str (1+ dot-pos)))
+                        (obj-sym (intern obj-name (symbol-package expr)))
+                        (member-sym (intern member-name (symbol-package expr))))
+                   ;; Recurse as a function call/macro expansion
+                   (analyze-expression `(,member-sym ,obj-sym) env location))
+                 ;; Not dot syntax, just unknown
+                 (error 'crisp-unknown-variable
+                   :name expr
+                   :source-location location))))))
 
    ;; Case 3: It's a function call, like '(+ a b)'
    ((listp expr) (let ((op (first expr)))
