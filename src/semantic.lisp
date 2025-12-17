@@ -167,3 +167,9 @@
   aggregate-node ; The semantic node for the aggregate (e.g., a semantic-call)
   index ; The 0-based index to extract
   source-location)
+
+(defstruct semantic-struct-construction
+  "Represents constructing a struct instance e.g. (%construct-struct 'point ...)."
+  type ; The type specifier of the struct (symbol name)
+  args ; List of semantic nodes for the field values (in definition order)
+  source-location)

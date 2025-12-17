@@ -68,6 +68,8 @@
    ;; Simple type like 'int
    ((symbolp type-spec)
      (log:info "Resolving symbol type: ~a" type-spec)
+     (when (null type-spec)
+           (error "Cannot resolve type to LLVM: NIL"))
      (resolve-type-to-llvm type-spec))
    ;; Parameterized type like '(cell int)
    ((listp type-spec)
@@ -734,7 +736,22 @@
 
           ;; --- Merge Block ---
           (llvm-position-builder-at-end builder merge-block)
-          (if result-alloca
-              (let ((loaded-val (llvm-build-load2 builder (crisp-type-to-llvm-type result-type-spec module) result-alloca "ifresult")))
-                (values loaded-val nil))
-              (values nil nil)))))))
+          (values nil nil))))))
+
+(defmethod generate-node-ir ((node semantic-struct-construction) builder module var-env di-builder di-scope location-map)
+  (let* ((type-name (semantic-struct-construction-type node))
+         (struct-def (gethash type-name *crisp-structs*))
+         (llvm-type (ensure-struct-llvm-type type-name))
+         (agg-val (llvm-get-undef llvm-type))
+         (args (semantic-struct-construction-args node))
+         (original-members (crisp-struct-definition-members struct-def))
+         (field-indices (crisp-struct-definition-field-indices struct-def)))
+
+    (loop for arg in args
+          for member in original-members
+          for i from 0
+          for field-name = (first member)
+          for field-idx = (gethash field-name field-indices)
+          do (let ((val (generate-node-ir arg builder module var-env di-builder di-scope location-map)))
+               (setf agg-val (llvm-build-insert-value builder agg-val val field-idx (format nil "insert_~a" field-name)))))
+    (values agg-val nil)))

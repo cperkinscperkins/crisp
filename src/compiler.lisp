@@ -180,12 +180,17 @@
 
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
-  (let ((parsed-members (mapcar #'parse-struct-member-spec members)))
+  (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
+         (constructor-name (intern (format nil "MAKE-~a" name)))
+         (param-names (mapcar #'first parsed-members)))
     ;; Register at macro-expansion time (for visibility to subsequent code)
     (register-struct-definition name parsed-members)
-    ;; Emit code to register at compilation/load time
-    `(eval-when (:compile-toplevel :load-toplevel :execute)
-       (register-struct-definition ',name ',parsed-members))))
+    ;; Emit code to register using eval-when, AND the constructor function
+    `(progn
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (register-struct-definition ',name ',parsed-members))
+      (def-function ,constructor-name ,parsed-members
+        (return (%construct-struct ,name ,@param-names))))))
 
 
 ;; INTERNAL TO COMPILER
@@ -428,6 +433,7 @@
 
       (let ((element-types '()))
         (dolist (member-spec (crisp-struct-definition-padded-members def))
+          (log:debug "Member-spec: ~a" member-spec)
           (let* ((type-name (second member-spec))
                  (resolved-type (resolve-type-to-llvm type-name)))
             (log:info "Member ~a (type ~a) resolved to LLVM type: ~a" (first member-spec) type-name resolved-type)
@@ -500,6 +506,7 @@
   (def-expression-analyzer def-function analyze-nested-def-function)
   (def-expression-analyzer template-instantiation analyze-template-instantiation)
   (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
+  (def-expression-analyzer %construct-struct analyze-struct-construction)
 
   ;; Register all possible `to-` and `as-` casts.
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
@@ -972,7 +979,7 @@
           :source-location (if return-node
                                (semantic-node-source-location return-node)
                                location))))
-    body-nodes))
+    (values body-nodes inferred-types)))
 
 (defun detect-and-register-implicit-template (name explicit-env return-type params body)
   "Detects if a function is an implicit template (e.g. has function-type args),
@@ -1022,7 +1029,16 @@
     (let ((env (inject-implicit-arguments name explicit-env)))
 
       ;; 3. Analyze Body and Validate Return Types
-      (let ((body-nodes (validate-return-types name body env return-type location)))
+      (multiple-value-bind (body-nodes inferred-return-types)
+          (validate-return-types name body env return-type location)
+
+        ;; Update the function registry if we inferred a return type and none was declared.
+        (when (and (or (null return-type) (equal return-type '(nil)))
+                   (not (equal inferred-return-types '(nil))))
+              (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
+              (let ((sig (first (gethash name *function-table*))))
+                (when sig
+                      (setf (function-signature-return-types sig) inferred-return-types))))
 
         ;; 4. Build and return the "blueprint"
         (let ((return-node (first (last body-nodes))))
@@ -1030,7 +1046,9 @@
             :name name
             :param-list (loop for (param-name param-type) in env
                               collect (make-semantic-param :name param-name :type param-type :source-location location))
-            :return-type return-type
+            :return-type (if (or (null return-type) (equal return-type '(nil)))
+                             inferred-return-types
+                             return-type)
             :body (if (typep return-node 'semantic-explicit-return)
                       (list return-node)
                       (list (make-semantic-return
@@ -1242,6 +1260,11 @@
   (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
          (right-node (analyze-expression (third expr) env (append location '(2)))))
     (make-semantic-neq :type 'int :left-arg left-node :right-arg right-node :source-location location)))
+
+(defun analyze-construct-struct-expression (expr env location)
+  "Analyzes a `%construct-struct` expression."
+  (analyze-struct-construction expr env location))
+
 
 (defun analyze-if-expression (expr env location)
   (let* ((cond-node (analyze-expression (second expr) env (append location '(1))))
@@ -1628,7 +1651,6 @@
                              (unless (equal (semantic-node-type node) expected-type)
                                (error 'crisp-type-error :expected expected-type :inferred (semantic-node-type node) :source-location location))
                              node))))
-
         (make-semantic-funcall
           :func-node func-node
           :type signature-return-type ; e.g. (int)
@@ -1640,6 +1662,44 @@
   ;; For now, just a simple list.
   ;; '((a i32) (b i32))
   (mapcar #'(lambda (p) (list (first p) (second p))) params))
+
+(defun analyze-struct-construction (expr env location)
+  "Analyzes a (%construct-struct type-name arg1 arg2 ...) form."
+  (let* ((type-name (second expr))
+         (args (cddr expr))
+         (struct-def (gethash type-name *crisp-structs*)))
+    (unless struct-def
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    ;; Validate argument count against original members
+    (let ((members (crisp-struct-definition-members struct-def)))
+      (unless (= (length args) (length members))
+        (error "Struct constructor for ~a expects ~a arguments, got ~a."
+          type-name (length members) (length args))))
+
+    ;; Analyze arguments
+    (let ((arg-nodes
+           (loop for arg in args
+                 for member in (crisp-struct-definition-members struct-def)
+                 for i from 0
+                 collect (let ((node (analyze-expression arg env (append location (list (+ 2 i)))))
+                               (expected-type (second member)))
+                           ;; Type check
+                           (unless (equal (semantic-node-type node) expected-type)
+                             ;; Relaxed check for literals behaving as types?
+                             ;; For now strict equality.
+                             (error 'crisp-type-error
+                               :expected expected-type
+                               :inferred (semantic-node-type node)
+                               :source-location location))
+                           node))))
+
+      (make-semantic-struct-construction
+       :type type-name
+       :args arg-nodes
+       :source-location location))))
+
+(def-expression-analyzer %construct-struct analyze-struct-construction)
 
 (defun analyze-body-expressions (body-list env location)
   "Recursively analyzes a list of expressions."
@@ -1725,7 +1785,8 @@
     (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
     (semantic-funcall (semantic-funcall-type node))
-    (semantic-extract-value (semantic-extract-value-type node))))
+    (semantic-extract-value (semantic-extract-value-type node))
+    (semantic-struct-construction (semantic-struct-construction-type node))))
 
 (defun semantic-node-source-location (node)
   (etypecase node
@@ -1751,7 +1812,8 @@
     (semantic-explicit-return (semantic-explicit-return-source-location node))
     (semantic-call (semantic-call-source-location node))
     (semantic-funcall (semantic-funcall-source-location node))
-    (semantic-extract-value (semantic-extract-value-source-location node))))
+    (semantic-extract-value (semantic-extract-value-source-location node))
+    (semantic-struct-construction (semantic-struct-construction-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)
