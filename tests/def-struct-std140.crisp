@@ -1,0 +1,11 @@
+
+;; tests/def-struct-std140.crisp
+;; Validates std140 padding insertion via alloca.
+
+(def-struct Mixed
+  (a char)
+  (b int))
+
+(def-function test-mixed-layout ()
+  (let ((m Mixed)) ;; This triggers ensure-struct-llvm-type
+    (return)))

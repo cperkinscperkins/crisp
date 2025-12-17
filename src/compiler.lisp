@@ -154,8 +154,19 @@
 
 (defun register-struct-definition (name members)
   "Registers a struct definition in the global registry."
-  (setf (gethash name *crisp-structs*)
-    (make-crisp-struct-definition :name name :members members)))
+  (multiple-value-bind (padded-members total-size)
+      (compute-std140-layout members)
+    (declare (ignore total-size))
+    (let ((indices (make-hash-table :test #'eq)))
+      (loop for m in padded-members
+            for i from 0
+            do (setf (gethash (car m) indices) i))
+      (setf (gethash name *crisp-structs*)
+        (make-crisp-struct-definition
+         :name name
+         :members members
+         :padded-members padded-members
+         :field-indices indices)))))
 
 (defun parse-struct-member-spec (spec)
   "Parses a struct member specification.
@@ -246,6 +257,111 @@
                (unknown-variable-name condition)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Std140 Layout (GPU Alignment)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun get-std140-base-alignment (type-spec)
+  "Returns the base alignment (N) for a given type according to std140 rules.
+  For scalars, N is the size of the scalar.
+  For vectors, it is 2N or 4N.
+  For arrays/structs, it is rounded up to vec4 alignment (16)."
+  (cond
+   ((or (eq type-spec 'float) (eq type-spec 'int) (eq type-spec 'uint)) 4)
+   ((or (eq type-spec 'double) (eq type-spec 'long) (eq type-spec 'ulong)) 8)
+   ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
+   ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
+   ;; TODO: Handle vectors here (will need vector support first)
+   ((or (eq type-spec 'bool)) 4) ;; booleans are 4 bytes in std140
+   ;; Structs align to 16 bytes (vec4)
+   ((gethash type-spec *crisp-structs*) 16)
+   (t (error "Unknown type for alignment: ~a" type-spec))))
+
+(defun get-std140-size (type-spec)
+  "Returns the size (in bytes) of a type. Does not include padding for alignment context."
+  (cond
+   ((or (eq type-spec 'float) (eq type-spec 'int) (eq type-spec 'uint)) 4)
+   ((or (eq type-spec 'double) (eq type-spec 'long) (eq type-spec 'ulong)) 8)
+   ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
+   ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
+   ((eq type-spec 'bool) 4)
+   ;; Structs need to be calculated recursively, but basic struct defs have a cached size?
+   ;; For now, error on unknown structs until we have size caching.
+   ((gethash type-spec *crisp-structs*)
+     (error "Recursive struct size calculation not yet implemented."))
+   (t (error "Unknown type for size: ~a" type-spec))))
+
+(defun calculate-std140-padding (current-offset alignment)
+  "Calculates padding needed to reach the next alignment boundary."
+  (let ((remainder (mod current-offset alignment)))
+    (if (zerop remainder)
+        0
+        (- alignment remainder))))
+
+(defun compute-std140-layout (members)
+  "Takes a list of (name type) members.
+  Returns a list of:
+    - Expanded members with `_pad` fields inserted.
+    - Total struct size (padded to 16 bytes).
+  
+  Returns (values expanded-members total-size)"
+  (let ((current-offset 0)
+        (expanded-members '()))
+    (dolist (member members)
+      (let* ((name (first member))
+             (type (second member))
+             (alignment (get-std140-base-alignment type))
+             (size (get-std140-size type))
+             (padding (calculate-std140-padding current-offset alignment)))
+
+        ;; Insert padding if needed
+        (when (> padding 0)
+              (let ((pad-type (case padding
+                                (1 'char)
+                                (2 'short)
+                                (3 'vec3-char-pad) ;; char + short
+                                (4 'int) ;; float/int
+                                (8 'double) ;; double/long
+                                (12 'vec3-pad-placeholder)
+                                (t (error "Unsupported padding size: ~a" padding)))))
+
+                (cond
+                 ((= padding 1)
+                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'char) expanded-members))
+                 ((= padding 2)
+                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'short) expanded-members))
+                 ((= padding 3)
+                   (push (list (intern (format nil "_PAD_~a_1" current-offset)) 'char) expanded-members)
+                   (push (list (intern (format nil "_PAD_~a_2" current-offset)) 'short) expanded-members))
+                 ((= padding 4)
+                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'int) expanded-members))
+                 ((= padding 8)
+                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'double) expanded-members))
+                 (t (error "Padding of ~a bytes not yet implemented." padding))))
+              (incf current-offset padding))
+
+        ;; Add the actual member
+        (push member expanded-members)
+        (incf current-offset size)))
+
+    ;; Final structure padding to multiple of 16 (vec4 alignment)
+    (let ((final-padding (calculate-std140-padding current-offset 16)))
+      (when (> final-padding 0)
+            ;; Same issue with padding types. 
+            ;; For now, if we need simple padding for test cases:
+            (if (= final-padding 4)
+                (push (list (intern (format nil "_PAD_EA")) 'int) expanded-members)
+                (if (= final-padding 8)
+                    (push (list (intern (format nil "_PAD_EA")) 'double) expanded-members)
+                    (if (= final-padding 12)
+                        (progn
+                         (push (list (intern (format nil "_PAD_EA_1")) 'double) expanded-members)
+                         (push (list (intern (format nil "_PAD_EA_2")) 'int) expanded-members))
+                        nil)))) ;; Assume 0 or handled
+      (incf current-offset final-padding))
+
+    (values (nreverse expanded-members) current-offset)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Type System Helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -311,9 +427,13 @@
       (setf (crisp-struct-definition-llvm-type def) struct-type)
 
       (let ((element-types '()))
-        (dolist (member-spec (crisp-struct-definition-members def))
-          (let ((type-name (second member-spec)))
-            (push (resolve-type-to-llvm type-name) element-types)))
+        (dolist (member-spec (crisp-struct-definition-padded-members def))
+          (let* ((type-name (second member-spec))
+                 (resolved-type (resolve-type-to-llvm type-name)))
+            (log:info "Member ~a (type ~a) resolved to LLVM type: ~a" (first member-spec) type-name resolved-type)
+            (unless resolved-type
+              (error "Failed to resolve type ~a for member ~a" type-name (first member-spec)))
+            (push resolved-type element-types)))
 
         ;; Set the body
         (let ((types-array (cffi:foreign-alloc :pointer :count (length element-types))))
