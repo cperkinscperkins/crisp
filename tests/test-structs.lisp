@@ -46,7 +46,7 @@
     (true ir)
     ;; Check for struct definition
     (true (search "test-point-ir" ir :test #'char-equal))
-    (true (search "{ float, i32 }" ir))
+    (true (search "{ float, i32, double }" ir))
     ;; Check for function signature using it
     (true (search "define i32 @use_point_test_point_ir(%TEST-POINT-IR %0)" ir :test #'char-equal)
         "Structs should be passed by value in this simple case?")))
