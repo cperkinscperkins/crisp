@@ -115,7 +115,18 @@
   type condition-node then-node else-node source-location)
 
 (defstruct semantic-set!
-  name value-node source-location)
+  "Represents a (set! ...) expression."
+  target-node ; The node being assigned to (usually semantic-var-read)
+  value-node ; The node for the value being assigned
+  source-location)
+
+(defstruct semantic-struct-member-update
+  "Represents updating a single member of a struct (creates a new struct value)."
+  type ; The type of the struct being updated
+  struct-node ; The struct value/variable to update
+  member-index ; The physical index of the member to update
+  value-node ; The new value for the member
+  source-location)
 
 (defstruct semantic-aref
   type array-node index-node source-location)

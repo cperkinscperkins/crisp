@@ -760,5 +760,38 @@
   "Generates IR for extracting a value from an aggregate."
   (let* ((agg-node (semantic-extract-value-aggregate-node node))
          (index (semantic-extract-value-index node))
-         (agg-val (generate-node-ir agg-node builder module var-env di-builder di-scope location-map)))
-    (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index))))
+         (agg-val (generate-node-ir agg-node builder module var-env di-builder di-scope location-map))
+         (val (llvm-build-extract-value builder agg-val index (format nil "extract_~d" index))))
+    (values val nil)))
+
+(defmethod generate-node-ir ((node semantic-set!) builder module var-env di-builder di-scope location-map)
+  "Generates IR for (set! target value)."
+  (let* ((target-node (semantic-set!-target-node node))
+         (value-node (semantic-set!-value-node node))
+         (new-val (generate-node-ir value-node builder module var-env di-builder di-scope location-map)))
+
+    (cond
+     ;; Case 1: Variable assignment. We need the ALLOCA, not the loaded value.
+     ((semantic-var-read-p target-node)
+       (let* ((var-name (semantic-var-read-name target-node))
+              (var-ptr (gethash var-name var-env)))
+         (unless var-ptr
+           (error "Compiler error in set!: Variable ~a not found in environment." var-name))
+         (llvm-build-store builder new-val var-ptr)
+         ;; set! returns the new value (or void? Common Lisp returns the value)
+         (values new-val nil)))
+
+     (t (error "Unsupported target for set! codegen: ~a" target-node)))))
+
+(defmethod generate-node-ir ((node semantic-struct-member-update) builder module var-env di-builder di-scope location-map)
+  "Generates IR for updating a struct member: inserts value into struct and returns new struct."
+  (let* ((struct-node (semantic-struct-member-update-struct-node node))
+         (member-index (semantic-struct-member-update-member-index node))
+         (value-node (semantic-struct-member-update-value-node node))
+         ;; Generate the ORIGINAL struct value (load it)
+         (struct-val (generate-node-ir struct-node builder module var-env di-builder di-scope location-map))
+         ;; Generate the NEW member value
+         (new-member-val (generate-node-ir value-node builder module var-env di-builder di-scope location-map))
+         ;; Insert the new value
+         (new-struct-val (llvm-build-insert-value builder struct-val new-member-val member-index "struct_update")))
+    (values new-struct-val nil)))

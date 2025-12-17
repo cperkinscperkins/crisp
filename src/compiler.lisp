@@ -27,6 +27,13 @@
    Called as (funcall *template-instantiator-fn* name arg-types callback).
    The callback is (funcall callback form location).")
 
+(defvar *template-registry* (make-hash-table)
+        "Maps template names (symbols) to a LIST of template-data structs.
+This supports overloading templates by arity or other factors.")
+
+(defvar *instantiated-templates* (make-hash-table :test 'equal)
+        "Tracks which specializations have already been generated.")
+
 (defvar *side-channel-originators* '(make-scratch-cell)
         "A list of function names that trigger the implicit side-channel argument passing mechanism.")
 
@@ -494,6 +501,7 @@
   (def-expression-analyzer funcall analyze-funcall-expression)
 
   (def-expression-analyzer set! analyze-set!-expression)
+
   (def-expression-analyzer let analyze-let-expression)
   (def-expression-analyzer let* analyze-let-expression)
   (def-expression-analyzer progn analyze-progn-expression) ;; NEW
@@ -531,139 +539,6 @@
   (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
-
-;; Sema Structs
-;; ------------
-
-;; blueprint for a function
-(defstruct semantic-function
-  name ; 'my-func
-  param-list ; A list of types
-  return-type ; The *validated* type, e.g., 'i32
-  body ; A list of *other* semantic nodes
-  source-location)
-
-;; blueprint for a 'return' statement
-(defstruct semantic-return
-  return-type ; 'i32
-  value-node ; The node for the value being returned
-  source-location)
-
-(defstruct semantic-explicit-return
-  "Represents an explicit (return ...) form."
-  type ; A list of types, e.g., '(int int)
-  value-nodes ; A list of semantic nodes for the values
-  source-location)
-
-
-;; blueprint for a literal
-(defstruct semantic-literal
-  value-type ; 'i32
-  value ; 7
-  source-location)
-
-;; Represents a function parameter (e.g., 'a' and its type 'i32)
-(defstruct semantic-param
-  name
-  type
-  source-location)
-
-;; Represents reading a variable (e.g., 'a' or 'b')
-(defstruct semantic-var-read
-  name
-  type
-  source-location)
-
-;; Represents a function call (e.g., '(+ a b)')
-(defstruct semantic-add
-  type ; The *result* type (e.g., 'i32)
-  left-arg ; The 'semantic-var-read' node for 'a'
-  right-arg ; The 'semantic-var-read' node for 'b'
-  source-location)
-
-(defstruct semantic-sub
-  type left-arg right-arg source-location)
-
-(defstruct semantic-mul
-  type left-arg right-arg source-location)
-
-(defstruct semantic-div
-  type left-arg right-arg source-location)
-
-(defstruct semantic-lt
-  type left-arg right-arg source-location)
-
-(defstruct semantic-gt
-  type left-arg right-arg source-location)
-
-(defstruct semantic-le
-  type left-arg right-arg source-location)
-
-(defstruct semantic-ge
-  type left-arg right-arg source-location)
-
-(defstruct semantic-eq
-  type left-arg right-arg source-location)
-
-(defstruct semantic-neq
-  type left-arg right-arg source-location)
-
-(defstruct semantic-if
-  type condition-node then-node else-node source-location)
-
-(defstruct semantic-set!
-  name value-node source-location)
-
-(defstruct semantic-aref
-  type array-node index-node source-location)
-
-(defstruct semantic-value-cast
-  "Represents a value-preserving cast (e.g., to-float)."
-  type ; The target type
-  arg ; The node being cast
-  source-location)
-
-(defstruct semantic-bitcast
-  "Represents a bit reinterpretation cast (e.g., as-int)."
-  type ; The target type
-  arg ; The node being cast
-  source-location)
-
-(defstruct semantic-fp-truncate-cast
-  "Represents a float-to-integer truncation cast."
-  type ; The target integer type
-  arg ; The float node being cast
-  source-location)
-
-
-(defstruct semantic-call
-  "Represents a call to a user-defined function."
-  name ; The symbol name of the function being called
-  type ; The return type of the function
-  args ; A list of semantic nodes for the arguments
-  signature ; The specific FUNCTION-SIGNATURE struct that was resolved
-  source-location)
-
-(defstruct semantic-funcall
-  "Represents a 'funcall' form."
-  func-node ; The semantic node for the function expression (e.g. var-read or literal)
-  type ; The return type of the call
-  args ; A list of semantic nodes for arguments
-  source-location)
-
-(defstruct semantic-let
-  "Represents a (let ...) expression."
-  type ; The type of the *last* expression in the body
-  bindings ; A list of (name . semantic-node) pairs
-  body ; A list of semantic nodes for the body
-  source-location)
-
-(defstruct semantic-extract-value
-  "Represents extracting a single value from an aggregate (struct)."
-  type ; The type of the extracted value (e.g., 'int)
-  aggregate-node ; The semantic node for the aggregate (e.g., a semantic-call)
-  index ; The 0-based index to extract
-  source-location)
 
 
 ;; ---------------------------------
@@ -1339,10 +1214,6 @@
         (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
     (make-semantic-if :type 'void :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
 
-(defun analyze-set!-expression (expr env location)
-  (let* ((var-name (second expr))
-         (val-node (analyze-expression (third expr) env (append location '(2)))))
-    (make-semantic-set! :name var-name :value-node val-node :source-location location)))
 
 (defun analyze-aref-expression (expr env location)
   (let* ((array-node (analyze-expression (second expr) env (append location '(1))))
@@ -1514,14 +1385,13 @@
            ((alexandria:starts-with-subseq "TO-" op-name) (intern (subseq op-name 3)))
            ((alexandria:starts-with-subseq "AS-" op-name) (intern (subseq op-name 3)))
            ;; For truncate, floor, etc., the target is always 'int' for now.
-           ;; This will need to be expanded if we support (truncate-to-long ...).
            ((member op '(truncate floor ceil round)) 'int)
            (t (error "Internal compiler error: analyze-cast-expression called with invalid operator ~a" op))))
          (target-crisp-type (gethash target-type-name *crisp-types*))
          (arg-node (analyze-expression arg-form env (append location '(1)))))
 
     (unless target-crisp-type
-      (error 'crisp-unknown-type-error :type-name target-type-name))
+      (error 'crisp-unknown-type-error :type-name target-type-name :source-location location))
 
     (let* ((source-type-name (get-single-value-type arg-node))
            (source-crisp-type (gethash source-type-name *crisp-types*)))
@@ -1547,6 +1417,89 @@
          ;; Handle unsafe `as-` bit reinterpretations
          (t ; Default for "AS-" and other currently unhandled float-to-int ops
            (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))))
+
+(defun get-struct-member-index (struct-type-name member-name)
+  "Helper to find the physical index of a struct member, accounting for padding."
+  (let ((struct-def (gethash struct-type-name *crisp-structs*)))
+    (unless struct-def
+      (error "Unknown struct type '~a' during member lookup." struct-type-name))
+    (let* ((indices (crisp-struct-definition-field-indices struct-def))
+           (index (gethash member-name indices)))
+      (unless index
+        (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
+      index)))
+
+(defun analyze-set!-expression (expr env location)
+  "Analyzes a (set! target value) expression."
+  (let* ((target-form (second expr))
+         (value-form (third expr))
+         (value-node (analyze-expression value-form env (append location '(2)))))
+
+    (cond
+     ;; Case 1: Simple variable assignment (set! x v)
+     ((symbolp target-form)
+       (let ((var-info (assoc target-form env)))
+         (unless var-info
+           (error 'crisp-unknown-variable :name target-form :source-location location))
+
+         ;; Verify types match
+         (let ((var-type (second var-info))
+               (val-type (semantic-node-type value-node)))
+           (unless (types-compatible-p val-type var-type)
+             (error 'crisp-type-error :expected var-type :inferred val-type :source-location location)))
+
+         (make-semantic-set!
+           :target-node (make-semantic-var-read :name target-form :type (second var-info) :source-location location)
+           :value-node value-node
+           :source-location location)))
+
+     ;; Case 2: Struct member assignment via accessor (set! (x~ p) v)
+     ;; We transform this into: (set! p (%set-struct-member p index v))
+     ((and (listp target-form) (= (length target-form) 2))
+       (let* ((op (first target-form))
+              (op-name (symbol-name op))
+              ;; Check if it ends with ~ (e.g., x~ or ~x~)
+              (is-accessor (or (alexandria:ends-with #\~ op-name)
+                               (and (alexandria:starts-with #\~ op-name)
+                                    (alexandria:ends-with #\~ op-name)))))
+         (unless is-accessor
+           (error "Invalid set! target: ~a. Only variables and struct accessors are supported." target-form))
+
+         ;; Extract member name from accessor (x~ -> x, ~x~ -> x)
+         (let* ((clean-name (string-trim "~" op-name))
+                (member-sym (intern clean-name (symbol-package op)))
+                (struct-obj-form (second target-form))
+                ;; Analyze the struct object to identify its type and variable
+                (struct-node (analyze-expression struct-obj-form env (append location '(1 1)))))
+
+           ;; The struct object MUST be a variable or something set!-able to be updated in place.
+           ;; (set! (x~ (make-point ...)) v) is meaningless because the result is discarded.
+           ;; But technically valid in functional sense if we return the new struct.
+           ;; However, (set! ...) implies mutation of a place.
+           ;; If the struct object is a variable, we generate (set! var (update ...))
+           ;; If it's not a variable, we can't 'set!' it.
+           (unless (semantic-var-read-p struct-node)
+             (error "Cannot set member of non-variable struct form: ~a" struct-obj-form))
+
+           (let* ((struct-type (semantic-node-type struct-node))
+                  (struct-var-name (semantic-var-read-name struct-node))
+                  (member-index (get-struct-member-index struct-type member-sym)))
+
+             ;; Create the update node
+             (let ((update-node (make-semantic-struct-member-update
+                                 :type struct-type
+                                 :struct-node struct-node
+                                 :member-index member-index
+                                 :value-node value-node
+                                 :source-location location)))
+
+               ;; Wrap in a set! for the struct variable
+               (make-semantic-set!
+                 :target-node struct-node
+                 :value-node update-node
+                 :source-location location))))))
+
+     (t (error "Invalid set! target structure: ~a" target-form)))))
 
 
 (defun types-compatible-p (arg-type param-type)

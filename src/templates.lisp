@@ -18,14 +18,6 @@
   (body nil :type list) ; The full (def-function ...) form
   (signature nil :type list)) ; The declared signature, if any
 
-(defvar *template-registry* (make-hash-table)
-        "Maps template names (symbols) to a LIST of template-data structs.
-This supports overloading templates by arity or other factors.")
-
-(defvar *instantiated-templates* (make-hash-table :test 'equal)
-        "Tracks which specializations have already been generated.
-Key: (template-name . concrete-types)
-Value: The expanded form (or T).")
 
 (defun register-template (name params constraints body signature)
   "Registers a new template definition."
@@ -126,9 +118,9 @@ Value: The expanded form (or T).")
        (let* ((name (second arg-type))
               (signatures (gethash name *function-table*)))
          (loop for sig in signatures
-               ;; Try to match this overload
-               when (match-function-signature sig-type sig inference-map template-params)
-               return t)))
+                 ;; Try to match this overload
+                 when (match-function-signature sig-type sig inference-map template-params)
+                 return t)))
 
      ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
      ((listp sig-type)
@@ -243,8 +235,8 @@ Value: The expanded form (or T).")
 
       ;; Perform substitution on the body
       ;; NOTE: This is wrapped in PROGN to satisfy unit test expectations
-        ;; (specifically CRISP.TESTS::TEMPLATE-INSTANTIATION checks for this structure).
-        ;; It also ensures that the returned form is a single S-expression.
+      ;; (specifically CRISP.TESTS::TEMPLATE-INSTANTIATION checks for this structure).
+      ;; It also ensures that the returned form is a single S-expression.
       `(progn ,(sublis substitutions (template-data-body tmpl))))))
 
 (defun try-infer-template-types (name argument-types)
