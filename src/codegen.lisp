@@ -221,14 +221,21 @@
             (initialize-function-parameters builder func param-nodes module var-env)
 
             ;; --- 5. Generate the Body ---
-            (let* ((body-node (first (semantic-function-body semantic-function)))
-                   (is-void-return (equal return-types '(nil))))
-              (multiple-value-bind (value di-location)
-                  (generate-expression-ir builder module var-env di-builder di-subprogram location-map body-node)
-                (let ((ret-inst (if is-void-return
-                                    (llvm-build-ret-void builder)
-                                    (llvm-build-ret builder value))))
-                  (when di-location (llvm-instruction-set-debug-loc ret-inst di-location)))))))))))
+            (let* ((body-nodes (semantic-function-body semantic-function))
+                   (is-void-return (or (null return-types)
+                                       (equal return-types '(nil))))
+                   (last-val nil)
+                   (last-loc nil))
+              (dolist (node body-nodes)
+                (multiple-value-bind (val loc)
+                    (generate-expression-ir builder module var-env di-builder di-subprogram location-map node)
+                  (setf last-val val)
+                  (setf last-loc loc)))
+
+              (let ((ret-inst (if is-void-return
+                                  (llvm-build-ret-void builder)
+                                  (llvm-build-ret builder last-val))))
+                (when last-loc (llvm-instruction-set-debug-loc ret-inst last-loc))))))))))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
   (:documentation "Generates LLVM IR for a single semantic node."))
@@ -247,7 +254,7 @@
          (value-nodes (semantic-explicit-return-value-nodes node)))
     (cond
      ;; Single return value, just generate the value.
-     ((= (length return-types) 1)
+     ((and return-types (= (length return-types) 1) (not (null (first return-types))))
        (generate-node-ir (first value-nodes) builder module var-env di-builder di-scope location-map))
      ;; Multiple return values, build a struct.
      ((> (length return-types) 1)
