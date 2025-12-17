@@ -1787,21 +1787,9 @@
      (let ((found (assoc expr env)))
        (if found
            (make-semantic-var-read :name expr :type (second found) :source-location location)
-           ;; If not found, check for dot-syntax sugar (e.g. p.x~)
-           (let* ((name-str (symbol-name expr))
-                  (dot-pos (position #\. name-str :from-end t)))
-             (if dot-pos
-                 ;; Split into (member object) e.g. (x~ p)
-                 (let* ((obj-name (subseq name-str 0 dot-pos))
-                        (member-name (subseq name-str (1+ dot-pos)))
-                        (obj-sym (intern obj-name (symbol-package expr)))
-                        (member-sym (intern member-name (symbol-package expr))))
-                   ;; Recurse as a function call/macro expansion
-                   (analyze-expression `(,member-sym ,obj-sym) env location))
-                 ;; Not dot syntax, just unknown
-                 (error 'crisp-unknown-variable
-                   :name expr
-                   :source-location location))))))
+           (error 'crisp-unknown-variable
+             :name expr
+             :source-location location))))
 
    ;; Case 3: It's a function call, like '(+ a b)'
    ((listp expr) (let ((op (first expr)))
