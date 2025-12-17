@@ -25,5 +25,5 @@
 (format t "~&; --- System loaded successfully.~%")
 
 (uiop::ensure-directories-exist "bin/")
-(asdf:make "crisp")
+(asdf:make "crisp" :force t)
 (uiop:quit 0)

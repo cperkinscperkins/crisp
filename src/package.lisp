@@ -32,7 +32,10 @@
    #:llvm-half-type #:llvm-bfloat-type #:llvm-float-type #:llvm-double-type
    #:llvm-void-type
    #:llvm-function-type
+   #:llvm-function-type
    #:llvm-struct-type-in-context
+   #:llvm-struct-create-named
+   #:llvm-struct-set-body
 
    ;; Functions
    #:llvm-add-function
@@ -144,6 +147,9 @@
 
    ;; laungage symbols
    #:def-function
+   #:def-struct
+   #:register-struct-definition
+   #:*crisp-structs*
    #:with-template-type
    #:return
    #:declare
@@ -214,6 +220,7 @@
   ;; --- 1. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
                 #:def-function
+                #:def-struct
                 #:return
                 #:declare
                 #:with-template-type

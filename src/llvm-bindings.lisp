@@ -4,10 +4,10 @@
 
 ;; Find the LLVM C library
 (define-foreign-library libllvm
-                        (:windows "LLVM-C.dll")
-                        (:unix (:or "libLLVM-21.so" "libLLVM.so"))
-                        (:darwin "libLLVM.dylib")
-                        (t (:default "libLLVM")))
+  (:windows "LLVM-C.dll")
+  (:unix (:or "libLLVM-21.so" "libLLVM.so"))
+  (:darwin "libLLVM.dylib")
+  (t (:default "libLLVM")))
 
 ;; We don't load this here, because otherwise the build will
 ;; not succeed.  This library is loaded as part of main.
@@ -16,23 +16,23 @@
 
 ;; --- Core Module and Context ---
 (defcfun ("LLVMModuleCreateWithName" llvm-module-create) :pointer
-         (module-id :string))
+  (module-id :string))
 
 (defcfun ("LLVMPrintModuleToString" llvm-print-module-to-string) :pointer
-         (module :pointer))
+  (module :pointer))
 
 (defcfun ("LLVMDisposeModule" llvm-dispose-module) :void
-         (module :pointer))
+  (module :pointer))
 
 (defcfun ("LLVMDisposeMessage" llvm-dispose-message) :void
-         (message :pointer))
+  (message :pointer))
 
 (defcfun ("LLVMGetModuleContext" llvm-get-module-context) :pointer
-         (module :pointer))
+  (module :pointer))
 
 (defcfun ("LLVMTypeOf" llvm-type-of) :pointer
-         "Obtain the type of a value."
-         (val :pointer))
+  "Obtain the type of a value."
+  (val :pointer))
 
 ;; --- Types ---
 (defcfun ("LLVMInt32Type" llvm-int32-type) :pointer)
@@ -41,246 +41,258 @@
 (defcfun ("LLVMInt16Type" llvm-int16-type) :pointer)
 
 (defcfun ("LLVMPointerType" llvm-int8-ptr-type) :pointer
-         (type :pointer)
-         (address-space :unsigned-int))
+  (type :pointer)
+  (address-space :unsigned-int))
 (defcfun ("LLVMInt64Type" llvm-int64-type) :pointer)
 
 (defcfun ("LLVMHalfType" llvm-half-type) :pointer
-         "Get a 16-bit floating-point type.")
+  "Get a 16-bit floating-point type.")
 (defcfun ("LLVMBFloatType" llvm-bfloat-type) :pointer
-         "Get a 16-bit brain floating-point type.")
+  "Get a 16-bit brain floating-point type.")
 (defcfun ("LLVMFloatType" llvm-float-type) :pointer
-         "Get a 32-bit floating-point type.")
+  "Get a 32-bit floating-point type.")
 (defcfun ("LLVMDoubleType" llvm-double-type) :pointer
-         "Get a 64-bit floating-point type.")
+  "Get a 64-bit floating-point type.")
 
 (defcfun ("LLVMVoidType" llvm-void-type) :pointer
-         "Get a void type.")
+  "Get a void type.")
 
 
 (defcfun ("LLVMFunctionType" llvm-function-type) :pointer
-         (return-type :pointer)
-         (param-types :pointer) ; We'll pass an array of types
-         (param-count :int)
-         (is-var-arg :boolean))
+  (return-type :pointer)
+  (param-types :pointer) ; We'll pass an array of types
+  (param-count :int)
+  (is-var-arg :boolean))
 
 (defcfun ("LLVMStructTypeInContext" llvm-struct-type-in-context) :pointer
-         "Create a new structure type in a context."
-         (context :pointer)
-         (element-types :pointer)
-         (element-count :unsigned-int)
-         (packed :boolean))
+  "Create a new structure type in a context."
+  (context :pointer)
+  (element-types :pointer)
+  (element-count :unsigned-int)
+  (packed :boolean))
+
+(defcfun ("LLVMStructCreateNamed" llvm-struct-create-named) :pointer
+  "Create a new named structure type in a context."
+  (context :pointer)
+  (name :string))
+
+(defcfun ("LLVMStructSetBody" llvm-struct-set-body) :void
+  "Sets the elements of a named structure type."
+  (struct-ty :pointer)
+  (element-types :pointer) ; Array of types
+  (element-count :unsigned-int)
+  (packed :boolean))
 
 ;; --- Functions ---
 (defcfun ("LLVMAddFunction" llvm-add-function) :pointer
-         (module :pointer)
-         (name :string)
-         (type :pointer))
+  (module :pointer)
+  (name :string)
+  (type :pointer))
 
 (defcfun ("LLVMGetInsertBlock" llvm-get-insert-block) :pointer
-         (builder :pointer))
+  (builder :pointer))
 
 (defcfun ("LLVMGetBasicBlockParent" llvm-get-basic-block-parent) :pointer
-         (block :pointer))
+  (block :pointer))
 
 (defcfun ("LLVMGetNamedFunction" llvm-get-named-function) :pointer
-         (module :pointer)
-         (name :string))
+  (module :pointer)
+  (name :string))
 
 ;; --- Basic Blocks ---
 (defcfun ("LLVMAppendBasicBlock" llvm-append-basic-block) :pointer
-         (function :pointer)
-         (name :string))
+  (function :pointer)
+  (name :string))
 
 (defcfun ("LLVMGetBasicBlockTerminator" llvm-get-basic-block-terminator) :pointer
-         (block :pointer))
+  (block :pointer))
 
 
 ;; --- Builder ---
 (defcfun ("LLVMCreateBuilder" llvm-create-builder) :pointer)
 
 (defcfun ("LLVMPositionBuilderAtEnd" llvm-position-builder-at-end) :void
-         (builder :pointer)
-         (block :pointer))
+  (builder :pointer)
+  (block :pointer))
 
 (defcfun ("LLVMDisposeBuilder" llvm-dispose-builder) :void
-         (builder :pointer))
+  (builder :pointer))
 
 (defcfun ("LLVMBuildCall2" llvm-build-call2) :pointer
-         "Builds a call instruction."
-         (builder :pointer)
-         (fn-type :pointer)
-         (fn :pointer)
-         (args :pointer)
-         (num-args :unsigned-int)
-         (name :string))
+  "Builds a call instruction."
+  (builder :pointer)
+  (fn-type :pointer)
+  (fn :pointer)
+  (args :pointer)
+  (num-args :unsigned-int)
+  (name :string))
 
 ;; --- Instructions ---
 (defcfun ("LLVMConstInt" llvm-const-int) :pointer
-         (int-type :pointer)
-         (value :uint64)
-         (sign-extend :boolean))
+  (int-type :pointer)
+  (value :uint64)
+  (sign-extend :boolean))
 
 (defcfun ("LLVMConstReal" llvm-const-real) :pointer
-         (real-type :pointer)
-         (value :double))
+  (real-type :pointer)
+  (value :double))
 
 (defcfun ("LLVMBuildRet" llvm-build-ret) :pointer
-         (builder :pointer)
-         (value :pointer))
+  (builder :pointer)
+  (value :pointer))
 
 (defcfun ("LLVMBuildRetVoid" llvm-build-ret-void) :pointer
-         (builder :pointer))
+  (builder :pointer))
 
 
 ;; --- Parameters ---
 (defcfun ("LLVMGetParam" llvm-get-param) :pointer
-         (function :pointer)
-         (index :uint))
+  (function :pointer)
+  (index :uint))
 
 ;; --- Memory (The "Alloca Trick") ---
 (defcfun ("LLVMBuildAlloca" llvm-build-alloca) :pointer
-         (builder :pointer)
-         (type :pointer)
-         (name :string))
+  (builder :pointer)
+  (type :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildStore" llvm-build-store) :pointer
-         (builder :pointer)
-         (value :pointer)
-         (pointer :pointer))
+  (builder :pointer)
+  (value :pointer)
+  (pointer :pointer))
 
 (defcfun ("LLVMGetUndef" llvm-get-undef) :pointer
-         "Get an undefined value of a given type."
-         (type :pointer))
+  "Get an undefined value of a given type."
+  (type :pointer))
 
 (defcfun ("LLVMBuildLoad" llvm-build-load) :pointer
-         (builder :pointer)
-         (pointer :pointer)
-         (name :string))
+  (builder :pointer)
+  (pointer :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildLoad2" llvm-build-load2) :pointer
-         (builder :pointer)
-         (type :pointer)
-         (pointer :pointer)
-         (name :string))
+  (builder :pointer)
+  (type :pointer)
+  (pointer :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildInsertValue" llvm-build-insert-value) :pointer
-         "Builds an instruction to insert a value into a struct."
-         (builder :pointer)
-         (agg-val :pointer)
-         (elt-val :pointer)
-         (index :unsigned-int)
-         (name :string))
+  "Builds an instruction to insert a value into a struct."
+  (builder :pointer)
+  (agg-val :pointer)
+  (elt-val :pointer)
+  (index :unsigned-int)
+  (name :string))
 
 (defcfun ("LLVMBuildExtractValue" llvm-build-extract-value) :pointer
-         "Builds an instruction to extract a value from a struct."
-         (builder :pointer)
-         (agg-val :pointer)
-         (index :unsigned-int)
-         (name :string))
+  "Builds an instruction to extract a value from a struct."
+  (builder :pointer)
+  (agg-val :pointer)
+  (index :unsigned-int)
+  (name :string))
 
 ;; --- Math ---
 (defcfun ("LLVMBuildAdd" llvm-build-add) :pointer
-         (builder :pointer)
-         (lhs :pointer)
-         (rhs :pointer)
-         (name :string))
+  (builder :pointer)
+  (lhs :pointer)
+  (rhs :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildFAdd" llvm-build-fadd) :pointer
-         (builder :pointer)
-         (lhs :pointer)
-         (rhs :pointer)
-         (name :string))
+  (builder :pointer)
+  (lhs :pointer)
+  (rhs :pointer)
+  (name :string))
 
 ;; --- Casting ---
 (defcfun ("LLVMBuildSExt" llvm-build-sext) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildZExt" llvm-build-zext) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildFPExt" llvm-build-fp-ext) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildSIToFP" llvm-build-si-to-fp) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildUIToFP" llvm-build-ui-to-fp) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildFPToSI" llvm-build-fp-to-si) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildFPToUI" llvm-build-fp-to-ui) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildTrunc" llvm-build-trunc) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildIntToPtr" llvm-build-int-to-ptr) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildBitCast" llvm-build-bit-cast) :pointer
-         (builder :pointer)
-         (val :pointer)
-         (dest-ty :pointer)
-         (name :string))
+  (builder :pointer)
+  (val :pointer)
+  (dest-ty :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildStructGEP" llvm-build-struct-gep) :pointer
-         (builder :pointer)
-         (ptr :pointer)
-         (idx :unsigned-int)
-         (name :string))
+  (builder :pointer)
+  (ptr :pointer)
+  (idx :unsigned-int)
+  (name :string))
 
 (defcfun ("LLVMBuildStructGEP2" llvm-build-struct-gep2) :pointer
-         (builder :pointer)
-         (type :pointer)
-         (ptr :pointer)
-         (idx :unsigned-int)
-         (name :string))
+  (builder :pointer)
+  (type :pointer)
+  (ptr :pointer)
+  (idx :unsigned-int)
+  (name :string))
 
 
 ;; --- Comparisons ---
 (defcfun ("LLVMBuildICmp" llvm-build-icmp) :pointer
-         (builder :pointer)
-         (op :unsigned-int) ;; LLVMIntPredicate
-         (lhs :pointer)
-         (rhs :pointer)
-         (name :string))
+  (builder :pointer)
+  (op :unsigned-int) ;; LLVMIntPredicate
+  (lhs :pointer)
+  (rhs :pointer)
+  (name :string))
 
 (defcfun ("LLVMBuildFCmp" llvm-build-fcmp) :pointer
-         (builder :pointer)
-         (op :unsigned-int) ;; LLVMRealPredicate
-         (lhs :pointer)
-         (rhs :pointer)
-         (name :string))
+  (builder :pointer)
+  (op :unsigned-int) ;; LLVMRealPredicate
+  (lhs :pointer)
+  (rhs :pointer)
+  (name :string))
 
 ;; LLVMIntPredicate
 (defconstant +llvm-int-eq+ 32)
@@ -312,122 +324,122 @@
 
 ;; --- Branching ---
 (defcfun ("LLVMBuildBr" llvm-build-br) :pointer
-         (builder :pointer)
-         (dest :pointer))
+  (builder :pointer)
+  (dest :pointer))
 
 (defcfun ("LLVMBuildCondBr" llvm-build-cond-br) :pointer
-         (builder :pointer)
-         (if :pointer)
-         (then :pointer)
-         (else :pointer))
+  (builder :pointer)
+  (if :pointer)
+  (then :pointer)
+  (else :pointer))
 
 (defcfun ("LLVMBuildPhi" llvm-build-phi) :pointer
-         "Builds a PHI node."
-         (builder :pointer)
-         (type :pointer)
-         (name :string))
+  "Builds a PHI node."
+  (builder :pointer)
+  (type :pointer)
+  (name :string))
 
 (defcfun ("LLVMAddIncoming" llvm-add-incoming) :void
-         "Adds incoming values to a PHI node."
-         (phi-node :pointer)
-         (incoming-values :pointer)
-         (incoming-blocks :pointer)
-         (count :unsigned-int))
+  "Adds incoming values to a PHI node."
+  (phi-node :pointer)
+  (incoming-values :pointer)
+  (incoming-blocks :pointer)
+  (count :unsigned-int))
 
 ;; --- Debug Info ---
 (cffi:defctype llvm-metadata-ref :pointer)
 (cffi:defctype llvm-di-builder-ref :pointer)
 
 (cffi:defcfun ("LLVMCreateDIBuilder" llvm-create-di-builder) llvm-di-builder-ref
-              "Creates a new DIBuilder."
-              (M :pointer))
+  "Creates a new DIBuilder."
+  (M :pointer))
 
 (cffi:defcfun ("LLVMDIBuilderFinalize" llvm-di-builder-finalize) :void
-              "Constructs the DWARF metadata for the given DIBuilder."
-              (builder llvm-di-builder-ref))
+  "Constructs the DWARF metadata for the given DIBuilder."
+  (builder llvm-di-builder-ref))
 
 (cffi:defcfun ("LLVMDisposeDIBuilder" llvm-dispose-di-builder) :void
-              "Disposes of a DIBuilder. This should be called to avoid memory leaks."
-              (builder llvm-di-builder-ref))
+  "Disposes of a DIBuilder. This should be called to avoid memory leaks."
+  (builder llvm-di-builder-ref))
 
 (cffi:defcfun ("LLVMDIBuilderCreateFile" llvm-di-builder-create-file) llvm-metadata-ref
-              "Creates a new DIFile."
-              (builder llvm-di-builder-ref)
-              (filename :string)
-              (filename-length :unsigned-int)
-              (directory :string)
-              (directory-length :unsigned-int))
+  "Creates a new DIFile."
+  (builder llvm-di-builder-ref)
+  (filename :string)
+  (filename-length :unsigned-int)
+  (directory :string)
+  (directory-length :unsigned-int))
 
 (cffi:defcfun ("LLVMDIBuilderCreateCompileUnit" llvm-di-builder-create-compile-unit) llvm-metadata-ref
-              "Creates a new DICompileUnit."
-              (builder llvm-di-builder-ref)
-              (lang :unsigned-int) ; LLVMDWARFSourceLanguage
-              (file llvm-metadata-ref)
-              (producer :string)
-              (producer-length :unsigned-int)
-              (is-optimized :boolean)
-              (flags :string)
-              (flags-length :unsigned-int)
-              (runtime-ver :unsigned-int)
-              (split-name :string)
-              (split-name-length :unsigned-int)
-              (kind :unsigned-int) ; LLVMDWARFEmissionKind
-              (dwo-id :unsigned-int)
-              (split-debug-inline :boolean)
-              (debug-info-for-profiling :boolean)
-              (sys-root :string)
-              (sys-root-length :unsigned-int)
-              (sdk :string)
-              (sdk-length :unsigned-int))
+  "Creates a new DICompileUnit."
+  (builder llvm-di-builder-ref)
+  (lang :unsigned-int) ; LLVMDWARFSourceLanguage
+  (file llvm-metadata-ref)
+  (producer :string)
+  (producer-length :unsigned-int)
+  (is-optimized :boolean)
+  (flags :string)
+  (flags-length :unsigned-int)
+  (runtime-ver :unsigned-int)
+  (split-name :string)
+  (split-name-length :unsigned-int)
+  (kind :unsigned-int) ; LLVMDWARFEmissionKind
+  (dwo-id :unsigned-int)
+  (split-debug-inline :boolean)
+  (debug-info-for-profiling :boolean)
+  (sys-root :string)
+  (sys-root-length :unsigned-int)
+  (sdk :string)
+  (sdk-length :unsigned-int))
 
 (cffi:defcfun ("LLVMDIBuilderCreateFunction" llvm-di-builder-create-function) llvm-metadata-ref
-              "Creates a new DISubprogram for a function."
-              (builder llvm-di-builder-ref)
-              (scope llvm-metadata-ref)
-              (name :string)
-              (name-len :unsigned-int)
-              (linkage-name :string)
-              (linkage-name-len :unsigned-int)
-              (file llvm-metadata-ref)
-              (line-no :unsigned-int)
-              (ty llvm-metadata-ref)
-              (is-local-to-unit :boolean)
-              (is-definition :boolean)
-              (scope-line :unsigned-int)
-              (flags :unsigned-int) ; LLVMDIFlags
-              (is-optimized :boolean))
+  "Creates a new DISubprogram for a function."
+  (builder llvm-di-builder-ref)
+  (scope llvm-metadata-ref)
+  (name :string)
+  (name-len :unsigned-int)
+  (linkage-name :string)
+  (linkage-name-len :unsigned-int)
+  (file llvm-metadata-ref)
+  (line-no :unsigned-int)
+  (ty llvm-metadata-ref)
+  (is-local-to-unit :boolean)
+  (is-definition :boolean)
+  (scope-line :unsigned-int)
+  (flags :unsigned-int) ; LLVMDIFlags
+  (is-optimized :boolean))
 
 (cffi:defcfun ("LLVMSetSubprogram" llvm-set-subprogram) :void
-              "Sets the subprogram for a function."
-              (func :pointer)
-              (sp llvm-metadata-ref))
+  "Sets the subprogram for a function."
+  (func :pointer)
+  (sp llvm-metadata-ref))
 
 (cffi:defcfun ("LLVMDIBuilderCreateBasicType" llvm-di-builder-create-basic-type) llvm-metadata-ref
-              "Creates a new DIBasicType."
-              (builder llvm-di-builder-ref)
-              (name :string)
-              (name-len :unsigned-int)
-              (size-in-bits :uint64)
-              (encoding :unsigned-int) ; LLVMDWARFTypeEncoding
-              (flags :unsigned-int)) ; LLVMDIFlags
+  "Creates a new DIBasicType."
+  (builder llvm-di-builder-ref)
+  (name :string)
+  (name-len :unsigned-int)
+  (size-in-bits :uint64)
+  (encoding :unsigned-int) ; LLVMDWARFTypeEncoding
+  (flags :unsigned-int)) ; LLVMDIFlags
 
 (cffi:defcfun ("LLVMDIBuilderCreateSubroutineType" llvm-di-builder-create-subroutine-type) llvm-metadata-ref
-              "Creates a new DISubroutineType."
-              (builder llvm-di-builder-ref)
-              (file llvm-metadata-ref)
-              (parameter-types :pointer) ; Array of LLVMMetadataRef
-              (num-parameter-types :unsigned-int)
-              (flags :unsigned-int)) ; LLVMDIFlags
+  "Creates a new DISubroutineType."
+  (builder llvm-di-builder-ref)
+  (file llvm-metadata-ref)
+  (parameter-types :pointer) ; Array of LLVMMetadataRef
+  (num-parameter-types :unsigned-int)
+  (flags :unsigned-int)) ; LLVMDIFlags
 
 (cffi:defcfun ("LLVMDIBuilderCreateDebugLocation" llvm-di-builder-create-debug-location) llvm-metadata-ref
-              "Creates a new DILocation metadata node."
-              (context :pointer)
-              (line :unsigned-int)
-              (column :unsigned-int)
-              (scope llvm-metadata-ref)
-              (inlined-at llvm-metadata-ref))
+  "Creates a new DILocation metadata node."
+  (context :pointer)
+  (line :unsigned-int)
+  (column :unsigned-int)
+  (scope llvm-metadata-ref)
+  (inlined-at llvm-metadata-ref))
 
 (cffi:defcfun ("LLVMInstructionSetDebugLoc" llvm-instruction-set-debug-loc) :void
-              "Sets the debug location for the given instruction."
-              (inst :pointer)
-              (loc :pointer))
+  "Sets the debug location for the given instruction."
+  (inst :pointer)
+  (loc :pointer))

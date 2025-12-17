@@ -36,23 +36,23 @@
   (let ((original-fn (symbol-function fn-symbol)))
     ;; Avoid advising a function more than once.
     (when (get fn-symbol :advised)
-      (log:warn "Function ~s is already advised. Skipping." fn-symbol)
-      (return-from advise-function))
+          (log:warn "Function ~s is already advised. Skipping." fn-symbol)
+          (return-from advise-function))
 
     (setf (symbol-function fn-symbol)
-          (lambda (&rest args)
-            (log:debug "-> Entering ~s with args: ~s" fn-symbol args)
-            (let ((return-vals (multiple-value-list (apply original-fn args))))
-              (log:debug "<- Exiting ~s with return: ~s" fn-symbol return-vals)
-              (values-list return-vals))))
+      (lambda (&rest args)
+        (log:debug "-> Entering ~s with args: ~s" fn-symbol args)
+        (let ((return-vals (multiple-value-list (apply original-fn args))))
+          (log:debug "<- Exiting ~s with return: ~s" fn-symbol return-vals)
+          (values-list return-vals))))
     (setf (get fn-symbol :advised) t)))
 
 (defun initialize-advisements ()
   "Advises a hard-coded list of functions for debugging purposes."
   (let ((functions-to-advise
-          ;; Add function symbols here, e.g., 'crisp.compiler::analyze-expression
-          ;'( crisp.compiler::analyze-signatures-pass))) 
-          '( )))
+         ;; Add function symbols here, e.g., 'crisp.compiler::analyze-expression
+         ;'( crisp.compiler::analyze-signatures-pass))) 
+         '()))
     (dolist (fn-sym functions-to-advise)
       (advise-function fn-sym))))
 
@@ -60,11 +60,11 @@
   "Prints the contents of a semantic environment to *debug-io* in a formatted way.
   The environment is expected to be an alist of (name type) pairs."
   (let ((output-string
-          (with-output-to-string (s)
-            (format s "~&--- ~a ---~%" title)
-            (if (null env)
-                (format s "  (empty)~%")
-                (loop for (var-name . var-type) in env
-                      do (format s "  ~20a: ~a~%" var-name var-type)))
-            (format s "------------------------"))))
+         (with-output-to-string (s)
+           (format s "~&--- ~a ---~%" title)
+           (if (null env)
+               (format s "  (empty)~%")
+               (loop for (var-name . var-type) in env
+                     do (format s "  ~20a: ~a~%" var-name var-type)))
+           (format s "------------------------"))))
     (log:debug "~a" output-string)))

@@ -24,8 +24,8 @@
                              (:unsigned-int 7) ; DW_ATE_unsigned
                              (:float 4))) ; DW_ATE_float
                  (di-type (llvm-di-builder-create-basic-type
-                           di-builder name-str (length name-str)
-                           (crisp-type-size crisp-type) encoding 0)))
+                            di-builder name-str (length name-str)
+                            (crisp-type-size crisp-type) encoding 0)))
             (setf (gethash (crisp-type-name crisp-type) di-type-cache) di-type)
             di-type))
       ;; It's an unknown or parameterized type. Create a placeholder.
@@ -67,10 +67,8 @@
   (cond
    ;; Simple type like 'int
    ((symbolp type-spec)
-     (let ((crisp-type (gethash type-spec *crisp-types*)))
-       (unless crisp-type
-         (error "Internal codegen error: Unknown simple type ~a" type-spec))
-       (funcall (crisp-type-llvm-type-fn crisp-type))))
+     (log:info "Resolving symbol type: ~a" type-spec)
+     (resolve-type-to-llvm type-spec))
    ;; Parameterized type like '(cell int)
    ((listp type-spec)
      (let ((base-type (first type-spec)))
@@ -155,16 +153,16 @@
                                                  (di-param-types (cons di-return-type
                                                                        (loop for param in param-nodes
                                                                              collect (get-or-create-di-type
-                                                                                      (gethash (semantic-param-type param) *crisp-types*)
-                                                                                      di-builder di-type-cache))))
+                                                                                       (gethash (semantic-param-type param) *crisp-types*)
+                                                                                       di-builder di-type-cache))))
                                                  (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
                                                  (_ (loop for i from 0 for type in di-param-types
                                                           do (setf (cffi:mem-aref di-param-array :pointer i) type)))
                                                  (di-fn-type (llvm-di-builder-create-subroutine-type
-                                                              di-builder di-file di-param-array (length di-param-types) 0))
+                                                               di-builder di-file di-param-array (length di-param-types) 0))
                                                  (subprogram (llvm-di-builder-create-function
-                                                              di-builder di-compile-unit fn-name (length fn-name) fn-name (length fn-name)
-                                                              di-file line-num di-fn-type nil t 0 0 nil)))
+                                                               di-builder di-compile-unit fn-name (length fn-name) fn-name (length fn-name)
+                                                               di-file line-num di-fn-type nil t 0 0 nil)))
           (llvm-set-subprogram func subprogram)
           subprogram)))
 
@@ -388,7 +386,7 @@
                                                                          (cffi:null-pointer)))))) ; InlinedAt
 
         (log:debug "Codegen for ADD: lhs-type: ~s, rhs-type: ~s, result-type: ~s"
-                   lhs-type-name rhs-type-name result-type-name)
+          lhs-type-name rhs-type-name result-type-name)
 
         (when di-location (llvm-instruction-set-debug-loc add-inst di-location))
         (values add-inst di-location)))))

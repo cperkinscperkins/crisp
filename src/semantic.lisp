@@ -26,6 +26,13 @@
   (is-template-p nil :type boolean)
   (template-params nil :type list))
 
+(defstruct crisp-struct-definition
+  "Stores the definition of a user-defined struct."
+  (name nil :type symbol)
+  (members nil :type list) ; List of (name type-symbol) pairs
+  (llvm-type nil) ; Cached LLVM type reference
+  )
+
 ;; Sema Structs
 ;; ------------
 
