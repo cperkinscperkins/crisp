@@ -743,7 +743,11 @@
 
           ;; --- Merge Block ---
           (llvm-position-builder-at-end builder merge-block)
-          (values nil nil))))))
+          (if result-alloca
+              (let* ((type (crisp-type-to-llvm-type result-type-spec module))
+                     (result-val (llvm-build-load2 builder type result-alloca "if_res")))
+                (values result-val nil))
+              (values nil nil)))))))
 
 (defmethod generate-node-ir ((node semantic-struct-construction) builder module var-env di-builder di-scope location-map)
   (let* ((type-name (semantic-struct-construction-type node))
