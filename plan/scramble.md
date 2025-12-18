@@ -278,6 +278,9 @@ LANGUAGE CHANGES
 - [ ] FML - +warp-size+ is 32 throughout the doc, but ideal warp size
             on BattleMage might be 16.  How is that set/handled?
 
+- [ ] remove x:int style type declarations. Just use : for namespaces at some later date.
+- [ ] if-reorder <-- see google doc.
+
 
 
 

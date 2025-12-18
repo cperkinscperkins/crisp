@@ -263,6 +263,11 @@ This supports overloading templates by arity or other factors.")
                    (return (%extract-struct-member obj ,i)))))))
 
 
+(defmacro def-setter (name args &body body)
+  "Defines a setter function (which is just a def-function but semantically intended for use with set!).
+   The return type is implicitly nil/void. We append (return) to ensure this."
+  `(def-function ,name ,args ,@body (return)))
+
 ;; INTERNAL TO COMPILER
 ;; ====================
 
@@ -1050,14 +1055,15 @@ This supports overloading templates by arity or other factors.")
                              inferred-return-types
                              return-type)
             :body (if (typep return-node 'semantic-explicit-return)
-                      (list return-node)
-                      (list (make-semantic-return
-                              :return-type (let ((nt (semantic-node-type return-node)))
-                                             (if (and (listp nt) (not (valid-type-p nt)))
-                                                 nt
-                                                 (list nt)))
-                              :value-node return-node
-                              :source-location (if return-node (semantic-node-source-location return-node) location))))
+                      body-nodes
+                      (append (butlast body-nodes)
+                        (list (make-semantic-return
+                                :return-type (let ((nt (semantic-node-type return-node)))
+                                               (if (and (listp nt) (not (valid-type-p nt)))
+                                                   nt
+                                                   (list nt)))
+                                :value-node return-node
+                                :source-location (if return-node (semantic-node-source-location return-node) location)))))
             :source-location location))))))
 
 
@@ -1576,51 +1582,67 @@ This supports overloading templates by arity or other factors.")
            :value-node value-node
            :source-location location)))
 
-     ;; Case 2: Struct member assignment via accessor (set! (x~ p) v)
-     ;; We transform this into: (set! p (%set-struct-member p index v))
-     ((and (listp target-form) (= (length target-form) 2))
+     ;; Case 2: Function Call / Struct Accessor
+     ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
        (let* ((op (first target-form))
-              (op-name (symbol-name op))
-              ;; Check if it ends with ~ (e.g., x~ or ~x~)
-              (is-accessor (or (alexandria:ends-with #\~ op-name)
-                               (and (alexandria:starts-with #\~ op-name)
-                                    (alexandria:ends-with #\~ op-name)))))
-         (unless is-accessor
-           (error "Invalid set! target: ~a. Only variables and struct accessors are supported." target-form))
+              (op-args (rest target-form))
+              ;; Analyze the arguments to `(op args...)`
+              (arg-nodes (loop for arg in op-args
+                               for i from 1
+                               collect (analyze-expression arg env (append location (list 1 i)))))
+              (all-arg-nodes (append arg-nodes (list value-node)))
+              (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
+              ;; Check for a matching setter function signature: (op arg1 ... argN value)
+              (signatures (gethash op *function-table*))
+              (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
 
-         ;; Extract member name from accessor (x~ -> x, ~x~ -> x)
-         (let* ((clean-name (string-trim "~" op-name))
-                (member-sym (intern clean-name (symbol-package op)))
-                (struct-obj-form (second target-form))
-                ;; Analyze the struct object to identify its type and variable
-                (struct-node (analyze-expression struct-obj-form env (append location '(1 1)))))
+         (cond
+          ;; Sub-case 2a: Found an overloaded setter function -> Call it.
+          (match
+            (make-semantic-call
+              :name op
+              :type (function-signature-return-types match)
+              :args all-arg-nodes
+              :signature match
+              :source-location location))
 
-           ;; The struct object MUST be a variable or something set!-able to be updated in place.
-           ;; (set! (x~ (make-point ...)) v) is meaningless because the result is discarded.
-           ;; But technically valid in functional sense if we return the new struct.
-           ;; However, (set! ...) implies mutation of a place.
-           ;; If the struct object is a variable, we generate (set! var (update ...))
-           ;; If it's not a variable, we can't 'set!' it.
-           (unless (semantic-var-read-p struct-node)
-             (error "Cannot set member of non-variable struct form: ~a" struct-obj-form))
+          ;; Sub-case 2b: Fallback to Struct Member Update (Legacy Accessor Logic)
+          ;; Only valid if default accessors are used and no explicit setter overrides it.
+          (t
+            (let* ((op-name (symbol-name op))
+                   (is-accessor (or (alexandria:ends-with #\~ op-name)
+                                    (and (alexandria:starts-with #\~ op-name)
+                                         (alexandria:ends-with #\~ op-name)))))
+              (unless is-accessor
+                (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor." target-form))
 
-           (let* ((struct-type (semantic-node-type struct-node))
-                  (struct-var-name (semantic-var-read-name struct-node))
-                  (member-index (get-struct-member-index struct-type member-sym)))
+              ;; The structure member update logic expects the FIRST arg to be the struct.
+              (unless (= (length arg-nodes) 1)
+                (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a." op (length arg-nodes)))
 
-             ;; Create the update node
-             (let ((update-node (make-semantic-struct-member-update
-                                 :type struct-type
-                                 :struct-node struct-node
-                                 :member-index member-index
-                                 :value-node value-node
-                                 :source-location location)))
+              (let* ((clean-name (string-trim "~" op-name))
+                     (member-sym (intern clean-name (symbol-package op)))
+                     (struct-node (first arg-nodes))
+                     (struct-type (semantic-node-type struct-node)))
 
-               ;; Wrap in a set! for the struct variable
-               (make-semantic-set!
-                 :target-node struct-node
-                 :value-node update-node
-                 :source-location location))))))
+                ;; Verify struct node is a variable (l-value)
+                (unless (semantic-var-read-p struct-node)
+                  (error "Cannot set member of non-variable struct form: ~a" (second target-form)))
+
+                (let ((member-index (get-struct-member-index struct-type member-sym)))
+                  ;; Create the update node
+                  (let ((update-node (make-semantic-struct-member-update
+                                      :type struct-type
+                                      :struct-node struct-node
+                                      :member-index member-index
+                                      :value-node value-node
+                                      :source-location location)))
+
+                    ;; Wrap in a set! for the struct variable
+                    (make-semantic-set!
+                      :target-node struct-node
+                      :value-node update-node
+                      :source-location location)))))))))
 
      (t (error "Invalid set! target structure: ~a" target-form)))))
 

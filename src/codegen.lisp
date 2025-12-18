@@ -635,8 +635,13 @@
 
     ;; 2. Generate code for the body, using the extended environment.
     ;; The result of the let is the result of the last expression in the body.
-    (loop for body-node in (semantic-let-body node)
-          finally (return (generate-expression-ir builder module let-env di-builder di-scope location-map body-node)))))
+    (let ((last-val nil)
+          (last-loc nil))
+      (dolist (body-node (semantic-let-body node))
+        (multiple-value-bind (val loc) (generate-expression-ir builder module let-env di-builder di-scope location-map body-node)
+          (setf last-val val)
+          (setf last-loc loc)))
+      (values last-val last-loc))))
 
 (defmethod generate-node-ir ((node semantic-funcall) builder module var-env di-builder di-scope location-map)
   "Generates IR for an indirect function call (funcall)."

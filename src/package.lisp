@@ -148,6 +148,7 @@
    ;; laungage symbols
    #:def-function
    #:def-struct
+   #:def-setter
    #:register-struct-definition
    #:*crisp-structs*
    #:with-template-type
@@ -229,6 +230,7 @@
   (:import-from :crisp.compiler
                 #:def-function
                 #:def-struct
+                #:def-setter
                 #:return
                 #:declare
                 #:with-template-type
@@ -307,7 +309,7 @@
    ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function
    #:def-orchestration #:def-qint #:def-microfloat-block
-   #:def-type-alias #:def-struct
+   #:def-type-alias #:def-struct #:def-setter
    #:declare
    #:return-type #:type
    ;; All Crisp types
