@@ -161,6 +161,7 @@ This supports overloading templates by arity or other factors.")
 
 (defun mangle-template-struct-name (name params)
   "Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT"
+  (unless name (return-from mangle-template-struct-name nil))
   (intern (format nil "~a_~{~a~^_~}" name params) (symbol-package name)))
 
 (defun types-equivalent-p (t1 t2)
@@ -168,7 +169,7 @@ This supports overloading templates by arity or other factors.")
   (cond
    ((equal t1 t2) t)
    ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT equivalence
-   ((and (listp t1) (symbolp t2))
+   ((and (consp t1) (symbolp t2))
      (let ((base-type (first t1))
            (params (rest t1)))
        (if (symbolp base-type)
@@ -194,7 +195,7 @@ This supports overloading templates by arity or other factors.")
                   t
                   nil)))
            nil)))
-   ((and (symbolp t1) (listp t2))
+   ((and (symbolp t1) (consp t2))
      (types-equivalent-p t2 t1))
    (t nil)))
 
@@ -438,15 +439,18 @@ This supports overloading templates by arity or other factors.")
    ;; Standard types
    ((symbolp type-spec)
      (or (gethash type-spec *crisp-types*)
-         (gethash type-spec *crisp-structs*)))
+         (gethash type-spec *crisp-structs*)
+         ;; Allow defined functions to be used as types (for function pointers/checking)
+         ;; We might want to be more specific here later.
+         (gethash type-spec *function-table*)))
    ;; Function Type Literal: (:function-literal +)
-   ((and (listp type-spec) (eq (first type-spec) :function-literal))
+   ((and (consp type-spec) (eq (first type-spec) :function-literal))
      (and (= (length type-spec) 2) (symbolp (second type-spec))))
    ;; Function Type Descriptor: (:function-type (int) :params (int int))
-   ((and (listp type-spec) (eq (first type-spec) :function-type))
+   ((and (consp type-spec) (eq (first type-spec) :function-type))
      t) ;; Relaxed check for now, assumed constructed correctly by parser.
    ;; Parameterized type like '(cell int)
-   ((listp type-spec)
+   ((consp type-spec)
      (let ((base-type (first type-spec))
            (params (rest type-spec)))
        (cond
