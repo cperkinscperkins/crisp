@@ -172,7 +172,8 @@ This supports overloading templates by arity or other factors.")
    ((and (consp t1) (symbolp t2))
      (let ((base-type (first t1))
            (params (rest t1)))
-       (if (symbolp base-type)
+       (if (and (symbolp base-type)
+                (not (member base-type '(function quote))))
            (progn
             ;; Trigger auto-instantiation if template exists
             (when (gethash base-type *template-registry*)
@@ -454,6 +455,7 @@ This supports overloading templates by arity or other factors.")
      (let ((base-type (first type-spec))
            (params (rest type-spec)))
        (cond
+        ((member base-type '(function quote)) nil)
         ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
         ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
         (t
