@@ -39,6 +39,9 @@
   Handles single values, void, and multiple values (by creating a struct)."
   (log:debug "get-llvm-return-type: ~s" return-type-names)
   (cond
+   ;; Case 0: Void return (NIL or empty list)
+   ((or (null return-type-names) (equal return-type-names '(nil)))
+     (llvm-void-type))
    ;; Case 1: Multiple return values. Create a struct.
    ((> (length return-type-names) 1)
      (let* ((context (llvm-get-module-context module))
