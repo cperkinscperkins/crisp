@@ -329,6 +329,7 @@
                           (cond
                            ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int)) (llvm-const-int llvm-type value nil))
                            ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
+                           ((eq (crisp-type-category crisp-type) :void) nil)
                            (t (error "Codegen for literal of unknown type category: ~a" type-spec)))))
                       (t (error "Codegen not implemented for literal of type ~a" type-spec))))
          (di-location (when (and di-builder di-scope location-map)
@@ -731,7 +732,9 @@
 
         ;; Note: The result type might be 'void (nil).
         (let ((result-alloca
-               (unless (or (null result-type-spec) (eq result-type-spec :void))
+               (unless (or (null result-type-spec)
+                           (eq result-type-spec :void)
+                           (eq result-type-spec 'void))
                  (let ((type (crisp-type-to-llvm-type result-type-spec module)))
                    (llvm-build-alloca builder type "if_result")))))
 
@@ -740,11 +743,14 @@
 
           ;; --- Then Block ---
           (llvm-position-builder-at-end builder then-block)
-          (multiple-value-bind (then-val then-loc)
-              (generate-node-ir (semantic-if-then-node node) builder module var-env di-builder di-scope location-map)
-            (declare (ignore then-loc))
-            (when result-alloca
-                  (llvm-build-store builder then-val result-alloca)))
+          (if (semantic-if-then-node node)
+              (multiple-value-bind (then-val then-loc)
+                  (generate-node-ir (semantic-if-then-node node) builder module var-env di-builder di-scope location-map)
+                (declare (ignore then-loc))
+                (when result-alloca
+                      (llvm-build-store builder then-val result-alloca)))
+              ;; No then clause (e.g. unless). Treat as void/nil.
+              nil)
 
           (unless (terminator-p (llvm-get-insert-block builder))
             (llvm-build-br builder merge-block))

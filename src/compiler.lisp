@@ -88,7 +88,9 @@ This supports overloading templates by arity or other factors.")
            (half ,#'llvm-half-type 16 :float)
            (bfloat16 ,#'llvm-bfloat-type 16 :float)
            (float ,#'llvm-float-type 32 :float)
-           (double ,#'llvm-double-type 64 :float))))
+           (double ,#'llvm-double-type 64 :float)
+           ;; Void
+           (void ,#'llvm-void-type 0 :void))))
     (loop for (name llvm-fn size category) in types
           do (setf (gethash name *crisp-types*)
                (make-crisp-type :name name
