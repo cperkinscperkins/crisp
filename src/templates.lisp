@@ -18,14 +18,6 @@
   (body nil :type list) ; The full (def-function ...) form
   (signature nil :type list)) ; The declared signature, if any
 
-(defvar *template-registry* (make-hash-table)
-        "Maps template names (symbols) to a LIST of template-data structs.
-This supports overloading templates by arity or other factors.")
-
-(defvar *instantiated-templates* (make-hash-table :test 'equal)
-        "Tracks which specializations have already been generated.
-Key: (template-name . concrete-types)
-Value: The expanded form (or T).")
 
 (defun register-template (name params constraints body signature)
   "Registers a new template definition."
@@ -52,24 +44,47 @@ Value: The expanded form (or T).")
 
     `(progn
       ,@(loop for form in real-body
-                when (and (listp form) (eq (first form) 'def-function))
-              collect (let ((name (second form))
-                            (args (third form))
-                            (fn-body (cdddr form)))
-                        ;; Extract signature from function body if present
-                        (let* ((sig-decl (find-if (lambda (f) (and (listp f) (eq (car f) 'declare))) fn-body))
-                               (signature (when sig-decl (second sig-decl))))
+              collect
+                (cond
+                 ((and (listp form) (eq (first form) 'def-function))
+                   (let ((name (second form))
+                         (args (third form))
+                         (fn-body (cdddr form)))
+                     ;; Extract signature from function body if present
+                     (let* ((sig-decl (find-if (lambda (f) (and (listp f) (eq (car f) 'declare))) fn-body))
+                            (signature (when sig-decl (second sig-decl))))
 
-                          `(progn
-                            ;; Register the template at compile/load time
-                            (eval-when (:compile-toplevel :load-toplevel :execute)
-                              (register-template ',name ',params ',constraints ',form ',signature)) ;; Define the generator macro: (gen-NAME ...)
-                            (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
-                              `(template-instantiation ,(instantiate-template ',name concrete-types)))
+                       `(progn
+                         ;; Register the template at compile/load time
+                         (eval-when (:compile-toplevel :load-toplevel :execute)
+                           (register-template ',name ',params ',constraints ',form ',signature)) ;; Define the generator macro: (gen-NAME ...)
+                         (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
+                           `(template-instantiation ,(instantiate-template ',name concrete-types)))
 
-                            ;; Define the type helper macro: (NAME-type ...)
-                            (defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
-                              `(get-template-signature ',',name ',concrete-types)))))))))
+                         ;; Define the type helper macro: (NAME-type ...)
+                         (defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
+                           `(get-template-signature ',',name ',concrete-types))))))
+
+                 ((and (listp form) (eq (first form) 'def-struct))
+                   (let* ((name (second form))
+                          (members (cddr form))
+                          ;; Parse (x type) (y type) -> (type type => name)
+                          (member-types (mapcar #'second members))
+                          (signature `(function (,@member-types => ,name))))
+                     `(progn
+                       ;; Register the template for Struct with synthesized constructor signature
+                       (eval-when (:compile-toplevel :load-toplevel :execute)
+                         (register-template ',name ',params ',constraints ',form ',signature))
+
+                       ;; Define the generator macro: (gen-NAME ...)
+                       (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
+                         `(template-instantiation ,(instantiate-template ',name concrete-types)))
+
+                       ;; Define the type helper macro: (NAME-type ...) 
+                       ;; For structs, this returns the Mangled Name.
+                       (defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
+                         (let ((mangled (intern (format nil "~a_~{~a~^_~}" ',name concrete-types) (symbol-package ',name))))
+                           `',mangled))))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Template Instantiation Logic
@@ -126,9 +141,9 @@ Value: The expanded form (or T).")
        (let* ((name (second arg-type))
               (signatures (gethash name *function-table*)))
          (loop for sig in signatures
-               ;; Try to match this overload
-               when (match-function-signature sig-type sig inference-map template-params)
-               return t)))
+                 ;; Try to match this overload
+                 when (match-function-signature sig-type sig inference-map template-params)
+                 return t)))
 
      ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
      ((listp sig-type)
@@ -238,14 +253,37 @@ Value: The expanded form (or T).")
     (let ((key (cons name concrete-types))
           (substitutions (pairlis (template-data-parameters tmpl) concrete-types)))
 
-      ;; Mark as instantiated
-      (setf (gethash key *instantiated-templates*) t)
+      ;; Check if it's a struct template by inspecting the body
+      (let* ((body (template-data-body tmpl))
+             (is-struct (and (listp body) (eq (first body) 'def-struct)))
+             (mangled-name (when is-struct
+                                 (crisp.compiler::mangle-template-struct-name name concrete-types))))
 
-      ;; Perform substitution on the body
-      ;; NOTE: This is wrapped in PROGN to satisfy unit test expectations
-        ;; (specifically CRISP.TESTS::TEMPLATE-INSTANTIATION checks for this structure).
-        ;; It also ensures that the returned form is a single S-expression.
-      `(progn ,(sublis substitutions (template-data-body tmpl))))))
+        (if is-struct
+            ;; For Structs: Rename the struct to mangled name AND generate overload wrapper
+            (let* ((substituted-body (sublis substitutions (subst mangled-name name body)))
+                   ;; Extract members from SUBSTITUTED body: (def-struct MANGLED-NAME (mem concrete-type)...)
+                   (members (cddr substituted-body))
+                   (parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec members))
+                   (param-names (mapcar #'first parsed-members))
+                   ;; Use a UNIQUE wrapper name to avoid LLVM collisions if multiple overloads are generated
+                   ;; e.g. MAKE-POINT_FLOAT_WRAPPER
+                   (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package name)))
+                   (constructor-alias (intern (format nil "MAKE-~a" name) (symbol-package name)))
+                   (mangled-constructor (intern (format nil "MAKE-~a" mangled-name) (symbol-package name))))
+
+              `(progn
+                ,substituted-body
+                ;; Generate overload wrapper with UNIQUE name: (def-function make-point_float_wrapper ...)
+                (def-function ,wrapper-name ,parsed-members
+                  (declare (return-type ,mangled-name))
+                  (return (,mangled-constructor ,@param-names)))
+                ;; Register this wrapper as an overload for the generic constructor name (e.g. MAKE-POINT)
+                (eval-when (:compile-toplevel :load-toplevel :execute)
+                  (crisp.compiler::register-overload ',constructor-alias ',wrapper-name))))
+
+            ;; For Functions: Just substitute types
+            `(progn ,(sublis substitutions body)))))))
 
 (defun try-infer-template-types (name argument-types)
   "Attempts to infer template parameters for 'name' given 'argument-types'.
@@ -273,24 +311,52 @@ Value: The expanded form (or T).")
                            ;; Ensure all template parameters were inferred
                            (let ((concrete-types (loop for p in params
                                                        collect (gethash p inference-map))))
+                             (log:info "try-infer: concrete-types = ~a" concrete-types)
                              (if (every #'identity concrete-types)
                                  (list (list tmpl concrete-types)) ;; Return pair!
                                  nil)))))))
 
-
 (defun ensure-template-instantiation (name explicit-arg-types compiler-callback)
   "Called by the compiler to auto-instantiate templates.
    compiler-callback is (lambda (form location) ...)"
-  (let ((match-sets (try-infer-template-types name explicit-arg-types))
-        (did-work nil))
-    (loop for (tmpl inferred-types) in match-sets do
-            ;; Filter duplicates/already instantiated if feasible?
-            (log:info "Auto-specializing template ~a for types ~a (Using specific template variant)" name inferred-types)
-            ;; 1. Instantiate the template using the SPECIFIC template object found
-            (let ((instantiated-code (instantiate-template tmpl inferred-types)))
-              ;; 2. Compile the instantiated code (it's a PROGN of DEF-FUNCTIONs)
-              ;; instantiated-code is now (PROGN (DEF-FUNCTION ...)) due to wrapper.
-              (loop for form in (rest instantiated-code) ; skip 'progn
-                    do (funcall compiler-callback form nil))
-              (setf did-work t)))
-    did-work))
+  (let ((templates (gethash name *template-registry*))
+        (match-sets nil))
+
+    ;; 1. Try Function Signature Inference
+    (setf match-sets (try-infer-template-types name explicit-arg-types))
+
+    ;; 2. If no function match, checking for Struct/Direct Instantiation by Arity
+    (unless match-sets
+      (loop for tmpl in templates
+            for params = (template-data-parameters tmpl)
+            do (when (= (length params) (length explicit-arg-types))
+                     ;; Direct match by arity (explicit args are the concrete types)
+                     ;; This assumes explicit-arg-types are the TYPES, not values.
+                     (push (list tmpl explicit-arg-types) match-sets))))
+
+    (let ((did-work nil))
+      (loop for (tmpl inferred-types) in match-sets do
+              (let* ((key (cons (template-data-name tmpl) inferred-types))
+                     (status (gethash key *instantiated-templates*))
+                     (is-compiling (and (boundp 'crisp.compiler::*current-module*)
+                                        crisp.compiler::*current-module*)))
+
+                ;; Smart Cache Check:
+                ;; - If :compiled, we are done.
+                ;; - If :analyzed and we are in analysis pass (not compiling), done.
+                ;; - If :analyzed and we ARE compiling, we must proceed to generate IR.
+                ;; - If nil, proceed.
+                (unless (or (eq status :compiled)
+                            (and (eq status :analyzed) (not is-compiling)))
+
+                  (log:info "Auto-specializing template ~a for types ~a (Status: ~a, Is-Compiling: ~a)" name inferred-types status is-compiling)
+                  ;; 1. Instantiate the template using the SPECIFIC template object found
+                  (let ((instantiated-code (instantiate-template tmpl inferred-types)))
+                    ;; 2. Compile the instantiated code (it's a PROGN of DEF-FUNCTIONs)
+                    (loop for form in (rest instantiated-code) ; skip 'progn
+                          do (funcall compiler-callback form nil))
+
+                    ;; Update status
+                    (setf (gethash key *instantiated-templates*) (if is-compiling :compiled :analyzed))
+                    (setf did-work t)))))
+      did-work)))

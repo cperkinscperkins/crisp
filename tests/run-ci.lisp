@@ -24,6 +24,7 @@
 ;; Run all Parachute tests
 (format t "~&; --- Running Parachute tests ---~%")
 (load "tests/all-tests.lisp")
+(load "tests/test-structs.lisp")
 (unless (parachute:test :crisp.tests)
   (format *error-output* "~&~%*** Crisp CI Tests FAILED! ***~%")
   (uiop:quit 1))
