@@ -60,6 +60,7 @@
 
 (defun mangle-type-spec (type-spec)
   "Creates a string representation of a type spec for name mangling."
+  (log:debug "mangle-type-spec: ~s (type-of: ~a)" type-spec (type-of type-spec))
   (cond
    ((symbolp type-spec) (string-downcase (symbol-name type-spec)))
    ((listp type-spec) (format nil "~{~a~^_~}" (mapcar #'mangle-type-spec type-spec)))
@@ -70,7 +71,7 @@
   (cond
    ;; Simple type like 'int
    ((symbolp type-spec)
-     (log:info "Resolving symbol type: ~a" type-spec)
+     (log:debug "Resolving symbol type: ~a" type-spec)
      (when (null type-spec)
            (error "Cannot resolve type to LLVM: NIL"))
      (resolve-type-to-llvm type-spec))
@@ -184,20 +185,23 @@
     (loop for param-node in param-nodes
           for param-name = (semantic-param-name param-node)
           for type-spec = (semantic-param-type param-node)
-          do (let* ((expanded-types (get-expanded-types type-spec module))
-                    (num-expanded (length expanded-types))
-                    (components (loop for i from 0 below num-expanded
-                                      for p = (llvm-get-param func (+ llvm-param-index i))
-                                      do (log:info "llvm-get-param ~a -> ~a" (+ llvm-param-index i) p)
-                                      collect p))
-                    (imploded-val (implode-value builder components type-spec module))
-                    (alloca (llvm-build-alloca builder (crisp-type-to-llvm-type type-spec module) (string-downcase param-name))))
-               (log:info "imploded-val: ~a, alloca: ~a" imploded-val alloca)
-               (unless imploded-val (error "imploded-val is NIL for type ~a" type-spec))
-               (unless alloca (error "alloca is NIL for type ~a" type-spec))
-               (llvm-build-store builder imploded-val alloca)
-               (setf (gethash param-name var-env) alloca)
-               (incf llvm-param-index num-expanded)))))
+          do
+            (log:debug "Init-func-params: param-name='~s' (type: ~a) type-spec='~s'"
+              param-name (type-of param-name) type-spec)
+            (let* ((expanded-types (get-expanded-types type-spec module))
+                   (num-expanded (length expanded-types))
+                   (components (loop for i from 0 below num-expanded
+                                     for p = (llvm-get-param func (+ llvm-param-index i))
+                                     do (log:debug "llvm-get-param ~a -> ~a" (+ llvm-param-index i) p)
+                                     collect p))
+                   (imploded-val (implode-value builder components type-spec module))
+                   (alloca (llvm-build-alloca builder (crisp-type-to-llvm-type type-spec module) (string-downcase param-name))))
+              (log:info "imploded-val: ~a, alloca: ~a" imploded-val alloca)
+              (unless imploded-val (error "imploded-val is NIL for type ~a" type-spec))
+              (unless alloca (error "alloca is NIL for type ~a" type-spec))
+              (llvm-build-store builder imploded-val alloca)
+              (setf (gethash param-name var-env) alloca)
+              (incf llvm-param-index num-expanded)))))
 
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
@@ -340,7 +344,8 @@
 ;; -- reading a variable --
 (defmethod generate-node-ir ((node semantic-var-read) builder module var-env di-builder di-scope location-map)
   "Generates IR for reading a variable."
-  (declare (ignore module di-builder di-scope location-map))
+  (declare (ignore di-builder di-scope location-map))
+  (log:debug "Generating IR for var-read: ~s" (semantic-var-read-name node))
   (let* ((var-name (semantic-var-read-name node))
          (alloca (gethash var-name var-env)))
     (let* ((type (crisp-type-to-llvm-type (semantic-var-read-type node) module))
@@ -493,7 +498,6 @@
 (def-comparison-codegen semantic-le +llvm-int-sle+ +llvm-real-ole+ "SEMANTIC-LE")
 (def-comparison-codegen semantic-gt +llvm-int-sgt+ +llvm-real-ogt+ "SEMANTIC-GT")
 (def-comparison-codegen semantic-ge +llvm-int-sge+ +llvm-real-oge+ "SEMANTIC-GE")
-
 
 (defmethod generate-node-ir ((node semantic-value-cast) builder module var-env di-builder di-scope location-map)
   "Generates IR for a value-preserving cast."

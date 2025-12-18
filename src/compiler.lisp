@@ -159,13 +159,21 @@ This supports overloading templates by arity or other factors.")
          ',body-forms ;  '((+ a b))
          ,source-location))))
 
+
+(defun excluded-template-base-type-p (base-type)
+  "Returns true if the base-type should be excluded from struct template processing.
+   Excludes COMMON-LISP special forms like FUNCTION and QUOTE to prevent package lock violations."
+  (member base-type '(function quote common-lisp:function common-lisp:quote)))
+
 (defun mangle-template-struct-name (name params)
   "Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT"
+  (log:debug "mangle-template-struct-name: name=~s (type=~a) params=~s" name (type-of name) params)
   (unless name (return-from mangle-template-struct-name nil))
   (intern (format nil "~a_~{~a~^_~}" name params) (symbol-package name)))
 
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, handling template struct canonicalization."
+  (log:debug "types-equivalent-p: ~s vs ~s" t1 t2)
   (cond
    ((equal t1 t2) t)
    ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT equivalence
@@ -173,7 +181,7 @@ This supports overloading templates by arity or other factors.")
      (let ((base-type (first t1))
            (params (rest t1)))
        (if (and (symbolp base-type)
-                (not (member base-type '(function quote))))
+                (not (excluded-template-base-type-p base-type)))
            (progn
             ;; Trigger auto-instantiation if template exists
             (when (gethash base-type *template-registry*)
@@ -455,10 +463,10 @@ This supports overloading templates by arity or other factors.")
      (let ((base-type (first type-spec))
            (params (rest type-spec)))
        (cond
-        ((member base-type '(function quote)) nil)
+        ((excluded-template-base-type-p base-type) nil)
         ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
         ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
-        (t
+        ((symbolp base-type)
           (let ((mangled-name (mangle-template-struct-name base-type params)))
             (or (gethash mangled-name *crisp-structs*)
                 ;; Attempt Auto-Instantiation if it's a known template
@@ -489,7 +497,8 @@ This supports overloading templates by arity or other factors.")
                                                           *current-location-map*)
                                    (eval form))))
                            (gethash mangled-name *crisp-structs*))
-                          (progn (log:warn "Template instantiator not bound/found") nil)))))))))
+                          (progn (log:warn "Template instantiator not bound/found") nil))))))
+        (t nil))))
    (t nil)))
 
 
@@ -1043,9 +1052,10 @@ This supports overloading templates by arity or other factors.")
             :body (if (typep return-node 'semantic-explicit-return)
                       (list return-node)
                       (list (make-semantic-return
-                              :return-type (if (listp (semantic-node-type return-node))
-                                               (semantic-node-type return-node)
-                                               (list (semantic-node-type return-node)))
+                              :return-type (let ((nt (semantic-node-type return-node)))
+                                             (if (and (listp nt) (not (valid-type-p nt)))
+                                                 nt
+                                                 (list nt)))
                               :value-node return-node
                               :source-location (if return-node (semantic-node-source-location return-node) location))))
             :source-location location))))))
