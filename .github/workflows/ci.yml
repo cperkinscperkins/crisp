@@ -214,6 +214,21 @@ jobs:
           echo "--- Running E2E: success test --debug (branching-plus.crisp) ---"
           ./bin/crisp-compile tests/branching-plus.crisp --debug
 
+          echo "--- Running E2E: success test (def-struct-08.crisp) ---"
+          ./bin/crisp-compile tests/def-struct-08.crisp
+
+          echo "--- Running E2E: success test (def-struct-09.crisp) ---"
+          ./bin/crisp-compile tests/def-struct-09.crisp
+
+          echo "--- Running E2E: success test (def-struct-10.crisp) ---"
+          ./bin/crisp-compile tests/def-struct-10.crisp
+
+          echo "--- Running E2E: success test (def-struct-11.crisp) ---"
+          ./bin/crisp-compile tests/def-struct-11.crisp
+
+          echo "--- Running E2E: success test (def-struct-std140.crisp) ---"
+          ./bin/crisp-compile tests/def-struct-std140.crisp
+
 
 
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
@@ -292,4 +307,10 @@ jobs:
 
           echo "--- Running E2E: failure test (branching-plus-error.crisp) ---"
           ! ./bin/crisp-compile tests/errors/branching-plus-error.crisp 2>&1 | grep -F "IF+ condition failed to evaluate at compile time"
+
+          echo "--- Running E2E: failure test (reserved_setter_name.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/reserved_setter_name.crisp 2>&1 | grep -F "Recursion is not allowed"
+
+          echo "--- Running E2E: failure test (reserved_setter_name.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/reserved_setter_name.crisp 2>&1 | grep -F "Generates/Overrides accessor"
 

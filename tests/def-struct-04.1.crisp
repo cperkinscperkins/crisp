@@ -1,0 +1,14 @@
+(def-struct point 
+  (x float) 
+  (y int))
+
+;; non-overridable accessors. 
+
+;; No callers yet, but codegen.   Might should make a unit test.
+(def-function get-x (p)
+    (declare #'(point => float))
+    (~x~ p))
+
+(def-function get-y (p)
+    (declare #'(point => int))
+    (~y~ p))

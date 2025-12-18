@@ -14,7 +14,7 @@
   ;; when we first define all the types.
   (llvm-type-fn nil :type function)
   (size 0 :type integer) ; size in bits
-  (category nil :type (member :signed-int :unsigned-int :float)))
+  (category nil :type (member :signed-int :unsigned-int :float :void)))
 
 
 (defstruct function-signature
@@ -25,6 +25,15 @@
   (source-location nil :type list)
   (is-template-p nil :type boolean)
   (template-params nil :type list))
+
+(defstruct crisp-struct-definition
+  "Stores the definition of a user-defined struct."
+  (name nil :type symbol)
+  (members nil :type list) ; List of (name type-symbol) pairs - Original definition
+  (padded-members nil :type list) ; List including _PAD fields - std140 layout
+  (field-indices nil :type hash-table) ; Map of name -> padded-index
+  (llvm-type nil) ; Cached LLVM type reference
+  )
 
 ;; Sema Structs
 ;; ------------
@@ -106,7 +115,18 @@
   type condition-node then-node else-node source-location)
 
 (defstruct semantic-set!
-  name value-node source-location)
+  "Represents a (set! ...) expression."
+  target-node ; The node being assigned to (usually semantic-var-read)
+  value-node ; The node for the value being assigned
+  source-location)
+
+(defstruct semantic-struct-member-update
+  "Represents updating a single member of a struct (creates a new struct value)."
+  type ; The type of the struct being updated
+  struct-node ; The struct value/variable to update
+  member-index ; The physical index of the member to update
+  value-node ; The new value for the member
+  source-location)
 
 (defstruct semantic-aref
   type array-node index-node source-location)
@@ -157,4 +177,10 @@
   type ; The type of the extracted value (e.g., 'int)
   aggregate-node ; The semantic node for the aggregate (e.g., a semantic-call)
   index ; The 0-based index to extract
+  source-location)
+
+(defstruct semantic-struct-construction
+  "Represents constructing a struct instance e.g. (%construct-struct 'point ...)."
+  type ; The type specifier of the struct (symbol name)
+  args ; List of semantic nodes for the field values (in definition order)
   source-location)

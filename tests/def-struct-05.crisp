@@ -1,0 +1,14 @@
+(def-struct point 
+  (x float) 
+  (y int))
+
+
+(def-function set-x (p v)
+    (declare #'(point float => nil))
+    (set! (x~ p) v)
+    (return))
+
+(def-function set-xx (p v)
+    (declare #'(point float => nil))
+    (set! (~x~ p) v)
+    (return))

@@ -23,20 +23,20 @@
          (di-file (crisp.llvm-bindings:llvm-di-builder-create-file di-builder f (length f) d (length d)))
          (producer "Crisp Compiler"))
     (crisp.llvm-bindings:llvm-di-builder-create-compile-unit
-     di-builder
-     32768 ; DW_LANG_user_lo
-     di-file
-     producer (length producer)
-     nil ; isOptimized
-     flags (length flags)
-     0 ; runtimeVersion
-     (cffi:null-pointer) 0 ; splitName
-     1 ; DW_Emission_Kind_Full
-     0 ; DWOId
-     nil ; splitDebugInlining
-     nil ; debugInfoForProfiling
-     (cffi:null-pointer) 0 ; sysroot
-     (cffi:null-pointer) 0 ; sdk
+      di-builder
+      32768 ; DW_LANG_user_lo
+      di-file
+      producer (length producer)
+      nil ; isOptimized
+      flags (length flags)
+      0 ; runtimeVersion
+      (cffi:null-pointer) 0 ; splitName
+      1 ; DW_Emission_Kind_Full
+      0 ; DWOId
+      nil ; splitDebugInlining
+      nil ; debugInfoForProfiling
+      (cffi:null-pointer) 0 ; sysroot
+      (cffi:null-pointer) 0 ; sdk
      )))
 
 (defun parse-cli-args (args)

@@ -194,6 +194,8 @@ SHORT TERM PLAN
 - - [ ] anaphoric support
 - - [ ] star `*` variants
 - [ ] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
+- [ ] compile time assert mightn't be the worst idea. Pretty handy. 
+- [ ] refactor.  reevalute ALL uses of symbolp looking for implicit expectation that (symbolp nil) is false (it's actually true)
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - [ ] def-kernel  <-- 
 
@@ -275,6 +277,10 @@ LANGUAGE CHANGES
 
 - [ ] FML - +warp-size+ is 32 throughout the doc, but ideal warp size
             on BattleMage might be 16.  How is that set/handled?
+
+- [ ] remove x:int style type declarations. Just use : for namespaces at some later date.
+- [ ] if-reorder <-- see google doc.
+- [ ] change => nil to => void ?? 
 
 
 

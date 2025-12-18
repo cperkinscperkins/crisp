@@ -1,0 +1,8 @@
+(def-struct point 
+  (x float) 
+  (y int))
+
+;; make and return a point
+(def-function test (xf yi)
+    (declare #'(float int => point))
+    (make-point xf yi))

@@ -27,6 +27,13 @@
    Called as (funcall *template-instantiator-fn* name arg-types callback).
    The callback is (funcall callback form location).")
 
+(defvar *template-registry* (make-hash-table)
+        "Maps template names (symbols) to a LIST of template-data structs.
+This supports overloading templates by arity or other factors.")
+
+(defvar *instantiated-templates* (make-hash-table :test 'equal)
+        "Tracks which specializations have already been generated.")
+
 (defvar *side-channel-originators* '(make-scratch-cell)
         "A list of function names that trigger the implicit side-channel argument passing mechanism.")
 
@@ -38,6 +45,9 @@
 
 (defvar *crisp-types* (make-hash-table)
         "A hash table mapping type names (symbols) to CRISP-TYPE structs.")
+
+(defvar *crisp-structs* (make-hash-table)
+        "A hash table mapping struct names to CRISP-STRUCT-DEFINITION structs.")
 
 
 (defvar *current-compiling-function* nil)
@@ -78,7 +88,9 @@
            (half ,#'llvm-half-type 16 :float)
            (bfloat16 ,#'llvm-bfloat-type 16 :float)
            (float ,#'llvm-float-type 32 :float)
-           (double ,#'llvm-double-type 64 :float))))
+           (double ,#'llvm-double-type 64 :float)
+           ;; Void
+           (void ,#'llvm-void-type 0 :void))))
     (loop for (name llvm-fn size category) in types
           do (setf (gethash name *crisp-types*)
                (make-crisp-type :name name
@@ -133,7 +145,7 @@
     (register-function-signature `(def-function ,name ,params ,@body) source-location)
 
     (log:debug "name: ~a  params: ~a  body: ~a ~%source-location: ~a~%"
-               name params body source-location)
+      name params body source-location)
     ;; Handle declarations (this part is tricky, let's simplify)
     (let* ((declare-forms
             (loop for form in body
@@ -143,12 +155,120 @@
            (body-forms (nthcdr (length declare-forms) body)))
 
       `(internal-def-function
-        ',name
-        ',params
-        ',declarations ;  '(((type a b int)) ((return-type int)))
-        ',body-forms ;  '((+ a b))
-        ,source-location))))
+         ',name
+         ',params
+         ',declarations ;  '(((type a b int)) ((return-type int)))
+         ',body-forms ;  '((+ a b))
+         ,source-location))))
 
+
+(defun excluded-template-base-type-p (base-type)
+  "Returns true if the base-type should be excluded from struct template processing.
+   Excludes COMMON-LISP special forms like FUNCTION and QUOTE to prevent package lock violations."
+  (member base-type '(function quote common-lisp:function common-lisp:quote)))
+
+(defun mangle-template-struct-name (name params)
+  "Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT"
+  (log:debug "mangle-template-struct-name: name=~s (type=~a) params=~s" name (type-of name) params)
+  (unless name (return-from mangle-template-struct-name nil))
+  (intern (format nil "~a_~{~a~^_~}" name params) (symbol-package name)))
+
+(defun types-equivalent-p (t1 t2)
+  "Checks if two types are equivalent, handling template struct canonicalization."
+  (log:debug "types-equivalent-p: ~s vs ~s" t1 t2)
+  (cond
+   ((equal t1 t2) t)
+   ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT equivalence
+   ((and (consp t1) (symbolp t2))
+     (let ((base-type (first t1))
+           (params (rest t1)))
+       (if (and (symbolp base-type)
+                (not (excluded-template-base-type-p base-type)))
+           (progn
+            ;; Trigger auto-instantiation if template exists
+            (when (gethash base-type *template-registry*)
+                  (let ((instantiated-form
+                         (funcall *template-instantiator-fn* base-type params
+                           (lambda (form location)
+                             (if (boundp '*current-module*)
+                                 (compile-toplevel-form form location
+                                                        *current-module*
+                                                        *current-builder*
+                                                        *current-di-builder*
+                                                        *current-di-compile-unit*
+                                                        *current-location-map*)
+                                 (eval form))))))
+                    t))
+
+            ;; Now check mangled name
+            (let ((mangled (mangle-template-struct-name base-type params)))
+              (if (gethash mangled *crisp-structs*)
+                  t
+                  nil)))
+           nil)))
+   ((and (symbolp t1) (consp t2))
+     (types-equivalent-p t2 t1))
+   (t nil)))
+
+(defun type-lists-equivalent-p (l1 l2)
+  (and (= (length l1) (length l2))
+       (every #'types-equivalent-p l1 l2)))
+
+(defun register-struct-definition (name members)
+  "Registers a struct definition in the global registry."
+  (multiple-value-bind (padded-members total-size)
+      (compute-std140-layout members)
+    (declare (ignore total-size))
+    (let ((indices (make-hash-table :test #'eq)))
+      (loop for m in padded-members
+            for i from 0
+            do (setf (gethash (car m) indices) i))
+      (setf (gethash name *crisp-structs*)
+        (make-crisp-struct-definition
+         :name name
+         :members members
+         :padded-members padded-members
+         :field-indices indices)))))
+
+(defun parse-struct-member-spec (spec)
+  "Parses a struct member specification.
+   Supports (name type) and (name:type)."
+  (cond
+   ;; (name type)
+   ((and (listp spec) (= (length spec) 2))
+     spec)
+   (t (error "Invalid struct member spec: ~a" spec))))
+
+
+(defmacro def-struct (name &rest members)
+  "Defines a new Crisp struct type."
+  (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
+         (constructor-name (intern (format nil "MAKE-~a" name)))
+         (param-names (mapcar #'first parsed-members)))
+    ;; Register at macro-expansion time (for visibility to subsequent code)
+    (register-struct-definition name parsed-members)
+    ;; Emit code to register using eval-when, AND the constructor function
+    `(progn
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (register-struct-definition ',name ',parsed-members))
+      (def-function ,constructor-name ,parsed-members
+        (return (%construct-struct ,name ,@param-names)))
+      ,@(loop for (member-name member-type) in parsed-members
+              for i from 0
+              collect
+                `(def-function ,(intern (format nil "~a~~" member-name)) ((obj ,name))
+                   (return (%extract-struct-member obj ,i))))
+      ,@(loop for (member-name member-type) in parsed-members
+              for i from 0
+              collect
+                `(def-function ,(intern (format nil "~~~a~~" member-name)) ((obj ,name))
+                   (return (%extract-struct-member obj ,i)))))))
+
+
+(defmacro def-setter (name args &body body)
+  "Defines a setter function (which is just a def-function but semantically intended for use with set!).
+   The return type is implicitly nil/void. We append (return) to ensure this."
+  `(def-function ,name ,args ,@body (return)))
 
 ;; INTERNAL TO COMPILER
 ;; ====================
@@ -219,6 +339,111 @@
                (unknown-variable-name condition)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Std140 Layout (GPU Alignment)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun get-std140-base-alignment (type-spec)
+  "Returns the base alignment (N) for a given type according to std140 rules.
+  For scalars, N is the size of the scalar.
+  For vectors, it is 2N or 4N.
+  For arrays/structs, it is rounded up to vec4 alignment (16)."
+  (cond
+   ((or (eq type-spec 'float) (eq type-spec 'int) (eq type-spec 'uint)) 4)
+   ((or (eq type-spec 'double) (eq type-spec 'long) (eq type-spec 'ulong)) 8)
+   ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
+   ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
+   ;; TODO: Handle vectors here (will need vector support first)
+   ((or (eq type-spec 'bool)) 4) ;; booleans are 4 bytes in std140
+   ;; Structs align to 16 bytes (vec4)
+   ((gethash type-spec *crisp-structs*) 16)
+   (t (error "Unknown type for alignment: ~a" type-spec))))
+
+(defun get-std140-size (type-spec)
+  "Returns the size (in bytes) of a type. Does not include padding for alignment context."
+  (cond
+   ((or (eq type-spec 'float) (eq type-spec 'int) (eq type-spec 'uint)) 4)
+   ((or (eq type-spec 'double) (eq type-spec 'long) (eq type-spec 'ulong)) 8)
+   ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
+   ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
+   ((eq type-spec 'bool) 4)
+   ;; Structs need to be calculated recursively, but basic struct defs have a cached size?
+   ;; For now, error on unknown structs until we have size caching.
+   ((gethash type-spec *crisp-structs*)
+     (error "Recursive struct size calculation not yet implemented."))
+   (t (error "Unknown type for size: ~a" type-spec))))
+
+(defun calculate-std140-padding (current-offset alignment)
+  "Calculates padding needed to reach the next alignment boundary."
+  (let ((remainder (mod current-offset alignment)))
+    (if (zerop remainder)
+        0
+        (- alignment remainder))))
+
+(defun compute-std140-layout (members)
+  "Takes a list of (name type) members.
+  Returns a list of:
+    - Expanded members with `_pad` fields inserted.
+    - Total struct size (padded to 16 bytes).
+  
+  Returns (values expanded-members total-size)"
+  (let ((current-offset 0)
+        (expanded-members '()))
+    (dolist (member members)
+      (let* ((name (first member))
+             (type (second member))
+             (alignment (get-std140-base-alignment type))
+             (size (get-std140-size type))
+             (padding (calculate-std140-padding current-offset alignment)))
+
+        ;; Insert padding if needed
+        (when (> padding 0)
+              (let ((pad-type (case padding
+                                (1 'char)
+                                (2 'short)
+                                (3 'vec3-char-pad) ;; char + short
+                                (4 'int) ;; float/int
+                                (8 'double) ;; double/long
+                                (12 'vec3-pad-placeholder)
+                                (t (error "Unsupported padding size: ~a" padding)))))
+
+                (cond
+                 ((= padding 1)
+                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'char) expanded-members))
+                 ((= padding 2)
+                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'short) expanded-members))
+                 ((= padding 3)
+                   (push (list (intern (format nil "_PAD_~a_1" current-offset)) 'char) expanded-members)
+                   (push (list (intern (format nil "_PAD_~a_2" current-offset)) 'short) expanded-members))
+                 ((= padding 4)
+                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'int) expanded-members))
+                 ((= padding 8)
+                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'double) expanded-members))
+                 (t (error "Padding of ~a bytes not yet implemented." padding))))
+              (incf current-offset padding))
+
+        ;; Add the actual member
+        (push member expanded-members)
+        (incf current-offset size)))
+
+    ;; Final structure padding to multiple of 16 (vec4 alignment)
+    (let ((final-padding (calculate-std140-padding current-offset 16)))
+      (when (> final-padding 0)
+            ;; Same issue with padding types. 
+            ;; For now, if we need simple padding for test cases:
+            (if (= final-padding 4)
+                (push (list (intern (format nil "_PAD_EA")) 'int) expanded-members)
+                (if (= final-padding 8)
+                    (push (list (intern (format nil "_PAD_EA")) 'double) expanded-members)
+                    (if (= final-padding 12)
+                        (progn
+                         (push (list (intern (format nil "_PAD_EA_1")) 'double) expanded-members)
+                         (push (list (intern (format nil "_PAD_EA_2")) 'int) expanded-members))
+                        nil)))) ;; Assume 0 or handled
+      (incf current-offset final-padding))
+
+    (values (nreverse expanded-members) current-offset)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Type System Helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -228,21 +453,117 @@
   Handles simple types, parameterized types, and function literals/types."
   (cond
    ;; Standard types
-   ((symbolp type-spec) (gethash type-spec *crisp-types*))
+   ((symbolp type-spec)
+     (or (gethash type-spec *crisp-types*)
+         (gethash type-spec *crisp-structs*)
+         ;; Allow defined functions to be used as types (for function pointers/checking)
+         ;; We might want to be more specific here later.
+         (gethash type-spec *function-table*)))
    ;; Function Type Literal: (:function-literal +)
-   ((and (listp type-spec) (eq (first type-spec) :function-literal))
+   ((and (consp type-spec) (eq (first type-spec) :function-literal))
      (and (= (length type-spec) 2) (symbolp (second type-spec))))
    ;; Function Type Descriptor: (:function-type (int) :params (int int))
-   ((and (listp type-spec) (eq (first type-spec) :function-type))
+   ((and (consp type-spec) (eq (first type-spec) :function-type))
      t) ;; Relaxed check for now, assumed constructed correctly by parser.
    ;; Parameterized type like '(cell int)
-   ((listp type-spec)
+   ((consp type-spec)
      (let ((base-type (first type-spec))
            (params (rest type-spec)))
        (cond
+        ((excluded-template-base-type-p base-type) nil)
         ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
+        ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
+        ((symbolp base-type)
+          (let ((mangled-name (mangle-template-struct-name base-type params)))
+            (or (gethash mangled-name *crisp-structs*)
+                ;; Attempt Auto-Instantiation if it's a known template
+                (when (gethash base-type *template-registry*)
+                      (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
+                      ;; Trigger the instantiation. 
+                      ;; We use the *template-instantiator-fn* hook to avoid direct dependency if possible,
+                      ;; but for struct *types* we might need immediate Side-Effect: Registering the struct.
+                      ;; BUT, ensure-template-instantiation returns boolean.
+                      ;; We need compilation of the struct form to happen NOW globally?
+                      ;; valid-type-p is usually called during analysis.
+                      ;; If we instantiate here, the DEFUN/DEFSTRUCT form is generated.
+                      ;; For valid-type-p to return T, the struct must be registered.
+                      (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
+                          (progn
+                           ;; We pass a callback that handles either analysis (Pass 1) or compilation (Pass 2)
+                           (funcall *template-instantiator-fn* base-type params
+                             (lambda (form loc)
+                               (declare (ignore loc))
+                               ;; (log:info "Callback: Boundp *current-module* = ~a" (boundp '*current-module*))
+                               ;; (log:info "Evaluating instantiated form in valid-type-p: ~a" form)
+                               (if (and (boundp '*current-module*) *current-module*)
+                                   (compile-toplevel-form form nil
+                                                          *current-module*
+                                                          *current-builder*
+                                                          *current-di-builder*
+                                                          *current-di-compile-unit*
+                                                          *current-location-map*)
+                                   (eval form))))
+                           (gethash mangled-name *crisp-structs*))
+                          (progn (log:warn "Template instantiator not bound/found") nil))))))
         (t nil))))
    (t nil)))
+
+
+(defun resolve-type-to-llvm (type-spec)
+  "Resolves a Crisp type specifier to an LLVM type reference."
+  (cond
+   ;; Built-in Scalar
+   ((and (symbolp type-spec) (gethash type-spec *crisp-types*))
+     (funcall (crisp-type-llvm-type-fn (gethash type-spec *crisp-types*))))
+
+   ;; Struct
+   ((and (symbolp type-spec) (gethash type-spec *crisp-structs*))
+     (ensure-struct-llvm-type type-spec))
+
+   ;; Pointer / Cell (simple version)
+   ((and (listp type-spec) (eq (first type-spec) 'cell))
+     ;; For now, treats cell as generic pointer.
+     ;; ideally this should match runtime struct layout
+     (llvm-int8-ptr-type (llvm-void-type) 0))
+
+   (t (error "Cannot resolve type to LLVM: ~a" type-spec))))
+
+(defun ensure-struct-llvm-type (name)
+  "Ensures the LLVM struct type exists for the given struct name.
+   Handles forward declarations and recursion."
+  (let ((def (gethash name *crisp-structs*)))
+    (unless def
+      (error "Unknown struct type: ~a" name))
+
+    ;; Return cached type if available
+    (when (crisp-struct-definition-llvm-type def)
+          (return-from ensure-struct-llvm-type (crisp-struct-definition-llvm-type def)))
+
+    ;; Create the named struct (opaque first) to handle recursion
+    (let* ((ctx (llvm-get-module-context *current-module*))
+           (struct-type (llvm-struct-create-named ctx (symbol-name name))))
+      ;; CACHE IT IMMEDIATELY
+      (setf (crisp-struct-definition-llvm-type def) struct-type)
+
+      (let ((element-types '()))
+        (dolist (member-spec (crisp-struct-definition-padded-members def))
+          (log:debug "Member-spec: ~a" member-spec)
+          (let* ((type-name (second member-spec))
+                 (resolved-type (resolve-type-to-llvm type-name)))
+            (log:info "Member ~a (type ~a) resolved to LLVM type: ~a" (first member-spec) type-name resolved-type)
+            (unless resolved-type
+              (error "Failed to resolve type ~a for member ~a" type-name (first member-spec)))
+            (push resolved-type element-types)))
+
+        ;; Set the body
+        (let ((types-array (cffi:foreign-alloc :pointer :count (length element-types))))
+          (loop for type in (reverse element-types)
+                for i from 0
+                do (setf (cffi:mem-aref types-array :pointer i) type))
+          (llvm-struct-set-body struct-type types-array (length element-types) nil) ; packed=nil
+          (cffi:foreign-free types-array)))
+
+      struct-type)))
 
 
 (defun analyze-function-literal (expr env location)
@@ -253,9 +574,9 @@
       (log:warn "Function literal ~a refers to unknown function (at compile time)." fn-name))
 
     (make-semantic-literal
-     :value-type `(:function-literal ,fn-name)
-     :value fn-name
-     :source-location location)))
+      :value-type `(:function-literal ,fn-name)
+      :value fn-name
+      :source-location location)))
 
 
 (defun initialize-expression-analyzers ()
@@ -277,6 +598,7 @@
   (def-expression-analyzer funcall analyze-funcall-expression)
 
   (def-expression-analyzer set! analyze-set!-expression)
+
   (def-expression-analyzer let analyze-let-expression)
   (def-expression-analyzer let* analyze-let-expression)
   (def-expression-analyzer progn analyze-progn-expression) ;; NEW
@@ -299,6 +621,9 @@
   (def-expression-analyzer def-function analyze-nested-def-function)
   (def-expression-analyzer template-instantiation analyze-template-instantiation)
   (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
+  (def-expression-analyzer %construct-struct analyze-struct-construction)
+  (def-expression-analyzer %extract-struct-member analyze-extract-struct-member-expression)
+  (def-expression-analyzer common-lisp:eval-when analyze-eval-when)
 
   ;; Register all possible `to-` and `as-` casts.
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
@@ -312,139 +637,6 @@
   (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
-
-;; Sema Structs
-;; ------------
-
-;; blueprint for a function
-(defstruct semantic-function
-  name ; 'my-func
-  param-list ; A list of types
-  return-type ; The *validated* type, e.g., 'i32
-  body ; A list of *other* semantic nodes
-  source-location)
-
-;; blueprint for a 'return' statement
-(defstruct semantic-return
-  return-type ; 'i32
-  value-node ; The node for the value being returned
-  source-location)
-
-(defstruct semantic-explicit-return
-  "Represents an explicit (return ...) form."
-  type ; A list of types, e.g., '(int int)
-  value-nodes ; A list of semantic nodes for the values
-  source-location)
-
-
-;; blueprint for a literal
-(defstruct semantic-literal
-  value-type ; 'i32
-  value ; 7
-  source-location)
-
-;; Represents a function parameter (e.g., 'a' and its type 'i32)
-(defstruct semantic-param
-  name
-  type
-  source-location)
-
-;; Represents reading a variable (e.g., 'a' or 'b')
-(defstruct semantic-var-read
-  name
-  type
-  source-location)
-
-;; Represents a function call (e.g., '(+ a b)')
-(defstruct semantic-add
-  type ; The *result* type (e.g., 'i32)
-  left-arg ; The 'semantic-var-read' node for 'a'
-  right-arg ; The 'semantic-var-read' node for 'b'
-  source-location)
-
-(defstruct semantic-sub
-  type left-arg right-arg source-location)
-
-(defstruct semantic-mul
-  type left-arg right-arg source-location)
-
-(defstruct semantic-div
-  type left-arg right-arg source-location)
-
-(defstruct semantic-lt
-  type left-arg right-arg source-location)
-
-(defstruct semantic-gt
-  type left-arg right-arg source-location)
-
-(defstruct semantic-le
-  type left-arg right-arg source-location)
-
-(defstruct semantic-ge
-  type left-arg right-arg source-location)
-
-(defstruct semantic-eq
-  type left-arg right-arg source-location)
-
-(defstruct semantic-neq
-  type left-arg right-arg source-location)
-
-(defstruct semantic-if
-  type condition-node then-node else-node source-location)
-
-(defstruct semantic-set!
-  name value-node source-location)
-
-(defstruct semantic-aref
-  type array-node index-node source-location)
-
-(defstruct semantic-value-cast
-  "Represents a value-preserving cast (e.g., to-float)."
-  type ; The target type
-  arg ; The node being cast
-  source-location)
-
-(defstruct semantic-bitcast
-  "Represents a bit reinterpretation cast (e.g., as-int)."
-  type ; The target type
-  arg ; The node being cast
-  source-location)
-
-(defstruct semantic-fp-truncate-cast
-  "Represents a float-to-integer truncation cast."
-  type ; The target integer type
-  arg ; The float node being cast
-  source-location)
-
-
-(defstruct semantic-call
-  "Represents a call to a user-defined function."
-  name ; The symbol name of the function being called
-  type ; The return type of the function
-  args ; A list of semantic nodes for the arguments
-  signature ; The specific FUNCTION-SIGNATURE struct that was resolved
-  source-location)
-
-(defstruct semantic-funcall
-  "Represents a 'funcall' form."
-  func-node ; The semantic node for the function expression (e.g. var-read or literal)
-  type ; The return type of the call
-  args ; A list of semantic nodes for arguments
-  source-location)
-
-(defstruct semantic-let
-  "Represents a (let ...) expression."
-  type ; The type of the *last* expression in the body
-  bindings ; A list of (name . semantic-node) pairs
-  body ; A list of semantic nodes for the body
-  source-location)
-
-(defstruct semantic-extract-value
-  "Represents extracting a single value from an aggregate (struct)."
-  type ; The type of the extracted value (e.g., 'int)
-  aggregate-node ; The semantic node for the aggregate (e.g., a semantic-call)
-  index ; The 0-based index to extract
-  source-location)
 
 
 ;; ---------------------------------
@@ -575,6 +767,7 @@
                                                            ;; Handle implicit templates which return nil
                                                            (let ((semantic-node (eval expanded-form)))
                                                              (when semantic-node
+                                                                   (log:info "Generating IR for function ~a in module ~a" (second form) module)
                                                                    (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))))
                                                      (pop *single-pass-call-stack*))))
 
@@ -607,6 +800,19 @@
         (*current-di-builder* di-builder)
         (*current-di-compile-unit* di-compile-unit)
         (*current-location-map* location-map))
+
+    ;; Pre-Pass: Ensure all templates instantiated during Pass 1 (signatures only) 
+    ;; are now fully compiled to IR/Structs in this module.
+    (maphash (lambda (key status)
+               (when (eq status :analyzed)
+                     (let ((name (car key))
+                           (types (cdr key)))
+                       (log:info "Pass 2: Rehydrating/Compiling template instance: ~a ~a" name types)
+                       (funcall *template-instantiator-fn* name types
+                         (lambda (form location)
+                           (compile-toplevel-form form location module builder di-builder di-compile-unit location-map))))))
+             *instantiated-templates*)
+
     (walk-code-forms forms
                      (lambda (form location)
                        (compile-toplevel-form form location module builder di-builder di-compile-unit location-map)))))
@@ -667,14 +873,35 @@
   (setf (gethash node visited) t))
 
 (defun parse-function-declarations (params declarations)
-  "Parses a function's declarations and returns its environment and return type."
+  "Parses a function's declarations and returns its environment and return type.
+   Supports interleaved type syntax: ((p type))"
   (let* ((fn-decl (find 'function declarations :key #'car))
+
          (return-types (if fn-decl
                            (analyze-return-type-from-spec (second fn-decl))
                            (analyze-return-type-from-list declarations)))
-         (env (if fn-decl
-                  (analyze-environment-from-spec params (second fn-decl))
-                  (analyze-environment-from-list params declarations))))
+
+         (env (cond
+               ;; Case 1: #'(...) signature
+               (fn-decl
+                 (analyze-environment-from-spec params (second fn-decl)))
+
+               ;; Case 2: Interleaved syntax ((a int) (b float))
+               ((some #'listp params)
+                 (loop for p in params
+                       collect (if (listp p)
+                                   (progn
+                                    (unless (>= (length p) 2)
+                                      (error "Invalid parameter spec: ~a" p))
+                                    (let ((name (first p)) (type (second p)))
+                                      (unless (valid-type-p type)
+                                        (error 'crisp-unknown-type-error :type-name type))
+                                      (list name type)))
+                                   (error "Mixed bare and typed parameters not allowed."))))
+
+               ;; Case 3: Standard declarations
+               (t
+                 (analyze-environment-from-list params declarations)))))
     (values env return-types)))
 
 (defun register-function-signature (form location)
@@ -690,7 +917,16 @@
       (let ((param-types (mapcar #'second env)))
         ;; Add the new signature to the list of existing ones.
         (setf (gethash name *function-table*)
-          (append existing-signatures (list (make-function-signature :name name :parameters param-types :return-types return-types :source-location location))))))))
+          (append existing-signatures (list (make-function-signature :name name :parameters param-types :return-types return-types :source-location location))))))
+
+    (defun register-overload (alias real-name)
+      "Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing."
+      (let ((real-sigs (gethash real-name *function-table*))
+            (alias-sigs (gethash alias *function-table*)))
+        (unless real-sigs
+          (error "Cannot register overload: function ~a not found." real-name))
+        (setf (gethash alias *function-table*)
+          (append alias-sigs real-sigs))))))
 
 (defun inject-implicit-arguments (name explicit-env)
   "Injects implicit arguments into the environment if the function is a carrier."
@@ -731,8 +967,8 @@
     (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types declared-return-types)
 
     (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
-               inferred-types (listp inferred-types)
-               declared-return-types (listp declared-return-types))
+      inferred-types (listp inferred-types)
+      declared-return-types (listp declared-return-types))
 
     ;; Check Types. This allows for a function returning multiple values
     ;; to be used in a context that expects fewer values (the extras are dropped).
@@ -743,14 +979,14 @@
                                 (subseq inferred-types 0 num-declared)
                                 inferred-types)))
       (unless (and (>= num-inferred num-declared)
-                   (equal inferred-subset declared-return-types))
+                   (type-lists-equivalent-p inferred-subset declared-return-types))
         (error 'crisp-type-error
           :expected declared-return-types
           :inferred inferred-types
           :source-location (if return-node
                                (semantic-node-source-location return-node)
                                location))))
-    body-nodes))
+    (values body-nodes inferred-types)))
 
 (defun detect-and-register-implicit-template (name explicit-env return-type params body)
   "Detects if a function is an implicit template (e.g. has function-type args),
@@ -800,24 +1036,37 @@
     (let ((env (inject-implicit-arguments name explicit-env)))
 
       ;; 3. Analyze Body and Validate Return Types
-      (let ((body-nodes (validate-return-types name body env return-type location)))
+      (multiple-value-bind (body-nodes inferred-return-types)
+          (validate-return-types name body env return-type location)
+
+        ;; Update the function registry if we inferred a return type and none was declared.
+        (when (and (or (null return-type) (equal return-type '(nil)))
+                   (not (equal inferred-return-types '(nil))))
+              (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
+              (let ((sig (first (gethash name *function-table*))))
+                (when sig
+                      (setf (function-signature-return-types sig) inferred-return-types))))
 
         ;; 4. Build and return the "blueprint"
         (let ((return-node (first (last body-nodes))))
           (make-semantic-function
-           :name name
-           :param-list (loop for (param-name param-type) in env
-                             collect (make-semantic-param :name param-name :type param-type :source-location location))
-           :return-type return-type
-           :body (if (typep return-node 'semantic-explicit-return)
-                     (list return-node)
-                     (list (make-semantic-return
-                            :return-type (if (listp (semantic-node-type return-node))
-                                             (semantic-node-type return-node)
-                                             (list (semantic-node-type return-node)))
-                            :value-node return-node
-                            :source-location (if return-node (semantic-node-source-location return-node) location))))
-           :source-location location))))))
+            :name name
+            :param-list (loop for (param-name param-type) in env
+                              collect (make-semantic-param :name param-name :type param-type :source-location location))
+            :return-type (if (or (null return-type) (equal return-type '(nil)))
+                             inferred-return-types
+                             return-type)
+            :body (if (typep return-node 'semantic-explicit-return)
+                      body-nodes
+                      (append (butlast body-nodes)
+                        (list (make-semantic-return
+                                :return-type (let ((nt (semantic-node-type return-node)))
+                                               (if (and (listp nt) (not (valid-type-p nt)))
+                                                   nt
+                                                   (list nt)))
+                                :value-node return-node
+                                :source-location (if return-node (semantic-node-source-location return-node) location)))))
+            :source-location location))))))
 
 
 ;; ### Helpers
@@ -1021,6 +1270,53 @@
          (right-node (analyze-expression (third expr) env (append location '(2)))))
     (make-semantic-neq :type 'int :left-arg left-node :right-arg right-node :source-location location)))
 
+(defun analyze-construct-struct-expression (expr env location)
+  "Analyzes a `%construct-struct` expression."
+  (analyze-struct-construction expr env location))
+
+(defun analyze-extract-struct-member-expression (expr env location)
+  "Analyzes a `%extract-struct-member` expression.
+   Form: (%extract-struct-member object-node index-literal)"
+  (let* ((obj-node (analyze-expression (second expr) env (append location '(1))))
+         (index (third expr)) ;; Expecting a raw integer literal from the macro expansion
+         (obj-type (semantic-node-type obj-node)))
+
+    (unless (symbolp obj-type)
+      (error "Cannot extract member from non-struct type ~a" obj-type))
+
+    (let ((struct-def (gethash obj-type *crisp-structs*)))
+      (unless struct-def
+        (error "Unknown struct type ~a in extraction." obj-type))
+
+      (let* ((padded-members (crisp-struct-definition-padded-members struct-def))
+             ;; We need to map the "logical" index i to the "physical" index in the padded struct.
+             ;; However, our macro passes the 'logical' index.
+             ;; But wait, the macro loop `for i from 0` matches `parsed-members`.
+             ;; `padded-members` has EXTRA fields. We need to find the Nth *non-padding* member.
+             ;; Let's iterate padded-members to find the Nth logical member's actual index.
+             (physical-index -1)
+             (logical-count -1)
+             (target-member-type nil))
+
+        (loop for m in padded-members
+              for idx from 0
+              do (unless (alexandria:starts-with-subseq "_PAD" (symbol-name (first m)))
+                   (incf logical-count)
+                   (when (= logical-count index)
+                         (setf physical-index idx)
+                         (setf target-member-type (second m))
+                         (return))))
+
+        (when (= physical-index -1)
+              (error "Invalid member index ~a for struct ~a" index obj-type))
+
+        (make-semantic-extract-value
+          :type target-member-type
+          :aggregate-node obj-node
+          :index physical-index
+          :source-location location)))))
+
+
 (defun analyze-if-expression (expr env location)
   (let* ((cond-node (analyze-expression (second expr) env (append location '(1))))
          (then-node (analyze-expression (third expr) env (append location '(2))))
@@ -1041,10 +1337,6 @@
         (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
     (make-semantic-if :type 'void :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
 
-(defun analyze-set!-expression (expr env location)
-  (let* ((var-name (second expr))
-         (val-node (analyze-expression (third expr) env (append location '(2)))))
-    (make-semantic-set! :name var-name :value-node val-node :source-location location)))
 
 (defun analyze-aref-expression (expr env location)
   (let* ((array-node (analyze-expression (second expr) env (append location '(1))))
@@ -1119,6 +1411,12 @@
     ;; We analyze it recursively.
     (analyze-expression body env location)))
 
+(defun analyze-eval-when (expr env location)
+  "Analyzes (eval-when ...) forms by ignoring them in the runtime IR.
+   Side effects (like struct registration) should have already occurred during macro expansion."
+  (declare (ignore expr env))
+  (make-semantic-literal :value-type 'void :value nil :source-location location))
+
 (defun analyze-let-expression (expr env location)
   "Analyzes a `(let ...)` expression."
   (unless (and (>= (length expr) 2) (listp (cadr expr)))
@@ -1173,10 +1471,10 @@
                                for j from 0 do
                                  (let* ((var-type (nth j init-node-types))
                                         (extract-node (make-semantic-extract-value
-                                                       :type var-type
-                                                       :aggregate-node init-node
-                                                       :index j
-                                                       :source-location (semantic-node-source-location init-node))))
+                                                        :type var-type
+                                                        :aggregate-node init-node
+                                                        :index j
+                                                        :source-location (semantic-node-source-location init-node))))
                                    (push (cons var-name extract-node) bindings-list)
                                    (setf current-env (cons (list var-name var-type) current-env)))))
                        (t (error "Malformed let binding: ~a" binding))))))
@@ -1187,7 +1485,7 @@
              (last-body-node (first (last analyzed-body)))
              (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
         (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
-                   analyzed-bindings analyzed-body return-type)
+          analyzed-bindings analyzed-body return-type)
         (make-semantic-let :type return-type
                            :bindings analyzed-bindings
                            :body analyzed-body
@@ -1199,7 +1497,10 @@
          (value-nodes (loop for form in value-forms
                             for i from 1
                             collect (analyze-expression form env (append location (list i)))))
-         (return-types (mapcar #'semantic-node-type value-nodes)))
+         (return-types (if value-nodes
+                           (loop for node in value-nodes
+                                   append (alexandria:ensure-list (semantic-node-type node)))
+                           '(nil))))
     (make-semantic-explicit-return :type return-types
                                    :value-nodes value-nodes
                                    :source-location location)))
@@ -1215,14 +1516,13 @@
            ((alexandria:starts-with-subseq "TO-" op-name) (intern (subseq op-name 3)))
            ((alexandria:starts-with-subseq "AS-" op-name) (intern (subseq op-name 3)))
            ;; For truncate, floor, etc., the target is always 'int' for now.
-           ;; This will need to be expanded if we support (truncate-to-long ...).
            ((member op '(truncate floor ceil round)) 'int)
            (t (error "Internal compiler error: analyze-cast-expression called with invalid operator ~a" op))))
          (target-crisp-type (gethash target-type-name *crisp-types*))
          (arg-node (analyze-expression arg-form env (append location '(1)))))
 
     (unless target-crisp-type
-      (error 'crisp-unknown-type-error :type-name target-type-name))
+      (error 'crisp-unknown-type-error :type-name target-type-name :source-location location))
 
     (let* ((source-type-name (get-single-value-type arg-node))
            (source-crisp-type (gethash source-type-name *crisp-types*)))
@@ -1248,6 +1548,105 @@
          ;; Handle unsafe `as-` bit reinterpretations
          (t ; Default for "AS-" and other currently unhandled float-to-int ops
            (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))))
+
+(defun get-struct-member-index (struct-type-name member-name)
+  "Helper to find the physical index of a struct member, accounting for padding."
+  (let ((struct-def (gethash struct-type-name *crisp-structs*)))
+    (unless struct-def
+      (error "Unknown struct type '~a' during member lookup." struct-type-name))
+    (let* ((indices (crisp-struct-definition-field-indices struct-def))
+           (index (gethash member-name indices)))
+      (unless index
+        (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
+      index)))
+
+(defun analyze-set!-expression (expr env location)
+  "Analyzes a (set! target value) expression."
+  (let* ((target-form (second expr))
+         (value-form (third expr))
+         (value-node (analyze-expression value-form env (append location '(2)))))
+
+    (cond
+     ;; Case 1: Simple variable assignment (set! x v)
+     ((symbolp target-form)
+       (let ((var-info (assoc target-form env)))
+         (unless var-info
+           (error 'crisp-unknown-variable :name target-form :source-location location))
+
+         ;; Verify types match
+         (let ((var-type (second var-info))
+               (val-type (semantic-node-type value-node)))
+           (unless (types-compatible-p val-type var-type)
+             (error 'crisp-type-error :expected var-type :inferred val-type :source-location location)))
+
+         (make-semantic-set!
+           :target-node (make-semantic-var-read :name target-form :type (second var-info) :source-location location)
+           :value-node value-node
+           :source-location location)))
+
+     ;; Case 2: Function Call / Struct Accessor
+     ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
+       (let* ((op (first target-form))
+              (op-args (rest target-form))
+              ;; Analyze the arguments to `(op args...)`
+              (arg-nodes (loop for arg in op-args
+                               for i from 1
+                               collect (analyze-expression arg env (append location (list 1 i)))))
+              (all-arg-nodes (append arg-nodes (list value-node)))
+              (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
+              ;; Check for a matching setter function signature: (op arg1 ... argN value)
+              (signatures (gethash op *function-table*))
+              (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
+
+         (cond
+          ;; Sub-case 2a: Found an overloaded setter function -> Call it.
+          (match
+            (make-semantic-call
+              :name op
+              :type (function-signature-return-types match)
+              :args all-arg-nodes
+              :signature match
+              :source-location location))
+
+          ;; Sub-case 2b: Fallback to Struct Member Update (Legacy Accessor Logic)
+          ;; Only valid if default accessors are used and no explicit setter overrides it.
+          (t
+            (let* ((op-name (symbol-name op))
+                   (is-accessor (or (alexandria:ends-with #\~ op-name)
+                                    (and (alexandria:starts-with #\~ op-name)
+                                         (alexandria:ends-with #\~ op-name)))))
+              (unless is-accessor
+                (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor." target-form))
+
+              ;; The structure member update logic expects the FIRST arg to be the struct.
+              (unless (= (length arg-nodes) 1)
+                (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a." op (length arg-nodes)))
+
+              (let* ((clean-name (string-trim "~" op-name))
+                     (member-sym (intern clean-name (symbol-package op)))
+                     (struct-node (first arg-nodes))
+                     (struct-type (semantic-node-type struct-node)))
+
+                ;; Verify struct node is a variable (l-value)
+                (unless (semantic-var-read-p struct-node)
+                  (error "Cannot set member of non-variable struct form: ~a" (second target-form)))
+
+                (let ((member-index (get-struct-member-index struct-type member-sym)))
+                  ;; Create the update node
+                  (let ((update-node (make-semantic-struct-member-update
+                                      :type struct-type
+                                      :struct-node struct-node
+                                      :member-index member-index
+                                      :value-node value-node
+                                      :source-location location)))
+
+                    ;; Wrap in a set! for the struct variable
+                    (make-semantic-set!
+                      :target-node struct-node
+                      :value-node update-node
+                      :source-location location)))))))))
+
+     (t (error "Invalid set! target structure: ~a" target-form)))))
 
 
 (defun types-compatible-p (arg-type param-type)
@@ -1336,7 +1735,7 @@
             :inferred (length explicit-arg-types)
             :source-location location))
 
-        (make-semantic-call :name op
+        (make-semantic-call :name (function-signature-name signature)
                             :type (function-signature-return-types signature)
                             :args final-arg-nodes
                             :signature signature
@@ -1382,11 +1781,11 @@
 
              (return-from analyze-funcall-expression
                           (make-semantic-call
-                           :name name
-                           :type (function-signature-return-types match)
-                           :args arg-nodes
-                           :signature match
-                           :source-location location)))))
+                            :name name
+                            :type (function-signature-return-types match)
+                            :args arg-nodes
+                            :signature match
+                            :source-location location)))))
 
        (t
          (error "First argument to funcall must be a function type or literal. Got ~a" func-type)))
@@ -1406,18 +1805,55 @@
                              (unless (equal (semantic-node-type node) expected-type)
                                (error 'crisp-type-error :expected expected-type :inferred (semantic-node-type node) :source-location location))
                              node))))
-
         (make-semantic-funcall
-         :func-node func-node
-         :type signature-return-type ; e.g. (int)
-         :args arg-nodes
-         :source-location location)))))
+          :func-node func-node
+          :type signature-return-type ; e.g. (int)
+          :args arg-nodes
+          :source-location location)))))
 
 (defun analyze-parameters (params)
   "Builds the environment (a symbol table)."
   ;; For now, just a simple list.
   ;; '((a i32) (b i32))
   (mapcar #'(lambda (p) (list (first p) (second p))) params))
+
+(defun analyze-struct-construction (expr env location)
+  "Analyzes a (%construct-struct type-name arg1 arg2 ...) form."
+  (let* ((type-name (second expr))
+         (args (cddr expr))
+         (struct-def (gethash type-name *crisp-structs*)))
+    (unless struct-def
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    ;; Validate argument count against original members
+    (let ((members (crisp-struct-definition-members struct-def)))
+      (unless (= (length args) (length members))
+        (error "Struct constructor for ~a expects ~a arguments, got ~a."
+          type-name (length members) (length args))))
+
+    ;; Analyze arguments
+    (let ((arg-nodes
+           (loop for arg in args
+                 for member in (crisp-struct-definition-members struct-def)
+                 for i from 0
+                 collect (let ((node (analyze-expression arg env (append location (list (+ 2 i)))))
+                               (expected-type (second member)))
+                           ;; Type check
+                           (unless (equal (semantic-node-type node) expected-type)
+                             ;; Relaxed check for literals behaving as types?
+                             ;; For now strict equality.
+                             (error 'crisp-type-error
+                               :expected expected-type
+                               :inferred (semantic-node-type node)
+                               :source-location location))
+                           node))))
+
+      (make-semantic-struct-construction
+       :type type-name
+       :args arg-nodes
+       :source-location location))))
+
+(def-expression-analyzer %construct-struct analyze-struct-construction)
 
 (defun analyze-body-expressions (body-list env location)
   "Recursively analyzes a list of expressions."
@@ -1503,7 +1939,9 @@
     (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
     (semantic-funcall (semantic-funcall-type node))
-    (semantic-extract-value (semantic-extract-value-type node))))
+    (semantic-extract-value (semantic-extract-value-type node))
+    (semantic-struct-construction (semantic-struct-construction-type node))
+    (semantic-struct-member-update (semantic-struct-member-update-type node))))
 
 (defun semantic-node-source-location (node)
   (etypecase node
@@ -1529,7 +1967,9 @@
     (semantic-explicit-return (semantic-explicit-return-source-location node))
     (semantic-call (semantic-call-source-location node))
     (semantic-funcall (semantic-funcall-source-location node))
-    (semantic-extract-value (semantic-extract-value-source-location node))))
+    (semantic-extract-value (semantic-extract-value-source-location node))
+    (semantic-struct-construction (semantic-struct-construction-source-location node))
+    (semantic-struct-member-update (semantic-struct-member-update-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)
@@ -1590,7 +2030,8 @@
                                   (llvm-di-builder-create-compile-unit di-builder 32768 di-file "Crisp" 5 nil "" 0 0 "" 0 1 0 nil nil "" 0 "" 0)))))
     (unwind-protect
         (progn
-         (let* ((form-with-location (append crisp-form (list :source-location ''(0))))
+         (let* ((*current-module* module)
+                (form-with-location (append crisp-form (list :source-location ''(0))))
                 (expanded-form (macroexpand-1 form-with-location))
                 (semantic-fn (eval expanded-form)))
            (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))

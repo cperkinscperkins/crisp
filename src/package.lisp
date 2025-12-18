@@ -32,7 +32,10 @@
    #:llvm-half-type #:llvm-bfloat-type #:llvm-float-type #:llvm-double-type
    #:llvm-void-type
    #:llvm-function-type
+   #:llvm-function-type
    #:llvm-struct-type-in-context
+   #:llvm-struct-create-named
+   #:llvm-struct-set-body
 
    ;; Functions
    #:llvm-add-function
@@ -144,6 +147,10 @@
 
    ;; laungage symbols
    #:def-function
+   #:def-struct
+   #:def-setter
+   #:register-struct-definition
+   #:*crisp-structs*
    #:with-template-type
    #:return
    #:declare
@@ -196,6 +203,8 @@
    #:semantic-let-bindings
    #:semantic-let-body
 
+   #:set!
+
    ;; Developer Utilities
    #:compile-crisp-form-to-ir-string
 
@@ -208,12 +217,20 @@
   (:export :main))
 
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (when (find-package :crisp-language)
+        (let ((sym (find-symbol "SET!" :crisp-language)))
+          (when (and sym (not (eq (symbol-package sym) (find-package :crisp.compiler))))
+                (unintern sym :crisp-language)))))
+
 (defpackage :crisp-language
   (:use) ;; <--- THIS IS KEY. It means "use nothing from Common Lisp."
 
   ;; --- 1. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
                 #:def-function
+                #:def-struct
+                #:def-setter
                 #:return
                 #:declare
                 #:with-template-type
@@ -239,6 +256,7 @@
 
                 ;; NEW: Unified Let from Compiler
                 #:let
+                #:set!
 
                 ;; NEW: Branching Macros
                 #:when #:unless #:cond #:if+ #:else)
@@ -291,7 +309,7 @@
    ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function
    #:def-orchestration #:def-qint #:def-microfloat-block
-   #:def-type-alias #:def-struct
+   #:def-type-alias #:def-struct #:def-setter
    #:declare
    #:return-type #:type
    ;; All Crisp types
