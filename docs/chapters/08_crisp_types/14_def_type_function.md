@@ -14,7 +14,7 @@ Possible example:
 ;; -- get-unsigned-type --
 (def-type-function get-unsigned-type (InputType)
   (cond ((<= (sizeof InputType) (sizeof uint)) 'uint)
-        (T 'ulong)))
+        (else 'ulong)))
 ```
 
 

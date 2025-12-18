@@ -132,6 +132,36 @@ Also note that the compile-time predicate check `if+`, `when+`, `unless+`, and `
 
 But the `*` variants for uniformity are not yet implemented. 
 
+### def-struct & Struct Templates
+Structs are now fully supported, including auto-generated accessors/constructors and templating!
+
+```lisp
+(def-struct point
+  (x float)
+  (y int))
+
+;; Creates: make-point, x~, y~, ~x~, ~y~
+```
+
+Structs can also be templated:
+```lisp
+(def-struct point
+  (x T)
+  (y T))
+
+(let ((p (make-point 1.0 2.0))) ;; Auto-instantiates POINT_FLOAT
+  ...)
+```
+
+### def-setter
+Setters can now be defined for things that are not struct accessors!
+```lisp
+(def-setter x~ (p v)
+  (declare #'(point float => nil))
+  (set! (~x~ p) v))
+```
+This allows `(set! (x~ p) 10.0)` to work transparently, just like a struct index. 
+
 Errors
 ======
 

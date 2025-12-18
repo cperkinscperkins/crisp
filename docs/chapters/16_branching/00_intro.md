@@ -7,6 +7,10 @@ They each operate similarly: first evalute a predicate expression, and if true, 
 some consequent. With variations for multiple checks, multiple statements, etc.  
 ( `unless` checks the predicate for being `false`, not `true`).
 
+### `cond` default
+The default case for `cond` is not `T` like it is in Common Lisp. That would be too confusing 
+with the very common `T` used for templating.  Instead in Crisp, `cond` uses `else` as the default case.
+
 ### + variant
 The `+` variant exists as well (`if+`, `when+`, `unless+`, `cond+`). 
 This variant checks that the predicate expression is compile time calculable. It wil error if it is not.

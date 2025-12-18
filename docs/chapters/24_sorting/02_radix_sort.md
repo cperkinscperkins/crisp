@@ -239,7 +239,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
 (def-type-function get-unsigned-type (T)
   ;; Helper to determine the corresponding unsigned integer type
   (cond ((<= (sizeof T) (sizeof uint)) 'uint)
-        (T 'ulong)))
+        (else 'ulong)))
 
 ;;
 ;; radix-transform
@@ -283,7 +283,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
                  (logxor as-uint msb-mask)))))
 
         ;; Should not be reached if T is numeric
-        (T (c-t-error "Unsupported type for radix_transform"))))))
+        (else (c-t-error "Unsupported type for radix_transform"))))))
 
 ;;
 ;; local-rank-within-digit

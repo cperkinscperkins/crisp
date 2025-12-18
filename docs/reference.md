@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-16T07:02:52.679538Z
+Generated on 2025-12-18T08:02:42.546108Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
@@ -121,6 +121,12 @@ Generated on 2025-12-16T07:02:52.679538Z
 
 
 ---
+### DEFSTRUCT `CRISP-STRUCT-DEFINITION`
+
+  > Stores the definition of a user-defined struct.
+
+
+---
 ### DEFSTRUCT `SEMANTIC-FUNCTION`
 
 ---
@@ -177,6 +183,15 @@ Generated on 2025-12-16T07:02:52.679538Z
 ---
 ### DEFSTRUCT `SEMANTIC-SET!`
 
+  > Represents a (set! ...) expression.
+
+
+---
+### DEFSTRUCT `SEMANTIC-STRUCT-MEMBER-UPDATE`
+
+  > Represents updating a single member of a struct (creates a new struct value).
+
+
 ---
 ### DEFSTRUCT `SEMANTIC-AREF`
 
@@ -220,6 +235,12 @@ Generated on 2025-12-16T07:02:52.679538Z
 ### DEFSTRUCT `SEMANTIC-EXTRACT-VALUE`
 
   > Represents extracting a single value from an aggregate (struct).
+
+
+---
+### DEFSTRUCT `SEMANTIC-STRUCT-CONSTRUCTION`
+
+  > Represents constructing a struct instance e.g. (%construct-struct 'point ...).
 
 
 ---
@@ -277,6 +298,18 @@ Generated on 2025-12-16T07:02:52.679538Z
 
 
 ---
+### DEFVAR `*TEMPLATE-REGISTRY*`
+
+  > Maps template names (symbols) to a LIST of template-data structs.  > This supports overloading templates by arity or other factors.
+
+
+---
+### DEFVAR `*INSTANTIATED-TEMPLATES*`
+
+  > Tracks which specializations have already been generated.
+
+
+---
 ### DEFVAR `*SIDE-CHANNEL-ORIGINATORS*`
 
   > A list of function names that trigger the implicit side-channel argument passing mechanism.
@@ -298,6 +331,12 @@ Generated on 2025-12-16T07:02:52.679538Z
 ### DEFVAR `*CRISP-TYPES*`
 
   > A hash table mapping type names (symbols) to CRISP-TYPE structs.
+
+
+---
+### DEFVAR `*CRISP-STRUCTS*`
+
+  > A hash table mapping struct names to CRISP-STRUCT-DEFINITION structs.
 
 
 ---
@@ -355,10 +394,105 @@ Generated on 2025-12-16T07:02:52.679538Z
 
 
 ---
+### DEFUN `EXCLUDED-TEMPLATE-BASE-TYPE-P`
+- **Args**: `(BASE-TYPE)`
+
+  > Returns true if the base-type should be excluded from struct template processing.  >    Excludes COMMON-LISP special forms like FUNCTION and QUOTE to prevent package lock violations.
+
+
+---
+### DEFUN `MANGLE-TEMPLATE-STRUCT-NAME`
+- **Args**: `(NAME PARAMS)`
+
+  > Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT
+
+
+---
+### DEFUN `TYPES-EQUIVALENT-P`
+- **Args**: `(T1 T2)`
+
+  > Checks if two types are equivalent, handling template struct canonicalization.
+
+
+---
+### DEFUN `TYPE-LISTS-EQUIVALENT-P`
+- **Args**: `(L1 L2)`
+
+---
+### DEFUN `REGISTER-STRUCT-DEFINITION`
+- **Args**: `(NAME MEMBERS)`
+
+  > Registers a struct definition in the global registry.
+
+
+---
+### DEFUN `PARSE-STRUCT-MEMBER-SPEC`
+- **Args**: `(SPEC)`
+
+  > Parses a struct member specification.  >    Supports (name type) and (name:type).
+
+
+---
+### DEFMACRO `DEF-STRUCT`
+- **Args**: `(NAME &REST MEMBERS)`
+
+  > Defines a new Crisp struct type.
+
+
+---
+### DEFMACRO `DEF-SETTER`
+- **Args**: `(NAME ARGS &BODY BODY)`
+
+  > Defines a setter function (which is just a def-function but semantically intended for use with set!).  >    The return type is implicitly nil/void. We append (return) to ensure this.
+
+
+---
+### DEFUN `GET-STD140-BASE-ALIGNMENT`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns the base alignment (N) for a given type according to std140 rules.  >   For scalars, N is the size of the scalar.  >   For vectors, it is 2N or 4N.  >   For arrays/structs, it is rounded up to vec4 alignment (16).
+
+
+---
+### DEFUN `GET-STD140-SIZE`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns the size (in bytes) of a type. Does not include padding for alignment context.
+
+
+---
+### DEFUN `CALCULATE-STD140-PADDING`
+- **Args**: `(CURRENT-OFFSET ALIGNMENT)`
+
+  > Calculates padding needed to reach the next alignment boundary.
+
+
+---
+### DEFUN `COMPUTE-STD140-LAYOUT`
+- **Args**: `(MEMBERS)`
+
+  > Takes a list of (name type) members.  >   Returns a list of:  >     - Expanded members with `_pad` fields inserted.  >     - Total struct size (padded to 16 bytes).  >     >   Returns (values expanded-members total-size)
+
+
+---
 ### DEFUN `VALID-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
   > Checks if a type specifier is valid.  >   Handles simple types, parameterized types, and function literals/types.
+
+
+---
+### DEFUN `RESOLVE-TYPE-TO-LLVM`
+- **Args**: `(TYPE-SPEC)`
+
+  > Resolves a Crisp type specifier to an LLVM type reference.
+
+
+---
+### DEFUN `ENSURE-STRUCT-LLVM-TYPE`
+- **Args**: `(NAME)`
+
+  > Ensures the LLVM struct type exists for the given struct name.  >    Handles forward declarations and recursion.
 
 
 ---
@@ -372,108 +506,6 @@ Generated on 2025-12-16T07:02:52.679538Z
 ### DEFUN `INITIALIZE-EXPRESSION-ANALYZERS`
 
   > Registers all expression analyzers.
-
-
----
-### DEFSTRUCT `SEMANTIC-FUNCTION`
-
----
-### DEFSTRUCT `SEMANTIC-RETURN`
-
----
-### DEFSTRUCT `SEMANTIC-EXPLICIT-RETURN`
-
-  > Represents an explicit (return ...) form.
-
-
----
-### DEFSTRUCT `SEMANTIC-LITERAL`
-
----
-### DEFSTRUCT `SEMANTIC-PARAM`
-
----
-### DEFSTRUCT `SEMANTIC-VAR-READ`
-
----
-### DEFSTRUCT `SEMANTIC-ADD`
-
----
-### DEFSTRUCT `SEMANTIC-SUB`
-
----
-### DEFSTRUCT `SEMANTIC-MUL`
-
----
-### DEFSTRUCT `SEMANTIC-DIV`
-
----
-### DEFSTRUCT `SEMANTIC-LT`
-
----
-### DEFSTRUCT `SEMANTIC-GT`
-
----
-### DEFSTRUCT `SEMANTIC-LE`
-
----
-### DEFSTRUCT `SEMANTIC-GE`
-
----
-### DEFSTRUCT `SEMANTIC-EQ`
-
----
-### DEFSTRUCT `SEMANTIC-NEQ`
-
----
-### DEFSTRUCT `SEMANTIC-IF`
-
----
-### DEFSTRUCT `SEMANTIC-SET!`
-
----
-### DEFSTRUCT `SEMANTIC-AREF`
-
----
-### DEFSTRUCT `SEMANTIC-VALUE-CAST`
-
-  > Represents a value-preserving cast (e.g., to-float).
-
-
----
-### DEFSTRUCT `SEMANTIC-BITCAST`
-
-  > Represents a bit reinterpretation cast (e.g., as-int).
-
-
----
-### DEFSTRUCT `SEMANTIC-FP-TRUNCATE-CAST`
-
-  > Represents a float-to-integer truncation cast.
-
-
----
-### DEFSTRUCT `SEMANTIC-CALL`
-
-  > Represents a call to a user-defined function.
-
-
----
-### DEFSTRUCT `SEMANTIC-FUNCALL`
-
-  > Represents a 'funcall' form.
-
-
----
-### DEFSTRUCT `SEMANTIC-LET`
-
-  > Represents a (let ...) expression.
-
-
----
-### DEFSTRUCT `SEMANTIC-EXTRACT-VALUE`
-
-  > Represents extracting a single value from an aggregate (struct).
 
 
 ---
@@ -557,7 +589,7 @@ Generated on 2025-12-16T07:02:52.679538Z
 ### DEFUN `PARSE-FUNCTION-DECLARATIONS`
 - **Args**: `(PARAMS DECLARATIONS)`
 
-  > Parses a function's declarations and returns its environment and return type.
+  > Parses a function's declarations and returns its environment and return type.  >    Supports interleaved type syntax: ((p type))
 
 
 ---
@@ -697,6 +729,20 @@ Generated on 2025-12-16T07:02:52.679538Z
 - **Args**: `(EXPR ENV LOCATION)`
 
 ---
+### DEFUN `ANALYZE-CONSTRUCT-STRUCT-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes a `%construct-struct` expression.
+
+
+---
+### DEFUN `ANALYZE-EXTRACT-STRUCT-MEMBER-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes a `%extract-struct-member` expression.  >    Form: (%extract-struct-member object-node index-literal)
+
+
+---
 ### DEFUN `ANALYZE-IF-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
@@ -706,10 +752,6 @@ Generated on 2025-12-16T07:02:52.679538Z
 
 ---
 ### DEFUN `ANALYZE-UNLESS-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
-
----
-### DEFUN `ANALYZE-SET!-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
 ---
@@ -764,6 +806,13 @@ Generated on 2025-12-16T07:02:52.679538Z
 
 
 ---
+### DEFUN `ANALYZE-EVAL-WHEN`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes (eval-when ...) forms by ignoring them in the runtime IR.  >    Side effects (like struct registration) should have already occurred during macro expansion.
+
+
+---
 ### DEFUN `ANALYZE-LET-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
@@ -782,6 +831,20 @@ Generated on 2025-12-16T07:02:52.679538Z
 - **Args**: `(EXPR ENV LOCATION)`
 
   > Analyzes a to-XXXX or as-XXXX cast expression.
+
+
+---
+### DEFUN `GET-STRUCT-MEMBER-INDEX`
+- **Args**: `(STRUCT-TYPE-NAME MEMBER-NAME)`
+
+  > Helper to find the physical index of a struct member, accounting for padding.
+
+
+---
+### DEFUN `ANALYZE-SET!-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes a (set! target value) expression.
 
 
 ---
@@ -824,6 +887,13 @@ Generated on 2025-12-16T07:02:52.679538Z
 - **Args**: `(PARAMS)`
 
   > Builds the environment (a symbol table).
+
+
+---
+### DEFUN `ANALYZE-STRUCT-CONSTRUCTION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
 
 
 ---
@@ -1000,18 +1070,6 @@ Generated on 2025-12-16T07:02:52.679538Z
 ### DEFSTRUCT `TEMPLATE-DATA`
 
   > Stores the definition of a template function.
-
-
----
-### DEFVAR `*TEMPLATE-REGISTRY*`
-
-  > Maps template names (symbols) to a LIST of template-data structs.  > This supports overloading templates by arity or other factors.
-
-
----
-### DEFVAR `*INSTANTIATED-TEMPLATES*`
-
-  > Tracks which specializations have already been generated.  > Key: (template-name . concrete-types)  > Value: The expanded form (or T).
 
 
 ---

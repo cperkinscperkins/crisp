@@ -17,10 +17,3 @@
         (set! (y~ p) 4)
         (return (x~ p) (y~ p)))) ;; should return (13 24)
 
-#|
-;; another negative test for tests/errors
-;; this should fail to compile.
-(def-setter ~y~ (p v)
-    (declare #'(point int => nil))
-    (set! (~y~ p) (+ 20 v)))
-|#
