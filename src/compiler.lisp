@@ -159,6 +159,49 @@ This supports overloading templates by arity or other factors.")
          ',body-forms ;  '((+ a b))
          ,source-location))))
 
+(defun mangle-template-struct-name (name params)
+  "Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT"
+  (intern (format nil "~a_~{~a~^_~}" name params) (symbol-package name)))
+
+(defun types-equivalent-p (t1 t2)
+  "Checks if two types are equivalent, handling template struct canonicalization."
+  (cond
+   ((equal t1 t2) t)
+   ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT equivalence
+   ((and (listp t1) (symbolp t2))
+     (let ((base-type (first t1))
+           (params (rest t1)))
+       (if (symbolp base-type)
+           (progn
+            ;; Trigger auto-instantiation if template exists
+            (when (gethash base-type *template-registry*)
+                  (let ((instantiated-form
+                         (funcall *template-instantiator-fn* base-type params
+                           (lambda (form location)
+                             (if (boundp '*current-module*)
+                                 (compile-toplevel-form form location
+                                                        *current-module*
+                                                        *current-builder*
+                                                        *current-di-builder*
+                                                        *current-di-compile-unit*
+                                                        *current-location-map*)
+                                 (eval form))))))
+                    t))
+
+            ;; Now check mangled name
+            (let ((mangled (mangle-template-struct-name base-type params)))
+              (if (gethash mangled *crisp-structs*)
+                  t
+                  nil)))
+           nil)))
+   ((and (symbolp t1) (listp t2))
+     (types-equivalent-p t2 t1))
+   (t nil)))
+
+(defun type-lists-equivalent-p (l1 l2)
+  (and (= (length l1) (length l2))
+       (every #'types-equivalent-p l1 l2)))
+
 (defun register-struct-definition (name members)
   "Registers a struct definition in the global registry."
   (multiple-value-bind (padded-members total-size)
@@ -408,7 +451,39 @@ This supports overloading templates by arity or other factors.")
            (params (rest type-spec)))
        (cond
         ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
-        (t nil))))
+        ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
+        (t
+          (let ((mangled-name (mangle-template-struct-name base-type params)))
+            (or (gethash mangled-name *crisp-structs*)
+                ;; Attempt Auto-Instantiation if it's a known template
+                (when (gethash base-type *template-registry*)
+                      (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
+                      ;; Trigger the instantiation. 
+                      ;; We use the *template-instantiator-fn* hook to avoid direct dependency if possible,
+                      ;; but for struct *types* we might need immediate Side-Effect: Registering the struct.
+                      ;; BUT, ensure-template-instantiation returns boolean.
+                      ;; We need compilation of the struct form to happen NOW globally?
+                      ;; valid-type-p is usually called during analysis.
+                      ;; If we instantiate here, the DEFUN/DEFSTRUCT form is generated.
+                      ;; For valid-type-p to return T, the struct must be registered.
+                      (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
+                          (progn
+                           ;; We pass a callback that handles either analysis (Pass 1) or compilation (Pass 2)
+                           (funcall *template-instantiator-fn* base-type params
+                             (lambda (form loc)
+                               (declare (ignore loc))
+                               ;; (log:info "Callback: Boundp *current-module* = ~a" (boundp '*current-module*))
+                               ;; (log:info "Evaluating instantiated form in valid-type-p: ~a" form)
+                               (if (and (boundp '*current-module*) *current-module*)
+                                   (compile-toplevel-form form nil
+                                                          *current-module*
+                                                          *current-builder*
+                                                          *current-di-builder*
+                                                          *current-di-compile-unit*
+                                                          *current-location-map*)
+                                   (eval form))))
+                           (gethash mangled-name *crisp-structs*))
+                          (progn (log:warn "Template instantiator not bound/found") nil)))))))))
    (t nil)))
 
 
@@ -526,6 +601,7 @@ This supports overloading templates by arity or other factors.")
   (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
   (def-expression-analyzer %construct-struct analyze-struct-construction)
   (def-expression-analyzer %extract-struct-member analyze-extract-struct-member-expression)
+  (def-expression-analyzer common-lisp:eval-when analyze-eval-when)
 
   ;; Register all possible `to-` and `as-` casts.
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
@@ -669,6 +745,7 @@ This supports overloading templates by arity or other factors.")
                                                            ;; Handle implicit templates which return nil
                                                            (let ((semantic-node (eval expanded-form)))
                                                              (when semantic-node
+                                                                   (log:info "Generating IR for function ~a in module ~a" (second form) module)
                                                                    (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))))
                                                      (pop *single-pass-call-stack*))))
 
@@ -701,6 +778,19 @@ This supports overloading templates by arity or other factors.")
         (*current-di-builder* di-builder)
         (*current-di-compile-unit* di-compile-unit)
         (*current-location-map* location-map))
+
+    ;; Pre-Pass: Ensure all templates instantiated during Pass 1 (signatures only) 
+    ;; are now fully compiled to IR/Structs in this module.
+    (maphash (lambda (key status)
+               (when (eq status :analyzed)
+                     (let ((name (car key))
+                           (types (cdr key)))
+                       (log:info "Pass 2: Rehydrating/Compiling template instance: ~a ~a" name types)
+                       (funcall *template-instantiator-fn* name types
+                         (lambda (form location)
+                           (compile-toplevel-form form location module builder di-builder di-compile-unit location-map))))))
+             *instantiated-templates*)
+
     (walk-code-forms forms
                      (lambda (form location)
                        (compile-toplevel-form form location module builder di-builder di-compile-unit location-map)))))
@@ -805,7 +895,16 @@ This supports overloading templates by arity or other factors.")
       (let ((param-types (mapcar #'second env)))
         ;; Add the new signature to the list of existing ones.
         (setf (gethash name *function-table*)
-          (append existing-signatures (list (make-function-signature :name name :parameters param-types :return-types return-types :source-location location))))))))
+          (append existing-signatures (list (make-function-signature :name name :parameters param-types :return-types return-types :source-location location))))))
+
+    (defun register-overload (alias real-name)
+      "Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing."
+      (let ((real-sigs (gethash real-name *function-table*))
+            (alias-sigs (gethash alias *function-table*)))
+        (unless real-sigs
+          (error "Cannot register overload: function ~a not found." real-name))
+        (setf (gethash alias *function-table*)
+          (append alias-sigs real-sigs))))))
 
 (defun inject-implicit-arguments (name explicit-env)
   "Injects implicit arguments into the environment if the function is a carrier."
@@ -858,7 +957,7 @@ This supports overloading templates by arity or other factors.")
                                 (subseq inferred-types 0 num-declared)
                                 inferred-types)))
       (unless (and (>= num-inferred num-declared)
-                   (equal inferred-subset declared-return-types))
+                   (type-lists-equivalent-p inferred-subset declared-return-types))
         (error 'crisp-type-error
           :expected declared-return-types
           :inferred inferred-types
@@ -1288,6 +1387,12 @@ This supports overloading templates by arity or other factors.")
     ;; We analyze it recursively.
     (analyze-expression body env location)))
 
+(defun analyze-eval-when (expr env location)
+  "Analyzes (eval-when ...) forms by ignoring them in the runtime IR.
+   Side effects (like struct registration) should have already occurred during macro expansion."
+  (declare (ignore expr env))
+  (make-semantic-literal :value-type 'void :value nil :source-location location))
+
 (defun analyze-let-expression (expr env location)
   "Analyzes a `(let ...)` expression."
   (unless (and (>= (length expr) 2) (listp (cadr expr)))
@@ -1590,7 +1695,7 @@ This supports overloading templates by arity or other factors.")
             :inferred (length explicit-arg-types)
             :source-location location))
 
-        (make-semantic-call :name op
+        (make-semantic-call :name (function-signature-name signature)
                             :type (function-signature-return-types signature)
                             :args final-arg-nodes
                             :signature signature

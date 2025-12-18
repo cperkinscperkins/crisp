@@ -91,7 +91,14 @@
         ((or (eq base-type :function-type) (eq base-type :function-literal))
           ;; Functions are passed as opaque pointers (void* / i8*)
           (llvm-int8-ptr-type (llvm-int8-type) 0))
-        (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
+
+        ;; Case: Templated Struct Instantiation, e.g. (POINT FLOAT)
+        ;; We try to mangle it and look it up.
+        (t
+          (let ((mangled-name (intern (format nil "~a_~{~a~^_~}" base-type (rest type-spec)) (symbol-package base-type))))
+            (if (gethash mangled-name *crisp-structs*)
+                (resolve-type-to-llvm mangled-name)
+                (error "Internal codegen error: Unknown parameterized type ~a (Mangled: ~a)" base-type mangled-name)))))))
    (t (error "Internal codegen error: Invalid type specifier ~a" type-spec))))
 
 (defun get-expanded-types (type-spec module)
@@ -209,6 +216,7 @@
     (let ((fn-type (create-llvm-function-type module return-types param-nodes)))
 
       ;; --- 2. Create the Function ---
+      (log:info "llvm-add-function: ~a Module: ~a" fn-name module)
       (let ((func (llvm-add-function module fn-name fn-type)))
         (log:debug "finished llvm-add-function for ~a, creating debug info..." fn-name)
 
@@ -544,6 +552,7 @@
            (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
 
            ;; 4. Get the LLVM function *value* (the callable function)
+           (progn (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module))
            (callee (or (llvm-get-named-function module callee-name)
                        ;; If not in this module, declare it
                        (llvm-add-function module callee-name llvm-fn-type)))
