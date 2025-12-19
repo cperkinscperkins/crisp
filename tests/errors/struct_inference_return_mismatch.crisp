@@ -1,0 +1,19 @@
+
+;; Negative Test: Return Type Mismatch in Struct Inference
+;; Expected Error: Type mismatch: Expected (POINT LONG), Actual (POINT INT)
+
+(with-template-type (T)
+  (def-struct point 
+    (x T) 
+    (y T)))
+
+;; Force instantiation of POINT<INT> via return type (known to work)
+(def-function force-int ()
+    (declare #'( => (point int)))
+    (make-point (as-int 0) (as-int 0)))
+
+(def-function inference ()
+    (declare #'( => (point long)))
+    ;; This infers POINT<INT> because we explicitly make it so.
+    ;; It should mismatch the declared POINT<LONG>.
+    (make-point (as-int 1) (as-int 2)))

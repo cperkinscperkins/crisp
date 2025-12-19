@@ -145,7 +145,7 @@ This supports overloading templates by arity or other factors.")
     (register-function-signature `(def-function ,name ,params ,@body) source-location)
 
     (log:debug "name: ~a  params: ~a  body: ~a ~%source-location: ~a~%"
-      name params body source-location)
+               name params body source-location)
     ;; Handle declarations (this part is tricky, let's simplify)
     (let* ((declare-forms
             (loop for form in body
@@ -155,11 +155,11 @@ This supports overloading templates by arity or other factors.")
            (body-forms (nthcdr (length declare-forms) body)))
 
       `(internal-def-function
-         ',name
-         ',params
-         ',declarations ;  '(((type a b int)) ((return-type int)))
-         ',body-forms ;  '((+ a b))
-         ,source-location))))
+        ',name
+        ',params
+        ',declarations ;  '(((type a b int)) ((return-type int)))
+        ',body-forms ;  '((+ a b))
+        ,source-location))))
 
 
 (defun excluded-template-base-type-p (base-type)
@@ -202,9 +202,12 @@ This supports overloading templates by arity or other factors.")
 
             ;; Now check mangled name
             (let ((mangled (mangle-template-struct-name base-type params)))
-              (if (gethash mangled *crisp-structs*)
-                  t
-                  nil)))
+              (cond
+               ;; If t2 is the mangled name, they are equivalent
+               ((eq mangled t2) t)
+               ;; If t2 is also a struct, check if it maps to mangled?
+               ;; Usually t2 is the resolved type symbol.
+               (t nil))))
            nil)))
    ((and (symbolp t1) (consp t2))
      (types-equivalent-p t2 t1))
@@ -218,7 +221,6 @@ This supports overloading templates by arity or other factors.")
   "Registers a struct definition in the global registry."
   (multiple-value-bind (padded-members total-size)
       (compute-std140-layout members)
-    (declare (ignore total-size))
     (let ((indices (make-hash-table :test #'eq)))
       (loop for m in padded-members
             for i from 0
@@ -228,7 +230,8 @@ This supports overloading templates by arity or other factors.")
          :name name
          :members members
          :padded-members padded-members
-         :field-indices indices)))))
+         :field-indices indices
+         :total-size total-size)))))
 
 (defun parse-struct-member-spec (spec)
   "Parses a struct member specification.
@@ -238,7 +241,6 @@ This supports overloading templates by arity or other factors.")
    ((and (listp spec) (= (length spec) 2))
      spec)
    (t (error "Invalid struct member spec: ~a" spec))))
-
 
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
@@ -252,18 +254,18 @@ This supports overloading templates by arity or other factors.")
       (eval-when (:compile-toplevel :load-toplevel :execute)
         (register-struct-definition ',name ',parsed-members))
       (def-function ,constructor-name ,parsed-members
-        (return (%construct-struct ,name ,@param-names)))
+                    (return (%construct-struct ,name ,@param-names)))
       ,@(loop for (member-name member-type) in parsed-members
               for i from 0
               collect
                 `(def-function ,(intern (format nil "~a~~" member-name)) ((obj ,name))
-                   (return (%extract-struct-member obj ,i))))
+                               (return (%extract-struct-member obj ,i))))
       ,@(loop for (member-name member-type) in parsed-members
               for i from 0
               collect
                 `(def-function ,(intern (format nil "~~~a~~" member-name)) ((obj ,name))
-                   (return (%extract-struct-member obj ,i)))))))
-
+                               (declare (crisp-system-generated))
+                               (return (%extract-struct-member obj ,i)))))))
 
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
@@ -275,22 +277,28 @@ This supports overloading templates by arity or other factors.")
 
 (define-condition crisp-compiler-error (error)
     ((source-location :initarg :source-location :reader error-source-location
-                      :initform nil))
+                      :initform nil)
+     (message :initarg :message :reader error-message :initform nil))
   (:report (lambda (condition stream)
-             (format stream "A Crisp compilation error occurred~@[ at ~a~]."
-               (error-source-location condition)))))
+             (if (error-message condition)
+                 (format stream "~a~@[ at ~a~]." (error-message condition) (error-source-location condition))
+                 (format stream "A Crisp compilation error occurred~@[ at ~a~]."
+                   (error-source-location condition))))))
 
 (define-condition crisp-type-error (crisp-compiler-error)
     ((message :initarg :message :initform "Type mismatch!" :reader type-error-message)
      (expected :initarg :expected :reader type-error-expected :initform nil)
      (inferred :initarg :inferred :reader type-error-inferred :initform nil))
   (:report (lambda (condition stream)
-             (format stream (type-error-message condition))
-             (when (or (type-error-expected condition)
-                       (type-error-inferred condition))
-                   (format stream "Type mismatch! Expected ~a but inferred ~a."
-                     (type-error-expected condition)
-                     (type-error-inferred condition))))))
+             ;; If we have specific expected/inferred types, use the standard format.
+             ;; Otherwise, just print the message.
+             (if (or (type-error-expected condition)
+                     (type-error-inferred condition))
+                 (format stream "~a Expected ~a but inferred ~a."
+                   (type-error-message condition)
+                   (type-error-expected condition)
+                   (type-error-inferred condition))
+                 (format stream "~a" (type-error-message condition))))))
 
 (define-condition crisp-unknown-type-error (crisp-compiler-error)
     ((type-name :initarg :type-name :reader unknown-type-name))
@@ -331,7 +339,6 @@ This supports overloading templates by arity or other factors.")
   (:report (lambda (condition stream)
              (format stream "Recursion is not allowed. Call to '~a' is recursive." (recursive-form condition)))))
 
-
 (define-condition crisp-unknown-variable (crisp-compiler-error)
     ((name :initarg :name :reader unknown-variable-name))
   (:report (lambda (condition stream)
@@ -366,10 +373,9 @@ This supports overloading templates by arity or other factors.")
    ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
    ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
    ((eq type-spec 'bool) 4)
-   ;; Structs need to be calculated recursively, but basic struct defs have a cached size?
-   ;; For now, error on unknown structs until we have size caching.
+   ;; Structs - Retrieve cached size
    ((gethash type-spec *crisp-structs*)
-     (error "Recursive struct size calculation not yet implemented."))
+     (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
    (t (error "Unknown type for size: ~a" type-spec))))
 
 (defun calculate-std140-padding (current-offset alignment)
@@ -397,28 +403,25 @@ This supports overloading templates by arity or other factors.")
 
         ;; Insert padding if needed
         (when (> padding 0)
-              (let ((pad-type (case padding
-                                (1 'char)
-                                (2 'short)
-                                (3 'vec3-char-pad) ;; char + short
-                                (4 'int) ;; float/int
-                                (8 'double) ;; double/long
-                                (12 'vec3-pad-placeholder)
-                                (t (error "Unsupported padding size: ~a" padding)))))
+              (let ((pad-remaining padding)
+                    (pad-idx 0)
+                    (pad-current-offset current-offset))
+                (loop while (> pad-remaining 0) do
+                        (let* ((pad-member
+                                (cond
+                                 ;; Only use larger types if we are aligned for them!
+                                 ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
+                                 ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
+                                 ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
+                                 (t (list 'char 1))))
+                               (pad-type (first pad-member))
+                               (pad-size (second pad-member))
+                               (pad-name (intern (format nil "_PAD_~a_~a" current-offset pad-idx))))
 
-                (cond
-                 ((= padding 1)
-                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'char) expanded-members))
-                 ((= padding 2)
-                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'short) expanded-members))
-                 ((= padding 3)
-                   (push (list (intern (format nil "_PAD_~a_1" current-offset)) 'char) expanded-members)
-                   (push (list (intern (format nil "_PAD_~a_2" current-offset)) 'short) expanded-members))
-                 ((= padding 4)
-                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'int) expanded-members))
-                 ((= padding 8)
-                   (push (list (intern (format nil "_PAD_~a" current-offset)) 'double) expanded-members))
-                 (t (error "Padding of ~a bytes not yet implemented." padding))))
+                          (push (list pad-name pad-type) expanded-members)
+                          (decf pad-remaining pad-size)
+                          (incf pad-current-offset pad-size)
+                          (incf pad-idx))))
               (incf current-offset padding))
 
         ;; Add the actual member
@@ -428,17 +431,24 @@ This supports overloading templates by arity or other factors.")
     ;; Final structure padding to multiple of 16 (vec4 alignment)
     (let ((final-padding (calculate-std140-padding current-offset 16)))
       (when (> final-padding 0)
-            ;; Same issue with padding types. 
-            ;; For now, if we need simple padding for test cases:
-            (if (= final-padding 4)
-                (push (list (intern (format nil "_PAD_EA")) 'int) expanded-members)
-                (if (= final-padding 8)
-                    (push (list (intern (format nil "_PAD_EA")) 'double) expanded-members)
-                    (if (= final-padding 12)
-                        (progn
-                         (push (list (intern (format nil "_PAD_EA_1")) 'double) expanded-members)
-                         (push (list (intern (format nil "_PAD_EA_2")) 'int) expanded-members))
-                        nil)))) ;; Assume 0 or handled
+            (let ((pad-remaining final-padding)
+                  (pad-idx 0)
+                  (pad-current-offset current-offset))
+              (loop while (> pad-remaining 0) do
+                      (let* ((pad-member
+                              (cond
+                               ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
+                               ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
+                               ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
+                               (t (list 'char 1))))
+                             (pad-type (first pad-member))
+                             (pad-size (second pad-member))
+                             (pad-name (intern (format nil "_PAD_EA_~a" pad-idx))))
+
+                        (push (list pad-name pad-type) expanded-members)
+                        (decf pad-remaining pad-size)
+                        (incf pad-current-offset pad-size)
+                        (incf pad-idx)))))
       (incf current-offset final-padding))
 
     (values (nreverse expanded-members) current-offset)))
@@ -446,7 +456,6 @@ This supports overloading templates by arity or other factors.")
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Type System Helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 
 (defun valid-type-p (type-spec)
   "Checks if a type specifier is valid.
@@ -508,7 +517,6 @@ This supports overloading templates by arity or other factors.")
         (t nil))))
    (t nil)))
 
-
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference."
   (cond
@@ -565,7 +573,6 @@ This supports overloading templates by arity or other factors.")
 
       struct-type)))
 
-
 (defun analyze-function-literal (expr env location)
   "Analyzes a (function name) form, e.g., #'foo."
   (let ((fn-name (second expr)))
@@ -574,10 +581,9 @@ This supports overloading templates by arity or other factors.")
       (log:warn "Function literal ~a refers to unknown function (at compile time)." fn-name))
 
     (make-semantic-literal
-      :value-type `(:function-literal ,fn-name)
-      :value fn-name
-      :source-location location)))
-
+     :value-type `(:function-literal ,fn-name)
+     :value fn-name
+     :source-location location)))
 
 (defun initialize-expression-analyzers ()
   "Registers all expression analyzers."
@@ -638,7 +644,6 @@ This supports overloading templates by arity or other factors.")
   (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
 
-
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
 ;; ---------------------------------
@@ -686,7 +691,6 @@ This supports overloading templates by arity or other factors.")
                    (setf (gethash caller *implicit-arg-map*) '(:storage-ptr :storage-size))
                    (push caller worklist)))))))
 
-
 (defun shallow-analyze-body (forms)
   "Performs a shallow, recursive walk of a function's body.
   Returns two values:
@@ -728,7 +732,6 @@ This supports overloading templates by arity or other factors.")
       (dolist (form forms)
         (walk form))
       (values is-originator callees))))
-
 
 (defun visit-toplevel-form (form location visitor-fn)
   "Recursively visits a top-level form, handling macros and progn.
@@ -776,7 +779,6 @@ This supports overloading templates by arity or other factors.")
   (loop for form in forms
         for i from 0
         do (visit-toplevel-form form (list i) visitor-fn)))
-
 
 (defun analyze-signatures-pass (forms)
   "Pass 1: Iterates through forms to find and register function signatures."
@@ -967,8 +969,8 @@ This supports overloading templates by arity or other factors.")
     (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types declared-return-types)
 
     (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
-      inferred-types (listp inferred-types)
-      declared-return-types (listp declared-return-types))
+               inferred-types (listp inferred-types)
+               declared-return-types (listp declared-return-types))
 
     ;; Check Types. This allows for a function returning multiple values
     ;; to be used in a context that expects fewer values (the extras are dropped).
@@ -1025,7 +1027,17 @@ This supports overloading templates by arity or other factors.")
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
 
-    ;; 0. Implicit Template Detection
+    ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
+    (let ((name-str (symbol-name name)))
+      (when (and (> (cl:length name-str) 2)
+                 (cl:char= (cl:char name-str 0) #\~)
+                 (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
+            (unless (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)))
+              (error 'crisp-compiler-error
+                :source-location location
+                :message (format nil "Function name '~a' is reserved (accessors ending in ~~ are not overloadable)." name)))))
+
+    ;; 0-b. Implicit Template Detection
     (when (detect-and-register-implicit-template name explicit-env return-type params body)
           (return-from internal-def-function nil))
 
@@ -1050,29 +1062,29 @@ This supports overloading templates by arity or other factors.")
         ;; 4. Build and return the "blueprint"
         (let ((return-node (first (last body-nodes))))
           (make-semantic-function
-            :name name
-            :param-list (loop for (param-name param-type) in env
-                              collect (make-semantic-param :name param-name :type param-type :source-location location))
-            :return-type (if (or (null return-type) (equal return-type '(nil)))
-                             inferred-return-types
-                             return-type)
-            :body (if (typep return-node 'semantic-explicit-return)
-                      body-nodes
-                      (append (butlast body-nodes)
-                        (list (make-semantic-return
-                                :return-type (let ((nt (semantic-node-type return-node)))
-                                               (if (and (listp nt) (not (valid-type-p nt)))
-                                                   nt
-                                                   (list nt)))
-                                :value-node return-node
-                                :source-location (if return-node (semantic-node-source-location return-node) location)))))
-            :source-location location))))))
-
+           :name name
+           :param-list (loop for (param-name param-type) in env
+                             collect (make-semantic-param :name param-name :type param-type :source-location location))
+           :return-type (cond
+                         ((or (null return-type) (equal return-type '(nil)))
+                           inferred-return-types)
+                         (t
+                           return-type))
+           :body (if (typep return-node 'semantic-explicit-return)
+                     body-nodes
+                     (append (butlast body-nodes)
+                       (list (make-semantic-return
+                              :return-type (let ((nt (semantic-node-type return-node)))
+                                             (if (and (listp nt) (not (valid-type-p nt)))
+                                                 nt
+                                                 (list nt)))
+                              :value-node return-node
+                              :source-location (if return-node (semantic-node-source-location return-node) location)))))
+           :source-location location))))))
 
 ;; ### Helpers
 
 ;; --- #'(...) Syntax Parsers ---
-
 
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
@@ -1121,7 +1133,6 @@ This supports overloading templates by arity or other factors.")
             for ts in param-type-specs
             collect (list p (parse-type-specifier ts))))))
 
-
 ;; --- (type ...) Syntax Parsers (The Fallback) ---
 
 (defun analyze-return-type-from-list (declarations)
@@ -1157,7 +1168,6 @@ This supports overloading templates by arity or other factors.")
                 (mapcar #'(lambda (name) (list name param-type-name))
                   param-names)
                 (error 'crisp-unknown-type-error :type-name param-type-name))))))
-
 
 (defun get-promoted-type (type-a-name type-b-name)
   "Determines the result type of a binary operation, applying promotion rules."
@@ -1311,11 +1321,10 @@ This supports overloading templates by arity or other factors.")
               (error "Invalid member index ~a for struct ~a" index obj-type))
 
         (make-semantic-extract-value
-          :type target-member-type
-          :aggregate-node obj-node
-          :index physical-index
-          :source-location location)))))
-
+         :type target-member-type
+         :aggregate-node obj-node
+         :index physical-index
+         :source-location location)))))
 
 (defun analyze-if-expression (expr env location)
   (let* ((cond-node (analyze-expression (second expr) env (append location '(1))))
@@ -1336,7 +1345,6 @@ This supports overloading templates by arity or other factors.")
   (let ((cond-node (analyze-expression (second expr) env (append location '(1))))
         (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
     (make-semantic-if :type 'void :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
-
 
 (defun analyze-aref-expression (expr env location)
   (let* ((array-node (analyze-expression (second expr) env (append location '(1))))
@@ -1471,10 +1479,10 @@ This supports overloading templates by arity or other factors.")
                                for j from 0 do
                                  (let* ((var-type (nth j init-node-types))
                                         (extract-node (make-semantic-extract-value
-                                                        :type var-type
-                                                        :aggregate-node init-node
-                                                        :index j
-                                                        :source-location (semantic-node-source-location init-node))))
+                                                       :type var-type
+                                                       :aggregate-node init-node
+                                                       :index j
+                                                       :source-location (semantic-node-source-location init-node))))
                                    (push (cons var-name extract-node) bindings-list)
                                    (setf current-env (cons (list var-name var-type) current-env)))))
                        (t (error "Malformed let binding: ~a" binding))))))
@@ -1485,7 +1493,7 @@ This supports overloading templates by arity or other factors.")
              (last-body-node (first (last analyzed-body)))
              (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
         (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
-          analyzed-bindings analyzed-body return-type)
+                   analyzed-bindings analyzed-body return-type)
         (make-semantic-let :type return-type
                            :bindings analyzed-bindings
                            :body analyzed-body
@@ -1504,7 +1512,6 @@ This supports overloading templates by arity or other factors.")
     (make-semantic-explicit-return :type return-types
                                    :value-nodes value-nodes
                                    :source-location location)))
-
 
 (defun analyze-cast-expression (expr env location)
   "Analyzes a to-XXXX or as-XXXX cast expression."
@@ -1580,9 +1587,9 @@ This supports overloading templates by arity or other factors.")
              (error 'crisp-type-error :expected var-type :inferred val-type :source-location location)))
 
          (make-semantic-set!
-           :target-node (make-semantic-var-read :name target-form :type (second var-info) :source-location location)
-           :value-node value-node
-           :source-location location)))
+          :target-node (make-semantic-var-read :name target-form :type (second var-info) :source-location location)
+          :value-node value-node
+          :source-location location)))
 
      ;; Case 2: Function Call / Struct Accessor
      ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
@@ -1602,11 +1609,11 @@ This supports overloading templates by arity or other factors.")
           ;; Sub-case 2a: Found an overloaded setter function -> Call it.
           (match
             (make-semantic-call
-              :name op
-              :type (function-signature-return-types match)
-              :args all-arg-nodes
-              :signature match
-              :source-location location))
+             :name op
+             :type (function-signature-return-types match)
+             :args all-arg-nodes
+             :signature match
+             :source-location location))
 
           ;; Sub-case 2b: Fallback to Struct Member Update (Legacy Accessor Logic)
           ;; Only valid if default accessors are used and no explicit setter overrides it.
@@ -1642,12 +1649,11 @@ This supports overloading templates by arity or other factors.")
 
                     ;; Wrap in a set! for the struct variable
                     (make-semantic-set!
-                      :target-node struct-node
-                      :value-node update-node
-                      :source-location location)))))))))
+                     :target-node struct-node
+                     :value-node update-node
+                     :source-location location)))))))))
 
      (t (error "Invalid set! target structure: ~a" target-form)))))
-
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."
@@ -1781,11 +1787,11 @@ This supports overloading templates by arity or other factors.")
 
              (return-from analyze-funcall-expression
                           (make-semantic-call
-                            :name name
-                            :type (function-signature-return-types match)
-                            :args arg-nodes
-                            :signature match
-                            :source-location location)))))
+                           :name name
+                           :type (function-signature-return-types match)
+                           :args arg-nodes
+                           :signature match
+                           :source-location location)))))
 
        (t
          (error "First argument to funcall must be a function type or literal. Got ~a" func-type)))
@@ -1806,10 +1812,10 @@ This supports overloading templates by arity or other factors.")
                                (error 'crisp-type-error :expected expected-type :inferred (semantic-node-type node) :source-location location))
                              node))))
         (make-semantic-funcall
-          :func-node func-node
-          :type signature-return-type ; e.g. (int)
-          :args arg-nodes
-          :source-location location)))))
+         :func-node func-node
+         :type signature-return-type ; e.g. (int)
+         :args arg-nodes
+         :source-location location)))))
 
 (defun analyze-parameters (params)
   "Builds the environment (a symbol table)."

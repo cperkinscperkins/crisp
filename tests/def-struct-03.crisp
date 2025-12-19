@@ -1,8 +1,0 @@
-;; struct as parameter and return value
-(def-struct point 
-  (x float) 
-  (y int))
-
-(def-function test (p)
-    (declare #'(point => point))
-    p)

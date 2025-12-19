@@ -133,34 +133,38 @@ Also note that the compile-time predicate check `if+`, `when+`, `unless+`, and `
 But the `*` variants for uniformity are not yet implemented. 
 
 ### def-struct & Struct Templates
-Structs are now fully supported, including auto-generated accessors/constructors and templating!
+Structs are now fully supported, backed by a robust implementation.
+Features include:
+- **Auto-generated Accessors**: `(x~ p)` and `(y~ p)` are created automatically.
+- **Auto-generated Raw Accessors**: `(~x~ p)` and `(~y~ p)` allow bypassing custom logic.
+- **Overloading**: You can define your own `(def-function x~ (p) ...)` to override default behavior.
+- **Template Support**: Structs can be generic, e.g., `(def-struct point (x T) (y T))`.
+- **Setters**: `(set! (x~ p) val)` works out of the box.
+- **Overloading Setters**: You can customize assignment logic via `(def-setter x~ (p v) ...)`
 
 ```lisp
 (def-struct point
   (x float)
   (y int))
 
-;; Creates: make-point, x~, y~, ~x~, ~y~
-```
+;; Use default
+(let ((p (make-point 1.0 2)))
+  (set! (x~ p) 5.0))
 
-Structs can also be templated:
-```lisp
-(def-struct point
-  (x T)
-  (y T))
-
-(let ((p (make-point 1.0 2.0))) ;; Auto-instantiates POINT_FLOAT
-  ...)
+;; Override
+(def-setter x~ (p v)
+  (declare #'(point float => nil))
+  (log:info "Setting x to ~a" v)
+  (set! (~x~ p) v)) ;; Use raw accessor to set actual memory
 ```
 
 ### def-setter
-Setters can now be defined for things that are not struct accessors!
+Generic setters can be defined for any function-like access pattern, not just structs.
 ```lisp
-(def-setter x~ (p v)
-  (declare #'(point float => nil))
-  (set! (~x~ p) v))
+(def-setter my-prop (obj val) 
+  ...)
 ```
-This allows `(set! (x~ p) 10.0)` to work transparently, just like a struct index. 
+This enables `(set! (my-prop obj) val)`. 
 
 Errors
 ======
