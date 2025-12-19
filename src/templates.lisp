@@ -48,7 +48,6 @@
                 (cond
                  ((and (listp form) (eq (first form) 'def-function))
                    (let ((name (second form))
-                         (args (third form))
                          (fn-body (cdddr form)))
                      ;; Extract signature from function body if present
                      (let* ((sig-decl (find-if (lambda (f) (and (listp f) (eq (car f) 'declare))) fn-body))
@@ -193,6 +192,10 @@
     (let ((next-char (peek-char nil stream nil nil t)))
       (cond
        ;; Case 1: Standard "less than" or "less than or equal" or "shift"
+       ((null next-char)
+         (intern "<"))
+
+       ;; Case 1: Standard "less than" or "less than or equal" or "shift"
        ((member next-char '(#\Space #\Tab #\Newline #\Return #\( #\)))
          (intern "<"))
        ((char= next-char #\=)
@@ -201,10 +204,6 @@
        ((char= next-char #\<)
          (read-char stream)
          (intern "<<"))
-
-       ;; Case 1.5: End of file or other delimiters
-       ((null next-char)
-         (intern "<"))
 
        ;; Case 2: Template syntax <T U>
        (t
@@ -250,8 +249,7 @@
       (error "No template for ~a matches the provided type arguments: ~a" name concrete-types))
 
     ;; Instantiate single template
-    (let ((key (cons name concrete-types))
-          (substitutions (pairlis (template-data-parameters tmpl) concrete-types)))
+    (let ((substitutions (pairlis (template-data-parameters tmpl) concrete-types)))
 
       ;; Check if it's a struct template by inspecting the body
       (let* ((body (template-data-body tmpl))
@@ -276,8 +274,8 @@
                 ,substituted-body
                 ;; Generate overload wrapper with UNIQUE name: (def-function make-point_float_wrapper ...)
                 (def-function ,wrapper-name ,parsed-members
-                  (declare (return-type ,mangled-name))
-                  (return (,mangled-constructor ,@param-names)))
+                              (declare (return-type ,mangled-name))
+                              (return (,mangled-constructor ,@param-names)))
                 ;; Register this wrapper as an overload for the generic constructor name (e.g. MAKE-POINT)
                 (eval-when (:compile-toplevel :load-toplevel :execute)
                   (crisp.compiler::register-overload ',constructor-alias ',wrapper-name))))

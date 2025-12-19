@@ -950,6 +950,7 @@ This supports overloading templates by arity or other factors.")
 
 (defun validate-return-types (name body env declared-return-types location)
   "Analyzes the function body and validates return types."
+  (declare (ignore name))
   ;; Handle the case where a function promises a return value but has no body.
   (when (and (not (equal declared-return-types '(nil))) (null body))
         (error 'crisp-type-error :expected declared-return-types :inferred '(nil) :source-location location))
@@ -1355,10 +1356,13 @@ This supports overloading templates by arity or other factors.")
                         :source-location location)))
 
 (defun analyze-inc!-expression (expr env location)
+  (declare (ignore expr env location))
   (error "inc! not implemented"))
 (defun analyze-dec!-expression (expr env location)
+  (declare (ignore expr env location))
   (error "dec! not implemented"))
 (defun analyze-atomic-add!-expression (expr env location)
+  (declare (ignore expr env location))
   (error "atomic-add! not implemented"))
 
 (defun analyze-scratch-expression (expr env location)
@@ -1394,6 +1398,7 @@ This supports overloading templates by arity or other factors.")
 
 (defun analyze-nested-def-function (expr env location)
   "Analyzes a nested `(def-function ...)` expression (e.g. from a template)."
+  (declare (ignore env))
   (unless *allow-nested-def-function*
     (error "Unsupported form 'DEF-FUNCTION' found in function body."))
 
