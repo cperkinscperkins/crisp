@@ -62,8 +62,12 @@
                  ;; 1. a (char)
                  (is eq 'a (first (first padded)))
 
-                 ;; 2. padding for 3 bytes (char + short)
-                 ;; Note: names are implementation detail (_PAD_0_1 etc)
+                 ;; 2. padding for 3 bytes.
+                 ;; Logic: Offset 1. Need to reach 4.
+                 ;; Offset 1 -> Not aligned for short(2) or int(4). Must use char(1).
+                 ;; New Offset 2. Aligned for short(2). Use short(2).
+                 ;; New Offset 4. Done.
+                 ;; Result: char, short.
                  (is eq 'char (second (second padded)))
                  (is eq 'short (second (third padded)))
 
@@ -73,3 +77,27 @@
                  ;; 4. padding for remaining 8 bytes (double)
                  ;; _PAD_EA (8 bytes)
                  (is eq 'double (second (fifth padded))))))
+
+(define-test (crisp-compiler struct-std140-stress-test)
+             "Verifies complex padding scenarios to ensure no crashes on 'odd' sizes."
+
+             ;; Case 1: Char (1) -> Double (8). 
+             ;; Offset 1. Next Align 8. Padding needed: 7 bytes.
+             (multiple-value-bind (padded size)
+                 (crisp.compiler::compute-std140-layout '((a char) (b double)))
+               (is = 16 size) ;; 1 + 7 + 8 -> 16. (Already aligned to 16, no tail pad needed)
+               (is eq 'a (first (first padded)))
+               ;; We expect SOME padding here. Implementation detail how it achieves 7 bytes.
+               ;; But we mostly care that it DOES NOT CRASH.
+               (true padded)
+               (is eq 'b (first (car (last padded)))))
+
+             ;; Case 2: Char (1) -> Struct (16 alignment)
+             ;; Offset 1. Next Align 16. Padding needed: 15 bytes.
+             ;; We need a registered struct for this to work.
+             (eval '(def-struct Inner (x float))) ;; Size 16 (4 + 12 pad)
+             (multiple-value-bind (padded size)
+                 (crisp.compiler::compute-std140-layout '((a char) (b Inner)))
+               (is = 32 size) ;; 1 + 15(pad) + 16(inner) = 32.
+               (true padded)))
+```
