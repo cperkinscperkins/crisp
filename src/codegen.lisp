@@ -24,8 +24,8 @@
                              (:unsigned-int 7) ; DW_ATE_unsigned
                              (:float 4))) ; DW_ATE_float
                  (di-type (llvm-di-builder-create-basic-type
-                            di-builder name-str (length name-str)
-                            (crisp-type-size crisp-type) encoding 0)))
+                           di-builder name-str (length name-str)
+                           (crisp-type-size crisp-type) encoding 0)))
             (setf (gethash (crisp-type-name crisp-type) di-type-cache) di-type)
             di-type))
       ;; It's an unknown or parameterized type. Create a placeholder.
@@ -166,16 +166,17 @@
                                                  (di-param-types (cons di-return-type
                                                                        (loop for param in param-nodes
                                                                              collect (get-or-create-di-type
-                                                                                       (gethash (semantic-param-type param) *crisp-types*)
-                                                                                       di-builder di-type-cache))))
-                                                 (di-param-array (cffi:foreign-alloc :pointer :count (length di-param-types)))
-                                                 (_ (loop for i from 0 for type in di-param-types
-                                                          do (setf (cffi:mem-aref di-param-array :pointer i) type)))
+                                                                                      (gethash (semantic-param-type param) *crisp-types*)
+                                                                                      di-builder di-type-cache))))
+                                                 (di-param-array (let ((ptr (cffi:foreign-alloc :pointer :count (length di-param-types))))
+                                                                   (loop for i from 0 for type in di-param-types
+                                                                         do (setf (cffi:mem-aref ptr :pointer i) type))
+                                                                   ptr))
                                                  (di-fn-type (llvm-di-builder-create-subroutine-type
-                                                               di-builder di-file di-param-array (length di-param-types) 0))
+                                                              di-builder di-file di-param-array (length di-param-types) 0))
                                                  (subprogram (llvm-di-builder-create-function
-                                                               di-builder di-compile-unit fn-name (length fn-name) fn-name (length fn-name)
-                                                               di-file line-num di-fn-type nil t 0 0 nil)))
+                                                              di-builder di-compile-unit fn-name (length fn-name) fn-name (length fn-name)
+                                                              di-file line-num di-fn-type nil t 0 0 nil)))
           (llvm-set-subprogram func subprogram)
           subprogram)))
 
@@ -187,7 +188,7 @@
           for type-spec = (semantic-param-type param-node)
           do
             (log:debug "Init-func-params: param-name='~s' (type: ~a) type-spec='~s'"
-              param-name (type-of param-name) type-spec)
+                       param-name (type-of param-name) type-spec)
             (let* ((expanded-types (get-expanded-types type-spec module))
                    (num-expanded (length expanded-types))
                    (components (loop for i from 0 below num-expanded
@@ -350,9 +351,7 @@
   (let* ((var-name (semantic-var-read-name node))
          (alloca (gethash var-name var-env)))
     (let* ((type (crisp-type-to-llvm-type (semantic-var-read-type node) module))
-           (loaded-name (string-downcase (format nil "~a" var-name)))
-           (current-block (llvm-get-insert-block builder))
-           (parent-fn (llvm-get-basic-block-parent current-block)))
+           (loaded-name (string-downcase (format nil "~a" var-name))))
       (values (llvm-build-load2 builder type alloca loaded-name)
         nil))))
 
@@ -417,7 +416,7 @@
                                                                          (cffi:null-pointer)))))) ; InlinedAt
 
         (log:debug "Codegen for ADD: lhs-type: ~s, rhs-type: ~s, result-type: ~s"
-          lhs-type-name rhs-type-name result-type-name)
+                   lhs-type-name rhs-type-name result-type-name)
 
         (when di-location (llvm-instruction-set-debug-loc add-inst di-location))
         (values add-inst di-location)))))
@@ -425,8 +424,7 @@
 ;; -- comparisons --
 (defun generate-comparison-ir (builder module var-env di-builder di-scope location-map node op-node-int op-node-float)
   "Helper to generate IR for comparison operators (<, >, =, etc)."
-  (let ((lhs-node (funcall (first (function-signature-parameters (semantic-node-type node))) node))
-        ;; Oops, semantic-lt etc don't store signature effectively in common way, 
+  (let (;; Oops, semantic-lt etc don't store signature effectively in common way, 
         ;; but they do store left-arg and right-arg. Let's assume standard accessors.
         (left-arg (slot-value node 'left-arg))
         (right-arg (slot-value node 'right-arg)))
@@ -436,7 +434,6 @@
       (multiple-value-bind (rhs rhs-loc) (generate-node-ir right-arg builder module var-env di-builder di-scope location-map)
         (declare (ignore rhs-loc))
         (let* ((lhs-type-name (get-single-value-type left-arg))
-               (rhs-type-name (get-single-value-type right-arg))
                ;; Determine common type (promote to float if mixed, else largest int)
                ;; For simplicity, we enforce strict typing or assume implicit cast logic is handled by semantic analysis?
                ;; Semantic analysis usually inserts casts. Let's assume types match or casts are explicit.
@@ -533,7 +530,7 @@
 
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
-  (declare (ignore di-builder di-scope location-map))
+
   (let* ((sig (semantic-call-signature node))
          (return-type-names (function-signature-return-types sig))
          (has-return-value (not (null (remove 'nil return-type-names))))
@@ -556,11 +553,11 @@
            (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
            (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
 
-           ;; 4. Get the LLVM function *value* (the callable function)
-           (progn (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module))
-           (callee (or (llvm-get-named-function module callee-name)
-                       ;; If not in this module, declare it
-                       (llvm-add-function module callee-name llvm-fn-type)))
+           (callee (progn
+                    (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module)
+                    (or (llvm-get-named-function module callee-name)
+                        ;; If not in this module, declare it
+                        (llvm-add-function module callee-name llvm-fn-type))))
 
            (arg-nodes (semantic-call-args node))
            (args-array (cffi:foreign-alloc 'llvm-value-ref :count param-count)))
@@ -646,7 +643,7 @@
 
 (defmethod generate-node-ir ((node semantic-funcall) builder module var-env di-builder di-scope location-map)
   "Generates IR for an indirect function call (funcall)."
-  (declare (ignore di-builder di-scope location-map))
+
   (let* ((func-node (semantic-funcall-func-node node))
          (func-type-spec (semantic-node-type func-node)) ; (:function-type (ret) :params (p1 p2)) or literals
          (return-type-names (semantic-funcall-type node)) ; (int)

@@ -2,6 +2,11 @@
 (in-package :cl-user)
 
 ;; load the crisp system using Quicklisp
+(unless (find-package :ql)
+  (let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
+    (when (probe-file quicklisp-init)
+          (load quicklisp-init))))
+
 (format t "~&; --- Loading Crisp system via Quicklisp...~%")
 ;; Tell Quicklisp to find local projects in the current directory
 (push *default-pathname-defaults* ql:*local-project-directories*)
