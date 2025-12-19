@@ -198,7 +198,7 @@ This supports overloading templates by arity or other factors.")
                                                         *current-di-compile-unit*
                                                         *current-location-map*)
                                  (eval form))))))
-                     instantiated-form
+                    instantiated-form
                     t))
 
             ;; Now check mangled name
@@ -459,65 +459,57 @@ This supports overloading templates by arity or other factors.")
 ;; Type System Helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defun valid-basic-type-p (type-spec)
+  "Checks if type-spec is a valid basic symbol type (built-in, struct, or function reference)."
+  (and (symbolp type-spec)
+       (or (gethash type-spec *crisp-types*)
+           (gethash type-spec *crisp-structs*)
+           (gethash type-spec *function-table*))))
+
+(defun valid-function-type-p (type-spec)
+  "Checks if type-spec is a valid function literal or descriptor."
+  (or (and (consp type-spec) (eq (first type-spec) :function-literal)
+           (= (length type-spec) 2) (symbolp (second type-spec)))
+      (and (consp type-spec) (eq (first type-spec) :function-type))))
+
+(defun valid-parameterized-type-p (type-spec)
+  "Checks if type-spec is a valid parameterized type (cell, templates, etc)."
+  (when (consp type-spec)
+        (let ((base-type (first type-spec))
+              (params (rest type-spec)))
+          (cond
+           ((excluded-template-base-type-p base-type) nil)
+           ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
+           ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
+           ((symbolp base-type)
+             (let ((mangled-name (mangle-template-struct-name base-type params)))
+               (or (gethash mangled-name *crisp-structs*)
+                   ;; Attempt Auto-Instantiation if it's a known template
+                   (when (gethash base-type *template-registry*)
+                         (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
+                         (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
+                             (progn
+                              (funcall *template-instantiator-fn* base-type params
+                                (lambda (form loc)
+                                  (declare (ignore loc))
+                                  (if (and (boundp '*current-module*) *current-module*)
+                                      (compile-toplevel-form form nil
+                                                             *current-module*
+                                                             *current-builder*
+                                                             *current-di-builder*
+                                                             *current-di-compile-unit*
+                                                             *current-location-map*)
+                                      (eval form))))
+                              (gethash mangled-name *crisp-structs*))
+                             (progn (log:warn "Template instantiator not bound/found") nil))))))
+           (t nil)))))
+
 (defun valid-type-p (type-spec)
   "Checks if a type specifier is valid.
-  Handles simple types, parameterized types, and function literals/types."
-  (cond
-   ;; Standard types
-   ((symbolp type-spec)
-     (or (gethash type-spec *crisp-types*)
-         (gethash type-spec *crisp-structs*)
-         ;; Allow defined functions to be used as types (for function pointers/checking)
-         ;; We might want to be more specific here later.
-         (gethash type-spec *function-table*)))
-   ;; Function Type Literal: (:function-literal +)
-   ((and (consp type-spec) (eq (first type-spec) :function-literal))
-     (and (= (length type-spec) 2) (symbolp (second type-spec))))
-   ;; Function Type Descriptor: (:function-type (int) :params (int int))
-   ((and (consp type-spec) (eq (first type-spec) :function-type))
-     t) ;; Relaxed check for now, assumed constructed correctly by parser.
-   ;; Parameterized type like '(cell int)
-   ((consp type-spec)
-     (let ((base-type (first type-spec))
-           (params (rest type-spec)))
-       (cond
-        ((excluded-template-base-type-p base-type) nil)
-        ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
-        ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
-        ((symbolp base-type)
-          (let ((mangled-name (mangle-template-struct-name base-type params)))
-            (or (gethash mangled-name *crisp-structs*)
-                ;; Attempt Auto-Instantiation if it's a known template
-                (when (gethash base-type *template-registry*)
-                      (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
-                      ;; Trigger the instantiation. 
-                      ;; We use the *template-instantiator-fn* hook to avoid direct dependency if possible,
-                      ;; but for struct *types* we might need immediate Side-Effect: Registering the struct.
-                      ;; BUT, ensure-template-instantiation returns boolean.
-                      ;; We need compilation of the struct form to happen NOW globally?
-                      ;; valid-type-p is usually called during analysis.
-                      ;; If we instantiate here, the DEFUN/DEFSTRUCT form is generated.
-                      ;; For valid-type-p to return T, the struct must be registered.
-                      (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
-                          (progn
-                           ;; We pass a callback that handles either analysis (Pass 1) or compilation (Pass 2)
-                           (funcall *template-instantiator-fn* base-type params
-                             (lambda (form loc)
-                               (declare (ignore loc))
-                               ;; (log:info "Callback: Boundp *current-module* = ~a" (boundp '*current-module*))
-                               ;; (log:info "Evaluating instantiated form in valid-type-p: ~a" form)
-                               (if (and (boundp '*current-module*) *current-module*)
-                                   (compile-toplevel-form form nil
-                                                          *current-module*
-                                                          *current-builder*
-                                                          *current-di-builder*
-                                                          *current-di-compile-unit*
-                                                          *current-location-map*)
-                                   (eval form))))
-                           (gethash mangled-name *crisp-structs*))
-                          (progn (log:warn "Template instantiator not bound/found") nil))))))
-        (t nil))))
-   (t nil)))
+   Handles simple types, parameterized types, and function literals/types."
+  (or (valid-basic-type-p type-spec)
+      (valid-function-type-p type-spec)
+      (valid-parameterized-type-p type-spec)))
 
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference."
