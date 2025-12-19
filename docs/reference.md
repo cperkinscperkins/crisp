@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-19T23:21:34.730979Z
+Generated on 2025-12-19T23:58:30.486446Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
@@ -276,31 +276,31 @@ Generated on 2025-12-19T23:21:34.730979Z
 
 ### DEFVAR `*FUNCTION-TABLE*`
 
-  > A hash table mapping function names (symbols) to a list of  >   FUNCTION-SIGNATURE structs. This supports overloading.
+  > A hash table mapping function names (symbols) to a list of  >   FUNCTION-SIGNATURE structs. This supports overloading.
 
 
 ---
 ### DEFVAR `*SINGLE-PASS-CALL-STACK*`
 
-  > A list of function names currently in the compilation stack, used to  >   detect recursion in single-pass mode.
+  > A list of function names currently in the compilation stack, used to  >   detect recursion in single-pass mode.
 
 
 ---
 ### DEFVAR `*CALL-GRAPH*`
 
-  > A hash table representing the call graph of functions.  >   Keys are caller function names, values are lists of callee names.
+  > A hash table representing the call graph of functions.  >   Keys are caller function names, values are lists of callee names.
 
 
 ---
 ### DEFVAR `*TEMPLATE-INSTANTIATOR-FN*`
 
-  > Hook for template instantiation.  >    Called as (funcall *template-instantiator-fn* name arg-types callback).  >    The callback is (funcall callback form location).
+  > Hook for template instantiation.  >    Called as (funcall *template-instantiator-fn* name arg-types callback).  >    The callback is (funcall callback form location).
 
 
 ---
 ### DEFVAR `*TEMPLATE-REGISTRY*`
 
-  > Maps template names (symbols) to a LIST of template-data structs.  > This supports overloading templates by arity or other factors.
+  > Maps template names (symbols) to a LIST of template-data structs.  > This supports overloading templates by arity or other factors.
 
 
 ---
@@ -383,7 +383,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL INFO))`
 
-  > A master initialization function for the Crisp compiler.  >   This should be called by any entry point into the system (REPL, executable, CI).
+  > A master initialization function for the Crisp compiler.  >   This should be called by any entry point into the system (REPL, executable, CI).
 
 
 ---
@@ -397,7 +397,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `EXCLUDED-TEMPLATE-BASE-TYPE-P`
 - **Args**: `(BASE-TYPE)`
 
-  > Returns true if the base-type should be excluded from struct template processing.  >    Excludes COMMON-LISP special forms like FUNCTION and QUOTE to prevent package lock violations.
+  > Returns true if the base-type should be excluded from struct template processing.  >    Excludes COMMON-LISP special forms like FUNCTION and QUOTE to prevent package lock violations.
 
 
 ---
@@ -429,7 +429,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `PARSE-STRUCT-MEMBER-SPEC`
 - **Args**: `(SPEC)`
 
-  > Parses a struct member specification.  >    Supports (name type) and (name:type).
+  > Parses a struct member specification.  >    Supports (name type) and (name:type).
 
 
 ---
@@ -443,14 +443,14 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFMACRO `DEF-SETTER`
 - **Args**: `(NAME ARGS &BODY BODY)`
 
-  > Defines a setter function (which is just a def-function but semantically intended for use with set!).  >    The return type is implicitly nil/void. We append (return) to ensure this.
+  > Defines a setter function (which is just a def-function but semantically intended for use with set!).  >    The return type is implicitly nil/void. We append (return) to ensure this.
 
 
 ---
 ### DEFUN `GET-STD140-BASE-ALIGNMENT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns the base alignment (N) for a given type according to std140 rules.  >   For scalars, N is the size of the scalar.  >   For vectors, it is 2N or 4N.  >   For arrays/structs, it is rounded up to vec4 alignment (16).
+  > Returns the base alignment (N) for a given type according to std140 rules.  >   For scalars, N is the size of the scalar.  >   For vectors, it is 2N or 4N.  >   For arrays/structs, it is rounded up to vec4 alignment (16).
 
 
 ---
@@ -471,14 +471,35 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `COMPUTE-STD140-LAYOUT`
 - **Args**: `(MEMBERS)`
 
-  > Takes a list of (name type) members.  >   Returns a list of:  >     - Expanded members with `_pad` fields inserted.  >     - Total struct size (padded to 16 bytes).  >     >   Returns (values expanded-members total-size)
+  > Takes a list of (name type) members.  >   Returns a list of:  >     - Expanded members with `_pad` fields inserted.  >     - Total struct size (padded to 16 bytes).  >     >   Returns (values expanded-members total-size)
+
+
+---
+### DEFUN `VALID-BASIC-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Checks if type-spec is a valid basic symbol type (built-in, struct, or function reference).
+
+
+---
+### DEFUN `VALID-FUNCTION-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Checks if type-spec is a valid function literal or descriptor.
+
+
+---
+### DEFUN `VALID-PARAMETERIZED-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Checks if type-spec is a valid parameterized type (cell, templates, etc).
 
 
 ---
 ### DEFUN `VALID-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Checks if a type specifier is valid.  >   Handles simple types, parameterized types, and function literals/types.
+  > Checks if a type specifier is valid.  >    Handles simple types, parameterized types, and function literals/types.
 
 
 ---
@@ -492,7 +513,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `ENSURE-STRUCT-LLVM-TYPE`
 - **Args**: `(NAME)`
 
-  > Ensures the LLVM struct type exists for the given struct name.  >    Handles forward declarations and recursion.
+  > Ensures the LLVM struct type exists for the given struct name.  >    Handles forward declarations and recursion.
 
 
 ---
@@ -525,14 +546,14 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `SHALLOW-ANALYZE-BODY`
 - **Args**: `(FORMS)`
 
-  > Performs a shallow, recursive walk of a function's body.  >   Returns two values:  >   1. A boolean indicating if a side-channel originator was found.  >   2. A list of all unique symbols found in the 'car' of lists (potential function calls).
+  > Performs a shallow, recursive walk of a function's body.  >   Returns two values:  >   1. A boolean indicating if a side-channel originator was found.  >   2. A list of all unique symbols found in the 'car' of lists (potential function calls).
 
 
 ---
 ### DEFUN `VISIT-TOPLEVEL-FORM`
 - **Args**: `(FORM LOCATION VISITOR-FN)`
 
-  > Recursively visits a top-level form, handling macros and progn.  >    Visitor-fn is called as (visitor-fn form location) for def-function forms.  >    Other forms are evaluated if they are not special forms handled by the walker.
+  > Recursively visits a top-level form, handling macros and progn.  >    Visitor-fn is called as (visitor-fn form location) for def-function forms.  >    Other forms are evaluated if they are not special forms handled by the walker.
 
 
 ---
@@ -589,7 +610,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `PARSE-FUNCTION-DECLARATIONS`
 - **Args**: `(PARAMS DECLARATIONS)`
 
-  > Parses a function's declarations and returns its environment and return type.  >    Supports interleaved type syntax: ((p type))
+  > Parses a function's declarations and returns its environment and return type.  >    Supports interleaved type syntax: ((p type))
 
 
 ---
@@ -624,7 +645,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `DETECT-AND-REGISTER-IMPLICIT-TEMPLATE`
 - **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY)`
 
-  > Detects if a function is an implicit template (e.g. has function-type args),  >    and if so, registers it as a template and returns T. Otherwise returns NIL.
+  > Detects if a function is an implicit template (e.g. has function-type args),  >    and if so, registers it as a template and returns T. Otherwise returns NIL.
 
 
 ---
@@ -638,7 +659,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `PARSE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Parses a single type specifier, handling basic types, parameterized types,  >    and function types like #'(int => int).
+  > Parses a single type specifier, handling basic types, parameterized types,  >    and function types like #'(int => int).
 
 
 ---
@@ -677,32 +698,8 @@ Generated on 2025-12-19T23:21:34.730979Z
 
 
 ---
-### DEFUN `ANALYZE-ADD-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
-
-  > Analyzes a `(+ ...)` expression.
-
-
----
-### DEFUN `ANALYZE-SUB-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
-
-  > Analyzes a `(- ...)` expression.
-
-
----
-### DEFUN `ANALYZE-MUL-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
-
-  > Analyzes a `(* ...)` expression.
-
-
----
-### DEFUN `ANALYZE-DIV-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
-
-  > Analyzes a `(/ ...)` expression.
-
+### DEFMACRO `DEF-BINARY-OP-ANALYZER`
+- **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
 
 ---
 ### DEFUN `ANALYZE-LT-EXPRESSION`
@@ -739,7 +736,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `ANALYZE-EXTRACT-STRUCT-MEMBER-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
-  > Analyzes a `%extract-struct-member` expression.  >    Form: (%extract-struct-member object-node index-literal)
+  > Analyzes a `%extract-struct-member` expression.  >    Form: (%extract-struct-member object-node index-literal)
 
 
 ---
@@ -774,7 +771,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `ANALYZE-SCRATCH-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
-  > Analyzes a `(make-scratch-cell ...)` expression.  >   In single-pass mode, this marks the current function as an originator.
+  > Analyzes a `(make-scratch-cell ...)` expression.  >   In single-pass mode, this marks the current function as an originator.
 
 
 ---
@@ -795,7 +792,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFMACRO `TEMPLATE-INSTANTIATION`
 - **Args**: `(&BODY BODY)`
 
-  > Wrapper to allow nested def-functions during template instantiation.  >    At top-level, it expands to PROGN to allow evaluation.
+  > Wrapper to allow nested def-functions during template instantiation.  >    At top-level, it expands to PROGN to allow evaluation.
 
 
 ---
@@ -809,7 +806,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `ANALYZE-EVAL-WHEN`
 - **Args**: `(EXPR ENV LOCATION)`
 
-  > Analyzes (eval-when ...) forms by ignoring them in the runtime IR.  >    Side effects (like struct registration) should have already occurred during macro expansion.
+  > Analyzes (eval-when ...) forms by ignoring them in the runtime IR.  >    Side effects (like struct registration) should have already occurred during macro expansion.
 
 
 ---
@@ -865,7 +862,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `RESOLVE-BEST-SIGNATURE`
 - **Args**: `(OP EXPLICIT-ARG-TYPES)`
 
-  > Finds the best matching function signature for the given operator and argument types.  >    Attempts template instantiation if no immediate match is found.
+  > Finds the best matching function signature for the given operator and argument types.  >    Attempts template instantiation if no immediate match is found.
 
 
 ---
@@ -922,7 +919,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `GET-SINGLE-VALUE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the type of a semantic node, assuming a single-value context.  >   If the node's type is a list (e.g., from a multi-value function call),  >   this returns the first type in the list. Otherwise, it returns the type as-is.
+  > Returns the type of a semantic node, assuming a single-value context.  >   If the node's type is a list (e.g., from a multi-value function call),  >   this returns the first type in the list. Otherwise, it returns the type as-is.
 
 
 ---
@@ -943,7 +940,7 @@ Generated on 2025-12-19T23:21:34.730979Z
 ### DEFUN `COMPILE-CRISP-FORM-TO-IR-STRING`
 - **Args**: `(CRISP-FORM &KEY (DEBUG-P NIL))`
 
-  > Takes a single Crisp s-expression (like a def-function form),  >   compiles it, and returns its LLVM IR as a string.  >   This is a developer utility for REPL use and testing.
+  > Takes a single Crisp s-expression (like a def-function form),  >   compiles it, and returns its LLVM IR as a string.  >   This is a developer utility for REPL use and testing.
 
 
 ---
@@ -1020,6 +1017,21 @@ Generated on 2025-12-19T23:21:34.730979Z
 
 
 ---
+### DEFUN `GENERATE-FUNCTION-PROTOTYPE`
+- **Args**: `(SEMANTIC-FUNCTION MODULE DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)`
+
+  > Generates the LLVM function prototype and debug info.
+
+
+---
+### DEFUN `GENERATE-FUNCTION-BODY`
+- **Args**: `(SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER
+              LOCATION-MAP)`
+
+  > Generates the body of the function.
+
+
+---
 ### DEFUN `GENERATE-LLVM-IR`
 - **Args**: `(SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
               LOCATION-MAP)`
@@ -1046,6 +1058,10 @@ Generated on 2025-12-19T23:21:34.730979Z
 
 
 ---
+### DEFMACRO `DEF-BINARY-OP-CODEGEN`
+- **Args**: `(NODE-TYPE INT-INST FLOAT-INST ACCESSOR-PREFIX)`
+
+---
 ### DEFUN `GENERATE-COMPARISON-IR`
 - **Args**: `(BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE
               OP-NODE-INT OP-NODE-FLOAT)`
@@ -1056,6 +1072,14 @@ Generated on 2025-12-19T23:21:34.730979Z
 ---
 ### DEFMACRO `DEF-COMPARISON-CODEGEN`
 - **Args**: `(TYPE-NAME INT-PRED FLOAT-PRED ACCESSOR-PREFIX)`
+
+---
+### DEFUN `PREPARE-CALL-ARGUMENTS`
+- **Args**: `(BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES
+              PARAM-TYPES PARAM-COUNT)`
+
+  > Prepares arguments for a function call by generating IR, exploding values, and filling a CFFI array.
+
 
 ---
 ### DEFUN `TERMINATOR-P`
