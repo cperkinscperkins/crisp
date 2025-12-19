@@ -1,0 +1,9 @@
+(def-struct point 
+  (x float) 
+  (y int))
+
+;; Overriding/Clashing with the auto-generated accessor syntax ~y~
+;; as a setter name should be illegal or cause issues.
+(def-setter ~y~ (p v)
+    (declare #'(point int => nil))
+    (set! (~y~ p) (+ 20 v)))

@@ -100,4 +100,3 @@
                  (crisp.compiler::compute-std140-layout '((a char) (b Inner)))
                (is = 32 size) ;; 1 + 15(pad) + 16(inner) = 32.
                (true padded)))
-```
