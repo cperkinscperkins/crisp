@@ -214,17 +214,32 @@ jobs:
           echo "--- Running E2E: success test --debug (branching-plus.crisp) ---"
           ./bin/crisp-compile tests/branching-plus.crisp --debug
 
-          echo "--- Running E2E: success test (def-struct-08.crisp) ---"
-          ./bin/crisp-compile tests/def-struct-08.crisp
+          echo "--- Running E2E: success test (structs_basic.crisp) ---"
+          ./bin/crisp-compile tests/structs_basic.crisp
 
-          echo "--- Running E2E: success test (def-struct-09.crisp) ---"
-          ./bin/crisp-compile tests/def-struct-09.crisp
+          echo "--- Running E2E: success test --single-pass (structs_basic.crisp) ---"
+          ./bin/crisp-compile tests/structs_basic.crisp --single-pass
 
-          echo "--- Running E2E: success test (def-struct-10.crisp) ---"
-          ./bin/crisp-compile tests/def-struct-10.crisp
+          echo "--- Running E2E: success test --debug (structs_basic.crisp) ---"
+          ./bin/crisp-compile tests/structs_basic.crisp --debug
 
-          echo "--- Running E2E: success test (def-struct-11.crisp) ---"
-          ./bin/crisp-compile tests/def-struct-11.crisp
+          echo "--- Running E2E: success test (structs_templates.crisp) ---"
+          ./bin/crisp-compile tests/structs_templates.crisp
+
+          echo "--- Running E2E: success test --single-pass (structs_templates.crisp) ---"
+          ./bin/crisp-compile tests/structs_templates.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (structs_templates.crisp) ---"
+          ./bin/crisp-compile tests/structs_templates.crisp --debug
+
+          echo "--- Running E2E: success test (structs_overrides.crisp) ---"
+          ./bin/crisp-compile tests/structs_overrides.crisp
+
+          echo "--- Running E2E: success test --single-pass (structs_overrides.crisp) ---"
+          ./bin/crisp-compile tests/structs_overrides.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (structs_overrides.crisp) ---"
+          ./bin/crisp-compile tests/structs_overrides.crisp --debug
 
           echo "--- Running E2E: success test (def-struct-std140.crisp) ---"
           ./bin/crisp-compile tests/def-struct-std140.crisp
@@ -309,8 +324,14 @@ jobs:
           ! ./bin/crisp-compile tests/errors/branching-plus-error.crisp 2>&1 | grep -F "IF+ condition failed to evaluate at compile time"
 
           echo "--- Running E2E: failure test (reserved_setter_name.crisp) ---"
-          ! ./bin/crisp-compile tests/errors/reserved_setter_name.crisp 2>&1 | grep -F "Recursion is not allowed"
+          ! ./bin/crisp-compile tests/errors/reserved_setter_name.crisp 2>&1 | grep -F "Function name '~X~' is reserved"
 
-          echo "--- Running E2E: failure test (reserved_setter_name.crisp) ---"
-          ! ./bin/crisp-compile tests/errors/reserved_setter_name.crisp 2>&1 | grep -F "Generates/Overrides accessor"
+          echo "--- Running E2E: failure test (reserved_accessor_not_overloadable.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/reserved_accessor_not_overloadable.crisp 2>&1 | grep -F "Function name '~Y~' is reserved"
+
+          echo "--- Running E2E: failure test (struct_inference_return_mismatch.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/struct_inference_return_mismatch.crisp 2>&1 | grep -F "Type mismatch"
+
+          echo "--- Running E2E: failure test (struct_inference_ambiguity.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/struct_inference_ambiguity.crisp 2>&1 | grep -F "Type mismatch"
 

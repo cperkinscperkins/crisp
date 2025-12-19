@@ -1,0 +1,33 @@
+;; Consolidated test for Template Struct Functionality
+;; Covers: Template Structs, Template Functions, Type Inference
+;; Originally from def-struct-08 through 09
+
+(with-template-type (T)
+  (def-struct point 
+    (x T) 
+    (y T)))
+
+;; 1. Template Instantiation
+(def-function test-gen ()
+    (declare #'( => (point float)))
+    (gen-point float)
+    (make-point 1.0 2.0))
+
+(def-function test-type-infer ()
+    (declare #'( => (point int)))
+    (make-point (as-int 1) (as-int 2)))
+
+;; 2. Template Function with Template Struct
+(with-template-type (T)
+  (def-function test-poly (x y)
+    (declare #'(T T => (point T)))
+    (make-point x y)))
+
+(def-function test-of-gen-func ()
+    (declare #'( => (point long)))
+    (gen-test-poly long)
+    (test-poly (as-long 1) (as-long 2)))
+
+(def-function test-of-inference-func ()
+    (declare #'( => (point int)))
+    (test-poly (as-int 1) (as-int 2)))

@@ -33,6 +33,7 @@
   (padded-members nil :type list) ; List including _PAD fields - std140 layout
   (field-indices nil :type hash-table) ; Map of name -> padded-index
   (llvm-type nil) ; Cached LLVM type reference
+  (total-size 0 :type integer) ; Total size in bytes (padded)
   )
 
 ;; Sema Structs

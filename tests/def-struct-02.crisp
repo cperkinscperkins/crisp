@@ -1,6 +1,0 @@
-;; no colons
-
-;; structs are std140 by default. How will we test that?
-(def-struct point 
-  (x float) 
-  (y int))
