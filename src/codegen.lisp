@@ -391,35 +391,43 @@
            (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
          (t (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))
 
-(defmethod generate-node-ir ((node semantic-add) builder module var-env di-builder di-scope location-map)
-  "Generates IR for an addition operation."
-  (multiple-value-bind (lhs lhs-loc) (generate-node-ir (semantic-add-left-arg node) builder module var-env di-builder di-scope location-map)
-    (declare (ignore lhs-loc))
-    (multiple-value-bind (rhs rhs-loc) (generate-node-ir (semantic-add-right-arg node) builder module var-env di-builder di-scope location-map)
-      (declare (ignore rhs-loc))
-      (let* ((result-type-name (semantic-add-type node))
-             (lhs-type-name (get-single-value-type (semantic-add-left-arg node)))
-             (rhs-type-name (get-single-value-type (semantic-add-right-arg node)))
-             (casted-lhs (build-cast-if-needed builder lhs lhs-type-name result-type-name))
-             (casted-rhs (build-cast-if-needed builder rhs rhs-type-name result-type-name))
-             (crisp-type (gethash result-type-name *crisp-types*))
-             (add-inst (if (eq (crisp-type-category crisp-type) :float)
-                           (llvm-build-fadd builder casted-lhs casted-rhs "fadd_tmp")
-                           (llvm-build-add builder casted-lhs casted-rhs "add_tmp")))
-             (di-location (when (and di-builder di-scope location-map)
-                                (let* ((loc (semantic-node-source-location node))
-                                       (line (gethash loc location-map 0)))
-                                  (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                         line
-                                                                         0 ; column
-                                                                         di-scope
-                                                                         (cffi:null-pointer)))))) ; InlinedAt
+(defmacro def-binary-op-codegen (node-type int-inst float-inst accessor-prefix)
+  (let ((left-accessor (intern (format nil "~a-LEFT-ARG" accessor-prefix)))
+        (right-accessor (intern (format nil "~a-RIGHT-ARG" accessor-prefix)))
+        (type-accessor (intern (format nil "~a-TYPE" accessor-prefix))))
+    `(defmethod generate-node-ir ((node ,node-type) builder module var-env di-builder di-scope location-map)
+       ,(format nil "Generates IR for ~a." node-type)
+       (multiple-value-bind (lhs lhs-loc) (generate-node-ir (,left-accessor node) builder module var-env di-builder di-scope location-map)
+         (declare (ignore lhs-loc))
+         (multiple-value-bind (rhs rhs-loc) (generate-node-ir (,right-accessor node) builder module var-env di-builder di-scope location-map)
+           (declare (ignore rhs-loc))
+           (let* ((result-type-name (,type-accessor node))
+                  (lhs-type-name (get-single-value-type (,left-accessor node)))
+                  (rhs-type-name (get-single-value-type (,right-accessor node)))
+                  (casted-lhs (build-cast-if-needed builder lhs lhs-type-name result-type-name))
+                  (casted-rhs (build-cast-if-needed builder rhs rhs-type-name result-type-name))
+                  (crisp-type (gethash result-type-name *crisp-types*))
+                  (inst (if (eq (crisp-type-category crisp-type) :float)
+                            (,float-inst builder casted-lhs casted-rhs "fop_tmp")
+                            (,int-inst builder casted-lhs casted-rhs "iop_tmp")))
+                  (di-location (when (and di-builder di-scope location-map)
+                                     (let* ((loc (semantic-node-source-location node))
+                                            (line (gethash loc location-map 0)))
+                                       (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                              line
+                                                                              0 ; column
+                                                                              di-scope
+                                                                              (cffi:null-pointer))))))
+             (when di-location (llvm-instruction-set-debug-loc inst di-location))
+             (values inst di-location)))))))
 
-        (log:debug "Codegen for ADD: lhs-type: ~s, rhs-type: ~s, result-type: ~s"
-                   lhs-type-name rhs-type-name result-type-name)
-
-        (when di-location (llvm-instruction-set-debug-loc add-inst di-location))
-        (values add-inst di-location)))))
+(def-binary-op-codegen semantic-add llvm-build-add llvm-build-fadd "SEMANTIC-ADD")
+(def-binary-op-codegen semantic-sub llvm-build-sub llvm-build-fsub "SEMANTIC-SUB")
+(def-binary-op-codegen semantic-mul llvm-build-mul llvm-build-fmul "SEMANTIC-MUL")
+;; Note: Div logic might need special handling for signed/unsigned later (sdiv vs udiv),
+;; but simpler macro assumes sdiv for now or that llvm-build-sdiv is distinct.
+;; Assuming signed integers for now as per initialized types.
+(def-binary-op-codegen semantic-div llvm-build-sdiv llvm-build-fdiv "SEMANTIC-DIV")
 
 ;; -- comparisons --
 (defun generate-comparison-ir (builder module var-env di-builder di-scope location-map node op-node-int op-node-float)

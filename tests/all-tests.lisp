@@ -58,7 +58,18 @@
      (true success-p (format nil "~a~%~:[~;~%LLVM verifier message:~%~a~]"
                        ,description (not success-p) message))))
 
+
 (define-test crisp-compiler)
+
+(defun count-substring (substring string)
+  "Counts the number of non-overlapping occurrences of a substring."
+  (let ((count 0)
+        (len (length substring)))
+    (loop for start = (search substring string)
+          while start
+          do (incf count)
+            (setf string (subseq string (+ start len))))
+    count))
 
 (defun compile-crisp-file-to-string (filepath &key (debug-p nil))
   "Compiles a .crisp file and returns the LLVM IR as a string."
@@ -165,7 +176,7 @@
              (define-test add-instruction-location
                           (let ((ir (compile-crisp-form-to-ir-string '(def-function test-add (a) (declare (type a int) (return-type int)) (+ a 2)) :debug-p t)))
                             (true (search "add i32 %a1, 2, !dbg" ir))
-                            (true (search "ret i32 %add_tmp, !dbg" ir)))))
+                            (true (search "ret i32 %iop_tmp, !dbg" ir)))))
 
 (define-test (analyzer let-expression)
              "Tests the semantic analysis of a 'let' expression, including let* scoping."
@@ -356,16 +367,6 @@
                ;; Check that the extracted values are stored in variables 'v' and 'w'
                (true (search "store i32 %extract_0, ptr %v" ir))
                (true (search "store i32 %extract_1, ptr %w" ir))))
-
-(defun count-substring (substring string)
-  "Counts the number of non-overlapping occurrences of a substring."
-  (let ((count 0)
-        (len (length substring)))
-    (loop for start = (search substring string)
-          while start
-          do (incf count)
-            (setf string (subseq string (+ start len))))
-    count))
 
 (define-test (codegen multiple-value-return)
              "Tests that a function returning multiple values generates correct IR."

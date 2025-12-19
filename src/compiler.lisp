@@ -198,6 +198,7 @@ This supports overloading templates by arity or other factors.")
                                                         *current-di-compile-unit*
                                                         *current-location-map*)
                                  (eval form))))))
+                     instantiated-form
                     t))
 
             ;; Now check mangled name
@@ -400,6 +401,7 @@ This supports overloading templates by arity or other factors.")
              (alignment (get-std140-base-alignment type))
              (size (get-std140-size type))
              (padding (calculate-std140-padding current-offset alignment)))
+        (declare (ignore name))
 
         ;; Insert padding if needed
         (when (> padding 0)
@@ -575,6 +577,7 @@ This supports overloading templates by arity or other factors.")
 
 (defun analyze-function-literal (expr env location)
   "Analyzes a (function name) form, e.g., #'foo."
+  (declare (ignore env))
   (let ((fn-name (second expr)))
     ;; Check if the function exists (simplistic check for now)
     (unless (or (fboundp fn-name) (gethash fn-name *function-table*))
@@ -1194,62 +1197,32 @@ This supports overloading templates by arity or other factors.")
          ;; No other implicit promotions allowed
          (t nil)))))
 
-(defun analyze-add-expression (expr env location)
-  "Analyzes a `(+ ...)` expression."
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2))))
-         ;; Operators like '+' operate on single values. If the arguments are
-         ;; function calls that return multiple values, we take the first one.
-         (left-type (get-single-value-type left-node))
-         (right-type (get-single-value-type right-node))
-         (promoted-type (get-promoted-type left-type right-type)))
+(defmacro def-binary-op-analyzer (name node-constructor op-string)
+  `(defun ,name (expr env location)
+     ,(format nil "Analyzes a `(~a ...)` expression." op-string)
+     (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+            (right-node (analyze-expression (third expr) env (append location '(2))))
+            (left-type (get-single-value-type left-node))
+            (right-type (get-single-value-type right-node))
+            (promoted-type (get-promoted-type left-type right-type)))
 
-    (if promoted-type
-        (let ((result-crisp-type (gethash promoted-type *crisp-types*)))
-          ;; Ensure the resulting type is numeric and supports addition.
-          (unless (and result-crisp-type (member (crisp-type-category result-crisp-type)
-                                                 '(:signed-int :unsigned-int :float)))
-            ;; If no promotion rule applies, it's a type error.
-            (error 'crisp-type-error
-              :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
-              :source-location location))
-          (make-semantic-add :type promoted-type :left-arg left-node :right-arg right-node :source-location location))
-        (error 'crisp-type-error
-          :message (format nil "Type mismatch for operator '+'. Cannot add ~a and ~a without explicit cast." left-type right-type)
-          :source-location location))))
+       (if promoted-type
+           (let ((result-crisp-type (gethash promoted-type *crisp-types*)))
+             ;; Ensure the resulting type is numeric and supports the op.
+             (unless (and result-crisp-type (member (crisp-type-category result-crisp-type)
+                                                    '(:signed-int :unsigned-int :float)))
+               (error 'crisp-type-error
+                 :message (format nil "Type mismatch for operator '~a'. Cannot operate on ~a and ~a." ,op-string left-type right-type)
+                 :source-location location))
+             (,node-constructor :type promoted-type :left-arg left-node :right-arg right-node :source-location location))
+           (error 'crisp-type-error
+             :message (format nil "Type mismatch for operator '~a'. Cannot operate on ~a and ~a." ,op-string left-type right-type)
+             :source-location location)))))
 
-(defun analyze-sub-expression (expr env location)
-  "Analyzes a `(- ...)` expression."
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2))))
-         (left-type (get-single-value-type left-node))
-         (right-type (get-single-value-type right-node))
-         (promoted-type (get-promoted-type left-type right-type)))
-    (if promoted-type
-        (make-semantic-sub :type promoted-type :left-arg left-node :right-arg right-node :source-location location)
-        (error 'crisp-type-error :message "Type mismatch for '-'" :source-location location))))
-
-(defun analyze-mul-expression (expr env location)
-  "Analyzes a `(* ...)` expression."
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2))))
-         (left-type (get-single-value-type left-node))
-         (right-type (get-single-value-type right-node))
-         (promoted-type (get-promoted-type left-type right-type)))
-    (if promoted-type
-        (make-semantic-mul :type promoted-type :left-arg left-node :right-arg right-node :source-location location)
-        (error 'crisp-type-error :message "Type mismatch for '*'" :source-location location))))
-
-(defun analyze-div-expression (expr env location)
-  "Analyzes a `(/ ...)` expression."
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2))))
-         (left-type (get-single-value-type left-node))
-         (right-type (get-single-value-type right-node))
-         (promoted-type (get-promoted-type left-type right-type)))
-    (if promoted-type
-        (make-semantic-div :type promoted-type :left-arg left-node :right-arg right-node :source-location location)
-        (error 'crisp-type-error :message "Type mismatch for '/'" :source-location location))))
+(def-binary-op-analyzer analyze-add-expression make-semantic-add "+")
+(def-binary-op-analyzer analyze-sub-expression make-semantic-sub "-")
+(def-binary-op-analyzer analyze-mul-expression make-semantic-mul "*")
+(def-binary-op-analyzer analyze-div-expression make-semantic-div "/")
 
 (defun analyze-lt-expression (expr env location)
   (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
