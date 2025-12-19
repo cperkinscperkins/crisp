@@ -309,10 +309,10 @@ jobs:
           ! ./bin/crisp-compile tests/errors/branching-plus-error.crisp 2>&1 | grep -F "IF+ condition failed to evaluate at compile time"
 
           echo "--- Running E2E: failure test (reserved_setter_name.crisp) ---"
-          ! ./bin/crisp-compile tests/errors/reserved_setter_name.crisp 2>&1 | grep -F "Recursion is not allowed"
+          ! ./bin/crisp-compile tests/errors/reserved_setter_name.crisp 2>&1 | grep -F "Function name '~X~' is reserved"
 
-          echo "--- Running E2E: failure test (reserved_setter_name.crisp) ---"
-          ! ./bin/crisp-compile tests/errors/reserved_setter_name.crisp 2>&1 | grep -F "Generates/Overrides accessor"
+          echo "--- Running E2E: failure test (reserved_accessor_not_overloadable.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/reserved_accessor_not_overloadable.crisp 2>&1 | grep -F "Function name '~Y~' is reserved"
 
           echo "--- Running E2E: failure test (struct_inference_return_mismatch.crisp) ---"
           ! ./bin/crisp-compile tests/errors/struct_inference_return_mismatch.crisp 2>&1 | grep -F "Type mismatch"

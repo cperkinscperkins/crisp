@@ -4,6 +4,6 @@
 
 ;; Overriding/Clashing with the auto-generated accessor syntax ~y~
 ;; as a setter name should be illegal or cause issues.
-(def-setter ~y~ (p v)
-    (declare #'(point int => nil))
-    (set! (~y~ p) (+ 20 v)))
+(def-setter ~x~ (p v)
+    (declare #'(point float => nil))
+    (set! (y~ p) (+ 10 v)))

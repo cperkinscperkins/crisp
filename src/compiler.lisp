@@ -264,6 +264,7 @@ This supports overloading templates by arity or other factors.")
               for i from 0
               collect
                 `(def-function ,(intern (format nil "~~~a~~" member-name)) ((obj ,name))
+                               (declare (crisp-system-generated))
                                (return (%extract-struct-member obj ,i)))))))
 
 (defmacro def-setter (name args &body body)
@@ -276,10 +277,13 @@ This supports overloading templates by arity or other factors.")
 
 (define-condition crisp-compiler-error (error)
     ((source-location :initarg :source-location :reader error-source-location
-                      :initform nil))
+                      :initform nil)
+     (message :initarg :message :reader error-message :initform nil))
   (:report (lambda (condition stream)
-             (format stream "A Crisp compilation error occurred~@[ at ~a~]."
-               (error-source-location condition)))))
+             (if (error-message condition)
+                 (format stream "~a~@[ at ~a~]." (error-message condition) (error-source-location condition))
+                 (format stream "A Crisp compilation error occurred~@[ at ~a~]."
+                   (error-source-location condition))))))
 
 (define-condition crisp-type-error (crisp-compiler-error)
     ((message :initarg :message :initform "Type mismatch!" :reader type-error-message)
@@ -1020,7 +1024,17 @@ This supports overloading templates by arity or other factors.")
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
 
-    ;; 0. Implicit Template Detection
+    ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
+    (let ((name-str (symbol-name name)))
+      (when (and (> (cl:length name-str) 2)
+                 (cl:char= (cl:char name-str 0) #\~)
+                 (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
+            (unless (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)))
+              (error 'crisp-compiler-error
+                :source-location location
+                :message (format nil "Function name '~a' is reserved (accessors ending in ~~ are not overloadable)." name)))))
+
+    ;; 0-b. Implicit Template Detection
     (when (detect-and-register-implicit-template name explicit-env return-type params body)
           (return-from internal-def-function nil))
 
