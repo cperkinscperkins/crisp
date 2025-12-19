@@ -12,23 +12,7 @@
     (declare #'( => (point int)))
     (make-point (as-int 1) (as-int 2))) 
 
-#|
-;; I'm commenting this out. Should be one of our negative tests in tests/errors
-(def-function failure-to-infer ()
-    (declare #'( => (point long)))
-    ;; we don't support "return type inference". (Not Ada).
-    (make-point 1 2))
 
-|#
 
-#|
-;; I'm also commenting this out. Maybe it should work though?  
-;; Most likely it should be a negative test.
-(def-function more-failure-to-infer ()
-    (declare #'( => (point long)))
-    ;; ooh - TWO gen-point calls.  What will the compiler do?  
-    ;; Inquiring minds want to know.
-    (gen-point long)
-    (gen-point int)
-    (make-point 1 2))
-|#
+
+

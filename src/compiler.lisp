@@ -202,9 +202,12 @@ This supports overloading templates by arity or other factors.")
 
             ;; Now check mangled name
             (let ((mangled (mangle-template-struct-name base-type params)))
-              (if (gethash mangled *crisp-structs*)
-                  t
-                  nil)))
+              (cond
+               ;; If t2 is the mangled name, they are equivalent
+               ((eq mangled t2) t)
+               ;; If t2 is also a struct, check if it maps to mangled?
+               ;; Usually t2 is the resolved type symbol.
+               (t nil))))
            nil)))
    ((and (symbolp t1) (consp t2))
      (types-equivalent-p t2 t1))
@@ -239,7 +242,6 @@ This supports overloading templates by arity or other factors.")
      spec)
    (t (error "Invalid struct member spec: ~a" spec))))
 
-
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
   (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
@@ -263,7 +265,6 @@ This supports overloading templates by arity or other factors.")
               collect
                 `(def-function ,(intern (format nil "~~~a~~" member-name)) ((obj ,name))
                                (return (%extract-struct-member obj ,i)))))))
-
 
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
@@ -330,7 +331,6 @@ This supports overloading templates by arity or other factors.")
     ((form :initarg :form :reader recursive-form))
   (:report (lambda (condition stream)
              (format stream "Recursion is not allowed. Call to '~a' is recursive." (recursive-form condition)))))
-
 
 (define-condition crisp-unknown-variable (crisp-compiler-error)
     ((name :initarg :name :reader unknown-variable-name))
@@ -450,7 +450,6 @@ This supports overloading templates by arity or other factors.")
 ;; Type System Helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-
 (defun valid-type-p (type-spec)
   "Checks if a type specifier is valid.
   Handles simple types, parameterized types, and function literals/types."
@@ -511,7 +510,6 @@ This supports overloading templates by arity or other factors.")
         (t nil))))
    (t nil)))
 
-
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference."
   (cond
@@ -568,7 +566,6 @@ This supports overloading templates by arity or other factors.")
 
       struct-type)))
 
-
 (defun analyze-function-literal (expr env location)
   "Analyzes a (function name) form, e.g., #'foo."
   (let ((fn-name (second expr)))
@@ -580,7 +577,6 @@ This supports overloading templates by arity or other factors.")
      :value-type `(:function-literal ,fn-name)
      :value fn-name
      :source-location location)))
-
 
 (defun initialize-expression-analyzers ()
   "Registers all expression analyzers."
@@ -641,7 +637,6 @@ This supports overloading templates by arity or other factors.")
   (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
 
-
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
 ;; ---------------------------------
@@ -689,7 +684,6 @@ This supports overloading templates by arity or other factors.")
                    (setf (gethash caller *implicit-arg-map*) '(:storage-ptr :storage-size))
                    (push caller worklist)))))))
 
-
 (defun shallow-analyze-body (forms)
   "Performs a shallow, recursive walk of a function's body.
   Returns two values:
@@ -731,7 +725,6 @@ This supports overloading templates by arity or other factors.")
       (dolist (form forms)
         (walk form))
       (values is-originator callees))))
-
 
 (defun visit-toplevel-form (form location visitor-fn)
   "Recursively visits a top-level form, handling macros and progn.
@@ -779,7 +772,6 @@ This supports overloading templates by arity or other factors.")
   (loop for form in forms
         for i from 0
         do (visit-toplevel-form form (list i) visitor-fn)))
-
 
 (defun analyze-signatures-pass (forms)
   "Pass 1: Iterates through forms to find and register function signatures."
@@ -1056,9 +1048,17 @@ This supports overloading templates by arity or other factors.")
            :name name
            :param-list (loop for (param-name param-type) in env
                              collect (make-semantic-param :name param-name :type param-type :source-location location))
-           :return-type (if (or (null return-type) (equal return-type '(nil)))
-                            inferred-return-types
-                            return-type)
+           :return-type (cond
+                         ((or (null return-type) (equal return-type '(nil)))
+                           inferred-return-types)
+                         (t
+                           ;; Strict check: Declared must match Inferred
+                           (unless (type-lists-equivalent-p return-type inferred-return-types)
+                             (error 'crisp-type-error
+                               :expected return-type
+                               :actual inferred-return-types
+                               :source-location location))
+                           return-type))
            :body (if (typep return-node 'semantic-explicit-return)
                      body-nodes
                      (append (butlast body-nodes)
@@ -1071,11 +1071,9 @@ This supports overloading templates by arity or other factors.")
                               :source-location (if return-node (semantic-node-source-location return-node) location)))))
            :source-location location))))))
 
-
 ;; ### Helpers
 
 ;; --- #'(...) Syntax Parsers ---
-
 
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
@@ -1124,7 +1122,6 @@ This supports overloading templates by arity or other factors.")
             for ts in param-type-specs
             collect (list p (parse-type-specifier ts))))))
 
-
 ;; --- (type ...) Syntax Parsers (The Fallback) ---
 
 (defun analyze-return-type-from-list (declarations)
@@ -1160,7 +1157,6 @@ This supports overloading templates by arity or other factors.")
                 (mapcar #'(lambda (name) (list name param-type-name))
                   param-names)
                 (error 'crisp-unknown-type-error :type-name param-type-name))))))
-
 
 (defun get-promoted-type (type-a-name type-b-name)
   "Determines the result type of a binary operation, applying promotion rules."
@@ -1319,7 +1315,6 @@ This supports overloading templates by arity or other factors.")
          :index physical-index
          :source-location location)))))
 
-
 (defun analyze-if-expression (expr env location)
   (let* ((cond-node (analyze-expression (second expr) env (append location '(1))))
          (then-node (analyze-expression (third expr) env (append location '(2))))
@@ -1339,7 +1334,6 @@ This supports overloading templates by arity or other factors.")
   (let ((cond-node (analyze-expression (second expr) env (append location '(1))))
         (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
     (make-semantic-if :type 'void :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
-
 
 (defun analyze-aref-expression (expr env location)
   (let* ((array-node (analyze-expression (second expr) env (append location '(1))))
@@ -1508,7 +1502,6 @@ This supports overloading templates by arity or other factors.")
                                    :value-nodes value-nodes
                                    :source-location location)))
 
-
 (defun analyze-cast-expression (expr env location)
   "Analyzes a to-XXXX or as-XXXX cast expression."
   (let* ((op (first expr))
@@ -1650,7 +1643,6 @@ This supports overloading templates by arity or other factors.")
                      :source-location location)))))))))
 
      (t (error "Invalid set! target structure: ~a" target-form)))))
-
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."

@@ -314,3 +314,9 @@ jobs:
           echo "--- Running E2E: failure test (reserved_setter_name.crisp) ---"
           ! ./bin/crisp-compile tests/errors/reserved_setter_name.crisp 2>&1 | grep -F "Generates/Overrides accessor"
 
+          echo "--- Running E2E: failure test (struct_inference_return_mismatch.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/struct_inference_return_mismatch.crisp 2>&1 | grep -F "Type mismatch"
+
+          echo "--- Running E2E: failure test (struct_inference_ambiguity.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/struct_inference_ambiguity.crisp 2>&1 | grep -F "Type mismatch"
+
