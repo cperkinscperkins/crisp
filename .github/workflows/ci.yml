@@ -214,17 +214,14 @@ jobs:
           echo "--- Running E2E: success test --debug (branching-plus.crisp) ---"
           ./bin/crisp-compile tests/branching-plus.crisp --debug
 
-          echo "--- Running E2E: success test (def-struct-08.crisp) ---"
-          ./bin/crisp-compile tests/def-struct-08.crisp
+          echo "--- Running E2E: success test (structs_basic.crisp) ---"
+          ./bin/crisp-compile tests/structs_basic.crisp
 
-          echo "--- Running E2E: success test (def-struct-09.crisp) ---"
-          ./bin/crisp-compile tests/def-struct-09.crisp
+          echo "--- Running E2E: success test (structs_templates.crisp) ---"
+          ./bin/crisp-compile tests/structs_templates.crisp
 
-          echo "--- Running E2E: success test (def-struct-10.crisp) ---"
-          ./bin/crisp-compile tests/def-struct-10.crisp
-
-          echo "--- Running E2E: success test (def-struct-11.crisp) ---"
-          ./bin/crisp-compile tests/def-struct-11.crisp
+          echo "--- Running E2E: success test (structs_overrides.crisp) ---"
+          ./bin/crisp-compile tests/structs_overrides.crisp
 
           echo "--- Running E2E: success test (def-struct-std140.crisp) ---"
           ./bin/crisp-compile tests/def-struct-std140.crisp

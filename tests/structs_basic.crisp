@@ -1,0 +1,41 @@
+;; Consolidated test for Basic Struct Functionality
+;; Covers: Definitions, Parameters, Returns, Accessors, Setters, Constructors
+;; Originally from def-struct-01 through 07
+
+;; 1. Basic Definition
+(def-struct point 
+  (x float) 
+  (y int))
+
+;; 2. Struct as Parameter and Return
+(def-function identity-point (p)
+    (declare #'(point => point))
+    p)
+
+;; 3. Accessors (Standard and Raw)
+(def-function get-x (p)
+    (declare #'(point => float))
+    (x~ p))
+
+(def-function get-raw-y (p)
+    (declare #'(point => int))
+    (~y~ p))
+
+;; 4. Constructors and Setters
+(def-function test-ops (xf yi)
+    (declare #'(float int => point))
+    (let ((p (make-point xf yi)))
+       ;; Test reading
+       (let ((x1 (x~ p))
+             (y1 (y~ p)))
+         ;; Test writing via set!
+         (set! (x~ p) (+ x1 1.0))
+         (set! (y~ p) (+ y1 1))
+         ;; Test raw access
+         (set! (~x~ p) (+ (~x~ p) 0.1))
+         p)))
+
+(def-function main-test ()
+    (declare #'( => float int))
+    (let ((p (test-ops 1.0 2)))
+      (return (x~ p) (y~ p))))

@@ -1,9 +1,0 @@
-
-;; We do NOT yet have name:type support for function parameters.
-;; It seems odd to have it for def-struct
-
-;; structs are std140 by default. How will we test that?
-
-(def-struct point 
-   (x int) 
-   (y int))
