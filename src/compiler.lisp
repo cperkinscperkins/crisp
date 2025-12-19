@@ -290,12 +290,15 @@ This supports overloading templates by arity or other factors.")
      (expected :initarg :expected :reader type-error-expected :initform nil)
      (inferred :initarg :inferred :reader type-error-inferred :initform nil))
   (:report (lambda (condition stream)
-             (format stream (type-error-message condition))
-             (when (or (type-error-expected condition)
-                       (type-error-inferred condition))
-                   (format stream "Type mismatch! Expected ~a but inferred ~a."
-                     (type-error-expected condition)
-                     (type-error-inferred condition))))))
+             ;; If we have specific expected/inferred types, use the standard format.
+             ;; Otherwise, just print the message.
+             (if (or (type-error-expected condition)
+                     (type-error-inferred condition))
+                 (format stream "~a Expected ~a but inferred ~a."
+                   (type-error-message condition)
+                   (type-error-expected condition)
+                   (type-error-inferred condition))
+                 (format stream "~a" (type-error-message condition))))))
 
 (define-condition crisp-unknown-type-error (crisp-compiler-error)
     ((type-name :initarg :type-name :reader unknown-type-name))
@@ -1066,12 +1069,6 @@ This supports overloading templates by arity or other factors.")
                          ((or (null return-type) (equal return-type '(nil)))
                            inferred-return-types)
                          (t
-                           ;; Strict check: Declared must match Inferred
-                           (unless (type-lists-equivalent-p return-type inferred-return-types)
-                             (error 'crisp-type-error
-                               :expected return-type
-                               :actual inferred-return-types
-                               :source-location location))
                            return-type))
            :body (if (typep return-node 'semantic-explicit-return)
                      body-nodes
