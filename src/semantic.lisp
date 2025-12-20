@@ -14,7 +14,7 @@
   ;; when we first define all the types.
   (llvm-type-fn nil :type function)
   (size 0 :type integer) ; size in bits
-  (category nil :type (member :signed-int :unsigned-int :float :void)))
+  (category nil :type (member :signed-int :unsigned-int :float :void :struct)))
 
 
 (defstruct function-signature
@@ -184,4 +184,10 @@
   "Represents constructing a struct instance e.g. (%construct-struct 'point ...)."
   type ; The type specifier of the struct (symbol name)
   args ; List of semantic nodes for the field values (in definition order)
+  source-location)
+
+(defstruct semantic-progn
+  "Represents a (progn ...) expression."
+  type ; The return type (of the last expression)
+  body ; A list of semantic nodes
   source-location)
