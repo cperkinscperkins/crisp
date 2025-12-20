@@ -69,11 +69,19 @@
                           (members (cddr form))
                           ;; Parse (x type) (y type) -> (type type => name)
                           (member-types (mapcar #'second members))
+                          (param-names (mapcar #'first members))
                           (signature `(function (,@member-types => ,name))))
                      `(progn
                        ;; Register the template for Struct with synthesized constructor signature
                        (eval-when (:compile-toplevel :load-toplevel :execute)
                          (register-template ',name ',params ',constraints ',form ',signature))
+
+                       ;; Define the Generic Macro that maps keywords -> positional dispatch
+                       (defmacro ,(intern (format nil "MAKE-~a" name) (symbol-package name)) (&rest args)
+                         (let ((reordered (crisp.compiler::validate-and-reorder-struct-args ',name
+                                                                                            (mapcar (lambda (n) (list n nil)) ',param-names) ;; Hack: pass simplified members
+                                                                                            args)))
+                           `(,(intern (format nil "MAKE-~a%DISPATCH" ',name) (symbol-package ',name)) ,@reordered)))
 
                        ;; Define the generator macro: (gen-NAME ...)
                        (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
@@ -265,17 +273,19 @@
                    (parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec members))
                    (param-names (mapcar #'first parsed-members))
                    ;; Use a UNIQUE wrapper name to avoid LLVM collisions if multiple overloads are generated
-                   ;; e.g. MAKE-POINT_FLOAT_WRAPPER
                    (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package name)))
-                   (constructor-alias (intern (format nil "MAKE-~a" name) (symbol-package name)))
-                   (mangled-constructor (intern (format nil "MAKE-~a" mangled-name) (symbol-package name))))
+                   (constructor-alias (intern (format nil "MAKE-~a%DISPATCH" name) (symbol-package name)))
+                   (mangled-constructor (intern (format nil "MAKE-~a" mangled-name) (symbol-package name)))
 
+                   (keyword-args (loop for name in param-names
+                                       collect (intern (symbol-name name) :keyword)
+                                       collect name)))
               `(progn
                 ,substituted-body
                 ;; Generate overload wrapper with UNIQUE name: (def-function make-point_float_wrapper ...)
                 (def-function ,wrapper-name ,parsed-members
                               (declare (return-type ,mangled-name))
-                              (return (,mangled-constructor ,@param-names)))
+                              (return (,mangled-constructor ,@keyword-args)))
                 ;; Register this wrapper as an overload for the generic constructor name (e.g. MAKE-POINT)
                 (eval-when (:compile-toplevel :load-toplevel :execute)
                   (crisp.compiler::register-overload ',constructor-alias ',wrapper-name))))
