@@ -252,18 +252,97 @@ This supports overloading templates by arity or other factors.")
 
 (defun parse-struct-member-spec (spec)
   "Parses a struct member specification.
-   Supports (name type) and (name:type)."
+   Supports (name type) and (name type :c-t [value])."
   (cond
    ;; (name type)
    ((and (listp spec) (= (length spec) 2))
      spec)
+   ;; (name type :c-t [value])
+   ((and (listp spec) (>= (length spec) 3) (eq (third spec) :c-t))
+     spec)
    (t (error "Invalid struct member spec: ~a" spec))))
 
 
+(defun compute-std140-layout (members)
+  "Takes a list of (name type) members.
+  Returns a list of:
+    - Expanded members with `_pad` fields inserted.
+    - Total struct size (padded to 16 bytes).
+  
+  Returns (values expanded-members total-size)"
+  ;; Filter out compile-time properties (marked with :c-t)
+  (let* ((runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
+         (current-offset 0)
+         (expanded-members '()))
+    (dolist (member runtime-members)
+      (let* ((name (first member))
+             (type (second member))
+             (alignment (get-std140-base-alignment type))
+             (size (get-std140-size type))
+             (padding (calculate-std140-padding current-offset alignment)))
+        (declare (ignore name))
+
+        ;; Insert padding if needed
+        (when (> padding 0)
+              (let ((pad-remaining padding)
+                    (pad-idx 0)
+                    (pad-current-offset current-offset))
+                (loop while (> pad-remaining 0) do
+                        (let* ((pad-member
+                                (cond
+                                 ;; Only use larger types if we are aligned for them!
+                                 ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
+                                 ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
+                                 ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
+                                 (t (list 'char 1))))
+                               (pad-type (first pad-member))
+                               (pad-size (second pad-member))
+                               (pad-name (intern (format nil "_PAD_~a_~a" current-offset pad-idx))))
+
+                          (push (list pad-name pad-type) expanded-members)
+                          (decf pad-remaining pad-size)
+                          (incf pad-current-offset pad-size)
+                          (incf pad-idx))))
+              (incf current-offset padding))
+
+        ;; Add the actual member
+        (push member expanded-members)
+        (incf current-offset size)))
+
+    ;; Final structure padding to multiple of 16 (vec4 alignment)
+    (let ((final-padding (calculate-std140-padding current-offset 16)))
+      (when (> final-padding 0)
+            (let ((pad-remaining final-padding)
+                  (pad-idx 0)
+                  (pad-current-offset current-offset))
+              (loop while (> pad-remaining 0) do
+                      (let* ((pad-member
+                              (cond
+                               ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
+                               ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
+                               ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
+                               (t (list 'char 1))))
+                             (pad-type (first pad-member))
+                             (pad-size (second pad-member))
+                             (pad-name (intern (format nil "_PAD_EA_~a" pad-idx))))
+
+                        (push (list pad-name pad-type) expanded-members)
+                        (decf pad-remaining pad-size)
+                        (incf pad-current-offset pad-size)
+                        (incf pad-idx)))))
+      (incf current-offset final-padding))
+
+    (values (nreverse expanded-members) current-offset)))
+
+;; Keep helper functions separate
 (defun validate-and-reorder-struct-args (struct-name defined-members args)
   "Validates and reorders keyword arguments for a struct constructor macro."
-  (let ((processed-args (make-hash-table :test 'eq))
-        (ordered-values '()))
+  ;; 0. Filter out :c-t members from validation - they are not constructor args!
+  ;; Or should they be accepted but ignored? 
+  ;; Since they are compile-time constants fixed in the struct def, they should NOT be passed.
+  (let* ((runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) defined-members))
+         (processed-args (make-hash-table :test 'eq))
+         (ordered-values '()))
 
     ;; 1. Parse into a hash table
     (let ((ptr args))
@@ -281,18 +360,18 @@ This supports overloading templates by arity or other factors.")
                 (setf ptr (cddr ptr)))))
 
     ;; 2. Validate and Reorder
-    (loop for (member-name member-type) in defined-members do
+    (loop for (member-name member-type) in runtime-members do
             (let* ((kw (intern (symbol-name member-name) :keyword))
                    (val (gethash kw processed-args)))
               (unless val
                 (error "Struct constructor for ~a missing required argument: ~s" struct-name kw))
               (push val ordered-values)))
 
-    ;; 3. Check for unknown keys
+    ;; 3. Check for unknown keys (against runtime members only!)
     (maphash (lambda (k v)
                (declare (ignore v))
-               (unless (find k defined-members :key (lambda (m) (intern (symbol-name (first m)) :keyword)))
-                 (error "Struct constructor for ~a has unknown argument: ~s" struct-name k)))
+               (unless (find k runtime-members :key (lambda (m) (intern (symbol-name (first m)) :keyword)))
+                 (error "Struct constructor for ~a has unknown or compile-time-only argument: ~s" struct-name k)))
              processed-args)
 
     (nreverse ordered-values)))
@@ -349,17 +428,38 @@ This supports overloading templates by arity or other factors.")
         (let ((reordered (validate-and-reorder-struct-args ',name ',parsed-members args)))
           `(%construct-struct ,',name ,@reordered)))
 
-      ,@(loop for (member-name member-type) in parsed-members
-              for i from 0
-              collect
-                `(def-function ,(intern (format nil "~a~~" member-name)) ((obj ,name))
-                               (return (%extract-struct-member obj ,i))))
-      ,@(loop for (member-name member-type) in parsed-members
-              for i from 0
-              collect
-                `(def-function ,(intern (format nil "~~~a~~" member-name)) ((obj ,name))
-                               (declare (crisp-system-generated))
-                               (return (%extract-struct-member obj ,i)))))))
+      ,@(let ((runtime-index 0))
+          (loop for member-spec in parsed-members
+                collect
+                  (let* ((member-name (first member-spec))
+                         (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
+                         (value (when is-ct (fourth member-spec))) ;; (name type :c-t value)
+                         (accessor-name (intern (format nil "~a~~" member-name))))
+                    (if is-ct
+                        ;; Generate Compile-Time Constant Accessor Macro
+                        `(defmacro ,accessor-name (obj)
+                           (declare (ignore obj))
+                           ;; If a value is provided, return it as a constant.
+                           (if ',value
+                               '',value
+                               ;; Otherwise error? Or return nil? User should provide value.
+                               (error "Compile-time struct member ~a accessed but has no constant value defined." ',member-name)))
+                        ;; Generate Runtime Accessor Function
+                        (let ((idx runtime-index))
+                          (incf runtime-index)
+                          `(def-function ,accessor-name ((obj ,name))
+                                         (return (%extract-struct-member obj ,idx))))))))
+      ,@(let ((runtime-index 0))
+          (loop for member-spec in parsed-members
+                  unless (and (consp member-spec) (eq (third member-spec) :c-t))
+                collect
+                  (let* ((member-name (first member-spec))
+                         (raw-accessor-name (intern (format nil "~~~a~~" member-name)))
+                         (idx runtime-index))
+                    (incf runtime-index)
+                    `(def-function ,raw-accessor-name ((obj ,name))
+                                   (declare (crisp-system-generated))
+                                   (return (%extract-struct-member obj ,idx)))))))))
 
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
@@ -459,6 +559,7 @@ This supports overloading templates by arity or other factors.")
    ((gethash type-spec *crisp-structs*) 16)
    (t (error "Unknown type for alignment: ~a" type-spec))))
 
+
 (defun get-std140-size (type-spec)
   "Returns the size (in bytes) of a type. Does not include padding for alignment context."
   (cond
@@ -479,74 +580,6 @@ This supports overloading templates by arity or other factors.")
         0
         (- alignment remainder))))
 
-(defun compute-std140-layout (members)
-  "Takes a list of (name type) members.
-  Returns a list of:
-    - Expanded members with `_pad` fields inserted.
-    - Total struct size (padded to 16 bytes).
-  
-  Returns (values expanded-members total-size)"
-  (let ((current-offset 0)
-        (expanded-members '()))
-    (dolist (member members)
-      (let* ((name (first member))
-             (type (second member))
-             (alignment (get-std140-base-alignment type))
-             (size (get-std140-size type))
-             (padding (calculate-std140-padding current-offset alignment)))
-        (declare (ignore name))
-
-        ;; Insert padding if needed
-        (when (> padding 0)
-              (let ((pad-remaining padding)
-                    (pad-idx 0)
-                    (pad-current-offset current-offset))
-                (loop while (> pad-remaining 0) do
-                        (let* ((pad-member
-                                (cond
-                                 ;; Only use larger types if we are aligned for them!
-                                 ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
-                                 ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
-                                 ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
-                                 (t (list 'char 1))))
-                               (pad-type (first pad-member))
-                               (pad-size (second pad-member))
-                               (pad-name (intern (format nil "_PAD_~a_~a" current-offset pad-idx))))
-
-                          (push (list pad-name pad-type) expanded-members)
-                          (decf pad-remaining pad-size)
-                          (incf pad-current-offset pad-size)
-                          (incf pad-idx))))
-              (incf current-offset padding))
-
-        ;; Add the actual member
-        (push member expanded-members)
-        (incf current-offset size)))
-
-    ;; Final structure padding to multiple of 16 (vec4 alignment)
-    (let ((final-padding (calculate-std140-padding current-offset 16)))
-      (when (> final-padding 0)
-            (let ((pad-remaining final-padding)
-                  (pad-idx 0)
-                  (pad-current-offset current-offset))
-              (loop while (> pad-remaining 0) do
-                      (let* ((pad-member
-                              (cond
-                               ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
-                               ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
-                               ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
-                               (t (list 'char 1))))
-                             (pad-type (first pad-member))
-                             (pad-size (second pad-member))
-                             (pad-name (intern (format nil "_PAD_EA_~a" pad-idx))))
-
-                        (push (list pad-name pad-type) expanded-members)
-                        (decf pad-remaining pad-size)
-                        (incf pad-current-offset pad-size)
-                        (incf pad-idx)))))
-      (incf current-offset final-padding))
-
-    (values (nreverse expanded-members) current-offset)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Type System Helpers

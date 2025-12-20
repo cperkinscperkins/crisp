@@ -331,6 +331,7 @@
    #:cell
    #:uchar #:ushort #:uint #:ulong
    #:to-char #:to-short #:to-int #:to-long #:to-float #:to-double #:as-char #:as-short #:as-int #:as-long #:as-float #:as-double
+   #:to-uchar #:to-ushort #:to-uint #:to-ulong #:as-uchar #:as-ushort #:as-uint #:as-ulong
    #:truncate #:floor #:ceil #:round
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall

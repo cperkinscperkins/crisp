@@ -211,6 +211,8 @@ SHORT TERM PLAN
 - - [ ] Cell Properties ( CAN be set )
 - - - [ ] offset~
 - - - [ ] parent~ 
+- - [ ] Compile Time Cell Properties
+- - - [ ] element-type~
 - - [ ] Cell Operations
 - - - [ ] (~ someCell)
 - - - [ ] (set! (~ someCell) newValue)
@@ -225,6 +227,7 @@ SHORT TERM PLAN
 - - - [ ] num-dims~   <-- compile time. 
 - - - [ ] strides~
 - - - [ ] extents~
+- - - [ ] element-type~
 - - [ ] Pass Through
 - - - (access~ someCellOrTensor)
 - - - (address-space~ someCellOrTensor)

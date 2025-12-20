@@ -176,6 +176,9 @@ This enables `(set! (my-prop obj) val)`.
 ### c-t-assert
 `c-t-assert` is available and working E2E (through the whole pipeline).
 
+### def-enumeration
+`def-enumeration` is now available. The address-space and access enumerations are defined.
+
 Errors
 ======
 
