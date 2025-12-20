@@ -335,3 +335,6 @@ jobs:
           echo "--- Running E2E: failure test (struct_inference_ambiguity.crisp) ---"
           ! ./bin/crisp-compile tests/errors/struct_inference_ambiguity.crisp 2>&1 | grep -F "Type mismatch"
 
+          echo "--- Running E2E: failure test (make-xxxx-without-keys.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/make-xxxx-without-keys.crisp 2>&1 | grep -F "requires keyword arguments"
+

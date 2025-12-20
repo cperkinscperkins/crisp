@@ -11,17 +11,17 @@
 (def-function test-gen ()
     (declare #'( => (point float)))
     (gen-point float)
-    (make-point 1.0 2.0))
+    (make-point :x 1.0 :y 2.0))
 
 (def-function test-type-infer ()
     (declare #'( => (point int)))
-    (make-point (as-int 1) (as-int 2)))
+    (make-point :x (as-int 1) :y (as-int 2)))
 
 ;; 2. Template Function with Template Struct
 (with-template-type (T)
   (def-function test-poly (x y)
     (declare #'(T T => (point T)))
-    (make-point x y)))
+    (make-point :x x :y y)))
 
 (def-function test-of-gen-func ()
     (declare #'( => (point long)))

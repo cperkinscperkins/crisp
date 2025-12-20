@@ -1,0 +1,9 @@
+(def-struct point 
+   (x long) 
+   (y long))
+
+(def-function two-points (coord-1 coord-2)
+    (declare #'(long long => point point))
+    (let ((p1 (make-point :x coord-1 :y coord-2))
+          (p2 (make-point :x coord-2 :y coord-1)))
+        (return p1 p2)))

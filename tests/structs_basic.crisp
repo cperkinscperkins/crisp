@@ -24,7 +24,7 @@
 ;; 4. Constructors and Setters
 (def-function test-ops (xf yi)
     (declare #'(float int => point))
-    (let ((p (make-point xf yi)))
+    (let ((p (make-point :x xf :y yi)))
        ;; Test reading
        (let ((x1 (x~ p))
              (y1 (y~ p)))
