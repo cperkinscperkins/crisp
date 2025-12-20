@@ -30,6 +30,7 @@
 (format t "~&; --- Running Parachute tests ---~%")
 (load "tests/all-tests.lisp")
 (load "tests/test-structs.lisp")
+(load "tests/test-struct-layout.lisp")
 (unless (parachute:test :crisp.tests)
   (format *error-output* "~&~%*** Crisp CI Tests FAILED! ***~%")
   (uiop:quit 1))
