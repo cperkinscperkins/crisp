@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-19T23:58:30.486446Z
+Generated on 2025-12-20T04:55:58.129491Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
@@ -244,6 +244,12 @@ Generated on 2025-12-19T23:58:30.486446Z
 
 
 ---
+### DEFSTRUCT `SEMANTIC-PROGN`
+
+  > Represents a (progn ...) expression.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp\src\macros.lisp`
 
 ### DEFMACRO `LET`
@@ -430,6 +436,20 @@ Generated on 2025-12-19T23:58:30.486446Z
 - **Args**: `(SPEC)`
 
   > Parses a struct member specification.  >    Supports (name type) and (name:type).
+
+
+---
+### DEFUN `VALIDATE-AND-REORDER-STRUCT-ARGS`
+- **Args**: `(STRUCT-NAME DEFINED-MEMBERS ARGS)`
+
+  > Validates and reorders keyword arguments for a struct constructor macro.
+
+
+---
+### DEFMACRO `WITH-STRUCT-ACCESSORS`
+- **Args**: `(STRUCT-TYPE BINDINGS &BODY BODY)`
+
+  > Iterates over the members of a struct type, binding accessor symbols to the provided variables.  >    Bindings: (aos-var [soa-var] [:access type])  >    Returns a PROGN containing the expanded body forms.
 
 
 ---
