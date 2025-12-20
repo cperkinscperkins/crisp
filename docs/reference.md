@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-20T04:55:58.129491Z
+Generated on 2025-12-20T18:34:51.662629Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
@@ -196,6 +196,12 @@ Generated on 2025-12-20T04:55:58.129491Z
 ### DEFSTRUCT `SEMANTIC-AREF`
 
 ---
+### DEFSTRUCT `SEMANTIC-CAST`
+
+  > Base struct for all cast operations.
+
+
+---
 ### DEFSTRUCT `SEMANTIC-VALUE-CAST`
 
   > Represents a value-preserving cast (e.g., to-float).
@@ -275,6 +281,26 @@ Generated on 2025-12-20T04:55:58.129491Z
 - **Args**: `(TEST THEN &OPTIONAL ELSE)`
 
   > Compile-time conditional. Evaluates TEST at macro-expansion time.  >    Errors if TEST cannot be evaluated (e.g. relies on runtime values).
+
+
+---
+### DEFUN `COMPILER-NO-OP`
+
+  > A no-op function that returns no values.   >    Used as the expansion target for compile-time macros when evaluated in the host environment.
+
+
+---
+### DEFMACRO `C-T-OUTPUT`
+- **Args**: `(&REST ARGS)`
+
+  > Compile-Time Output. Evaluates arguments at macro-expansion time and prints them.
+
+
+---
+### DEFMACRO `C-T-ASSERT`
+- **Args**: `(TEST-EXPR &REST MSGS)`
+
+  > Compile-Time Assertion. Evaluates TEST-EXPR at macro-expansion time.  >    If false, signals a compilation error with MSGS.
 
 
 ---
@@ -544,6 +570,8 @@ Generated on 2025-12-20T04:55:58.129491Z
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp\src\analysis.lisp`
+
 ### DEFUN `INITIALIZE-EXPRESSION-ANALYZERS`
 
   > Registers all expression analyzers.
@@ -792,6 +820,13 @@ Generated on 2025-12-20T04:55:58.129491Z
 - **Args**: `(EXPR ENV LOCATION)`
 
   > Analyzes a `(make-scratch-cell ...)` expression.  >   In single-pass mode, this marks the current function as an originator.
+
+
+---
+### DEFUN `ANALYZE-COMPILER-NO-OP`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes a (compiler-no-op) form, which results in a void literal.  >    Used by compile-time macros (c-t-assert, c-t-output) to emit no code.
 
 
 ---
