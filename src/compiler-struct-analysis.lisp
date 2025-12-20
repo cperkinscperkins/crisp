@@ -6,28 +6,30 @@
     (unless struct-def
       (error 'crisp-unknown-type-error :type-name type-name :source-location location))
 
-    ;; Validate argument count against original members
-    (let ((members (crisp-struct-definition-members struct-def)))
+    ;; Validate argument count against original members (excluding compile-time properties)
+    (let* ((all-members (crisp-struct-definition-members struct-def))
+           (members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) all-members)))
       (unless (= (length args) (length members))
         (error "Struct constructor for ~a expects ~a arguments, got ~a."
-          type-name (length members) (length args))))
+          type-name (length members) (length args)))
 
-    ;; Analyze arguments
-    (let ((arg-nodes
-           (loop for arg in args
-                 for member in (crisp-struct-definition-members struct-def)
-                 for i from 0
-                 collect (let ((node (analyze-expression arg env (append location (list (+ 2 i)))))
-                               (expected-type (second member)))
-                           ;; Type check
-                           (unless (eq (semantic-node-type node) expected-type)
-                             (error 'crisp-type-error
-                               :expected expected-type
-                               :inferred (semantic-node-type node)
-                               :source-location location))
-                           node))))
+      ;; Analyze arguments
+      (let ((arg-nodes
+             (loop for arg in args
+                   for member in members
+                   for i from 0
+                   collect (let ((node (analyze-expression arg env (append location (list (+ 2 i)))))
+                                 (expected-type (second member)))
 
-      (make-semantic-struct-construction
-       :type type-name
-       :args arg-nodes
-       :source-location location))))
+                             ;; Type check
+                             (unless (eq (semantic-node-type node) expected-type)
+                               (error 'crisp-type-error
+                                 :expected expected-type
+                                 :inferred (semantic-node-type node)
+                                 :source-location location))
+                             node))))
+
+        (make-semantic-struct-construction
+         :type type-name
+         :args arg-nodes
+         :source-location location))))

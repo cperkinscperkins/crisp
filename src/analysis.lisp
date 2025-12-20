@@ -49,10 +49,13 @@
   (def-expression-analyzer common-lisp:eval-when analyze-eval-when)
 
   ;; Register all possible `to-` and `as-` casts.
+  (log:info "Registering cast operators. *crisp-types* count: ~a" (hash-table-count *crisp-types*))
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
     (let* ((type-str (symbol-name type-name))
-           (to-name (intern (concatenate 'string "TO-" type-str) :crisp.compiler))
-           (as-name (intern (concatenate 'string "AS-" type-str) :crisp.compiler)))
+           (pkg (symbol-package type-name))
+           (to-name (intern (concatenate 'string "TO-" type-str) pkg))
+           (as-name (intern (concatenate 'string "AS-" type-str) pkg)))
+      (log:debug "Registering cast/bitcast: ~s / ~s" to-name as-name)
       (setf (gethash to-name *expression-analyzers*) #'analyze-cast-expression)
       (setf (gethash as-name *expression-analyzers*) #'analyze-cast-expression)))
   ;; Register the special float-to-int conversion functions
@@ -1244,33 +1247,34 @@
     (unless struct-def
       (error 'crisp-unknown-type-error :type-name type-name :source-location location))
 
-    ;; Validate argument count against original members
-    (let ((members (crisp-struct-definition-members struct-def)))
+    ;; Validate argument count against original members (excluding compile-time properties)
+    (let* ((all-members (crisp-struct-definition-members struct-def))
+           (members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) all-members)))
       (unless (= (length args) (length members))
         (error "Struct constructor for ~a expects ~a arguments, got ~a."
-          type-name (length members) (length args))))
+          type-name (length members) (length args)))
 
-    ;; Analyze arguments
-    (let ((arg-nodes
-           (loop for arg in args
-                 for member in (crisp-struct-definition-members struct-def)
-                 for i from 0
-                 collect (let ((node (analyze-expression arg env (append location (list (+ 2 i)))))
-                               (expected-type (second member)))
-                           ;; Type check
-                           (unless (equal (semantic-node-type node) expected-type)
-                             ;; Relaxed check for literals behaving as types?
-                             ;; For now strict equality.
-                             (error 'crisp-type-error
-                               :expected expected-type
-                               :inferred (semantic-node-type node)
-                               :source-location location))
-                           node))))
+      ;; Analyze arguments
+      (let ((arg-nodes
+             (loop for arg in args
+                   for member in members
+                   for i from 0
+                   collect (let ((node (analyze-expression arg env (append location (list (+ 2 i)))))
+                                 (expected-type (second member)))
+                             ;; Type check
+                             (unless (equal (semantic-node-type node) expected-type)
+                               ;; Relaxed check for literals behaving as types?
+                               ;; For now strict equality.
+                               (error 'crisp-type-error
+                                 :expected expected-type
+                                 :inferred (semantic-node-type node)
+                                 :source-location location))
+                             node))))
 
-      (make-semantic-struct-construction
-       :type type-name
-       :args arg-nodes
-       :source-location location))))
+        (make-semantic-struct-construction
+         :type type-name
+         :args arg-nodes
+         :source-location location)))))
 
 (def-expression-analyzer %construct-struct analyze-struct-construction)
 
