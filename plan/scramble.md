@@ -193,8 +193,9 @@ SHORT TERM PLAN
 - [x] conditionals - LLVM Blocks and branches. Will be needed for "crisp-in-crisp" vectors etc.
 - - [ ] anaphoric support
 - - [ ] star `*` variants
-- [ ] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
-- [ ] compile time assert mightn't be the worst idea. Pretty handy. 
+- [x] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
+- [x] compile time assert mightn't be the worst idea. Pretty handy. 
+- [ ] neq is /= , but probably should be != 
 - [ ] refactor.  reevalute ALL uses of symbolp looking for implicit expectation that (symbolp nil) is false (it's actually true)
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - [ ] def-kernel  <-- 
