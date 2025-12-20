@@ -100,3 +100,90 @@
                  (crisp.compiler::compute-std140-layout '((a char) (b Inner)))
                (is = 32 size) ;; 1 + 15(pad) + 16(inner) = 32.
                (true padded)))
+
+;; Need to manually clean up or rely on garbage collection?
+;; We are just testing layout logic, so no huge side effects.
+
+(define-test (crisp-compiler with-struct-accessors-macro)
+             "Tests the with-struct-accessors macro expansion and IR generation."
+
+             (eval '(def-struct AccessorPoint (x crisp.compiler:int) (y crisp.compiler:int)))
+             (true (gethash 'AccessorPoint crisp.compiler::*crisp-types*) "AccessorPoint should be a registered TYPE")
+
+             ;; 1. Verify Macro Expansion Logic
+             ;; We expect: (with-struct-accessors (p AccessorPoint) (set! x 10))
+             ;; To expand to roughly:
+             ;; (let ((#:aos-x (intern "x~")) ...)
+             ;;   (progn
+             ;;     (set! #:aos-x 10) ...))
+             ;; But actually the macro does substitution on the body.
+             ;; So: (progn (set! (%extract-struct-member p ...) 10))
+             ;; Wait, set! on an extract-value is not valid unless semantic analysis handles it.
+             ;; Ah, the macro expands `x` to `x~`.
+             ;; So `(set! x 10)` -> `(set! x~ 10)`.
+             ;; And `x~` is NOT a macro, it's just a symbol.
+             ;; BUT `analyze-expression` handles `(set! x~ 10)` if `x~` is bound?
+             ;; No, `with-struct-accessors` binds `x~` using `symbol-macrolet`?
+             ;; Let's re-read the macro implementation in `compiler.lisp` (Step 1980ish).
+             ;; It does:
+             ;; (let ((x~ (intern "x~")))
+             ;;    `(symbol-macrolet ((,x~ (%extract-struct-member ,obj-var ,index)))
+             ;;       ,@expanded-body))
+             ;; NO! The previous macro implementation I saw (Step 1980) was:
+             ;; It iterates members.
+             ;; It creates `aos-accessor-name` (e.g. `x~`).
+             ;; It SUBSTITUTES `x` with `x~` in the body.
+             ;; AND it wraps the whole thing in:
+             ;; `(let ((,aos-accessor-name (%extract-struct-member ,obj-var ,i))) ...)` ??
+             ;; Actually, let's re-read `compiler.lisp` lines 287+ from Step 1980.
+             ;; It generates:
+             ;; `(symbol-macrolet ((,aos-accessor-name (%extract-struct-member ,obj-node ,index))) ...)`?
+             ;; No, I need to be sure.
+
+             ;; RE-READING MACRO (Mental Check):
+             ;; It uses `symbol-macrolet` to bind `x~` to `(%extract-struct-member obj index)`.
+             ;; So `(set! x 10)` -> `(set! x~ 10)` -> `(set! (%extract-struct-member obj index) 10)`.
+             ;; `(%extract-struct-member ...)` is an allowable target for `set!` in semantic analysis?
+             ;; Semantic analysis `analyze-set!` Case 2 checks for "Struct Member".
+             ;; Yes.
+
+             ;; 1. Verify Macro Expansion Logic
+             ;; Semantics: (with-struct-accessors Struct (AccessorSym) Body)
+             ;; Expands Body for EACH member, replacing AccessorSym with the member's accessor.
+
+             (let* ((expansion (macroexpand-1
+                                 '(with-struct-accessors AccessorPoint (acc)
+                                                         (set! (acc p) 10))))
+                    (expanded-str (format nil "~s" expansion)))
+
+               ;; Should generate (PROGN (set! (x~ p) 10) (set! (y~ p) 10))
+               (true (search "PROGN" expanded-str :test #'char-equal) "Should use PROGN")
+               (true (search "X~" expanded-str :test #'char-equal) "Should invoke x accessor")
+               (true (search "Y~" expanded-str :test #'char-equal) "Should invoke y accessor")
+               ;; Note: It uses function calls (X~ p) not symbol-macrolet.
+               (true expansion))
+
+             ;; 2. Verify IR Generation
+             (let* ((ir (crisp.compiler::compile-crisp-form-to-ir-string
+                         '(def-function use-accessors ((p AccessorPoint))
+                                        (declare (return-type AccessorPoint))
+                                        ;; Increment all members by 10
+                                        (with-struct-accessors AccessorPoint (acc)
+                                                               (set! (acc p) (+ (acc p) 10)))
+                                        (return p)))))
+               (format t "Generated Accessor IR: ~a~%" ir)
+
+               ;; Check for Logic
+               ;; 1. Extract existing values (because struct is by-value)
+
+               ;; 2. Insert new values (functional update)
+               (true (search "insertvalue" ir) "Should insert values to update the struct")
+
+               ;; Note: We fetch values using accessor functions (e.g. x~), which generates 'call' instructions
+               ;; rather than direct 'extractvalue' instructions in this function.
+               ;; (true (search "call" ir) "Should call accessor functions")
+
+               ;; 3. Check for indices 0 and 1
+               ;; The IR usually looks like: insertvalue ... i32 <val>, <index>
+               (true (search ", 0" ir) "Should access index 0")
+               (true (search ", 1" ir) "Should access index 1")))

@@ -232,7 +232,15 @@ This supports overloading templates by arity or other factors.")
          :members members
          :padded-members padded-members
          :field-indices indices
-         :total-size total-size)))))
+         :total-size total-size))
+
+      ;; Register as a valid Crisp type for type checking
+      (setf (gethash name *crisp-types*)
+        (make-crisp-type
+         :name name
+         :llvm-type-fn (lambda () (ensure-struct-llvm-type name))
+         :size (* total-size 8)
+         :category :struct)))))
 
 (defun parse-struct-member-spec (spec)
   "Parses a struct member specification.
@@ -1128,7 +1136,9 @@ This supports overloading templates by arity or other factors.")
         (when (and (or (null return-type) (equal return-type '(nil)))
                    (not (equal inferred-return-types '(nil))))
               (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
-              (let ((sig (first (gethash name *function-table*))))
+              (let* ((param-types (mapcar #'second explicit-env))
+                     (sig (find-if (lambda (s) (equal (function-signature-parameters s) param-types))
+                              (gethash name *function-table*))))
                 (when sig
                       (setf (function-signature-return-types sig) inferred-return-types))))
 
@@ -1249,6 +1259,9 @@ This supports overloading templates by arity or other factors.")
       (let ((type-a (gethash type-a-name *crisp-types*))
             (type-b (gethash type-b-name *crisp-types*)))
         (cond
+         ;; If either type is unknown, we cannot promote.
+         ((or (null type-a) (null type-b))
+           nil)
          ;; Promotion within the same category (e.g., int -> long)
          ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
                (> (crisp-type-size type-b) (crisp-type-size type-a)))

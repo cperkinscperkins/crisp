@@ -583,9 +583,11 @@
 
            (callee (progn
                     (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module)
-                    (or (llvm-get-named-function module callee-name)
-                        ;; If not in this module, declare it
-                        (llvm-add-function module callee-name llvm-fn-type))))
+                    (let ((f (llvm-get-named-function module callee-name)))
+                      (if (cffi:null-pointer-p f)
+                          ;; If not in this module, declare it
+                          (llvm-add-function module callee-name llvm-fn-type)
+                          f))))
 
            (arg-nodes (semantic-call-args node))
            (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
