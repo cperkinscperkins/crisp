@@ -281,11 +281,47 @@ This supports overloading templates by arity or other factors.")
 
     (nreverse ordered-values)))
 
+(defmacro with-struct-accessors (struct-type bindings &body body)
+  "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
+   Bindings: (aos-var [soa-var] [:access type])
+   Returns a PROGN containing the expanded body forms."
+  (let* ((aos-var (first bindings))
+         (rest-bindings (rest bindings))
+         ;; Manual parsing of optional SOA-VAR and keys
+         (soa-var (if (and rest-bindings (not (keywordp (first rest-bindings))))
+                      (pop rest-bindings)
+                      nil))
+         (access (let ((k (getf rest-bindings :access)))
+                   (if k k :public)))
+         (struct-def (gethash struct-type *crisp-structs*)))
+
+    (unless struct-def
+      (error "Unknown struct type '~a' in with-struct-accessors." struct-type))
+
+    (let ((forms '()))
+      (dolist (member (crisp-struct-definition-members struct-def))
+        (let* ((member-name (first member))
+               (aos-accessor-name
+                (ecase access
+                  (:public (intern (format nil "~a~~" member-name)))
+                  (:raw (intern (format nil "~~~a~~" member-name)))))
+               (soa-accessor-name (intern (format nil "~a~~" member-name))))
+
+          (let ((expanded-body
+                 (mapcar (lambda (form)
+                           (let ((f (subst aos-accessor-name aos-var form)))
+                             (if soa-var
+                                 (subst soa-accessor-name soa-var f)
+                                 f)))
+                     body)))
+            (setf forms (append forms expanded-body)))))
+
+      `(progn ,@forms))))
+
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
   (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
-         (constructor-name (intern (format nil "MAKE-~a" name)))
-         (param-names (mapcar #'first parsed-members)))
+         (constructor-name (intern (format nil "MAKE-~a" name))))
     ;; Register at macro-expansion time (for visibility to subsequent code)
     (register-struct-definition name parsed-members)
     ;; Emit code to register using eval-when, AND the constructor MACRO

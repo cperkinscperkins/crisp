@@ -1,3 +1,8 @@
+;;;
+;;;  sbcl --non-interactive--load generate-reference.lisp
+;;;
+
+
 (require :asdf)
 (require :sb-introspect)
 
