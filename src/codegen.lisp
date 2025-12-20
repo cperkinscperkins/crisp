@@ -22,7 +22,8 @@
                  (encoding (ecase (crisp-type-category crisp-type)
                              (:signed-int 5) ; DW_ATE_signed
                              (:unsigned-int 7) ; DW_ATE_unsigned
-                             (:float 4))) ; DW_ATE_float
+                             (:float 4) ; DW_ATE_float
+                             (:struct 7))) ; Fallback: Treat struct as unsigned blob for now
                  (di-type (llvm-di-builder-create-basic-type
                            di-builder name-str (length name-str)
                            (crisp-type-size crisp-type) encoding 0)))
