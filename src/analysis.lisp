@@ -1,4 +1,4 @@
-﻿;;; src/analysis.lisp
+;;; src/analysis.lisp
 (in-package :crisp.compiler)
 
 (defun initialize-expression-analyzers ()

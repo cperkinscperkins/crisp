@@ -37,13 +37,13 @@
 
         ;; Define the predicate function
         (defun ,pred-name (x)
-          (declare (ignore x)) ;; Placeholder logic? No, check if x is in members.
-          ;; But wait, x at runtime? 
-          ;; In templates (is-type? x), x is a type specifier or a value?
-          ;; Usually type constraint predicates check if a TYPE matches.
-          ;; If I say (with-template-type T (is-address-space? T)), T is a kw like :global.
-          (and (keywordp x)
-               (assoc x ',members)))
+          (or (assoc x ',members)
+              (and (integerp x)
+                   (find x ',members :key (lambda (entry) (cdr entry))))))
+
+        ;; Helper to get integer value
+        (defun ,(intern (concatenate 'string (symbol-name name) "-VALUE") :crisp.compiler) (k)
+          (cdr (assoc k ',members)))
 
         (export ',pred-name)))))
 
