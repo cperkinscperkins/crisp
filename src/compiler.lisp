@@ -243,6 +243,44 @@ This supports overloading templates by arity or other factors.")
      spec)
    (t (error "Invalid struct member spec: ~a" spec))))
 
+
+(defun validate-and-reorder-struct-args (struct-name defined-members args)
+  "Validates and reorders keyword arguments for a struct constructor macro."
+  (let ((processed-args (make-hash-table :test 'eq))
+        (ordered-values '()))
+
+    ;; 1. Parse into a hash table
+    (let ((ptr args))
+      (loop while ptr do
+              (let ((key (first ptr))
+                    (val (second ptr)))
+                (unless (keywordp key)
+                  (error "Struct constructor for ~a requires keyword arguments. Found: ~s" struct-name key))
+                (unless (second ptr)
+                  (error "Struct constructor for ~a has missing value for key: ~s" struct-name key))
+                (when (gethash key processed-args)
+                      (error "Struct constructor for ~a has duplicate key: ~s" struct-name key))
+
+                (setf (gethash key processed-args) val)
+                (setf ptr (cddr ptr)))))
+
+    ;; 2. Validate and Reorder
+    (loop for (member-name member-type) in defined-members do
+            (let* ((kw (intern (symbol-name member-name) :keyword))
+                   (val (gethash kw processed-args)))
+              (unless val
+                (error "Struct constructor for ~a missing required argument: ~s" struct-name kw))
+              (push val ordered-values)))
+
+    ;; 3. Check for unknown keys
+    (maphash (lambda (k v)
+               (declare (ignore v))
+               (unless (find k defined-members :key (lambda (m) (intern (symbol-name (first m)) :keyword)))
+                 (error "Struct constructor for ~a has unknown argument: ~s" struct-name k)))
+             processed-args)
+
+    (nreverse ordered-values)))
+
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
   (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
@@ -250,12 +288,15 @@ This supports overloading templates by arity or other factors.")
          (param-names (mapcar #'first parsed-members)))
     ;; Register at macro-expansion time (for visibility to subsequent code)
     (register-struct-definition name parsed-members)
-    ;; Emit code to register using eval-when, AND the constructor function
+    ;; Emit code to register using eval-when, AND the constructor MACRO
     `(progn
       (eval-when (:compile-toplevel :load-toplevel :execute)
         (register-struct-definition ',name ',parsed-members))
-      (def-function ,constructor-name ,parsed-members
-                    (return (%construct-struct ,name ,@param-names)))
+
+      (defmacro ,constructor-name (&rest args)
+        (let ((reordered (validate-and-reorder-struct-args ',name ',parsed-members args)))
+          `(%construct-struct ,',name ,@reordered)))
+
       ,@(loop for (member-name member-type) in parsed-members
               for i from 0
               collect
