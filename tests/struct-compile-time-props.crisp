@@ -1,0 +1,23 @@
+;;;; tests/tdd/struct-compile-time-props.crisp
+;;;; Verifies that :c-t tagged struct members generate compile-time constant accessors.
+
+(def-struct mock-vec-explicit
+  (length int)
+  ;; Explicitly define theier value for the compile-time property
+  (address-space address-space :c-t :global)
+  (access access :c-t :read_write))
+
+(def-function test-compile-time-props ()
+  (let ((v (make-mock-vec-explicit :length 10)))
+    
+    ;; 1. runtime check (should constant fold to true)
+    ;; (if (eq (address-space~ v) :global)
+    ;;     (compiler-no-op)
+    ;;     (return 0)) ;; Fail if not global
+
+    ;; 2. Compile-Time Assertion (The real test)
+    ;; This proves address-space~ expands to a constant usable by the compiler at analysis time
+    (c-t-assert (equal (address-space~ v) :global))
+    (c-t-assert (equal (access~ v) :read_write))
+    
+    (return 1)))

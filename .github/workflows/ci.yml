@@ -93,6 +93,9 @@ jobs:
           echo "--- Running E2E: success test --single-pass (scratch-cell.crisp) ---"
           ./bin/crisp-compile tests/scratch-cell.crisp --single-pass
 
+          echo "--- Running E2E: success test (struct-compile-time-props.crisp) ---"
+          ./bin/crisp-compile tests/struct-compile-time-props.crisp
+
 
           echo "--- Running E2E: --debug success test (return_7.crisp) ---"
           ./bin/crisp-compile tests/return_7.crisp --debug 
