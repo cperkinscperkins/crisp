@@ -19,6 +19,7 @@
                                              (:file "src/semantic")
                                              (:file "src/macros")
                                              (:file "src/compiler") ; 3. Uses FFI, defines compiler
+                                             (:file "src/enums")
                                              (:file "src/analysis")
                                              (:file "src/codegen") ; 4. Uses compiler, defines codegen
                                              (:file "src/templates") ; 5. with-template-type macro

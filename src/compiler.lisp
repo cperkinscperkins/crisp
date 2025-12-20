@@ -50,6 +50,14 @@ This supports overloading templates by arity or other factors.")
         "A hash table mapping struct names to CRISP-STRUCT-DEFINITION structs.")
 
 
+(defstruct enumeration-def
+  name
+  members ; Alist of (keyword . integer)
+)
+
+(defvar *crisp-enums* (make-hash-table :test 'eq))
+
+
 (defvar *current-compiling-function* nil)
 (defvar *current-module* nil)
 (defvar *current-builder* nil)
@@ -618,6 +626,7 @@ This supports overloading templates by arity or other factors.")
      (llvm-int8-ptr-type (llvm-void-type) 0))
 
    (t (error "Cannot resolve type to LLVM: ~a" type-spec))))
+
 
 (defun ensure-struct-llvm-type (name)
   "Ensures the LLVM struct type exists for the given struct name.
