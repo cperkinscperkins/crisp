@@ -217,7 +217,8 @@
 
    ;; Macros
    #:when #:unless #:cond #:if+ #:else
-   #:c-t-assert #:c-t-output #:compiler-no-op))
+   #:c-t-assert #:c-t-output #:compiler-no-op
+   #:!=))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -269,7 +270,8 @@
                 #:set!
 
                 ;; NEW: Branching Macros
-                #:when #:unless #:cond #:if+ #:else)
+                #:when #:unless #:cond #:if+ #:else
+                #:!=)
 
   ;; --- 2. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
@@ -308,7 +310,7 @@
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
    #:if+ #:else
    #:c-t-assert #:c-t-output
-   #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal
+   #:+ #:- #:* #:/ #:= #:!= #:< #:> #:<= #:>= #:equal
    #:defmacro
 
    #:car #:cdr #:first #:rest

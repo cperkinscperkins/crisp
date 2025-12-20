@@ -6,5 +6,5 @@
 (def-function test-le (a b) (declare #'(int int => int)) (<= a b))
 (def-function test-ge (a b) (declare #'(int int => int)) (>= a b))
 (def-function test-eq (a b) (declare #'(int int => int)) (= a b))
-(def-function test-neq (a b) (declare #'(int int => int)) (/= a b))
+(def-function test-neq (a b) (declare #'(int int => int)) (!= a b))
 

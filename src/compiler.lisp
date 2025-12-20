@@ -677,7 +677,7 @@ This supports overloading templates by arity or other factors.")
   (def-expression-analyzer <= analyze-le-expression)
   (def-expression-analyzer >= analyze-ge-expression)
   (def-expression-analyzer = analyze-eq-expression)
-  (def-expression-analyzer /= analyze-neq-expression)
+  (def-expression-analyzer != analyze-neq-expression)
 
   (def-expression-analyzer function analyze-function-literal)
   (def-expression-analyzer common-lisp:function analyze-function-literal)

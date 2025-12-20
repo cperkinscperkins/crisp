@@ -170,6 +170,12 @@ This enables `(set! (my-prop obj) val)`.
 ### with-struct-accessors
 `with-struct-accessors` is available and working E2E (through the whole pipeline).
 
+### c-t-output
+`c-t-output` is available and working E2E (through the whole pipeline).
+
+### c-t-assert
+`c-t-assert` is available and working E2E (through the whole pipeline).
+
 Errors
 ======
 
