@@ -338,3 +338,23 @@ jobs:
           echo "--- Running E2E: failure test (make-xxxx-without-keys.crisp) ---"
           ! ./bin/crisp-compile tests/errors/make-xxxx-without-keys.crisp 2>&1 | grep -F "requires keyword arguments"
 
+          echo "--- Running E2E: failure test (c-t-assert-fail.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/c-t-assert-fail.crisp 2>&1 | grep -F "Compile-time assertion failed"
+
+          echo "--- Running E2E: success test with output verification (c-t-output.crisp) ---"
+          # We capture output and check specifically for the compile-time message.
+          ./bin/crisp-compile tests/c-t-output.crisp > output.txt 2>&1
+          if grep -q "hello world" output.txt; then
+            echo "[PASSED] Found 'hello world' in output."
+          else
+            echo "[FAILED] Did not find 'hello world' in output."
+            cat output.txt
+            exit 1
+          fi
+          if grep -q "this is a top level c-t-output" output.txt; then
+             echo "[PASSED] Found top-level output."
+          else
+             echo "[FAILED] Did not find top-level output."
+             exit 1
+          fi
+

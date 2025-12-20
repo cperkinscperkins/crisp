@@ -1,0 +1,9 @@
+(c-t-output "this is a top level c-t-output." "awesome!")
+
+(def-function test-c-t-output ()
+    (declare #'(=> int))
+    (c-t-output "hello" "world")
+    (c-t-output "this message" "is on a second line")
+    8)
+    
+    
