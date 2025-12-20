@@ -65,6 +65,12 @@
    #:llvm-build-ret-void
    #:llvm-build-add
    #:llvm-build-fadd
+   #:llvm-build-sub
+   #:llvm-build-fsub
+   #:llvm-build-mul
+   #:llvm-build-fmul
+   #:llvm-build-sdiv
+   #:llvm-build-fdiv
    #:llvm-build-icmp
    #:llvm-build-fcmp
    #:llvm-build-br
@@ -148,6 +154,7 @@
    ;; laungage symbols
    #:def-function
    #:def-struct
+   #:with-struct-accessors
    #:def-setter
    #:register-struct-definition
    #:*crisp-structs*
@@ -195,7 +202,7 @@
    #:semantic-param #:semantic-var-read #:semantic-add
    #:semantic-value-cast #:semantic-bitcast
    #:semantic-fp-truncate-cast #:semantic-call #:semantic-let
-   #:semantic-extract-value
+   #:semantic-extract-value #:semantic-progn
 
    ;; Accessors for semantic nodes
    #:semantic-function-body
@@ -230,6 +237,7 @@
   (:import-from :crisp.compiler
                 #:def-function
                 #:def-struct
+                #:with-struct-accessors
                 #:def-setter
                 #:return
                 #:declare
@@ -309,7 +317,7 @@
    ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function
    #:def-orchestration #:def-qint #:def-microfloat-block
-   #:def-type-alias #:def-struct #:def-setter
+   #:def-type-alias #:def-struct #:with-struct-accessors #:def-setter
    #:declare
    #:return-type #:type
    ;; All Crisp types

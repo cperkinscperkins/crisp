@@ -232,7 +232,15 @@ This supports overloading templates by arity or other factors.")
          :members members
          :padded-members padded-members
          :field-indices indices
-         :total-size total-size)))))
+         :total-size total-size))
+
+      ;; Register as a valid Crisp type for type checking
+      (setf (gethash name *crisp-types*)
+        (make-crisp-type
+         :name name
+         :llvm-type-fn (lambda () (ensure-struct-llvm-type name))
+         :size (* total-size 8)
+         :category :struct)))))
 
 (defun parse-struct-member-spec (spec)
   "Parses a struct member specification.
@@ -281,11 +289,47 @@ This supports overloading templates by arity or other factors.")
 
     (nreverse ordered-values)))
 
+(defmacro with-struct-accessors (struct-type bindings &body body)
+  "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
+   Bindings: (aos-var [soa-var] [:access type])
+   Returns a PROGN containing the expanded body forms."
+  (let* ((aos-var (first bindings))
+         (rest-bindings (rest bindings))
+         ;; Manual parsing of optional SOA-VAR and keys
+         (soa-var (if (and rest-bindings (not (keywordp (first rest-bindings))))
+                      (pop rest-bindings)
+                      nil))
+         (access (let ((k (getf rest-bindings :access)))
+                   (if k k :public)))
+         (struct-def (gethash struct-type *crisp-structs*)))
+
+    (unless struct-def
+      (error "Unknown struct type '~a' in with-struct-accessors." struct-type))
+
+    (let ((forms '()))
+      (dolist (member (crisp-struct-definition-members struct-def))
+        (let* ((member-name (first member))
+               (aos-accessor-name
+                (ecase access
+                  (:public (intern (format nil "~a~~" member-name)))
+                  (:raw (intern (format nil "~~~a~~" member-name)))))
+               (soa-accessor-name (intern (format nil "~a~~" member-name))))
+
+          (let ((expanded-body
+                 (mapcar (lambda (form)
+                           (let ((f (subst aos-accessor-name aos-var form)))
+                             (if soa-var
+                                 (subst soa-accessor-name soa-var f)
+                                 f)))
+                     body)))
+            (setf forms (append forms expanded-body)))))
+
+      `(progn ,@forms))))
+
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
   (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
-         (constructor-name (intern (format nil "MAKE-~a" name)))
-         (param-names (mapcar #'first parsed-members)))
+         (constructor-name (intern (format nil "MAKE-~a" name))))
     ;; Register at macro-expansion time (for visibility to subsequent code)
     (register-struct-definition name parsed-members)
     ;; Emit code to register using eval-when, AND the constructor MACRO
@@ -1092,7 +1136,9 @@ This supports overloading templates by arity or other factors.")
         (when (and (or (null return-type) (equal return-type '(nil)))
                    (not (equal inferred-return-types '(nil))))
               (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
-              (let ((sig (first (gethash name *function-table*))))
+              (let* ((param-types (mapcar #'second explicit-env))
+                     (sig (find-if (lambda (s) (equal (function-signature-parameters s) param-types))
+                              (gethash name *function-table*))))
                 (when sig
                       (setf (function-signature-return-types sig) inferred-return-types))))
 
@@ -1213,6 +1259,9 @@ This supports overloading templates by arity or other factors.")
       (let ((type-a (gethash type-a-name *crisp-types*))
             (type-b (gethash type-b-name *crisp-types*)))
         (cond
+         ;; If either type is unknown, we cannot promote.
+         ((or (null type-a) (null type-b))
+           nil)
          ;; Promotion within the same category (e.g., int -> long)
          ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
                (> (crisp-type-size type-b) (crisp-type-size type-a)))
@@ -1395,12 +1444,16 @@ This supports overloading templates by arity or other factors.")
 (defun analyze-progn-expression (expr env location)
   "Analyzes a `(progn ...)` expression."
   (let ((body (cdr expr))
-        (last-node nil))
+        (nodes '()))
     (dolist (form body)
-      (setf last-node (analyze-expression form env location)))
-    ;; Return the last node, or a void literal if empty
-    (or last-node
-        (make-semantic-literal :value-type 'void :value nil :source-location location))))
+      (push (analyze-expression form env location) nodes))
+    (setf nodes (nreverse nodes))
+    ;; Determine type from the last node
+    (let ((last-node (first (last nodes))))
+      (make-semantic-progn
+       :type (if last-node (semantic-node-type last-node) 'void)
+       :body nodes
+       :source-location location))))
 
 (defun analyze-nested-def-function (expr env location)
   "Analyzes a nested `(def-function ...)` expression (e.g. from a template)."
@@ -1958,6 +2011,7 @@ This supports overloading templates by arity or other factors.")
     (semantic-funcall (semantic-funcall-type node))
     (semantic-extract-value (semantic-extract-value-type node))
     (semantic-struct-construction (semantic-struct-construction-type node))
+    (semantic-progn (semantic-progn-type node))
     (semantic-struct-member-update (semantic-struct-member-update-type node))))
 
 (defun semantic-node-source-location (node)
@@ -1986,6 +2040,7 @@ This supports overloading templates by arity or other factors.")
     (semantic-funcall (semantic-funcall-source-location node))
     (semantic-extract-value (semantic-extract-value-source-location node))
     (semantic-struct-construction (semantic-struct-construction-source-location node))
+    (semantic-progn (semantic-progn-source-location node))
     (semantic-struct-member-update (semantic-struct-member-update-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---

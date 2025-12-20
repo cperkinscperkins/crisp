@@ -22,7 +22,8 @@
                  (encoding (ecase (crisp-type-category crisp-type)
                              (:signed-int 5) ; DW_ATE_signed
                              (:unsigned-int 7) ; DW_ATE_unsigned
-                             (:float 4))) ; DW_ATE_float
+                             (:float 4) ; DW_ATE_float
+                             (:struct 7))) ; Fallback: Treat struct as unsigned blob for now
                  (di-type (llvm-di-builder-create-basic-type
                            di-builder name-str (length name-str)
                            (crisp-type-size crisp-type) encoding 0)))
@@ -583,9 +584,11 @@
 
            (callee (progn
                     (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module)
-                    (or (llvm-get-named-function module callee-name)
-                        ;; If not in this module, declare it
-                        (llvm-add-function module callee-name llvm-fn-type))))
+                    (let ((f (llvm-get-named-function module callee-name)))
+                      (if (cffi:null-pointer-p f)
+                          ;; If not in this module, declare it
+                          (llvm-add-function module callee-name llvm-fn-type)
+                          f))))
 
            (arg-nodes (semantic-call-args node))
            (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
@@ -616,6 +619,14 @@
       ;; TODO: Should this have a debug location? It corresponds to a variable binding,
       ;; but not a distinct expression in the source.
       (values extract-val nil))))
+
+
+(defmethod generate-node-ir ((node semantic-progn) builder module var-env di-builder di-scope location-map)
+  "Generates IR for a progn expression."
+  (let ((last-val nil))
+    (dolist (sub-node (semantic-progn-body node))
+      (setf last-val (generate-node-ir sub-node builder module var-env di-builder di-scope location-map)))
+    (values last-val nil)))
 
 (defmethod generate-node-ir ((node semantic-let) builder module var-env di-builder di-scope location-map)
   "Generates IR for a let expression."
