@@ -83,3 +83,34 @@
     (if val
         then
         else)))
+
+;; --- Compile-Time Utilities ---
+
+(defun compiler-no-op ()
+  "A no-op function that returns no values. 
+   Used as the expansion target for compile-time macros when evaluated in the host environment."
+  (values))
+
+(defmacro c-t-output (&rest args)
+  "Compile-Time Output. Evaluates arguments at macro-expansion time and prints them."
+  (let ((output-string
+         (with-output-to-string (s)
+           (dolist (arg args)
+             (let ((val (eval arg)))
+               (format s "~a " val))))))
+    (format *standard-output* "~&~a~%" output-string)
+    ;; Return a no-op form for the compiler to process (and ignore)
+    `(compiler-no-op)))
+
+(defmacro c-t-assert (test-expr &rest msgs)
+  "Compile-Time Assertion. Evaluates TEST-EXPR at macro-expansion time.
+   If false, signals a compilation error with MSGS."
+  (let ((result (eval test-expr)))
+    (unless result
+      (let ((msg-str (if msgs
+                         (format nil "~{~a~^ ~}" (mapcar #'eval msgs))
+                         "Assertion failed")))
+        (error 'crisp-compiler-error
+          :message (format nil "Compile-time assertion failed: ~a. Message: ~a"
+                     test-expr msg-str)))))
+  `(compiler-no-op))

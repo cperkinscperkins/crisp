@@ -687,7 +687,8 @@ This supports overloading templates by arity or other factors.")
 
   (def-expression-analyzer let analyze-let-expression)
   (def-expression-analyzer let* analyze-let-expression)
-  (def-expression-analyzer progn analyze-progn-expression) ;; NEW
+  (def-expression-analyzer progn analyze-progn-expression)
+  (def-expression-analyzer compiler-no-op analyze-compiler-no-op) ;; NEW
 
   (def-expression-analyzer atomic-add! analyze-atomic-add!-expression)
   (def-expression-analyzer to analyze-value-cast-expression)
@@ -1440,6 +1441,14 @@ This supports overloading templates by arity or other factors.")
     (make-semantic-literal :value-type (list 'cell inner-type)
                            :value nil ; No real value yet
                            :source-location location)))
+
+(defun analyze-compiler-no-op (expr env location)
+  "Analyzes a (compiler-no-op) form, which results in a void literal.
+   Used by compile-time macros (c-t-assert, c-t-output) to emit no code."
+  (declare (ignore expr env))
+  (make-semantic-literal :value-type 'void :value nil :source-location location))
+
+(def-expression-analyzer compiler-no-op analyze-compiler-no-op)
 
 (defun analyze-progn-expression (expr env location)
   "Analyzes a `(progn ...)` expression."

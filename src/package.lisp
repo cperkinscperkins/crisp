@@ -216,7 +216,8 @@
    #:compile-crisp-form-to-ir-string
 
    ;; Macros
-   #:when #:unless #:cond #:if+ #:else))
+   #:when #:unless #:cond #:if+ #:else
+   #:c-t-assert #:c-t-output #:compiler-no-op))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -246,6 +247,7 @@
                 #:type
                 #:make-scratch-cell
                 #:|=>|
+                #:c-t-assert #:c-t-output
 
                 ;; All Crisp types
                 #:char #:short #:int #:long
@@ -305,6 +307,7 @@
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
    #:if+ #:else
+   #:c-t-assert #:c-t-output
    #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal
    #:defmacro
 
