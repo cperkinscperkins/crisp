@@ -132,23 +132,18 @@
 (defstruct semantic-aref
   type array-node index-node source-location)
 
-(defstruct semantic-value-cast
-  "Represents a value-preserving cast (e.g., to-float)."
-  type ; The target type
-  arg ; The node being cast
-  source-location)
+(defstruct semantic-cast
+  "Base struct for all cast operations."
+  type arg source-location)
 
-(defstruct semantic-bitcast
-  "Represents a bit reinterpretation cast (e.g., as-int)."
-  type ; The target type
-  arg ; The node being cast
-  source-location)
+(defstruct (semantic-value-cast (:include semantic-cast))
+  "Represents a value-preserving cast (e.g., to-float).")
 
-(defstruct semantic-fp-truncate-cast
-  "Represents a float-to-integer truncation cast."
-  type ; The target integer type
-  arg ; The float node being cast
-  source-location)
+(defstruct (semantic-bitcast (:include semantic-cast))
+  "Represents a bit reinterpretation cast (e.g., as-int).")
+
+(defstruct (semantic-fp-truncate-cast (:include semantic-cast))
+  "Represents a float-to-integer truncation cast.")
 
 
 (defstruct semantic-call
