@@ -179,6 +179,9 @@ This enables `(set! (my-prop obj) val)`.
 ### def-enumeration
 `def-enumeration` is now available. The address-space and access enumerations are defined.
 
+### compile time struct properties
+These are now available.  They'll be needed for Storage Handles.
+
 Errors
 ======
 
