@@ -1,0 +1,15 @@
+;; TDD test.  Move to tests once passing.
+
+(def-struct point
+ (x int) 
+ (y int))
+
+(def-function test-with-struct-accessors ()
+  (declare #'(=> point))
+    (let ((p (make-point :x 1 :y 2))
+          (q (make-point :x 1 :y 2)))
+        (with-struct-accessors point (someAccessor)
+            (set! (someAccessor p) (+ 10 (someAccessor q))))
+        q))
+
+            
