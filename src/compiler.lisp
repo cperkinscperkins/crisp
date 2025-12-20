@@ -1998,6 +1998,7 @@ This supports overloading templates by arity or other factors.")
     (semantic-funcall (semantic-funcall-type node))
     (semantic-extract-value (semantic-extract-value-type node))
     (semantic-struct-construction (semantic-struct-construction-type node))
+    (semantic-progn (semantic-progn-type node))
     (semantic-struct-member-update (semantic-struct-member-update-type node))))
 
 (defun semantic-node-source-location (node)
@@ -2026,6 +2027,7 @@ This supports overloading templates by arity or other factors.")
     (semantic-funcall (semantic-funcall-source-location node))
     (semantic-extract-value (semantic-extract-value-source-location node))
     (semantic-struct-construction (semantic-struct-construction-source-location node))
+    (semantic-progn (semantic-progn-source-location node))
     (semantic-struct-member-update (semantic-struct-member-update-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
