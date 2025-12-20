@@ -1,4 +1,4 @@
-﻿;;;; Crisp - Lisp for Developing GPU Kernels
+;;;; Crisp - Lisp for Developing GPU Kernels
 ;;;; Copyright (c) 2025 Christopher Perkins
 ;;;;
 ;;;; Licensed under the MIT License. See LICENSE file in the project root.
@@ -48,6 +48,14 @@ This supports overloading templates by arity or other factors.")
 
 (defvar *crisp-structs* (make-hash-table)
         "A hash table mapping struct names to CRISP-STRUCT-DEFINITION structs.")
+
+
+(defstruct enumeration-def
+  name
+  members ; Alist of (keyword . integer)
+)
+
+(defvar *crisp-enums* (make-hash-table :test 'eq))
 
 
 (defvar *current-compiling-function* nil)
@@ -563,8 +571,12 @@ This supports overloading templates by arity or other factors.")
         (let ((base-type (first type-spec))
               (params (rest type-spec)))
           (cond
+           ((not (symbolp base-type)) nil) ;; Base type must be a symbol
            ((excluded-template-base-type-p base-type) nil)
-           ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
+           ((and (string-equal (symbol-name base-type) "CELL")
+                 (= (length params) 1)
+                 (gethash (first params) *crisp-types*))
+             t)
            ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
            ((symbolp base-type)
              (let ((mangled-name (mangle-template-struct-name base-type params)))
@@ -615,6 +627,7 @@ This supports overloading templates by arity or other factors.")
 
    (t (error "Cannot resolve type to LLVM: ~a" type-spec))))
 
+
 (defun ensure-struct-llvm-type (name)
   "Ensures the LLVM struct type exists for the given struct name.
    Handles forward declarations and recursion."
@@ -664,4 +677,3 @@ This supports overloading templates by arity or other factors.")
      :value-type `(:function-literal ,fn-name)
      :value fn-name
      :source-location location)))
-

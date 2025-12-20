@@ -1,4 +1,4 @@
-﻿;;; src/analysis.lisp
+;;; src/analysis.lisp
 (in-package :crisp.compiler)
 
 (defun initialize-expression-analyzers ()
@@ -916,7 +916,11 @@
                             collect (analyze-expression form env (append location (list i)))))
          (return-types (if value-nodes
                            (loop for node in value-nodes
-                                   append (alexandria:ensure-list (semantic-node-type node)))
+                                   append (let ((t-spec (semantic-node-type node)))
+                                            ;; If it's a list that ISN'T a valid type (e.g. '(int float)), assume it's multi-value
+                                            (if (and (listp t-spec) (not (valid-type-p t-spec)))
+                                                t-spec
+                                                (list t-spec))))
                            '(nil))))
     (make-semantic-explicit-return :type return-types
                                    :value-nodes value-nodes

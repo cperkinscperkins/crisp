@@ -153,10 +153,30 @@
 
    ;; laungage symbols
    #:def-function
+
+   ;; Structs
+   #:register-struct-definition
+   #:parse-struct-member-spec
+   #:make-crisp-struct-definition
+   #:crisp-struct-definition-members
+
+   ;; Enumerations
+   #:def-enumeration
+   #:address-space
+   #:access
+   #:is-address-space?
+   #:is-access?
+
+   ;; Global Compiler State
+   #:*types*
+   #:*functions*
+   #:*structs*
+   #:*enums*
+   #:*current-module*
+   #:*current-builder*
    #:def-struct
    #:with-struct-accessors
    #:def-setter
-   #:register-struct-definition
    #:*crisp-structs*
    #:with-template-type
    #:return
@@ -247,6 +267,11 @@
                 #:return-type
                 #:type
                 #:make-scratch-cell
+                #:def-enumeration
+                #:address-space
+                #:access
+                #:is-address-space?
+                #:is-access?
                 #:|=>|
                 #:c-t-assert #:c-t-output
 
@@ -288,6 +313,7 @@
                           #:progn
                           #:funcall
                           #:+ #:- #:* #:/ #:= #:/= #:< #:> #:<= #:>= #:equal ;; and so on...
+                          #:not #:and #:or
                           #:defmacro ;; We need defmacro to build the language
    )
 
@@ -338,10 +364,20 @@
 
    ;; Memory
    #:vector #:matrix #:tensor
-   #:storage
+   ;; Storage Handle
    #:make-scratch-cell
-   #:make-scratch-vector #:make-tile
-   #:load-chunk #:store-chunk #:load-tile #:store-tile
+   #:cell
+
+   ;; Enumerations
+   #:def-enumeration
+   #:address-space
+   #:access
+   #:is-address-space?
+   #:is-access?
+
+   ;; Compiler/Codegen
+   #:emit-llvm
+   #:compile-function #:store-chunk #:load-tile #:store-tile
    #:~ #:set! #:length~
 
    ;; Ops

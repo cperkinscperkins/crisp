@@ -1,0 +1,26 @@
+;; tests/tdd/test-enums.crisp
+
+(def-enumeration color :red (:green 10) :blue)
+
+(def-function test-enum ()
+  (declare (return-type int))
+  
+  ;; 1. Test custom enumeration predicate
+  (c-t-assert (is-color? :red))
+  (c-t-assert (is-color? :green))
+  (c-t-assert (is-color? :blue))
+  (c-t-assert (not (is-color? :yellow)))
+  
+  ;; 2. Test standard enumeration (address-space)
+  (c-t-assert (is-address-space? :global))
+  (c-t-assert (is-address-space? :local))
+  (c-t-assert (is-address-space? :private))
+  (c-t-assert (is-address-space? :constant))
+  (c-t-assert (not (is-address-space? :invalid)))
+  
+  ;; 3. Test standard enumeration (access)
+  (c-t-assert (is-access? :read_only))
+  (c-t-assert (is-access? :write_only))
+  (c-t-assert (is-access? :read_write))
+  
+  (return 0))

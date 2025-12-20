@@ -195,10 +195,41 @@ SHORT TERM PLAN
 - - [ ] star `*` variants
 - [x] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
 - [x] compile time assert mightn't be the worst idea. Pretty handy. 
-- [ ] refactor? compiler.lisp is nearly 2000 lines. maybe analysis.lisp and compiler.lisp ?
-- [ ] neq is /= , but probably should be != 
+- [x] refactor? compiler.lisp is nearly 2000 lines. maybe analysis.lisp and compiler.lisp ?
+- [x] neq is /= , but probably should be != 
 - [ ] refactor.  reevalute ALL uses of symbolp looking for implicit expectation that (symbolp nil) is false (it's actually true)
+- [ ] def-enumeration
+- - address space
+- - access
+- [ ] compile time struct properties
+- [ ] runtime assert and --runtime-checks flag
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
+- - [ ] Storage Properties  (cannot be set)
+- - - [ ] address-space
+- - - [ ] access
+- - - [ ] bytes
+- - [ ] Cell Properties ( CAN be set )
+- - - [ ] offset~
+- - - [ ] parent~ 
+- - [ ] Cell Operations
+- - - [ ] (~ someCell)
+- - - [ ] (set! (~ someCell) newValue)
+- - - [ ] (atomic-xchg! (~ someCell) newValue)
+- - [ ] def-setter
+- - [ ] overload ~
+- - [ ] Tensor Properties ( can be set)
+- - - [ ] length~ ( number of elements)
+- - - [ ] parent~
+- - - [ ] alignment~ <-- compile time.
+- - - [ ] offset~
+- - - [ ] num-dims~   <-- compile time. 
+- - - [ ] strides~
+- - - [ ] extents~
+- - [ ] Pass Through
+- - - (access~ someCellOrTensor)
+- - - (address-space~ someCellOrTensor)
+- - [ ] built atop def-struct ? 
+- [ ] def-kernel-exact 
 - [ ] def-kernel  <-- 
 
 
