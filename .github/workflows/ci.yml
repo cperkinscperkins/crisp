@@ -245,6 +245,19 @@ jobs:
           ./bin/crisp-compile tests/def-struct-std140.crisp
 
 
+          echo "--- Running E2E: success test (test-enums.crisp) ---"
+          ./bin/crisp-compile tests/test-enums.crisp
+
+          echo "--- Running E2E: success test --single-pass (test-enums.crisp) ---"
+          ./bin/crisp-compile tests/test-enums.crisp --single-pass
+
+          echo "--- Running E2E: success test --debug (test-enums.crisp) ---"
+          ./bin/crisp-compile tests/test-enums.crisp --debug
+
+          echo "--- Running E2E: success test --debug --single-pass (test-enums.crisp) ---"
+          ./bin/crisp-compile tests/test-enums.crisp --debug --single-pass
+
+
 
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"

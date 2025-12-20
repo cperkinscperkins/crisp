@@ -34,6 +34,8 @@
   (field-indices nil :type hash-table) ; Map of name -> padded-index
   (llvm-type nil) ; Cached LLVM type reference
   (total-size 0 :type integer) ; Total size in bytes (padded)
+  (constructor nil) ; Helper function name
+  (canonical-type nil) ; For template instantiations, the fully resolved type name
   )
 
 ;; Sema Structs
