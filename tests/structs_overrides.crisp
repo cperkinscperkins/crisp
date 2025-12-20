@@ -27,7 +27,7 @@
 ;; Test Function
 (def-function test-overrides ()
     (declare #'( => float int))
-    (let ((p (make-point 1.0 2)))
+    (let ((p (make-point :x 1.0 :y 2)))
         ;; Setters should add 10/20 to value
         (set! (x~ p) 3.0)  ;; assigns 13.0 to raw x
         (set! (y~ p) 4)    ;; assigns 24 to raw y

@@ -8,5 +8,5 @@
 
 (def-function test-mixed-constructor ()
    (declare #'(=> int))
-  (let ((m (make-Mixed (as-char 65) 123)))
+  (let ((m (make-Mixed :a (as-char 65) :b 123)))
     (return 7)))
