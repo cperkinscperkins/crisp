@@ -195,6 +195,7 @@ SHORT TERM PLAN
 - - [ ] star `*` variants
 - [x] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
 - [x] compile time assert mightn't be the worst idea. Pretty handy. 
+- [ ] refactor? compiler.lisp is nearly 2000 lines. maybe analysis.lisp and compiler.lisp ?
 - [ ] neq is /= , but probably should be != 
 - [ ] refactor.  reevalute ALL uses of symbolp looking for implicit expectation that (symbolp nil) is false (it's actually true)
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
