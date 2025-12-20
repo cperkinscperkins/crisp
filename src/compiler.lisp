@@ -1431,12 +1431,16 @@ This supports overloading templates by arity or other factors.")
 (defun analyze-progn-expression (expr env location)
   "Analyzes a `(progn ...)` expression."
   (let ((body (cdr expr))
-        (last-node nil))
+        (nodes '()))
     (dolist (form body)
-      (setf last-node (analyze-expression form env location)))
-    ;; Return the last node, or a void literal if empty
-    (or last-node
-        (make-semantic-literal :value-type 'void :value nil :source-location location))))
+      (push (analyze-expression form env location) nodes))
+    (setf nodes (nreverse nodes))
+    ;; Determine type from the last node
+    (let ((last-node (first (last nodes))))
+      (make-semantic-progn
+       :type (if last-node (semantic-node-type last-node) 'void)
+       :body nodes
+       :source-location location))))
 
 (defun analyze-nested-def-function (expr env location)
   "Analyzes a nested `(def-function ...)` expression (e.g. from a template)."

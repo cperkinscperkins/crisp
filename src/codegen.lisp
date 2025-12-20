@@ -617,6 +617,14 @@
       ;; but not a distinct expression in the source.
       (values extract-val nil))))
 
+
+(defmethod generate-node-ir ((node semantic-progn) builder module var-env di-builder di-scope location-map)
+  "Generates IR for a progn expression."
+  (let ((last-val nil))
+    (dolist (sub-node (semantic-progn-body node))
+      (setf last-val (generate-node-ir sub-node builder module var-env di-builder di-scope location-map)))
+    (values last-val nil)))
+
 (defmethod generate-node-ir ((node semantic-let) builder module var-env di-builder di-scope location-map)
   "Generates IR for a let expression."
   ;; Create a new environment for the let block that inherits from the outer one.

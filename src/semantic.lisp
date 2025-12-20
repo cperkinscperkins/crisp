@@ -185,3 +185,9 @@
   type ; The type specifier of the struct (symbol name)
   args ; List of semantic nodes for the field values (in definition order)
   source-location)
+
+(defstruct semantic-progn
+  "Represents a (progn ...) expression."
+  type ; The return type (of the last expression)
+  body ; A list of semantic nodes
+  source-location)

@@ -202,7 +202,7 @@
    #:semantic-param #:semantic-var-read #:semantic-add
    #:semantic-value-cast #:semantic-bitcast
    #:semantic-fp-truncate-cast #:semantic-call #:semantic-let
-   #:semantic-extract-value
+   #:semantic-extract-value #:semantic-progn
 
    ;; Accessors for semantic nodes
    #:semantic-function-body
