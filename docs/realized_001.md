@@ -148,7 +148,7 @@ Features include:
   (y int))
 
 ;; Use default
-(let ((p (make-point 1.0 2)))
+(let ((p (make-point :x 1.0 :y 2)))
   (set! (x~ p) 5.0))
 
 ;; Override
@@ -165,6 +165,10 @@ Generic setters can be defined for any function-like access pattern, not just st
   ...)
 ```
 This enables `(set! (my-prop obj) val)`. 
+
+
+### with-struct-accessors
+`with-struct-accessors` is available and working E2E (through the whole pipeline).
 
 Errors
 ======
