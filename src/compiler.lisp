@@ -563,8 +563,12 @@ This supports overloading templates by arity or other factors.")
         (let ((base-type (first type-spec))
               (params (rest type-spec)))
           (cond
+           ((not (symbolp base-type)) nil) ;; Base type must be a symbol
            ((excluded-template-base-type-p base-type) nil)
-           ((and (eq base-type 'cell) (= (length params) 1) (gethash (first params) *crisp-types*)) t)
+           ((and (string-equal (symbol-name base-type) "CELL")
+                 (= (length params) 1)
+                 (gethash (first params) *crisp-types*))
+             t)
            ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
            ((symbolp base-type)
              (let ((mangled-name (mangle-template-struct-name base-type params)))
@@ -664,4 +668,3 @@ This supports overloading templates by arity or other factors.")
      :value-type `(:function-literal ,fn-name)
      :value fn-name
      :source-location location)))
-
