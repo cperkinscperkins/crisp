@@ -23,7 +23,8 @@
                              (:signed-int 5) ; DW_ATE_signed
                              (:unsigned-int 7) ; DW_ATE_unsigned
                              (:float 4) ; DW_ATE_float
-                             (:struct 7))) ; Fallback: Treat struct as unsigned blob for now
+                             (:struct 7) ; Fallback: Treat struct as unsigned blob for now
+                             (:void (return-from get-or-create-di-type (cffi:null-pointer)))))
                  (di-type (llvm-di-builder-create-basic-type
                            di-builder name-str (length name-str)
                            (crisp-type-size crisp-type) encoding 0)))
@@ -58,7 +59,6 @@
    ((= (length return-type-names) 1) (crisp-type-to-llvm-type (first return-type-names) module))
    ;; Case 3: Should not happen, but treat as void.
    (t (llvm-void-type))))
-
 
 (defparameter *cached-int32-type* nil)
 (defparameter *cached-int64-type* nil)
