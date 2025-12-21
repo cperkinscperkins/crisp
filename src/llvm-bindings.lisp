@@ -4,7 +4,7 @@
 
 ;; Find the LLVM C library
 (define-foreign-library libllvm
-                        (:windows "LLVM-C.dll")
+                        (:windows "C:/Program Files/LLVM/bin/LLVM-C.dll")
                         (:unix (:or "libLLVM-21.so" "libLLVM.so"))
                         (:darwin "libLLVM.dylib")
                         (t (:default "libLLVM")))
@@ -35,14 +35,22 @@
          (val :pointer))
 
 ;; --- Types ---
+(defcfun ("LLVMInt32TypeInContext" llvm-int32-type-in-context) :pointer
+         (context :pointer))
+(defcfun ("LLVMInt64TypeInContext" llvm-int64-type-in-context) :pointer
+         (context :pointer))
+
 (defcfun ("LLVMInt32Type" llvm-int32-type) :pointer)
 (defcfun ("LLVMInt8Type" llvm-int8-type) :pointer)
 (defcfun ("LLVMInt1Type" llvm-int1-type) :pointer)
 (defcfun ("LLVMInt16Type" llvm-int16-type) :pointer)
 
-(defcfun ("LLVMPointerType" llvm-int8-ptr-type) :pointer
+(defcfun ("LLVMPointerType" llvm-pointer-type) :pointer
          (type :pointer)
          (address-space :unsigned-int))
+
+(defcfun ("LLVMSizeOf" llvm-size-of) :pointer
+         (type :pointer))
 (defcfun ("LLVMInt64Type" llvm-int64-type) :pointer)
 
 (defcfun ("LLVMHalfType" llvm-half-type) :pointer
@@ -128,6 +136,12 @@
          (name :string))
 
 ;; --- Instructions ---
+(defcfun ("LLVMConstPointerNull" llvm-const-pointer-null) :pointer
+         (type :pointer))
+
+(defcfun ("LLVMConstNull" llvm-const-null) :pointer
+         (type :pointer))
+
 (defcfun ("LLVMConstInt" llvm-const-int) :pointer
          (int-type :pointer)
          (value :uint64)
@@ -289,6 +303,14 @@
          (dest-ty :pointer)
          (name :string))
 
+
+(defcfun ("LLVMBuildPtrToInt" llvm-build-ptr-to-int) :pointer
+         (builder :pointer)
+         (val :pointer)
+         (dest-ty :pointer)
+         (name :string))
+
+
 (defcfun ("LLVMBuildIntToPtr" llvm-build-int-to-ptr) :pointer
          (builder :pointer)
          (val :pointer)
@@ -314,6 +336,28 @@
          (idx :unsigned-int)
          (name :string))
 
+(defcfun ("LLVMBuildGEP2" llvm-build-gep2) :pointer
+         (builder :pointer)
+         (type :pointer)
+         (ptr :pointer)
+         (indices :pointer)
+         (num-indices :unsigned-int)
+         (name :string))
+
+(defcfun ("LLVMBuildGEP" llvm-build-gep) :pointer
+         (builder :pointer)
+         (ptr :pointer)
+         (indices :pointer)
+         (num-indices :unsigned-int)
+         (name :string))
+
+(defcfun ("LLVMBuildInBoundsGEP2" llvm-build-in-bounds-gep2) :pointer
+         (builder :pointer)
+         (type :pointer)
+         (ptr :pointer)
+         (indices :pointer)
+         (num-indices :unsigned-int)
+         (name :string))
 
 ;; --- Comparisons ---
 (defcfun ("LLVMBuildICmp" llvm-build-icmp) :pointer

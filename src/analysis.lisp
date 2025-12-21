@@ -28,7 +28,9 @@
 
   (def-expression-analyzer atomic-add! analyze-atomic-add!-expression)
   (def-expression-analyzer to analyze-value-cast-expression)
-  (def-expression-analyzer as analyze-bitcast-expression)
+  (def-expression-analyzer to analyze-value-cast-expression)
+  (def-expression-analyzer as analyze-generic-as-expression) ;; Generic (as type val)
+  ;; (def-expression-analyzer as analyze-bitcast-expression) ;; OLD (as-*) handler
   (def-expression-analyzer as-bits analyze-bitcast-expression) ;; alias
   (def-expression-analyzer inc! analyze-inc!-expression)
   (def-expression-analyzer dec! analyze-dec!-expression)
@@ -38,7 +40,7 @@
   (def-expression-analyzer return analyze-return-expression)
   (def-expression-analyzer aref analyze-aref-expression)
   ;; ~ is an alias for aref
-  (def-expression-analyzer ~ analyze-aref-expression)
+  (def-expression-analyzer ~ref~ analyze-aref-expression)
 
   ;; From duplicate definition:
   (def-expression-analyzer def-function analyze-nested-def-function)
@@ -744,7 +746,11 @@
 
 (defun analyze-aref-expression (expr env location)
   (let* ((array-node (analyze-expression (second expr) env (append location '(1))))
-         (index-node (analyze-expression (third expr) env (append location '(2)))))
+         (index-expr (third expr))
+         (index-node (if index-expr
+                         (analyze-expression index-expr env (append location '(2)))
+                         ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
+                         (make-semantic-literal :value-type 'int :value 0 :source-location location))))
     (make-semantic-aref :type (if (listp (semantic-node-type array-node)) (second (semantic-node-type array-node)) 'int)
                         :array-node array-node
                         :index-node index-node
@@ -972,6 +978,24 @@
          (t ; Default for "AS-" and other currently unhandled float-to-int ops
            (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))))
 
+(defun analyze-generic-as-expression (expr env location)
+  "Analyzes the generic (as type value) form."
+  (let* ((type-form (second expr))
+         (value-form (third expr))
+         (type-name (if (symbolp type-form) type-form (error "Generic AS expects a type symbol, got ~a" type-form)))
+         ;; If it's a template parameter (like T), it should already be substituted? 
+         ;; Or if T is bound in template-params passed down? 
+         ;; For now assume substitution happened.
+         (target-type (gethash type-name *crisp-types*)))
+
+    (unless target-type
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    ;; Reuse analyze-cast-expression logic but fake the operator name
+    ;; Or just reimplement dispatch. Reimplementing is cleaner for custom 'as' logic.
+    (let ((arg-node (analyze-expression value-form env (append location '(2)))))
+      (make-semantic-value-cast :type type-name :arg arg-node :source-location location))))
+
 (defun get-struct-member-index (struct-type-name member-name)
   "Helper to find the physical index of a struct member, accounting for padding."
   (let ((struct-def (gethash struct-type-name *crisp-structs*)))
@@ -1018,20 +1042,40 @@
               (all-arg-nodes (append arg-nodes (list value-node)))
               (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
               ;; Check for a matching setter function signature: (op arg1 ... argN value)
-              (signatures (gethash op *function-table*))
+              (full-setter-name (intern (format nil "~a_SET!" op) (symbol-package op)))
+              (signatures (append (gethash op *function-table*)
+                            (gethash full-setter-name *function-table*)))
               (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
+
+         ;; If no match found, try checking if it's a template we can instantiate
+         (unless match
+           (let ((template-op (if (gethash full-setter-name *template-registry*) full-setter-name op)))
+             (when (gethash template-op *template-registry*)
+                   (ensure-template-instantiation template-op all-arg-types (lambda (f l) (declare (ignore l)) (eval f)))
+                   ;; Re-fetch signatures after possible instantiation
+                   (setf signatures (append (gethash op *function-table*)
+                                      (gethash full-setter-name *function-table*)))
+                   (setf match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))))
 
          (cond
           ;; Sub-case 2a: Found an overloaded setter function -> Call it.
           (match
             (make-semantic-call
-             :name op
+             :name (function-signature-name match)
              :type (function-signature-return-types match)
              :args all-arg-nodes
              :signature match
              :source-location location))
 
-          ;; Sub-case 2b: Fallback to Struct Member Update (Legacy Accessor Logic)
+          ;; Sub-case 2b: It is an expression analyzer (e.g. `~`, `aref`)
+          ((gethash op *expression-analyzers*)
+            (let ((target-node (analyze-expression target-form env (append location '(1)))))
+              (make-semantic-set!
+               :target-node target-node
+               :value-node value-node
+               :source-location location)))
+
+          ;; Sub-case 2c: Fallback to Struct Member Update (Legacy Accessor Logic)
           ;; Only valid if default accessors are used and no explicit setter overrides it.
           (t
             (let* ((op-name (symbol-name op))
@@ -1073,7 +1117,7 @@
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."
-  (or (equal arg-type param-type)
+  (or (types-equivalent-p arg-type param-type)
       (and (listp arg-type) (eq (first arg-type) :function-literal)
            (listp param-type) (eq (first param-type) :function-type)
            ;; Verify signature match
@@ -1331,9 +1375,12 @@
                              (gethash op *template-registry*))
                           (analyze-function-call op expr env location))
                         ;; Case 3c: Otherwise, we don't know what this is.
-                        (t (error 'crisp-unsupported-form-error
-                             :form op
-                             :source-location (append location '(0)))))))
+                        (t
+                          (log:debug "  UNSUPPORTED FORM: ~a (pkg: ~a)" op (package-name (symbol-package op)))
+                          (log:debug "  Function Table Keys: ~a" (alexandria:hash-table-keys *function-table*))
+                          (error 'crisp-unsupported-form-error
+                            :form op
+                            :source-location (append location '(0)))))))
    (t (error 'crisp-unsupported-form-error
         :form expr
         :source-location location))))
@@ -1354,7 +1401,7 @@
     (semantic-eq 'int)
     (semantic-neq 'int)
     (semantic-if (semantic-if-type node))
-    (semantic-set! (semantic-node-type (semantic-set!-value-node node)))
+    (semantic-set! 'void)
     (semantic-aref (semantic-aref-type node))
     (semantic-value-cast (semantic-value-cast-type node))
     (semantic-let (semantic-let-type node))

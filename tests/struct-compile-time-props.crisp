@@ -17,7 +17,7 @@
 
     ;; 2. Compile-Time Assertion (The real test)
     ;; This proves address-space~ expands to a constant usable by the compiler at analysis time
-    (c-t-assert (equal (address-space~ v) :global))
-    (c-t-assert (equal (access~ v) :read_write))
+    (c-t-assert (equal (address-space~ v) :global) "Address space must be global")
+    (c-t-assert (equal (access~ v) :read_write) "Access must be read-write")
     
     (return 1)))

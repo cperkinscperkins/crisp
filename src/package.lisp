@@ -27,8 +27,10 @@
    #:llvm-type-of
    ;; Types
    #:llvm-void-type
+   #:llvm-int32-type-in-context #:llvm-int64-type-in-context
    #:llvm-int32-type #:llvm-int8-type #:llvm-int16-type #:llvm-int64-type #:llvm-int1-type
-   #:llvm-int8-ptr-type
+   #:llvm-pointer-type
+   #:llvm-size-of
    #:llvm-half-type #:llvm-bfloat-type #:llvm-float-type #:llvm-double-type
    #:llvm-void-type
    #:llvm-function-type
@@ -52,6 +54,8 @@
    #:llvm-build-call2
    ;; Instructions
    #:llvm-const-int
+   #:llvm-const-pointer-null
+   #:llvm-const-null
    #:llvm-const-real
    #:llvm-build-ret
    ;; Alloca
@@ -87,6 +91,9 @@
 
    #:llvm-build-struct-gep
    #:llvm-build-struct-gep2
+   #:llvm-build-gep2
+   #:llvm-build-gep
+   #:llvm-build-in-bounds-gep2
    ;; Casting
    #:llvm-build-sext
    #:llvm-build-zext
@@ -96,7 +103,10 @@
    #:llvm-build-fp-to-si
    #:llvm-build-fp-to-ui
    #:llvm-build-trunc
+   #:llvm-build-zext #:llvm-build-sext
+   #:llvm-build-ptr-to-int
    #:llvm-build-int-to-ptr
+   #:llvm-size-of
    #:llvm-build-bit-cast
    ;; DWARF Debug Info
    #:llvm-create-di-builder
@@ -191,9 +201,13 @@
 
    ;; All Crisp types
    #:char #:short #:int #:long
-   #:cell
+   #:cell #:c-pointer #:storage
    #:uchar #:ushort #:uint #:ulong
    #:half #:bfloat16 #:float #:double
+
+   ;; Accessors
+   #:address~ #:byte-size~ #:address-space~ #:access~
+   #:parent~ #:offset~ #:element-type~
 
    ;; All cast/conversion operators
    #:to-char #:as-char
@@ -230,7 +244,7 @@
    #:semantic-let-bindings
    #:semantic-let-body
 
-   #:set!
+   #:set! #:~ #:aref #:~ref~
 
    ;; Developer Utilities
    #:compile-crisp-form-to-ir-string
@@ -279,8 +293,13 @@
                 ;; All Crisp types
                 #:char #:short #:int #:long
                 #:cell
+                #:storage #:c-pointer
                 #:uchar #:ushort #:uint #:ulong
                 #:half #:bfloat16 #:float #:double
+
+                ;; Accessors
+                #:address~ #:byte-size~ #:address-space~ #:access~
+                #:parent~ #:offset~ #:element-type~
 
                 ;; All cast/conversion operators
                 #:to-char #:as-char
@@ -293,7 +312,7 @@
 
                 ;; NEW: Unified Let from Compiler
                 #:let
-                #:set!
+                #:set! #:~ #:aref #:~ref~
 
                 ;; NEW: Branching Macros
                 #:when #:unless #:cond #:if+ #:else
@@ -338,10 +357,11 @@
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
    #:if+ #:else
-   #:if+ #:else
    #:c-t-assert #:c-t-output
    #:die #:r-t-assert #:r-t-assert-0
+   #:type-equal-p
    #:+ #:- #:* #:/ #:= #:!= #:< #:> #:<= #:>= #:equal
+
    #:defmacro
 
    #:car #:cdr #:first #:rest
@@ -372,6 +392,7 @@
    ;; Storage Handle
    #:make-scratch-cell
    #:cell
+   #:parent~ #:offset~ #:element-type~
 
    ;; Enumerations
    #:def-enumeration
@@ -383,7 +404,7 @@
    ;; Compiler/Codegen
    #:emit-llvm
    #:compile-function #:store-chunk #:load-tile #:store-tile
-   #:~ #:set! #:length~
+   #:~ #:set! #:length~ #:~ref~
 
    ;; Ops
    #:*! #:identity-of #:zero #:accum #:base))

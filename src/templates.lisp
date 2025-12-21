@@ -59,10 +59,14 @@
                            (register-template ',name ',params ',constraints ',form ',signature)) ;; Define the generator macro: (gen-NAME ...)
                          (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
                            `(template-instantiation ,(instantiate-template ',name concrete-types)))
+                         (eval-when (:compile-toplevel :load-toplevel :execute)
+                           (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name)))
 
                          ;; Define the type helper macro: (NAME-type ...)
                          (defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
-                           `(get-template-signature ',',name ',concrete-types))))))
+                           `(get-template-signature ',',name ',concrete-types))
+                         (eval-when (:compile-toplevel :load-toplevel :execute)
+                           (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name)))))))
 
                  ((and (listp form) (eq (first form) 'def-struct))
                    (let* ((name (second form))
@@ -86,17 +90,20 @@
                        ;; Define the generator macro: (gen-NAME ...)
                        (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
                          `(template-instantiation ,(instantiate-template ',name concrete-types)))
+                       (eval-when (:compile-toplevel :load-toplevel :execute)
+                         (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name)))
 
-                       ;; Define the type helper macro: (NAME-type ...) 
+                       ;; Define the type helper macro: (NAME-type ...)
                        ;; For structs, this returns the Mangled Name.
                        (defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
                          (let ((mangled (intern (format nil "~a_~{~a~^_~}" ',name concrete-types) (symbol-package ',name))))
-                           `',mangled))))))))))
+                           `',mangled))
+                       (eval-when (:compile-toplevel :load-toplevel :execute)
+                         (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name)))))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Template Instantiation Logic
 ;;; ----------------------------------------------------------------------------
-
 
 (defun get-template-signature (name concrete-types)
   "Returns the specialized signature for a template."
@@ -118,7 +125,6 @@
              (sig (template-data-signature tmpl)))
         (when sig
               (sublis substitutions sig))))))
-
 
 (defun normalize-template-sig-type (type)
   "Converts (function ...) specs to (:function-type ...) structs for matching."
@@ -185,7 +191,6 @@
                  (maphash (lambda (k v) (setf (gethash k inference-map) v)) temp-map)
                  t)
                 nil)))))
-
 
 (defun initialize-templates ()
   "Initializes the template system and hooks into the compiler."

@@ -1,0 +1,15 @@
+(def-function test-cell-passthrough-address-space (c)
+    (declare #'((cell long) => ulong)) 
+
+    ;; will :global work here, naked?  Or does it need to be address-space:global ?
+    (c-t-assert (= (address-space~ c) :global) "Address space should be global")
+
+    (offset~ c))
+
+(def-function test-cell-passthrough-access (c)
+    (declare #'((cell long) => ulong))  
+
+    ;; will :read-write work here, naked?  Or does it need to be access:read-write ?
+    (c-t-assert (= (access~ c) :read-write) "Access should be read-write")
+
+    (offset~ c))

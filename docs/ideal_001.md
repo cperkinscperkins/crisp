@@ -120,6 +120,9 @@ These are simple and should be flexible enough to get things done.
 
 `let` in Crisp is like `let*` in Common Lisp. Asterisk not needed.
 
+`set!` in Crisp is like `setf` in Common Lisp. However, it does NOT return a value. 
+You cannot shortcut set and return a value in the same expression.
+
 
 Commonalities with C++
 ----------------------
@@ -138,7 +141,7 @@ Crisp does that sort of thing too, except there is no `std::sort`.
 
 ### SFINAE
 
-Just kidding. Crisp doesn't do that. It has Common Lisp `defmacro` which is better++.
+Just kidding. Crisp doesn't do SFINAE. It has Common Lisp `defmacro` which is better++.
 
 
 
@@ -567,9 +570,9 @@ wisest to explicitly declare the type, rather than rely on type inference on the
 
 Example:
 ```
-(let ((my-svec:short3 ##(5 6 7))
+(let ((my-svec ##(5 6 7))
       (my-dvec ##(3.0 4.0 5.1 6.0)))
-  (declare (type my-dvec double4)) 
+  (declare (type my-svec short3) (type my-dvec double4)) 
   ...)
 ```
 
@@ -578,10 +581,10 @@ The subelements can be dereferences with the `x~`, `y~`, `z~` and `w~` functions
 Furthermore, Crisp supports "swizzles" (like `xyyy~`)
 
 ```
-(let ((my-svec:short4 ##(5 6 7 9))
+(let ((my-svec ##(5 6 7 9))
       (all-six          (yyyy~ my-svec))
       (tail-part      #(0 0)))
-  (declare (type tail-part short2))
+  (declare (type my-svec short4) (type tail-part short2))
   (set! (xy~ tail-part) (zw~ my-svec))
   ; OR
   (set! tail-part (zw~ my-svec))
@@ -746,19 +749,14 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
     (declare #'(long long => long))
   (+ a b))
 
-;; D -- use colon (:) to attach type directly to variable. return type must still be declared.
-(def-function addInts (a:int b:int)
-    (declare (return-type int))
-  (+ a b))
-
 ;; E -- multiple values return
 (def-function divInts (a b)
 ; divInts returns both the quotient AND the remainder.
     (declare #'(int int => int int))
     ...)
 
-(def-function divIntsAgain (a:int b:int)
-    (declare (return-type int int))
+(def-function divIntsAgain (a b)
+    (declare (type a b int) (return-type int int))
     ...)
 
 ;; F -- type-signature can refer to other functions
@@ -782,12 +780,12 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
 ;; H -- keyword & optional arguments
 (def-function survive (&key birds fish zombies)
   (declare (return-type NIL) (type birds fish zombies int))
-  ;OR
-  (declare #`(&key birds:int fish:int zombies:int => NIL))
+  ;OR -- this one might need revisiting
+  (declare #'(&key int int int => NIL))
   ...)
 
-(def-function addSome (x:int &optional y)
-  (declare (return-type NIL) (type y int))
+(def-function addSome (x &optional y)
+  (declare (return-type NIL) (type x y int))
   ;OR
   (declare #'(int &optional int => NIL))
   ...)
@@ -798,8 +796,8 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
   ...)
 
 ;; I -- skip return type in kernels and grid functions
-(def-grid-function bury (meters:float)
-   ;types declared in paramter list, no need to declare anything else
+(def-grid-function bury (meters)
+  (declare (type meters float))
    ...)
 
 (def-grid-function sharpen (edge)
@@ -865,7 +863,8 @@ Like `def-function` ALL the parameters to the kernel function must have their ty
 (def-type int-result-cell (cell-type int :global :writeable))
 
 ;; -- add_two --
-(def-kernel add_two (a:int b:int &out result:int-result-cell)
+(def-kernel add_two (a b &out result)
+   (declare #'(int int &out int-result-cell => nil))
    (set! (~ result) (+ a b)))
 ```
 
@@ -921,7 +920,8 @@ which is a function Crisp provides for making Crisp vectors from `void` pointers
 (def-type float-vec-t (vector-type float :global :compact))
 
 ;; -- vector_add_k --
-(def-kernel-exact vector_add_k (APtr:voidp ASz:ulong BPtr:voidp BSz:ulong CPtr:voidp CSz:ulong)
+(def-kernel-exact vector_add_k (APtr ASz BPtr BSz CPtr CSz)
+  (declare #'(voidp ulong voidp ulong voidp ulong => nil))
   (let ((A (marshall-vector APtr ASz (float-vec-t :read_only)))
         (B (marshall-vector BPtr BSz (float-vec-t :read_only)))
         (C (marshall-vector CPtr CSz (float-vec-t :write_only))))
@@ -1097,8 +1097,8 @@ If you want to overload access there too, an additional overload function must b
 
 ```
 ;;;  (x~ sv) returns the vector of ALL x values, we are adjusting the one at idx
-(def-function x~ (sv:(soa-vector-type point) idx:ulong)
-    (declare (return-type float))
+(def-function x~ (sv idx)
+    (declare (type sv soa-vector-type point) (type idx ulong) (return-type float))
     (- (~ (x~ sv) idx)))
 ```
 
@@ -1176,7 +1176,8 @@ If the setter parameters are typed, there is no need for an additonal declare.
 ;; this custom setter function negates x
 
 ;;;  x~  (setter)
-(def-setter x~ (p:point newVal:float)
+(def-setter x~ (p newVal)
+   (declare #'(point float => nil))
    (set! (~x~ p) (- newVal))) 
 
 (set! (x~ somePoint) 14) ;; <-- the x of somePoint is actually stored as -14 
@@ -1190,7 +1191,8 @@ In the future, Crisp may handle this automatically.
 ;; additional overload if we are using soa-vectors.
 
 ;;;  x~   (setter soa)
-(def-setter x~ (sv:(soa-vector-type point) idx:ulong newVal:float)
+(def-setter x~ (sv idx newVal)
+    (declare #'((soa-vector-type point) ulong float => nil))
     (set! (~ (x~ sv) idx) newVal))
 ```
 
@@ -1210,8 +1212,8 @@ where `XXXX` is the name of the function, struct, vector, etc that was defined.
 (with-template-type (T)
 
   ;; -- addTwo --
-  (def-function addTwo (a:T b:T)
-      (declare (return-type T))
+  (def-function addTwo (a b)
+      (declare (type a b T) (return-type T))
     (+ a b)))
 
 
@@ -1219,14 +1221,14 @@ where `XXXX` is the name of the function, struct, vector, etc that was defined.
     (declare (type-is U #'is-floating-point?) (value-is A #'is-address-space?))
 
   ;; -- move-discrete --
-  (def-function move-discrete (a:T b:U)
-     (declare (return-type (vector-type U A)))
+  (def-function move-discrete (a b)
+     (declare (type a T) (type b U) (return-type (vector-type U A)))
      ...))
 
 ; we can template structs as well
 (with-template-type (T)
   ;; -- point -- 
-  (def-struct point (x:T) (y:T)))
+  (def-struct point (x T) (y T)))
 
 ```
 
@@ -1269,7 +1271,7 @@ Example:
 ```
 (with-template-type (T)
   ;; -- point --
-  (def-struct point (x:T) (y:T)))
+  (def-struct point (x T) (y T)))
 
 (point-type int)  <== evaluates to the type, which is a point specialized to int.
 
@@ -1279,8 +1281,8 @@ Example:
     (declare (type-is U #'is-floating-point?) (value-is A #'is-address-space?))
 
   ;; -- move-discrete --
-  (def-function move-discrete (a:T b:U)
-     (declare (return-type (vector-type U A)))
+  (def-function move-discrete (a b)
+     (declare (type a T) (type b U) (return-type (vector-type U A)))
      ...))
 
 (move-discrete-type int float :global) ; that specfic type. 
@@ -1299,7 +1301,7 @@ all the needed type information is present (or it'll error :-) )
 ```
 (with-template-type (T U)
   ;; -- pair --
-  (def-struct pair (first:T) (second:U)))
+  (def-struct pair (first T) (second U)))
 
 (def-type incomplete-p-t (pair-type nil (vector-type)))  ;; <-- a pair with a vector in the second type. Who cares what's in the first?
 
@@ -1320,8 +1322,8 @@ of whatever it is wrapping.  This is `gen-XXXX`
 (with-template-type (T)
 
   ;; -- addTwo --
-  (def-function addTwo (a:T b:T)
-      (declare (return-type T))
+  (def-function addTwo (a b)
+      (declare #'(T T => T))
     (+ a b)))
 
 (reduce-to-workgroup someVector (gen-addTwo int)) ; <-- specialize "addTwo" for int and pass that to reduce-to-workgroup
@@ -1330,7 +1332,7 @@ of whatever it is wrapping.  This is `gen-XXXX`
 ; template over a struct
 (with-template-type (T)
   ;; -- point --
-  (def-struct point (x:T y:T)))
+  (def-struct point (x T y T)))
 
 (gen-point int)                         ; a. generate the template. 
 (setf g-horizon (make-point :x a :y b)) ; b. now use it (assuming 'a' and 'b' are ints)
@@ -1403,8 +1405,8 @@ The `with-template-type` argument list supports `&optional` and `&key`
 ```
 (with-template-type (T &optional C)
   ;; -- Point --
-  (def-struct Point (x:T) (y:T)
-    (when C '(color:C)) ; The color field is optional
+  (def-struct Point (x T) (y T)
+    (when C '(color C)) ; The color field is optional
   ))
 ```
 
@@ -1925,7 +1927,8 @@ The number of dimensions is (obviously) implicit for the `cell`, `vector` and `m
 (def-type result-from-kernel-t (vector-type float :std140 :global :write-only ))
 
 ;; -- my_kernel --
-(def-kernel my_kernel (in:data-from-host-t &out out:result-from-kernel-t)
+(def-kernel my_kernel (in &out out)
+  (declare #'(data-from-host-t &out result-from-kernel-t))
   ...)
 ```
 
@@ -2104,7 +2107,7 @@ Additionally,  `soa-vector` also inherits the properties of their struct element
 
 Example
 ```
-(def-struct point (x:long) (y:long))
+(def-struct point (x long) (y long))
 
 (let ((sv      (make-soa-vector point :local :read_write :std140 20))
       (y       (y~ sv 9))
@@ -2188,7 +2191,7 @@ Possible Implementation
     (def-function convert-soa-to-aos (input-soa-vector output-vector)
         (declare #((soa-vector-type T) (vector T) => nil))
         (loop-soa-stride input-soa-vector (i)
-            (let ((temp-struct:T (get-struct input-soa-vector i)))
+            (let ((temp-struct (get-struct input-soa-vector i)))
                 (set! (~ output-vector i) temp-struct)))))
 
 ;; -- convert-aos-to-soa --
@@ -2228,7 +2231,7 @@ Due to inference, `def-const` expressions do not typically need type information
 ```
 (def-const +PI+ 3.141592654)       ; type will be inferred
 ;OR
-(def-const +PI+:float 3.141592654) ; type is explicit
+(def-const +PI+ 3.141592654 float) ; type is explicit
 ;OR
 (def-const +PI+ 3.141592654)
 (declare (type +PI+ float))        ; type is explicit
@@ -2245,7 +2248,7 @@ def-parameter
 `def-parameter` is used to define the type and possible default value for parameters that might 
 come in from the compiler when it is invoked.   `def-parameter` is very similar to `def-const` in
 that it also defines an immutable expression in global file scope.
-`(def-parameter <parameter-name>:<type> &optional <default-value>)`
+`(def-parameter <parameter-name> &optional <default-value> <type>)`
 
 Like in C++, the `-D` flag is used to specify a parameter and is followed by the parameter name, equal sign and a value without spaces.
 e.g. `-DMAX_INDEX=40` 
@@ -2257,7 +2260,7 @@ Paramter names should follow the C standard identifying rules. (ie use underscor
 
 ```
 ;; in the .crisp file
-(def-parameter MAX_INDEX:ulong 100) ;; 100 is default value, used when not provided by the compiler invocation.
+(def-parameter MAX_INDEX 100 ulong) ;; 100 is default value, used when not provided by the compiler invocation.
 
 (def-parameter START_LOC 41.1)
 (declaim (type START_LOC float))
@@ -2862,7 +2865,7 @@ Remember, NO DATA IS MOVED.
 Possible Implemenation
 ```
 ;; -- transpose! --
-(def-function transpose! (M:matrix)
+(def-function transpose! (M)
   (declare #((matrix) => nil))
 
   (let ((dims-vec (dims~ M))
@@ -3057,11 +3060,11 @@ NEVER be called with a value of type `B`  unless `as-A ` were used.
 ;; -- point --
 (def-struct point
     (x float)
-    (y:float))
+    (y float))
 
 ;; -- distance --
-(def-function distance (a:point b:point)
-    (declare (return-type float))
+(def-function distance (a  b )
+    (declare #'(point point => float))
     #| pythagorean formula here |#  )
 
 
@@ -3070,8 +3073,8 @@ NEVER be called with a value of type `B`  unless `as-A ` were used.
 (def-derived-type coordinate point :subst :no)
 
 ;; -- distance --
-(def-function distance (a:coordinate b:coordinate)
-  (declare (return-type float))
+(def-function distance (a b)
+  (declare #'(coordinate coordinate => float))
   #| haversine formula here |# )
 
 (let ((p1 (make-point 1 2))
@@ -3166,8 +3169,8 @@ you can use `def-struct` in conjunction with `set-derived` for this.
 Example:
 ```
 (def-struct MY-VEC 
-    (base:vector-type)
-    (new-prop:int))
+    (base vector-type)
+    (new-prop int))
 
 (set-derived vector-type MY-VIEW-type :subst :pass-orig)
 ```
@@ -3319,8 +3322,8 @@ ANSWER: I guess.
 (def-type my-vec-t (vector-type int :local))
 
 ;; -- count-if --
-(def-function count-if (v:my-vec-t predicate?)
-    (declare (return-type ulong) (type predicate? #'(int => bool)))
+(def-function count-if (v predicate?)
+    (declare (return-type ulong) (type v my-vec-t) (type predicate? #'(int => bool)))
     ...)
 
 ;; -- count-if -- 
@@ -3520,7 +3523,7 @@ forced to return 'maybe' simply because one of its sub-functions uses it.
 
 `let`
 =====
-<!-- NOTE:  this section, and the one on declare should probably appear MUCH earlier in the doc -->
+<!-- NOTE:  this section, and the one on set! and declare should probably appear MUCH earlier in the doc -->
 
 `let` is the form for declaring variables in the scope of a function. 
 
@@ -3540,14 +3543,23 @@ last expression in its closure, in its implicit `progn`.
       (diff  (- sum c))      ;; can refer to 'sum' since it was declared before.
       (fail  (+ someNum 9))  ;; this would fail, as someNum hasn't been declared yet.
       (someNum   0.2)        ;; is this a bfloat16, half, float or double? 
-      (otherNum:half 0.1)    ;; type included
+      (otherNum 0.1)    
       (quotient remainder (/ a b)))  ;; / returns multiple values, we can bind them all
-  (declare (type someNum double))    ;; finally declare the type of someNum
+  (declare (type someNum double) (type otherNum half))    ;; finally declare the type of someNum
 
   (dec! diff) ;; mutable
   (munch sum diff someNum otherNum remainder))  ;; <-- the return type of #'munch
                                                 ;; is the return type of this `let`
 ```
+
+`set!`
+======
+
+`set!` is the form for setting the value of a variable in the scope of a function. 
+It does not return a value.
+
+See [Appendix #1](#appendix-1---summary-set--get-vars-storage-handles-and-structs) for examples
+of its use with various types of variables.
 
 `declare`
 =========
@@ -3617,7 +3629,7 @@ There are other ways of declaring variable types (arrows form, colon join).
 
 #'(int => long double)
 
-#'(int int &optional long &key clamp:float => long)
+#'(int int &optional long &key :clamp float => long)
 
 #'(in-vec &out out-vec)
 ```
@@ -3969,7 +3981,7 @@ It can take a single symbol (for a vector, implying its length) or a list of sym
 
 ;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
-   (declare (type image-data (vector-type :uchar :global :read_write))
+   (declare (type image-data (vector-type uchar :global :read_write))
             (type width height ulong)
             (global-size :derive-from '(width height) :strategy :one-thread-per :msg "ensure enough threads for every pixel of image, otherwise use the stepping convolution")) 
   ...)
@@ -4059,7 +4071,7 @@ has been "rounded up" to a multiple of the workgroup size by the host.
 ```
 ;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
-   (declare (type image-data (vector-type :uchar :global :read_write))
+   (declare (type image-data (vector-type uchar :global :read_write))
             (type width height ulong)
             (global-size :derive-from ( width height) :strategy :one-thread-per)) ; <-- this sets the upper bound for check-thread-bounds 
   (let ((image-matrix (make-tensor image-data width height)))
@@ -4147,7 +4159,7 @@ There are three variants for 1D, 2D and 3D .
 
 ;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
-   (declare (type image-data (vector-type :uchar :global :read_write))
+   (declare (type image-data (vector-type uchar :global :read_write))
             (type width height ulong)
             (global-size :derive-from '(width height) :strategy :one-thread-per)) 
   (let ((image-matrix (make-tensor image-data width height)))

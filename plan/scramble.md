@@ -198,27 +198,27 @@ SHORT TERM PLAN
 - [x] refactor? compiler.lisp is nearly 2000 lines. maybe analysis.lisp and compiler.lisp ?
 - [x] neq is /= , but probably should be != 
 - [ ] refactor.  reevalute ALL uses of symbolp looking for implicit expectation that (symbolp nil) is false (it's actually true)
-- [ ] def-enumeration
+- [x] def-enumeration
 - - address space
 - - access
-- [ ] compile time struct properties
-- [ ] runtime assert and --runtime-checks flag
+- [x] compile time struct properties
+- [x] runtime assert and --runtime-checks flag
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
-- - [ ] Storage Properties  (cannot be set)
-- - - [ ] address-space
-- - - [ ] access
-- - - [ ] bytes
-- - [ ] Cell Properties ( CAN be set )
-- - - [ ] offset~
-- - - [ ] parent~ 
-- - [ ] Compile Time Cell Properties
-- - - [ ] element-type~
-- - [ ] Cell Operations
-- - - [ ] (~ someCell)
-- - - [ ] (set! (~ someCell) newValue)
+- - [x] Storage Properties  (cannot be set)
+- - - [x] address-space
+- - - [x] access
+- - - [x] bytes
+- - [x] Cell Properties ( CAN be set )
+- - - [x] offset~
+- - - [x] parent~ 
+- - [x] Compile Time Cell Properties
+- - - [x] element-type~
+- - [x] Cell Operations
+- - - [x] (~ someCell)
+- - - [x] (set! (~ someCell) newValue)
 - - - [ ] (atomic-xchg! (~ someCell) newValue)
-- - [ ] def-setter
-- - [ ] overload ~
+- - [x] def-setter
+- - [x] overload ~
 - - [ ] Tensor Properties ( can be set)
 - - - [ ] length~ ( number of elements)
 - - - [ ] parent~
@@ -317,6 +317,7 @@ LANGUAGE CHANGES
 - [ ] remove x:int style type declarations. Just use : for namespaces at some later date.
 - [ ] if-reorder <-- see google doc.
 - [ ] change => nil to => void ?? 
+- [ ] :read_write vs :read-write 
 
 
 

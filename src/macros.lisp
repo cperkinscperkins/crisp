@@ -102,30 +102,33 @@
     ;; Return a no-op form for the compiler to process (and ignore)
     `(compiler-no-op)))
 
-(defmacro c-t-assert (test-expr &rest msgs)
-  "Compile-Time Assertion. Evaluates TEST-EXPR at macro-expansion time.
-   If false, signals a compilation error with MSGS."
-  (let ((result (eval test-expr)))
-    (unless result
-      (let ((msg-str (if msgs
-                         (format nil "~{~a~^ ~}" (mapcar #'eval msgs))
-                         "Assertion failed")))
-        (error 'crisp-compiler-error
-          :message (format nil "Compile-time assertion failed: ~a. Message: ~a"
-                     test-expr msg-str)))))
-  `(compiler-no-op))
 
 ;; Core Language Macros
 ;; ====================
 
 (defmacro def-function (name params &rest body-and-location)
   "Defines a new, thread-level Crisp function."
+  (when (string-equal (symbol-name name) "~REF~")
+        (error 'crisp-illegal-overload-error :name name))
   ;; Find the position of our injected :source-location keyword.
   (let* ((loc-pos (position :source-location body-and-location))
          ;; The source location is the value right after the keyword.
          (source-location (when loc-pos (nth (1+ loc-pos) body-and-location)))
          ;; The "real" body is everything before the keyword.
-         (body (if loc-pos (subseq body-and-location 0 loc-pos) body-and-location)))
+         (body (if loc-pos (subseq body-and-location 0 loc-pos) body-and-location))
+         (declarations (loop for form in body
+                             while (and (listp form) (eq (car form) 'declare))
+                               append (rest form)))
+         (is-system (member '(crisp-system-generated) declarations :test #'equal)))
+
+    (let ((name-str (symbol-name name)))
+      (when (and (not is-system)
+                 (or (string-equal name-str "~REF~")
+                     (and (> (length name-str) 2)
+                          (cl:char= (cl:char name-str 0) #\~)
+                          (cl:char= (cl:char name-str (1- (length name-str))) #\~))))
+            (error 'crisp-illegal-overload-error :name name)))
+
     (log:debug "which package?: ~a ~%" *package*)
 
     ;; Eagerly register the signature for single-pass compilation scenarios.
@@ -202,13 +205,14 @@
         (let ((reordered (validate-and-reorder-struct-args ',name ',parsed-members args)))
           `(%construct-struct ,',name ,@reordered)))
 
-      ,@(let ((runtime-index 0))
+      ,@(let ((runtime-index 0)
+              (pkg (symbol-package name)))
           (loop for member-spec in parsed-members
                 collect
                   (let* ((member-name (first member-spec))
                          (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
                          (value (when is-ct (fourth member-spec))) ;; (name type :c-t value)
-                         (accessor-name (intern (format nil "~a~~" member-name))))
+                         (accessor-name (intern (format nil "~a~~" member-name) pkg)))
                     (if is-ct
                         ;; Generate Compile-Time Constant Accessor Macro
                         `(defmacro ,accessor-name (obj)
@@ -223,12 +227,13 @@
                           (incf runtime-index)
                           `(def-function ,accessor-name ((obj ,name))
                                          (return (%extract-struct-member obj ,idx))))))))
-      ,@(let ((runtime-index 0))
+      ,@(let ((runtime-index 0)
+              (pkg (symbol-package name)))
           (loop for member-spec in parsed-members
                   unless (and (consp member-spec) (eq (third member-spec) :c-t))
                 collect
                   (let* ((member-name (first member-spec))
-                         (raw-accessor-name (intern (format nil "~~~a~~" member-name)))
+                         (raw-accessor-name (intern (format nil "~~~a~~" member-name) pkg))
                          (idx runtime-index))
                     (incf runtime-index)
                     `(def-function ,raw-accessor-name ((obj ,name))
@@ -238,7 +243,14 @@
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
    The return type is implicitly nil/void. We append (return) to ensure this."
-  `(def-function ,name ,args ,@body (return)))
+  (let ((name-str (symbol-name name)))
+    (when (or (string-equal name-str "~REF~")
+              (and (> (length name-str) 2)
+                   (cl:char= (cl:char name-str 0) #\~)
+                   (cl:char= (cl:char name-str (1- (length name-str))) #\~)))
+          (error 'crisp-illegal-overload-error :name name)))
+  (let ((setter-name (intern (format nil "~a_SET!" (symbol-name name)) (symbol-package name))))
+    `(def-function ,setter-name ,args ,@body (return))))
 
 (defmacro r-t-assert (test &rest args)
   "Asserts that TEST is true at runtime. If not, terminates kernel.
@@ -247,6 +259,12 @@
   (if *runtime-checks-enabled*
       `(unless ,test (die))
       nil))
+
+(defmacro c-t-assert (condition message)
+  "Compile-Time Assertion."
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (unless ,condition
+       (error "Compile-Time Assertion Failed: ~a" ,message))))
 
 (defmacro r-t-assert-0 (test &rest args)
   "Asserts that TEST is true at runtime (placeholder for thread-0 check)."
