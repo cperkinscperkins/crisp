@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-21T00:46:09.777017Z
+Generated on 2025-12-21T21:57:07.941741Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
@@ -431,10 +431,26 @@ Generated on 2025-12-21T00:46:09.777017Z
 
 
 ---
+### DEFUN `TYPE-EQUAL-P`
+- **Args**: `(T1 T2)`
+
+  > Checks if two Crisp types are equivalent at compile-time.
+
+
+---
 ### DEFUN `RESOLVE-TYPE-TO-LLVM`
 - **Args**: `(TYPE-SPEC)`
 
   > Resolves a Crisp type specifier to an LLVM type reference.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\types-instantiator.lisp`
+
+### DEFUN `INSTANTIATE-CELL-STRUCT`
+- **Args**: `(ELEMENT-TYPE)`
+
+  > Programmatically defines the CELL_<ElementType> struct.  >    Members:  >      parent: (storage)  >      offset: (long)  >      element-type: (type :c-t <element-type>)  >      address-space: (address-space :c-t :global) ;; Default, effectively  >      access: (access :c-t :read-write) ;; Default  >   
 
 
 ---
@@ -537,13 +553,6 @@ Generated on 2025-12-21T00:46:09.777017Z
 
 
 ---
-### DEFMACRO `C-T-ASSERT`
-- **Args**: `(TEST-EXPR &REST MSGS)`
-
-  > Compile-Time Assertion. Evaluates TEST-EXPR at macro-expansion time.  >    If false, signals a compilation error with MSGS.
-
-
----
 ### DEFMACRO `DEF-FUNCTION`
 - **Args**: `(NAME PARAMS &REST BODY-AND-LOCATION)`
 
@@ -579,6 +588,13 @@ Generated on 2025-12-21T00:46:09.777017Z
 
 
 ---
+### DEFMACRO `C-T-ASSERT`
+- **Args**: `(CONDITION MESSAGE)`
+
+  > Compile-Time Assertion.
+
+
+---
 ### DEFMACRO `R-T-ASSERT-0`
 - **Args**: `(TEST &REST ARGS)`
 
@@ -592,6 +608,12 @@ Generated on 2025-12-21T00:46:09.777017Z
 - **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL))`
 
   > A master initialization function for the Crisp compiler.  >   This should be called by any entry point into the system (REPL, executable, CI).
+
+
+---
+### DEFUN `REGISTER-BUILTINS`
+
+  > Registers built-in types and structs like 'storage' using def-struct semantics.
 
 
 ---
@@ -927,6 +949,13 @@ Generated on 2025-12-21T00:46:09.777017Z
 
 
 ---
+### DEFUN `ANALYZE-GENERIC-AS-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes the generic (as type value) form.
+
+
+---
 ### DEFUN `GET-STRUCT-MEMBER-INDEX`
 - **Args**: `(STRUCT-TYPE-NAME MEMBER-NAME)`
 
@@ -1056,6 +1085,12 @@ Generated on 2025-12-21T00:46:09.777017Z
 
 
 ---
+### DEFPARAMETER `*CACHED-INT32-TYPE*`
+
+---
+### DEFPARAMETER `*CACHED-INT64-TYPE*`
+
+---
 ### DEFUN `MANGLE-TYPE-SPEC`
 - **Args**: `(TYPE-SPEC)`
 
@@ -1073,7 +1108,7 @@ Generated on 2025-12-21T00:46:09.777017Z
 ### DEFUN `GET-EXPANDED-TYPES`
 - **Args**: `(TYPE-SPEC MODULE)`
 
-  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64). For others, returns (type).
+  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type).
 
 
 ---

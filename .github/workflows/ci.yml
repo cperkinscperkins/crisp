@@ -247,6 +247,26 @@ jobs:
           echo "--- Running E2E: success test (def-struct-std140.crisp) ---"
           ./bin/crisp-compile tests/def-struct-std140.crisp
 
+          echo "--- Running E2E: success test (cell-01-arg.crisp) ---"
+          ./bin/crisp-compile tests/cell-01-arg.crisp
+
+          echo "--- Running E2E: success test (cell-02-props.crisp) ---"
+          ./bin/crisp-compile tests/cell-02-props.crisp
+
+          echo "--- Running E2E: success test (cell-03-passthrough.crisp) ---"
+          ./bin/crisp-compile tests/cell-03-passthrough.crisp
+
+          echo "--- Running E2E: success test (cell-04-accessor.crisp) ---"
+          ./bin/crisp-compile tests/cell-04-accessor.crisp
+
+          echo "--- Running E2E: success test (cell-05-set-bang.crisp) ---"
+          ./bin/crisp-compile tests/cell-05-set-bang.crisp
+
+          echo "--- Running E2E: success test (cell-06-overload-accessor.crisp) ---"
+          ./bin/crisp-compile tests/cell-06-overload-accessor.crisp
+
+          echo "--- Running E2E: success test (cell-07-overload-setter.crisp) ---"
+          ./bin/crisp-compile tests/cell-07-overload-setter.crisp
 
           echo "--- Running E2E: success test (test-enums.crisp) ---"
           ./bin/crisp-compile tests/test-enums.crisp
@@ -344,6 +364,12 @@ jobs:
 
           echo "--- Running E2E: failure test (reserved_accessor_not_overloadable.crisp) ---"
           ! ./bin/crisp-compile tests/errors/reserved_accessor_not_overloadable.crisp 2>&1 | grep -F "Function name '~Y~' is reserved"
+
+          echo "--- Running E2E: failure test (ref_accessor_not_overloadable.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/ref_accessor_not_overloadable.crisp 2>&1 | grep -F "is a system accessor and cannot be overloaded"
+
+          echo "--- Running E2E: failure test (ref_setter_not_overloadable.crisp) ---"
+          ! ./bin/crisp-compile tests/errors/ref_setter_not_overloadable.crisp 2>&1 | grep -F "is a system accessor and cannot be overloaded"
 
           echo "--- Running E2E: failure test (struct_inference_return_mismatch.crisp) ---"
           ! ./bin/crisp-compile tests/errors/struct_inference_return_mismatch.crisp 2>&1 | grep -F "Type mismatch"
