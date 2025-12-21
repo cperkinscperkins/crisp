@@ -80,6 +80,7 @@
    ((listp type-spec)
      (let ((base-type (first type-spec)))
        (cond
+        ((null base-type) (llvm-void-type))
         ((eq base-type 'cell)
           ;; A cell is a struct { ptr, i64 }.
           ;; We use get-expanded-types to get the component types.
@@ -560,6 +561,17 @@
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
 
+  ;; Special handling for compiler intrinsic DIE
+  (when (eq (semantic-call-name node) 'die)
+        (let ((trap-name "llvm.trap"))
+          (let ((f (llvm-get-named-function module trap-name)))
+            (when (cffi:null-pointer-p f)
+                  (let ((ft (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)))
+                    (setf f (llvm-add-function module trap-name ft))))
+            (llvm-build-call2 builder (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)
+                              f (cffi:null-pointer) 0 "")))
+        (return-from generate-node-ir (values nil nil)))
+
   (let* ((sig (semantic-call-signature node))
          (return-type-names (function-signature-return-types sig))
          (has-return-value (not (null (remove 'nil return-type-names))))
@@ -750,7 +762,8 @@
         (let ((result-alloca
                (unless (or (null result-type-spec)
                            (eq result-type-spec :void)
-                           (eq result-type-spec 'void))
+                           (eq result-type-spec 'void)
+                           (equal result-type-spec '(nil)))
                  (let ((type (crisp-type-to-llvm-type result-type-spec module)))
                    (llvm-build-alloca builder type "if_result")))))
 

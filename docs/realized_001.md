@@ -14,7 +14,7 @@ and Linux.
 
 Presently it supports the compilation of one (1) .crisp file. 
 
-It also supports three (four) flags:
+It also supports four (five) flags:
 
 ### -g / --debug
 DWARF symbols are inserted when using the `-g` or `--debug` flags.
@@ -28,6 +28,8 @@ else errors (see below).
 Sets the logging verbosity. Accepted levels are (from most to least verbose): `trace`, `debug`, `info`, `warn`, `error`, `fatal`.
 The default level is `info`.
 
+### --runtime-checks
+Enables runtime checks. When enabled, assertions are compiled into the kernel. When disabled (default), assertions are elided from the bitcode, ensuring zero runtime cost.
 
 Pipeline
 ========
@@ -175,6 +177,11 @@ This enables `(set! (my-prop obj) val)`.
 
 ### c-t-assert
 `c-t-assert` is available and working E2E (through the whole pipeline).
+
+### r-t-assert
+`r-t-assert` is available. Requuires `--runtime-checks` flag to be enabled.
+Present implementation is primitive: `(r-t-assert <testExpression>)`.  Logging 
+not supported yet.
 
 ### def-enumeration
 `def-enumeration` is now available. The address-space and access enumerations are defined.

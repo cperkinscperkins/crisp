@@ -735,12 +735,12 @@
 (defun analyze-when-expression (expr env location)
   (let ((cond-node (analyze-expression (second expr) env (append location '(1))))
         (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
-    (make-semantic-if :type 'void :condition-node cond-node :then-node body-node :else-node nil :source-location location)))
+    (make-semantic-if :type '(nil) :condition-node cond-node :then-node body-node :else-node nil :source-location location)))
 
 (defun analyze-unless-expression (expr env location)
   (let ((cond-node (analyze-expression (second expr) env (append location '(1))))
         (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
-    (make-semantic-if :type 'void :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
+    (make-semantic-if :type '(nil) :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
 
 (defun analyze-aref-expression (expr env location)
   (let* ((array-node (analyze-expression (second expr) env (append location '(1))))
@@ -1282,6 +1282,7 @@
   "Recursively analyzes a list of expressions."
   (loop for expr in body-list
         for i from 0
+          unless (null expr)
         collect (analyze-expression expr env (append location (list i)))))
 
 (defun analyze-expression (expr env location)
@@ -1289,7 +1290,7 @@
   (log:debug "analyze-expression expr: ~s location: ~s" expr location)
   ;; Handle empty body case, which `read` can return as NIL
   (when (null expr)
-        (error 'crisp-unsupported-form-error :form expr :source-location location))
+        (return-from analyze-expression (make-semantic-progn :type '(nil) :body nil :source-location location)))
 
   (cond
    ;; Case 1: It's a literal, like 7

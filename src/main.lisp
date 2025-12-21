@@ -49,10 +49,12 @@
                         :info))
          (single-pass-p (member "--single-pass" flags :test #'string=))
          (debug-p (or (member "-g" flags :test #'string=)
-                      (member "--debug" flags :test #'string=))))
+                      (member "--debug" flags :test #'string=)))
+         (runtime-checks-p (member "--runtime-checks" flags :test #'string=)))
 
     ;; Initialize the compiler system.
-    (crisp.compiler:initialize-compiler :log-level log-level)
+    (crisp.compiler:initialize-compiler :log-level log-level
+                                        :runtime-checks runtime-checks-p)
     (crisp.compiler:initialize-templates)
 
     (unless (= (length files) 1)
