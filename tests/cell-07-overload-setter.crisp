@@ -18,6 +18,10 @@
     ;; this should be 10 less than v
     (~ c))
 
+#|
+
+;; I don't like this "templating of accessors" thing. Normally gen-point, not gen-x~  .
+;;  So I'm setting this aside for now
 
 ;; HERE BE DRAGONS
 
@@ -34,3 +38,5 @@
         (set! (~ref~ c) (- v (as T 10)))))
 
 (gen-~ float)
+
+|#

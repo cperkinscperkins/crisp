@@ -15,6 +15,7 @@
     ;; should return c[0] + 10
     (~ c))
 
+#|
 ;; danger ahead
 ;; If ~ is currently defined as a generic accessor macro in standard library 
 ;; (which I suspect it is, acting as a "smart dot" operator), 
@@ -26,4 +27,8 @@
         ;; should return c[0] + 30
         (+ (as T 30) (~ref~ c))))
 
+;; this is temporary.  (gen-cell-~ float) is the syntax we'll support in the future
+;; but we don't have anything like that for structs yet.  So that change has to come first
 (gen-~ float)
+
+|#
