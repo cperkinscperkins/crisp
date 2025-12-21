@@ -102,18 +102,6 @@
     ;; Return a no-op form for the compiler to process (and ignore)
     `(compiler-no-op)))
 
-(defmacro c-t-assert (test-expr &rest msgs)
-  "Compile-Time Assertion. Evaluates TEST-EXPR at macro-expansion time.
-   If false, signals a compilation error with MSGS."
-  (let ((result (eval test-expr)))
-    (unless result
-      (let ((msg-str (if msgs
-                         (format nil "~{~a~^ ~}" (mapcar #'eval msgs))
-                         "Assertion failed")))
-        (error 'crisp-compiler-error
-          :message (format nil "Compile-time assertion failed: ~a. Message: ~a"
-                     test-expr msg-str)))))
-  `(compiler-no-op))
 
 ;; Core Language Macros
 ;; ====================
@@ -249,6 +237,12 @@
   (if *runtime-checks-enabled*
       `(unless ,test (die))
       nil))
+
+(defmacro c-t-assert (condition message)
+  "Compile-Time Assertion."
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (unless ,condition
+       (error "Compile-Time Assertion Failed: ~a" ,message))))
 
 (defmacro r-t-assert-0 (test &rest args)
   "Asserts that TEST is true at runtime (placeholder for thread-0 check)."

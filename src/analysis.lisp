@@ -744,7 +744,11 @@
 
 (defun analyze-aref-expression (expr env location)
   (let* ((array-node (analyze-expression (second expr) env (append location '(1))))
-         (index-node (analyze-expression (third expr) env (append location '(2)))))
+         (index-expr (third expr))
+         (index-node (if index-expr
+                         (analyze-expression index-expr env (append location '(2)))
+                         ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
+                         (make-semantic-literal :value-type 'int :value 0 :source-location location))))
     (make-semantic-aref :type (if (listp (semantic-node-type array-node)) (second (semantic-node-type array-node)) 'int)
                         :array-node array-node
                         :index-node index-node
@@ -1018,6 +1022,7 @@
               (all-arg-nodes (append arg-nodes (list value-node)))
               (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
               ;; Check for a matching setter function signature: (op arg1 ... argN value)
+              ;; Check for a matching setter function signature: (op arg1 ... argN value)
               (signatures (gethash op *function-table*))
               (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
 
@@ -1031,7 +1036,15 @@
              :signature match
              :source-location location))
 
-          ;; Sub-case 2b: Fallback to Struct Member Update (Legacy Accessor Logic)
+          ;; Sub-case 2b: It is an expression analyzer (e.g. `~`, `aref`)
+          ((gethash op *expression-analyzers*)
+            (let ((target-node (analyze-expression target-form env (append location '(1)))))
+              (make-semantic-set!
+               :target-node target-node
+               :value-node value-node
+               :source-location location)))
+
+          ;; Sub-case 2c: Fallback to Struct Member Update (Legacy Accessor Logic)
           ;; Only valid if default accessors are used and no explicit setter overrides it.
           (t
             (let* ((op-name (symbol-name op))
@@ -1073,7 +1086,7 @@
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."
-  (or (equal arg-type param-type)
+  (or (types-equivalent-p arg-type param-type)
       (and (listp arg-type) (eq (first arg-type) :function-literal)
            (listp param-type) (eq (first param-type) :function-type)
            ;; Verify signature match

@@ -157,11 +157,14 @@ This supports overloading templates by arity or other factors.")
 
             ;; Now check mangled name
             (cl:let ((mangled (mangle-template-struct-name base-type params)))
+              (log:debug "types-equivalent-p: mangled=~s vs t2=~s" mangled t2)
+              (log:debug "  packages: ~s vs ~s" (symbol-package mangled) (symbol-package t2))
               (cl:cond
-                ;; If t2 is the mangled name, they are equivalent
                 ((eq mangled t2) t)
-                ;; If t2 is also a struct, check if it maps to mangled?
-                ;; Usually t2 is the resolved type symbol.
+                ;; Also check string equality as fallback for package issues
+                ((string-equal (symbol-name mangled) (symbol-name t2))
+                 (log:warn "types-equivalent-p: Matched by string, potential package mismatch: ~a vs ~a" mangled t2)
+                 t)
                 (t nil))))
            nil)))
     ((and (symbolp t1) (consp t2))
@@ -204,7 +207,11 @@ This supports overloading templates by arity or other factors.")
         ((and (string-equal (symbol-name base-type) "CELL")
               (= (length params) 1)
               (gethash (first params) *crisp-types*))
-         t)
+         ;; Auto-instantiate CELL_<Type> struct if not present
+         (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
+           (cl:unless (gethash mangled-name *crisp-structs*)
+             (instantiate-cell-struct (first params)))
+           t))
         ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
         ((symbolp base-type)
          (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
@@ -235,6 +242,16 @@ This supports overloading templates by arity or other factors.")
   (or (valid-basic-type-p type-spec)
       (valid-function-type-p type-spec)
       (valid-parameterized-type-p type-spec)))
+
+
+(defun type-equal-p (t1 t2)
+  "Checks if two Crisp types are equivalent at compile-time."
+  (cl:cond
+    ((and (symbolp t1) (symbolp t2))
+     (eq t1 t2)) ;; TODO: Handle aliases
+    ((and (listp t1) (listp t2))
+     (equal t1 t2))
+    (t nil)))
 
 ;; LLVM Resolution
 ;; ===============

@@ -314,6 +314,14 @@
          (idx :unsigned-int)
          (name :string))
 
+(defcfun ("LLVMBuildGEP2" llvm-build-gep2) :pointer
+         (builder :pointer)
+         (type :pointer)
+         (ptr :pointer)
+         (indices :pointer)
+         (num-indices :unsigned-int)
+         (name :string))
+
 
 ;; --- Comparisons ---
 (defcfun ("LLVMBuildICmp" llvm-build-icmp) :pointer

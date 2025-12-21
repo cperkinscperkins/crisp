@@ -53,7 +53,7 @@
   ;; EVAL the form so it is processed by the macros in the current runtime environment
   (eval '(def-struct storage
                      (address c-pointer)
-                     (byte-size long)
+                     (byte-size ulong)
                      (address-space address-space :c-t)
                      (access access :c-t))))
 

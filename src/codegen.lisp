@@ -81,27 +81,22 @@
      (let ((base-type (first type-spec)))
        (cond
         ((null base-type) (llvm-void-type))
-        ((eq base-type 'cell)
-          ;; A cell is a struct { ptr, i64 }.
-          ;; We use get-expanded-types to get the component types.
-          (let* ((context (llvm-get-module-context module))
-                 (element-types (get-expanded-types type-spec module))
-                 (element-count (length element-types))
-                 (type-array (cffi:foreign-alloc 'llvm-type-ref :count element-count)))
-            (loop for i from 0 for type in element-types
-                  do (setf (cffi:mem-aref type-array 'llvm-type-ref i) type))
-            (llvm-struct-type-in-context context type-array element-count nil)))
         ((or (eq base-type :function-type) (eq base-type :function-literal))
           ;; Functions are passed as opaque pointers (void* / i8*)
           (llvm-int8-ptr-type (llvm-int8-type) 0))
-
-        ;; Case: Templated Struct Instantiation, e.g. (POINT FLOAT)
+        ;; Generic Parameterized Structs (e.g. CELL)
+        ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
+          (let ((mangled (mangle-template-struct-name base-type (rest type-spec))))
+            (resolve-type-to-llvm mangled)))
         ;; We try to mangle it and look it up.
         (t
           (let ((mangled-name (intern (format nil "~a_~{~a~^_~}" base-type (rest type-spec)) (symbol-package base-type))))
             (if (gethash mangled-name *crisp-structs*)
                 (resolve-type-to-llvm mangled-name)
-                (error "Internal codegen error: Unknown parameterized type ~a (Mangled: ~a)" base-type mangled-name)))))))
+                (error "Internal codegen error: Unknown parameterized type ~a (pkg: ~a). Mangled: ~a"
+                  base-type
+                  (package-name (symbol-package base-type))
+                  mangled-name)))))))
    (t (error "Internal codegen error: Invalid type specifier ~a" type-spec))))
 
 (defun get-expanded-types (type-spec module)
@@ -114,11 +109,10 @@
    ((listp type-spec)
      (let ((base-type (first type-spec)))
        (cond
-        ((eq base-type 'cell)
-          ;; Placeholder cell logic (Stage 0 legacy?)
-          (list (llvm-int8-ptr-type (llvm-int8-type) 0)
-                (llvm-int64-type)))
         ((or (eq base-type :function-type) (eq base-type :function-literal))
+          (list (crisp-type-to-llvm-type type-spec module)))
+        ;; Generic Parameterized Structs (e.g. CELL)
+        ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
           (list (crisp-type-to-llvm-type type-spec module)))
         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
    (t (list (crisp-type-to-llvm-type type-spec module)))))
@@ -133,10 +127,10 @@
    ((listp type-spec)
      (let ((base-type (first type-spec)))
        (cond
-        ((eq base-type 'cell)
-          (list (llvm-build-extract-value builder agg-val 0 "cell_ptr")
-                (llvm-build-extract-value builder agg-val 1 "cell_size")))
         ((or (eq base-type :function-type) (eq base-type :function-literal))
+          (list agg-val))
+        ;; Generic Parameterized Structs (e.g. CELL)
+        ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
           (list agg-val))
         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
    (t (list agg-val))))
@@ -153,12 +147,10 @@
    ((listp type-spec)
      (let ((base-type (first type-spec)))
        (cond
-        ((eq base-type 'cell)
-          (let* ((struct-type (crisp-type-to-llvm-type type-spec module))
-                 (undef (llvm-get-undef struct-type))
-                 (val-0 (llvm-build-insert-value builder undef (first components) 0 "cell_ptr")))
-            (llvm-build-insert-value builder val-0 (second components) 1 "cell_size")))
         ((or (eq base-type :function-type) (eq base-type :function-literal))
+          (first components))
+        ;; Generic Parameterized Structs (e.g. CELL)
+        ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
           (first components))
         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
    (t (first components))))
@@ -340,11 +332,19 @@
                                       (size-val (llvm-build-load2 builder (llvm-int64-type) size-alloca "storage_size"))
                                       ;; Cast i64 ptr to ptr (i8*)
                                       (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-int8-ptr-type (llvm-int8-type) 0) "storage_ptr"))
-                                      ;; Create struct
-                                      (struct-undef (llvm-get-undef llvm-type))
-                                      (struct-0 (llvm-build-insert-value builder struct-undef ptr-casted 0 "cell_ptr"))
-                                      (struct-1 (llvm-build-insert-value builder struct-0 size-val 1 "cell_size")))
-                                 struct-1)))
+
+                                      ;; 1. Create STORAGE struct { ptr, size }
+                                      (storage-type (ensure-struct-llvm-type 'storage))
+                                      (st-undef (llvm-get-undef storage-type))
+                                      (st-0 (llvm-build-insert-value builder st-undef ptr-casted 0 "st_ptr"))
+                                      (st-val (llvm-build-insert-value builder st-0 size-val 1 "st_size"))
+
+                                      ;; 2. Create CELL struct { parent:storage, offset:ulong, ... }
+                                      (cell-undef (llvm-get-undef llvm-type))
+                                      (cell-0 (llvm-build-insert-value builder cell-undef st-val 0 "parent"))
+                                      ;; Initialize offset to 0
+                                      (cell-1 (llvm-build-insert-value builder cell-0 (llvm-const-int (llvm-int64-type) 0 nil) 1 "offset")))
+                                 cell-1)))
                            (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
                       ;; Handle simple types
                       ((symbolp type-spec)
@@ -863,6 +863,16 @@
          ;; set! returns the new value (or void? Common Lisp returns the value)
          (values new-val nil)))
 
+     ;; Case 2: Array/Pointer assignment (set! (aref x i) v)
+     ((semantic-aref-p target-node)
+       (multiple-value-bind (val ptr)
+           (generate-node-ir target-node builder module var-env di-builder di-scope location-map)
+         (declare (ignore val))
+         (unless ptr
+           (error "Compiler error in set!: Target ~a did not return an address." target-node))
+         (llvm-build-store builder new-val ptr)
+         (values new-val nil)))
+
      (t (error "Unsupported target for set! codegen: ~a" target-node)))))
 
 (defmethod generate-node-ir ((node semantic-struct-member-update) builder module var-env di-builder di-scope location-map)
@@ -877,3 +887,41 @@
          ;; Insert the new value
          (new-struct-val (llvm-build-insert-value builder struct-val new-member-val member-index "struct_update")))
     (values new-struct-val nil)))
+(defmethod generate-node-ir ((node semantic-aref) builder module var-env di-builder di-scope location-map)
+  "Generates IR for array access (aref). Currently supports CELL types."
+  (let* ((array-node (semantic-aref-array-node node))
+         (index-node (semantic-aref-index-node node))
+         (array-type (semantic-node-type array-node))
+         (element-type (semantic-aref-type node))
+         ;; Generate the array (cell) value
+         (cell-val (generate-node-ir array-node builder module var-env di-builder di-scope location-map))
+         ;; Generate the index value
+         (index-val (generate-node-ir index-node builder module var-env di-builder di-scope location-map)))
+
+    (cond
+     ;; Case 1: CELL parameterized type
+     ((and (listp array-type) (eq (first array-type) 'cell))
+       ;; Extract components from the CELL struct
+       ;; 1. Extract Parent (Storage) - index 0
+       (let* ((storage-val (llvm-build-extract-value builder cell-val 0 "parent"))
+              ;; 2. Extract Offset - index 1
+              (offset-val (llvm-build-extract-value builder cell-val 1 "offset"))
+              ;; 3. Extract Storage Address (void*) from Storage struct - index 0
+              (raw-ptr (llvm-build-extract-value builder storage-val 0 "raw_ptr"))
+              ;; 4. Compute Total Offset = offset + index
+              ;; Ensure indices are same width (assuming 64-bit/ulong)
+              (total-offset (llvm-build-add builder offset-val index-val "total_offset"))
+              ;; 5. Cast void* -> T*
+              (llvm-elem-type (crisp-type-to-llvm-type element-type module))
+
+              (ptr-type (llvm-int8-ptr-type llvm-elem-type 0)) ;; Address Space 0 for now.
+              (typed-ptr (llvm-build-bit-cast builder raw-ptr ptr-type "casted_ptr")))
+
+         ;; 6. GEP to element
+         (cffi:with-foreign-object (indices-ptr :pointer 1)
+                                   (setf (cffi:mem-aref indices-ptr :pointer 0) total-offset)
+                                   (let ((elem-ptr (llvm-build-gep2 builder llvm-elem-type typed-ptr indices-ptr 1 "elem_ptr")))
+                                     ;; 7. Load
+                                     (values (llvm-build-load2 builder llvm-elem-type elem-ptr "val") elem-ptr)))))
+
+     (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a" array-type)))))

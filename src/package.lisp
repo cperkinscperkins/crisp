@@ -87,6 +87,7 @@
 
    #:llvm-build-struct-gep
    #:llvm-build-struct-gep2
+   #:llvm-build-gep2
    ;; Casting
    #:llvm-build-sext
    #:llvm-build-zext
@@ -197,6 +198,7 @@
 
    ;; Accessors
    #:address~ #:byte-size~ #:address-space~ #:access~
+   #:parent~ #:offset~ #:element-type~
 
    ;; All cast/conversion operators
    #:to-char #:as-char
@@ -233,7 +235,7 @@
    #:semantic-let-bindings
    #:semantic-let-body
 
-   #:set!
+   #:set! #:~ #:aref
 
    ;; Developer Utilities
    #:compile-crisp-form-to-ir-string
@@ -281,12 +283,14 @@
 
                 ;; All Crisp types
                 #:char #:short #:int #:long
-                #:cell #:storage #:c-pointer
+                #:cell
+                #:storage #:c-pointer
                 #:uchar #:ushort #:uint #:ulong
                 #:half #:bfloat16 #:float #:double
 
                 ;; Accessors
                 #:address~ #:byte-size~ #:address-space~ #:access~
+                #:parent~ #:offset~ #:element-type~
 
                 ;; All cast/conversion operators
                 #:to-char #:as-char
@@ -299,7 +303,7 @@
 
                 ;; NEW: Unified Let from Compiler
                 #:let
-                #:set!
+                #:set! #:~ #:aref
 
                 ;; NEW: Branching Macros
                 #:when #:unless #:cond #:if+ #:else
@@ -344,10 +348,11 @@
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
    #:if+ #:else
-   #:if+ #:else
    #:c-t-assert #:c-t-output
    #:die #:r-t-assert #:r-t-assert-0
+   #:type-equal-p
    #:+ #:- #:* #:/ #:= #:!= #:< #:> #:<= #:>= #:equal
+
    #:defmacro
 
    #:car #:cdr #:first #:rest
@@ -378,6 +383,7 @@
    ;; Storage Handle
    #:make-scratch-cell
    #:cell
+   #:parent~ #:offset~ #:element-type~
 
    ;; Enumerations
    #:def-enumeration
