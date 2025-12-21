@@ -17,3 +17,20 @@
     (set! (~ c) v)
     ;; this should be 10 less than v
     (~ c))
+
+
+;; HERE BE DRAGONS
+
+(with-template-type (T)
+   ;; template the getter
+    (def-function ~ (c)
+        (declare #'((cell T) => T))
+        ;; should return c[0] + 30
+        (+ (as T 30) (~ref~ c)))
+    
+    ;; template the setter
+    (def-setter ~ (c v)
+        (declare #'((cell T) T => nil))
+        (set! (~ref~ c) (- v (as T 10)))))
+
+(gen-~ float)

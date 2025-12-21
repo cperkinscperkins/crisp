@@ -14,3 +14,16 @@
     (declare #'((cell long) => long))
     ;; should return c[0] + 10
     (~ c))
+
+;; danger ahead
+;; If ~ is currently defined as a generic accessor macro in standard library 
+;; (which I suspect it is, acting as a "smart dot" operator), 
+;; defining it as a function here might shadow the macro or cause a collision in the symbol table.
+
+(with-template-type (T)
+    (def-function ~ (c)
+        (declare #'((cell T) => T))
+        ;; should return c[0] + 30
+        (+ (as T 30) (~ref~ c))))
+
+(gen-~ float)

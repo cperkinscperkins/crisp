@@ -28,7 +28,9 @@
 
   (def-expression-analyzer atomic-add! analyze-atomic-add!-expression)
   (def-expression-analyzer to analyze-value-cast-expression)
-  (def-expression-analyzer as analyze-bitcast-expression)
+  (def-expression-analyzer to analyze-value-cast-expression)
+  (def-expression-analyzer as analyze-generic-as-expression) ;; Generic (as type val)
+  ;; (def-expression-analyzer as analyze-bitcast-expression) ;; OLD (as-*) handler
   (def-expression-analyzer as-bits analyze-bitcast-expression) ;; alias
   (def-expression-analyzer inc! analyze-inc!-expression)
   (def-expression-analyzer dec! analyze-dec!-expression)
@@ -975,6 +977,24 @@
          ;; Handle unsafe `as-` bit reinterpretations
          (t ; Default for "AS-" and other currently unhandled float-to-int ops
            (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))))
+
+(defun analyze-generic-as-expression (expr env location)
+  "Analyzes the generic (as type value) form."
+  (let* ((type-form (second expr))
+         (value-form (third expr))
+         (type-name (if (symbolp type-form) type-form (error "Generic AS expects a type symbol, got ~a" type-form)))
+         ;; If it's a template parameter (like T), it should already be substituted? 
+         ;; Or if T is bound in template-params passed down? 
+         ;; For now assume substitution happened.
+         (target-type (gethash type-name *crisp-types*)))
+
+    (unless target-type
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    ;; Reuse analyze-cast-expression logic but fake the operator name
+    ;; Or just reimplement dispatch. Reimplementing is cleaner for custom 'as' logic.
+    (let ((arg-node (analyze-expression value-form env (append location '(2)))))
+      (make-semantic-value-cast :type type-name :arg arg-node :source-location location))))
 
 (defun get-struct-member-index (struct-type-name member-name)
   "Helper to find the physical index of a struct member, accounting for padding."
