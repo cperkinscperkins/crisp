@@ -1,0 +1,4 @@
+(def-function test-storage-basic (s)
+  (declare (type s storage) (return-type long))
+  (let ((sz (byte-size~ s)))
+     (return sz)))
