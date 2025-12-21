@@ -59,6 +59,10 @@
    ;; Case 3: Should not happen, but treat as void.
    (t (llvm-void-type))))
 
+
+(defparameter *cached-int32-type* nil)
+(defparameter *cached-int64-type* nil)
+
 (defun mangle-type-spec (type-spec)
   "Creates a string representation of a type spec for name mangling."
   (log:debug "mangle-type-spec: ~s (type-of: ~a)" type-spec (type-of type-spec))
@@ -75,6 +79,13 @@
      (log:debug "Resolving symbol type: ~a" type-spec)
      (when (null type-spec)
            (error "Cannot resolve type to LLVM: NIL"))
+     ;; HARDCODED BYPASS
+     (when (eq type-spec 'int)
+           (return-from crisp-type-to-llvm-type
+                        (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module)))))
+     (when (eq type-spec 'long)
+           (return-from crisp-type-to-llvm-type
+                        (or *cached-int64-type* (llvm-int64-type-in-context (llvm-get-module-context module)))))
      (resolve-type-to-llvm type-spec))
    ;; Parameterized type like '(cell int)
    ((listp type-spec)
@@ -83,7 +94,7 @@
         ((null base-type) (llvm-void-type))
         ((or (eq base-type :function-type) (eq base-type :function-literal))
           ;; Functions are passed as opaque pointers (void* / i8*)
-          (llvm-int8-ptr-type (llvm-int8-type) 0))
+          (llvm-pointer-type (llvm-int8-type) 0))
         ;; Generic Parameterized Structs (e.g. CELL)
         ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
           (let ((mangled (mangle-template-struct-name base-type (rest type-spec))))
@@ -104,7 +115,7 @@
    For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type)."
   (cond
    ((or (eq type-spec 'storage) (equal type-spec '(storage)))
-     (list (llvm-int8-ptr-type (llvm-int8-type) 0)
+     (list (llvm-pointer-type (llvm-int8-type) 0)
            (llvm-int64-type)))
    ((listp type-spec)
      (let ((base-type (first type-spec)))
@@ -198,6 +209,7 @@
           do
             (log:debug "Init-func-params: param-name='~s' (type: ~a) type-spec='~s'"
                        param-name (type-of param-name) type-spec)
+            (log:debug "Cached INT32: ~a" *cached-int32-type*)
             (let* ((expanded-types (get-expanded-types type-spec module))
                    (num-expanded (length expanded-types))
                    (components (loop for i from 0 below num-expanded
@@ -226,6 +238,11 @@
          (fn-type (create-llvm-function-type module return-types param-nodes)))
 
     (log:info "llvm-add-function: ~a Module: ~a" fn-name module)
+
+    ;; Cache common types using GLOBAL context (Context-aware types seem to crash ConstInt)
+    (setf *cached-int32-type* (llvm-int32-type))
+    (setf *cached-int64-type* (llvm-int64-type))
+    (log:debug "Cached INT32 (Global): ~a" *cached-int32-type*)
     ;; Check if already exists (forward declaration)
     (let ((existing (llvm-get-named-function module fn-name)))
       (if (and existing (not (cffi:null-pointer-p existing)))
@@ -331,7 +348,7 @@
                                (let* ((ptr-val (llvm-build-load2 builder (llvm-int64-type) ptr-alloca "storage_ptr_raw"))
                                       (size-val (llvm-build-load2 builder (llvm-int64-type) size-alloca "storage_size"))
                                       ;; Cast i64 ptr to ptr (i8*)
-                                      (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-int8-ptr-type (llvm-int8-type) 0) "storage_ptr"))
+                                      (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-pointer-type (llvm-int8-type) 0) "storage_ptr"))
 
                                       ;; 1. Create STORAGE struct { ptr, size }
                                       (storage-type (ensure-struct-llvm-type 'storage))
@@ -350,7 +367,13 @@
                       ((symbolp type-spec)
                         (let ((crisp-type (gethash type-spec *crisp-types*)))
                           (cond
-                           ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int)) (llvm-const-int llvm-type value nil))
+                           ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
+                             ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
+                             ;; Generate I64 constant and Truncate if needed.
+                             (let ((val-i64 (llvm-const-int (llvm-int64-type) value nil)))
+                               (if (types-equivalent-p llvm-type (llvm-int64-type))
+                                   val-i64
+                                   (llvm-build-trunc builder val-i64 llvm-type "int_trunc"))))
                            ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
                            ((eq (crisp-type-category crisp-type) :void) nil)
                            (t (error "Codegen for literal of unknown type category: ~a" type-spec)))))
@@ -527,7 +550,6 @@
 (def-comparison-codegen semantic-gt +llvm-int-sgt+ +llvm-real-ogt+ "SEMANTIC-GT")
 (def-comparison-codegen semantic-ge +llvm-int-sge+ +llvm-real-oge+ "SEMANTIC-GE")
 
-
 (defun prepare-call-arguments (builder module var-env di-builder di-scope location-map arg-nodes param-types param-count)
   "Prepares arguments for a function call by generating IR, exploding values, and filling a CFFI array."
   (let ((args-array (cffi:foreign-alloc 'llvm-value-ref :count param-count))
@@ -646,7 +668,6 @@
       ;; TODO: Should this have a debug location? It corresponds to a variable binding,
       ;; but not a distinct expression in the source.
       (values extract-val nil))))
-
 
 (defmethod generate-node-ir ((node semantic-progn) builder module var-env di-builder di-scope location-map)
   "Generates IR for a progn expression."
@@ -893,35 +914,57 @@
          (index-node (semantic-aref-index-node node))
          (array-type (semantic-node-type array-node))
          (element-type (semantic-aref-type node))
-         ;; Generate the array (cell) value
          (cell-val (generate-node-ir array-node builder module var-env di-builder di-scope location-map))
-         ;; Generate the index value
          (index-val (generate-node-ir index-node builder module var-env di-builder di-scope location-map)))
 
     (cond
      ;; Case 1: CELL parameterized type
      ((and (listp array-type) (eq (first array-type) 'cell))
-       ;; Extract components from the CELL struct
-       ;; 1. Extract Parent (Storage) - index 0
-       (let* ((storage-val (llvm-build-extract-value builder cell-val 0 "parent"))
-              ;; 2. Extract Offset - index 1
-              (offset-val (llvm-build-extract-value builder cell-val 1 "offset"))
-              ;; 3. Extract Storage Address (void*) from Storage struct - index 0
-              (raw-ptr (llvm-build-extract-value builder storage-val 0 "raw_ptr"))
-              ;; 4. Compute Total Offset = offset + index
-              ;; Ensure indices are same width (assuming 64-bit/ulong)
-              (total-offset (llvm-build-add builder offset-val index-val "total_offset"))
-              ;; 5. Cast void* -> T*
-              (llvm-elem-type (crisp-type-to-llvm-type element-type module))
+       (let* ((elem-type-spec (second array-type))
+              (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
+              (storage-struct-type (ensure-struct-llvm-type 'storage))
+              (cell-struct-type (crisp-type-to-llvm-type array-type module)))
 
-              (ptr-type (llvm-int8-ptr-type llvm-elem-type 0)) ;; Address Space 0 for now.
-              (typed-ptr (llvm-build-bit-cast builder raw-ptr ptr-type "casted_ptr")))
+         ;; Cell is passed by value (struct { parent, offset, [extra stuff like size if runtime sized] }).
+         ;; Structure: { STORAGE(ptr,size), OFFSET(u64), ... }
+         ;; We need to:
+         ;; 1. Extract STORAGE.PTR (i8*)
+         ;; 2. Extract OFFSET (u64)
+         ;; 3. Calculate Effective Offset = CELL.OFFSET + (INDEX * sizeof(ELEM))
+         ;; 4. GEP = PTR + Effective Offset
+         ;; 5. Cast GEP to ELEM*
+         ;; 6. Load ELEM
 
-         ;; 6. GEP to element
-         (cffi:with-foreign-object (indices-ptr :pointer 1)
-                                   (setf (cffi:mem-aref indices-ptr :pointer 0) total-offset)
-                                   (let ((elem-ptr (llvm-build-gep2 builder llvm-elem-type typed-ptr indices-ptr 1 "elem_ptr")))
-                                     ;; 7. Load
-                                     (values (llvm-build-load2 builder llvm-elem-type elem-ptr "val") elem-ptr)))))
+         ;; Extract PARENT (index 0) -> STORAGE
+         (let* ((parent-val (progn (log:debug "DEBUG: Pre-Parent") (llvm-build-extract-value builder cell-val 0 "parent"))))
+           ;; Extract STORAGE.PTR (index 0 of STORAGE)
+           (let* ((base-ptr (llvm-build-extract-value builder parent-val 0 "base_ptr")))
+             ;; Extract CELL.OFFSET (Index 1) - ulong/i64
+             (let* ((cell-offset (llvm-build-extract-value builder cell-val 1 "cell_offset")))
+
+               (log:debug "DEBUG: base-ptr: ~a, cell-offset: ~a" base-ptr cell-offset)
+
+               ;; Calculate Element Size
+               (let* ((elem-size (progn (log:debug "DEBUG: Pre-SizeOf") (llvm-size-of elem-llvm-type)))
+                      ;; Calculate Index Offset = Index * Size
+                      (index-val (progn (log:debug "DEBUG: Pre-IdxGen") (generate-node-ir index-node builder module var-env di-builder di-scope location-map)))
+                      ;; Extend Index to i64 (assume s64 for now)
+                      (index-i64 (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
+                      ;; Index Bytes = Index * Size
+                      (index-bytes (llvm-build-mul builder index-i64 elem-size "index_bytes"))
+                      ;; Total Offset = CellOffset + IndexBytes
+                      (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
+
+                 ;; Final Pointer = GEP(BasePtr, TotalOffset)
+                 (cffi:with-foreign-object (indices :pointer 1)
+                                           (setf (cffi:mem-aref indices :pointer 0) total-offset)
+                                           (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8")))
+
+                                             ;; Cast to Element and Load
+                                             (let* ((target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type 0) "target_ptr"))
+                                                    (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
+
+                                               ;; Return loaded val
+                                               loaded-val)))))))))
 
      (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a" array-type)))))

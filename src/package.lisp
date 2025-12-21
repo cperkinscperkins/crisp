@@ -27,8 +27,10 @@
    #:llvm-type-of
    ;; Types
    #:llvm-void-type
+   #:llvm-int32-type-in-context #:llvm-int64-type-in-context
    #:llvm-int32-type #:llvm-int8-type #:llvm-int16-type #:llvm-int64-type #:llvm-int1-type
-   #:llvm-int8-ptr-type
+   #:llvm-pointer-type
+   #:llvm-size-of
    #:llvm-half-type #:llvm-bfloat-type #:llvm-float-type #:llvm-double-type
    #:llvm-void-type
    #:llvm-function-type
@@ -52,6 +54,7 @@
    #:llvm-build-call2
    ;; Instructions
    #:llvm-const-int
+   #:llvm-const-pointer-null
    #:llvm-const-real
    #:llvm-build-ret
    ;; Alloca
@@ -88,6 +91,8 @@
    #:llvm-build-struct-gep
    #:llvm-build-struct-gep2
    #:llvm-build-gep2
+   #:llvm-build-gep
+   #:llvm-build-in-bounds-gep2
    ;; Casting
    #:llvm-build-sext
    #:llvm-build-zext
@@ -97,7 +102,10 @@
    #:llvm-build-fp-to-si
    #:llvm-build-fp-to-ui
    #:llvm-build-trunc
+   #:llvm-build-zext #:llvm-build-sext
+   #:llvm-build-ptr-to-int
    #:llvm-build-int-to-ptr
+   #:llvm-size-of
    #:llvm-build-bit-cast
    ;; DWARF Debug Info
    #:llvm-create-di-builder

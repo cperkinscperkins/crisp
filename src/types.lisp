@@ -87,12 +87,12 @@ This supports overloading templates by arity or other factors.")
             `(;; Signed Integers
               (char ,#'llvm-int8-type 8 :signed-int)
               (short ,#'llvm-int16-type 16 :signed-int)
-              (int ,#'llvm-int32-type 32 :signed-int)
+              (int ,(lambda () (llvm-int32-type)) 32 :signed-int)
               (long ,#'llvm-int64-type 64 :signed-int)
               ;; Unsigned Integers
               (uchar ,#'llvm-int8-type 8 :unsigned-int)
               (ushort ,#'llvm-int16-type 16 :unsigned-int)
-              (uint ,#'llvm-int32-type 32 :unsigned-int)
+              (uint ,(lambda () (llvm-int32-type)) 32 :unsigned-int)
               (ulong ,#'llvm-int64-type 64 :unsigned-int)
               ;; Floating Point
               (half ,#'llvm-half-type 16 :float)
@@ -102,7 +102,7 @@ This supports overloading templates by arity or other factors.")
               ;; Void
               (void ,#'llvm-void-type 0 :void)
               ;; Pointer
-              (c-pointer ,(lambda () (llvm-int8-ptr-type (llvm-int8-type) 0)) 8 :pointer))))
+              (c-pointer ,(lambda () (llvm-pointer-type (llvm-int8-type) 0)) 8 :pointer))))
     (loop for (name llvm-fn size category) in types
           do (setf (gethash name *crisp-types*)
                (make-crisp-type :name name
@@ -271,6 +271,6 @@ This supports overloading templates by arity or other factors.")
     ((and (listp type-spec) (eq (first type-spec) 'cell))
      ;; For now, treats cell as generic pointer.
      ;; ideally this should match runtime struct layout
-     (llvm-int8-ptr-type (llvm-void-type) 0))
+     (llvm-pointer-type (llvm-void-type) 0))
 
     (t (error "Cannot resolve type to LLVM: ~a" type-spec))))
