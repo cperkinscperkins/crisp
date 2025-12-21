@@ -1,0 +1,13 @@
+(def-function test-cell-offset (c)
+    (declare #'((cell long) => ulong))
+  (offset~ c))
+
+(def-function test-cell-parent (c)
+    (declare #'((cell long) => ulong))
+ (byte-size~ (parent~ c)))
+
+(def-function test-element-type (c)
+    (declare #'((cell long) => ulong))
+  ;; drat, now we need 'type-equal'. 
+ (c-t-assert (type-equal (element-type~ c) 'long) "best be long, little doggie")
+ (offset~ c))

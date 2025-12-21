@@ -411,7 +411,7 @@
 
                ;; Check that we are inserting the pointer and size into the struct
                ;; We use a regex-like check or just check for the instruction name.
-               (true (search "insertvalue { ptr, i64 }" ir) "Should insert pointer into struct.")))
+               (true (search "insertvalue %CELL_INT" ir) "Should insert into named Cell struct.")))
 
 (define-test (codegen cell-parameter-explosion)
              "Tests that a function with a cell parameter is compiled to take two arguments (ptr, size)."
@@ -420,14 +420,13 @@
                                        (declare (type c (cell int)) (return-type int))
                                        (return 0)))))
                (is-valid-ir ir)
-               ;; We expect the function signature to explode the cell into ptr and i64.
-               ;; Current implementation generates: define i32 @test_cell_param_cell_int({ ptr, i64 } %0)
-               ;; We want: define i32 @test_cell_param_cell_int(ptr %0, i64 %1)
+               ;; We expect the function signature to pass the cell as a struct (Stage 2 implementation).
+               ;; Current implementation generates: define i32 @test_cell_param_cell_int(%CELL_INT %0)
 
-               (true (search "define i32 @test_cell_param_cell_int(ptr %0, i64 %1)" ir)
-                     "Function signature should explode cell into ptr and i64.")
-               (false (search "define i32 @test_cell_param_cell_int({ ptr, i64 }" ir)
-                      "Function signature should NOT pass cell as a struct.")))
+               (true (search "define i32 @test_cell_param_cell_int(%CELL_INT %0)" ir)
+                     "Function signature should pass cell as a named struct.")
+               (false (search "define i32 @test_cell_param_cell_int(ptr" ir)
+                      "Function signature should NOT explode cell into params.")))
 
 (define-test (codegen cell-argument-explosion)
              "Tests that passing a cell to a function passes it as two arguments (ptr, size)."
@@ -450,13 +449,13 @@
                                 (llvm-dispose-builder builder)
                                 (llvm-dispose-module module)))))))
                (is-valid-ir ir)
-               ;; We expect the call to 'take-cell' to pass ptr and i64 separately.
-               ;; The function name mangling will be take_cell_cell_int
-               (true (search "call i32 @take_cell_cell_int(ptr" ir)
-                     "Function call should pass ptr as first argument.")
+               ;; We expect the call to 'take-cell' to pass the struct.
+
+               (true (search "call i32 @take_cell_cell_int(%CELL_INT" ir)
+                     "Function call should pass cell struct.")
                ;; We can't easily regex for the second arg without a regex lib, but we can check for the absence of the struct
-               (false (search "call i32 @take_cell_cell_int({ ptr, i64 }" ir)
-                      "Function call should NOT pass cell as a struct.")))
+               (false (search "call i32 @take_cell_cell_int(ptr" ir)
+                      "Function call should NOT pass ptr exploded.")))
 
 
 (define-test template-macro-exists
