@@ -191,9 +191,12 @@
 
    ;; All Crisp types
    #:char #:short #:int #:long
-   #:cell
+   #:cell #:c-pointer #:storage
    #:uchar #:ushort #:uint #:ulong
    #:half #:bfloat16 #:float #:double
+
+   ;; Accessors
+   #:address~ #:byte-size~ #:address-space~ #:access~
 
    ;; All cast/conversion operators
    #:to-char #:as-char
@@ -278,9 +281,12 @@
 
                 ;; All Crisp types
                 #:char #:short #:int #:long
-                #:cell
+                #:cell #:storage #:c-pointer
                 #:uchar #:ushort #:uint #:ulong
                 #:half #:bfloat16 #:float #:double
+
+                ;; Accessors
+                #:address~ #:byte-size~ #:address-space~ #:access~
 
                 ;; All cast/conversion operators
                 #:to-char #:as-char

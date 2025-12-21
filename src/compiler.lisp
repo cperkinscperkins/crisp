@@ -42,7 +42,20 @@
   ;; Auto-initialize templates if available (runtime check)
   (if (fboundp 'initialize-templates)
       (funcall 'initialize-templates)
-      (log:warn "Template system not loaded/initialized.")))
+      (log:warn "Template system not loaded/initialized."))
+
+  ;; Initialize built-in structs (storage)
+  (register-builtins))
+
+(defun register-builtins ()
+  "Registers built-in types and structs like 'storage' using def-struct semantics."
+  (log:info "Registering built-in structs...")
+  ;; EVAL the form so it is processed by the macros in the current runtime environment
+  (eval '(def-struct storage
+                     (address c-pointer)
+                     (byte-size long)
+                     (address-space address-space :c-t)
+                     (access access :c-t))))
 
 
 ;; Helpers (Analysis Placeholder)

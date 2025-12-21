@@ -106,47 +106,62 @@
 
 (defun get-expanded-types (type-spec module)
   "Returns a list of LLVM types for a given Crisp type spec.
-   For 'cell', returns (ptr i64). For others, returns (type)."
-  (if (listp type-spec)
-      (let ((base-type (first type-spec)))
-        (cond
-         ((eq base-type 'cell)
-           (list (llvm-int8-ptr-type (llvm-int8-type) 0)
-                 (llvm-int64-type)))
-         ((or (eq base-type :function-type) (eq base-type :function-literal))
-           (list (crisp-type-to-llvm-type type-spec module)))
-         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
-      (list (crisp-type-to-llvm-type type-spec module))))
+   For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type)."
+  (cond
+   ((or (eq type-spec 'storage) (equal type-spec '(storage)))
+     (list (llvm-int8-ptr-type (llvm-int8-type) 0)
+           (llvm-int64-type)))
+   ((listp type-spec)
+     (let ((base-type (first type-spec)))
+       (cond
+        ((eq base-type 'cell)
+          ;; Placeholder cell logic (Stage 0 legacy?)
+          (list (llvm-int8-ptr-type (llvm-int8-type) 0)
+                (llvm-int64-type)))
+        ((or (eq base-type :function-type) (eq base-type :function-literal))
+          (list (crisp-type-to-llvm-type type-spec module)))
+        (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
+   (t (list (crisp-type-to-llvm-type type-spec module)))))
 
 (defun explode-value (builder agg-val type-spec)
   "Extracts components from an aggregate value if necessary.
    Returns a list of LLVM values."
-  (if (listp type-spec)
-      (let ((base-type (first type-spec)))
-        (cond
-         ((eq base-type 'cell)
-           (list (llvm-build-extract-value builder agg-val 0 "cell_ptr")
-                 (llvm-build-extract-value builder agg-val 1 "cell_size")))
-         ((or (eq base-type :function-type) (eq base-type :function-literal))
-           (list agg-val))
-         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
-      (list agg-val)))
+  (cond
+   ((or (eq type-spec 'storage) (equal type-spec '(storage)))
+     (list (llvm-build-extract-value builder agg-val 0 "storage_addr")
+           (llvm-build-extract-value builder agg-val 1 "storage_size")))
+   ((listp type-spec)
+     (let ((base-type (first type-spec)))
+       (cond
+        ((eq base-type 'cell)
+          (list (llvm-build-extract-value builder agg-val 0 "cell_ptr")
+                (llvm-build-extract-value builder agg-val 1 "cell_size")))
+        ((or (eq base-type :function-type) (eq base-type :function-literal))
+          (list agg-val))
+        (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
+   (t (list agg-val))))
 
 (defun implode-value (builder components type-spec module)
   "Combines components into an aggregate value if necessary.
    Returns a single LLVM value."
-  (if (listp type-spec)
-      (let ((base-type (first type-spec)))
-        (cond
-         ((eq base-type 'cell)
-           (let* ((struct-type (crisp-type-to-llvm-type type-spec module))
-                  (undef (llvm-get-undef struct-type))
-                  (val-0 (llvm-build-insert-value builder undef (first components) 0 "cell_ptr")))
-             (llvm-build-insert-value builder val-0 (second components) 1 "cell_size")))
-         ((or (eq base-type :function-type) (eq base-type :function-literal))
-           (first components))
-         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type))))
-      (first components)))
+  (cond
+   ((or (eq type-spec 'storage) (equal type-spec '(storage)))
+     (let* ((struct-type (crisp-type-to-llvm-type 'storage module))
+            (undef (llvm-get-undef struct-type))
+            (val-0 (llvm-build-insert-value builder undef (first components) 0 "storage_addr")))
+       (llvm-build-insert-value builder val-0 (second components) 1 "storage_size")))
+   ((listp type-spec)
+     (let ((base-type (first type-spec)))
+       (cond
+        ((eq base-type 'cell)
+          (let* ((struct-type (crisp-type-to-llvm-type type-spec module))
+                 (undef (llvm-get-undef struct-type))
+                 (val-0 (llvm-build-insert-value builder undef (first components) 0 "cell_ptr")))
+            (llvm-build-insert-value builder val-0 (second components) 1 "cell_size")))
+        ((or (eq base-type :function-type) (eq base-type :function-literal))
+          (first components))
+        (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
+   (t (first components))))
 
 (defun create-llvm-function-type (module return-types param-nodes)
   "Calculates the LLVM function type, handling parameter explosion."

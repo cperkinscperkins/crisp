@@ -100,7 +100,9 @@ This supports overloading templates by arity or other factors.")
               (float ,#'llvm-float-type 32 :float)
               (double ,#'llvm-double-type 64 :float)
               ;; Void
-              (void ,#'llvm-void-type 0 :void))))
+              (void ,#'llvm-void-type 0 :void)
+              ;; Pointer
+              (c-pointer ,(lambda () (llvm-int8-ptr-type (llvm-int8-type) 0)) 8 :pointer))))
     (loop for (name llvm-fn size category) in types
           do (setf (gethash name *crisp-types*)
                (make-crisp-type :name name
@@ -175,10 +177,15 @@ This supports overloading templates by arity or other factors.")
 
 (defun valid-basic-type-p (type-spec)
   "Checks if type-spec is a valid basic symbol type (built-in, struct, or function reference)."
-  (and (symbolp type-spec)
-       (or (gethash type-spec *crisp-types*)
-           (gethash type-spec *crisp-structs*)
-           (gethash type-spec *function-table*))))
+  (cl:when (and (symbolp type-spec) (not (keywordp type-spec)))
+    (cl:cond
+      ((gethash type-spec *crisp-types*) t)
+      ((gethash type-spec *crisp-structs*) t)
+      ((gethash type-spec *function-table*) t)
+      (t
+       (log:debug "valid-basic-type-p CHECK FAILED for: ~s (pkg: ~a)" type-spec (package-name (symbol-package type-spec)))
+       (log:debug "  Available types keys: ~a" (alexandria:hash-table-keys *crisp-types*))
+       nil))))
 
 (defun valid-function-type-p (type-spec)
   "Checks if type-spec is a valid function literal or descriptor."

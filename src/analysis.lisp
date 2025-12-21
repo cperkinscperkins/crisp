@@ -1331,9 +1331,12 @@
                              (gethash op *template-registry*))
                           (analyze-function-call op expr env location))
                         ;; Case 3c: Otherwise, we don't know what this is.
-                        (t (error 'crisp-unsupported-form-error
-                             :form op
-                             :source-location (append location '(0)))))))
+                        (t
+                          (log:debug "  UNSUPPORTED FORM: ~a (pkg: ~a)" op (package-name (symbol-package op)))
+                          (log:debug "  Function Table Keys: ~a" (alexandria:hash-table-keys *function-table*))
+                          (error 'crisp-unsupported-form-error
+                            :form op
+                            :source-location (append location '(0)))))))
    (t (error 'crisp-unsupported-form-error
         :form expr
         :source-location location))))

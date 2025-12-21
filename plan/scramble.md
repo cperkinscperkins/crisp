@@ -198,11 +198,11 @@ SHORT TERM PLAN
 - [x] refactor? compiler.lisp is nearly 2000 lines. maybe analysis.lisp and compiler.lisp ?
 - [x] neq is /= , but probably should be != 
 - [ ] refactor.  reevalute ALL uses of symbolp looking for implicit expectation that (symbolp nil) is false (it's actually true)
-- [ ] def-enumeration
+- [x] def-enumeration
 - - address space
 - - access
-- [ ] compile time struct properties
-- [ ] runtime assert and --runtime-checks flag
+- [x] compile time struct properties
+- [x] runtime assert and --runtime-checks flag
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - - [ ] Storage Properties  (cannot be set)
 - - - [ ] address-space
