@@ -57,6 +57,9 @@ This supports overloading templates by arity or other factors.")
 
 (defvar *crisp-enums* (make-hash-table :test 'eq))
 
+(defvar *runtime-checks-enabled* nil
+        "If true, runtime assertions (r-t-assert) are compiled.")
+
 
 (defvar *current-compiling-function* nil)
 (defvar *current-module* nil)
@@ -107,9 +110,11 @@ This supports overloading templates by arity or other factors.")
                                 :category category)))))
 
 
-(defun initialize-compiler (&key (log-level :info))
+(defun initialize-compiler (&key (log-level :info) (runtime-checks nil))
   "A master initialization function for the Crisp compiler.
   This should be called by any entry point into the system (REPL, executable, CI)."
+
+  (setf *runtime-checks-enabled* runtime-checks)
   ;; Load the LLVM shared library.
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
@@ -121,6 +126,10 @@ This supports overloading templates by arity or other factors.")
   (initialize-expression-analyzers)
   (clrhash *implicit-arg-map*)
   (initialize-advisements)
+
+  ;; Register intrinsic `die`
+  (setf (gethash 'die *function-table*)
+    (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
 
   ;; Bind shadowed symbols to their CL equivalents so they work in macros
   (setf (symbol-function 'truncate) #'cl:truncate)
@@ -465,6 +474,18 @@ This supports overloading templates by arity or other factors.")
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
    The return type is implicitly nil/void. We append (return) to ensure this."
   `(def-function ,name ,args ,@body (return)))
+
+(defmacro r-t-assert (test &rest args)
+  "Asserts that TEST is true at runtime. If not, terminates kernel.
+   Args (message strings etc) are currently ignored."
+  (declare (ignore args))
+  (if *runtime-checks-enabled*
+      `(unless ,test (die))
+      nil))
+
+(defmacro r-t-assert-0 (test &rest args)
+  "Asserts that TEST is true at runtime (placeholder for thread-0 check)."
+  `(r-t-assert ,test ,@args))
 
 ;; INTERNAL TO COMPILER
 ;; ====================
