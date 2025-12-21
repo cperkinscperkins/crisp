@@ -132,6 +132,10 @@ This supports overloading templates by arity or other factors.")
   (log:debug "types-equivalent-p: ~s vs ~s" t1 t2)
   (cl:cond
     ((equal t1 t2) t)
+    ;; Treat VOID and NIL as equivalent return types
+    ((or (and (symbolp t1) (string-equal t1 "VOID") (null t2))
+         (and (null t1) (symbolp t2) (string-equal t2 "VOID")))
+     t)
     ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT equivalence
     ((and (consp t1) (symbolp t2))
      (cl:let ((base-type (first t1))

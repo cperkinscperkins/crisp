@@ -1,0 +1,3 @@
+(def-function test-cell-set! (c v)
+    (declare #'((cell long) long => nil))
+    (set! (~ c) v))

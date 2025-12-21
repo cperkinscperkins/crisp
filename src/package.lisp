@@ -55,6 +55,7 @@
    ;; Instructions
    #:llvm-const-int
    #:llvm-const-pointer-null
+   #:llvm-const-null
    #:llvm-const-real
    #:llvm-build-ret
    ;; Alloca

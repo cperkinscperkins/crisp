@@ -264,7 +264,9 @@
     (initialize-function-parameters builder func param-nodes module var-env)
 
     (let* ((body-nodes (semantic-function-body semantic-function))
-           (is-void-return (or (null return-types) (equal return-types '(nil))))
+           (is-void-return (or (null return-types)
+                               (equal return-types '(nil))
+                               (and (consp return-types) (symbolp (first return-types)) (string-equal (first return-types) "VOID"))))
            (last-val nil)
            (last-loc nil))
       (dolist (node body-nodes)
@@ -368,12 +370,14 @@
                         (let ((crisp-type (gethash type-spec *crisp-types*)))
                           (cond
                            ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
-                             ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
-                             ;; Generate I64 constant and Truncate if needed.
-                             (let ((val-i64 (llvm-const-int (llvm-int64-type) value nil)))
-                               (if (types-equivalent-p llvm-type (llvm-int64-type))
-                                   val-i64
-                                   (llvm-build-trunc builder val-i64 llvm-type "int_trunc"))))
+                             (if (zerop value)
+                                 (llvm-const-null llvm-type)
+                                 ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
+                                 ;; Generate I64 constant and Truncate if needed.
+                                 (let ((val-i64 (llvm-const-int (llvm-int64-type) value nil)))
+                                   (if (types-equivalent-p llvm-type (llvm-int64-type))
+                                       val-i64
+                                       (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
                            ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
                            ((eq (crisp-type-category crisp-type) :void) nil)
                            (t (error "Codegen for literal of unknown type category: ~a" type-spec)))))
@@ -886,9 +890,9 @@
 
      ;; Case 2: Array/Pointer assignment (set! (aref x i) v)
      ((semantic-aref-p target-node)
-       (multiple-value-bind (val ptr)
+       (multiple-value-bind (val loc ptr)
            (generate-node-ir target-node builder module var-env di-builder di-scope location-map)
-         (declare (ignore val))
+         (declare (ignore val loc))
          (unless ptr
            (error "Compiler error in set!: Target ~a did not return an address." target-node))
          (llvm-build-store builder new-val ptr)
@@ -936,18 +940,16 @@
          ;; 6. Load ELEM
 
          ;; Extract PARENT (index 0) -> STORAGE
-         (let* ((parent-val (progn (log:debug "DEBUG: Pre-Parent") (llvm-build-extract-value builder cell-val 0 "parent"))))
+         (let* ((parent-val (llvm-build-extract-value builder cell-val 0 "parent")))
            ;; Extract STORAGE.PTR (index 0 of STORAGE)
            (let* ((base-ptr (llvm-build-extract-value builder parent-val 0 "base_ptr")))
              ;; Extract CELL.OFFSET (Index 1) - ulong/i64
              (let* ((cell-offset (llvm-build-extract-value builder cell-val 1 "cell_offset")))
 
-               (log:debug "DEBUG: base-ptr: ~a, cell-offset: ~a" base-ptr cell-offset)
-
                ;; Calculate Element Size
-               (let* ((elem-size (progn (log:debug "DEBUG: Pre-SizeOf") (llvm-size-of elem-llvm-type)))
+               (let* ((elem-size (llvm-size-of elem-llvm-type))
                       ;; Calculate Index Offset = Index * Size
-                      (index-val (progn (log:debug "DEBUG: Pre-IdxGen") (generate-node-ir index-node builder module var-env di-builder di-scope location-map)))
+                      (index-val (generate-node-ir index-node builder module var-env di-builder di-scope location-map))
                       ;; Extend Index to i64 (assume s64 for now)
                       (index-i64 (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
                       ;; Index Bytes = Index * Size
@@ -964,7 +966,7 @@
                                              (let* ((target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type 0) "target_ptr"))
                                                     (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
 
-                                               ;; Return loaded val
-                                               loaded-val)))))))))
+                                               ;; Return loaded val, nil (loc), AND pointer (for set!)
+                                               (values loaded-val nil target-ptr))))))))))
 
      (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a" array-type)))))

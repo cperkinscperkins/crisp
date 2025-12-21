@@ -139,6 +139,9 @@
 (defcfun ("LLVMConstPointerNull" llvm-const-pointer-null) :pointer
          (type :pointer))
 
+(defcfun ("LLVMConstNull" llvm-const-null) :pointer
+         (type :pointer))
+
 (defcfun ("LLVMConstInt" llvm-const-int) :pointer
          (int-type :pointer)
          (value :uint64)

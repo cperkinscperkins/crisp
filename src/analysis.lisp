@@ -1370,7 +1370,7 @@
     (semantic-eq 'int)
     (semantic-neq 'int)
     (semantic-if (semantic-if-type node))
-    (semantic-set! (semantic-node-type (semantic-set!-value-node node)))
+    (semantic-set! 'void)
     (semantic-aref (semantic-aref-type node))
     (semantic-value-cast (semantic-value-cast-type node))
     (semantic-let (semantic-let-type node))
