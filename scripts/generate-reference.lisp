@@ -1,5 +1,5 @@
 ;;;
-;;;  sbcl --non-interactive--load generate-reference.lisp
+;;;  sbcl --non-interactive --load ./scripts/generate-reference.lisp
 ;;;
 
 

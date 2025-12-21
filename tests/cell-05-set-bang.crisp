@@ -1,0 +1,10 @@
+(def-function test-cell-set! (c v)
+    (declare #'((cell long) long => nil))
+    (set! (~ c) v))
+
+(with-template-type (T)
+    (def-function test-templated-cell-set! (c v)
+        (declare #'((cell T) T => nil))
+        (set! (~ c) v)))
+
+(gen-test-templated-cell-set! float )

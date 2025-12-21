@@ -6,21 +6,21 @@
   (declare (return-type int))
   
   ;; 1. Test custom enumeration predicate
-  (c-t-assert (is-color? :red))
-  (c-t-assert (is-color? :green))
-  (c-t-assert (is-color? :blue))
-  (c-t-assert (not (is-color? :yellow)))
+  (c-t-assert (is-color? :red) "RED should be a color")
+  (c-t-assert (is-color? :green) "GREEN should be a color")
+  (c-t-assert (is-color? :blue) "BLUE should be a color")
+  (c-t-assert (not (is-color? :yellow)) "YELLOW should NOT be a color")
   
   ;; 2. Test standard enumeration (address-space)
-  (c-t-assert (is-address-space? :global))
-  (c-t-assert (is-address-space? :local))
-  (c-t-assert (is-address-space? :private))
-  (c-t-assert (is-address-space? :constant))
-  (c-t-assert (not (is-address-space? :invalid)))
+  (c-t-assert (is-address-space? :global) "GLOBAL should be an address-space")
+  (c-t-assert (is-address-space? :local) "LOCAL should be an address-space")
+  (c-t-assert (is-address-space? :private) "PRIVATE should be an address-space")
+  (c-t-assert (is-address-space? :constant) "CONSTANT should be an address-space")
+  (c-t-assert (not (is-address-space? :invalid)) "INVALID should NOT be an address-space")
   
   ;; 3. Test standard enumeration (access)
-  (c-t-assert (is-access? :read_only))
-  (c-t-assert (is-access? :write_only))
-  (c-t-assert (is-access? :read_write))
+  (c-t-assert (is-access? :read_only) "READ_ONLY should be an access mode")
+  (c-t-assert (is-access? :write_only) "WRITE_ONLY should be an access mode")
+  (c-t-assert (is-access? :read_write) "READ_WRITE should be an access mode")
   
   (return 0))

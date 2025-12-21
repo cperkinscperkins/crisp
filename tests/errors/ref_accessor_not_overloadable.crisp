@@ -1,0 +1,5 @@
+;; Overloading ~ref~ is not allowed.
+
+(def-function ~ref~ (c)
+    (declare #'((cell long) => long))
+    10)

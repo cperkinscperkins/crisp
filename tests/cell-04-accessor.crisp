@@ -1,0 +1,11 @@
+;; tests/tdd/cell-04-accessor.crisp
+(def-function test-cell-accessor (c)
+    (declare #'((cell long) => long))
+    (~ c))
+
+(with-template-type (T)
+    (def-function test-templated-cell-accessor (c)
+        (declare #'((cell T) => T))
+        (~ c)))
+
+(gen-test-templated-cell-accessor float)

@@ -1,0 +1,42 @@
+;; overloading ~ setter on cell is a bad idea.
+;; use def-derived-type to derive a custom type
+;; and overload for that type instead. BUT
+;; bad idea or not, we need to support and test.
+
+(def-setter ~ (c v)
+    (declare #'((cell long) long => nil))
+    ;; Note: aref is not a Crisp form. ~ref~ is the non-overloadable form Crisp uses for accessing cells, vectors, matrices and tensors.
+    ;; Obviously, ~ is the main overloadable form.  Those overloads use ~ref~ to avoid recursion.
+    (set! (~ref~ c) (- v 10)))
+
+;; great to check that this compiles and all.
+;; but stunts like this probably need to be a unit test
+;; so we can vet the IR.
+(def-function test-overloaded-setter (c v)
+    (declare #'((cell long) long => long))
+    (set! (~ c) v)
+    ;; this should be 10 less than v
+    (~ c))
+
+#|
+
+;; I don't like this "templating of accessors" thing. Normally gen-point, not gen-x~  .
+;;  So I'm setting this aside for now
+
+;; HERE BE DRAGONS
+
+(with-template-type (T)
+   ;; template the getter
+    (def-function ~ (c)
+        (declare #'((cell T) => T))
+        ;; should return c[0] + 30
+        (+ (as T 30) (~ref~ c)))
+    
+    ;; template the setter
+    (def-setter ~ (c v)
+        (declare #'((cell T) T => nil))
+        (set! (~ref~ c) (- v (as T 10)))))
+
+(gen-~ float)
+
+|#

@@ -1,0 +1,34 @@
+;; overloading ~ on cell is a bad idea.
+;; use def-derived-type to derive a custom type
+;; and overload ~ for that type instead. BUT
+;; bad idea or not, we need to support and test.
+
+(def-function ~ (c)
+    (declare #'((cell long) => long))
+    (+ 10 (~ref~ c)))
+
+;; great to check that this compiles and all.
+;; but stunts like this probably need to be a unit test
+;; so we can vet the IR.
+(def-function test-overloaded-accessor (c)
+    (declare #'((cell long) => long))
+    ;; should return c[0] + 10
+    (~ c))
+
+#|
+;; danger ahead
+;; If ~ is currently defined as a generic accessor macro in standard library 
+;; (which I suspect it is, acting as a "smart dot" operator), 
+;; defining it as a function here might shadow the macro or cause a collision in the symbol table.
+
+(with-template-type (T)
+    (def-function ~ (c)
+        (declare #'((cell T) => T))
+        ;; should return c[0] + 30
+        (+ (as T 30) (~ref~ c))))
+
+;; this is temporary.  (gen-cell-~ float) is the syntax we'll support in the future
+;; but we don't have anything like that for structs yet.  So that change has to come first
+(gen-~ float)
+
+|#

@@ -1,0 +1,4 @@
+(def-function test-set!-returns-nil ()
+    (declare #'( => nil))
+    (let ((i 20))
+        (set! i 14)))

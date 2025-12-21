@@ -42,7 +42,34 @@
   ;; Auto-initialize templates if available (runtime check)
   (if (fboundp 'initialize-templates)
       (funcall 'initialize-templates)
-      (log:warn "Template system not loaded/initialized.")))
+      (log:warn "Template system not loaded/initialized."))
+
+  ;; Initialize built-in structs (storage)
+  (register-builtins))
+
+(defun register-builtins ()
+  "Registers built-in types and structs like 'storage' using def-struct semantics."
+  (log:info "Registering built-in structs...")
+  ;; EVAL the form so it is processed by the macros in the current runtime environment
+  (eval '(def-struct storage
+                     (address c-pointer)
+                     (byte-size ulong)
+                     (address-space address-space :c-t)
+                     (access access :c-t)))
+  ;; Register default ~ accessor as a template
+  (register-template '~ '(To) nil
+                     '(def-function ~ (c)
+                                    (declare (function ((cell To) => To)))
+                                    (declare (crisp-system-generated))
+                                    (return (~ref~ c)))
+                     '((cell To) => To))
+  (register-template '~_SET! '(To) nil
+                     '(def-function ~_SET! (c v)
+                                    (declare (function ((cell To) To) => nil))
+                                    (declare (crisp-system-generated))
+                                    (set! (~ref~ c) v)
+                                    (return))
+                     '((cell To) To => nil)))
 
 
 ;; Helpers (Analysis Placeholder)

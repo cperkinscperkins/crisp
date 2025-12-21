@@ -87,12 +87,12 @@ This supports overloading templates by arity or other factors.")
             `(;; Signed Integers
               (char ,#'llvm-int8-type 8 :signed-int)
               (short ,#'llvm-int16-type 16 :signed-int)
-              (int ,#'llvm-int32-type 32 :signed-int)
+              (int ,(lambda () (llvm-int32-type)) 32 :signed-int)
               (long ,#'llvm-int64-type 64 :signed-int)
               ;; Unsigned Integers
               (uchar ,#'llvm-int8-type 8 :unsigned-int)
               (ushort ,#'llvm-int16-type 16 :unsigned-int)
-              (uint ,#'llvm-int32-type 32 :unsigned-int)
+              (uint ,(lambda () (llvm-int32-type)) 32 :unsigned-int)
               (ulong ,#'llvm-int64-type 64 :unsigned-int)
               ;; Floating Point
               (half ,#'llvm-half-type 16 :float)
@@ -100,7 +100,9 @@ This supports overloading templates by arity or other factors.")
               (float ,#'llvm-float-type 32 :float)
               (double ,#'llvm-double-type 64 :float)
               ;; Void
-              (void ,#'llvm-void-type 0 :void))))
+              (void ,#'llvm-void-type 0 :void)
+              ;; Pointer
+              (c-pointer ,(lambda () (llvm-pointer-type (llvm-int8-type) 0)) 8 :pointer))))
     (loop for (name llvm-fn size category) in types
           do (setf (gethash name *crisp-types*)
                (make-crisp-type :name name
@@ -130,6 +132,10 @@ This supports overloading templates by arity or other factors.")
   (log:debug "types-equivalent-p: ~s vs ~s" t1 t2)
   (cl:cond
     ((equal t1 t2) t)
+    ;; Treat VOID and NIL as equivalent return types
+    ((or (and (symbolp t1) (string-equal t1 "VOID") (null t2))
+         (and (null t1) (symbolp t2) (string-equal t2 "VOID")))
+     t)
     ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT equivalence
     ((and (consp t1) (symbolp t2))
      (cl:let ((base-type (first t1))
@@ -155,11 +161,14 @@ This supports overloading templates by arity or other factors.")
 
             ;; Now check mangled name
             (cl:let ((mangled (mangle-template-struct-name base-type params)))
+              (log:debug "types-equivalent-p: mangled=~s vs t2=~s" mangled t2)
+              (log:debug "  packages: ~s vs ~s" (symbol-package mangled) (symbol-package t2))
               (cl:cond
-                ;; If t2 is the mangled name, they are equivalent
                 ((eq mangled t2) t)
-                ;; If t2 is also a struct, check if it maps to mangled?
-                ;; Usually t2 is the resolved type symbol.
+                ;; Also check string equality as fallback for package issues
+                ((string-equal (symbol-name mangled) (symbol-name t2))
+                 (log:warn "types-equivalent-p: Matched by string, potential package mismatch: ~a vs ~a" mangled t2)
+                 t)
                 (t nil))))
            nil)))
     ((and (symbolp t1) (consp t2))
@@ -175,10 +184,15 @@ This supports overloading templates by arity or other factors.")
 
 (defun valid-basic-type-p (type-spec)
   "Checks if type-spec is a valid basic symbol type (built-in, struct, or function reference)."
-  (and (symbolp type-spec)
-       (or (gethash type-spec *crisp-types*)
-           (gethash type-spec *crisp-structs*)
-           (gethash type-spec *function-table*))))
+  (cl:when (and (symbolp type-spec) (not (keywordp type-spec)))
+    (cl:cond
+      ((gethash type-spec *crisp-types*) t)
+      ((gethash type-spec *crisp-structs*) t)
+      ((gethash type-spec *function-table*) t)
+      (t
+       (log:debug "valid-basic-type-p CHECK FAILED for: ~s (pkg: ~a)" type-spec (package-name (symbol-package type-spec)))
+       (log:debug "  Available types keys: ~a" (alexandria:hash-table-keys *crisp-types*))
+       nil))))
 
 (defun valid-function-type-p (type-spec)
   "Checks if type-spec is a valid function literal or descriptor."
@@ -197,7 +211,11 @@ This supports overloading templates by arity or other factors.")
         ((and (string-equal (symbol-name base-type) "CELL")
               (= (length params) 1)
               (gethash (first params) *crisp-types*))
-         t)
+         ;; Auto-instantiate CELL_<Type> struct if not present
+         (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
+           (cl:unless (gethash mangled-name *crisp-structs*)
+             (instantiate-cell-struct (first params)))
+           t))
         ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
         ((symbolp base-type)
          (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
@@ -229,6 +247,16 @@ This supports overloading templates by arity or other factors.")
       (valid-function-type-p type-spec)
       (valid-parameterized-type-p type-spec)))
 
+
+(defun type-equal-p (t1 t2)
+  "Checks if two Crisp types are equivalent at compile-time."
+  (cl:cond
+    ((and (symbolp t1) (symbolp t2))
+     (eq t1 t2)) ;; TODO: Handle aliases
+    ((and (listp t1) (listp t2))
+     (equal t1 t2))
+    (t nil)))
+
 ;; LLVM Resolution
 ;; ===============
 
@@ -247,6 +275,6 @@ This supports overloading templates by arity or other factors.")
     ((and (listp type-spec) (eq (first type-spec) 'cell))
      ;; For now, treats cell as generic pointer.
      ;; ideally this should match runtime struct layout
-     (llvm-int8-ptr-type (llvm-void-type) 0))
+     (llvm-pointer-type (llvm-void-type) 0))
 
     (t (error "Cannot resolve type to LLVM: ~a" type-spec))))
