@@ -4,7 +4,8 @@
 `with-template-type` can wrap several `def-` declarations to template them. 
 
 
-Doing so automatically generates two additional functions: `XXXX-type` and `gen-XXXX` 
+Doing so automatically generates a type specifier (e.g. `(point long)`) and specializer function that 
+can explicitly instantiate the template for a type:  `gen-XXXX` (e.g. `(gen-addTwo long)` or `(gen-point float)`).
 where `XXXX` is the name of the function, struct, vector, etc that was defined.
 
 
@@ -12,8 +13,8 @@ where `XXXX` is the name of the function, struct, vector, etc that was defined.
 (with-template-type (T)
 
   ;; -- addTwo --
-  (def-function addTwo (a:T b:T)
-      (declare (return-type T))
+  (def-function addTwo (a b)
+      (declare (type a b T) (return-type T))
     (+ a b)))
 
 
@@ -21,14 +22,14 @@ where `XXXX` is the name of the function, struct, vector, etc that was defined.
     (declare (type-is U #'is-floating-point?) (value-is A #'is-address-space?))
 
   ;; -- move-discrete --
-  (def-function move-discrete (a:T b:U)
-     (declare (return-type (vector-type U A)))
+  (def-function move-discrete (a b)
+     (declare (type a T) (type b U) (return-type (vector U A)))
      ...))
 
 ; we can template structs as well
 (with-template-type (T)
   ;; -- point -- 
-  (def-struct point (x:T) (y:T)))
+  (def-struct point (x T) (y T)))
 
 ```
 
@@ -63,17 +64,17 @@ Borrowing from C++, the type vars can appear between `<  >`  and that expression
 can stand-in for the wordier `with-template-type (T)` .  
 
 
-### XXXX-type
+### XXXX type function
 
-`with-template-type` AUTOMATICALLY defines a new type expression: XXXXX-type  for whatever it is wrapping.
+`with-template-type` AUTOMATICALLY defines a new type expression: XXXXX  for whatever it is wrapping.
 That type expression can be used to specialize the template and return that specific type.
 Example:
 ```
 (with-template-type (T)
   ;; -- point --
-  (def-struct point (x:T) (y:T)))
+  (def-struct point (x T) (y T)))
 
-(point-type int)  <== evaluates to the type, which is a point specialized to int.
+(point int)  <== evaluates to the type, which is a point specialized to int.
 
 
 ;; I don't like this example as it's not really realizable.
@@ -81,16 +82,16 @@ Example:
     (declare (type-is U #'is-floating-point?) (value-is A #'is-address-space?))
 
   ;; -- move-discrete --
-  (def-function move-discrete (a:T b:U)
-     (declare (return-type (vector-type U A)))
+  (def-function move-discrete (a b)
+     (declare (type a T) (type b U) (return-type (vector U A)))
      ...))
 
-(move-discrete-type int float :global) ; that specfic type. 
+(move-discrete int float :global) ; that specfic type. 
 ```
 
 #### Incomplete Types
 
-Passing `nil` as a type argument when specializing with `XXXX-type` produces an incomplete type. 
+Passing `nil` as a type argument when specializing with `XXXX` produces an incomplete type. 
 This can help make interoperation between different functions and structures more flexible.
 
 Incomplete types are used in function signatures (only). Use them when you need to define 
@@ -101,9 +102,9 @@ all the needed type information is present (or it'll error :-) )
 ```
 (with-template-type (T U)
   ;; -- pair --
-  (def-struct pair (first:T) (second:U)))
+  (def-struct pair (first T) (second U)))
 
-(def-type incomplete-p-t (pair-type nil (vector-type)))  ;; <-- a pair with a vector in the second type. Who cares what's in the first?
+(def-type incomplete-p-t (pair nil (vector)))  ;; <-- a pair with a vector in the second type. Who cares what's in the first?
 
 ;; -- sum-length --
 (def-function sum-length (a b)
@@ -122,8 +123,8 @@ of whatever it is wrapping.  This is `gen-XXXX`
 (with-template-type (T)
 
   ;; -- addTwo --
-  (def-function addTwo (a:T b:T)
-      (declare (return-type T))
+  (def-function addTwo (a b)
+      (declare #'(T T => T))
     (+ a b)))
 
 (reduce-to-workgroup someVector (gen-addTwo int)) ; <-- specialize "addTwo" for int and pass that to reduce-to-workgroup
@@ -132,7 +133,7 @@ of whatever it is wrapping.  This is `gen-XXXX`
 ; template over a struct
 (with-template-type (T)
   ;; -- point --
-  (def-struct point (x:T y:T)))
+  (def-struct point (x T y T)))
 
 (gen-point int)                         ; a. generate the template. 
 (setf g-horizon (make-point :x a :y b)) ; b. now use it (assuming 'a' and 'b' are ints)
@@ -165,7 +166,7 @@ which is a string name that the compiler should give the kernel.
 (with-template-type (T)
 
    ;; -- happy_stance --
-   (def-kernel happy_stance (data:(vector-type T :global :read-write)
+   (def-kernel happy_stance (data:(vector T :global :read-write)
      ...)))
 
 (gen-happy_stance float "happy_stance_f")
@@ -205,8 +206,8 @@ The `with-template-type` argument list supports `&optional` and `&key`
 ```
 (with-template-type (T &optional C)
   ;; -- Point --
-  (def-struct Point (x:T) (y:T)
-    (when C '(color:C)) ; The color field is optional
+  (def-struct Point (x T) (y T)
+    (when C '(color C)) ; The color field is optional
   ))
 ```
 

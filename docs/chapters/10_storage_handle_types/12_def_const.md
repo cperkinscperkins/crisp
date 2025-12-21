@@ -9,7 +9,7 @@ Due to inference, `def-const` expressions do not typically need type information
 ```
 (def-const +PI+ 3.141592654)       ; type will be inferred
 ;OR
-(def-const +PI+:float 3.141592654) ; type is explicit
+(def-const +PI+ 3.141592654 float) ; type is explicit
 ;OR
 (def-const +PI+ 3.141592654)
 (declare (type +PI+ float))        ; type is explicit

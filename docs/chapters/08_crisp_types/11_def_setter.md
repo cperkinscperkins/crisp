@@ -11,7 +11,8 @@ If the setter parameters are typed, there is no need for an additonal declare.
 ;; this custom setter function negates x
 
 ;;;  x~  (setter)
-(def-setter x~ (p:point newVal:float)
+(def-setter x~ (p newVal)
+   (declare #'(point float => nil))
    (set! (~x~ p) (- newVal))) 
 
 (set! (x~ somePoint) 14) ;; <-- the x of somePoint is actually stored as -14 
@@ -25,7 +26,8 @@ In the future, Crisp may handle this automatically.
 ;; additional overload if we are using soa-vectors.
 
 ;;;  x~   (setter soa)
-(def-setter x~ (sv:(soa-vector-type point) idx:ulong newVal:float)
+(def-setter x~ (sv idx newVal)
+    (declare #'((soa-vector point) ulong float => nil))
     (set! (~ (x~ sv) idx) newVal))
 ```
 

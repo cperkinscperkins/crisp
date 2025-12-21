@@ -72,7 +72,7 @@ Remember, NO DATA IS MOVED.
 Possible Implemenation
 ```
 ;; -- transpose! --
-(def-function transpose! (M:matrix)
+(def-function transpose! (M)
   (declare #((matrix) => nil))
 
   (let ((dims-vec (dims~ M))
@@ -159,9 +159,9 @@ not necessarily like we want them to be.
 (def-const TILE_DIM:ulong +warp-size+)
 
 ;; -- convert-layout --
-(def-function convert-layout (source-M dest-M choice &optional (scratch (make-scratch-matrix (element-type source-M) :match-warp-tile)))
+(def-function convert-layout (source-M dest-M choice &optional (scratch (make-scratch-matrix (element-type~ source-M) :match-warp-tile)))
   ;; scratch is 32x32 (+warp-size+ x +warp-size+)
-  (declare #(matrix matrix matrix-layout &optional (vector-type (element-type source-M)) => nil)
+  (declare #(matrix matrix matrix-layout &optional (vector (element-type~ source-M)) => nil)
             (global-size :strategy :strided))
   (c-t-assert (!= choice :other-layout) "dude")
   (r-t-assert-0 (!= choice :other-layout) "??")
