@@ -115,7 +115,20 @@
          ;; The source location is the value right after the keyword.
          (source-location (when loc-pos (nth (1+ loc-pos) body-and-location)))
          ;; The "real" body is everything before the keyword.
-         (body (if loc-pos (subseq body-and-location 0 loc-pos) body-and-location)))
+         (body (if loc-pos (subseq body-and-location 0 loc-pos) body-and-location))
+         (declarations (loop for form in body
+                             while (and (listp form) (eq (car form) 'declare))
+                               append (rest form)))
+         (is-system (member '(crisp-system-generated) declarations :test #'equal)))
+
+    (let ((name-str (symbol-name name)))
+      (when (and (not is-system)
+                 (or (string-equal name-str "~REF~")
+                     (and (> (length name-str) 2)
+                          (cl:char= (cl:char name-str 0) #\~)
+                          (cl:char= (cl:char name-str (1- (length name-str))) #\~))))
+            (error 'crisp-illegal-overload-error :name name)))
+
     (log:debug "which package?: ~a ~%" *package*)
 
     ;; Eagerly register the signature for single-pass compilation scenarios.
@@ -230,8 +243,12 @@
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
    The return type is implicitly nil/void. We append (return) to ensure this."
-  (when (string-equal (symbol-name name) "~REF~")
-        (error 'crisp-illegal-overload-error :name name))
+  (let ((name-str (symbol-name name)))
+    (when (or (string-equal name-str "~REF~")
+              (and (> (length name-str) 2)
+                   (cl:char= (cl:char name-str 0) #\~)
+                   (cl:char= (cl:char name-str (1- (length name-str))) #\~)))
+          (error 'crisp-illegal-overload-error :name name)))
   (let ((setter-name (intern (format nil "~a_SET!" (symbol-name name)) (symbol-package name))))
     `(def-function ,setter-name ,args ,@body (return))))
 
