@@ -77,3 +77,9 @@
   (:report (lambda (condition stream)
              (format stream "Unknown variable ~a."
                (unknown-variable-name condition)))))
+
+(define-condition crisp-illegal-overload-error (crisp-compiler-error)
+    ((name :initarg :name :reader overload-error-name))
+  (:report (lambda (condition stream)
+             (format stream "Overloading ~a is not allowed."
+               (overload-error-name condition)))))

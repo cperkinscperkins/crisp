@@ -1022,10 +1022,20 @@
               (all-arg-nodes (append arg-nodes (list value-node)))
               (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
               ;; Check for a matching setter function signature: (op arg1 ... argN value)
-              ;; Check for a matching setter function signature: (op arg1 ... argN value)
+              (full-setter-name (intern (format nil "~a_SET!" op) (symbol-package op)))
               (signatures (append (gethash op *function-table*)
-                            (gethash (intern (format nil "~a_SET!" op) (symbol-package op)) *function-table*)))
+                            (gethash full-setter-name *function-table*)))
               (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
+
+         ;; If no match found, try checking if it's a template we can instantiate
+         (unless match
+           (let ((template-op (if (gethash full-setter-name *template-registry*) full-setter-name op)))
+             (when (gethash template-op *template-registry*)
+                   (ensure-template-instantiation template-op all-arg-types (lambda (f l) (declare (ignore l)) (eval f)))
+                   ;; Re-fetch signatures after possible instantiation
+                   (setf signatures (append (gethash op *function-table*)
+                                      (gethash full-setter-name *function-table*)))
+                   (setf match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))))
 
          (cond
           ;; Sub-case 2a: Found an overloaded setter function -> Call it.

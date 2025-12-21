@@ -62,7 +62,14 @@
                                     (declare (function ((cell To) => To)))
                                     (declare (crisp-system-generated))
                                     (return (~ref~ c)))
-                     '((cell To) => To)))
+                     '((cell To) => To))
+  (register-template '~_SET! '(To) nil
+                     '(def-function ~_SET! (c v)
+                                    (declare (function ((cell To) To) => nil))
+                                    (declare (crisp-system-generated))
+                                    (set! (~ref~ c) v)
+                                    (return))
+                     '((cell To) To => nil)))
 
 
 ;; Helpers (Analysis Placeholder)
