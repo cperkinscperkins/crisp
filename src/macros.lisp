@@ -114,3 +114,140 @@
           :message (format nil "Compile-time assertion failed: ~a. Message: ~a"
                      test-expr msg-str)))))
   `(compiler-no-op))
+
+;; Core Language Macros
+;; ====================
+
+(defmacro def-function (name params &rest body-and-location)
+  "Defines a new, thread-level Crisp function."
+  ;; Find the position of our injected :source-location keyword.
+  (let* ((loc-pos (position :source-location body-and-location))
+         ;; The source location is the value right after the keyword.
+         (source-location (when loc-pos (nth (1+ loc-pos) body-and-location)))
+         ;; The "real" body is everything before the keyword.
+         (body (if loc-pos (subseq body-and-location 0 loc-pos) body-and-location)))
+    (log:debug "which package?: ~a ~%" *package*)
+
+    ;; Eagerly register the signature for single-pass compilation scenarios.
+    ;; This ensures that when loading a file, function signatures are known
+    ;; before they are called by subsequent functions in the same file.
+    (register-function-signature `(def-function ,name ,params ,@body) source-location)
+
+    (log:debug "name: ~a  params: ~a  body: ~a ~%source-location: ~a~%"
+               name params body source-location)
+    ;; Handle declarations (this part is tricky, let's simplify)
+    (let* ((declare-forms
+            (loop for form in body
+                  while (and (listp form) (eq (car form) 'declare))
+                  collect form))
+           (declarations (loop for form in declare-forms append (rest form)))
+           (body-forms (nthcdr (length declare-forms) body)))
+
+      `(internal-def-function
+        ',name
+        ',params
+        ',declarations ;  '(((type a b int)) ((return-type int)))
+        ',body-forms ;  '((+ a b))
+        ,source-location))))
+
+(defmacro with-struct-accessors (struct-type bindings &body body)
+  "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
+   Bindings: (aos-var [soa-var] [:access type])
+   Returns a PROGN containing the expanded body forms."
+  (let* ((aos-var (first bindings))
+         (rest-bindings (rest bindings))
+         ;; Manual parsing of optional SOA-VAR and keys
+         (soa-var (if (and rest-bindings (not (keywordp (first rest-bindings))))
+                      (pop rest-bindings)
+                      nil))
+         (access (let ((k (getf rest-bindings :access)))
+                   (if k k :public)))
+         (struct-def (gethash struct-type *crisp-structs*)))
+
+    (unless struct-def
+      (error "Unknown struct type '~a' in with-struct-accessors." struct-type))
+
+    (let ((forms '()))
+      (dolist (member (crisp-struct-definition-members struct-def))
+        (let* ((member-name (first member))
+               (aos-accessor-name
+                (ecase access
+                  (:public (intern (format nil "~a~~" member-name)))
+                  (:raw (intern (format nil "~~~a~~" member-name)))))
+               (soa-accessor-name (intern (format nil "~a~~" member-name))))
+
+          (let ((expanded-body
+                 (mapcar (lambda (form)
+                           (let ((f (subst aos-accessor-name aos-var form)))
+                             (if soa-var
+                                 (subst soa-accessor-name soa-var f)
+                                 f)))
+                     body)))
+            (setf forms (append forms expanded-body)))))
+
+      `(progn ,@forms))))
+
+(defmacro def-struct (name &rest members)
+  "Defines a new Crisp struct type."
+  (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
+         (constructor-name (intern (format nil "MAKE-~a" name))))
+    ;; Register at macro-expansion time (for visibility to subsequent code)
+    (register-struct-definition name parsed-members)
+    ;; Emit code to register using eval-when, AND the constructor MACRO
+    `(progn
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (register-struct-definition ',name ',parsed-members))
+
+      (defmacro ,constructor-name (&rest args)
+        (let ((reordered (validate-and-reorder-struct-args ',name ',parsed-members args)))
+          `(%construct-struct ,',name ,@reordered)))
+
+      ,@(let ((runtime-index 0))
+          (loop for member-spec in parsed-members
+                collect
+                  (let* ((member-name (first member-spec))
+                         (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
+                         (value (when is-ct (fourth member-spec))) ;; (name type :c-t value)
+                         (accessor-name (intern (format nil "~a~~" member-name))))
+                    (if is-ct
+                        ;; Generate Compile-Time Constant Accessor Macro
+                        `(defmacro ,accessor-name (obj)
+                           (declare (ignore obj))
+                           ;; If a value is provided, return it as a constant.
+                           (if ',value
+                               '',value
+                               ;; Otherwise error? Or return nil? User should provide value.
+                               (error "Compile-time struct member ~a accessed but has no constant value defined." ',member-name)))
+                        ;; Generate Runtime Accessor Function
+                        (let ((idx runtime-index))
+                          (incf runtime-index)
+                          `(def-function ,accessor-name ((obj ,name))
+                                         (return (%extract-struct-member obj ,idx))))))))
+      ,@(let ((runtime-index 0))
+          (loop for member-spec in parsed-members
+                  unless (and (consp member-spec) (eq (third member-spec) :c-t))
+                collect
+                  (let* ((member-name (first member-spec))
+                         (raw-accessor-name (intern (format nil "~~~a~~" member-name)))
+                         (idx runtime-index))
+                    (incf runtime-index)
+                    `(def-function ,raw-accessor-name ((obj ,name))
+                                   (declare (crisp-system-generated))
+                                   (return (%extract-struct-member obj ,idx)))))))))
+
+(defmacro def-setter (name args &body body)
+  "Defines a setter function (which is just a def-function but semantically intended for use with set!).
+   The return type is implicitly nil/void. We append (return) to ensure this."
+  `(def-function ,name ,args ,@body (return)))
+
+(defmacro r-t-assert (test &rest args)
+  "Asserts that TEST is true at runtime. If not, terminates kernel.
+   Args (message strings etc) are currently ignored."
+  (declare (ignore args))
+  (if *runtime-checks-enabled*
+      `(unless ,test (die))
+      nil))
+
+(defmacro r-t-assert-0 (test &rest args)
+  "Asserts that TEST is true at runtime (placeholder for thread-0 check)."
+  `(r-t-assert ,test ,@args))

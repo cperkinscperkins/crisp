@@ -1,0 +1,234 @@
+;;;; Crisp - Lisp for Developing GPU Kernels
+;;;; Copyright (c) 2025 Christopher Perkins
+;;;;
+;;;; Licensed under the MIT License. See LICENSE file in the project root.
+
+(in-package :crisp.compiler)
+
+;; Std140 Layout (GPU Alignment)
+;; =============================
+
+(defun get-std140-base-alignment (type-spec)
+  "Returns the base alignment (N) for a given type according to std140 rules.
+  For scalars, N is the size of the scalar.
+  For vectors, it is 2N or 4N.
+  For arrays/structs, it is rounded up to vec4 alignment (16)."
+  (cl:cond
+    ((or (eq type-spec 'float) (eq type-spec 'int) (eq type-spec 'uint)) 4)
+    ((or (eq type-spec 'double) (eq type-spec 'long) (eq type-spec 'ulong)) 8)
+    ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
+    ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
+    ;; TODO: Handle vectors here (will need vector support first)
+    ((or (eq type-spec 'bool)) 4) ;; booleans are 4 bytes in std140
+    ;; Structs align to 16 bytes (vec4)
+    ((gethash type-spec *crisp-structs*) 16)
+    (t (error "Unknown type for alignment: ~a" type-spec))))
+
+
+(defun get-std140-size (type-spec)
+  "Returns the size (in bytes) of a type. Does not include padding for alignment context."
+  (cl:cond
+    ((or (eq type-spec 'float) (eq type-spec 'int) (eq type-spec 'uint)) 4)
+    ((or (eq type-spec 'double) (eq type-spec 'long) (eq type-spec 'ulong)) 8)
+    ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
+    ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
+    ((eq type-spec 'bool) 4)
+    ;; Structs - Retrieve cached size
+    ((gethash type-spec *crisp-structs*)
+     (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
+    (t (error "Unknown type for size: ~a" type-spec))))
+
+(defun calculate-std140-padding (current-offset alignment)
+  "Calculates padding needed to reach the next alignment boundary."
+  (cl:let ((remainder (mod current-offset alignment)))
+    (if (zerop remainder)
+        0
+        (- alignment remainder))))
+
+(defun compute-std140-layout (members)
+  "Takes a list of (name type) members.
+  Returns a list of:
+    - Expanded members with `_pad` fields inserted.
+    - Total struct size (padded to 16 bytes).
+  
+  Returns (values expanded-members total-size)"
+  ;; Filter out compile-time properties (marked with :c-t)
+  (cl:let* ((runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
+            (current-offset 0)
+            (expanded-members '()))
+    (dolist (member runtime-members)
+      (cl:let* ((name (first member))
+                (type (second member))
+                (alignment (get-std140-base-alignment type))
+                (size (get-std140-size type))
+                (padding (calculate-std140-padding current-offset alignment)))
+        (declare (ignore name))
+
+        ;; Insert padding if needed
+        (cl:when (> padding 0)
+          (cl:let ((pad-remaining padding)
+                   (pad-idx 0)
+                   (pad-current-offset current-offset))
+            (loop while (> pad-remaining 0) do
+                    (cl:let* ((pad-member
+                               (cl:cond
+                                 ;; Only use larger types if we are aligned for them!
+                                 ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
+                                 ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
+                                 ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
+                                 (t (list 'char 1))))
+                              (pad-type (first pad-member))
+                              (pad-size (second pad-member))
+                              (pad-name (intern (format nil "_PAD_~a_~a" current-offset pad-idx))))
+
+                      (push (list pad-name pad-type) expanded-members)
+                      (decf pad-remaining pad-size)
+                      (incf pad-current-offset pad-size)
+                      (incf pad-idx))))
+          (incf current-offset padding))
+
+        ;; Add the actual member
+        (push member expanded-members)
+        (incf current-offset size)))
+
+    ;; Final structure padding to multiple of 16 (vec4 alignment)
+    (cl:let ((final-padding (calculate-std140-padding current-offset 16)))
+      (cl:when (> final-padding 0)
+        (cl:let ((pad-remaining final-padding)
+                 (pad-idx 0)
+                 (pad-current-offset current-offset))
+          (loop while (> pad-remaining 0) do
+                  (cl:let* ((pad-member
+                             (cl:cond
+                               ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
+                               ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
+                               ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
+                               (t (list 'char 1))))
+                            (pad-type (first pad-member))
+                            (pad-size (second pad-member))
+                            (pad-name (intern (format nil "_PAD_EA_~a" pad-idx))))
+
+                    (push (list pad-name pad-type) expanded-members)
+                    (decf pad-remaining pad-size)
+                    (incf pad-current-offset pad-size)
+                    (incf pad-idx)))))
+      (incf current-offset final-padding))
+
+    (values (nreverse expanded-members) current-offset)))
+
+;; Struct Logic
+;; ============
+
+(defun ensure-struct-llvm-type (name)
+  "Ensures the LLVM struct type exists for the given struct name.
+   Handles forward declarations and recursion."
+  (cl:let ((def (gethash name *crisp-structs*)))
+    (cl:unless def
+      (error "Unknown struct type: ~a" name))
+
+    ;; Return cached type if available
+    (cl:when (crisp-struct-definition-llvm-type def)
+      (return-from ensure-struct-llvm-type (crisp-struct-definition-llvm-type def)))
+
+    ;; Create the named struct (opaque first) to handle recursion
+    (cl:let* ((ctx (llvm-get-module-context *current-module*))
+              (struct-type (llvm-struct-create-named ctx (symbol-name name))))
+      ;; CACHE IT IMMEDIATELY
+      (setf (crisp-struct-definition-llvm-type def) struct-type)
+
+      (cl:let ((element-types '()))
+        (dolist (member-spec (crisp-struct-definition-padded-members def))
+          (log:debug "Member-spec: ~a" member-spec)
+          (cl:let* ((type-name (second member-spec))
+                    (resolved-type (resolve-type-to-llvm type-name)))
+            (log:info "Member ~a (type ~a) resolved to LLVM type: ~a" (first member-spec) type-name resolved-type)
+            (cl:unless resolved-type
+              (error "Failed to resolve type ~a for member ~a" type-name (first member-spec)))
+            (push resolved-type element-types)))
+
+        ;; Set the body
+        (cl:let ((types-array (cffi:foreign-alloc :pointer :count (length element-types))))
+          (loop for type in (reverse element-types)
+                for i from 0
+                do (setf (cffi:mem-aref types-array :pointer i) type))
+          (llvm-struct-set-body struct-type types-array (length element-types) nil) ; packed=nil
+          (cffi:foreign-free types-array)))
+
+      struct-type)))
+
+(defun register-struct-definition (name members)
+  "Registers a struct definition in the global registry."
+  (multiple-value-bind (padded-members total-size)
+      (compute-std140-layout members)
+    (cl:let ((indices (make-hash-table :test #'eq)))
+      (loop for m in padded-members
+            for i from 0
+            do (setf (gethash (car m) indices) i))
+      (setf (gethash name *crisp-structs*)
+        (make-crisp-struct-definition
+         :name name
+         :members members
+         :padded-members padded-members
+         :field-indices indices
+         :total-size total-size))
+
+      ;; Register as a valid Crisp type for type checking
+      (setf (gethash name *crisp-types*)
+        (make-crisp-type
+         :name name
+         :llvm-type-fn (lambda () (ensure-struct-llvm-type name))
+         :size (* total-size 8)
+         :category :struct)))))
+
+(defun parse-struct-member-spec (spec)
+  "Parses a struct member specification.
+   Supports (name type) and (name type :c-t [value])."
+  (cl:cond
+    ;; (name type)
+    ((and (listp spec) (= (length spec) 2))
+     spec)
+    ;; (name type :c-t [value])
+    ((and (listp spec) (>= (length spec) 3) (eq (third spec) :c-t))
+     spec)
+    (t (error "Invalid struct member spec: ~a" spec))))
+
+(defun validate-and-reorder-struct-args (struct-name defined-members args)
+  "Validates and reorders keyword arguments for a struct constructor macro."
+  ;; 0. Filter out :c-t members from validation - they are not constructor args!
+  ;; Or should they be accepted but ignored? 
+  ;; Since they are compile-time constants fixed in the struct def, they should NOT be passed.
+  (cl:let* ((runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) defined-members))
+            (processed-args (make-hash-table :test 'eq))
+            (ordered-values '()))
+
+    ;; 1. Parse into a hash table
+    (cl:let ((ptr args))
+      (loop while ptr do
+              (cl:let ((key (first ptr))
+                       (val (second ptr)))
+                (cl:unless (keywordp key)
+                  (error "Struct constructor for ~a requires keyword arguments. Found: ~s" struct-name key))
+                (cl:unless (second ptr)
+                  (error "Struct constructor for ~a has missing value for key: ~s" struct-name key))
+                (cl:when (gethash key processed-args)
+                  (error "Struct constructor for ~a has duplicate key: ~s" struct-name key))
+
+                (setf (gethash key processed-args) val)
+                (setf ptr (cddr ptr)))))
+
+    ;; 2. Validate and Reorder
+    (loop for (member-name member-type) in runtime-members do
+            (cl:let* ((kw (intern (symbol-name member-name) :keyword))
+                      (val (gethash kw processed-args)))
+              (cl:unless val
+                (error "Struct constructor for ~a missing required argument: ~s" struct-name kw))
+              (push val ordered-values)))
+
+    ;; 3. Check for unknown keys (against runtime members only!)
+    (maphash (lambda (k v)
+               (declare (ignore v))
+               (cl:unless (find k runtime-members :key (lambda (m) (intern (symbol-name (first m)) :keyword)))
+                 (error "Struct constructor for ~a has unknown or compile-time-only argument: ~s" struct-name k)))
+             processed-args)
+
+    (nreverse ordered-values)))

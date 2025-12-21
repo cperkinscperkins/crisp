@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-20T18:34:51.662629Z
+Generated on 2025-12-21T00:46:09.777017Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
@@ -256,55 +256,9 @@ Generated on 2025-12-20T18:34:51.662629Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\macros.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\errors.lisp`
 
-### DEFMACRO `LET`
-- **Args**: `(BINDINGS &BODY BODY)`
-
-  > A unified 'let' for Crisp that works in both Kernels and Macros.  >    - It is SEQUENTIAL (like CL:LET*).  >    - It supports Multi-Value-Binding (MVB) destructuring.  >      >    Example:  >      (let ((a 1)  >            (b 2)  >            ((q r) (floor 10 3)))  >        (+ a b q r))  >   >    This macro expands into a nest of CL:LET* and CL:MULTIPLE-VALUE-BIND  >    forms, suitable for execution in the Lisp host (macros/tests).  >      >    When compiling Kernels, the Crisp Compiler intercepts the 'let' symbol  >    directly and uses its own semantic analyzer, ignoring this macro.
-
-
----
-### DEFMACRO `WHEN`
-- **Args**: `(TEST &BODY BODY)`
-
----
-### DEFMACRO `UNLESS`
-- **Args**: `(TEST &BODY BODY)`
-
----
-### DEFMACRO `COND`
-- **Args**: `(&REST CLAUSES)`
-
----
-### DEFMACRO `IF+`
-- **Args**: `(TEST THEN &OPTIONAL ELSE)`
-
-  > Compile-time conditional. Evaluates TEST at macro-expansion time.  >    Errors if TEST cannot be evaluated (e.g. relies on runtime values).
-
-
----
-### DEFUN `COMPILER-NO-OP`
-
-  > A no-op function that returns no values.   >    Used as the expansion target for compile-time macros when evaluated in the host environment.
-
-
----
-### DEFMACRO `C-T-OUTPUT`
-- **Args**: `(&REST ARGS)`
-
-  > Compile-Time Output. Evaluates arguments at macro-expansion time and prints them.
-
-
----
-### DEFMACRO `C-T-ASSERT`
-- **Args**: `(TEST-EXPR &REST MSGS)`
-
-  > Compile-Time Assertion. Evaluates TEST-EXPR at macro-expansion time.  >    If false, signals a compilation error with MSGS.
-
-
----
-## File: `C:\Users\cperk\Documents\crisp\src\compiler.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types.lisp`
 
 ### DEFVAR `*FUNCTION-TABLE*`
 
@@ -360,15 +314,9 @@ Generated on 2025-12-20T18:34:51.662629Z
 
 
 ---
-### DEFVAR `*CRISP-TYPES*`
+### DEFVAR `*RUNTIME-CHECKS-ENABLED*`
 
-  > A hash table mapping type names (symbols) to CRISP-TYPE structs.
-
-
----
-### DEFVAR `*CRISP-STRUCTS*`
-
-  > A hash table mapping struct names to CRISP-STRUCT-DEFINITION structs.
+  > If true, runtime assertions (r-t-assert) are compiled.
 
 
 ---
@@ -393,6 +341,24 @@ Generated on 2025-12-20T18:34:51.662629Z
 ### DEFVAR `*ALLOW-NESTED-DEF-FUNCTION*`
 
 ---
+### DEFVAR `*CRISP-TYPES*`
+
+  > A hash table mapping type names (symbols) to CRISP-TYPE structs.
+
+
+---
+### DEFVAR `*CRISP-STRUCTS*`
+
+  > A hash table mapping struct names to CRISP-STRUCT-DEFINITION structs.
+
+
+---
+### DEFSTRUCT `ENUMERATION-DEF`
+
+---
+### DEFVAR `*CRISP-ENUMS*`
+
+---
 ### DEFVAR `*EXPRESSION-ANALYZERS*`
 
   > A dispatch table mapping operator symbols to their analyzer functions.
@@ -409,20 +375,6 @@ Generated on 2025-12-20T18:34:51.662629Z
 ### DEFUN `INITIALIZE-CRISP-TYPES`
 
   > Populates the *crisp-types* hash table with built-in scalar types.
-
-
----
-### DEFUN `INITIALIZE-COMPILER`
-- **Args**: `(&KEY (LOG-LEVEL INFO))`
-
-  > A master initialization function for the Crisp compiler.  >   This should be called by any entry point into the system (REPL, executable, CI).
-
-
----
-### DEFMACRO `DEF-FUNCTION`
-- **Args**: `(NAME PARAMS &REST BODY-AND-LOCATION)`
-
-  > Defines a new, thread-level Crisp function.
 
 
 ---
@@ -449,76 +401,6 @@ Generated on 2025-12-20T18:34:51.662629Z
 ---
 ### DEFUN `TYPE-LISTS-EQUIVALENT-P`
 - **Args**: `(L1 L2)`
-
----
-### DEFUN `REGISTER-STRUCT-DEFINITION`
-- **Args**: `(NAME MEMBERS)`
-
-  > Registers a struct definition in the global registry.
-
-
----
-### DEFUN `PARSE-STRUCT-MEMBER-SPEC`
-- **Args**: `(SPEC)`
-
-  > Parses a struct member specification.  >    Supports (name type) and (name:type).
-
-
----
-### DEFUN `VALIDATE-AND-REORDER-STRUCT-ARGS`
-- **Args**: `(STRUCT-NAME DEFINED-MEMBERS ARGS)`
-
-  > Validates and reorders keyword arguments for a struct constructor macro.
-
-
----
-### DEFMACRO `WITH-STRUCT-ACCESSORS`
-- **Args**: `(STRUCT-TYPE BINDINGS &BODY BODY)`
-
-  > Iterates over the members of a struct type, binding accessor symbols to the provided variables.  >    Bindings: (aos-var [soa-var] [:access type])  >    Returns a PROGN containing the expanded body forms.
-
-
----
-### DEFMACRO `DEF-STRUCT`
-- **Args**: `(NAME &REST MEMBERS)`
-
-  > Defines a new Crisp struct type.
-
-
----
-### DEFMACRO `DEF-SETTER`
-- **Args**: `(NAME ARGS &BODY BODY)`
-
-  > Defines a setter function (which is just a def-function but semantically intended for use with set!).  >    The return type is implicitly nil/void. We append (return) to ensure this.
-
-
----
-### DEFUN `GET-STD140-BASE-ALIGNMENT`
-- **Args**: `(TYPE-SPEC)`
-
-  > Returns the base alignment (N) for a given type according to std140 rules.  >   For scalars, N is the size of the scalar.  >   For vectors, it is 2N or 4N.  >   For arrays/structs, it is rounded up to vec4 alignment (16).
-
-
----
-### DEFUN `GET-STD140-SIZE`
-- **Args**: `(TYPE-SPEC)`
-
-  > Returns the size (in bytes) of a type. Does not include padding for alignment context.
-
-
----
-### DEFUN `CALCULATE-STD140-PADDING`
-- **Args**: `(CURRENT-OFFSET ALIGNMENT)`
-
-  > Calculates padding needed to reach the next alignment boundary.
-
-
----
-### DEFUN `COMPUTE-STD140-LAYOUT`
-- **Args**: `(MEMBERS)`
-
-  > Takes a list of (name type) members.  >   Returns a list of:  >     - Expanded members with `_pad` fields inserted.  >     - Total struct size (padded to 16 bytes).  >     >   Returns (values expanded-members total-size)
-
 
 ---
 ### DEFUN `VALID-BASIC-TYPE-P`
@@ -556,6 +438,36 @@ Generated on 2025-12-20T18:34:51.662629Z
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp\src\structs.lisp`
+
+### DEFUN `GET-STD140-BASE-ALIGNMENT`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns the base alignment (N) for a given type according to std140 rules.  >   For scalars, N is the size of the scalar.  >   For vectors, it is 2N or 4N.  >   For arrays/structs, it is rounded up to vec4 alignment (16).
+
+
+---
+### DEFUN `GET-STD140-SIZE`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns the size (in bytes) of a type. Does not include padding for alignment context.
+
+
+---
+### DEFUN `CALCULATE-STD140-PADDING`
+- **Args**: `(CURRENT-OFFSET ALIGNMENT)`
+
+  > Calculates padding needed to reach the next alignment boundary.
+
+
+---
+### DEFUN `COMPUTE-STD140-LAYOUT`
+- **Args**: `(MEMBERS)`
+
+  > Takes a list of (name type) members.  >   Returns a list of:  >     - Expanded members with `_pad` fields inserted.  >     - Total struct size (padded to 16 bytes).  >     >   Returns (values expanded-members total-size)
+
+
+---
 ### DEFUN `ENSURE-STRUCT-LLVM-TYPE`
 - **Args**: `(NAME)`
 
@@ -563,10 +475,139 @@ Generated on 2025-12-20T18:34:51.662629Z
 
 
 ---
+### DEFUN `REGISTER-STRUCT-DEFINITION`
+- **Args**: `(NAME MEMBERS)`
+
+  > Registers a struct definition in the global registry.
+
+
+---
+### DEFUN `PARSE-STRUCT-MEMBER-SPEC`
+- **Args**: `(SPEC)`
+
+  > Parses a struct member specification.  >    Supports (name type) and (name type :c-t [value]).
+
+
+---
+### DEFUN `VALIDATE-AND-REORDER-STRUCT-ARGS`
+- **Args**: `(STRUCT-NAME DEFINED-MEMBERS ARGS)`
+
+  > Validates and reorders keyword arguments for a struct constructor macro.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\macros.lisp`
+
+### DEFMACRO `LET`
+- **Args**: `(BINDINGS &BODY BODY)`
+
+  > A unified 'let' for Crisp that works in both Kernels and Macros.  >    - It is SEQUENTIAL (like CL:LET*).  >    - It supports Multi-Value-Binding (MVB) destructuring.  >      >    Example:  >      (let ((a 1)  >            (b 2)  >            ((q r) (floor 10 3)))  >        (+ a b q r))  >   >    This macro expands into a nest of CL:LET* and CL:MULTIPLE-VALUE-BIND  >    forms, suitable for execution in the Lisp host (macros/tests).  >      >    When compiling Kernels, the Crisp Compiler intercepts the 'let' symbol  >    directly and uses its own semantic analyzer, ignoring this macro.
+
+
+---
+### DEFMACRO `WHEN`
+- **Args**: `(TEST &BODY BODY)`
+
+---
+### DEFMACRO `UNLESS`
+- **Args**: `(TEST &BODY BODY)`
+
+---
+### DEFMACRO `COND`
+- **Args**: `(&REST CLAUSES)`
+
+---
+### DEFMACRO `IF+`
+- **Args**: `(TEST THEN &OPTIONAL ELSE)`
+
+  > Compile-time conditional. Evaluates TEST at macro-expansion time.  >    Errors if TEST cannot be evaluated (e.g. relies on runtime values).
+
+
+---
+### DEFUN `COMPILER-NO-OP`
+
+  > A no-op function that returns no values.   >    Used as the expansion target for compile-time macros when evaluated in the host environment.
+
+
+---
+### DEFMACRO `C-T-OUTPUT`
+- **Args**: `(&REST ARGS)`
+
+  > Compile-Time Output. Evaluates arguments at macro-expansion time and prints them.
+
+
+---
+### DEFMACRO `C-T-ASSERT`
+- **Args**: `(TEST-EXPR &REST MSGS)`
+
+  > Compile-Time Assertion. Evaluates TEST-EXPR at macro-expansion time.  >    If false, signals a compilation error with MSGS.
+
+
+---
+### DEFMACRO `DEF-FUNCTION`
+- **Args**: `(NAME PARAMS &REST BODY-AND-LOCATION)`
+
+  > Defines a new, thread-level Crisp function.
+
+
+---
+### DEFMACRO `WITH-STRUCT-ACCESSORS`
+- **Args**: `(STRUCT-TYPE BINDINGS &BODY BODY)`
+
+  > Iterates over the members of a struct type, binding accessor symbols to the provided variables.  >    Bindings: (aos-var [soa-var] [:access type])  >    Returns a PROGN containing the expanded body forms.
+
+
+---
+### DEFMACRO `DEF-STRUCT`
+- **Args**: `(NAME &REST MEMBERS)`
+
+  > Defines a new Crisp struct type.
+
+
+---
+### DEFMACRO `DEF-SETTER`
+- **Args**: `(NAME ARGS &BODY BODY)`
+
+  > Defines a setter function (which is just a def-function but semantically intended for use with set!).  >    The return type is implicitly nil/void. We append (return) to ensure this.
+
+
+---
+### DEFMACRO `R-T-ASSERT`
+- **Args**: `(TEST &REST ARGS)`
+
+  > Asserts that TEST is true at runtime. If not, terminates kernel.  >    Args (message strings etc) are currently ignored.
+
+
+---
+### DEFMACRO `R-T-ASSERT-0`
+- **Args**: `(TEST &REST ARGS)`
+
+  > Asserts that TEST is true at runtime (placeholder for thread-0 check).
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\compiler.lisp`
+
+### DEFUN `INITIALIZE-COMPILER`
+- **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL))`
+
+  > A master initialization function for the Crisp compiler.  >   This should be called by any entry point into the system (REPL, executable, CI).
+
+
+---
 ### DEFUN `ANALYZE-FUNCTION-LITERAL`
 - **Args**: `(EXPR ENV LOCATION)`
 
   > Analyzes a (function name) form, e.g., #'foo.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\enums.lisp`
+
+### DEFMACRO `DEF-ENUMERATION`
+- **Args**: `(NAME &REST SPECS)`
+
+  > Defines a new enumeration type.  >    Usage: (def-enumeration address-space (:global 1) :local :private)
 
 
 ---
