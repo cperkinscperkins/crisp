@@ -57,4 +57,7 @@ These are simple and should be flexible enough to get things done.
 
 `let` in Crisp is like `let*` in Common Lisp. Asterisk not needed.
 
+`set!` in Crisp is like `setf` in Common Lisp. However, it does NOT return a value. 
+You cannot shortcut set and return a value in the same expression.
+
 

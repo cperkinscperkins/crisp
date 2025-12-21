@@ -15,7 +15,7 @@ Crisp does that sort of thing too, except there is no `std::sort`.
 
 ### SFINAE
 
-Just kidding. Crisp doesn't do that. It has Common Lisp `defmacro` which is better++.
+Just kidding. Crisp doesn't do SFINAE. It has Common Lisp `defmacro` which is better++.
 
 
 

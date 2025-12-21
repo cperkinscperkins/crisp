@@ -61,7 +61,7 @@ in `with-template-type`.  See the discussion of type constraints in `with-templa
 ### type names vs. type constructors
 When a struct is defined with `def-struct`, its name becomes a new type name (e.g., `point`).
 
-If a struct is defined within a `with-template-type` block, the system also generates a type constructor (e.g., `point-type`). This constructor must be used with its type arguments to create a concrete type, like `(point-type int)`.
+If a struct is defined within a `with-template-type` block, the system also generates a type constructor (e.g., `point`). This constructor must be used with its type arguments to create a concrete type, like `(point int)`.
 
 
 ### member access: `XXXX~`
@@ -134,8 +134,8 @@ If you want to overload access there too, an additional overload function must b
 
 ```
 ;;;  (x~ sv) returns the vector of ALL x values, we are adjusting the one at idx
-(def-function x~ (sv:(soa-vector-type point) idx:ulong)
-    (declare (return-type float))
+(def-function x~ (sv idx)
+    (declare (type sv (soa-vector point)) (type idx ulong) (return-type float))
     (- (~ (x~ sv) idx)))
 ```
 

@@ -12,11 +12,11 @@ QUESTION: `(return-type-of (type-signature-of #'someFunction))` supported?
 ANSWER: I guess. 
 -->
 ```
-(def-type my-vec-t (vector-type int :local))
+(def-type my-vec-t (vector int :local))
 
 ;; -- count-if --
-(def-function count-if (v:my-vec-t predicate?)
-    (declare (return-type ulong) (type predicate? #'(int => bool)))
+(def-function count-if (v predicate?)
+    (declare (return-type ulong) (type v my-vec-t) (type predicate? #'(int => bool)))
     ...)
 
 ;; -- count-if -- 
