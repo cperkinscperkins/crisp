@@ -55,7 +55,14 @@
                      (address c-pointer)
                      (byte-size ulong)
                      (address-space address-space :c-t)
-                     (access access :c-t))))
+                     (access access :c-t)))
+  ;; Register default ~ accessor as a template
+  (register-template '~ '(To) nil
+                     '(def-function ~ (c)
+                                    (declare (function ((cell To) => To)))
+                                    (declare (crisp-system-generated))
+                                    (return (~ref~ c)))
+                     '((cell To) => To)))
 
 
 ;; Helpers (Analysis Placeholder)

@@ -1,0 +1,16 @@
+;; overloading ~ on cell is a bad idea.
+;; use def-derived-type to derive a custom type
+;; and overload ~ for that type instead. BUT
+;; bad idea or not, we need to support and test.
+
+(def-function ~ (c)
+    (declare #'((cell long) => long))
+    (+ 10 (~ref~ c)))
+
+;; great to check that this compiles and all.
+;; but stunts like this probably need to be a unit test
+;; so we can vet the IR.
+(def-function test-overloaded-accessor (c)
+    (declare #'((cell long) => long))
+    ;; should return c[0] + 10
+    (~ c))

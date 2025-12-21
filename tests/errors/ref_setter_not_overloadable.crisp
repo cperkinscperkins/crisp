@@ -1,0 +1,6 @@
+
+;; Overloading ~ref~ is not allowed.
+
+(def-setter ~ref~ (c v)
+    (declare #'((cell long) long => nil))
+)

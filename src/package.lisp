@@ -244,7 +244,7 @@
    #:semantic-let-bindings
    #:semantic-let-body
 
-   #:set! #:~ #:aref
+   #:set! #:~ #:aref #:~ref~
 
    ;; Developer Utilities
    #:compile-crisp-form-to-ir-string
@@ -312,7 +312,7 @@
 
                 ;; NEW: Unified Let from Compiler
                 #:let
-                #:set! #:~ #:aref
+                #:set! #:~ #:aref #:~ref~
 
                 ;; NEW: Branching Macros
                 #:when #:unless #:cond #:if+ #:else
@@ -404,7 +404,7 @@
    ;; Compiler/Codegen
    #:emit-llvm
    #:compile-function #:store-chunk #:load-tile #:store-tile
-   #:~ #:set! #:length~
+   #:~ #:set! #:length~ #:~ref~
 
    ;; Ops
    #:*! #:identity-of #:zero #:accum #:base))

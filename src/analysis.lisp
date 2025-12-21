@@ -38,7 +38,7 @@
   (def-expression-analyzer return analyze-return-expression)
   (def-expression-analyzer aref analyze-aref-expression)
   ;; ~ is an alias for aref
-  (def-expression-analyzer ~ analyze-aref-expression)
+  (def-expression-analyzer ~ref~ analyze-aref-expression)
 
   ;; From duplicate definition:
   (def-expression-analyzer def-function analyze-nested-def-function)
@@ -1023,14 +1023,15 @@
               (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
               ;; Check for a matching setter function signature: (op arg1 ... argN value)
               ;; Check for a matching setter function signature: (op arg1 ... argN value)
-              (signatures (gethash op *function-table*))
+              (signatures (append (gethash op *function-table*)
+                            (gethash (intern (format nil "~a_SET!" op) (symbol-package op)) *function-table*)))
               (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
 
          (cond
           ;; Sub-case 2a: Found an overloaded setter function -> Call it.
           (match
             (make-semantic-call
-             :name op
+             :name (function-signature-name match)
              :type (function-signature-return-types match)
              :args all-arg-nodes
              :signature match

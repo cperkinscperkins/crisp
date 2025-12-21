@@ -108,6 +108,8 @@
 
 (defmacro def-function (name params &rest body-and-location)
   "Defines a new, thread-level Crisp function."
+  (when (string-equal (symbol-name name) "~REF~")
+        (error "Overloading ~~ref~~ is not allowed."))
   ;; Find the position of our injected :source-location keyword.
   (let* ((loc-pos (position :source-location body-and-location))
          ;; The source location is the value right after the keyword.
@@ -228,7 +230,10 @@
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
    The return type is implicitly nil/void. We append (return) to ensure this."
-  `(def-function ,name ,args ,@body (return)))
+  (when (string-equal (symbol-name name) "~REF~")
+        (error "Overloading ~~ref~~ is not allowed."))
+  (let ((setter-name (intern (format nil "~a_SET!" (symbol-name name)) (symbol-package name))))
+    `(def-function ,setter-name ,args ,@body (return))))
 
 (defmacro r-t-assert (test &rest args)
   "Asserts that TEST is true at runtime. If not, terminates kernel.
