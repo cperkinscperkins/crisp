@@ -45,11 +45,11 @@ NEVER be called with a value of type `B`  unless `as-A ` were used.
 ;; -- point --
 (def-struct point
     (x float)
-    (y:float))
+    (y float))
 
 ;; -- distance --
-(def-function distance (a:point b:point)
-    (declare (return-type float))
+(def-function distance (a  b )
+    (declare #'(point point => float))
     #| pythagorean formula here |#  )
 
 
@@ -58,8 +58,8 @@ NEVER be called with a value of type `B`  unless `as-A ` were used.
 (def-derived-type coordinate point :subst :no)
 
 ;; -- distance --
-(def-function distance (a:coordinate b:coordinate)
-  (declare (return-type float))
+(def-function distance (a b)
+  (declare #'(coordinate coordinate => float))
   #| haversine formula here |# )
 
 (let ((p1 (make-point 1 2))
@@ -154,10 +154,10 @@ you can use `def-struct` in conjunction with `set-derived` for this.
 Example:
 ```
 (def-struct MY-VEC 
-    (base:vector-type)
-    (new-prop:int))
+    (base (vector))
+    (new-prop int))
 
-(set-derived vector-type MY-VIEW-type :subst :pass-orig)
+(set-derived vector MY-VIEW-type :subst :pass-orig)
 ```
 
 #### std140

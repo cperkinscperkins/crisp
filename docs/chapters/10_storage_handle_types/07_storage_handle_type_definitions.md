@@ -23,26 +23,26 @@ Therefore, there are several storage handle type functions available in CRISP,
 No argument.
 
 ```
-(cell-type)
-(vector-type)
-(matrix-type)
-(tensor-type)
+(cell)
+(vector)
+(matrix)
+(tensor)
 ```
 
 It's a `cell`, `vector`, `matrix` or `tensor`.   
 
 ### Element Type Only
 ```
-(cell-type <element-type>)
-(vector-type <element-type>)
-(matrix-type <element-type>)
-(tensor-type <element-type> NumDims)
+(cell <element-type>)
+(vector <element-type>)
+(matrix <element-type>)
+(tensor <element-type> NumDims)
 ```
 
 Unlike the other Storage Handle types, the `tensor` type doesn't have an "only element type" type
 specifier. Whenever the element-type is provided, the number of dimensions must also be provided.
 
-Example: `(vector-type float)`
+Example: `(vector float)`
 This example simply specifies that the value or parameter is a `vector` 
 with a `float` element type. It does not specify any particular alignment, address space, access, or size.
 
@@ -53,13 +53,13 @@ Note that for the `cell` type, this is the minimum information needed to perform
 After the base element type and dimensions, the other arguments can be provided as "optional" args. 
 
 ```
-(cell-type <element-type> &optional address-space access)
-(vector-type <element-type> &optional align address-space access length)
-(matrix-type <element-type> &optional align address-space access length)
-(tensor-type <element-type> NumDims &optional align address-space access length))
+(cell <element-type> &optional address-space access)
+(vector <element-type> &optional align address-space access length)
+(matrix <element-type> &optional align address-space access length)
+(tensor <element-type> NumDims &optional align address-space access length))
 ```
 
-Example: `(vector-type float :compact)` 
+Example: `(vector float :compact)` 
 This example specifies a vector  of floats with `:compact` alignment. 
 It does not specify address-space,  access, or size.
 
@@ -72,12 +72,12 @@ The `address-space`, `access` and `length` may appear in order.
 
 ### Using Keys
 For the most flexibility, keys can be used.
-`(XXXX-type &key element-type num-dims align address-space access length)`
+`(XXXX &key element-type num-dims align address-space access length)`
 
-Example: `(vector-type :access :writeable)`  This specifies that some vector is writeable. 
+Example: `(vector :access :writeable)`  This specifies that some vector is writeable. 
 It could be of any type, address space, alignment, or size.
 
-Example: `(tensor-type)`  This specifies merely that something is a `tensor`, but nothing else is known about it.
+Example: `(tensor)`  This specifies merely that something is a `tensor`, but nothing else is known about it.
 
 
 
@@ -100,10 +100,10 @@ But note that the last two are not available in the hoisting example code for lo
 ```
 ;; -- count --
 (def-function count (v)
-    (declare (return-type ulong) (type v (vector-type long :std140 :global :read-only)))
+    (declare (return-type ulong) (type v (vector long :std140 :global :read-only)))
  ...)
 
  ;; vectors can be compile-time fixed size
-(vector-type float :std140 :local :read-write 100)
+(vector float :std140 :local :read-write 100)
 ```
 

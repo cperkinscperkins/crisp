@@ -73,7 +73,7 @@ assertion requires compiler flags (like `--runtime-checks`).
 
 
 ```
-(def-type vec-floats-t (vector-type float :std140 :local :read-write ))
+(def-type vec-floats-t (vector float :std140 :local :read-write ))
 (def-type vec-ints-t (literal-vector int))
 
 ;; -- do_things --

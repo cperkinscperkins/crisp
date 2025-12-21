@@ -25,19 +25,14 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
     (declare #'(long long => long))
   (+ a b))
 
-;; D -- use colon (:) to attach type directly to variable. return type must still be declared.
-(def-function addInts (a:int b:int)
-    (declare (return-type int))
-  (+ a b))
-
 ;; E -- multiple values return
 (def-function divInts (a b)
 ; divInts returns both the quotient AND the remainder.
     (declare #'(int int => int int))
     ...)
 
-(def-function divIntsAgain (a:int b:int)
-    (declare (return-type int int))
+(def-function divIntsAgain (a b)
+    (declare (type a b int) (return-type int int))
     ...)
 
 ;; F -- type-signature can refer to other functions
@@ -61,12 +56,12 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
 ;; H -- keyword & optional arguments
 (def-function survive (&key birds fish zombies)
   (declare (return-type NIL) (type birds fish zombies int))
-  ;OR
-  (declare #`(&key birds:int fish:int zombies:int => NIL))
+  ;OR -- this one might need revisiting
+  (declare #'(&key int int int => NIL))
   ...)
 
-(def-function addSome (x:int &optional y)
-  (declare (return-type NIL) (type y int))
+(def-function addSome (x &optional y)
+  (declare (return-type NIL) (type x y int))
   ;OR
   (declare #'(int &optional int => NIL))
   ...)
@@ -77,8 +72,8 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
   ...)
 
 ;; I -- skip return type in kernels and grid functions
-(def-grid-function bury (meters:float)
-   ;types declared in paramter list, no need to declare anything else
+(def-grid-function bury (meters)
+  (declare (type meters float))
    ...)
 
 (def-grid-function sharpen (edge)

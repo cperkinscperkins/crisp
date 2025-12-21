@@ -20,10 +20,11 @@ Like `def-function` ALL the parameters to the kernel function must have their ty
 ; note also that since the arguments are typed in the parameter list, we didn't need a declare directive at all. 
 ;  the return type is assumed NIL.
 
-(def-type int-result-cell (cell-type int :global :writeable))
+(def-type int-result-cell (cell int :global :writeable))
 
 ;; -- add_two --
-(def-kernel add_two (a:int b:int &out result:int-result-cell)
+(def-kernel add_two (a b &out result)
+   (declare #'(int int &out int-result-cell => nil))
    (set! (~ result) (+ a b)))
 ```
 
@@ -76,10 +77,11 @@ including the ones required for the Crisp debug logging and scratch memory.
 which is a function Crisp provides for making Crisp vectors from `void` pointers and byte counts. This function cannot be used in other contexts.
 
 ```
-(def-type float-vec-t (vector-type float :global :compact))
+(def-type float-vec-t (vector float :global :compact))
 
 ;; -- vector_add_k --
-(def-kernel-exact vector_add_k (APtr:voidp ASz:ulong BPtr:voidp BSz:ulong CPtr:voidp CSz:ulong)
+(def-kernel-exact vector_add_k (APtr ASz BPtr BSz CPtr CSz)
+  (declare #'(voidp ulong voidp ulong voidp ulong => nil))
   (let ((A (marshall-vector APtr ASz (float-vec-t :read_only)))
         (B (marshall-vector BPtr BSz (float-vec-t :read_only)))
         (C (marshall-vector CPtr CSz (float-vec-t :write_only))))

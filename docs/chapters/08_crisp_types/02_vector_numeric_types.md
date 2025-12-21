@@ -21,9 +21,9 @@ wisest to explicitly declare the type, rather than rely on type inference on the
 
 Example:
 ```
-(let ((my-svec:short3 ##(5 6 7))
+(let ((my-svec ##(5 6 7))
       (my-dvec ##(3.0 4.0 5.1 6.0)))
-  (declare (type my-dvec double4)) 
+  (declare (type my-svec short3) (type my-dvec double4)) 
   ...)
 ```
 
@@ -32,10 +32,10 @@ The subelements can be dereferences with the `x~`, `y~`, `z~` and `w~` functions
 Furthermore, Crisp supports "swizzles" (like `xyyy~`)
 
 ```
-(let ((my-svec:short4 ##(5 6 7 9))
+(let ((my-svec ##(5 6 7 9))
       (all-six          (yyyy~ my-svec))
       (tail-part      #(0 0)))
-  (declare (type tail-part short2))
+  (declare (type my-svec short4) (type tail-part short2))
   (set! (xy~ tail-part) (zw~ my-svec))
   ; OR
   (set! tail-part (zw~ my-svec))

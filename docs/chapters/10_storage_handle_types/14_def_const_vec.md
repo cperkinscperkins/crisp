@@ -46,14 +46,14 @@ refer to an earlier `def-const-vec` .  The requirement is that the named const v
 clause MUST have been defined earlier in the translation unit. 
 
 ### Type Function
-CRISP also has two type functions for `:constant :read-only` vectors returned by `const-vec-type`
-`(const-vec-type <element-type> <align> &optional length)` 
+CRISP also has two type functions for `:constant :read-only` vectors returned by `const-vec`
+`(const-vec <element-type> <align> &optional length)` 
 and
-`(const-soa-vec-type <element-type> <align> &optional length)`
+`(const-soa-vec <element-type> <align> &optional length)`
 
 
 ```
-(def-type image-mask-t (const-vec-type uchar :compact))
+(def-type image-mask-t (const-vec uchar :compact))
 (def-const-vec +image-mask-32+ 
   (let ((image-mask-vec (make-vector image-mask-t 32)))
     (dotimes (x 32)

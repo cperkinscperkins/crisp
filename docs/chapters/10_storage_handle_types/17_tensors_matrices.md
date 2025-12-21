@@ -2,7 +2,7 @@
 
 
 Tensors were introduced earlier in the [Storage Handle Types](#storage-handle-types) section.
-That section covers how to declare a `tensor-type` or `matrix-type`, how to access elements, using scratch memory and more.
+That section covers how to declare a `tensor` or `matrix`, how to access elements, using scratch memory and more.
 
 In this section we want to cover a few more details about tensors and matrices. 
 
@@ -86,7 +86,7 @@ It is uwise to overload `~` for all tensors. Use `def-derived-type` when overloa
 
 ```
 ;; source vector is floats ranged 0-1
-(def-derived-type normalized-tv (tensor 1 (vector-type :element-type float)))
+(def-derived-type normalized-tv (tensor 1 (vector :element-type float)))
 
 ;; we return int values between 0-100
 ;;; ~

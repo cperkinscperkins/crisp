@@ -93,6 +93,7 @@ Usually this argument is a Storage Handle type, but an existing Storage Handle v
 can make things simpler.
 
 #### scratch types
+<!-- NOTE not sure about this -->
 These type expressions are available:
 ```
 (scratch-cell-type T &optional address-space)
@@ -170,8 +171,8 @@ placement arguments, but they are perfectly usable without. See the section on [
 Possible Implementation
 ```
 (defmacro load-local (global-vec scratch-vec &optional (identity 0))
-  (c-t-assert (type-equal (element-type global-vec) (element-type scratch-vec)) "type match!")
-  (when identity (c-t-assert (type-equal (element-type global-vec) (type-of identity)) "identiy type"))
+  (c-t-assert (type-equal (element-type~ global-vec) (element-type~ scratch-vec)) "type match!")
+  (when identity (c-t-assert (type-equal (element-type~ global-vec) (type-of identity)) "identiy type"))
   `(let ((lid (get-local-linear-id))
          (gid (get-global-linear-id))
          (val (if (< gid (length~ ,global-vec)) (~ ,global-vec gid) ,identity)))
@@ -179,8 +180,8 @@ Possible Implementation
       (local-barrier)))
 
 (defmacro store-global (scratch-vec global-vec 
-              &optional (transformF (get-identityF (element-type global-vec))))
-  (c-t-assert (type-equal (element-type global-vec) (element-type scratch-vec)) "type match!")
+              &optional (transformF (get-identityF (element-type~ global-vec))))
+  (c-t-assert (type-equal (element-type~ global-vec) (element-type~ scratch-vec)) "type match!")
   `(let ((lid (get-local-linear-id))
          (gid (get-global-linear-id)))
             ;; (wg-idx (get-workgroup-linear-id))) ;;<-- exists? 
@@ -213,8 +214,8 @@ In the example below, this function, if called by a kernel, would cause two addi
 be hoisted, plus a pointer to a unsigned long array.  
 
 ```
-(def-type float-vec (vector-type float :std140 :global :read_only))
-(def-type ulong-vec (vector-type ulong :std140 :global :writeable :std140))
+(def-type float-vec (vector float :std140 :global :read_only))
+(def-type ulong-vec (vector ulong :std140 :global :writeable :std140))
 
 ;; -- calc-final-result --
 (def-grid-function calc-final-result (x y &out A)

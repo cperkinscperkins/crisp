@@ -5,8 +5,8 @@
 (def-enumeration address-space (:global 1) :local :private)
 
 ; Both of these are acceptable usage:
-(vector-type int :global)
-(vector-type float address-space:global)
+(vector int :global)
+(vector float address-space:global)
 
 ```
 

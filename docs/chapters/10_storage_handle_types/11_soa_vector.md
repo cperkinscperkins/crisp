@@ -6,7 +6,7 @@
 `soa-vector` are templated over `S` where `S` is some struct type. But rather than a contiguous block of 
 memmory consisting of repeating structs, `soa-vector`s are "Structs of Arrays". 
 
-For example, using our `point` type from before, `(vector-type :element-type point :length 4)` would layout in memory
+For example, using our `point` type from before, `(vector :element-type point :length 4)` would layout in memory
 like this:
 `|x0|y0|x1|y1|x2|y2|x3|y3|`.
 Or in C++ we can think of it like this:
@@ -51,7 +51,7 @@ Additionally,  `soa-vector` also inherits the properties of their struct element
 
 Example
 ```
-(def-struct point (x:long) (y:long))
+(def-struct point (x long) (y long))
 
 (let ((sv      (make-soa-vector point :local :read_write :std140 20))
       (y       (y~ sv 9))
@@ -68,7 +68,7 @@ Owning to memory coalesence, when the index is a thread id from parallel threads
 #### `XXXX~` without index
 
 Whereas constrastingly, in the example above `(x~ sv)` returns the ENTIRE VECTOR of X from the `soa-vector`.
- `x-vec` would be `(vector-type :element-type long :length 20)`.  
+ `x-vec` would be `(vector :element-type long :length 20)`.  
 
 Its primary purpose is to pass a single, contiguous stream of data to another high-performance primitive, like `reduce-vec`
 
@@ -99,9 +99,9 @@ This rule is in place to prevent overly complex nested SoA layouts and to ensure
 ### Defining 
 
 ```
-(soa-vector-type <element-type> &optional address-space access align length)
+(soa-vector <element-type> &optional address-space access align length)
 
-(soa-vector-type &key element-type address-space access align length)
+(soa-vector &key element-type address-space access align length)
 ```
 
 ### Creating
@@ -133,21 +133,21 @@ Possible Implementation
 
     ;; -- convert-soa-to-aos --
     (def-function convert-soa-to-aos (input-soa-vector output-vector)
-        (declare #((soa-vector-type T) (vector T) => nil))
+        (declare #((soa-vector T) (vector T) => nil))
         (loop-soa-stride input-soa-vector (i)
-            (let ((temp-struct:T (get-struct input-soa-vector i)))
+            (let ((temp-struct (get-struct input-soa-vector i)))
                 (set! (~ output-vector i) temp-struct)))))
 
 ;; -- convert-aos-to-soa --
 (defmacro convert-aos-to-soa (input-vector output-soa-vector)
-    (c-t-assert (type-equal (element-type input-vector) (element-type output-soa-vector)))
-    (let ((T (element-type input-vector))
+    (c-t-assert (type-equal (element-type~ input-vector) (element-type~ output-soa-vector)))
+    (let ((T (element-type~ input-vector))
           (set-forms (with-struct-accessors T (aos-accF soa-accF)
                        ;; body generates one form for each member
                        ;; "i" and "temp-struct" TBD below.
                        `(set! (,soa-accF ,output-soa-vector i (,aos-accF temp-struct))))))
         `(def-function convert-aos-to-soa (input-vector output-soa-vector)
-            (declare #((vector-type ,T) (soa-vector-type ,T)))
+            (declare #((vector ,T) (soa-vector ,T)))
             (loop-vector-stride ,input-vector (i)
                 (let ((temp-struct (~ ,input-vector i)))
                     ;; expand the forms we gathered
