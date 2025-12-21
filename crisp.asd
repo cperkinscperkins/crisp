@@ -17,13 +17,16 @@
                                              (:file "src/llvm-bindings") ; 2. Uses one package, defines FFI
                                              (:file "src/utils")
                                              (:file "src/semantic")
+                                             (:file "src/errors") ; 3. Conditions
+                                             (:file "src/types") ; 4. Type System
+                                             (:file "src/structs") ; 5. Struct Layout
                                              (:file "src/macros")
-                                             (:file "src/compiler") ; 3. Uses FFI, defines compiler
+                                             (:file "src/compiler") ; 6. Uses FFI, defines compiler
                                              (:file "src/enums")
                                              (:file "src/analysis")
-                                             (:file "src/codegen") ; 4. Uses compiler, defines codegen
-                                             (:file "src/templates") ; 5. with-template-type macro
-                                             (:file "src/main")) ; 6. Uses compiler, defines main
+                                             (:file "src/codegen") ; 7. Uses compiler, defines codegen
+                                             (:file "src/templates") ; 8. with-template-type macro
+                                             (:file "src/main")) ; 9. Uses compiler, defines main
 
            ;; --- Build Instructions ---
            ;; how to build "crisp-compile" exe from (asdf:make "crisp")
