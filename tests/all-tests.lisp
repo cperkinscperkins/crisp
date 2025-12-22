@@ -133,14 +133,14 @@
              (is equal '(nil) (analyze-return-type-from-spec '(int)))
              (fail (analyze-return-type-from-spec '(int => foobar))
                    'crisp-unknown-type-error)
-             (is equal '((cell long)) (analyze-return-type-from-spec '(int => (cell long)))))
+             (is equal (list (intern "CELL_LONG_GLOBAL_READ-WRITE" :crisp.compiler)) (analyze-return-type-from-spec '(int => (cell long)))))
 
 (define-test (analyzer environment-from-spec)
              (is equal '((a int) (b float))
                  (analyze-environment-from-spec '(a b) '(int float => nil)))
              (fail (analyze-environment-from-spec '(a) '(bar => nil))
                    'crisp-unknown-type-error)
-             (is equal '((a (cell long)))
+             (is equal (list (list 'a (intern "CELL_LONG_GLOBAL_READ-WRITE" :crisp.compiler)))
                  (analyze-environment-from-spec '(a) '((cell long) => nil))))
 
 (define-test (analyzer return-type-from-list)
@@ -253,7 +253,7 @@
 
                ;; Check the overall structure
                (true (typep ast 'semantic-function) "The top-level AST node should be a semantic-function.")
-               (is equal '((cell int)) (crisp.compiler::semantic-function-return-type ast) "The function's return type should be ((cell int)).")
+               (is equal (list (intern "CELL_INT_GLOBAL_READ-WRITE" :crisp.compiler)) (crisp.compiler::semantic-function-return-type ast) "The function's return type should be (cell_int_global_read-write).")
 
                (let* ((return-node (first (semantic-function-body ast)))
                       (value-node (semantic-return-value-node return-node)))
@@ -421,10 +421,12 @@
                                        (return 0)))))
                (is-valid-ir ir)
                ;; We expect the function signature to pass the cell as a struct (Stage 2 implementation).
-               ;; Current implementation generates: define i32 @test_cell_param_cell_int(%CELL_INT %0)
+               ;; Current implementation generates: define i32 @test_cell_param_cell_int(%CELL_INT_GLOBAL_READ-WRITE %0)
 
-               (true (search "define i32 @test_cell_param_cell_int(%CELL_INT %0)" ir)
-                     "Function signature should pass cell as a named struct.")
+               (true (search "define i32 @test_cell_param_cell_int" ir)
+                     "Function should be defined with correct mangled name.")
+               (true (search "%CELL_INT_GLOBAL_READ-WRITE" ir)
+                     "Function signature should use the canonical mangled struct type.")
                (false (search "define i32 @test_cell_param_cell_int(ptr" ir)
                       "Function signature should NOT explode cell into params.")))
 

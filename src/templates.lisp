@@ -160,7 +160,12 @@
 
      ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
      ((listp sig-type)
-       (match-list-structure sig-type arg-type inference-map template-params))
+       (or (match-list-structure sig-type arg-type inference-map template-params)
+           ;; Unmangle struct names to lists for matching (e.g. CELL_FLOAT -> (CELL FLOAT ...))
+           (and (symbolp arg-type)
+                (let ((unmangled (crisp.compiler::unmangle-template-struct-name arg-type)))
+                  (when unmangled
+                        (match-list-structure sig-type unmangled inference-map template-params))))))
 
      ;; 4. Concrete Type (int)
      (t (equal sig-type arg-type)))))

@@ -39,8 +39,9 @@
   (def-expression-analyzer unless analyze-unless-expression)
   (def-expression-analyzer return analyze-return-expression)
   (def-expression-analyzer aref analyze-aref-expression)
-  ;; ~ is an alias for aref
+  ;; ~ is an alias for aref (handles Cells/Arrays directly, or falls back to ~ function)
   (def-expression-analyzer ~ref~ analyze-aref-expression)
+  (def-expression-analyzer ~ analyze-aref-expression)
 
   ;; From duplicate definition:
   (def-expression-analyzer def-function analyze-nested-def-function)
@@ -61,7 +62,7 @@
       (setf (gethash to-name *expression-analyzers*) #'analyze-cast-expression)
       (setf (gethash as-name *expression-analyzers*) #'analyze-cast-expression)))
   ;; Register the special float-to-int conversion functions
-  (setf (gethash 'truncate *expression-analyzers*) #'analyze-cast-expression)
+  (setf (gethash 'truncate *expression-analyzers*) #'analyze-truncate-expression) ; NEW handler
   (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
@@ -335,6 +336,7 @@
          (body (cdddr form))
          (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
          (existing-signatures (gethash name *function-table*)))
+    (log:info "REGISTER: ~s. Found declare-forms: ~s" name declare-forms)
     (multiple-value-bind (env return-types)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
       ;(dump-env env)
@@ -514,22 +516,37 @@
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
    and function types like #'(int => int)."
+  (log:info "PARSE-TYPE-SPECIFIER ENTRY: ~s (type: ~s)" spec (type-of spec))
   (cond
    ;; Standard symbol: e.g. 'int'
-   ((valid-type-p spec) spec)
+   ((and (symbolp spec) (valid-type-p spec)) spec)
    ;; Function Type: #'(int => int) or (function int => int)
    ((and (listp spec) (member (first spec) '(function common-lisp:function)))
-     ;; Recursively parse the function signature? 
-     ;; For now, let's just create a :function-type descriptor.
      (let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
        `(:function-type ,(analyze-return-type-from-spec sig)
                         :params ,(mapcar #'parse-type-specifier
                                    (subseq sig 0 (position '=> sig))))))
-   ;; List but not a function? Maybe a parameterized type like '(cell int)
+   ;; Storage Handle Constructor Rules (Explicit expansion)
+   ((and (listp spec) (member (symbol-name (first spec)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+     (log:info "PARSE: Calling expand for ~s" spec)
+     (let ((canonical (expand-storage-handle-type-specifier spec)))
+       (if (valid-type-p canonical)
+           (mangle-template-struct-name (first canonical) (rest canonical))
+           (error 'crisp-unknown-type-error :type-name spec))))
+
+   ;; Function Type/Literal (e.g. (:function-type ...) or (:function-literal ...))
+   ((and (listp spec) (valid-function-type-p spec)) spec)
+
+   ;; Generic Parameterized Type: e.g. '(point float)
    ((and (listp spec) (valid-type-p spec))
-     spec)
+     (log:info "PARSE: Generic path for ~s" spec)
+     (mangle-template-struct-name (first spec) (rest spec)))
+
    ;; Unknown?
-   (t (error 'crisp-unknown-type-error :type-name spec))))
+   (t
+     (log:error "PARSE: Unknown type spec: ~s" spec)
+     (error 'crisp-unknown-type-error :type-name spec))))
+
 
 (defun analyze-return-type-from-spec (fn-spec)
   "Parses '(int int => int int)' and returns a list of types."
@@ -744,17 +761,39 @@
         (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
     (make-semantic-if :type '(nil) :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
 
+
+(defun get-array-element-type (type)
+  "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown."
+  (cond
+   ((listp type) (second type)) ;; e.g. (ptr float), (array float 10)
+   ((symbolp type)
+     ;; Check if it is a Mangled Cell
+     (let ((unmangled (unmangle-template-struct-name type)))
+       (if (and (consp unmangled) (eq (first unmangled) 'cell))
+           (second unmangled)
+           nil)))
+   (t nil)))
+
 (defun analyze-aref-expression (expr env location)
-  (let* ((array-node (analyze-expression (second expr) env (append location '(1))))
+  (let* ((op (first expr))
+         (array-node (analyze-expression (second expr) env (append location '(1))))
          (index-expr (third expr))
          (index-node (if index-expr
                          (analyze-expression index-expr env (append location '(2)))
                          ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
-                         (make-semantic-literal :value-type 'int :value 0 :source-location location))))
-    (make-semantic-aref :type (if (listp (semantic-node-type array-node)) (second (semantic-node-type array-node)) 'int)
-                        :array-node array-node
-                        :index-node index-node
-                        :source-location location)))
+                         (make-semantic-literal :value-type 'int :value 0 :source-location location)))
+         (elem-type (get-array-element-type (semantic-node-type array-node))))
+
+    (if elem-type
+        (make-semantic-aref :type elem-type
+                            :array-node array-node
+                            :index-node index-node
+                            :source-location location)
+        ;; Fallback: If not an array/pointer, and op is ~, try to treat as overloadable function call
+        (let ((op-name (symbol-name op)))
+          (if (or (string= op-name "~") (string= op-name "~REF~"))
+              (analyze-function-call op expr env location)
+              (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
 
 (defun analyze-inc!-expression (expr env location)
   (declare (ignore expr env location))
@@ -944,8 +983,8 @@
           (cond
            ((alexandria:starts-with-subseq "TO-" op-name) (intern (subseq op-name 3)))
            ((alexandria:starts-with-subseq "AS-" op-name) (intern (subseq op-name 3)))
-           ;; For truncate, floor, etc., the target is always 'int' for now.
-           ((member op '(truncate floor ceil round)) 'int)
+           ;; For floor, ceil, etc., the target is always 'int' for now.
+           ((member op '(floor ceil round)) 'int)
            (t (error "Internal compiler error: analyze-cast-expression called with invalid operator ~a" op))))
          (target-crisp-type (gethash target-type-name *crisp-types*))
          (arg-node (analyze-expression arg-form env (append location '(1)))))
@@ -977,6 +1016,15 @@
          ;; Handle unsafe `as-` bit reinterpretations
          (t ; Default for "AS-" and other currently unhandled float-to-int ops
            (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))))
+
+(defun analyze-truncate-expression (expr env location)
+  "Analyzes (truncate val) -> (values int rem)."
+  (let* ((arg-form (second expr))
+         (arg-node (analyze-expression arg-form env (append location '(1))))
+         (arg-type (get-single-value-type arg-node))) ;; e.g. 'float
+    (make-semantic-truncate :type (list 'int arg-type) ;; Returns (int float)
+                            :arg arg-node
+                            :source-location location)))
 
 (defun analyze-generic-as-expression (expr env location)
   "Analyzes the generic (as type value) form."
@@ -1407,6 +1455,7 @@
     (semantic-let (semantic-let-type node))
     (semantic-bitcast (semantic-bitcast-type node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-type node))
+    (semantic-truncate (semantic-truncate-type node))
     (semantic-explicit-return (semantic-explicit-return-type node))
     (semantic-call (semantic-call-type node))
     (semantic-funcall (semantic-funcall-type node))
@@ -1423,6 +1472,7 @@
     (semantic-bitcast (semantic-bitcast-source-location node))
     (semantic-let (semantic-let-source-location node))
     (semantic-fp-truncate-cast (semantic-fp-truncate-cast-source-location node))
+    (semantic-truncate (semantic-truncate-source-location node))
     (semantic-add (semantic-add-source-location node))
     (semantic-sub (semantic-sub-source-location node))
     (semantic-mul (semantic-mul-source-location node))
