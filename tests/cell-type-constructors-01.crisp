@@ -1,0 +1,11 @@
+;; storage handle type definitions.
+
+;; type constructors
+
+;; simplest: (cell)   -- not enough to use ~, which requires element type to be known.
+(def-function compare-parent (A B)
+    (declare #'((cell) (cell) => int))
+    ;; (equal (parent~ A) (parent~ B)) ;; do we have equal? Do we want it?  Would = work?
+    ;; alternately
+    (= (byte-size~ (parent~ A)) (byte-size~ (parent~ B))))
+
