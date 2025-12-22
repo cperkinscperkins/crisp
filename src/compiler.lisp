@@ -57,19 +57,19 @@
                      (address-space address-space :c-t)
                      (access access :c-t)))
   ;; Register default ~ accessor as a template
-  (register-template '~ '(To) nil
+  (register-template '~ '(To Addr Acc) nil
                      '(def-function ~ (c)
-                                    (declare (function ((cell To) => To)))
+                                    (declare (function ((cell To Addr Acc) => To)))
                                     (declare (crisp-system-generated))
                                     (return (~ref~ c)))
-                     '((cell To) => To))
-  (register-template '~_SET! '(To) nil
+                     '((cell To Addr Acc) => To))
+  (register-template '~_SET! '(To Addr Acc) nil
                      '(def-function ~_SET! (c v)
-                                    (declare (function ((cell To) To) => nil))
+                                    (declare (function ((cell To Addr Acc) To) => nil))
                                     (declare (crisp-system-generated))
                                     (set! (~ref~ c) v)
                                     (return))
-                     '((cell To) To => nil)))
+                     '((cell To Addr Acc) To => nil)))
 
 
 ;; Helpers (Analysis Placeholder)

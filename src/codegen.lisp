@@ -97,7 +97,8 @@
           (llvm-pointer-type (llvm-int8-type) 0))
         ;; Generic Parameterized Structs (e.g. CELL)
         ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
-          (let ((mangled (mangle-template-struct-name base-type (rest type-spec))))
+          (let* ((expanded (if (string= (symbol-name base-type) "CELL") (expand-storage-handle-type-specifier type-spec) type-spec))
+                 (mangled (mangle-template-struct-name (first expanded) (rest expanded))))
             (resolve-type-to-llvm mangled)))
         ;; We try to mangle it and look it up.
         (t
@@ -599,6 +600,25 @@
            (cast-val (llvm-build-fp-to-si builder arg-val to-llvm-type "fptosi")))
       (values cast-val nil))))
 
+(defmethod generate-node-ir ((node semantic-truncate) builder module var-env di-builder di-scope location-map)
+  "Generates IR for (truncate val) -> (values int rem)."
+  (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-truncate-arg node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore arg-loc))
+    (let* ((result-types (semantic-truncate-type node)) ; (int float)
+                                                       (quot-type (or *cached-int32-type* (llvm-int32-type)))
+                                                       (rem-type (llvm-float-type)) ;; Assuming float input for now
+                                                       ;; 1. Calculate Quotient: fptosi
+                                                       (quot-val (llvm-build-fp-to-si builder arg-val quot-type "quot"))
+                                                       ;; 2. Calculate Remainder: val - (float quot)
+                                                       (quot-float (llvm-build-si-to-fp builder quot-val rem-type "quot_f"))
+                                                       (rem-val (llvm-build-fsub builder arg-val quot-float "rem"))
+                                                       ;; 3. Build Struct
+                                                       (struct-type (get-llvm-return-type module result-types))
+                                                       (agg-undef (llvm-get-undef struct-type))
+                                                       (agg-0 (llvm-build-insert-value builder agg-undef quot-val 0 "res_q"))
+                                                       (agg-1 (llvm-build-insert-value builder agg-0 rem-val 1 "res_r")))
+      (values agg-1 nil))))
+
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
 
@@ -921,52 +941,54 @@
          (cell-val (generate-node-ir array-node builder module var-env di-builder di-scope location-map))
          (index-val (generate-node-ir index-node builder module var-env di-builder di-scope location-map)))
 
-    (cond
-     ;; Case 1: CELL parameterized type
-     ((and (listp array-type) (eq (first array-type) 'cell))
-       (let* ((elem-type-spec (second array-type))
-              (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
-              (storage-struct-type (ensure-struct-llvm-type 'storage))
-              (cell-struct-type (crisp-type-to-llvm-type array-type module)))
+    (let ((cell-spec (if (symbolp array-type)
+                         (unmangle-template-struct-name array-type)
+                         array-type)))
+      (cond
+       ;; Case 1: CELL parameterized type
+       ((and (listp cell-spec) (eq (first cell-spec) 'cell))
+         (let* (;; Use element-type from analysis if reliable, otherwise safe to derive
+                (elem-type-spec element-type)
+                (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
+                (storage-struct-type (ensure-struct-llvm-type 'storage))
+                (cell-struct-type (crisp-type-to-llvm-type array-type module)))
 
-         ;; Cell is passed by value (struct { parent, offset, [extra stuff like size if runtime sized] }).
-         ;; Structure: { STORAGE(ptr,size), OFFSET(u64), ... }
-         ;; We need to:
-         ;; 1. Extract STORAGE.PTR (i8*)
-         ;; 2. Extract OFFSET (u64)
-         ;; 3. Calculate Effective Offset = CELL.OFFSET + (INDEX * sizeof(ELEM))
-         ;; 4. GEP = PTR + Effective Offset
-         ;; 5. Cast GEP to ELEM*
-         ;; 6. Load ELEM
+           ;; Cell is passed by value (struct { parent, offset, [extra stuff like size if runtime sized] }).
+           ;; Structure: { STORAGE(ptr,size), OFFSET(u64), ... }
+           ;; We need to:
+           ;; 1. Extract STORAGE.PTR (i8*)
+           ;; 2. Extract OFFSET (u64)
+           ;; 3. Calculate Effective Offset = CELL.OFFSET + (INDEX * sizeof(ELEM))
+           ;; 4. GEP = PTR + Effective Offset
+           ;; 5. Cast GEP to ELEM*
+           ;; 6. Load ELEM
 
-         ;; Extract PARENT (index 0) -> STORAGE
-         (let* ((parent-val (llvm-build-extract-value builder cell-val 0 "parent")))
-           ;; Extract STORAGE.PTR (index 0 of STORAGE)
-           (let* ((base-ptr (llvm-build-extract-value builder parent-val 0 "base_ptr")))
-             ;; Extract CELL.OFFSET (Index 1) - ulong/i64
-             (let* ((cell-offset (llvm-build-extract-value builder cell-val 1 "cell_offset")))
+           ;; Extract PARENT (index 0) -> STORAGE
+           (let* ((parent-val (llvm-build-extract-value builder cell-val 0 "parent")))
+             ;; Extract STORAGE.PTR (index 0 of STORAGE)
+             (let* ((base-ptr (llvm-build-extract-value builder parent-val 0 "base_ptr")))
+               ;; Extract CELL.OFFSET (Index 1) - ulong/i64
+               (let* ((cell-offset (llvm-build-extract-value builder cell-val 1 "cell_offset")))
 
-               ;; Calculate Element Size
-               (let* ((elem-size (llvm-size-of elem-llvm-type))
-                      ;; Calculate Index Offset = Index * Size
-                      (index-val (generate-node-ir index-node builder module var-env di-builder di-scope location-map))
-                      ;; Extend Index to i64 (assume s64 for now)
-                      (index-i64 (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
-                      ;; Index Bytes = Index * Size
-                      (index-bytes (llvm-build-mul builder index-i64 elem-size "index_bytes"))
-                      ;; Total Offset = CellOffset + IndexBytes
-                      (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
+                 ;; Calculate Element Size
+                 (let* ((elem-size (llvm-size-of elem-llvm-type))
+                        ;; Extend Index to i64 (assume s64 for now)
+                        (index-i64 (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
+                        ;; Index Bytes = Index * Size
+                        (index-bytes (llvm-build-mul builder index-i64 elem-size "index_bytes"))
+                        ;; Total Offset = CellOffset + IndexBytes
+                        (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
 
-                 ;; Final Pointer = GEP(BasePtr, TotalOffset)
-                 (cffi:with-foreign-object (indices :pointer 1)
-                                           (setf (cffi:mem-aref indices :pointer 0) total-offset)
-                                           (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8")))
+                   ;; Final Pointer = GEP(BasePtr, TotalOffset)
+                   (cffi:with-foreign-object (indices :pointer 1)
+                                             (setf (cffi:mem-aref indices :pointer 0) total-offset)
+                                             (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8")))
 
-                                             ;; Cast to Element and Load
-                                             (let* ((target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type 0) "target_ptr"))
-                                                    (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
+                                               ;; Cast to Element and Load
+                                               (let* ((target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type 0) "target_ptr"))
+                                                      (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
 
-                                               ;; Return loaded val, nil (loc), AND pointer (for set!)
-                                               (values loaded-val nil target-ptr))))))))))
+                                                 ;; Return loaded val, nil (loc), AND pointer (for set!)
+                                                 (values loaded-val nil target-ptr))))))))))
 
-     (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a" array-type)))))
+       (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)" array-type cell-spec))))))

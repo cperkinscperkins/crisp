@@ -147,6 +147,9 @@
 (defstruct (semantic-fp-truncate-cast (:include semantic-cast))
   "Represents a float-to-integer truncation cast.")
 
+(defstruct (semantic-truncate (:include semantic-cast))
+  "Represents a truncate operation returning (quot rem).")
+
 
 (defstruct semantic-call
   "Represents a call to a user-defined function."

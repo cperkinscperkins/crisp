@@ -219,6 +219,9 @@ SHORT TERM PLAN
 - - - [ ] (atomic-xchg! (~ someCell) newValue)
 - - [x] def-setter
 - - [x] overload ~
+- - [ ] cell type constructors (&optional first, maybe not &key quite yet)
+- - [ ] insertion of r-t-assert when set! offset~ or parent~ ?
+- - - [ ] validation against --runtime-checks flag
 - - [ ] Tensor Properties ( can be set)
 - - - [ ] length~ ( number of elements)
 - - - [ ] parent~
