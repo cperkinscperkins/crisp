@@ -154,6 +154,20 @@ This supports overloading templates by arity or other factors.")
 ;; Type Equivalence
 ;; ================
 
+
+(defun expand-storage-handle-type-specifier (spec)
+  "Expands storage handle constructors like (cell) or (cell int) into canonical template forms."
+  (cl:let ((base (first spec))
+           (args (rest spec)))
+    (cl:cond
+      ((string-equal (symbol-name base) "CELL")
+       (cl:let ((element-type (if args (first args) 'void))
+                (address-space (if (> (length args) 1) (second args) :global))
+                (access (if (> (length args) 2) (third args) :read-write)))
+         (cl:let ((res `(,base ,element-type ,address-space ,access)))
+           res)))
+      (t spec))))
+
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, handling template struct canonicalization."
   (log:debug "types-equivalent-p: ~s vs ~s" t1 t2)
@@ -165,8 +179,12 @@ This supports overloading templates by arity or other factors.")
      t)
     ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT equivalence
     ((and (consp t1) (symbolp t2))
-     (cl:let ((base-type (first t1))
-              (params (rest t1)))
+     ;; Expand implicit storage handles first (e.g. (cell int) -> (cell int :global :read-write))
+     (let* ((expanded (if (member (symbol-name (first t1)) '("CELL") :test #'string-equal)
+                          (expand-storage-handle-type-specifier t1)
+                          t1))
+            (base-type (first expanded))
+            (params (rest expanded)))
        (if (and (symbolp base-type)
                 (not (excluded-template-base-type-p base-type)))
            (progn

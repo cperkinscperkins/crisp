@@ -97,7 +97,8 @@
           (llvm-pointer-type (llvm-int8-type) 0))
         ;; Generic Parameterized Structs (e.g. CELL)
         ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
-          (let ((mangled (mangle-template-struct-name base-type (rest type-spec))))
+          (let* ((expanded (if (string= (symbol-name base-type) "CELL") (expand-storage-handle-type-specifier type-spec) type-spec))
+                 (mangled (mangle-template-struct-name (first expanded) (rest expanded))))
             (resolve-type-to-llvm mangled)))
         ;; We try to mangle it and look it up.
         (t

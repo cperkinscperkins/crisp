@@ -534,6 +534,9 @@
            (mangle-template-struct-name (first canonical) (rest canonical))
            (error 'crisp-unknown-type-error :type-name spec))))
 
+   ;; Function Type/Literal (e.g. (:function-type ...) or (:function-literal ...))
+   ((and (listp spec) (valid-function-type-p spec)) spec)
+
    ;; Generic Parameterized Type: e.g. '(point float)
    ((and (listp spec) (valid-type-p spec))
      (log:info "PARSE: Generic path for ~s" spec)
@@ -544,20 +547,6 @@
      (log:error "PARSE: Unknown type spec: ~s" spec)
      (error 'crisp-unknown-type-error :type-name spec))))
 
-(defun expand-storage-handle-type-specifier (spec)
-  "Expands storage handle constructors like (cell) or (cell int) into canonical template forms."
-  (let ((base (first spec))
-        (args (rest spec)))
-    (cond
-     ((string-equal (symbol-name base) "CELL")
-       (log:info "EXPANDING CELL SPEC: ~s args=~s" spec args)
-       (let ((element-type (if args (first args) 'void))
-             (address-space (if (> (length args) 1) (second args) :global))
-             (access (if (> (length args) 2) (third args) :read-write)))
-         (let ((res `(,base ,element-type ,address-space ,access)))
-           (log:info "EXPANDED CELL RESULT: ~s" res)
-           res)))
-     (t spec))))
 
 (defun analyze-return-type-from-spec (fn-spec)
   "Parses '(int int => int int)' and returns a list of types."
