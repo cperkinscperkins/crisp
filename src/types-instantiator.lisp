@@ -1,17 +1,23 @@
 ```lisp
 (in-package :crisp.compiler)
 
-(defun instantiate-cell-struct (element-type)
+(defun instantiate-cell-struct (element-type &optional (address-space :global) (access :read-write))
   "Programmatically defines the CELL_<ElementType> struct.
    Members:
      parent: (storage)
      offset: (long)
      element-type: (type :c-t <element-type>)
-     address-space: (address-space :c-t :global) ;; Default, effectively
-     access: (access :c-t :read-write) ;; Default
+     address-space: (address-space :c-t :global)
+     access: (access :c-t :read-write)
   "
+  ;; TODO: Validate address-space and access are keywords?
+  (cl:unless (member address-space '(:global :local :private :constant :generic))
+    (error "Invalid address-space for cell: ~a" address-space))
+
+  (cl:unless (member access '(:read-only :write-only :read-write :writable :readable))
+    (error "Invalid access for cell: ~a" access))
   (log:info "Instantiating CELL struct for type: ~a" element-type)
-  (cl:let* ((mangled-name (mangle-template-struct-name 'cell (list element-type)))
+  (cl:let* ((mangled-name (mangle-template-struct-name 'cell (list element-type address-space access)))
             (members `((parent storage)
                        (offset ulong) ;; Changed to ulong as per user feedback
                        (element-type type :c-t ,element-type)
@@ -25,8 +31,8 @@
                        ;; User TDD 'cell-03-passthrough' expects:
                        ;; (c-t-assert (= (address-space~ c) :global))
                        ;; This implies 'address-space~' is a macro expanding to a keyword.
-                       (address-space address-space :c-t :global)
-                       (access access :c-t :read-write))))
+                       (address-space address-space :c-t ,address-space)
+                       (access access :c-t ,access))))
 
     ;; Register the definition
     (register-struct-definition mangled-name (mapcar #'parse-struct-member-spec members))

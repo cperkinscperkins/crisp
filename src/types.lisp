@@ -124,6 +124,33 @@ This supports overloading templates by arity or other factors.")
   (cl:unless name (return-from mangle-template-struct-name nil))
   (intern (format nil "~a_~{~a~^_~}" name params) (symbol-package name)))
 
+(defun split-string (string delimiter)
+  "Splits a string by a character delimiter."
+  (loop for i = 0 then (1+ j)
+          as j = (position delimiter string :start i)
+        collect (subseq string i j)
+        while j))
+
+(defun unmangle-template-struct-name (symbol)
+  "Attempts to reverse mangling for known parameterized types like CELL.
+   Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL."
+  (cl:when (cl:symbolp symbol)
+    (cl:let ((name (cl:symbol-name symbol)))
+      (cl:if (cl:and (cl:> (cl:length name) 5) (cl:string-equal (cl:subseq name 0 5) "CELL_"))
+             (cl:let* ((parts (split-string (cl:subseq name 5) #\_))
+                       (n (cl:length parts)))
+               (cl:when (cl:>= n 3)
+                 (cl:let* ((access-str (cl:nth (cl:1- n) parts))
+                           (addr-str (cl:nth (cl:- n 2) parts))
+                           ;; Reconstruct element type name from remaining parts (handling underscores in elem name)
+                           (elem-parts (cl:subseq parts 0 (cl:- n 2)))
+                           (elem-str (cl:format nil "~{~a~^_~}" elem-parts))
+                           (elem-sym (cl:intern elem-str (cl:symbol-package symbol)))
+                           (addr-kw (cl:intern addr-str :keyword))
+                           (access-kw (cl:intern access-str :keyword)))
+                   `(cell ,elem-sym ,addr-kw ,access-kw))))
+             nil))))
+
 ;; Type Equivalence
 ;; ================
 
@@ -206,21 +233,24 @@ This supports overloading templates by arity or other factors.")
     (cl:let ((base-type (first type-spec))
              (params (rest type-spec)))
       (cl:cond
-        ((not (symbolp base-type)) nil) ;; Base type must be a symbol
+        ((not (symbolp base-type)) nil)
         ((excluded-template-base-type-p base-type) nil)
-        ((and (string-equal (symbol-name base-type) "CELL")
-              (= (length params) 1)
-              (gethash (first params) *crisp-types*))
-         ;; Auto-instantiate CELL_<Type> struct if not present
-         (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
-           (cl:unless (gethash mangled-name *crisp-structs*)
-             (instantiate-cell-struct (first params)))
-           t))
-        ;; Generic Templated Structs: (POINT FLOAT) -> POINT_FLOAT
+        ((string-equal (symbol-name base-type) "CELL")
+         (cl:let ((elem (first params)))
+           (if (symbolp elem)
+               (log:info "Type Check: ~s (pkg: ~s) In *CRISP-TYPES*? ~s" elem (symbol-package elem) (gethash elem *crisp-types*))
+               (log:info "Type Check: ~s (NOT SYMBOL)" elem)))
+         (cl:cond
+           ((and (>= (length params) 1)
+                 (valid-type-p (first params)))
+            (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
+              (cl:unless (gethash mangled-name *crisp-structs*)
+                (apply #'instantiate-cell-struct params))
+              t))
+           (t nil)))
         ((symbolp base-type)
          (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
            (or (gethash mangled-name *crisp-structs*)
-               ;; Attempt Auto-Instantiation if it's a known template
                (cl:when (gethash base-type *template-registry*)
                  (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
                  (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
