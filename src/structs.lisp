@@ -136,7 +136,7 @@
 (defun ensure-struct-llvm-type (name)
   "Ensures the LLVM struct type exists for the given struct name.
    Handles forward declarations and recursion."
-  (cl:let ((def (gethash name *crisp-structs*)))
+  (cl:let ((def (find-struct-definition-by-name name)))
     (cl:unless def
       (error "Unknown struct type: ~a" name))
 
@@ -169,6 +169,19 @@
           (cffi:foreign-free types-array)))
 
       struct-type)))
+
+(defun find-struct-definition-by-name (name-or-symbol)
+  "Robustly finds a struct definition by symbol or name string, ignoring package."
+  (cl:let ((def (gethash name-or-symbol *crisp-structs*)))
+    (if def
+        def
+        ;; Fallback: Scan for name match
+        (cl:let ((target-name (string (if (symbolp name-or-symbol) (symbol-name name-or-symbol) name-or-symbol))))
+          (maphash (lambda (k v)
+                     (when (string-equal (symbol-name k) target-name)
+                           (return-from find-struct-definition-by-name v)))
+                   *crisp-structs*)
+          nil))))
 
 (defun register-struct-definition (name members)
   "Registers a struct definition in the global registry."

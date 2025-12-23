@@ -1049,11 +1049,20 @@
 
 (defun get-struct-member-index (struct-type-name member-name)
   "Helper to find the physical index of a struct member, accounting for padding."
-  (let ((struct-def (gethash struct-type-name *crisp-structs*)))
+  (let ((struct-def (find-struct-definition-by-name struct-type-name)))
+    ;; Robust Lookup: If not found by symbol, try by name (ignoring package)
     (unless struct-def
       (error "Unknown struct type '~a' during member lookup." struct-type-name))
+
     (let* ((indices (crisp-struct-definition-field-indices struct-def))
            (index (gethash member-name indices)))
+      ;; Robust Member Lookup: If not found by symbol, try by name
+      (unless index
+        (maphash (lambda (k v)
+                   (when (string-equal (symbol-name k) (symbol-name member-name))
+                         (setf index v)))
+                 indices))
+
       (unless index
         (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
       index)))
@@ -1769,9 +1778,10 @@
                      (struct-node (first arg-nodes))
                      (struct-type (semantic-node-type struct-node)))
 
-                ;; Verify struct node is a variable (l-value)
-                (unless (semantic-var-read-p struct-node)
-                  (error "Cannot set member of non-variable struct form: ~a" (second target-form)))
+                ;; Verify struct node is a variable (l-value) OR a valid place for set!
+                ;; Removed check for semantic-var-read-p to allow generalized places like (~ p)
+                ;; (unless (semantic-var-read-p struct-node)
+                ;;   (error "Cannot set member of non-variable struct form: ~a" (second target-form)))
 
                 (let ((member-index (get-struct-member-index struct-type member-sym)))
                   ;; Create the update node

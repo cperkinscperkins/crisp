@@ -321,7 +321,7 @@ This supports overloading templates by arity or other factors.")
      (funcall (crisp-type-llvm-type-fn (gethash type-spec *crisp-types*))))
 
     ;; Struct
-    ((and (symbolp type-spec) (gethash type-spec *crisp-structs*))
+    ((and (symbolp type-spec) (find-struct-definition-by-name type-spec))
      (ensure-struct-llvm-type type-spec))
 
     ;; Pointer / Cell (simple version)
