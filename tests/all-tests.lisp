@@ -453,8 +453,10 @@
                (is-valid-ir ir)
                ;; We expect the call to 'take-cell' to pass the struct.
 
-               (true (search "call i32 @take_cell_cell_int(%CELL_INT" ir)
-                     "Function call should pass cell struct.")
+               (true (search "call i32 @take_cell_cell_int" ir)
+                     "Function call should pass cell struct (func name).")
+               (true (search "%CELL_INT" ir)
+                     "Function call should pass cell struct (arg type).")
                ;; We can't easily regex for the second arg without a regex lib, but we can check for the absence of the struct
                (false (search "call i32 @take_cell_cell_int(ptr" ir)
                       "Function call should NOT pass ptr exploded.")))

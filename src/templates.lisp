@@ -168,7 +168,9 @@
                         (match-list-structure sig-type unmangled inference-map template-params))))))
 
      ;; 4. Concrete Type (int)
-     (t (equal sig-type arg-type)))))
+     (t (or (equal sig-type arg-type)
+            (and (symbolp sig-type) (symbolp arg-type)
+                 (string-equal (symbol-name sig-type) (symbol-name arg-type))))))))
 
 (defun match-list-structure (sig-list arg-list inference-map template-params)
   (and (listp arg-list)
@@ -200,6 +202,17 @@
 (defun initialize-templates ()
   "Initializes the template system and hooks into the compiler."
   (setf crisp.compiler::*template-instantiator-fn* #'ensure-template-instantiation)
+  (setf crisp.compiler::*template-arity-lookup-fn*
+    (lambda (name)
+      (let ((tmpls (gethash name *template-registry*)))
+        (unless tmpls
+          ;; Robust lookup: try to find by string name in registry keys
+          (maphash (lambda (k v)
+                     (when (string-equal (symbol-name k) (symbol-name name))
+                           (setf tmpls v)))
+                   *template-registry*))
+        (when tmpls
+              (length (template-data-parameters (first tmpls)))))))
   (log:info "Template system initialized."))
 
 ;;; ----------------------------------------------------------------------------

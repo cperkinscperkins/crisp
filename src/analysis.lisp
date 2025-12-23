@@ -321,7 +321,11 @@
                                     (let ((name (first p)) (type (second p)))
                                       (unless (valid-type-p type)
                                         (error 'crisp-unknown-type-error :type-name type))
-                                      (list name type)))
+                                      ;; Start-Of-Change
+                                      (let ((parsed (parse-type-specifier type)))
+                                        (log:info "Parsing Param ~a: Declared ~a -> Parsed ~a" name type parsed)
+                                        (list name parsed))))
+                                   ;; End-Of-Change
                                    (error "Mixed bare and typed parameters not allowed."))))
 
                ;; Case 3: Standard declarations
@@ -531,7 +535,11 @@
      (log:info "PARSE: Calling expand for ~s" spec)
      (let ((canonical (expand-storage-handle-type-specifier spec)))
        (if (valid-type-p canonical)
-           (mangle-template-struct-name (first canonical) (rest canonical))
+           (let ((base (first canonical))
+                 (params (rest canonical)))
+             ;; Recursively parse params if they are types (e.g. (point int) -> POINT_INT)
+             (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+               (mangle-template-struct-name base resolved-params)))
            (error 'crisp-unknown-type-error :type-name spec))))
 
    ;; Function Type/Literal (e.g. (:function-type ...) or (:function-literal ...))
@@ -540,13 +548,15 @@
    ;; Generic Parameterized Type: e.g. '(point float)
    ((and (listp spec) (valid-type-p spec))
      (log:info "PARSE: Generic path for ~s" spec)
-     (mangle-template-struct-name (first spec) (rest spec)))
+     (let ((base (first spec))
+           (params (rest spec)))
+       (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+         (mangle-template-struct-name base resolved-params))))
 
    ;; Unknown?
    (t
      (log:error "PARSE: Unknown type spec: ~s" spec)
      (error 'crisp-unknown-type-error :type-name spec))))
-
 
 (defun analyze-return-type-from-spec (fn-spec)
   "Parses '(int int => int int)' and returns a list of types."
@@ -607,7 +617,7 @@
           (let* ((param-names (butlast (rest type-decl) 1))
                  (param-type-name (first (last type-decl))))
             (if (valid-type-p param-type-name)
-                (mapcar #'(lambda (name) (list name param-type-name))
+                (mapcar #'(lambda (name) (list name (parse-type-specifier param-type-name)))
                   param-names)
                 (error 'crisp-unknown-type-error :type-name param-type-name))))))
 
@@ -760,7 +770,6 @@
   (let ((cond-node (analyze-expression (second expr) env (append location '(1))))
         (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
     (make-semantic-if :type '(nil) :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
-
 
 (defun get-array-element-type (type)
   "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown."
@@ -1049,23 +1058,27 @@
 
 (defun get-struct-member-index (struct-type-name member-name)
   "Helper to find the physical index of a struct member, accounting for padding."
-  (let ((struct-def (find-struct-definition-by-name struct-type-name)))
-    ;; Robust Lookup: If not found by symbol, try by name (ignoring package)
-    (unless struct-def
-      (error "Unknown struct type '~a' during member lookup." struct-type-name))
+  (let ((search-key (if (and (consp struct-type-name) (valid-type-p struct-type-name))
+                        (mangle-template-struct-name (first struct-type-name) (rest struct-type-name))
+                        struct-type-name)))
+    (log:info "Looking up struct member ~a in type ~a (key: ~a params?: ~a)" member-name struct-type-name search-key (valid-type-p struct-type-name))
+    (let ((struct-def (find-struct-definition-by-name search-key)))
+      ;; Robust Lookup: If not found by symbol, try by name (ignoring package)
+      (unless struct-def
+        (error "Unknown struct type '~a' during member lookup." struct-type-name))
 
-    (let* ((indices (crisp-struct-definition-field-indices struct-def))
-           (index (gethash member-name indices)))
-      ;; Robust Member Lookup: If not found by symbol, try by name
-      (unless index
-        (maphash (lambda (k v)
-                   (when (string-equal (symbol-name k) (symbol-name member-name))
-                         (setf index v)))
-                 indices))
+      (let* ((indices (crisp-struct-definition-field-indices struct-def))
+             (index (gethash member-name indices)))
+        ;; Robust Member Lookup: If not found by symbol, try by name
+        (unless index
+          (maphash (lambda (k v)
+                     (when (string-equal (symbol-name k) (symbol-name member-name))
+                           (setf index v)))
+                   indices))
 
-      (unless index
-        (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
-      index)))
+        (unless index
+          (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
+        index))))
 
 (defun analyze-set!-expression-OLD (expr env location)
   "Analyzes a (set! target value) expression."

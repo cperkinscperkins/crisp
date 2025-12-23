@@ -103,7 +103,7 @@
         ;; We try to mangle it and look it up.
         (t
           (let ((mangled-name (intern (format nil "~a_~{~a~^_~}" base-type (rest type-spec)) (symbol-package base-type))))
-            (if (gethash mangled-name *crisp-structs*)
+            (if (or (gethash mangled-name *crisp-structs*) (find-struct-definition-by-name mangled-name))
                 (resolve-type-to-llvm mangled-name)
                 (error "Internal codegen error: Unknown parameterized type ~a (pkg: ~a). Mangled: ~a"
                   base-type
