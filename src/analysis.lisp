@@ -774,7 +774,7 @@
            nil)))
    (t nil)))
 
-(defun analyze-aref-expression (expr env location)
+(defun analyze-aref-expression-OLD (expr env location)
   (let* ((op (first expr))
          (array-node (analyze-expression (second expr) env (append location '(1))))
          (index-expr (third expr))
@@ -785,10 +785,13 @@
          (elem-type (get-array-element-type (semantic-node-type array-node))))
 
     (if elem-type
-        (make-semantic-aref :type elem-type
-                            :array-node array-node
-                            :index-node index-node
-                            :source-location location)
+        (progn
+         (when (or (eq elem-type 'void) (eq elem-type :void) (string-equal elem-type "VOID"))
+               (error "Cannot dereference a Cell of type VOID. Cast it to a concrete type first."))
+         (make-semantic-aref :type elem-type
+                             :array-node array-node
+                             :index-node index-node
+                             :source-location location))
         ;; Fallback: If not an array/pointer, and op is ~, try to treat as overloadable function call
         (let ((op-name (symbol-name op)))
           (if (or (string= op-name "~") (string= op-name "~REF~"))
@@ -1055,7 +1058,7 @@
         (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
       index)))
 
-(defun analyze-set!-expression (expr env location)
+(defun analyze-set!-expression-OLD (expr env location)
   "Analyzes a (set! target value) expression."
   (let* ((target-form (second expr))
          (value-form (third expr))
@@ -1211,7 +1214,7 @@
 
     signature))
 
-(defun analyze-function-call (op expr env location)
+(defun analyze-function-call-OLD (op expr env location)
   "Analyzes a call to a user-defined function."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op *current-compiling-function*)
   (if *call-graph*
@@ -1248,6 +1251,13 @@
             :expected (length (function-signature-parameters signature))
             :inferred (length explicit-arg-types)
             :source-location location))
+
+        ;; Check for invalid use of ~ on VOID cells
+        (let ((ret-type (function-signature-return-types signature)))
+          (when (and (or (string= (symbol-name op) "~") (string= (symbol-name op) "~REF~"))
+                     (or (equal ret-type '(void)) (eq ret-type 'void)
+                         (and (listp ret-type) (string-equal (symbol-name (first ret-type)) "VOID"))))
+                (error "Cannot dereference a Cell of type VOID. Cast it to a concrete type first.")))
 
         (make-semantic-call :name (function-signature-name signature)
                             :type (function-signature-return-types signature)
@@ -1377,12 +1387,12 @@
           unless (null expr)
         collect (analyze-expression expr env (append location (list i)))))
 
-(defun analyze-expression (expr env location)
+(defun analyze-expression-OLD (expr env location)
   "Recursively analyzes a *single* expression."
   (log:debug "analyze-expression expr: ~s location: ~s" expr location)
   ;; Handle empty body case, which `read` can return as NIL
   (when (null expr)
-        (return-from analyze-expression (make-semantic-progn :type '(nil) :body nil :source-location location)))
+        (return-from analyze-expression-OLD (make-semantic-progn :type '(nil) :body nil :source-location location)))
 
   (cond
    ;; Case 1: It's a literal, like 7
@@ -1564,3 +1574,278 @@
       (when di-builder (llvm-dispose-di-builder di-builder))
       (llvm-dispose-builder builder)
       (llvm-dispose-module module))))
+
+;; PATCH: Redefine analyze-function-call to fix void cell dereference issue
+(defun analyze-function-call (op expr env location)
+  "Analyzes a call to a user-defined function."
+  (log:debug "Analyzing function call to ~s. Current function: ~s" op *current-compiling-function*)
+  (if *call-graph*
+      (when *current-compiling-function*
+            (pushnew op (gethash *current-compiling-function* *call-graph*)))
+      (when (member op *single-pass-call-stack*)
+            (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
+
+  (let ((implicit-args-required (gethash op *implicit-arg-map*)))
+    (when (and (null *call-graph*) implicit-args-required)
+          (setf (gethash *current-compiling-function* *implicit-arg-map*) implicit-args-required))
+
+    (let* ((arg-forms (rest expr))
+           (explicit-arg-nodes (loop for arg-form in arg-forms
+                                     for i from 1
+                                     collect (analyze-expression arg-form env (append location (list i)))))
+           (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
+           (signature (resolve-best-signature op explicit-arg-types)))
+
+      (let ((final-arg-nodes
+             (if implicit-args-required
+                 (let ((implicit-arg-nodes
+                        (loop for arg-name in '(__storage_ptr __storage_size)
+                              collect (let ((found (assoc arg-name env)))
+                                        (if found
+                                            (make-semantic-var-read :name arg-name :type (second found) :source-location location)
+                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
+                                              *current-compiling-function* arg-name))))))
+                   (append implicit-arg-nodes explicit-arg-nodes))
+                 explicit-arg-nodes)))
+
+        (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
+          (error 'crisp-signature-arity-error
+            :expected (length (function-signature-parameters signature))
+            :inferred (length explicit-arg-types)
+            :source-location location))
+
+        ;; Check for invalid use of ~ on VOID cells (Robust Check)
+        (let ((ret-type (function-signature-return-types signature)))
+          ;; Robust check for VOID (symbol, string, list wrapped)
+          (let ((is-void (or (eq ret-type 'void)
+                             (and (symbolp ret-type) (string-equal (symbol-name ret-type) "VOID"))
+                             (and (consp ret-type)
+                                  (let ((head (first ret-type)))
+                                    (or (eq head 'void)
+                                        (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
+            (when (and (or (string= (symbol-name op) "~") (string= (symbol-name op) "~REF~"))
+                       is-void)
+                  (error "Cannot dereference a Cell of type VOID. Cast it to a concrete type first."))))
+
+        (make-semantic-call :name (function-signature-name signature)
+                            :type (function-signature-return-types signature)
+                            :args final-arg-nodes
+                            :signature signature
+                            :source-location location)))))
+
+;; PATCH: Redefine analyze-aref-expression to fix void cell dereference issue
+(defun analyze-aref-expression (expr env location)
+  (let* ((op (first expr))
+         (array-node (analyze-expression (second expr) env (append location '(1))))
+         (index-expr (third expr))
+         (index-node (if index-expr
+                         (analyze-expression index-expr env (append location '(2)))
+                         ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
+                         (make-semantic-literal :value-type 'int :value 0 :source-location location)))
+         (elem-type (get-array-element-type (semantic-node-type array-node))))
+
+    (if elem-type
+        (progn
+         ;; Check for VOID element type
+         (let ((is-void (or (eq elem-type 'void)
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
+                            (and (consp elem-type)
+                                 (let ((head (first elem-type)))
+                                   (or (eq head 'void)
+                                       (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
+           (when is-void
+                 (error "Cannot dereference a Cell of type VOID. Cast it to a concrete type first.")))
+
+         (make-semantic-aref :type elem-type
+                             :array-node array-node
+                             :index-node index-node
+                             :source-location location))
+        ;; Fallback: If not an array/pointer, and op is ~, try to treat as overloadable function call
+        (let ((op-name (symbol-name op)))
+          (if (or (string= op-name "~") (string= op-name "~REF~"))
+              (analyze-function-call op expr env location)
+              (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+
+;; PATCH: Redefine analyze-set!-expression with deep debugging and fallback check
+(defun analyze-set!-expression (expr env location)
+  "Analyzes a (set! target value) expression."
+  (let* ((target-form (second expr))
+         (value-form (third expr))
+         (value-node (analyze-expression value-form env (append location '(2)))))
+
+    (cond
+     ;; Case 1: Simple variable assignment (set! x v)
+     ((symbolp target-form)
+       (let ((var-info (assoc target-form env)))
+         (unless var-info
+           (error 'crisp-unknown-variable :name target-form :source-location location))
+
+         ;; Verify types match
+         (let ((var-type (second var-info))
+               (val-type (semantic-node-type value-node)))
+           (unless (types-compatible-p val-type var-type)
+             (error 'crisp-type-error :expected var-type :inferred val-type :source-location location)))
+
+         (make-semantic-set!
+          :target-node (make-semantic-var-read :name target-form :type (second var-info) :source-location location)
+          :value-node value-node
+          :source-location location)))
+
+     ;; Case 2: Function Call / Struct Accessor
+     ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
+       (let* ((op (first target-form))
+              (op-args (rest target-form))
+              ;; Analyze the arguments to `(op args...)`
+              (arg-nodes (loop for arg in op-args
+                               for i from 1
+                               collect (analyze-expression arg env (append location (list 1 i)))))
+              (all-arg-nodes (append arg-nodes (list value-node)))
+              (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
+              ;; Check for a matching setter function signature: (op arg1 ... argN value)
+              (full-setter-name (intern (format nil "~a_SET!" op) (symbol-package op)))
+              (signatures (append (gethash op *function-table*)
+                            (gethash full-setter-name *function-table*)))
+              (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
+
+         ;; If no match found, try checking if it's a template we can instantiate
+         (unless match
+           (let ((template-op (if (gethash full-setter-name *template-registry*) full-setter-name op)))
+             (when (gethash template-op *template-registry*)
+                   (ensure-template-instantiation template-op all-arg-types (lambda (f l) (declare (ignore l)) (eval f)))
+                   ;; Re-fetch signatures after possible instantiation
+                   (setf signatures (append (gethash op *function-table*)
+                                      (gethash full-setter-name *function-table*)))
+                   (setf match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))))
+
+         (log:info "DEBUG SET!: op=~s arg-types=~s match=~s signatures-count=~d"
+                   op all-arg-types (if match (function-signature-name match) "NIL") (length signatures))
+
+         ;; Check if value is invalid VOID, regardless of match
+         (let ((val-type (semantic-node-type value-node)))
+           (let ((is-void (or (eq val-type 'void)
+                              (and (symbolp val-type) (string-equal (symbol-name val-type) "VOID"))
+                              (and (consp val-type)
+                                   (let ((head (first val-type)))
+                                     (or (eq head 'void)
+                                         (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
+             (when is-void
+                   (log:info "DEBUG SET!: CAUGHT VOID! val-type=~s" val-type)
+                   (error "Cannot set! using a VOID value."))))
+
+         (cond
+          ;; Sub-case 2a: Found an overloaded setter function -> Call it.
+          (match
+            (make-semantic-call
+             :name (function-signature-name match)
+             :type (function-signature-return-types match)
+             :args all-arg-nodes
+             :signature match
+             :source-location location))
+
+          ;; Sub-case 2b: It is an expression analyzer (e.g. `~`, `aref`)
+          ((gethash op *expression-analyzers*)
+            (let ((target-node (analyze-expression target-form env (append location '(1)))))
+              (make-semantic-set!
+               :target-node target-node
+               :value-node value-node
+               :source-location location)))
+
+          ;; Sub-case 2c: Fallback to Struct Member Update (Legacy Accessor Logic)
+          ;; Only valid if default accessors are used and no explicit setter overrides it.
+          (t
+            (let* ((op-name (symbol-name op))
+                   (is-accessor (or (alexandria:ends-with #\~ op-name)
+                                    (and (alexandria:starts-with #\~ op-name)
+                                         (alexandria:ends-with #\~ op-name)))))
+              (unless is-accessor
+                (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor." target-form))
+
+              ;; The structure member update logic expects the FIRST arg to be the struct.
+              (unless (= (length arg-nodes) 1)
+                (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a." op (length arg-nodes)))
+
+              (let* ((clean-name (string-trim "~" op-name))
+                     (member-sym (intern clean-name (symbol-package op)))
+                     (struct-node (first arg-nodes))
+                     (struct-type (semantic-node-type struct-node)))
+
+                ;; Verify struct node is a variable (l-value)
+                (unless (semantic-var-read-p struct-node)
+                  (error "Cannot set member of non-variable struct form: ~a" (second target-form)))
+
+                (let ((member-index (get-struct-member-index struct-type member-sym)))
+                  ;; Create the update node
+                  (let ((update-node (make-semantic-struct-member-update
+                                      :type struct-type
+                                      :struct-node struct-node
+                                      :member-index member-index
+                                      :value-node value-node
+                                      :source-location location)))
+
+                    ;; Wrap in a set! for the struct variable
+                    (make-semantic-set!
+                     :target-node struct-node
+                     :value-node update-node
+                     :source-location location)))))))))
+
+     (t (error "Invalid set! target structure: ~a" target-form)))))
+
+(in-package :crisp.compiler)
+(def-expression-analyzer set! analyze-set!-expression)
+
+;; Resurrect analyze-expression to force usage of new analyze-set!
+(defun analyze-expression (expr env location)
+  "Recursively analyzes a *single* expression."
+  (log:debug "analyze-expression expr: ~s location: ~s" expr location)
+  ;; Handle empty body case, which `read` can return as NIL
+  (when (null expr)
+        (return-from analyze-expression (make-semantic-progn :type '(nil) :body nil :source-location location)))
+
+  (cond
+   ;; Case 1: It's a literal, like 7
+   ((integerp expr)
+     (make-semantic-literal :value-type 'int :value expr :source-location location))
+
+   ;; Case 1.1: It's a float literal, like 3.14
+   ((floatp expr)
+     ;; For now, all floating point literals default to the 'float' type.
+     (make-semantic-literal :value-type 'float :value expr :source-location location))
+
+   ;; Case 1.5: It's a keyword symbol, like :foo
+   ((keywordp expr)
+     (error 'crisp-unsupported-form-error :form expr :source-location location))
+
+   ;; Case 2: It's a variable, like 'a'
+   ((symbolp expr)
+     (let ((found (assoc expr env)))
+       (if found
+           (make-semantic-var-read :name expr :type (second found) :source-location location)
+           (error 'crisp-unknown-variable
+             :name expr
+             :source-location location))))
+
+   ;; Case 3: It's a function call, like '(+ a b)'
+   ((listp expr) (let ((op (first expr)))
+                   (log:info "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
+                   (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
+                   (cond ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
+                        ((gethash op *expression-analyzers*)
+                          (funcall (gethash op *expression-analyzers*) expr env location))
+                        ;; Case 3b: Is it a macro?
+                        ((macro-function op)
+                          (analyze-expression (macroexpand-1 expr) env location))
+                        ;; Case 3c: Is it a call to a known user-defined function?
+                        ;; Also check implicit *template-registry* for overloading
+                        ((or (gethash op *function-table*)
+                             (gethash op *template-registry*))
+                          (analyze-function-call op expr env location))
+                        ;; Case 3c: Otherwise, we don't know what this is.
+                        (t
+                          (log:debug "  UNSUPPORTED FORM: ~a (pkg: ~a)" op (package-name (symbol-package op)))
+                          (log:debug "  Function Table Keys: ~a" (alexandria:hash-table-keys *function-table*))
+                          (error 'crisp-unsupported-form-error
+                            :form op
+                            :source-location (append location '(0)))))))
+   (t (error 'crisp-unsupported-form-error
+        :form expr
+        :source-location location))))
