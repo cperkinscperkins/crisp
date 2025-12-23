@@ -1625,7 +1625,7 @@
                                         (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
             (when (and (or (string= (symbol-name op) "~") (string= (symbol-name op) "~REF~"))
                        is-void)
-                  (error "Cannot dereference a Cell of type VOID. Cast it to a concrete type first."))))
+                  (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~)."))))
 
         (make-semantic-call :name (function-signature-name signature)
                             :type (function-signature-return-types signature)
@@ -1654,7 +1654,7 @@
                                    (or (eq head 'void)
                                        (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
            (when is-void
-                 (error "Cannot dereference a Cell of type VOID. Cast it to a concrete type first.")))
+                 (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
 
          (make-semantic-aref :type elem-type
                              :array-node array-node
