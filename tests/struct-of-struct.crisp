@@ -1,0 +1,4 @@
+(def-struct point (x int) (y int))
+
+(def-struct rect (p1 point) (p2 point))
+
