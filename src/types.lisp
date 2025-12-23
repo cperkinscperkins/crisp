@@ -366,14 +366,10 @@ This supports overloading templates by arity or other factors.")
       (valid-function-type-p type-spec)
       (valid-parameterized-type-p type-spec)))
 
+
+;; Alias for backward compatibility / simplicity
 (defun type-equal-p (t1 t2)
-  "Checks if two Crisp types are equivalent at compile-time."
-  (cl:cond
-    ((and (symbolp t1) (symbolp t2))
-     (eq t1 t2)) ;; TODO: Handle aliases
-    ((and (listp t1) (listp t2))
-     (equal t1 t2))
-    (t nil)))
+  (types-equivalent-p t1 t2))
 
 ;; LLVM Resolution
 ;; ===============

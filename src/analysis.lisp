@@ -1386,9 +1386,9 @@
                    collect (let ((node (analyze-expression arg env (append location (list (+ 2 i)))))
                                  (expected-type (second member)))
                              ;; Type check
-                             (unless (equal (semantic-node-type node) expected-type)
+                             (unless (type-equal-p (semantic-node-type node) expected-type)
                                ;; Relaxed check for literals behaving as types?
-                               ;; For now strict equality.
+                               ;; For now strict equality (but robust to template mangling).
                                (error 'crisp-type-error
                                  :expected expected-type
                                  :inferred (semantic-node-type node)
