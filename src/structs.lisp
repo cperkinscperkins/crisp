@@ -23,6 +23,12 @@
     ((eq type-spec 'c-pointer) 8) ;; c-pointer is 8 bytes
     ;; Structs align to 16 bytes (vec4)
     ((gethash type-spec *crisp-structs*) 16)
+    ;; Parameterized Structs (e.g. (POINT INT))
+    ((and (consp type-spec) (valid-type-p type-spec))
+     (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+       (if (gethash mangled *crisp-structs*)
+           16
+           (error "Valid type ~a but struct def not found after check alignment." type-spec))))
     (t (error "Unknown type for alignment: ~a" type-spec))))
 
 
@@ -38,6 +44,12 @@
     ;; Structs - Retrieve cached size
     ((gethash type-spec *crisp-structs*)
      (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
+    ;; Parameterized Structs
+    ((and (consp type-spec) (valid-type-p type-spec))
+     (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+       (if (gethash mangled *crisp-structs*)
+           (crisp-struct-definition-total-size (gethash mangled *crisp-structs*))
+           (error "Valid type ~a but struct def not found after check size." type-spec))))
     (t (error "Unknown type for size: ~a" type-spec))))
 
 (defun calculate-std140-padding (current-offset alignment)

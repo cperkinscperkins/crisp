@@ -268,24 +268,29 @@ This supports overloading templates by arity or other factors.")
            (t nil)))
         ((symbolp base-type)
          (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
+           (log:info "Valid-Param-Type Check: ~a (Mangled: ~a)" type-spec mangled-name)
            (or (gethash mangled-name *crisp-structs*)
-               (cl:when (gethash base-type *template-registry*)
-                 (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
-                 (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
-                     (progn
-                      (funcall *template-instantiator-fn* base-type params
-                        (lambda (form loc)
-                          (declare (ignore loc))
-                          (if (and (boundp '*current-module*) *current-module*)
-                              (compile-toplevel-form form nil
-                                                     *current-module*
-                                                     *current-builder*
-                                                     *current-di-builder*
-                                                     *current-di-compile-unit*
-                                                     *current-location-map*)
-                              (eval form))))
-                      (gethash mangled-name *crisp-structs*))
-                     (progn (log:warn "Template instantiator not bound/found") nil))))))
+               (cl:let ((templates (gethash base-type *template-registry*)))
+                 (log:info "  Template Registry for ~a: ~a" base-type templates)
+                 (cl:when templates
+                   (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
+                   (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
+                       (progn
+                        (funcall *template-instantiator-fn* base-type params
+                          (lambda (form loc)
+                            (declare (ignore loc))
+                            (if (and (boundp '*current-module*) *current-module*)
+                                (compile-toplevel-form form nil
+                                                       *current-module*
+                                                       *current-builder*
+                                                       *current-di-builder*
+                                                       *current-di-compile-unit*
+                                                       *current-location-map*)
+                                (eval form))))
+                        (cl:let ((res (gethash mangled-name *crisp-structs*)))
+                          (log:info "  Instantiation Result (crisp-structs check): ~a" res)
+                          res))
+                       (progn (log:warn "Template instantiator not bound/found") nil)))))))
         (t nil)))))
 
 (defun valid-type-p (type-spec)
@@ -324,5 +329,10 @@ This supports overloading templates by arity or other factors.")
      ;; For now, treats cell as generic pointer.
      ;; ideally this should match runtime struct layout
      (llvm-pointer-type (llvm-void-type) 0))
+
+    ;; Parameterized Structs (e.g. (POINT INT))
+    ((and (consp type-spec) (not (keywordp (first type-spec))) (valid-type-p type-spec))
+     (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+       (resolve-type-to-llvm mangled)))
 
     (t (error "Cannot resolve type to LLVM: ~a" type-spec))))
