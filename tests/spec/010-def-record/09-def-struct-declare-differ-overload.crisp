@@ -1,0 +1,13 @@
+
+;; this is not wrong. It should be allowed and it should work.
+;; type resolution doesn't use return types, so this should
+;; take the 'slot' of the normal x~ accessor 
+
+(def-struct point 
+  (x float) 
+  (y int))
+
+
+(def-function x~ (p)
+  (declare #'(point => long))  ; <-- long, not float.
+  (to-long (truncate (~x~ p))))

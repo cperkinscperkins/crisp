@@ -211,6 +211,8 @@ SHORT TERM PLAN
 - [x] runtime assert and --runtime-checks flag
 - [ ] def-record 
 - [ ] revisit "implicit" and "exploded" args - def-record FTW
+- [ ] damn literal numbers are long overdue.  1.0f 1i 2l  something.
+- - [ ] also, give up on "no (to-int )" already. geebus
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - - [x] Storage Properties  (cannot be set)
 - - - [x] address-space
