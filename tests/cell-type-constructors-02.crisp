@@ -1,0 +1,16 @@
+;; storage handle type definitions.
+
+;; type constructors
+
+;; &optional (cell T &optional :address-space :access)
+(def-function kernel-proxy (A B C)
+    (declare #'((cell int) (cell int :global) (cell float :local) => nil))
+    (let ((quot rem (truncate (~ C))))
+        (set! (~ A) quot)
+        (set! (~ B) rem)))
+
+(def-function kernel-proximate (A B C)
+    (declare #'((cell long :global :read-only) (cell long :local :read-only) (cell long :local :write-only) => nil))
+    (set! (~ C) (to-float (+ (~ A) (~ B)))))
+
+;; &key (cell &key :element-type :address-space :access)

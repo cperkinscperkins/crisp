@@ -103,7 +103,7 @@
         ;; We try to mangle it and look it up.
         (t
           (let ((mangled-name (intern (format nil "~a_~{~a~^_~}" base-type (rest type-spec)) (symbol-package base-type))))
-            (if (gethash mangled-name *crisp-structs*)
+            (if (or (gethash mangled-name *crisp-structs*) (find-struct-definition-by-name mangled-name))
                 (resolve-type-to-llvm mangled-name)
                 (error "Internal codegen error: Unknown parameterized type ~a (pkg: ~a). Mangled: ~a"
                   base-type
@@ -354,17 +354,28 @@
                                       (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-pointer-type (llvm-int8-type) 0) "storage_ptr"))
 
                                       ;; 1. Create STORAGE struct { ptr, size }
-                                      (storage-type (ensure-struct-llvm-type 'storage))
-                                      (st-undef (llvm-get-undef storage-type))
+                                      ;; 1. Create STORAGE struct { ptr, size }
+                                      (storage-struct-type (ensure-struct-llvm-type 'storage))
+                                      (st-undef (llvm-get-undef storage-struct-type))
                                       (st-0 (llvm-build-insert-value builder st-undef ptr-casted 0 "st_ptr"))
                                       (st-val (llvm-build-insert-value builder st-0 size-val 1 "st_size"))
 
                                       ;; 2. Create CELL struct { parent:storage, offset:ulong, ... }
-                                      (cell-undef (llvm-get-undef llvm-type))
+                                      ;; We must resolve the PHYSICAL struct type, not the logical pointer type.
+                                      (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
+
+                                      (cell-struct-type (ensure-struct-llvm-type mangled-name))
+                                      (cell-undef (llvm-get-undef cell-struct-type))
+
+                                      ;; STORAGE is now BY VALUE in CELL.
                                       (cell-0 (llvm-build-insert-value builder cell-undef st-val 0 "parent"))
                                       ;; Initialize offset to 0
-                                      (cell-1 (llvm-build-insert-value builder cell-0 (llvm-const-int (llvm-int64-type) 0 nil) 1 "offset")))
-                                 cell-1)))
+                                      (cell-1 (llvm-build-insert-value builder cell-0 (llvm-const-int (llvm-int64-type) 0 nil) 1 "offset"))
+
+                                      ;; 3. Spill to stack (Handle)
+                                      (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
+                                 (llvm-build-store builder cell-1 cell-handle)
+                                 cell-handle)))
                            (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
                       ;; Handle simple types
                       ((symbolp type-spec)
@@ -400,8 +411,12 @@
   (log:debug "Generating IR for var-read: ~s" (semantic-var-read-name node))
   (let* ((var-name (semantic-var-read-name node))
          (alloca (gethash var-name var-env)))
+    (when (null alloca)
+          (log:error "CRITICAL: Var ~a not found in var-env!" var-name)
+          (log:error "Var-env keys: ~a" (alexandria:hash-table-keys var-env)))
     (let* ((type (crisp-type-to-llvm-type (semantic-var-read-type node) module))
            (loaded-name (string-downcase (format nil "~a" var-name))))
+      (log:info "Var-read: ~a. Alloca: ~a. Type: ~a" var-name alloca type)
       (values (llvm-build-load2 builder type alloca loaded-name)
         nil))))
 
@@ -874,6 +889,10 @@
          (original-members (crisp-struct-definition-members struct-def))
          (field-indices (crisp-struct-definition-field-indices struct-def)))
 
+    (log:info "Struct Construction: ~a" type-name)
+    (log:info "  LLVM Type: ~a" (llvm-print-type-to-string llvm-type))
+    (log:info "  Agg Val Type: ~a" (llvm-print-type-to-string (llvm-type-of agg-val)))
+
     (loop for arg in args
           for member in original-members
           for i from 0
@@ -881,15 +900,39 @@
           for field-idx = (gethash field-name field-indices)
           do (let ((val (generate-node-ir arg builder module var-env di-builder di-scope location-map)))
                (setf agg-val (llvm-build-insert-value builder agg-val val field-idx (format nil "insert_~a" field-name)))))
-    (values agg-val nil)))
+
+    ;; Phase 5: If the logical type is a Handle (ptr) (e.g. Cell), but we constructed an Aggregate,
+    ;; we must return the Handle (pointer to the aggregate).
+    (let ((logical-type (resolve-type-to-llvm type-name)))
+      (if (and (llvm-type-kind-is-pointer? logical-type)
+               (not (llvm-type-kind-is-pointer? llvm-type)))
+          (let ((handle (llvm-build-alloca builder llvm-type "cell_handle")))
+            (llvm-build-store builder agg-val handle)
+            (values handle nil))
+          (values agg-val nil)))))
 
 (defmethod generate-node-ir ((node semantic-extract-value) builder module var-env di-builder di-scope location-map)
   "Generates IR for extracting a value from an aggregate."
   (let* ((agg-node (semantic-extract-value-aggregate-node node))
          (index (semantic-extract-value-index node))
-         (agg-val (generate-node-ir agg-node builder module var-env di-builder di-scope location-map))
-         (val (llvm-build-extract-value builder agg-val index (format nil "extract_~d" index))))
-    (values val nil)))
+         (agg-val (generate-node-ir agg-node builder module var-env di-builder di-scope location-map)))
+
+    ;; Recursively resolve the aggregate if it is a handle (ptr)
+    (let ((final-agg-val
+           (if (llvm-type-kind-is-pointer? (llvm-type-of agg-val))
+               (let* ((crisp-type (semantic-node-type agg-node))
+                      ;; Use ensure-struct-llvm-type for Structs (like Cell)
+                      ;; But semantic-node-type might be list (CELL INT).
+                      (struct-type (if (and (listp crisp-type) (eq (first crisp-type) 'cell))
+                                       (ensure-struct-llvm-type (mangle-template-struct-name 'cell (rest crisp-type)))
+                                       (if (symbolp crisp-type)
+                                           (ensure-struct-llvm-type crisp-type)
+                                           (error "Cannot extract from non-struct/handle type: ~a" crisp-type)))))
+                 (llvm-build-load2 builder struct-type agg-val "loaded_agg"))
+               agg-val)))
+
+      (let ((val (llvm-build-extract-value builder final-agg-val index (format nil "extract_~d" index))))
+        (values val nil)))))
 
 (defmethod generate-node-ir ((node semantic-set!) builder module var-env di-builder di-scope location-map)
   "Generates IR for (set! target value)."
@@ -950,45 +993,51 @@
          (let* (;; Use element-type from analysis if reliable, otherwise safe to derive
                 (elem-type-spec element-type)
                 (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
-                (storage-struct-type (ensure-struct-llvm-type 'storage))
-                (cell-struct-type (crisp-type-to-llvm-type array-type module)))
+                (mangled-struct-name (if (symbolp array-type)
+                                         array-type
+                                         (mangle-template-struct-name (first array-type) (rest array-type)))))
 
-           ;; Cell is passed by value (struct { parent, offset, [extra stuff like size if runtime sized] }).
-           ;; Structure: { STORAGE(ptr,size), OFFSET(u64), ... }
-           ;; We need to:
-           ;; 1. Extract STORAGE.PTR (i8*)
-           ;; 2. Extract OFFSET (u64)
-           ;; 3. Calculate Effective Offset = CELL.OFFSET + (INDEX * sizeof(ELEM))
-           ;; 4. GEP = PTR + Effective Offset
-           ;; 5. Cast GEP to ELEM*
-           ;; 6. Load ELEM
+           (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
+           (let ((cell-struct-type (ensure-struct-llvm-type mangled-struct-name)))
+             ;; Phase 5: Cell types are now `ptr` handles in IR signatures.
+             ;; To access members (Parent, Offset), we use GEP + Load from the handle.
+             ;; Avoid loading the entire Cell struct by value.
+             (log:info "semantic-aref: Using GEP to access Cell Handle members.")
 
-           ;; Extract PARENT (index 0) -> STORAGE
-           (let* ((parent-val (llvm-build-extract-value builder cell-val 0 "parent")))
-             ;; Extract STORAGE.PTR (index 0 of STORAGE)
-             (let* ((base-ptr (llvm-build-extract-value builder parent-val 0 "base_ptr")))
-               ;; Extract CELL.OFFSET (Index 1) - ulong/i64
-               (let* ((cell-offset (llvm-build-extract-value builder cell-val 1 "cell_offset")))
+             (log:info "semantic-aref: Using StructGEP2 to access Cell Handle members.")
 
-                 ;; Calculate Element Size
-                 (let* ((elem-size (llvm-size-of elem-llvm-type))
-                        ;; Extend Index to i64 (assume s64 for now)
-                        (index-i64 (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
-                        ;; Index Bytes = Index * Size
-                        (index-bytes (llvm-build-mul builder index-i64 elem-size "index_bytes"))
-                        ;; Total Offset = CellOffset + IndexBytes
-                        (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
+             ;; 1. Get PARENT (index 0) -> STORAGE
+             (let* ((ptr-parent (llvm-build-struct-gep2 builder cell-struct-type cell-val 0 "ptr_parent")))
+               ;; Load PARENT (Storage Struct)
+               (let ((storage-struct-type (ensure-struct-llvm-type 'storage)))
+                 (let ((parent-val (llvm-build-load2 builder storage-struct-type ptr-parent "parent_val")))
 
-                   ;; Final Pointer = GEP(BasePtr, TotalOffset)
-                   (cffi:with-foreign-object (indices :pointer 1)
-                                             (setf (cffi:mem-aref indices :pointer 0) total-offset)
-                                             (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8")))
+                   ;; Extract STORAGE.PTR (index 0 of STORAGE)
+                   (let* ((base-ptr (llvm-build-extract-value builder parent-val 0 "base_ptr")))
 
-                                               ;; Cast to Element and Load
-                                               (let* ((target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type 0) "target_ptr"))
-                                                      (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
+                     ;; 2. Get OFFSET (index 1 of CELL)
+                     (let* ((ptr-offset (llvm-build-struct-gep2 builder cell-struct-type cell-val 1 "ptr_offset"))
+                            (cell-offset (llvm-build-load2 builder (llvm-int64-type) ptr-offset "cell_offset")))
 
-                                                 ;; Return loaded val, nil (loc), AND pointer (for set!)
-                                                 (values loaded-val nil target-ptr))))))))))
+                       ;; Calculate Element Size
+                       (let* ((elem-size (llvm-size-of elem-llvm-type))
+                              ;; Extend Index to i64 (assume s64 for now)
+                              (index-i64 (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
+                              ;; Index Bytes = Index * Size
+                              (index-bytes (llvm-build-mul builder index-i64 elem-size "index_bytes"))
+                              ;; Total Offset = CellOffset + IndexBytes
+                              (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
+
+                         ;; Final Pointer = GEP(BasePtr, TotalOffset)
+                         (cffi:with-foreign-object (indices :pointer 1)
+                                                   (setf (cffi:mem-aref indices :pointer 0) total-offset)
+                                                   (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8")))
+
+                                                     ;; Cast to Element and Load
+                                                     (let* ((target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type 0) "target_ptr"))
+                                                            (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
+
+                                                       ;; Return loaded val, nil (loc), AND pointer (for set!)
+                                                       (values loaded-val nil target-ptr)))))))))))))
 
        (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)" array-type cell-spec))))))

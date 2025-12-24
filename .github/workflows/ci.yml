@@ -262,6 +262,18 @@ jobs:
           echo "--- Running E2E: success test (cell-05-set-bang.crisp) ---"
           ./bin/crisp-compile tests/cell-05-set-bang.crisp
 
+          echo "--- Running E2E: success test (cell-type-constructors-01.crisp) ---"
+          ./bin/crisp-compile tests/cell-type-constructors-01.crisp
+
+          echo "--- Running E2E: success test --debug (cell-type-constructors-01.crisp) ---"
+          ./bin/crisp-compile tests/cell-type-constructors-01.crisp --debug
+
+          echo "--- Running E2E: success test (cell-type-constructors-02.crisp) ---"
+          ./bin/crisp-compile tests/cell-type-constructors-02.crisp
+
+          echo "--- Running E2E: success test --debug (cell-type-constructors-02.crisp) ---"
+          ./bin/crisp-compile tests/cell-type-constructors-02.crisp --debug
+
           echo "--- Running E2E: success test (cell-06-overload-accessor.crisp) ---"
           ./bin/crisp-compile tests/cell-06-overload-accessor.crisp
 
