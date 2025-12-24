@@ -118,6 +118,10 @@ This supports overloading templates by arity or other factors.")
    Excludes COMMON-LISP special forms like FUNCTION and QUOTE to prevent package lock violations."
   (member base-type '(function quote common-lisp:function common-lisp:quote)))
 
+(defvar *template-arity-lookup-fn* nil
+        "A hook for looking up the arity of a template by name (symbol or string).
+   Should be set by the templates module. Returns integer or nil.")
+
 (defun mangle-template-struct-name (name params)
   "Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT"
   (log:debug "mangle-template-struct-name: name=~s (type=~a) params=~s" name (type-of name) params)
@@ -131,6 +135,68 @@ This supports overloading templates by arity or other factors.")
         collect (subseq string i j)
         while j))
 
+(defun reconstruct-template-args (tokens package)
+  "Recursively groups tokens into lists based on template arity.
+   tokens: list of strings.
+   package: the fallback package for interning.
+   Returns: (values property-list remaining-tokens)"
+  (if (null tokens)
+      (values nil nil)
+      (cl:let* ((token-str (first tokens))
+                ;; Handle keywords specially
+                (token-sym (if (cl:char= (cl:char token-str 0) #\:)
+                               (cl:intern (cl:subseq token-str 1) :keyword)
+                               ;; Try to find in package, otherwise intern
+                               (cl:let ((existing (cl:find-symbol token-str package)))
+                                 (if existing existing (cl:intern token-str package)))))
+                (arity (and *template-arity-lookup-fn*
+                            (funcall *template-arity-lookup-fn* token-sym))))
+
+        (if (and arity (> arity 0))
+            ;; It's a template! Consume 'arity' args.
+            (multiple-value-bind (args remaining)
+                (reconstruct-n-args (rest tokens) arity package)
+              (multiple-value-bind (rest-processed rest-remaining)
+                  (reconstruct-template-args remaining package)
+                (values (cons (cons token-sym args) rest-processed) rest-remaining)))
+
+            ;; Not a template (or arity 0), treat as atom
+            (multiple-value-bind (rest-processed rest-remaining)
+                (reconstruct-template-args (rest tokens) package)
+              (values (cons token-sym rest-processed) rest-remaining))))))
+
+(defun reconstruct-n-args (tokens n package)
+  "Consumes N arguments from tokens."
+  (if (or (<= n 0) (null tokens))
+      (values nil tokens)
+      ;; We need to reconstruct one argument (which might itself be a template tree)
+      ;; But our reconstruct-template-args returns a LIST of args.
+      ;; We want effective 'read' behavior: read one form.
+      ;; The greedy approach in reconstruct-template-args reads ALL remaining.
+      ;; We need a variant that reads ONE form.
+      (multiple-value-bind (one-arg-list remaining-after-one)
+          (reconstruct-one-arg tokens package)
+        (multiple-value-bind (rest-args remaining-after-rest)
+            (reconstruct-n-args remaining-after-one (1- n) package)
+          (values (cons (first one-arg-list) rest-args) remaining-after-rest)))))
+
+(defun reconstruct-one-arg (tokens package)
+  "Reads exactly one logical form (atom or template-expr) from tokens."
+  (if (null tokens) (values nil nil)
+      (cl:let* ((token-str (first tokens))
+                (token-sym (if (cl:char= (cl:char token-str 0) #\:)
+                               (cl:intern (cl:subseq token-str 1) :keyword)
+                               (cl:let ((existing (cl:find-symbol token-str package)))
+                                 (if existing existing (cl:intern token-str package)))))
+                (arity (and *template-arity-lookup-fn*
+                            (funcall *template-arity-lookup-fn* token-sym))))
+
+        (if (and arity (> arity 0))
+            (multiple-value-bind (args remaining)
+                (reconstruct-n-args (rest tokens) arity package)
+              (values (list (cons token-sym args)) remaining))
+            (values (list token-sym) (rest tokens))))))
+
 (defun unmangle-template-struct-name (symbol)
   "Attempts to reverse mangling for known parameterized types like CELL.
    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL."
@@ -138,17 +204,8 @@ This supports overloading templates by arity or other factors.")
     (cl:let ((name (cl:symbol-name symbol)))
       (cl:if (cl:and (cl:> (cl:length name) 5) (cl:string-equal (cl:subseq name 0 5) "CELL_"))
              (cl:let* ((parts (split-string (cl:subseq name 5) #\_))
-                       (n (cl:length parts)))
-               (cl:when (cl:>= n 3)
-                 (cl:let* ((access-str (cl:nth (cl:1- n) parts))
-                           (addr-str (cl:nth (cl:- n 2) parts))
-                           ;; Reconstruct element type name from remaining parts (handling underscores in elem name)
-                           (elem-parts (cl:subseq parts 0 (cl:- n 2)))
-                           (elem-str (cl:format nil "~{~a~^_~}" elem-parts))
-                           (elem-sym (cl:intern elem-str (cl:symbol-package symbol)))
-                           (addr-kw (cl:intern addr-str :keyword))
-                           (access-kw (cl:intern access-str :keyword)))
-                   `(cell ,elem-sym ,addr-kw ,access-kw))))
+                       (reconstructed (reconstruct-template-args parts (symbol-package symbol))))
+               `(cell ,@reconstructed))
              nil))))
 
 ;; Type Equivalence
@@ -218,6 +275,17 @@ This supports overloading templates by arity or other factors.")
            nil)))
     ((and (symbolp t1) (consp t2))
      (types-equivalent-p t2 t1))
+
+    ;; Handle parameterized struct vs parameterized struct (e.g. (CELL INT) vs (CELL INT :GLOBAL))
+    ((and (cl:consp t1) (cl:consp t2))
+     (cl:let ((e1 (cl:if (cl:member (cl:symbol-name (cl:first t1)) '("CELL") :test #'cl:string-equal)
+                         (expand-storage-handle-type-specifier t1)
+                         t1))
+              (e2 (cl:if (cl:member (cl:symbol-name (cl:first t2)) '("CELL") :test #'cl:string-equal)
+                         (expand-storage-handle-type-specifier t2)
+                         t2)))
+       (cl:equal e1 e2)))
+
     (t nil)))
 
 (defun type-lists-equivalent-p (l1 l2)
@@ -258,34 +326,51 @@ This supports overloading templates by arity or other factors.")
            (if (symbolp elem)
                (log:info "Type Check: ~s (pkg: ~s) In *CRISP-TYPES*? ~s" elem (symbol-package elem) (gethash elem *crisp-types*))
                (log:info "Type Check: ~s (NOT SYMBOL)" elem)))
-         (cl:cond
-           ((and (>= (length params) 1)
-                 (valid-type-p (first params)))
-            (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
-              (cl:unless (gethash mangled-name *crisp-structs*)
-                (apply #'instantiate-cell-struct params))
-              t))
-           (t nil)))
+         (if (and (>= (length params) 1) (valid-type-p (first params)))
+             (cl:let* ((elem (first params))
+                       (resolved-elem (if (and (consp elem) (valid-type-p elem))
+                                          (mangle-template-struct-name (first elem) (rest elem))
+                                          elem))
+                       (effective-params (cons resolved-elem (rest params)))
+                       (mangled-name (mangle-template-struct-name base-type effective-params))
+                       (constructor-name (intern (format nil "MAKE-~a" mangled-name) (symbol-package mangled-name))))
+               (cl:unless (and (gethash mangled-name *crisp-structs*)
+                               (macro-function constructor-name))
+                 (log:info "Instantiating/Re-instantiating cell struct: ~a (Macro missing? ~a)" mangled-name (null (macro-function constructor-name)))
+                 (apply #'instantiate-cell-struct effective-params))
+               t)
+             nil))
         ((symbolp base-type)
          (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
+           (log:info "Valid-Param-Type Check: ~a (Mangled: ~a)" type-spec mangled-name)
            (or (gethash mangled-name *crisp-structs*)
-               (cl:when (gethash base-type *template-registry*)
-                 (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
-                 (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
-                     (progn
-                      (funcall *template-instantiator-fn* base-type params
-                        (lambda (form loc)
-                          (declare (ignore loc))
-                          (if (and (boundp '*current-module*) *current-module*)
-                              (compile-toplevel-form form nil
-                                                     *current-module*
-                                                     *current-builder*
-                                                     *current-di-builder*
-                                                     *current-di-compile-unit*
-                                                     *current-location-map*)
-                              (eval form))))
-                      (gethash mangled-name *crisp-structs*))
-                     (progn (log:warn "Template instantiator not bound/found") nil))))))
+               (cl:let ((templates (or (gethash base-type *template-registry*)
+                                       (cl:let ((found nil))
+                                         (maphash (cl:lambda (k v)
+                                                    (cl:when (string-equal (symbol-name k) (symbol-name base-type))
+                                                      (cl:setf found v)))
+                                                  *template-registry*)
+                                         found))))
+                 (log:info "  Template Registry for ~a: ~a" base-type templates)
+                 (cl:when templates
+                   (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
+                   (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
+                       (progn
+                        (funcall *template-instantiator-fn* base-type params
+                          (lambda (form loc)
+                            (declare (ignore loc))
+                            (if (and (boundp '*current-module*) *current-module*)
+                                (compile-toplevel-form form nil
+                                                       *current-module*
+                                                       *current-builder*
+                                                       *current-di-builder*
+                                                       *current-di-compile-unit*
+                                                       *current-location-map*)
+                                (eval form))))
+                        (cl:let ((res (gethash mangled-name *crisp-structs*)))
+                          (log:info "  Instantiation Result (crisp-structs check): ~a" res)
+                          t)) ;; Always return T if template found/instantiated
+                       (progn (log:warn "Template instantiator not bound/found") nil)))))))
         (t nil)))))
 
 (defun valid-type-p (type-spec)
@@ -296,14 +381,12 @@ This supports overloading templates by arity or other factors.")
       (valid-parameterized-type-p type-spec)))
 
 
+;; Alias for backward compatibility / simplicity
 (defun type-equal-p (t1 t2)
-  "Checks if two Crisp types are equivalent at compile-time."
-  (cl:cond
-    ((and (symbolp t1) (symbolp t2))
-     (eq t1 t2)) ;; TODO: Handle aliases
-    ((and (listp t1) (listp t2))
-     (equal t1 t2))
-    (t nil)))
+  (types-equivalent-p t1 t2))
+
+;; LLVM Resolution
+;; ===============
 
 ;; LLVM Resolution
 ;; ===============
@@ -316,13 +399,12 @@ This supports overloading templates by arity or other factors.")
      (funcall (crisp-type-llvm-type-fn (gethash type-spec *crisp-types*))))
 
     ;; Struct
-    ((and (symbolp type-spec) (gethash type-spec *crisp-structs*))
+    ((and (symbolp type-spec) (find-struct-definition-by-name type-spec))
      (ensure-struct-llvm-type type-spec))
 
-    ;; Pointer / Cell (simple version)
-    ((and (listp type-spec) (eq (first type-spec) 'cell))
-     ;; For now, treats cell as generic pointer.
-     ;; ideally this should match runtime struct layout
-     (llvm-pointer-type (llvm-void-type) 0))
+    ;; Parameterized Structs (e.g. (POINT INT))
+    ((and (consp type-spec) (not (keywordp (first type-spec))) (valid-type-p type-spec))
+     (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+       (resolve-type-to-llvm mangled)))
 
     (t (error "Cannot resolve type to LLVM: ~a" type-spec))))

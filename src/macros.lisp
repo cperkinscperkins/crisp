@@ -6,6 +6,8 @@
 ;; src/macros.lisp
 (in-package :crisp.compiler)
 
+(log:info "Loading macros.lisp in package: ~a. RETURN symbol package: ~a" *package* (symbol-package 'return))
+
 (defmacro let (bindings &body body)
   "A unified 'let' for Crisp that works in both Kernels and Macros.
    - It is SEQUENTIAL (like CL:LET*).
@@ -73,6 +75,13 @@
             `(if ,test
                  (progn ,@forms)
                  (cond ,@rest))))))
+
+(defmacro return (&optional value)
+  "Crisp's special RETURN form. Expands to a semantic-return node."
+  ;; This macro is intercepted by the semantic analyzer.
+  ;; It should NOT expand to CL:RETURN-FROM.
+  ;; It is processed directly by analyze-expression.
+  `(semantic-return ,value))
 
 (defmacro if+ (test then &optional else)
   "Compile-time conditional. Evaluates TEST at macro-expansion time.
@@ -193,7 +202,7 @@
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
   (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
-         (constructor-name (intern (format nil "MAKE-~a" name))))
+         (constructor-name (intern (format nil "MAKE-~a" name) (symbol-package name))))
     ;; Register at macro-expansion time (for visibility to subsequent code)
     (register-struct-definition name parsed-members)
     ;; Emit code to register using eval-when, AND the constructor MACRO

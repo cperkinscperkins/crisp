@@ -56,6 +56,15 @@
                      (byte-size ulong)
                      (address-space address-space :c-t)
                      (access access :c-t)))
+
+  ;; Register CELL struct template
+  ;; CELL is an opaque handle to a storage slice.
+  ;; It contains a pointer to the storage struct and an offset.
+  (eval '(with-template-type (To Addr Acc)
+                             (def-struct cell
+                                         (parent storage) ;; Pointer to STORAGE struct
+                                         (offset ulong))))
+
   ;; Register default ~ accessor as a template
   (register-template '~ '(To Addr Acc) nil
                      '(def-function ~ (c)

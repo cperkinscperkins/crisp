@@ -1,0 +1,35 @@
+(with-template-type (T)
+    (def-struct point (x T) (y T)))
+
+(with-template-type (T)
+    (def-struct rect (p1 (point T)) (p2 (point T))))
+
+
+
+(def-function explicit-instantiation (t-l b-r)
+    (declare #'((point int) (point int) => (rect int)))
+    (gen-rect int)
+    (make-rect :p1 t-l :p2 b-r))
+
+(def-function implicit-instantiation (t-l b-r)
+    (declare #'((point float) (point float) => (rect float)))
+    (make-rect :p1 t-l :p2 b-r))
+
+
+;; Template Function with Template Struct
+(with-template-type (T)
+  (def-function test-poly (t l b r)
+    (declare #'(T T T T => (rect T)))
+    (let ((p1 (make-point :x t :y l))
+          (p2 (make-point :x b :y r)))
+      (make-rect :p1 p1 :p2 p2))))
+
+(def-function test-of-gen-func ()
+    (declare #'( => (rect long)))
+    (gen-test-poly long)
+    (test-poly (as-long 1) (as-long 2) (as-long 3) (as-long 4)))
+
+(def-function test-of-inference-func ()
+    (declare #'( => (rect int)))
+    (test-poly (as-int 1) (as-int 2) (as-int 3) (as-int 4)))
+     

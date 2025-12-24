@@ -21,9 +21,26 @@
     ;; TODO: Handle vectors here (will need vector support first)
     ((or (eq type-spec 'bool)) 4) ;; booleans are 4 bytes in std140
     ((eq type-spec 'c-pointer) 8) ;; c-pointer is 8 bytes
+    ;; Cells are pointers (8 bytes) - Check mangled name
+    ((and (symbolp type-spec)
+          (> (length (symbol-name type-spec)) 5)
+          (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
+     8)
     ;; Structs align to 16 bytes (vec4)
     ((gethash type-spec *crisp-structs*) 16)
-    (t (error "Unknown type for alignment: ~a" type-spec))))
+    ;; Parameterized Structs (e.g. (POINT INT))
+    ((and (consp type-spec) (valid-type-p type-spec))
+     (cl:let ((base (first type-spec)))
+       (cl:cond
+         ;; Cells are pointers (8 bytes aligned to 8)
+         ((string-equal (symbol-name base) "CELL") 8)
+         (t
+          (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+            (if (gethash mangled *crisp-structs*)
+                16
+                (error "Valid type ~a but struct def not found after check alignment." type-spec)))))))
+    (t
+     (error "Unknown type for alignment: ~a" type-spec))))
 
 
 (defun get-std140-size (type-spec)
@@ -35,9 +52,25 @@
     ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
     ((eq type-spec 'bool) 4)
     ((eq type-spec 'c-pointer) 8)
+    ;; Cells are pointers (8 bytes)
+    ((and (symbolp type-spec)
+          (> (length (symbol-name type-spec)) 5)
+          (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
+     8)
     ;; Structs - Retrieve cached size
     ((gethash type-spec *crisp-structs*)
      (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
+    ;; Parameterized Structs
+    ((and (consp type-spec) (valid-type-p type-spec))
+     (cl:let ((base (first type-spec)))
+       (cl:cond
+         ;; Cells are pointers (8 bytes)
+         ((string-equal (symbol-name base) "CELL") 8)
+         (t
+          (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+            (if (gethash mangled *crisp-structs*)
+                (crisp-struct-definition-total-size (gethash mangled *crisp-structs*))
+                (error "Valid type ~a but struct def not found after check size." type-spec)))))))
     (t (error "Unknown type for size: ~a" type-spec))))
 
 (defun calculate-std140-padding (current-offset alignment)
@@ -124,7 +157,7 @@
 (defun ensure-struct-llvm-type (name)
   "Ensures the LLVM struct type exists for the given struct name.
    Handles forward declarations and recursion."
-  (cl:let ((def (gethash name *crisp-structs*)))
+  (cl:let ((def (find-struct-definition-by-name name)))
     (cl:unless def
       (error "Unknown struct type: ~a" name))
 
@@ -140,7 +173,6 @@
 
       (cl:let ((element-types '()))
         (dolist (member-spec (crisp-struct-definition-padded-members def))
-          (log:debug "Member-spec: ~a" member-spec)
           (cl:let* ((type-name (second member-spec))
                     (resolved-type (resolve-type-to-llvm type-name)))
             (log:info "Member ~a (type ~a) resolved to LLVM type: ~a" (first member-spec) type-name resolved-type)
@@ -149,14 +181,30 @@
             (push resolved-type element-types)))
 
         ;; Set the body
+        (log:info "Setting struct body for ~a. Element count: ~d" name (length element-types))
         (cl:let ((types-array (cffi:foreign-alloc :pointer :count (length element-types))))
           (loop for type in (reverse element-types)
                 for i from 0
                 do (setf (cffi:mem-aref types-array :pointer i) type))
+          (log:info "Calling LLVMStructSetBody...")
           (llvm-struct-set-body struct-type types-array (length element-types) nil) ; packed=nil
+          (log:info "LLVMStructSetBody done.")
           (cffi:foreign-free types-array)))
 
       struct-type)))
+
+(defun find-struct-definition-by-name (name-or-symbol)
+  "Robustly finds a struct definition by symbol or name string, ignoring package."
+  (cl:let ((def (gethash name-or-symbol *crisp-structs*)))
+    (if def
+        def
+        ;; Fallback: Scan for name match
+        (cl:let ((target-name (string (if (symbolp name-or-symbol) (symbol-name name-or-symbol) name-or-symbol))))
+          (maphash (lambda (k v)
+                     (cl:when (string-equal (symbol-name k) target-name)
+                       (return-from find-struct-definition-by-name v)))
+                   *crisp-structs*)
+          nil))))
 
 (defun register-struct-definition (name members)
   "Registers a struct definition in the global registry."

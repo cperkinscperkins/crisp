@@ -7,6 +7,9 @@ Target #1: Download
 - Q: anything add to the repo?
 - A: YES - [x] instructions on install SBCL and LLVM Dev
 
+Instead of Generating all bindings automatically, we just lift them
+individuall from the headers and manually update llvm-bindings.lisp
+
 ~~Target #2: Generate bindings~~
 ~~[ ] C2FFI~~
 ~~[ ] using clang run against LLVM Dev headers~~
@@ -47,11 +50,14 @@ Target #6 - LLVM IR
 - [ ] test? golden string or using ORC?
 - [ ] Make a new "in-progress" doc and check "[ ] minimal def-function" ?
 
-Target #7 - Transpile
-- [ ] walk DATA STRUC, gen OpenCL C.
-- [ ] compile
-- [ ] test?
-- [ ] update "in-progress" doc
+Transpiling is no longer a target.  Targeting LLVM-IR is general purpose and powerful
+enough for our needs.  Plus, we add Dwarf symbols from the beginning, so that leaves
+little purpose to transpiling.
+~~Target #7 - Transpile~~
+~~- [ ] walk DATA STRUC, gen OpenCL C.~~
+~~- [ ] compile~~
+~~- [ ] test?~~
+~~- [ ] update "in-progress" doc~~
 
 Target #8  - Continuous Integration
 - [x] github actions. 
@@ -150,7 +156,7 @@ LOOSE PRIORITIES
 - [x] funcction overloading
 - [x] multiple return values
 - [x] let with mv bindings
-- [ ] first order functions & funcall
+- [x] first order functions & funcall
 - [x] add more types
 - - [ ] bool type decisions
 - - [ ] hardware vector types
@@ -158,11 +164,11 @@ LOOSE PRIORITIES
 - - [ ] type promotion in + ? - maybe this requires let to test
 - [ ] &optional &key 
 - [ ] &out
-- [ ] defmacro
+- [x] defmacro
 - [ ] variadic + < = etc
 - [ ] vectors
-- [ ] def-struct
-- [ ] cond  ( we can make all other divergent control flows from that: when, if, unless)
+- [x] def-struct
+- [x] cond  ( we can make all other divergent control flows from that: when, if, unless)
 - [ ] bool true false.  ( macros can still use T/nil ? )
 - [ ] precision selections (declare / declaim / flags )
 - [x] .crisp files.  basic flag for crisp-compiler.exe
@@ -203,6 +209,8 @@ SHORT TERM PLAN
 - - access
 - [x] compile time struct properties
 - [x] runtime assert and --runtime-checks flag
+- [ ] def-record 
+- [ ] revisit "implicit" and "exploded" args - def-record FTW
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - - [x] Storage Properties  (cannot be set)
 - - - [x] address-space
@@ -219,7 +227,7 @@ SHORT TERM PLAN
 - - - [ ] (atomic-xchg! (~ someCell) newValue)
 - - [x] def-setter
 - - [x] overload ~
-- - [ ] cell type constructors (&optional first, maybe not &key quite yet)
+- - [x] cell type constructors (&optional first, maybe not &key quite yet)
 - - [ ] insertion of r-t-assert when set! offset~ or parent~ ?
 - - - [ ] validation against --runtime-checks flag
 - - [ ] Tensor Properties ( can be set)

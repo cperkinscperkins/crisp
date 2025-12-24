@@ -781,7 +781,7 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
 (def-function survive (&key birds fish zombies)
   (declare (return-type NIL) (type birds fish zombies int))
   ;OR -- this one might need revisiting
-  (declare #'(&key int int int => NIL))
+  (declare #'(&key :birds int :fish int :zombies int => NIL))
   ...)
 
 (def-function addSome (x &optional y)
@@ -982,15 +982,14 @@ and I have to admit, that's fairly compelling. Might have to consider it.
 
 
 ```
-; note the two different ways of specifing member type
 (def-struct point
     (x float)
-    (y:float))
+    (y float))
 
 
 ;; make-XXXX
 (make-point :x 3 :y 4)
-;; type signature of make-point is #'(&key x:float y:float => point)
+;; type signature of make-point is #'(&key :x float :y float => point)
 ```
 
 ### member data rules
@@ -1195,6 +1194,55 @@ In the future, Crisp may handle this automatically.
     (declare #'((soa-vector point) ulong float => nil))
     (set! (~ (x~ sv) idx) newVal))
 ```
+
+
+def-record
+----------
+
+`def-record` is very simlar to `def-struct`. Records "pun" as structs. The crucial difference is that while structs result in contiguous memory (:std140 aligned), records are not contiguous in memory.  Records are just a collection of register, of memory addresses. They act as virtualized structures.
+
+`def-record` undergirds the Crisp "implicit" argument passing - how the many and sundry pieces of data required for a `tensor` get bound into one virtual variable passed from function to function. 
+
+`def-record` has the exact same syntax and affordances as `def-struct`, including overloadable `XXXXy~` property accessors and non-overloadable `~XXXX~` accessors, and  support for `def-setter`, `def-derived-type`, templates , compile-time properties and more.
+
+Though there is no equivalent of `soa-vector` for records.  
+
+```
+(def-record virtual-point
+  (x float)
+  (y float)
+  (d bool :c-t)) ;; <-- some compile-time known property
+
+(def-kernel-exact some_op (vpx vpy)
+  (declare (type vpx vpy float))
+  (let ((v-p (make-virtual-point :x vpx :y vpy :d (target-has :fp64 T))))
+    ...))
+```
+
+<!-- IMPLEMENTATION NOTE
+  So make-XXXX for records is capturing register identities, not values.
+  This should work fine for 
+    - kernel arguments
+    - function arguments that originated as kernel arguments.
+    - memory (:global, :local etc)
+
+  But we have to be careful with temporaries, especially things that might 
+  be modelled with alloca:
+
+  (let ((someStruct (make-some-struct :x 10 :y 20))
+        (someValue  10)
+        (someRecord (make-some-record :vx someValue :vss someStruct)))
+      (return someRecord))   
+
+  If a record-of-a-struct "explodes-and-flattens" it to registers, that should be fine.
+  But otherwise the code above could have an implicit "use-after-free" or incorrect
+  reuse of    :vss someStruct   
+
+  Therefore record-of-struct "explodes-and-flattens" the struct to registers.  
+
+  
+
+-->
 
 
 
@@ -3033,7 +3081,7 @@ between two types.
 
 (def-derived-type <new-name> <type-expr> &key (subst :no))
 ```
-The `type-expr` is any type that supports a `make-` function (`vector`, `soa-vector`,  `tensor` and things created from `def-struct` )  
+The `type-expr` is any type that supports a `make-` function (`vector`, `soa-vector`,  `tensor` and things created from `def-struct` and `def-record` )  
 <!-- what about numeric types? bool, or nil ?  Definitely NOT functions or kernels, right?-->
 
 
