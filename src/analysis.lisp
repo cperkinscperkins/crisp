@@ -37,7 +37,9 @@
   (def-expression-analyzer if analyze-if-expression)
   (def-expression-analyzer when analyze-when-expression)
   (def-expression-analyzer unless analyze-unless-expression)
+  (def-expression-analyzer unless analyze-unless-expression)
   (def-expression-analyzer return analyze-return-expression)
+  (def-expression-analyzer semantic-return analyze-return-expression)
   (def-expression-analyzer aref analyze-aref-expression)
   ;; ~ is an alias for aref (handles Cells/Arrays directly, or falls back to ~ function)
   (def-expression-analyzer ~ref~ analyze-aref-expression)
@@ -740,7 +742,7 @@
                    (when (= logical-count index)
                          (setf physical-index idx)
                          (setf target-member-type (second m))
-                         (return))))
+                         (cl:return))))
 
         (when (= physical-index -1)
               (error "Invalid member index ~a for struct ~a" index obj-type))
@@ -832,11 +834,22 @@
           '(:storage-ptr :storage-size)))
 
   (let ((inner-type (cadr expr)))
+    ;; Ensure the inner type is valid
     (unless (gethash inner-type *crisp-types*)
       (error 'crisp-unknown-type-error :type-name inner-type :source-location location))
-    (make-semantic-literal :value-type (list 'cell inner-type)
-                           :value nil ; No real value yet
-                           :source-location location)))
+
+    ;; Construct raw spec and expand/canonicalize it (e.g. inject defaults)
+    ;; We use expand-storage-handle-type-specifier directly to get the LIST form, not the mangled symbol.
+    (let* ((raw-spec (list 'cell inner-type))
+           (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
+
+      ;; Ensure instantiation
+      (unless (valid-parameterized-type-p canonical-spec)
+        (error "Failed to instantiate template for ~a (raw: ~a)" canonical-spec raw-spec))
+
+      (make-semantic-literal :value-type canonical-spec
+                             :value nil ; No real value yet
+                             :source-location location))))
 
 (defun analyze-compiler-no-op (expr env location)
   "Analyzes a (compiler-no-op) form, which results in a void literal.
@@ -1229,7 +1242,7 @@
                          (setf signature (find-if (lambda (sig)
                                                     (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
                                              signatures)))
-                        (return)))))
+                        (cl:return)))))
 
     (unless signature
       (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types))
@@ -1456,7 +1469,7 @@
                           (analyze-function-call op expr env location))
                         ;; Case 3c: Otherwise, we don't know what this is.
                         (t
-                          (log:debug "  UNSUPPORTED FORM: ~a (pkg: ~a)" op (package-name (symbol-package op)))
+                          (log:debug "  UNSUPPORTED FORM: ~a (pkg: ~a) (addr: ~x)" op (package-name (symbol-package op)) (sb-kernel:get-lisp-obj-address op))
                           (log:debug "  Function Table Keys: ~a" (alexandria:hash-table-keys *function-table*))
                           (error 'crisp-unsupported-form-error
                             :form op

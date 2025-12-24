@@ -28,7 +28,9 @@
    ;; Types
    #:llvm-void-type
    #:llvm-int32-type-in-context #:llvm-int64-type-in-context
-   #:llvm-int32-type #:llvm-int8-type #:llvm-int16-type #:llvm-int64-type #:llvm-int1-type
+   #:llvm-int32-type #:llvm-int8-type #:llvm-int8-type-in-context #:llvm-int16-type #:llvm-int64-type #:llvm-int16-type
+   #:llvm-type-kind-is-pointer?
+   #:llvm-print-type-to-string
    #:llvm-pointer-type
    #:llvm-size-of
    #:llvm-half-type #:llvm-bfloat-type #:llvm-float-type #:llvm-double-type
@@ -61,11 +63,8 @@
    ;; Alloca
    #:llvm-get-param
    #:llvm-build-alloca
-   #:llvm-build-store
-   #:llvm-build-load2
-   #:llvm-build-insert-value
-   #:llvm-build-extract-value
-   #:llvm-get-undef
+   #:llvm-build-load #:llvm-build-load2 #:llvm-build-store #:llvm-build-gep2 #:llvm-build-struct-gep2 #:llvm-build-in-bounds-gep2
+   #:llvm-build-extract-value #:llvm-build-insert-value #:llvm-get-undef
    #:llvm-build-ret-void
    #:llvm-build-add
    #:llvm-build-fadd
@@ -146,7 +145,9 @@
            ;; We enable Unified Let by defining our own let macro
            #:let
            ;; We enable custom Branching by defining our own macros
-           #:when #:unless #:cond)
+           #:when #:unless #:cond
+           ;; We handle RETURN specially
+           #:return)
 
   (:export
    #:compile-toplevel-form

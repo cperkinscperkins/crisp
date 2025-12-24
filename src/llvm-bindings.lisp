@@ -34,6 +34,9 @@
          "Obtain the type of a value."
          (val :pointer))
 
+(defcfun ("LLVMPrintTypeToString" llvm-print-type-to-string) :string
+         (type :pointer))
+
 ;; --- Types ---
 (defcfun ("LLVMInt32TypeInContext" llvm-int32-type-in-context) :pointer
          (context :pointer))
@@ -42,6 +45,9 @@
 
 (defcfun ("LLVMInt32Type" llvm-int32-type) :pointer)
 (defcfun ("LLVMInt8Type" llvm-int8-type) :pointer)
+
+(defcfun ("LLVMInt8TypeInContext" llvm-int8-type-in-context) :pointer
+         (context :pointer))
 (defcfun ("LLVMInt1Type" llvm-int1-type) :pointer)
 (defcfun ("LLVMInt16Type" llvm-int16-type) :pointer)
 
@@ -64,6 +70,22 @@
 
 (defcfun ("LLVMVoidType" llvm-void-type) :pointer
          "Get a void type.")
+
+(defcfun ("LLVMGetTypeKind" llvm-get-type-kind) :int
+         (ty :pointer))
+
+(defconstant +llvm-void-type-kind+ 0)
+(defconstant +llvm-half-type-kind+ 1)
+(defconstant +llvm-float-type-kind+ 2)
+(defconstant +llvm-double-type-kind+ 3)
+(defconstant +llvm-integer-type-kind+ 11)
+(defconstant +llvm-function-type-kind+ 12)
+(defconstant +llvm-struct-type-kind+ 13)
+(defconstant +llvm-array-type-kind+ 14)
+(defconstant +llvm-pointer-type-kind+ 15)
+
+(defun llvm-type-kind-is-pointer? (ty)
+  (= (llvm-get-type-kind ty) +llvm-pointer-type-kind+))
 
 
 (defcfun ("LLVMFunctionType" llvm-function-type) :pointer

@@ -299,7 +299,6 @@
                    (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package name)))
                    (constructor-alias (intern (format nil "MAKE-~a%DISPATCH" name) (symbol-package name)))
                    (mangled-constructor (intern (format nil "MAKE-~a" mangled-name) (symbol-package name)))
-
                    (keyword-args (loop for name in param-names
                                        collect (intern (symbol-name name) :keyword)
                                        collect name)))

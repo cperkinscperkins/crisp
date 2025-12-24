@@ -275,6 +275,17 @@ This supports overloading templates by arity or other factors.")
            nil)))
     ((and (symbolp t1) (consp t2))
      (types-equivalent-p t2 t1))
+
+    ;; Handle parameterized struct vs parameterized struct (e.g. (CELL INT) vs (CELL INT :GLOBAL))
+    ((and (cl:consp t1) (cl:consp t2))
+     (cl:let ((e1 (cl:if (cl:member (cl:symbol-name (cl:first t1)) '("CELL") :test #'cl:string-equal)
+                         (expand-storage-handle-type-specifier t1)
+                         t1))
+              (e2 (cl:if (cl:member (cl:symbol-name (cl:first t2)) '("CELL") :test #'cl:string-equal)
+                         (expand-storage-handle-type-specifier t2)
+                         t2)))
+       (cl:equal e1 e2)))
+
     (t nil)))
 
 (defun type-lists-equivalent-p (l1 l2)
@@ -321,8 +332,11 @@ This supports overloading templates by arity or other factors.")
                                           (mangle-template-struct-name (first elem) (rest elem))
                                           elem))
                        (effective-params (cons resolved-elem (rest params)))
-                       (mangled-name (mangle-template-struct-name base-type effective-params)))
-               (cl:unless (gethash mangled-name *crisp-structs*)
+                       (mangled-name (mangle-template-struct-name base-type effective-params))
+                       (constructor-name (intern (format nil "MAKE-~a" mangled-name) (symbol-package mangled-name))))
+               (cl:unless (and (gethash mangled-name *crisp-structs*)
+                               (macro-function constructor-name))
+                 (log:info "Instantiating/Re-instantiating cell struct: ~a (Macro missing? ~a)" mangled-name (null (macro-function constructor-name)))
                  (apply #'instantiate-cell-struct effective-params))
                t)
              nil))
@@ -374,6 +388,9 @@ This supports overloading templates by arity or other factors.")
 ;; LLVM Resolution
 ;; ===============
 
+;; LLVM Resolution
+;; ===============
+
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference."
   (cl:cond
@@ -384,12 +401,6 @@ This supports overloading templates by arity or other factors.")
     ;; Struct
     ((and (symbolp type-spec) (find-struct-definition-by-name type-spec))
      (ensure-struct-llvm-type type-spec))
-
-    ;; Pointer / Cell (simple version)
-    ((and (listp type-spec) (eq (first type-spec) 'cell))
-     ;; For now, treats cell as generic pointer.
-     ;; ideally this should match runtime struct layout
-     (llvm-pointer-type (llvm-void-type) 0))
 
     ;; Parameterized Structs (e.g. (POINT INT))
     ((and (consp type-spec) (not (keywordp (first type-spec))) (valid-type-p type-spec))
