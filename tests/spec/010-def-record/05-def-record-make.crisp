@@ -1,0 +1,19 @@
+(def-record virtual-point
+  (x long)
+  (y long))
+
+(def-function adjust (vp)
+    (declare #'(virtual-point => nil))
+   (set! (x~ vp) (as-long 100))
+   (set! (y~ vp) (+ (y~ vp) (as-long 20))))
+
+(def-function simple-sky (h v)
+    (declare #'(long long => virtual-point))
+    (let ((solitary (make-virtual-point :x h :y v)))
+       (adjust solitary)
+       (return solitary)))
+
+(def-function main-caller ()
+    (declare #'( => virtual-point))
+   (simple-sky (as-long -5) (as-long -4)))
+

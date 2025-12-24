@@ -1,0 +1,13 @@
+(def-record virtual-point
+  (x long)
+  (y long))
+
+;; overloadable property accessor
+(def-function get-x (vp)
+    (declare #'(virtual-point => long))
+    (x~ vp))
+
+;; non-overloadable property accessor
+(def-function get-raw-y (vp)
+    (declare #'(virtual-point => long))
+    (~y~ vp))

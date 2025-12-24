@@ -1,0 +1,8 @@
+(def-record virtual-point
+  (x long)
+  (y long))
+
+(def-function move-the-stars (star)
+  (declare #'(virtual-point => nil))
+  (set! (x~ star) (+ (x~ star) 40))
+  (set! (~y~ star) (as-long 4)))

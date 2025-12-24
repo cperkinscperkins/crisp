@@ -14,7 +14,7 @@
   ;; when we first define all the types.
   (llvm-type-fn nil :type function)
   (size 0 :type integer) ; size in bits
-  (category nil :type (member :signed-int :unsigned-int :float :void :struct :pointer)))
+  (category nil :type (member :signed-int :unsigned-int :float :void :struct :record :pointer)))
 
 
 (defstruct function-signature
