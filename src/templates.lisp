@@ -68,7 +68,7 @@
                          (eval-when (:compile-toplevel :load-toplevel :execute)
                            (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name)))))))
 
-                 ((and (listp form) (eq (first form) 'def-struct))
+                 ((and (listp form) (member (first form) '(def-struct def-record)))
                    (let* ((name (second form))
                           (members (cddr form))
                           ;; Parse (x type) (y type) -> (type type => name)
@@ -284,7 +284,7 @@
 
       ;; Check if it's a struct template by inspecting the body
       (let* ((body (template-data-body tmpl))
-             (is-struct (and (listp body) (eq (first body) 'def-struct)))
+             (is-struct (and (listp body) (member (first body) '(def-struct def-record))))
              (mangled-name (when is-struct
                                  (crisp.compiler::mangle-template-struct-name name concrete-types))))
 

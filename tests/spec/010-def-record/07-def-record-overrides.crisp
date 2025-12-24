@@ -1,0 +1,37 @@
+(def-record virtual-point
+  (x int)
+  (y int))
+
+;; overload property accessors
+(def-function x~ (vp)
+    (declare #'(virtual-point => int))
+    (+ 1 (~x~ vp)))
+
+(def-function y~ (vp)
+    (declare #'(virtual-point => int))
+    (+ 2 (~y~ vp)))
+
+;; overload Setters
+(def-setter x~ (vp v)
+    (declare #'(virtual-point int => nil))
+    (set! (~x~ vp) (+ 10 v)))
+
+(def-setter y~ (vp v)
+    (declare #'(virtual-point int => nil))
+    (set! (~y~ vp) (+ 20 v)))
+
+;; test
+(def-function test-overrides ()
+    (declare #'( => int int))
+    (let ((p (make-virtual-point :x 1 :y 2)))
+        ;; Setters should add 10/20 to value
+        (set! (x~ p) 3)    ;; assigns 13 to raw x
+        (set! (y~ p) 4)    ;; assigns 24 to raw y
+        
+        ;; Accessors should add 1 or 2 to raw value
+        ;; x: 13.0 + 1.0 = 14.0
+        ;; y: 24 + 2 = 26
+        (return (x~ p) (y~ p))))
+
+
+

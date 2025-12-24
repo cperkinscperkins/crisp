@@ -249,6 +249,51 @@
                                    (declare (crisp-system-generated))
                                    (return (%extract-struct-member obj ,idx)))))))))
 
+(defmacro def-record (name &rest members)
+  "Defines a new Crisp record type (virtual struct)."
+  (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
+         (constructor-name (intern (format nil "MAKE-~a" name) (symbol-package name))))
+    ;; Register at macro-expansion time
+    (register-struct-definition name parsed-members :record)
+    ;; Emit code
+    `(progn
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (register-struct-definition ',name ',parsed-members :record))
+
+      (defmacro ,constructor-name (&rest args)
+        (let ((reordered (validate-and-reorder-struct-args ',name ',parsed-members args)))
+          `(%construct-struct ,',name ,@reordered)))
+
+      ,@(let ((runtime-index 0)
+              (pkg (symbol-package name)))
+          (loop for member-spec in parsed-members
+                collect
+                  (let* ((member-name (first member-spec))
+                         (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
+                         (value (when is-ct (fourth member-spec)))
+                         (accessor-name (intern (format nil "~a~~" member-name) pkg)))
+                    (if is-ct
+                        `(defmacro ,accessor-name (obj)
+                           (declare (ignore obj))
+                           (if ',value '',value
+                               (error "Compile-time record member ~a accessed but has no constant value defined." ',member-name)))
+                        (let ((idx runtime-index))
+                          (incf runtime-index)
+                          `(def-function ,accessor-name ((obj ,name))
+                                         (return (%extract-struct-member obj ,idx))))))))
+      ,@(let ((runtime-index 0)
+              (pkg (symbol-package name)))
+          (loop for member-spec in parsed-members
+                  unless (and (consp member-spec) (eq (third member-spec) :c-t))
+                collect
+                  (let* ((member-name (first member-spec))
+                         (raw-accessor-name (intern (format nil "~~~a~~" member-name) pkg))
+                         (idx runtime-index))
+                    (incf runtime-index)
+                    `(def-function ,raw-accessor-name ((obj ,name))
+                                   (declare (crisp-system-generated))
+                                   (return (%extract-struct-member obj ,idx)))))))))
+
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
    The return type is implicitly nil/void. We append (return) to ensure this."

@@ -185,7 +185,9 @@
    #:*enums*
    #:*current-module*
    #:*current-builder*
+
    #:def-struct
+   #:def-record
    #:with-struct-accessors
    #:def-setter
    #:*crisp-structs*
@@ -274,7 +276,8 @@
   ;; --- 1. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
                 #:def-function
-                #:def-struct
+
+                #:def-record
                 #:with-struct-accessors
                 #:def-setter
                 #:return
@@ -374,8 +377,10 @@
    ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function
    #:def-orchestration #:def-qint #:def-microfloat-block
-   #:def-type-alias #:def-struct #:with-struct-accessors #:def-setter
+
+   #:def-type-alias #:def-struct #:def-record #:with-struct-accessors #:def-setter
    #:declare
+
    #:return-type #:type
    ;; All Crisp types
    #:char #:short #:int #:long

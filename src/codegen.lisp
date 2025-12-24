@@ -386,7 +386,7 @@
                                  (llvm-const-null llvm-type)
                                  ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
                                  ;; Generate I64 constant and Truncate if needed.
-                                 (let ((val-i64 (llvm-const-int (llvm-int64-type) value nil)))
+                                 (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
                                    (if (types-equivalent-p llvm-type (llvm-int64-type))
                                        val-i64
                                        (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))

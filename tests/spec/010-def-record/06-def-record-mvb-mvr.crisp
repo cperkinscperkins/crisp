@@ -1,0 +1,25 @@
+(def-record virtual-point
+  (x long)
+  (y long))
+
+;; because of the "explosion" we want to
+;; make sure records behave well with
+;; multiple-value bind and return
+
+
+(def-function initialize-constellation (h1 v1 h2 v2)
+   (declare #'(long long long long => virtual-point virtual-point))
+    (let ((morning-star (make-virtual-point :x h1 :y v1))
+          (evening-star (make-virtual-point :x h2 :y v2)))
+      (return morning-star evening-star)))
+
+(def-function adjust (vp)
+    (declare #'(virtual-point => nil))
+   (set! (x~ vp) (as-long 100))
+   (set! (y~ vp) (+ (y~ vp) (as-long 20))))
+
+(def-function the-firmament ()
+    (declare #'(=> virtual-point virtual-point))
+    (let ((morning-star evening-star (initialize-constellation (as-long 2) (as-long 3) (as-long 4) (as-long 5))))
+      (adjust morning-star)
+      (return morning-star evening-star)))

@@ -1,0 +1,10 @@
+(def-record virtual-point
+  (x long)
+  (y long))
+
+;; record as parameter and return
+;; remember that records are exploded
+;; in the ACTUAL LLVM-IR funcall interface.
+(def-function identity-vp (vp)
+    (declare #'(virtual-point => virtual-point))
+    vp)

@@ -206,10 +206,25 @@
                    *crisp-structs*)
           nil))))
 
-(defun register-struct-definition (name members)
-  "Registers a struct definition in the global registry."
+(defun compute-record-layout (members)
+  "Computes layout for records (virtual, no padding)."
+  (cl:let* ((runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
+            (current-offset 0)
+            (expanded-members '()))
+    (dolist (member runtime-members)
+      (cl:let* ((type (second member))
+                (size (get-std140-size type)))
+        (push member expanded-members)
+        (incf current-offset size)))
+
+    (values (nreverse expanded-members) current-offset)))
+
+(defun register-struct-definition (name members &optional (category :struct))
+  "Registers a struct or record definition in the global registry."
   (multiple-value-bind (padded-members total-size)
-      (compute-std140-layout members)
+      (if (eq category :record)
+          (compute-record-layout members)
+          (compute-std140-layout members))
     (cl:let ((indices (make-hash-table :test #'eq)))
       (loop for m in padded-members
             for i from 0
@@ -228,7 +243,7 @@
          :name name
          :llvm-type-fn (lambda () (ensure-struct-llvm-type name))
          :size (* total-size 8)
-         :category :struct)))))
+         :category category)))))
 
 (defun parse-struct-member-spec (spec)
   "Parses a struct member specification.
