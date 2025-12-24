@@ -32,7 +32,7 @@
         (set! (x~ p) 3.0)  ;; assigns 13.0 to raw x
         (set! (y~ p) 4)    ;; assigns 24 to raw y
         
-        ;; Accessors should add 1/2 to raw value
+        ;; Accessors should add 1 or 2 to raw value
         ;; x: 13.0 + 1.0 = 14.0
         ;; y: 24 + 2 = 26
         (return (x~ p) (y~ p))))

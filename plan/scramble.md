@@ -209,6 +209,8 @@ SHORT TERM PLAN
 - - access
 - [x] compile time struct properties
 - [x] runtime assert and --runtime-checks flag
+- [ ] def-record 
+- [ ] revisit "implicit" and "exploded" args - def-record FTW
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - - [x] Storage Properties  (cannot be set)
 - - - [x] address-space
