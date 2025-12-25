@@ -24,7 +24,7 @@
          (producer "Crisp Compiler"))
     (crisp.llvm-bindings:llvm-di-builder-create-compile-unit
      di-builder
-     32768 ; DW_LANG_user_lo
+     12 ; DW_LANG_C99 (Temporarily using C99 to debug CI failure. Was 32768/0x8000)
      di-file
      producer (length producer)
      nil ; isOptimized

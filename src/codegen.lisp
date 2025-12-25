@@ -24,6 +24,7 @@
                              (:unsigned-int 7) ; DW_ATE_unsigned
                              (:float 4) ; DW_ATE_float
                              (:struct 7) ; Fallback: Treat struct as unsigned blob for now
+                             (:record 7) ; Treat record as struct/unsigned for now
                              (:void (return-from get-or-create-di-type (cffi:null-pointer)))))
                  (di-type (llvm-di-builder-create-basic-type
                            di-builder name-str (length name-str)
