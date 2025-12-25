@@ -38,7 +38,12 @@
 (defvar *compile-single-pass* nil)
 
 (defun get-binary-path ()
-  (merge-pathnames "bin/crisp-compile.exe" (uiop:getcwd)))
+  (let ((exe (merge-pathnames "bin/crisp-compile.exe" (uiop:getcwd)))
+        (unix (merge-pathnames "bin/crisp-compile" (uiop:getcwd))))
+    (cond
+     ((probe-file exe) exe)
+     ((probe-file unix) unix)
+     (t (error "Could not locate crisp-compile binary at ~a or ~a" exe unix)))))
 
 (defun cleanup-ir-string (output)
   "Extracts the IR from the compiler stdout."
@@ -49,6 +54,11 @@
           output))))
 
 (defun run-spec-binary (file)
+  ;; Filter out known incompatible tests for flags
+  (when (and *compile-single-pass* (search "multipass" (pathname-name file)))
+        (format t "~&Skipping ~a (Incompatible with --single-pass)~%" (pathname-name file))
+        (return-from run-spec-binary t))
+
   (let ((bin (get-binary-path))
         (args (list (uiop:native-namestring file))))
     (when *compile-debug* (push "--debug" args))
