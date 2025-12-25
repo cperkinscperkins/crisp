@@ -25,7 +25,7 @@ These property functions for the mutable properties can be overloaded.  They can
 
 ### Settable Properties
 
-None of the `storage` properties can be set. Also, excepting `bytes`, all the `storage` properties are compile time properties. 
+None of the `storage` properties can be set. Also, excepting `byte-size`, all the `storage` properties are compile time properties. 
 The `bytes` property on a `storage` entity is sometimes a compile time property, but usually it's a runtime property. Regardless, it cannot be changed, .
 But ALL the mutable properties on the Storage Handle view can be set, including `length`.
 

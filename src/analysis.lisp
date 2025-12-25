@@ -99,7 +99,7 @@
   (let ((worklist '()))
     ;; 1. Seed the map and worklist with all originator functions.
     (loop for fn-name being the hash-keys of *originator-functions*
-          do (setf (gethash fn-name *implicit-arg-map*) '(:storage-ptr :storage-size))
+          do (setf (gethash fn-name *implicit-arg-map*) '(:storage))
             (push fn-name worklist))
 
     ;; 2. Process the worklist until it's empty.
@@ -113,7 +113,7 @@
                (dolist (caller callers)
                  ;; If this caller isn't already marked as a carrier, mark it and add to worklist.
                  (unless (gethash caller *implicit-arg-map*)
-                   (setf (gethash caller *implicit-arg-map*) '(:storage-ptr :storage-size))
+                   (setf (gethash caller *implicit-arg-map*) '(:storage))
                    (push caller worklist)))))))
 
 (defun shallow-analyze-body (forms)
@@ -364,7 +364,7 @@
   "Injects implicit arguments into the environment if the function is a carrier."
   (let* ((implicit-args (gethash name *implicit-arg-map*))
          (implicit-env (when implicit-args
-                             '((__storage_ptr ulong) (__storage_size ulong)))))
+                             '((__storage storage)))))
     (append implicit-env explicit-env)))
 
 (defun scan-for-carriers (name body)
@@ -376,7 +376,7 @@
                                               (member callee *side-channel-originators*)))
                                       callees))
                 (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
-                (setf (gethash name *implicit-arg-map*) '(:storage-ptr :storage-size))))))
+                (setf (gethash name *implicit-arg-map*) '(:storage))))))
 
 (defun validate-return-types (name body env declared-return-types location)
   "Analyzes the function body and validates return types."
@@ -851,7 +851,7 @@
   (when (null *call-graph*)
         (log:debug "Single-pass: Found originator form in ~s. Marking it." *current-compiling-function*)
         (setf (gethash *current-compiling-function* *implicit-arg-map*)
-          '(:storage-ptr :storage-size)))
+          '(:storage)))
 
   (let ((inner-type (cadr expr)))
     ;; Ensure the inner type is valid
@@ -1690,12 +1690,15 @@
       (let ((final-arg-nodes
              (if implicit-args-required
                  (let ((implicit-arg-nodes
-                        (loop for arg-name in '(__storage_ptr __storage_size)
-                              collect (let ((found (assoc arg-name env)))
-                                        (if found
-                                            (make-semantic-var-read :name arg-name :type (second found) :source-location location)
-                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
-                                              *current-compiling-function* arg-name))))))
+                        (loop for kw in implicit-args-required
+                              collect (let ((arg-name (case kw
+                                                        (:storage '__storage)
+                                                        (t (error "Unknown implicit arg keyword: ~s" kw)))))
+                                        (let ((found (assoc arg-name env)))
+                                          (if found
+                                              (make-semantic-var-read :name arg-name :type (second found) :source-location location)
+                                              (error "Compiler bug: Carrier function ~s is missing implicit argument ~s (for ~s)."
+                                                *current-compiling-function* arg-name kw)))))))
                    (append implicit-arg-nodes explicit-arg-nodes))
                  explicit-arg-nodes)))
 

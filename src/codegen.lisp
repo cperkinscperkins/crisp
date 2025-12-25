@@ -114,58 +114,64 @@
 (defun get-expanded-types (type-spec module)
   "Returns a list of LLVM types for a given Crisp type spec.
    For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type)."
-  (cond
-   ((or (eq type-spec 'storage) (equal type-spec '(storage)))
-     (list (llvm-pointer-type (llvm-int8-type) 0)
-           (llvm-int64-type)))
-   ((listp type-spec)
-     (let ((base-type (first type-spec)))
-       (cond
-        ((or (eq base-type :function-type) (eq base-type :function-literal))
-          (list (crisp-type-to-llvm-type type-spec module)))
-        ;; Generic Parameterized Structs (e.g. CELL)
-        ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
-          (list (crisp-type-to-llvm-type type-spec module)))
-        (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
-   (t (list (crisp-type-to-llvm-type type-spec module)))))
+  (let ((type-rec (gethash type-spec *crisp-types*)))
+    (cond
+     ;; Case 1: Record Type -> Explode recursively
+     ((and type-rec (eq (crisp-type-category type-rec) :record))
+       (let* ((struct-def (gethash type-spec *crisp-structs*))
+              (members (crisp-struct-definition-members struct-def))
+              ;; Filter out compile-time members (e.g. :c-t tagged)
+              (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members)))
+         (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members)))
+
+     ;; Case 2: Standard Type (Struct/Scalar) -> Return as is
+     (t (list (crisp-type-to-llvm-type type-spec module))))))
 
 (defun explode-value (builder agg-val type-spec)
   "Extracts components from an aggregate value if necessary.
    Returns a list of LLVM values."
-  (cond
-   ((or (eq type-spec 'storage) (equal type-spec '(storage)))
-     (list (llvm-build-extract-value builder agg-val 0 "storage_addr")
-           (llvm-build-extract-value builder agg-val 1 "storage_size")))
-   ((listp type-spec)
-     (let ((base-type (first type-spec)))
-       (cond
-        ((or (eq base-type :function-type) (eq base-type :function-literal))
-          (list agg-val))
-        ;; Generic Parameterized Structs (e.g. CELL)
-        ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
-          (list agg-val))
-        (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
-   (t (list agg-val))))
+  (let ((type-rec (gethash type-spec *crisp-types*)))
+    (cond
+     ((and type-rec (eq (crisp-type-category type-rec) :record))
+       (let* ((struct-def (gethash type-spec *crisp-structs*))
+              (members (crisp-struct-definition-members struct-def))
+              (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
+              (values '()))
+         (loop for m in runtime-members
+               for i from 0
+               do (let* ((member-type (second m))
+                         ;; Extract the member from the aggregate
+                         (extracted (llvm-build-extract-value builder agg-val i (format nil "~a_val" (first m)))))
+                    ;; Recursively explode the member (in case it's a nested record)
+                    (setf values (append values (explode-value builder extracted member-type)))))
+         values))
+     (t (list agg-val)))))
 
 (defun implode-value (builder components type-spec module)
   "Combines components into an aggregate value if necessary.
    Returns a single LLVM value."
-  (cond
-   ((or (eq type-spec 'storage) (equal type-spec '(storage)))
-     (let* ((struct-type (crisp-type-to-llvm-type 'storage module))
-            (undef (llvm-get-undef struct-type))
-            (val-0 (llvm-build-insert-value builder undef (first components) 0 "storage_addr")))
-       (llvm-build-insert-value builder val-0 (second components) 1 "storage_size")))
-   ((listp type-spec)
-     (let ((base-type (first type-spec)))
-       (cond
-        ((or (eq base-type :function-type) (eq base-type :function-literal))
-          (first components))
-        ;; Generic Parameterized Structs (e.g. CELL)
-        ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
-          (first components))
-        (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
-   (t (first components))))
+  (let ((type-rec (gethash type-spec *crisp-types*)))
+    (cond
+     ((and type-rec (eq (crisp-type-category type-rec) :record))
+       (let* ((struct-def (gethash type-spec *crisp-structs*))
+              (members (crisp-struct-definition-members struct-def))
+              (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
+              (record-type (crisp-type-to-llvm-type type-spec module))
+              (agg (llvm-get-undef record-type))
+              (current-components components))
+
+         (loop for m in runtime-members
+               for i from 0
+               do (let* ((member-type (second m))
+                         ;; Implode the member first (consumes N components)
+                         (member-val (implode-value builder current-components member-type module))
+                         ;; Advance the component list by the number of components consumed
+                         (consumed-count (length (get-expanded-types member-type module))))
+                    ;; Insert the imploded member into the record
+                    (setf agg (llvm-build-insert-value builder agg member-val i (format nil "~a_ins" (first m))))
+                    (setf current-components (subseq current-components consumed-count))))
+         agg))
+     (t (first components)))))
 
 (defun extract-primary-value (builder value type-spec)
   "If the type indicates an MVR (multiple return value) struct, extract the first element.
@@ -369,24 +375,13 @@
                              ;; The type system tracks the identity, but at runtime it's a ghost.
                              (llvm-get-undef llvm-type))
                            ((eq base-type 'cell)
-                             (let* ((ptr-name '__storage_ptr)
-                                    (size-name '__storage_size)
-                                    (ptr-alloca (gethash ptr-name var-env))
-                                    (size-alloca (gethash size-name var-env)))
-                               (unless (and ptr-alloca size-alloca)
-                                 (error "Missing implicit arguments for make-scratch-cell. Environment keys: ~s" (alexandria:hash-table-keys var-env)))
+                             (let* ((storage-var-name '__storage)
+                                    (storage-alloca (gethash storage-var-name var-env)))
+                               (unless storage-alloca
+                                 (error "Missing implicit argument __storage for make-scratch-cell. Environment keys: ~s" (alexandria:hash-table-keys var-env)))
 
-                               (let* ((ptr-val (llvm-build-load2 builder (llvm-int64-type) ptr-alloca "storage_ptr_raw"))
-                                      (size-val (llvm-build-load2 builder (llvm-int64-type) size-alloca "storage_size"))
-                                      ;; Cast i64 ptr to ptr (i8*)
-                                      (ptr-casted (llvm-build-int-to-ptr builder ptr-val (llvm-pointer-type (llvm-int8-type) 0) "storage_ptr"))
-
-                                      ;; 1. Create STORAGE struct { ptr, size }
-                                      ;; 1. Create STORAGE struct { ptr, size }
-                                      (storage-struct-type (ensure-struct-llvm-type 'storage))
-                                      (st-undef (llvm-get-undef storage-struct-type))
-                                      (st-0 (llvm-build-insert-value builder st-undef ptr-casted 0 "st_ptr"))
-                                      (st-val (llvm-build-insert-value builder st-0 size-val 1 "st_size"))
+                               (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
+                                      (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
 
                                       ;; 2. Create CELL struct { parent:storage, offset:ulong, ... }
                                       ;; We must resolve the PHYSICAL struct type, not the logical pointer type.
@@ -396,7 +391,7 @@
                                       (cell-undef (llvm-get-undef cell-struct-type))
 
                                       ;; STORAGE is now BY VALUE in CELL.
-                                      (cell-0 (llvm-build-insert-value builder cell-undef st-val 0 "parent"))
+                                      (cell-0 (llvm-build-insert-value builder cell-undef storage-val 0 "parent"))
                                       ;; Initialize offset to 0
                                       (cell-1 (llvm-build-insert-value builder cell-0 (llvm-const-int (llvm-int64-type) 0 nil) 1 "offset"))
 
