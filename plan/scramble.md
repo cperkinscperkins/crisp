@@ -334,6 +334,40 @@ LANGUAGE CHANGES
 
 
 
+THE SPINE - testing and ci
+==========================
+Ultimate Goal: given the design document, and the step-by-step series of tests,
+be able to have AntiGravity (or comparable) build the compiler in any language (though, defmacro support might be a reach for non-Lisps)
+
+Issues and Shortcomings
+-----------------------
+- [ ] "negative tests".  The error files still not split out along the spine.
+- - [ ] exactly one failure per file seems suboptimal. unpleasant.
+- - [ ] it'd be nice to declare the expected error right with the test.  Sort of like llvm-lit.  
+- - [ ] llvm-lit does warnings as well as errors.   a bit brittle though.
+
+- [ ] flags. no way to capture WHEN any particular flag should be developed.
+- - [ ] no way to declare their usage in the spec test.
+
+What other things are not properly captured in the spine?
+
+
+
+Architecture
+============
+
+more pass driven? We could isolate the "expansion and desugar" phase from the "create semantic AST nodes" phase from the analysis from the codegen. In theory each one could have an input sink and an output sink and be its own standalone application.
+
+And, of course, there would be strict input/output formats at each stage. Which could also mean testing at each stage.  The isolation would allow AntiGravity to focus on just one stage and not need to absorb the whole codebase.
+
+But, on the other hand, most features are "cross cutting" and wishing otherwise doesn't change that.  If a new feature is added (like def-record) it has to be added to every pass.  
+
+However, even if we do NOT rearchitect in this fashion, we could have a --sanity flag that makes each pass output some sort of s-expression (or LLVM-IR) out.
+
+Not sure how difficult that would be. 
+
+
+
 
 
 
