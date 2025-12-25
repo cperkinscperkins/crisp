@@ -36,9 +36,10 @@
 - [Declaring Types - Kernels](chapters/08_crisp_types/09_declaring_types_kernels.md)
 - [Struct Types](chapters/08_crisp_types/10_struct_types.md)
 - [def-setter](chapters/08_crisp_types/11_def_setter.md)
-- [Template Types](chapters/08_crisp_types/12_template_types.md)
-- [def-constraint](chapters/08_crisp_types/13_def_constraint.md)
-- [def-type-function](chapters/08_crisp_types/14_def_type_function.md)
+- [def-record](chapters/08_crisp_types/12_def_record.md)
+- [Template Types](chapters/08_crisp_types/13_template_types.md)
+- [def-constraint](chapters/08_crisp_types/14_def_constraint.md)
+- [def-type-function](chapters/08_crisp_types/15_def_type_function.md)
 
 ## GPU Memory
 

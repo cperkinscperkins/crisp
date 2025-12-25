@@ -19,15 +19,14 @@ and I have to admit, that's fairly compelling. Might have to consider it.
 
 
 ```
-; note the two different ways of specifing member type
 (def-struct point
     (x float)
-    (y:float))
+    (y float))
 
 
 ;; make-XXXX
 (make-point :x 3 :y 4)
-;; type signature of make-point is #'(&key x:float y:float => point)
+;; type signature of make-point is #'(&key :x float :y float => point)
 ```
 
 ### member data rules

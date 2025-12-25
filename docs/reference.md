@@ -1,11 +1,42 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-21T21:57:07.941741Z
+Generated on 2025-12-25T07:58:12.451518Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
 ## File: `C:\Users\cperk\Documents\crisp\src\llvm-bindings.lisp`
 
+### DEFCONSTANT `+LLVM-VOID-TYPE-KIND+`
+
+---
+### DEFCONSTANT `+LLVM-HALF-TYPE-KIND+`
+
+---
+### DEFCONSTANT `+LLVM-FLOAT-TYPE-KIND+`
+
+---
+### DEFCONSTANT `+LLVM-DOUBLE-TYPE-KIND+`
+
+---
+### DEFCONSTANT `+LLVM-INTEGER-TYPE-KIND+`
+
+---
+### DEFCONSTANT `+LLVM-FUNCTION-TYPE-KIND+`
+
+---
+### DEFCONSTANT `+LLVM-STRUCT-TYPE-KIND+`
+
+---
+### DEFCONSTANT `+LLVM-ARRAY-TYPE-KIND+`
+
+---
+### DEFCONSTANT `+LLVM-POINTER-TYPE-KIND+`
+
+---
+### DEFUN `LLVM-TYPE-KIND-IS-POINTER?`
+- **Args**: `(TY)`
+
+---
 ### DEFCONSTANT `+LLVM-INT-EQ+`
 
 ---
@@ -220,6 +251,12 @@ Generated on 2025-12-21T21:57:07.941741Z
 
 
 ---
+### DEFSTRUCT `SEMANTIC-TRUNCATE`
+
+  > Represents a truncate operation returning (quot rem).
+
+
+---
 ### DEFSTRUCT `SEMANTIC-CALL`
 
   > Represents a call to a user-defined function.
@@ -385,10 +422,58 @@ Generated on 2025-12-21T21:57:07.941741Z
 
 
 ---
+### DEFVAR `*TEMPLATE-ARITY-LOOKUP-FN*`
+
+  > A hook for looking up the arity of a template by name (symbol or string).  >    Should be set by the templates module. Returns integer or nil.
+
+
+---
 ### DEFUN `MANGLE-TEMPLATE-STRUCT-NAME`
 - **Args**: `(NAME PARAMS)`
 
   > Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT
+
+
+---
+### DEFUN `SPLIT-STRING`
+- **Args**: `(STRING DELIMITER)`
+
+  > Splits a string by a character delimiter.
+
+
+---
+### DEFUN `RECONSTRUCT-TEMPLATE-ARGS`
+- **Args**: `(TOKENS PACKAGE)`
+
+  > Recursively groups tokens into lists based on template arity.  >    tokens: list of strings.  >    package: the fallback package for interning.  >    Returns: (values property-list remaining-tokens)
+
+
+---
+### DEFUN `RECONSTRUCT-N-ARGS`
+- **Args**: `(TOKENS N PACKAGE)`
+
+  > Consumes N arguments from tokens.
+
+
+---
+### DEFUN `RECONSTRUCT-ONE-ARG`
+- **Args**: `(TOKENS PACKAGE)`
+
+  > Reads exactly one logical form (atom or template-expr) from tokens.
+
+
+---
+### DEFUN `UNMANGLE-TEMPLATE-STRUCT-NAME`
+- **Args**: `(SYMBOL)`
+
+  > Attempts to reverse mangling for known parameterized types like CELL.  >    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.
+
+
+---
+### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
+- **Args**: `(SPEC)`
+
+  > Expands storage handle constructors like (cell) or (cell int) into canonical template forms.
 
 
 ---
@@ -434,9 +519,6 @@ Generated on 2025-12-21T21:57:07.941741Z
 ### DEFUN `TYPE-EQUAL-P`
 - **Args**: `(T1 T2)`
 
-  > Checks if two Crisp types are equivalent at compile-time.
-
-
 ---
 ### DEFUN `RESOLVE-TYPE-TO-LLVM`
 - **Args**: `(TYPE-SPEC)`
@@ -448,9 +530,9 @@ Generated on 2025-12-21T21:57:07.941741Z
 ## File: `C:\Users\cperk\Documents\crisp\src\types-instantiator.lisp`
 
 ### DEFUN `INSTANTIATE-CELL-STRUCT`
-- **Args**: `(ELEMENT-TYPE)`
+- **Args**: `(ELEMENT-TYPE &OPTIONAL (ADDRESS-SPACE GLOBAL) (ACCESS READ-WRITE))`
 
-  > Programmatically defines the CELL_<ElementType> struct.  >    Members:  >      parent: (storage)  >      offset: (long)  >      element-type: (type :c-t <element-type>)  >      address-space: (address-space :c-t :global) ;; Default, effectively  >      access: (access :c-t :read-write) ;; Default  >   
+  > Programmatically defines the CELL_<ElementType> struct.  >    Members:  >      parent: (storage)  >      offset: (long)  >      element-type: (type :c-t <element-type>)  >      address-space: (address-space :c-t :global)  >      access: (access :c-t :read-write)  >   
 
 
 ---
@@ -484,6 +566,9 @@ Generated on 2025-12-21T21:57:07.941741Z
 
 
 ---
+### DEFVAR `*STRUCT-NAME-PREFIX*`
+
+---
 ### DEFUN `ENSURE-STRUCT-LLVM-TYPE`
 - **Args**: `(NAME)`
 
@@ -491,10 +576,24 @@ Generated on 2025-12-21T21:57:07.941741Z
 
 
 ---
-### DEFUN `REGISTER-STRUCT-DEFINITION`
-- **Args**: `(NAME MEMBERS)`
+### DEFUN `FIND-STRUCT-DEFINITION-BY-NAME`
+- **Args**: `(NAME-OR-SYMBOL)`
 
-  > Registers a struct definition in the global registry.
+  > Robustly finds a struct definition by symbol or name string, ignoring package.
+
+
+---
+### DEFUN `COMPUTE-RECORD-LAYOUT`
+- **Args**: `(MEMBERS)`
+
+  > Computes layout for records (virtual, no padding).
+
+
+---
+### DEFUN `REGISTER-STRUCT-DEFINITION`
+- **Args**: `(NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))`
+
+  > Registers a struct or record definition in the global registry.
 
 
 ---
@@ -531,6 +630,13 @@ Generated on 2025-12-21T21:57:07.941741Z
 ---
 ### DEFMACRO `COND`
 - **Args**: `(&REST CLAUSES)`
+
+---
+### DEFMACRO `RETURN`
+- **Args**: `(&OPTIONAL VALUE)`
+
+  > Crisp's special RETURN form. Expands to a semantic-return node.
+
 
 ---
 ### DEFMACRO `IF+`
@@ -571,6 +677,13 @@ Generated on 2025-12-21T21:57:07.941741Z
 - **Args**: `(NAME &REST MEMBERS)`
 
   > Defines a new Crisp struct type.
+
+
+---
+### DEFMACRO `DEF-RECORD`
+- **Args**: `(NAME &REST MEMBERS)`
+
+  > Defines a new Crisp record type (virtual struct).
 
 
 ---
@@ -863,7 +976,14 @@ Generated on 2025-12-21T21:57:07.941741Z
 - **Args**: `(EXPR ENV LOCATION)`
 
 ---
-### DEFUN `ANALYZE-AREF-EXPRESSION`
+### DEFUN `GET-ARRAY-ELEMENT-TYPE`
+- **Args**: `(TYPE)`
+
+  > Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.
+
+
+---
+### DEFUN `ANALYZE-AREF-EXPRESSION-OLD`
 - **Args**: `(EXPR ENV LOCATION)`
 
 ---
@@ -949,6 +1069,13 @@ Generated on 2025-12-21T21:57:07.941741Z
 
 
 ---
+### DEFUN `ANALYZE-TRUNCATE-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes (truncate val) -> (values int rem).
+
+
+---
 ### DEFUN `ANALYZE-GENERIC-AS-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
@@ -963,7 +1090,7 @@ Generated on 2025-12-21T21:57:07.941741Z
 
 
 ---
-### DEFUN `ANALYZE-SET!-EXPRESSION`
+### DEFUN `ANALYZE-SET!-EXPRESSION-OLD`
 - **Args**: `(EXPR ENV LOCATION)`
 
   > Analyzes a (set! target value) expression.
@@ -991,7 +1118,7 @@ Generated on 2025-12-21T21:57:07.941741Z
 
 
 ---
-### DEFUN `ANALYZE-FUNCTION-CALL`
+### DEFUN `ANALYZE-FUNCTION-CALL-OLD`
 - **Args**: `(OP EXPR ENV LOCATION)`
 
   > Analyzes a call to a user-defined function.
@@ -1026,7 +1153,7 @@ Generated on 2025-12-21T21:57:07.941741Z
 
 
 ---
-### DEFUN `ANALYZE-EXPRESSION`
+### DEFUN `ANALYZE-EXPRESSION-OLD`
 - **Args**: `(EXPR ENV LOCATION)`
 
   > Recursively analyzes a *single* expression.
@@ -1066,6 +1193,31 @@ Generated on 2025-12-21T21:57:07.941741Z
 - **Args**: `(CRISP-FORM &KEY (DEBUG-P NIL))`
 
   > Takes a single Crisp s-expression (like a def-function form),  >   compiles it, and returns its LLVM IR as a string.  >   This is a developer utility for REPL use and testing.
+
+
+---
+### DEFUN `ANALYZE-FUNCTION-CALL`
+- **Args**: `(OP EXPR ENV LOCATION)`
+
+  > Analyzes a call to a user-defined function.
+
+
+---
+### DEFUN `ANALYZE-AREF-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+---
+### DEFUN `ANALYZE-SET!-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes a (set! target value) expression.
+
+
+---
+### DEFUN `ANALYZE-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Recursively analyzes a *single* expression.
 
 
 ---
@@ -1123,6 +1275,13 @@ Generated on 2025-12-21T21:57:07.941741Z
 - **Args**: `(BUILDER COMPONENTS TYPE-SPEC MODULE)`
 
   > Combines components into an aggregate value if necessary.  >    Returns a single LLVM value.
+
+
+---
+### DEFUN `EXTRACT-PRIMARY-VALUE`
+- **Args**: `(BUILDER VALUE TYPE-SPEC)`
+
+  > If the type indicates an MVR (multiple return value) struct, extract the first element.  >    Otherwise return the value as is.  >    Used when a single-value context receives an MVR result.
 
 
 ---

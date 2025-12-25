@@ -57,7 +57,7 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
 (def-function survive (&key birds fish zombies)
   (declare (return-type NIL) (type birds fish zombies int))
   ;OR -- this one might need revisiting
-  (declare #'(&key int int int => NIL))
+  (declare #'(&key :birds int :fish int :zombies int => NIL))
   ...)
 
 (def-function addSome (x &optional y)

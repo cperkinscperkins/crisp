@@ -16,7 +16,7 @@ between two types.
 
 (def-derived-type <new-name> <type-expr> &key (subst :no))
 ```
-The `type-expr` is any type that supports a `make-` function (`vector`, `soa-vector`,  `tensor` and things created from `def-struct` )  
+The `type-expr` is any type that supports a `make-` function (`vector`, `soa-vector`,  `tensor` and things created from `def-struct` and `def-record` )  
 <!-- what about numeric types? bool, or nil ?  Definitely NOT functions or kernels, right?-->
 
 
