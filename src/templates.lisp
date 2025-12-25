@@ -201,6 +201,8 @@
 
 (defun initialize-templates ()
   "Initializes the template system and hooks into the compiler."
+  (clrhash *instantiated-templates*) ;; Reset cache
+  (clrhash *template-registry*) ;; Reset registry
   (setf crisp.compiler::*template-instantiator-fn* #'ensure-template-instantiation)
   (setf crisp.compiler::*template-arity-lookup-fn*
     (lambda (name)

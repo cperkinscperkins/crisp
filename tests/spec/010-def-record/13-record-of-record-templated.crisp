@@ -1,0 +1,35 @@
+(with-template-type (T)
+    (def-record virtual-point (x T) (y T)))
+
+(with-template-type (T)
+    (def-record virtual-rect (p1 (virtual-point T)) (p2 (virtual-point T))))
+
+
+
+(def-function explicit-instantiation (t-l b-r)
+    (declare #'((virtual-point int) (virtual-point int) => (virtual-rect int)))
+    (gen-virtual-rect int)
+    (make-virtual-rect :p1 t-l :p2 b-r))
+
+(def-function implicit-instantiation (t-l b-r)
+    (declare #'((virtual-point float) (virtual-point float) => (virtual-rect float)))
+    (make-virtual-rect :p1 t-l :p2 b-r))
+
+
+;; Template Function with Template Struct
+(with-template-type (T)
+  (def-function test-poly (t l b r)
+    (declare #'(T T T T => (virtual-rect T)))
+    (let ((p1 (make-virtual-point :x t :y l))
+          (p2 (make-virtual-point :x b :y r)))
+      (make-virtual-rect :p1 p1 :p2 p2))))
+
+(def-function test-of-gen-func ()
+    (declare #'( => (virtual-rect long)))
+    (gen-test-poly long)
+    (test-poly (as-long 1) (as-long 2) (as-long 3) (as-long 4)))
+
+(def-function test-of-inference-func ()
+    (declare #'( => (virtual-rect int)))
+    (test-poly (as-int 1) (as-int 2) (as-int 3) (as-int 4)))
+     

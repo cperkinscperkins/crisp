@@ -1,0 +1,4 @@
+(def-record virtual-point (x int) (y int))
+
+(def-record virtual-rect (p1 virtual-point) (p2 virtual-point))
+

@@ -19,8 +19,8 @@
   (c-t-assert (not (is-address-space? :invalid)) "INVALID should NOT be an address-space")
   
   ;; 3. Test standard enumeration (access)
-  (c-t-assert (is-access? :read_only) "READ_ONLY should be an access mode")
-  (c-t-assert (is-access? :write_only) "WRITE_ONLY should be an access mode")
-  (c-t-assert (is-access? :read_write) "READ_WRITE should be an access mode")
+  (c-t-assert (is-access? :read-only) "READ-ONLY should be an access mode")
+  (c-t-assert (is-access? :write-only) "WRITE-ONLY should be an access mode")
+  (c-t-assert (is-access? :read-write) "READ-WRITE should be an access mode")
   
   (return 0))

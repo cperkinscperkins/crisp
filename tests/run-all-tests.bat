@@ -17,59 +17,31 @@ echo            Running Crisp E2E Tests
 echo =================================================
 
 REM ---------------------------------------------------
-REM 1. Success Tests (Default and Debug)
+REM 1. Specs Runner (Internal & External)
 REM ---------------------------------------------------
+
 echo.
-echo [1/3] Running Success Tests...
-
-for %%f in (tests\*.crisp) do (
-    echo.
-    echo --- Running test: %%f ---
-    bin\crisp-compile.exe %%f
-    if errorlevel 1 (
-        echo [FAILED] Test failed: %%f
-        exit /b 1
-    ) else (
-        echo [PASSED]
-    )
-
-    echo --- Running test: %%f --debug ---
-    bin\crisp-compile.exe %%f --debug
-    if errorlevel 1 (
-        echo [FAILED] Test failed: %%f --debug
-        exit /b 1
-    ) else (
-        echo [PASSED]
-    )
+echo --- Running Internal Runner ---
+sbcl --script tests/run-specs.lisp
+if errorlevel 1 (
+    echo [FAILED] Internal Runner failed.
+    exit /b 1
 )
 
-REM ---------------------------------------------------
-REM 2. Single-Pass Tests (Specific Files)
-REM ---------------------------------------------------
 echo.
-echo [2/3] Running Single-Pass Tests...
+echo --- Running External Runner (Binary) ---
+sbcl --script tests/run-specs.lisp --use-binary
+if errorlevel 1 (
+    echo [FAILED] External Runner failed.
+    exit /b 1
+)
 
-set SINGLE_PASS_TESTS=tests\def-function_primitive.crisp tests\scratch-cell.crisp tests\templates.crisp tests\templates_composite.crisp tests\defmacro-01.crisp tests\let-unified.crisp tests\branching-comparisons.crisp tests\structs_basic.crisp tests\structs_templates.crisp tests\structs_overrides.crisp
-
-for %%f in (%SINGLE_PASS_TESTS%) do (
-    echo.
-    echo --- Running test: %%f --single-pass ---
-    bin\crisp-compile.exe %%f --single-pass
-    if errorlevel 1 (
-        echo [FAILED] Test failed: %%f --single-pass
-        exit /b 1
-    ) else (
-        echo [PASSED]
-    )
-
-    echo --- Running test: %%f --debug --single-pass ---
-    bin\crisp-compile.exe %%f --debug --single-pass
-    if errorlevel 1 (
-        echo [FAILED] Test failed: %%f --debug --single-pass
-        exit /b 1
-    ) else (
-        echo [PASSED]
-    )
+echo.
+echo --- Running External Runner (Debug) ---
+sbcl --script tests/run-specs.lisp --use-binary --debug
+if errorlevel 1 (
+    echo [FAILED] External Runner (Debug) failed.
+    exit /b 1
 )
 
 REM ---------------------------------------------------

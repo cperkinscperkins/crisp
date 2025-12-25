@@ -1,3 +1,0 @@
-(def-function first () 
-  (declare (return-type int)) 
-7)
