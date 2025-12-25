@@ -53,13 +53,14 @@
 
 (defun register-builtins ()
   "Registers built-in types and structs like 'storage' using def-struct semantics."
+  ;; Register built-in structs like 'storage'
   (log:info "Registering built-in structs...")
-  ;; EVAL the form so it is processed by the macros in the current runtime environment
-  (eval '(def-struct storage
-                     (address c-pointer)
-                     (byte-size ulong)
-                     (address-space address-space :c-t)
-                     (access access :c-t)))
+
+  ;; Redefine STORAGE as a RECORD (Register-based, passed by value)
+  ;; This replaces the old "exploded" implicit argument handling.
+  (eval '(def-record storage
+                     (ptr c-pointer)
+                     (size ulong)))
 
   ;; Register CELL struct template
   ;; CELL is an opaque handle to a storage slice.

@@ -209,7 +209,7 @@ SHORT TERM PLAN
 - - access
 - [x] compile time struct properties
 - [x] runtime assert and --runtime-checks flag
-- [ ] def-record 
+- [x] def-record 
 - [ ] revisit "implicit" and "exploded" args - def-record FTW
 - [ ] damn literal numbers are long overdue.  1.0f 1i 2l  something.
 - - [ ] also, give up on "no (to-int )" already. geebus
