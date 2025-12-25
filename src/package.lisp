@@ -40,9 +40,12 @@
    #:llvm-struct-type-in-context
    #:llvm-struct-create-named
    #:llvm-struct-set-body
+   #:llvm-get-type-by-name
 
    ;; Functions
    #:llvm-add-function
+   #:llvm-delete-function
+   #:llvm-count-basic-blocks
    #:llvm-get-insert-block
    #:llvm-get-basic-block-parent
    #:llvm-get-named-function
@@ -276,6 +279,7 @@
   ;; --- 1. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
                 #:def-function
+                #:def-struct
 
                 #:def-record
                 #:with-struct-accessors

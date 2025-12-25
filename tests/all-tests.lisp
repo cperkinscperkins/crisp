@@ -99,24 +99,24 @@
 
 (define-test (crisp-compiler fadd-generation)
              "Tests that fadd generation works correctly."
-             (let ((ir (compile-crisp-file-to-string "tests/types.crisp")))
+             (let ((ir (compile-crisp-file-to-string "tests/spec/002-type-conversion/types.crisp")))
                (true (search "fadd float" ir)
                      "Expected to find 'fadd float' instruction.")))
 
 (define-test (crisp-compiler di-type-generation)
-             (let ((ir (compile-crisp-file-to-string "tests/types.crisp" :debug-p t)))
+             (let ((ir (compile-crisp-file-to-string "tests/spec/002-type-conversion/types.crisp" :debug-p t)))
                (true (search "!DIBasicType(name: \"uint\"" ir))
                (true (search "!DIBasicType(name: \"float\"" ir))))
 
 (define-test (crisp-compiler promotion-casts)
-             (let ((ir (compile-crisp-file-to-string "tests/promotions.crisp")))
+             (let ((ir (compile-crisp-file-to-string "tests/spec/002-type-conversion/promotions.crisp")))
                (true (search "sitofp i32" ir))
                (true (search "uitofp i32" ir))
                (true (search "sext i8" ir))
                (true (search "fpext float" ir))))
 
 (define-test (crisp-compiler explicit-casts)
-             (let ((ir (compile-crisp-file-to-string "tests/casts.crisp")))
+             (let ((ir (compile-crisp-file-to-string "tests/spec/002-type-conversion/casts.crisp")))
                (true (search "sext i32" ir))
                (true (search "bitcast float" ir))
                (true (search "fptosi float" ir))))

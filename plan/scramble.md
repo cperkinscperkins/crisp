@@ -322,15 +322,15 @@ LANGUAGE CHANGES
 - - side channel
 - [ ] Revisit `def-constant-vector` . `def-contstant-storage` ??
 
-- [ ] Resolve `vector-type` vs. `vector` etc.  UPDATE: implementation is using 'cell' not 'cell-type'
+- [x] Resolve `vector-type` vs. `vector` etc.  UPDATE: implementation is using 'cell' not 'cell-type'
 
 - [ ] FML - +warp-size+ is 32 throughout the doc, but ideal warp size
             on BattleMage might be 16.  How is that set/handled?
 
-- [ ] remove x:int style type declarations. Just use : for namespaces at some later date.
+- [x] remove x:int style type declarations. Just use : for namespaces at some later date.
 - [ ] if-reorder <-- see google doc.
 - [ ] change => nil to => void ?? 
-- [ ] :read_write vs :read-write 
+- [x] :read_write vs :read-write 
 
 
 

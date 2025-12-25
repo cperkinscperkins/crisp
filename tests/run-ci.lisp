@@ -39,4 +39,6 @@
 ;; switch back to cl-user just in case
 (in-package :cl-user)
 
+
+(format t "~&; --- ALL TESTS PASSED ---~%")
 (uiop:quit 0)

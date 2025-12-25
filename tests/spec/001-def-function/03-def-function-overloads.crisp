@@ -1,0 +1,37 @@
+(def-function add-two (x y)
+    (declare #'(int int => int))
+  (+ x y))
+
+(def-function add-two (x y)
+    (declare #'(long long => long))
+  (+ x y))
+
+
+(def-function add-three (x y z)
+    (declare #'(long long long => long))
+  (add-two x (add-two y z)))
+
+(def-function add-three (x y z)
+    (declare #'(int int int => int))
+  (add-two x (add-two y z)))
+
+
+#|
+move this to error tests?
+This attempts to use back-propogation FROM 
+the return type of add-asym to force
+type promotion so that the 
+outer add-two is the long variant. 
+
+We don't support this. This isn't Ada. 
+
+(def-function add-asym (x y z)
+    (declare #'(int int int => long))
+  (add-two (add-two x y) z))
+|#
+
+
+;; this IS working now. 
+(def-function add-promoted (x y z)
+    (declare #'(int int int => long))
+  (add-two (as-long (add-two x y)) (to-long z)))

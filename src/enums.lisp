@@ -56,8 +56,8 @@
                  :constant)
 
 (def-enumeration access
-                 :read_only
-                 :write_only
-                 :read_write
+                 :read-only
+                 :write-only
+                 :read-write
                  :readable
                  :writeable)

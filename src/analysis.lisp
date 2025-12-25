@@ -511,7 +511,27 @@
                                              (if (and (listp nt) (not (valid-type-p nt)))
                                                  nt
                                                  (list nt)))
-                              :value-node return-node
+                              ;; TRUNCATION LOGIC FOR IMPLICIT RETURN
+                              :value-node (let* ((nt (semantic-node-type return-node))
+                                                 (val-types (if (and (listp nt) (not (valid-type-p nt))) nt (list nt)))
+                                                 (target-types (cond ((or (null return-type) (equal return-type '(nil))) inferred-return-types)
+                                                                     (t return-type)))
+                                                 (target-list (if (and (listp target-types) (not (valid-type-p target-types))) target-types (list target-types))))
+
+                                            (cond
+                                             ;; Case: 1 value needed, >1 provided. Extract index 0.
+                                             ((and (= (length target-list) 1) (> (length val-types) 1))
+                                               (log:info "Implicit Return Truncation: ~a -> ~a" val-types target-list)
+                                               (make-semantic-extract-value
+                                                :type (first target-list)
+                                                :aggregate-node return-node
+                                                :index 0
+                                                :source-location (if return-node (semantic-node-source-location return-node) location)))
+
+                                             ;; TODO: Handle N -> M (where M > 1 and N > M) case if needed.
+                                             ;; For now return original node.
+                                             (t return-node)))
+
                               :source-location (if return-node (semantic-node-source-location return-node) location)))))
            :source-location location))))))
 
@@ -987,14 +1007,50 @@
          (value-nodes (loop for form in value-forms
                             for i from 1
                             collect (analyze-expression form env (append location (list i)))))
-         (return-types (if value-nodes
-                           (loop for node in value-nodes
-                                   append (let ((t-spec (semantic-node-type node)))
-                                            ;; If it's a list that ISN'T a valid type (e.g. '(int float)), assume it's multi-value
-                                            (if (and (listp t-spec) (not (valid-type-p t-spec)))
-                                                t-spec
-                                                (list t-spec))))
-                           '(nil))))
+
+         ;; Flatten types to check against signature
+         (all-inferred-types (if value-nodes
+                                 (loop for node in value-nodes
+                                         append (let ((t-spec (semantic-node-type node)))
+                                                  (if (and (listp t-spec) (not (valid-type-p t-spec)))
+                                                      t-spec
+                                                      (list t-spec))))
+                                 '(nil)))
+
+         ;; Context
+         (current-func *current-compiling-function*)
+         (sig (if current-func (first (gethash current-func *function-table*)) nil))
+         (declared-ret (if sig (function-signature-return-types sig) nil))
+
+         ;; Initialize return-types default
+         (return-types all-inferred-types))
+
+    ;; Truncation Logic
+    (when (and declared-ret (not (equal declared-ret '(nil))))
+          (let ((num-declared (length declared-ret))
+                (num-inferred (length all-inferred-types)))
+
+            (when (> num-inferred num-declared)
+                  (log:info "Truncating return values for ~a. declared: ~a inferred: ~a" current-func declared-ret all-inferred-types)
+                  (let ((new-nodes '())
+                        (captured 0))
+                    (loop for node in value-nodes
+                          while (< captured num-declared)
+                          do (let* ((type (semantic-node-type node))
+                                    (is-mv (and (listp type) (not (valid-type-p type))))
+                                    (count (if is-mv (length type) 1)))
+                               (cond
+                                (is-mv
+                                  (loop for i from 0 below count
+                                        while (< captured num-declared)
+                                        do (push (make-semantic-extract-value :type (nth i type) :aggregate-node node :index i :source-location (semantic-node-source-location node)) new-nodes)
+                                          (incf captured)))
+                                (t
+                                  (push node new-nodes)
+                                  (incf captured)))))
+                    (setf value-nodes (nreverse new-nodes))
+                    (setf return-types declared-ret)))))
+
     (make-semantic-explicit-return :type return-types
                                    :value-nodes value-nodes
                                    :source-location location)))
