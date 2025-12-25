@@ -154,6 +154,9 @@
 ;; Struct Logic
 ;; ============
 
+;; Global for testing isolation
+(defvar *struct-name-prefix* "")
+
 (defun ensure-struct-llvm-type (name)
   "Ensures the LLVM struct type exists for the given struct name.
    Handles forward declarations and recursion."
@@ -167,7 +170,8 @@
 
     ;; Create the named struct (opaque first) to handle recursion
     (cl:let* ((ctx (llvm-get-module-context *current-module*))
-              (struct-type (llvm-struct-create-named ctx (symbol-name name))))
+              (full-name (format nil "~a~a" *struct-name-prefix* (symbol-name name)))
+              (struct-type (llvm-struct-create-named ctx full-name)))
       ;; CACHE IT IMMEDIATELY
       (setf (crisp-struct-definition-llvm-type def) struct-type)
 

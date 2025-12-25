@@ -39,23 +39,22 @@
       (let ((ir-string (compile-crisp-file-to-ir-string file)))
         (if (validate-ir-with-clang ir-string)
             (progn (format t "PASS~%") t)
-            (progn (format t "FAIL (Invalid IR)~%") nil)))
+            (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
     (error (e)
-      (format t "FAIL (Condition: ~a)~%" e)
+      (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
 
 (defun compile-crisp-file-to-ir-string (filepath)
   "Compiles a .crisp file and returns the LLVM IR as a string."
-  (with-output-to-string (s)
-    (let ((*standard-output* s)
-          ;; Use a FRESH environment for each spec to ensure isolation
-          (crisp.compiler::*function-table* (make-hash-table :test 'equal))
-          (crisp.compiler::*crisp-structs* (make-hash-table :test 'equal))
-          (crisp.compiler::*record-definitions* (make-hash-table :test 'equal)) ;; Future proofing
-          (forms (with-open-file (stream filepath)
-                   (loop for form = (read stream nil :eof)
-                         until (eq form :eof)
-                         collect form))))
+  (let ((*standard-output* (make-broadcast-stream))) ; Discard stdout (redirect to null)
+    (let (;; Use a FRESH environment for each spec to ensure isolation
+          (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
+          (forms (progn
+                  (crisp.compiler:initialize-compiler :log-level :warn) ;; Standard cleanup
+                  (with-open-file (stream filepath)
+                    (loop for form = (read stream nil :eof)
+                          until (eq form :eof)
+                          collect form)))))
       (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filepath)))
              (builder (crisp.llvm-bindings:llvm-create-builder)))
         (unwind-protect

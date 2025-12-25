@@ -22,6 +22,10 @@
 
   ;; Initialize the compiler's internal state.
   (initialize-crisp-types)
+  (clrhash *function-table*) ;; Reset function table
+  (clrhash *crisp-structs*) ;; Reset struct definitions
+  (when (boundp '*record-definitions*) (clrhash *record-definitions*)) ;; Reset records (if defined)
+
   (initialize-expression-analyzers) ;; In analysis.lisp, but usually registered.
   ;; Note: analysis.lisp initializes *expression-analyzers* entries via def-expression-analyzer.
   ;; Wait, where is initialize-expression-analyzers defined?
