@@ -167,6 +167,22 @@
         (t (error "Internal codegen error: Unknown parameterized type ~a" base-type)))))
    (t (first components))))
 
+(defun extract-primary-value (builder value type-spec)
+  "If the type indicates an MVR (multiple return value) struct, extract the first element.
+   Otherwise return the value as is.
+   Used when a single-value context receives an MVR result."
+  (log:info "EXTRACT-PRIMARY: value=~s type=~s listp=~s" value type-spec (listp type-spec))
+  (if (and (listp type-spec)
+           (not (valid-type-p type-spec))
+           (> (length type-spec) 1))
+      ;; It is a multi-value return type (e.g. from semantic-truncate: (int float))
+      ;; The value is a struct { i32, float }
+      ;; We extract index 0.
+      (let ((extracted (llvm-build-extract-value builder value 0 "primary")))
+        extracted)
+      ;; It is a single value
+      value))
+
 (defun create-llvm-function-type (module return-types param-nodes)
   "Calculates the LLVM function type, handling parameter explosion."
   (let* ((return-type (get-llvm-return-type module return-types))
@@ -244,10 +260,22 @@
     (setf *cached-int32-type* (llvm-int32-type))
     (setf *cached-int64-type* (llvm-int64-type))
     (log:debug "Cached INT32 (Global): ~a" *cached-int32-type*)
-    ;; Check if already exists (forward declaration)
+    ;; Check if already exists (forward declaration or redefinition)
     (let ((existing (llvm-get-named-function module fn-name)))
       (if (and existing (not (cffi:null-pointer-p existing)))
-          (values existing nil) ;; TODO: Handle debug info for existing?
+          (cond
+           ;; Case 1: Redefinition (Function has a body already). We must Replace it.
+           ((> (llvm-count-basic-blocks existing) 0)
+             (log:warn "Redefining function ~a (replacing existing definition)." fn-name)
+             (llvm-delete-function existing)
+             (let ((func (llvm-add-function module fn-name fn-type)))
+               (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
+                 (values func di-subprogram))))
+           ;; Case 2: Forward Declaration (Function has no body). Reuse it.
+           (t
+             (values existing nil))) ; TODO: Debug info for definition of forward decl?
+
+          ;; Case 3: New Function (Does not exist). Create it.
           (let ((func (llvm-add-function module fn-name fn-type)))
             (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
               (values func di-subprogram)))))))
@@ -485,8 +513,11 @@
            (let* ((result-type-name (,type-accessor node))
                   (lhs-type-name (get-single-value-type (,left-accessor node)))
                   (rhs-type-name (get-single-value-type (,right-accessor node)))
-                  (casted-lhs (build-cast-if-needed builder lhs lhs-type-name result-type-name))
-                  (casted-rhs (build-cast-if-needed builder rhs rhs-type-name result-type-name))
+                  ;; Ensure MVR structs are unpacked
+                  (lhs-raw (extract-primary-value builder lhs (semantic-node-type (,left-accessor node))))
+                  (rhs-raw (extract-primary-value builder rhs (semantic-node-type (,right-accessor node))))
+                  (casted-lhs (build-cast-if-needed builder lhs-raw lhs-type-name result-type-name))
+                  (casted-rhs (build-cast-if-needed builder rhs-raw rhs-type-name result-type-name))
                   (crisp-type (gethash result-type-name *crisp-types*))
                   (inst (if (eq (crisp-type-category crisp-type) :float)
                             (,float-inst builder casted-lhs casted-rhs "fop_tmp")
@@ -553,6 +584,9 @@
            (declare (ignore rhs-loc))
            (let* ((lhs-type-name (get-single-value-type (,left-accessor node)))
                   (lhs-type (gethash lhs-type-name *crisp-types*))
+                  ;; Ensure MVR structs are unpacked (comparing primary values)
+                  (lhs (extract-primary-value builder lhs (semantic-node-type (,left-accessor node))))
+                  (rhs (extract-primary-value builder rhs (semantic-node-type (,right-accessor node))))
                   ;; Determine predicate based on type. Note: Signed vs Unsigned integers might need different predicates!
                   ;; This is a simplification. Ideally semantic analysis distinguishes signed/unsigned ops
                   ;; or we check the type category here.
@@ -594,7 +628,9 @@
           for param-type in param-types
           do (multiple-value-bind (arg-val arg-loc) (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)
                (declare (ignore arg-loc))
-               (let ((exploded-vals (explode-value builder arg-val param-type)))
+               (let* ((arg-type-spec (semantic-node-type arg-node))
+                      (prim-val (extract-primary-value builder arg-val arg-type-spec))
+                      (exploded-vals (explode-value builder prim-val param-type)))
                  (dolist (val exploded-vals)
                    (setf (cffi:mem-aref args-array 'llvm-value-ref idx) val)
                    (incf idx)))))
@@ -604,7 +640,9 @@
   "Generates IR for a value-preserving cast."
   (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-value-cast-arg node) builder module var-env di-builder di-scope location-map)
     (declare (ignore arg-loc))
-    (let* ((from-type-name (get-single-value-type (semantic-value-cast-arg node)))
+    (let* ((arg-type (semantic-node-type (semantic-value-cast-arg node)))
+           (arg-val (extract-primary-value builder arg-val arg-type))
+           (from-type-name (get-single-value-type (semantic-value-cast-arg node)))
            (to-type-name (semantic-value-cast-type node))
            (cast-val (build-cast-if-needed builder arg-val from-type-name to-type-name)))
       ;; NOTE: This will need to be expanded to handle more `to-` conversions.
@@ -615,7 +653,9 @@
   "Generates IR for a bitcast."
   (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-bitcast-arg node) builder module var-env di-builder di-scope location-map)
     (declare (ignore arg-loc))
-    (let* ((to-type-spec (semantic-bitcast-type node))
+    (let* ((arg-type (semantic-node-type (semantic-bitcast-arg node)))
+           (arg-val (extract-primary-value builder arg-val arg-type))
+           (to-type-spec (semantic-bitcast-type node))
            (to-llvm-type (crisp-type-to-llvm-type to-type-spec module))
            (cast-val (llvm-build-bit-cast builder arg-val to-llvm-type "bitcast")))
       (values cast-val nil))))
@@ -624,7 +664,9 @@
   "Generates IR for a float-to-integer truncation cast."
   (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-fp-truncate-cast-arg node) builder module var-env di-builder di-scope location-map)
     (declare (ignore arg-loc))
-    (let* ((to-type-spec (semantic-fp-truncate-cast-type node))
+    (let* ((arg-type (semantic-node-type (semantic-fp-truncate-cast-arg node)))
+           (arg-val (extract-primary-value builder arg-val arg-type))
+           (to-type-spec (semantic-fp-truncate-cast-type node))
            (to-llvm-type (crisp-type-to-llvm-type to-type-spec module))
            ;; NOTE: This assumes a signed conversion. We'll need to check the
            ;; crisp-type category to select fptosi vs fptoui in the future.
@@ -698,17 +740,21 @@
            (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
                                                arg-nodes param-nodes param-count)))
 
-      (let ((call-inst (llvm-build-call2 builder
-                                         llvm-fn-type
-                                         callee
-                                         args-array
-                                         param-count
-                                         (if has-return-value "call_tmp" "")))
-            (di-location (when (and di-builder di-scope location-map)
-                               (let* ((loc (semantic-node-source-location node))
-                                      (line (gethash loc location-map 0)))
-                                 (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                        line 0 di-scope (cffi:null-pointer))))))
+      (let* ((call-inst (llvm-build-call2 builder
+                                          llvm-fn-type
+                                          callee
+                                          args-array
+                                          param-count
+                                          (if (or (null return-type-names)
+                                                  (equal return-type-names '(nil))
+                                                  (and (consp return-type-names) (eq (first return-type-names) 'void))) ;; Explicitly check for void
+                                              ""
+                                              "call_tmp")))
+             (di-location (when (and di-builder di-scope location-map)
+                                (let* ((loc (semantic-node-source-location node))
+                                       (line (gethash loc location-map 0)))
+                                  (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                         line 0 di-scope (cffi:null-pointer))))))
         (when di-location
               (llvm-instruction-set-debug-loc call-inst di-location))
         (values call-inst di-location)))))
@@ -954,7 +1000,8 @@
   "Generates IR for (set! target value)."
   (let* ((target-node (semantic-set!-target-node node))
          (value-node (semantic-set!-value-node node))
-         (new-val (generate-node-ir value-node builder module var-env di-builder di-scope location-map)))
+         (new-val (generate-node-ir value-node builder module var-env di-builder di-scope location-map))
+         (new-val (extract-primary-value builder new-val (semantic-node-type value-node))))
 
     (cond
      ;; Case 1: Variable assignment. We need the ALLOCA, not the loaded value.
@@ -987,7 +1034,8 @@
          ;; Generate the ORIGINAL struct value (load it)
          (struct-val (generate-node-ir struct-node builder module var-env di-builder di-scope location-map))
          ;; Generate the NEW member value
-         (new-member-val (generate-node-ir value-node builder module var-env di-builder di-scope location-map))
+         (new-member-val-raw (generate-node-ir value-node builder module var-env di-builder di-scope location-map))
+         (new-member-val (extract-primary-value builder new-member-val-raw (semantic-node-type value-node)))
          ;; Insert the new value
          (new-struct-val (llvm-build-insert-value builder struct-val new-member-val member-index "struct_update")))
     (values new-struct-val nil)))

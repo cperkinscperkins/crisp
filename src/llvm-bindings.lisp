@@ -113,6 +113,11 @@
          (element-count :unsigned-int)
          (packed :boolean))
 
+(defcfun ("LLVMGetTypeByName" llvm-get-type-by-name) :pointer
+         "Obtain a type from a module by its registered name."
+         (module :pointer)
+         (name :string))
+
 ;; --- Functions ---
 (defcfun ("LLVMAddFunction" llvm-add-function) :pointer
          (module :pointer)
@@ -128,6 +133,14 @@
 (defcfun ("LLVMGetNamedFunction" llvm-get-named-function) :pointer
          (module :pointer)
          (name :string))
+
+(defcfun ("LLVMDeleteFunction" llvm-delete-function) :void
+         "Deletes a function from its parent module."
+         (fn :pointer))
+
+(defcfun ("LLVMCountBasicBlocks" llvm-count-basic-blocks) :unsigned-int
+         "Counts the number of basic blocks in a function."
+         (fn :pointer))
 
 ;; --- Basic Blocks ---
 (defcfun ("LLVMAppendBasicBlock" llvm-append-basic-block) :pointer
