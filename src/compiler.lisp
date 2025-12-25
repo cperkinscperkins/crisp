@@ -59,8 +59,10 @@
   ;; Redefine STORAGE as a RECORD (Register-based, passed by value)
   ;; This replaces the old "exploded" implicit argument handling.
   (eval '(def-record storage
-                     (ptr c-pointer)
-                     (size ulong)))
+                     (address c-pointer)
+                     (byte-size ulong)
+                     (address-space address-space :c-t :global)
+                     (access access :c-t :read-write)))
 
   ;; Register CELL struct template
   ;; CELL is an opaque handle to a storage slice.
