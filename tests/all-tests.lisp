@@ -444,6 +444,21 @@
                (true (search "call i32 @take_cell_cell_int" ir) "Should call the function.")
                (true (search "(ptr" ir) "Should pass a pointer argument.")))
 
+(define-test (codegen def-record-explosion)
+             "Tests that def-record types are exploded into individual parameters in the IR."
+             (let ((ir (compile-crisp-file-to-string "tests/spec/010-def-record/14-def-record-implose-explode.crisp")))
+               (is-valid-ir ir)
+               (true (search "define i32 @take_point_point(i32 %0, i32 %1)" ir)
+                     "Function signature should be exploded into individual fields (i32, i32).")
+               (true (search "insertvalue %POINT undef, i32 %0, 0" ir)
+                     "Should start reconstructing the POINT record from the first argument.")
+               (true (search "insertvalue %POINT %X_ins, i32 %1, 1" ir)
+                     "Should continue reconstructing the POINT record from the second argument.")
+               (true (search "extractvalue %POINT" ir)
+                     "Should extract values from the POINT record to pass them.")
+               (true (search "call i32 @take_point_point(i32 %X_val, i32 %Y_val)" ir)
+                     "Should call the function with exploded arguments.")))
+
 
 (define-test template-macro-exists
              (true (macro-function 'crisp.compiler::with-template-type) "with-template-type should be a defined macro"))
