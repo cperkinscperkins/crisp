@@ -40,7 +40,7 @@ echo.
 echo --- Running External Runner (Debug) ---
 sbcl --script tests/run-specs.lisp --use-binary --debug
 if errorlevel 1 (
-    echo [FAILED] External Runner (Debug) failed.
+    echo [FAILED] External Runner ^(Debug^) failed.
     exit /b 1
 )
 
