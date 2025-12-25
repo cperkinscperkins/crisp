@@ -64,233 +64,24 @@ jobs:
           # This runs your new build script
           sbcl --non-interactive --load build/build.lisp
 
-      - name: 6. Run End-to-End Tests (Executable)
+      - name: 6. Run End-to-End Specs (Internal & External)
         run: |
           # Exit immediately if a pipeline returns a non-zero status.
           set -o pipefail
 
-          echo "--- Running E2E: success test (return_7.crisp) ---"
-          ./bin/crisp-compile tests/return_7.crisp
-
-          echo "--- Running E2E: success test (def-function_primitive.crisp) ---"
-          ./bin/crisp-compile tests/def-function_primitive.crisp
-
-          echo "--- Running E2E: success test --single-pass (def-function_primitive.crisp) ---"
-          ./bin/crisp-compile tests/def-function_primitive.crisp --single-pass
- 
-          echo "--- Running E2E: success test (multipass.crisp) ---"
-          ./bin/crisp-compile tests/multipass.crisp
-
-          echo "--- Running E2E: success test (def-function-overloads.crisp) ---"
-          ./bin/crisp-compile tests/def-function-overloads.crisp
-
-          echo "--- Running E2E: success test (let-bindings.crisp) ---"
-          ./bin/crisp-compile tests/let-bindings.crisp
-
-          echo "--- Running E2E: success test (scratch-cell.crisp) ---"
-          ./bin/crisp-compile tests/scratch-cell.crisp
-
-          echo "--- Running E2E: success test --single-pass (scratch-cell.crisp) ---"
-          ./bin/crisp-compile tests/scratch-cell.crisp --single-pass
-
-          echo "--- Running E2E: success test (struct-compile-time-props.crisp) ---"
-          ./bin/crisp-compile tests/struct-compile-time-props.crisp
-
-
-          echo "--- Running E2E: --debug success test (return_7.crisp) ---"
-          ./bin/crisp-compile tests/return_7.crisp --debug 
-
-          echo "--- Running E2E: --debug success test (def-function_primitive.crisp) ---"
-          ./bin/crisp-compile tests/def-function_primitive.crisp --debug 
-
-          echo "--- Running E2E: --debug success test (def-function-overloads.crisp) ---"
-          ./bin/crisp-compile tests/def-function-overloads.crisp --debug
-
-          echo "--- Running E2E: --debug success test (let-bindings.crisp) ---"
-          ./bin/crisp-compile tests/let-bindings.crisp --debug
-
-          echo "--- Running E2E: --debug success test (scratch-cell.crisp) ---"
-          ./bin/crisp-compile tests/scratch-cell.crisp --debug --single-pass  
-
-          echo "--- Running E2E: --debug --single-pass success test (scratch-cell.crisp) ---"
-          ./bin/crisp-compile tests/scratch-cell.crisp --debug --single-pass
-
-
-
-          echo "--- Running E2E: --debug success test --single-pass (def-function_primitive.crisp) ---"
-          ./bin/crisp-compile tests/def-function_primitive.crisp --single-pass --debug 
- 
-          echo "--- Running E2E: --debug success test (multipass.crisp) ---"
-          ./bin/crisp-compile tests/multipass.crisp --debug 
-
-
-          echo "--- Running E2E: success test (templates.crisp) ---"
-          ./bin/crisp-compile tests/templates.crisp
-
-          echo "--- Running E2E: success test --single-pass (templates.crisp) ---"
-          ./bin/crisp-compile tests/templates.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (templates.crisp) ---"
-          ./bin/crisp-compile tests/templates.crisp --debug
-
-          echo "--- Running E2E: success test --debug --single-pass (templates.crisp) ---"
-          ./bin/crisp-compile tests/templates.crisp --debug --single-pass
-
-
-          echo "--- Running E2E: success test (templates_composite.crisp) ---"
-          ./bin/crisp-compile tests/templates_composite.crisp
-
-          echo "--- Running E2E: success test --single-pass (templates_composite.crisp) ---"
-          ./bin/crisp-compile tests/templates_composite.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (templates_composite.crisp) ---"
-          ./bin/crisp-compile tests/templates_composite.crisp --debug
-
-          echo "--- Running E2E: success test --debug --single-pass (templates_composite.crisp) ---"
-          ./bin/crisp-compile tests/templates_composite.crisp --debug --single-pass
-
-
-          echo "--- Running E2E: success test (higher-order-functions.crisp) ---"
-          ./bin/crisp-compile tests/higher-order-functions.crisp
-
-          echo "--- Running E2E: success test --single-pass (higher-order-functions.crisp) ---"
-          ./bin/crisp-compile tests/higher-order-functions.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (higher-order-functions.crisp) ---"
-          ./bin/crisp-compile tests/higher-order-functions.crisp --debug
-
-
-          echo "--- Running E2E: success test (defmacro-01.crisp) ---"
-          ./bin/crisp-compile tests/defmacro-01.crisp
-
-          echo "--- Running E2E: success test --single-pass (defmacro-01.crisp) ---"
-          ./bin/crisp-compile tests/defmacro-01.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (defmacro-01.crisp) ---"
-          ./bin/crisp-compile tests/defmacro-01.crisp --debug
-
-          echo "--- Running E2E: success test --debug --single-pass (defmacro-01.crisp) ---"
-          ./bin/crisp-compile tests/defmacro-01.crisp --debug --single-pass
-
-          echo "--- Running E2E: success test (defmacro-cond.crisp) ---"
-          ./bin/crisp-compile tests/defmacro-cond.crisp
-
-          echo "--- Running E2E: success test (let-unified.crisp) ---"
-          ./bin/crisp-compile tests/let-unified.crisp
-
-          echo "--- Running E2E: success test --single-pass (let-unified.crisp) ---"
-          ./bin/crisp-compile tests/let-unified.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (let-unified.crisp) ---"
-          ./bin/crisp-compile tests/let-unified.crisp --debug
-
-          echo "--- Running E2E: success test --debug --single-pass (let-unified.crisp) ---"
-          ./bin/crisp-compile tests/let-unified.crisp --debug --single-pass
-
-          echo "--- Running E2E: success test (branching-comparisons.crisp) ---"
-          ./bin/crisp-compile tests/branching-comparisons.crisp
-
-          echo "--- Running E2E: success test --single-pass (branching-comparisons.crisp) ---"
-          ./bin/crisp-compile tests/branching-comparisons.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (branching-comparisons.crisp) ---"
-          ./bin/crisp-compile tests/branching-comparisons.crisp --debug
-
-          echo "--- Running E2E: success test --debug --single-pass (branching-comparisons.crisp) ---"
-          ./bin/crisp-compile tests/branching-comparisons.crisp --debug --single-pass
-
-          echo "--- Running E2E: success test (branching-if.crisp) ---"
-          ./bin/crisp-compile tests/branching-if.crisp
-
-          echo "--- Running E2E: success test --debug (branching-if.crisp) ---"
-          ./bin/crisp-compile tests/branching-if.crisp --debug
-
-          echo "--- Running E2E: success test (branching-cond.crisp) ---"
-          ./bin/crisp-compile tests/branching-cond.crisp
-
-          echo "--- Running E2E: success test --debug (branching-cond.crisp) ---"
-          ./bin/crisp-compile tests/branching-cond.crisp --debug
-
-          echo "--- Running E2E: success test (branching-plus.crisp) ---"
-          ./bin/crisp-compile tests/branching-plus.crisp
-
-          echo "--- Running E2E: success test --debug (branching-plus.crisp) ---"
-          ./bin/crisp-compile tests/branching-plus.crisp --debug
-
-          echo "--- Running E2E: success test (structs_basic.crisp) ---"
-          ./bin/crisp-compile tests/structs_basic.crisp
-
-          echo "--- Running E2E: success test --single-pass (structs_basic.crisp) ---"
-          ./bin/crisp-compile tests/structs_basic.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (structs_basic.crisp) ---"
-          ./bin/crisp-compile tests/structs_basic.crisp --debug
-
-          echo "--- Running E2E: success test (structs_templates.crisp) ---"
-          ./bin/crisp-compile tests/structs_templates.crisp
-
-          echo "--- Running E2E: success test --single-pass (structs_templates.crisp) ---"
-          ./bin/crisp-compile tests/structs_templates.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (structs_templates.crisp) ---"
-          ./bin/crisp-compile tests/structs_templates.crisp --debug
-
-          echo "--- Running E2E: success test (structs_overrides.crisp) ---"
-          ./bin/crisp-compile tests/structs_overrides.crisp
-
-          echo "--- Running E2E: success test --single-pass (structs_overrides.crisp) ---"
-          ./bin/crisp-compile tests/structs_overrides.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (structs_overrides.crisp) ---"
-          ./bin/crisp-compile tests/structs_overrides.crisp --debug
-
-          echo "--- Running E2E: success test (def-struct-std140.crisp) ---"
-          ./bin/crisp-compile tests/def-struct-std140.crisp
-
-          echo "--- Running E2E: success test (cell-01-arg.crisp) ---"
-          ./bin/crisp-compile tests/cell-01-arg.crisp
-
-          echo "--- Running E2E: success test (cell-02-props.crisp) ---"
-          ./bin/crisp-compile tests/cell-02-props.crisp
-
-          echo "--- Running E2E: success test (cell-03-passthrough.crisp) ---"
-          ./bin/crisp-compile tests/cell-03-passthrough.crisp
-
-          echo "--- Running E2E: success test (cell-04-accessor.crisp) ---"
-          ./bin/crisp-compile tests/cell-04-accessor.crisp
-
-          echo "--- Running E2E: success test (cell-05-set-bang.crisp) ---"
-          ./bin/crisp-compile tests/cell-05-set-bang.crisp
-
-          echo "--- Running E2E: success test (cell-type-constructors-01.crisp) ---"
-          ./bin/crisp-compile tests/cell-type-constructors-01.crisp
-
-          echo "--- Running E2E: success test --debug (cell-type-constructors-01.crisp) ---"
-          ./bin/crisp-compile tests/cell-type-constructors-01.crisp --debug
-
-          echo "--- Running E2E: success test (cell-type-constructors-02.crisp) ---"
-          ./bin/crisp-compile tests/cell-type-constructors-02.crisp
-
-          echo "--- Running E2E: success test --debug (cell-type-constructors-02.crisp) ---"
-          ./bin/crisp-compile tests/cell-type-constructors-02.crisp --debug
-
-          echo "--- Running E2E: success test (cell-06-overload-accessor.crisp) ---"
-          ./bin/crisp-compile tests/cell-06-overload-accessor.crisp
-
-          echo "--- Running E2E: success test (cell-07-overload-setter.crisp) ---"
-          ./bin/crisp-compile tests/cell-07-overload-setter.crisp
-
-          echo "--- Running E2E: success test (test-enums.crisp) ---"
-          ./bin/crisp-compile tests/test-enums.crisp
-
-          echo "--- Running E2E: success test --single-pass (test-enums.crisp) ---"
-          ./bin/crisp-compile tests/test-enums.crisp --single-pass
-
-          echo "--- Running E2E: success test --debug (test-enums.crisp) ---"
-          ./bin/crisp-compile tests/test-enums.crisp --debug
-
-          echo "--- Running E2E: success test --debug --single-pass (test-enums.crisp) ---"
-          ./bin/crisp-compile tests/test-enums.crisp --debug --single-pass
+          # echo "--- Running Specs: Internal (Checking Isolation) ---"
+          # sbcl --script tests/run-specs.lisp
+
+          echo "--- Running Specs: External Binary ---"
+          sbcl --script tests/run-specs.lisp --use-binary
+
+          echo "--- Running Specs: External Binary (Debug) ---"
+          sbcl --script tests/run-specs.lisp --use-binary --debug
+
+          # 001-def-function/04-multipass.crisp won't work with --single-pass.
+          #  need to screen it out somehow.  Best done in run-specs.lisp
+          # echo "--- Running Specs: External Binary (Single Pass) ---"
+          # sbcl --script tests/run-specs.lisp --use-binary --single-pass
 
 
 

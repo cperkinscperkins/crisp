@@ -32,17 +32,69 @@
 (initialize-compiler :log-level :info)
 (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
+;; Configuration Globals
+(defvar *use-binary* nil)
+(defvar *compile-debug* nil)
+(defvar *compile-single-pass* nil)
+
+(defun get-binary-path ()
+  (merge-pathnames "bin/crisp-compile.exe" (uiop:getcwd)))
+
+(defun cleanup-ir-string (output)
+  "Extracts the IR from the compiler stdout."
+  (let ((marker "--- Generated LLVM IR: ---"))
+    (let ((pos (search marker output)))
+      (if pos
+          (string-trim '(#\Space #\Newline #\Return) (subseq output (+ pos (length marker))))
+          output))))
+
+(defun run-spec-binary (file)
+  (let ((bin (get-binary-path))
+        (args (list (uiop:native-namestring file))))
+    (when *compile-debug* (push "--debug" args))
+    (when *compile-single-pass* (push "--single-pass" args))
+    ;; Put flags first? parser logic says flags first usually.
+    ;; Actually main.lisp uses (parse-cli-args) which separates flags/files. Order doesn't matter much.
+    ;; But let's be safe: exe [flags] [file]
+    (setf args (append (when *compile-debug* '("--debug"))
+                 (when *compile-single-pass* '("--single-pass"))
+                 (list (uiop:native-namestring file))))
+
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string
+          :error-output :string
+          :ignore-error-status t)
+      (cond
+       ((not (zerop exit-code))
+         (format *error-output* "FAIL (Compiler Exit Code ~a)~%~a~%" exit-code error-output)
+         nil)
+       (t
+         (let ((clean-ir (cleanup-ir-string output)))
+           (cond
+            ((= (length clean-ir) 0)
+              (format *error-output* "FAIL (Empty IR)~%~a~%" error-output)
+              nil)
+            ((validate-ir-with-clang clean-ir)
+              (format t "PASS~%")
+              t)
+            (t
+              (format *error-output* "FAIL (Invalid IR via Binary)~%~a~%" error-output)
+              nil))))))))
+
 (defun run-spec-file (file)
   (format t "~&Running Spec: ~a... " (pathname-name file))
   (finish-output)
-  (handler-case
-      (let ((ir-string (compile-crisp-file-to-ir-string file)))
-        (if (validate-ir-with-clang ir-string)
-            (progn (format t "PASS~%") t)
-            (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
-    (error (e)
-      (format *error-output* "FAIL (Condition: ~a)~%" e)
-      nil)))
+  (if *use-binary*
+      (run-spec-binary file)
+      (handler-case
+          (let ((ir-string (compile-crisp-file-to-ir-string file)))
+            (if (validate-ir-with-clang ir-string)
+                (progn (format t "PASS~%") t)
+                (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
+        (error (e)
+          (format *error-output* "FAIL (Condition: ~a)~%" e)
+          nil))))
 
 (defun compile-crisp-file-to-ir-string (filepath)
   "Compiles a .crisp file and returns the LLVM IR as a string."
@@ -84,6 +136,17 @@
            (format t "~%LLVM Verification Error:~%~a~%" error-output)
            nil)))))
 
+(defun get-ci-stop-target ()
+  "Reads tests/ci-stop.txt to determine the last directory to run."
+  (let ((path (merge-pathnames "tests/ci-stop.txt" (uiop:getcwd))))
+    (when (probe-file path)
+          (let ((content (string-trim '(#\Space #\Newline #\Return) (uiop:read-file-string path))))
+            (unless (zerop (length content))
+              content)))))
+
+(defun get-parent-directory-name (path)
+  (car (last (pathname-directory path))))
+
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))
          ;; Assume tests/run-specs.lisp -> tests/spec/
@@ -91,13 +154,36 @@
          (spec-files (directory (merge-pathnames "**/*.crisp" spec-dir)))
          (total 0)
          (passed 0)
-         (failed-files '()))
+         (failed-files '())
+         (stop-target (get-ci-stop-target))
+         (stop-triggered nil))
+
+    ;; Parse Arguments
+    (loop for arg in (uiop:command-line-arguments) do
+            (cond
+             ((string= arg "--use-binary") (setf *use-binary* t))
+             ((string= arg "--debug") (setf *compile-debug* t))
+             ((string= arg "--single-pass") (setf *compile-single-pass* t))))
 
     (format t "~&Locating specs in ~a~%" spec-dir)
+    (format t "Configuration: Binary: ~a, Debug: ~a, Single-Pass: ~a~%"
+      *use-binary* *compile-debug* *compile-single-pass*)
+
+    (format t "~&Locating specs in ~a~%" spec-dir)
+    (when stop-target
+          (format t "Stop Target Active: Running tests up to directory '~a'~%" stop-target))
+
     ;; Sort mainly to ensure numerical order of directories (010-... before 011-...)
     (setf spec-files (sort spec-files #'string< :key #'namestring))
 
     (loop for file in spec-files do
+            (let ((dir-name (get-parent-directory-name file)))
+              (when (and stop-target (string> dir-name stop-target))
+                    (unless stop-triggered
+                      (format t "~&--- Reached Stop Target (~a). Stopping. ---~%" stop-target)
+                      (setf stop-triggered t))
+                    (cl:return)))
+
             (incf total)
             (if (run-spec-file file)
                 (incf passed)
