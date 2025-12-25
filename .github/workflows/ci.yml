@@ -188,7 +188,7 @@ jobs:
 
           echo "--- Running E2E: success test with output verification (c-t-output.crisp) ---"
           # We capture output and check specifically for the compile-time message.
-          ./bin/crisp-compile tests/c-t-output.crisp > output.txt 2>&1
+          ./bin/crisp-compile tests/spec/008-enum-and-c-t-output/c-t-output.crisp > output.txt 2>&1
           if grep -q "hello world" output.txt; then
             echo "[PASSED] Found 'hello world' in output."
           else
