@@ -1,0 +1,17 @@
+
+;; 20-storage-record.crisp
+;; Verifies that records are passed as aggregates (structs), not exploded.
+
+(def-record Point (x int) (y int))
+;; Expected: %POINT = type { i32, i32 }
+
+(def-function take-point (p)
+  (declare (type p Point) (return-type int))
+  ;; Expected: define i32 @take_point_point_point(%POINT %0) -> INCORRECT
+  ;; Expected: define i32 @take_point_point(i32 %0, i32 %1) -> CORRECT (Exploded)
+  (return (+ (x~ p) (y~ p))))
+
+(def-function make-and-pass ()
+  (declare (return-type int))
+  (let ((p (make-point :x 10 :y 20)))
+    (take-point p)))

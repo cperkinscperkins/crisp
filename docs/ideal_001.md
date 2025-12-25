@@ -1689,13 +1689,32 @@ Storage Properties
 
 | Property      | Type          |              |     Description |
 | --------------|---------------|--------------|-----------------|
-| bytes         | ulong         | runtime      | the number of bytes in the `storage`. This is immutable.|
+| byte-size~         | ulong         | runtime      | the number of bytes in the `storage`. This is immutable.|
 | address-space | address-space | compile-time | one of `:global`, `:local`, `:constant` |
 | access        | access        | compile-time | one of `:read_only` `:write_only` `:read_write` `:readable` `:writeable` |
 
 
-The `bytes` property for a `storage` is sometimes known at compile time, but is most often a runtime property.
+The `byte-size~` property for a `storage` is sometimes known at compile time, but is most often a runtime property.
 However the other properties are all known and evaluable at compile time. 
+
+<!-- IMPLEMENTATION NOTE:
+
+We should be able to model storage as a def-record.  But note that the memory address the storage is tracking is both a runtime property AND not directly 
+accessible to the user. 
+
+BUT - at the moment, let's NOT hide "address" from the user.  We'll simply
+not document it, and play it by ear later. 
+
+;; the address-space and access enumerations provide the "type" for the
+;; storage properties of the same name. 
+
+(def-record storage
+    (address ulong)    
+    (byte-size ulong)
+    (address-space address-space :c-t)
+    (access access :c-t))
+
+-->
 
 Cell Properties
 ---------------
@@ -1742,7 +1761,7 @@ These property functions for the mutable properties can be overloaded.  They can
 
 ### Settable Properties
 
-None of the `storage` properties can be set. Also, excepting `bytes`, all the `storage` properties are compile time properties. 
+None of the `storage` properties can be set. Also, excepting `byte-size`, all the `storage` properties are compile time properties. 
 The `bytes` property on a `storage` entity is sometimes a compile time property, but usually it's a runtime property. Regardless, it cannot be changed, .
 But ALL the mutable properties on the Storage Handle view can be set, including `length`.
 
