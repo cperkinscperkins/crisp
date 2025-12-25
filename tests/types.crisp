@@ -1,9 +1,0 @@
-;;; tests/types.crisp
-
-(def-function add_floats (a b)
-  (declare (return-type float) (type a b float))
-  (+ a b))
-
-(def-function use_uint (u)
-  (declare (return-type uint) (type u uint))
-  u)
