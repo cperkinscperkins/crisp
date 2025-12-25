@@ -119,8 +119,10 @@
      ;; Case 1: Record Type -> Explode recursively
      ((and type-rec (eq (crisp-type-category type-rec) :record))
        (let* ((struct-def (gethash type-spec *crisp-structs*))
-              (members (crisp-struct-definition-members struct-def)))
-         (mapcan (lambda (m) (get-expanded-types (second m) module)) members)))
+              (members (crisp-struct-definition-members struct-def))
+              ;; Filter out compile-time members (e.g. :c-t tagged)
+              (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members)))
+         (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members)))
 
      ;; Case 2: Standard Type (Struct/Scalar) -> Return as is
      (t (list (crisp-type-to-llvm-type type-spec module))))))
@@ -133,8 +135,9 @@
      ((and type-rec (eq (crisp-type-category type-rec) :record))
        (let* ((struct-def (gethash type-spec *crisp-structs*))
               (members (crisp-struct-definition-members struct-def))
+              (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
               (values '()))
-         (loop for m in members
+         (loop for m in runtime-members
                for i from 0
                do (let* ((member-type (second m))
                          ;; Extract the member from the aggregate
@@ -152,11 +155,12 @@
      ((and type-rec (eq (crisp-type-category type-rec) :record))
        (let* ((struct-def (gethash type-spec *crisp-structs*))
               (members (crisp-struct-definition-members struct-def))
+              (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
               (record-type (crisp-type-to-llvm-type type-spec module))
               (agg (llvm-get-undef record-type))
               (current-components components))
 
-         (loop for m in members
+         (loop for m in runtime-members
                for i from 0
                do (let* ((member-type (second m))
                          ;; Implode the member first (consumes N components)
