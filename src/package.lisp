@@ -276,6 +276,7 @@
   ;; --- 1. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
                 #:def-function
+                #:def-struct
 
                 #:def-record
                 #:with-struct-accessors
