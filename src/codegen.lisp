@@ -433,27 +433,43 @@
         (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
         (cond
          ;; Integer to Float
-         ((and (eq (crisp-type-category from-type) :signed-int) (eq (crisp-type-category to-type) :float))
-           (llvm-build-si-to-fp builder from-val to-llvm-type "si2fp_cast"))
-         ((and (eq (crisp-type-category from-type) :unsigned-int) (eq (crisp-type-category to-type) :float))
-           (llvm-build-ui-to-fp builder from-val to-llvm-type "ui2fp_cast"))
-         ;; Integer Extension
-         ((and (eq (crisp-type-category from-type) :signed-int) (eq (crisp-type-category to-type) :signed-int))
-           (llvm-build-sext builder from-val to-llvm-type "sext_cast"))
-         ((and (eq (crisp-type-category from-type) :unsigned-int) (eq (crisp-type-category to-type) :unsigned-int))
-           (llvm-build-zext builder from-val to-llvm-type "zext_cast"))
-         ;; Float Extension
-         ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :float))
-           (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast"))
-         ;; Float to Integer
-         ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :signed-int))
-           (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast"))
-         ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :unsigned-int))
-           (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast"))
-         ;; Truncation
+         ((and (member (crisp-type-category from-type) '(:signed-int :unsigned-int))
+               (eq (crisp-type-category to-type) :float))
+           (if (eq (crisp-type-category from-type) :signed-int)
+               (llvm-build-si-to-fp builder from-val to-llvm-type "si2fp_cast")
+               (llvm-build-ui-to-fp builder from-val to-llvm-type "ui2fp_cast")))
+
+         ;; Integer to Integer (Ext, Trunc, or Same)
          ((and (member (crisp-type-category from-type) '(:signed-int :unsigned-int))
                (member (crisp-type-category to-type) '(:signed-int :unsigned-int)))
-           (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
+           (let ((from-size (crisp-type-size from-type))
+                 (to-size (crisp-type-size to-type)))
+             (cond
+              ((< to-size from-size)
+                (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
+              ((> to-size from-size)
+                (if (eq (crisp-type-category from-type) :signed-int)
+                    (llvm-build-sext builder from-val to-llvm-type "sext_cast")
+                    (llvm-build-zext builder from-val to-llvm-type "zext_cast")))
+              (t from-val)))) ;; Same size
+
+         ;; Float Extension / Truncation
+         ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :float))
+           (let ((from-size (crisp-type-size from-type))
+                 (to-size (crisp-type-size to-type)))
+             (cond
+              ((< to-size from-size)
+                (llvm-build-fp-trunc builder from-val to-llvm-type "fptrunc_cast"))
+              ((> to-size from-size)
+                (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast"))
+              (t from-val))))
+
+         ;; Float to Integer
+         ((and (eq (crisp-type-category from-type) :float) (member (crisp-type-category to-type) '(:signed-int :unsigned-int)))
+           (if (eq (crisp-type-category to-type) :signed-int)
+               (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast")
+               (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast")))
+
          (t (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))
 
 (defmacro def-binary-op-codegen (node-type int-inst float-inst accessor-prefix)
