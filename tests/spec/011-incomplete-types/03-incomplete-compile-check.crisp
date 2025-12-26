@@ -1,0 +1,29 @@
+(def-enumeration color :blue :brown :black)
+
+(def-record pants
+    (size int)
+    (color color :c-t))
+
+(def-function op-only-blue (blue-pants)
+  (declare (type blue-pants (pants :color :blue)) (return-type nil))
+   (set! (size~ blue-pants) (- (size~ blue-pants) 1)))
+
+;; this function takes any pant, but calls an operation that only
+;; accepts blue pants.  This is potentially a problem, but, by itself,
+;; would not trigger a compile time error. 
+(def-function remeasure (p)
+  (declare #'(pants => int))
+  (op-only-blue p)
+  (- (size~ p) 2))
+
+;; kernels are required to have complete types for all parameters and return
+;; values.  Here, we see (pants :color :blue) is specified, therefore
+;; this is safe and no compile error is generated.
+;; BUT if the color were :red, then an error would appear.
+(def-function fake-kernel (bp)
+   (declare #'((pants :color :blue) => int))
+   (let ((new-size (remeasure bp)))
+     new-size))
+
+
+;; see tests/errors/incomplete-compile-check-fail.crisp for the failure check

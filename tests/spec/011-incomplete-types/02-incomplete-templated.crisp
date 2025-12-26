@@ -1,0 +1,28 @@
+(def-enumeration color :blue :brown :black)
+
+(with-template-type (T FC)
+    (def-struct shirt
+        (size T)
+        (fabric-c color :c-t FC)
+        (stitching-c color :c-t)))
+
+(<T FC>
+    (def-record pants
+        (size T)
+        (fabric-c color :c-t FC)
+        (stitching-c color :c-t)))
+
+;; the complete type constructor is a hybrid of template type construction and the
+;; regular :key :value of a struct or record.  The template consumes "int :blue" and then
+;; the default type constructor gets ":stitching-c :black".
+(def-function two-shirts (complete b)
+    (declare (type complete (shirt int :blue :stitching-c :black))  
+             (type b (shirt long :brown)) ;; incomplete, no stitching specified.
+             (return-type int))
+    (+ (size~ complete) (size~ b)))
+
+(def-function two-pants (complete b)
+    (declare (type complete (pants int :blue :stitching-c :black))  
+             (type b (pants long :brown)) ;; incomplete, no stitching specified.
+             (return-type int))
+    (+ (size~ complete) (size~ b)))
