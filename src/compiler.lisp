@@ -18,7 +18,9 @@
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
   ;; Configure the logging system to use stderr (important for stdout IR capture)
-  (log:config :sane :stream *error-output* log-level)
+  (if (eq log-level :off)
+      (log:config :off)
+      (log:config :sane :stream *error-output* log-level))
 
   ;; Initialize the compiler's internal state.
   (initialize-crisp-types)
