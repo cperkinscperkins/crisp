@@ -46,5 +46,3 @@ Though there is no equivalent of `soa-vector` for records.
 
 -->
 
-
-
