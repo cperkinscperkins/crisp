@@ -101,6 +101,8 @@ This supports overloading templates by arity or other factors.")
               (double ,#'llvm-double-type 64 :float)
               ;; Void
               (void ,#'llvm-void-type 0 :void)
+              ;; Meta Types
+              (type-spec ,#'llvm-void-type 0 :meta)
               ;; Pointer
               (c-pointer ,(lambda () (llvm-pointer-type (llvm-int8-type) 0)) 8 :pointer))))
     (loop for (name llvm-fn size category) in types
@@ -213,16 +215,40 @@ This supports overloading templates by arity or other factors.")
 
 
 (defun expand-storage-handle-type-specifier (spec)
-  "Expands storage handle constructors like (cell) or (cell int) into canonical template forms."
+  "Expands storage handle constructors like (cell) or (cell int) into canonical template forms.
+   Supports keyword arguments."
   (cl:let ((base (first spec))
            (args (rest spec)))
     (cl:cond
-      ((string-equal (symbol-name base) "CELL")
-       (cl:let ((element-type (if args (first args) 'void))
-                (address-space (if (> (length args) 1) (second args) :global))
-                (access (if (> (length args) 2) (third args) :read-write)))
-         (cl:let ((res `(,base ,element-type ,address-space ,access)))
-           res)))
+      ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
+       (cl:let ((arg-map (make-hash-table :test 'eq))
+                (pos-args nil))
+
+         ;; Parse arguments manually
+         (cl:let ((ptr args))
+           (cl:loop while ptr do
+             (cl:let ((item (first ptr)))
+               ;; Only treat specific known keywords as key-value pairs
+               (cl:if (and (keywordp item)
+                           (member item '(:element-type :address-space :access) :test #'eq))
+                      (progn
+                       (setf (gethash item arg-map) (second ptr))
+                       (setf ptr (cddr ptr)))
+                      (progn
+                       (push item pos-args)
+                       (setf ptr (cdr ptr)))))))
+
+         (setf pos-args (nreverse pos-args))
+
+         (cl:let* ((element-type (or (gethash :element-type arg-map) (first pos-args) :unknown))
+                   (address-space (or (gethash :address-space arg-map)
+                                      (second pos-args)
+                                      (if (eq element-type :unknown) :unknown :global)))
+                   (access (or (gethash :access arg-map)
+                               (third pos-args)
+                               (if (eq element-type :unknown) :unknown :read-write))))
+
+           `(,base ,element-type ,address-space ,access))))
       (t spec))))
 
 (defun types-equivalent-p (t1 t2)
@@ -286,6 +312,10 @@ This supports overloading templates by arity or other factors.")
                          t2)))
        (cl:equal e1 e2)))
 
+    ;; Keyword vs Enum: Allow :KEYWORD or 'KEYWORD to match enum type
+    ((and (or (eq t1 'keyword) (eq t1 :keyword)) (gethash t2 *crisp-enums*)) t)
+    ((and (or (eq t2 'keyword) (eq t2 :keyword)) (gethash t1 *crisp-enums*)) t)
+
     (t nil)))
 
 (defun type-lists-equivalent-p (l1 l2)
@@ -301,9 +331,11 @@ This supports overloading templates by arity or other factors.")
     (cl:cond
       ((gethash type-spec *crisp-types*) t)
       ((gethash type-spec *crisp-structs*) t)
+      ((gethash type-spec *crisp-enums*) t)
       ((gethash type-spec *function-table*) t)
       (t
-       (log:debug "valid-basic-type-p CHECK FAILED for: ~s (pkg: ~a)" type-spec (package-name (symbol-package type-spec)))
+       (log:debug "valid-basic-type-p CHECK FAILED for: ~s (pkg: ~a)" type-spec
+                  (if (symbolp type-spec) (package-name (symbol-package type-spec)) "N/A"))
        (log:debug "  Available types keys: ~a" (alexandria:hash-table-keys *crisp-types*))
        nil))))
 
@@ -316,30 +348,14 @@ This supports overloading templates by arity or other factors.")
 (defun valid-parameterized-type-p (type-spec)
   "Checks if type-spec is a valid parameterized type (cell, templates, etc)."
   (cl:when (consp type-spec)
-    (cl:let ((base-type (first type-spec))
-             (params (rest type-spec)))
+    (cl:let* ((expanded (expand-storage-handle-type-specifier type-spec))
+              (base-type (first expanded))
+              (params (rest expanded)))
       (cl:cond
         ((not (symbolp base-type)) nil)
         ((excluded-template-base-type-p base-type) nil)
-        ((string-equal (symbol-name base-type) "CELL")
-         (cl:let ((elem (first params)))
-           (if (symbolp elem)
-               (log:info "Type Check: ~s (pkg: ~s) In *CRISP-TYPES*? ~s" elem (symbol-package elem) (gethash elem *crisp-types*))
-               (log:info "Type Check: ~s (NOT SYMBOL)" elem)))
-         (if (and (>= (length params) 1) (valid-type-p (first params)))
-             (cl:let* ((elem (first params))
-                       (resolved-elem (if (and (consp elem) (valid-type-p elem))
-                                          (mangle-template-struct-name (first elem) (rest elem))
-                                          elem))
-                       (effective-params (cons resolved-elem (rest params)))
-                       (mangled-name (mangle-template-struct-name base-type effective-params))
-                       (constructor-name (intern (format nil "MAKE-~a" mangled-name) (symbol-package mangled-name))))
-               (cl:unless (and (gethash mangled-name *crisp-structs*)
-                               (macro-function constructor-name))
-                 (log:info "Instantiating/Re-instantiating cell struct: ~a (Macro missing? ~a)" mangled-name (null (macro-function constructor-name)))
-                 (apply #'instantiate-cell-struct effective-params))
-               t)
-             nil))
+
+        ;; Standard Template Instantiation
         ((symbolp base-type)
          (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
            (log:info "Valid-Param-Type Check: ~a (Mangled: ~a)" type-spec mangled-name)
@@ -347,7 +363,7 @@ This supports overloading templates by arity or other factors.")
                (cl:let ((templates (or (gethash base-type *template-registry*)
                                        (cl:let ((found nil))
                                          (maphash (cl:lambda (k v)
-                                                    (cl:when (string-equal (symbol-name k) (symbol-name base-type))
+                                                    (cl:when (and (symbolp k) (string-equal (symbol-name k) (symbol-name base-type)))
                                                       (cl:setf found v)))
                                                   *template-registry*)
                                          found))))
@@ -388,9 +404,6 @@ This supports overloading templates by arity or other factors.")
 ;; LLVM Resolution
 ;; ===============
 
-;; LLVM Resolution
-;; ===============
-
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference."
   (cl:cond
@@ -401,6 +414,10 @@ This supports overloading templates by arity or other factors.")
     ;; Struct
     ((and (symbolp type-spec) (find-struct-definition-by-name type-spec))
      (ensure-struct-llvm-type type-spec))
+
+    ;; Enumerations (map to i32)
+    ((and (symbolp type-spec) (gethash type-spec *crisp-enums*))
+     (llvm-int32-type))
 
     ;; Parameterized Structs (e.g. (POINT INT))
     ((and (consp type-spec) (not (keywordp (first type-spec))) (valid-type-p type-spec))

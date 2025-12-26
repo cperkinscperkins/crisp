@@ -44,6 +44,7 @@
   ;; ~ is an alias for aref (handles Cells/Arrays directly, or falls back to ~ function)
   (def-expression-analyzer ~ref~ analyze-aref-expression)
   (def-expression-analyzer ~ analyze-aref-expression)
+  (def-expression-analyzer quote analyze-quote)
 
   ;; From duplicate definition:
   (def-expression-analyzer def-function analyze-nested-def-function)
@@ -56,13 +57,14 @@
   ;; Register all possible `to-` and `as-` casts.
   (log:info "Registering cast operators. *crisp-types* count: ~a" (hash-table-count *crisp-types*))
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
-    (let* ((type-str (symbol-name type-name))
-           (pkg (symbol-package type-name))
-           (to-name (intern (concatenate 'string "TO-" type-str) pkg))
-           (as-name (intern (concatenate 'string "AS-" type-str) pkg)))
-      (log:debug "Registering cast/bitcast: ~s / ~s" to-name as-name)
-      (setf (gethash to-name *expression-analyzers*) #'analyze-cast-expression)
-      (setf (gethash as-name *expression-analyzers*) #'analyze-cast-expression)))
+    (when (symbolp type-name)
+          (let* ((type-str (symbol-name type-name))
+                 (pkg (symbol-package type-name))
+                 (to-name (intern (concatenate 'string "TO-" type-str) pkg))
+                 (as-name (intern (concatenate 'string "AS-" type-str) pkg)))
+            (log:debug "Registering cast/bitcast: ~s / ~s" to-name as-name)
+            (setf (gethash to-name *expression-analyzers*) #'analyze-cast-expression)
+            (setf (gethash as-name *expression-analyzers*) #'analyze-cast-expression))))
   ;; Register the special float-to-int conversion functions
   (setf (gethash 'truncate *expression-analyzers*) #'analyze-truncate-expression) ; NEW handler
   (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
@@ -1908,7 +1910,7 @@
 
    ;; Case 1.5: It's a keyword symbol, like :foo
    ((keywordp expr)
-     (error 'crisp-unsupported-form-error :form expr :source-location location))
+     (make-semantic-literal :value-type 'keyword :value expr :source-location location))
 
    ;; Case 2: It's a variable, like 'a'
    ((symbolp expr)
@@ -1921,7 +1923,9 @@
 
    ;; Case 3: It's a function call, like '(+ a b)'
    ((listp expr) (let ((op (first expr)))
-                   (log:info "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
+                   (format *error-output* "DEBUG: analyze-expression list op: ~a (pkg: ~a) macro-function: ~a~%" op (package-name (symbol-package op)) (macro-function op))
+                   (when (eq op 'quote)
+                         (format *error-output* "DEBUG: ANALYZE-EXPR (NEW): QUOTE check. Analyzer: ~a~%" (gethash op *expression-analyzers*)))
                    (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
                    (cond ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
                         ((gethash op *expression-analyzers*)
@@ -1944,3 +1948,13 @@
    (t (error 'crisp-unsupported-form-error
         :form expr
         :source-location location))))
+
+(defun analyze-quote (expr env location)
+  (declare (ignore env))
+  (let ((val (second expr)))
+    (cond
+     ((keywordp val) (make-semantic-literal :value-type 'keyword :value val :source-location location))
+     ((symbolp val) (make-semantic-literal :value-type 'symbol :value val :source-location location))
+     (t (make-semantic-literal :value-type 'quote :value val :source-location location)))))
+
+(def-expression-analyzer quote analyze-quote)

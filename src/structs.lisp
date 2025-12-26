@@ -160,59 +160,66 @@
 (defun ensure-struct-llvm-type (name)
   "Ensures the LLVM struct type exists for the given struct name.
    Handles forward declarations and recursion."
-  (cl:let ((def (find-struct-definition-by-name name)))
-    (cl:unless def
-      (error "Unknown struct type: ~a" name))
+  (cl:let ((name (if (consp name)
+                     (crisp.compiler::mangle-template-struct-name (first name) (rest name))
+                     name)))
+    (format *error-output* "DEBUG: ensure-struct-llvm-type called with ~s (mangled: ~s)~%" name name)
+    (cl:let ((def (find-struct-definition-by-name name)))
+      (cl:unless def
+        (error "Unknown struct type: ~a" name))
 
-    ;; Return cached type if available
-    (cl:when (crisp-struct-definition-llvm-type def)
-      (return-from ensure-struct-llvm-type (crisp-struct-definition-llvm-type def)))
+      ;; Return cached type if available
+      (cl:when (crisp-struct-definition-llvm-type def)
+        (return-from ensure-struct-llvm-type (crisp-struct-definition-llvm-type def)))
 
-    ;; Create the named struct (opaque first) to handle recursion
-    (cl:let* ((ctx (llvm-get-module-context *current-module*))
-              (full-name (format nil "~a~a" *struct-name-prefix* (symbol-name name)))
-              ;; FIX: Check if the type already exists in the module (e.g. from a previous pass or duplicate instantiation)
-              (existing-type (crisp.llvm-bindings:llvm-get-type-by-name *current-module* full-name))
-              (struct-type (if (and existing-type (not (cffi:null-pointer-p existing-type)))
-                               existing-type
-                               (llvm-struct-create-named ctx full-name))))
-      ;; CACHE IT IMMEDIATELY
-      (setf (crisp-struct-definition-llvm-type def) struct-type)
+      ;; Create the named struct (opaque first) to handle recursion
+      (cl:let* ((ctx (llvm-get-module-context *current-module*))
+                (full-name (format nil "~a~a" *struct-name-prefix* (symbol-name (crisp-struct-definition-name def))))
+                ;; FIX: Check if the type already exists in the module (e.g. from a previous pass or duplicate instantiation)
+                (existing-type (crisp.llvm-bindings:llvm-get-type-by-name *current-module* full-name))
+                (struct-type (if (and existing-type (not (cffi:null-pointer-p existing-type)))
+                                 existing-type
+                                 (llvm-struct-create-named ctx full-name))))
+        ;; CACHE IT IMMEDIATELY
+        (setf (crisp-struct-definition-llvm-type def) struct-type)
 
-      (cl:let ((element-types '()))
-        (dolist (member-spec (crisp-struct-definition-padded-members def))
-          (cl:let* ((type-name (second member-spec))
-                    (resolved-type (resolve-type-to-llvm type-name)))
-            (log:info "Member ~a (type ~a) resolved to LLVM type: ~a" (first member-spec) type-name resolved-type)
-            (cl:unless resolved-type
-              (error "Failed to resolve type ~a for member ~a" type-name (first member-spec)))
-            (push resolved-type element-types)))
+        (cl:let ((element-types '()))
+          (dolist (member-spec (crisp-struct-definition-padded-members def))
+            (cl:let* ((type-name (second member-spec))
+                      (resolved-type (resolve-type-to-llvm type-name)))
+              (log:info "Member ~a (type ~a) resolved to LLVM type: ~a" (first member-spec) type-name resolved-type)
+              (cl:unless resolved-type
+                (error "Failed to resolve type ~a for member ~a" type-name (first member-spec)))
+              (push resolved-type element-types)))
 
-        ;; Set the body
-        (log:info "Setting struct body for ~a. Element count: ~d" name (length element-types))
-        (cl:let ((types-array (cffi:foreign-alloc :pointer :count (length element-types))))
-          (loop for type in (reverse element-types)
-                for i from 0
-                do (setf (cffi:mem-aref types-array :pointer i) type))
-          (log:info "Calling LLVMStructSetBody...")
-          (llvm-struct-set-body struct-type types-array (length element-types) nil) ; packed=nil
-          (log:info "LLVMStructSetBody done.")
-          (cffi:foreign-free types-array)))
+          ;; Set the body
+          (log:info "Setting struct body for ~a. Element count: ~d" name (length element-types))
+          (cl:let ((types-array (cffi:foreign-alloc :pointer :count (length element-types))))
+            (loop for type in (reverse element-types)
+                  for i from 0
+                  do (setf (cffi:mem-aref types-array :pointer i) type))
+            (log:info "Calling LLVMStructSetBody...")
+            (llvm-struct-set-body struct-type types-array (length element-types) nil) ; packed=nil
+            (log:info "LLVMStructSetBody done.")
+            (cffi:foreign-free types-array)))
 
-      struct-type)))
+        struct-type))))
 
 (defun find-struct-definition-by-name (name-or-symbol)
   "Robustly finds a struct definition by symbol or name string, ignoring package."
+  (cl:when (consp name-or-symbol) (return-from find-struct-definition-by-name nil))
   (cl:let ((def (gethash name-or-symbol *crisp-structs*)))
     (if def
         def
         ;; Fallback: Scan for name match
-        (cl:let ((target-name (string (if (symbolp name-or-symbol) (symbol-name name-or-symbol) name-or-symbol))))
-          (maphash (lambda (k v)
-                     (cl:when (string-equal (symbol-name k) target-name)
-                       (return-from find-struct-definition-by-name v)))
-                   *crisp-structs*)
-          nil))))
+        (if (or (symbolp name-or-symbol) (stringp name-or-symbol))
+            (cl:let ((target-name (string (if (symbolp name-or-symbol) (symbol-name name-or-symbol) name-or-symbol))))
+              (maphash (lambda (k v)
+                         (cl:when (string-equal (symbol-name k) target-name)
+                           (return-from find-struct-definition-by-name v)))
+                       *crisp-structs*)
+              nil)
+            nil))))
 
 (defun compute-record-layout (members)
   "Computes layout for records (virtual, no padding)."
@@ -229,29 +236,33 @@
 
 (defun register-struct-definition (name members &optional (category :struct))
   "Registers a struct or record definition in the global registry."
-  (multiple-value-bind (padded-members total-size)
-      (if (eq category :record)
-          (compute-record-layout members)
-          (compute-std140-layout members))
-    (cl:let ((indices (make-hash-table :test #'eq)))
-      (loop for m in padded-members
-            for i from 0
-            do (setf (gethash (car m) indices) i))
-      (setf (gethash name *crisp-structs*)
-        (make-crisp-struct-definition
-         :name name
-         :members members
-         :padded-members padded-members
-         :field-indices indices
-         :total-size total-size))
+  (cl:let ((name (if (consp name)
+                     (crisp.compiler::mangle-template-struct-name (first name) (rest name))
+                     name)))
+    (format *error-output* "DEBUG: REGISTER-STRUCT: Input Name=~s Sanitzed Name=~s~%" name name)
+    (multiple-value-bind (padded-members total-size)
+        (if (eq category :record)
+            (compute-record-layout members)
+            (compute-std140-layout members))
+      (cl:let ((indices (make-hash-table :test #'eq)))
+        (loop for m in padded-members
+              for i from 0
+              do (setf (gethash (car m) indices) i))
+        (setf (gethash name *crisp-structs*)
+          (make-crisp-struct-definition
+           :name name
+           :members members
+           :padded-members padded-members
+           :field-indices indices
+           :total-size total-size))
 
-      ;; Register as a valid Crisp type for type checking
-      (setf (gethash name *crisp-types*)
-        (make-crisp-type
-         :name name
-         :llvm-type-fn (lambda () (ensure-struct-llvm-type name))
-         :size (* total-size 8)
-         :category category)))))
+        ;; Register as a valid Crisp type for type checking
+        (setf (gethash name *crisp-types*)
+          (make-crisp-type
+           :name name
+           :llvm-type-fn (lambda () (ensure-struct-llvm-type name))
+           :size (* total-size 8)
+           :category category))))))
 
 (defun parse-struct-member-spec (spec)
   "Parses a struct member specification.
@@ -297,10 +308,10 @@
                 (error "Struct constructor for ~a missing required argument: ~s" struct-name kw))
               (push val ordered-values)))
 
-    ;; 3. Check for unknown keys (against runtime members only!)
+    ;; 3. Check for unknown keys (against ALL members, including compile-time ones)
     (maphash (lambda (k v)
                (declare (ignore v))
-               (cl:unless (find k runtime-members :key (lambda (m) (intern (symbol-name (first m)) :keyword)))
+               (cl:unless (find k defined-members :key (lambda (m) (intern (symbol-name (first m)) :keyword)))
                  (error "Struct constructor for ~a has unknown or compile-time-only argument: ~s" struct-name k)))
              processed-args)
 
