@@ -210,7 +210,7 @@ SHORT TERM PLAN
 - [x] compile time struct properties
 - [x] runtime assert and --runtime-checks flag
 - [x] def-record 
-- [ ] revisit "implicit" and "exploded" args - def-record FTW
+- [x] revisit "implicit" and "exploded" args - def-record FTW
 - [ ] damn literal numbers are long overdue.  1.0f 1i 2l  something.
 - - [ ] also, give up on "no (to-int )" already. geebus
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
@@ -232,6 +232,13 @@ SHORT TERM PLAN
 - - [x] cell type constructors (&optional first, maybe not &key quite yet)
 - - [ ] insertion of r-t-assert when set! offset~ or parent~ ?
 - - - [ ] validation against --runtime-checks flag
+- - [ ] incomplete types: formalize and test.
+- - - [ ] polymorphism
+- - - [ ] compile errors if conflict.  
+- - [ ] type constructors for all def-struct / def-record with :c-t props
+        This _might_ be tested already, check.
+- - [ ] def-type  <--  we will need this to create vector from tensor, etc.
+                       I'm tempted to do def-derived-type too
 - - [ ] Tensor Properties ( can be set)
 - - - [ ] length~ ( number of elements)
 - - - [ ] parent~

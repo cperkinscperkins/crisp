@@ -1020,8 +1020,67 @@ https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#interfaces-res
 Using `def-struct` automatically generates `is-XXXX?` for that struct name, which can be used as a type constraint function
 in `with-template-type`.  See the discussion of type constraints in `with-template-type` for more information.
 
+### compile-time properties
+```
+(def-struct addressable
+   (value int)
+   (address-space address-space :c-t)
+   (access access :c-t :read-write))
+```
+
+
+The `:c-t` key can be used to label any property as a compile-time property. It can be inspected
+via a property accessor, just like any property (e.g. `(access~ someAddressable)`).  But cannot be changed at runtime. It becomes part of the type declaration for the struct.
+
+A default value can follow the `:c-t` key.  This default will be used if a call to `make-XXXX` did not specifiy it. 
+
+```
+;; example #1
+(let ((v (make-addressable :value 10 :address-space :global :access :read-only))
+      ;; access has a default value, so can be elided:
+      (v2 (make-addressable :value 20 :address-space :global)))
+   ...)
+
+;; example #2 
+(def-function has-addressable-arg (a b)
+   (declare (type a (addressable :address-space :global :access :read-only))
+            (type b (addressable :address-space :global))
+            (return-type nil))
+   ...)
+```
+<!-- 
+
+THIS IMPLEMENTATION DETAIL IS BEING REALIZED
+
+> [!NOTE]
+> **Implementation Status**: The implicit syntax shown above (where constructor arguments like `:address-space` are automatically promoted to type parameters) is a future goal. 
+> Currently, to achieve this behavior, you must use **Explicit Templates**:
+> ```lisp
+> (with-template-type (T &optional (AS :global))
+>    (def-struct addressable (val T) (space address-space :c-t AS)))
+>
+> ;; Specialize explicitly
+> (def-type-alias GlobalAddr (addressable-type int :global))
+> (make-GlobalAddr :val 10)
+> ```
+
+-->
+
 ### type names vs. type constructors
 When a struct is defined with `def-struct`, its name becomes a new type name (e.g., `point`).
+
+If the struct has compile time properties (`:c-t`) then those become part of its complete type constructor.
+
+Example:
+```
+(def-struct addressable
+   (value int)
+   (address-space address-space :c-t)
+   (access access :c-t :read-write))
+
+(def-function foo (a)
+  (declare (type a (addressable :address-space :local :access :read-only)) ...))
+```
 
 If a struct is defined within a `with-template-type` block, the system also generates a type constructor (e.g., `point`). This constructor must be used with its type arguments to create a concrete type, like `(point int)`.
 
@@ -1123,43 +1182,7 @@ accessors (`~x~`).
 
 See the "possible implementation" of  `convert-aos-to-soa` below for a usage example.
 
-### compile-time properties
-```
-(def-struct addressable
-   (value int)
-   (address-space address-space :c-t)
-   (access access :c-t :read-write))
-```
 
-The `:c-t` key can be used to label any property as a compile-time property. It can be inspected
-via a property accessor, just like any property (e.g. `(access~ someAddressable)`).  But cannot be changed at runtime. It becomes part of the type declaration for the struct.
-
-```
-;; example #1
-(let ((v (make-addressable :value 10 :address-space :global :access :read-only))
-      ;; access has a default value, so can be elided:
-      (v2 (make-addressable :value 20 :address-space :global)))
-   ...)
-
-;; example #2 
-(def-function has-addressable-arg (a b)
-   (declare (type a (addressable :address-space :global :access :read-only))
-            (type b (addressable :address-space :global))
-            (return-type nil))
-   ...)
-```
-
-> [!NOTE]
-> **Implementation Status**: The implicit syntax shown above (where constructor arguments like `:address-space` are automatically promoted to type parameters) is a future goal. 
-> Currently, to achieve this behavior, you must use **Explicit Templates**:
-> ```lisp
-> (with-template-type (T &optional (AS :global))
->    (def-struct addressable (val T) (space address-space :c-t AS)))
->
-> ;; Specialize explicitly
-> (def-type-alias GlobalAddr (addressable-type int :global))
-> (make-GlobalAddr :val 10)
-> ```
 
 
 def-setter
@@ -1243,6 +1266,66 @@ Though there is no equivalent of `soa-vector` for records.
   
 
 -->
+
+Incomplete Types
+----------------
+
+An "Incomplete Type" is a composite type (defined via `def-record` or `def-struct`) where one or more of its compile-time properties have not been specified in type declaration.
+
+For example, given a record definition:
+```lisp
+(def-record pants
+  (size int)
+  (color someEnum :c-t))
+```
+
+The `make-pants` call is always required to have both `:size` and `:color` specified (e.g. `(make-pants :size 32 :color :blue)`), but the actual declaration of the type, as might appear in a function parameter list, can elide compile time properties and be "incomplete".
+```
+;; a 'complete' type: all compile time properties specified
+(pants :color :blue)
+
+;; an 'incomplete' type: one or more compile time properties unspecified:
+(pants)
+;; also valid and 'incomplete':
+pants
+```
+
+Incomplete types allow for polymorphism in internal functions. You can write a function that accepts any kind of `pants`, regardless of (compile time) color.
+
+### Rules for Incomplete Types:
+1. **Allowed in `def-function` and `def-grid-function`**: You may declare parameters with incomplete types in standard functions.
+2. **Forbidden in `def-kernel` and `def-kernel-exact`**: Kernel parameters (the boundary between host and device) MUST have fully specified complete types. The host must know the exact layout and semantics of the data it is passing. Incomplete types cannot be used there.  Note that  `gen-XXXXX`, which can be used to generate a kernel from a grid function, when encountering an incomplete type will use its default value (if specified) or emit a compile error (if no default was specified)
+3. **Compile Time Properties Only**: Runtime member fields are not required in the type declaration anyway, so the question of "complete" vs "incomplete" does not apply to them.
+
+This question of "complete" vs "incomplete" matters because if a `:c-t` property
+is declared in the type constructor, then the compiler will enforce that requirement. Whereas an incomplete type is more flexible. 
+
+```
+(def-record pants
+    (size int)
+    (color someEnum :c-t))
+
+(def-function op-only-blue (blue-pants)
+  (declare (type blue-pants (pants :color :blue)) (return-type nil))
+  ...)
+
+;; this function takes any pant, but calls an operation that only
+;; accepts blue pants.  This is potentially a problem, but, by itself,
+;; would not trigger a compile time error. 
+(def-function remeasure (p)
+  (declare #'(pants => int))
+  (op-only-blue p)
+  (- (size~ p) 2))
+
+;; kernels are required to have complete types for all parameters and return
+;; values.  Here, we see (pants :color :blue) is specified, therefore
+;; this is safe and no compile error is generated.
+;; BUT if the color were :red, then an error would appear.
+(def-kernel omg (cbp &out csz)
+   (declare #'((in-cell (pants :color :blue)) &out (out-cell int)))
+   (let ((new-size (remeasure (~ cbp))))
+     (set! (~ csz) new-size)))
+```
 
 
 
