@@ -17,8 +17,8 @@
   ;; Load the LLVM shared library.
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
-  ;; Configure the logging system.
-  (log:config :sane2 log-level)
+  ;; Configure the logging system to use stderr (important for stdout IR capture)
+  (log:config :sane :stream *error-output* log-level)
 
   ;; Initialize the compiler's internal state.
   (initialize-crisp-types)
@@ -64,13 +64,18 @@
                      (address-space address-space :c-t :global)
                      (access access :c-t :read-write)))
 
-  ;; Register CELL struct template
+  ;; Register CELL record template
   ;; CELL is an opaque handle to a storage slice.
   ;; It contains a pointer to the storage struct and an offset.
+  ;; It now tracks element-type, address-space, and access as compile-time properties.
+
   (eval '(with-template-type (To Addr Acc)
-                             (def-struct cell
+                             (def-record cell
                                          (parent storage) ;; Pointer to STORAGE struct
-                                         (offset ulong))))
+                                         (offset ulong)
+                                         (element-type type-spec :c-t To)
+                                         (address-space address-space :c-t Addr)
+                                         (access access :c-t Acc))))
 
   ;; Register default ~ accessor as a template
   (register-template '~ '(To Addr Acc) nil

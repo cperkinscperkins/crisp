@@ -26,6 +26,7 @@
                                   :constraints constraints
                                   :body body
                                   :signature signature)))
+
     ;; Append to the list of templates for this name
     (setf (gethash name *template-registry*)
       (append (gethash name *template-registry*) (list data)))))
@@ -295,7 +296,9 @@
             (let* ((substituted-body (sublis substitutions (subst mangled-name name body)))
                    ;; Extract members from SUBSTITUTED body: (def-struct MANGLED-NAME (mem concrete-type)...)
                    (members (cddr substituted-body))
-                   (parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec members))
+                   (all-parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec members))
+                   ;; Filter out compile-time members for the generated wrapper signature
+                   (parsed-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) all-parsed-members))
                    (param-names (mapcar #'first parsed-members))
                    ;; Use a UNIQUE wrapper name to avoid LLVM collisions if multiple overloads are generated
                    (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package name)))

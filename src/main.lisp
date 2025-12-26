@@ -55,7 +55,6 @@
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
                                         :runtime-checks runtime-checks-p)
-    (crisp.compiler:initialize-templates)
 
     (unless (= (length files) 1)
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
