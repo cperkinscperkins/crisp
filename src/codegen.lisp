@@ -361,13 +361,29 @@
          (values agg-val nil)))
      ;; No return values (void return)
      (t (values nil nil)))))
+
+(defun resolve-keyword-constant (kw)
+  "Resolves a keyword to its integer value by searching all registered enumerations."
+  (if (integerp kw) kw
+      (progn
+       (maphash (lambda (name enum-def)
+                  (declare (ignore name))
+                  (let ((memb (assoc kw (crisp.compiler::enumeration-def-members enum-def))))
+                    (when memb (return-from resolve-keyword-constant (cdr memb)))))
+                *crisp-enums*)
+       (error "Unable to resolve keyword constant ~a to an integer value. Is it defined in an enumeration?" kw))))
+
 ;; -- literal value --
 (defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
   "Generates IR for a literal value."
   (let* ((type-spec (semantic-literal-value-type node))
          (value (semantic-literal-value node))
-         (llvm-type (crisp-type-to-llvm-type type-spec module))
+         (llvm-type (unless (member type-spec '(keyword symbol quote))
+                      (crisp-type-to-llvm-type type-spec module)))
          (result (cond ;; Handle parameterized types
+                      ((or (eq type-spec 'keyword) (eq type-spec 'symbol) (eq type-spec 'quote))
+                        (let ((ival (resolve-keyword-constant value)))
+                          (llvm-const-int (llvm-int32-type) ival nil)))
                       ((listp type-spec)
                         (let ((base-type (first type-spec)))
                           (cond
@@ -1059,45 +1075,39 @@
 
            (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
            (let ((cell-struct-type (ensure-struct-llvm-type mangled-struct-name)))
-             ;; Phase 5: Cell types are now `ptr` handles in IR signatures.
-             ;; To access members (Parent, Offset), we use GEP + Load from the handle.
-             ;; Avoid loading the entire Cell struct by value.
-             (log:info "semantic-aref: Using GEP to access Cell Handle members.")
+             ;; Phase 5: Cell types are now Records passed by value.
+             ;; We must EXTRACT members (Parent, Offset) from the aggregate value.
+             ;; Do NOT use GEP on the cell value itself.
+             (log:info "semantic-aref: Using ExtractValue to access Cell Record members.")
 
-             (log:info "semantic-aref: Using StructGEP2 to access Cell Handle members.")
+             ;; 1. Get PARENT (index 0) -> STORAGE Value
+             (let* ((parent-val (llvm-build-extract-value builder cell-val 0 "parent_val")))
 
-             ;; 1. Get PARENT (index 0) -> STORAGE
-             (let* ((ptr-parent (llvm-build-struct-gep2 builder cell-struct-type cell-val 0 "ptr_parent")))
-               ;; Load PARENT (Storage Struct)
-               (let ((storage-struct-type (ensure-struct-llvm-type 'storage)))
-                 (let ((parent-val (llvm-build-load2 builder storage-struct-type ptr-parent "parent_val")))
+               ;; Extract STORAGE.PTR (index 0 of STORAGE)
+               (let* ((base-ptr (llvm-build-extract-value builder parent-val 0 "base_ptr")))
 
-                   ;; Extract STORAGE.PTR (index 0 of STORAGE)
-                   (let* ((base-ptr (llvm-build-extract-value builder parent-val 0 "base_ptr")))
+                 ;; 2. Get OFFSET (index 1 of CELL)
+                 (let* ((cell-offset (llvm-build-extract-value builder cell-val 1 "cell_offset")))
 
-                     ;; 2. Get OFFSET (index 1 of CELL)
-                     (let* ((ptr-offset (llvm-build-struct-gep2 builder cell-struct-type cell-val 1 "ptr_offset"))
-                            (cell-offset (llvm-build-load2 builder (llvm-int64-type) ptr-offset "cell_offset")))
+                   ;; Calculate Element Size
+                   (let* ((elem-size (llvm-size-of elem-llvm-type))
+                          ;; Extend Index to i64 (assume s64 for now)
+                          (index-i64 (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
+                          ;; Index Bytes = Index * Size
+                          (index-bytes (llvm-build-mul builder index-i64 elem-size "index_bytes"))
+                          ;; Total Offset = CellOffset + IndexBytes
+                          (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
 
-                       ;; Calculate Element Size
-                       (let* ((elem-size (llvm-size-of elem-llvm-type))
-                              ;; Extend Index to i64 (assume s64 for now)
-                              (index-i64 (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
-                              ;; Index Bytes = Index * Size
-                              (index-bytes (llvm-build-mul builder index-i64 elem-size "index_bytes"))
-                              ;; Total Offset = CellOffset + IndexBytes
-                              (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
+                     ;; Final Pointer = GEP(BasePtr, TotalOffset)
+                     (cffi:with-foreign-object (indices :pointer 1)
+                                               (setf (cffi:mem-aref indices :pointer 0) total-offset)
+                                               (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8")))
 
-                         ;; Final Pointer = GEP(BasePtr, TotalOffset)
-                         (cffi:with-foreign-object (indices :pointer 1)
-                                                   (setf (cffi:mem-aref indices :pointer 0) total-offset)
-                                                   (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8")))
+                                                 ;; Cast to Element and Load
+                                                 (let* ((target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type 0) "target_ptr"))
+                                                        (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
 
-                                                     ;; Cast to Element and Load
-                                                     (let* ((target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type 0) "target_ptr"))
-                                                            (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
-
-                                                       ;; Return loaded val, nil (loc), AND pointer (for set!)
-                                                       (values loaded-val nil target-ptr)))))))))))))
+                                                   ;; Return loaded val, nil (loc), AND pointer (for set!)
+                                                   (values loaded-val nil target-ptr)))))))))))
 
        (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)" array-type cell-spec))))))

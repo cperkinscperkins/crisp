@@ -198,6 +198,10 @@
    #:return
    #:declare
    #:return-type
+
+   ;; Built-in Types
+   #:cell
+   #:storage
    #:type
    #:make-scratch-cell
    #:|=>| ;; Correct arrow

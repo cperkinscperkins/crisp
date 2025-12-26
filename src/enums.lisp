@@ -50,12 +50,14 @@
 ;;; Standard Enumerations
 
 (def-enumeration address-space
+                 (:unknown 0)
                  (:global 1)
                  :local
                  :private
                  :constant)
 
 (def-enumeration access
+                 (:unknown 255)
                  :read-only
                  :write-only
                  :read-write
