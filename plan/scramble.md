@@ -254,6 +254,7 @@ SHORT TERM PLAN
 - - [ ] built atop def-struct ? 
 - [ ] def-kernel-exact 
 - [ ] def-kernel  <-- 
+- [ ] expand variadics (+, * etc).  Maybe up to 5 or 7?  (+ a b c d e)
 
 
 M-V-R

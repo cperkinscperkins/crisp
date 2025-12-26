@@ -21,4 +21,12 @@
 [x] 007 illegal_float_to_int_cast.crisp    UNBOUND SLOT error. 
    analyze-cast-expression /   (error 'crisp-type-error :message "Invalid cast: Cannot use 'to-...' for float-to-integer conversion. Use 'truncate', 'floor', 'ceil', or 'round' instead."
                                  :source-location location)
+
+
+[ ] 008  --log-level=off is not working. 
    
+.\bin\crisp-compile.exe .\variadic.crisp --log-level=off
+DEBUG: REGISTER-STRUCT: Input Name=CRISP.COMPILER:STORAGE Sanitzed Name=CRISP.COMPILER:STORAGE
+DEBUG: REGISTER-STRUCT: Input Name=CRISP.COMPILER:STORAGE Sanitzed Name=CRISP.COMPILER:STORAGE
+DEBUG: analyze-expression list op: RETURN (pkg: CRISP.COMPILER) macro-function: #<FUNCTION (MACRO-FUNCTION
+.. and much more
