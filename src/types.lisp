@@ -128,7 +128,12 @@ This supports overloading templates by arity or other factors.")
   "Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT"
   (log:debug "mangle-template-struct-name: name=~s (type=~a) params=~s" name (type-of name) params)
   (cl:unless name (return-from mangle-template-struct-name nil))
-  (intern (format nil "~a_~{~a~^_~}" name params) (symbol-package name)))
+  (cl:let ((mangled-params (mapcar (lambda (p)
+                                     (if (consp p)
+                                         (mangle-template-struct-name (first p) (rest p))
+                                         p))
+                               params)))
+    (intern (format nil "~a_~{~a~^_~}" name mangled-params) (symbol-package name))))
 
 (defun split-string (string delimiter)
   "Splits a string by a character delimiter."
