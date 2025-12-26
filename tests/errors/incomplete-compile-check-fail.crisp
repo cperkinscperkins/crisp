@@ -1,0 +1,23 @@
+(def-enumeration color :blue :brown :black)
+
+(def-record pants
+    (size int)
+    (color color :c-t))
+
+(def-function op-only-blue (blue-pants)
+  (declare (type blue-pants (pants :color :blue)) (return-type nil))
+   (set! (size~ blue-pants) (- (size~ blue-pants) 1)))
+
+;; this function takes any pant, but calls an operation that only
+;; accepts blue pants.  This is potentially a problem, but, by itself,
+;; would not trigger a compile time error. 
+(def-function remeasure (p)
+  (declare #'(pants => int))
+  (op-only-blue p)
+  (- (size~ p) 2))
+
+;; :red pants will introduce a conflict
+(def-function fake-kernel (bp)
+   (declare #'((pants :color :red) => int))
+   (let ((new-size (remeasure bp)))
+     new-size))
