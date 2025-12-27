@@ -25,6 +25,7 @@
   (def-expression-analyzer let* analyze-let-expression)
   (def-expression-analyzer progn analyze-progn-expression)
   (def-expression-analyzer compiler-no-op analyze-compiler-no-op) ;; NEW
+  (def-expression-analyzer is-set? analyze-is-set-expression) ;; Compile-time predicate
 
   (def-expression-analyzer atomic-add! analyze-atomic-add!-expression)
   (def-expression-analyzer to analyze-value-cast-expression)
@@ -45,6 +46,11 @@
   (def-expression-analyzer ~ref~ analyze-aref-expression)
   (def-expression-analyzer ~ analyze-aref-expression)
   (def-expression-analyzer quote analyze-quote)
+
+  ;; Compile-time conditional aliases (same analyzers, rely on DCE)
+  (def-expression-analyzer if+ analyze-static-if-expression)
+  (def-expression-analyzer when+ analyze-static-when-expression)
+  (def-expression-analyzer unless+ analyze-static-unless-expression)
 
   ;; From duplicate definition:
   (def-expression-analyzer def-function analyze-nested-def-function)
@@ -184,22 +190,65 @@
      (eval form))))
 
 (defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
-  "Compiles a single def-function form."
+  "Compiles a single def-function form. Handles optional parameters by generating overloaded variants."
   ;; In single-pass mode, the signature won't be registered yet.
-  ;; We check and register it here to ensure forward calls work.
-  ;; In multi-pass mode, this check prevents re-registration.
   (unless (gethash (second form) *function-table*)
-    (register-function-signature form location)) (let ((*current-compiling-function* (second form)))
-                                                   (push *current-compiling-function* *single-pass-call-stack*)
-                                                   (unwind-protect
-                                                       (let ((form-with-location (append form (list :source-location `',location))))
-                                                         (let ((expanded-form (macroexpand-1 form-with-location)))
-                                                           ;; Handle implicit templates which return nil
-                                                           (let ((semantic-node (eval expanded-form)))
-                                                             (when semantic-node
-                                                                   (log:info "Generating IR for function ~a in module ~a" (second form) module)
-                                                                   (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))))
-                                                     (pop *single-pass-call-stack*))))
+    (register-function-signature form location))
+
+  (let* ((name (second form))
+         (params (third form))
+         (body-and-loc (cdddr form))
+         ;; Extract declarations manually to check for optional args
+         (declare-forms (loop for f in body-and-loc while (and (listp f) (eq (car f) 'declare)) collect f))
+         ;; Extract real body (remove declarations)
+         (real-body (nthcdr (length declare-forms) body-and-loc)))
+
+    (multiple-value-bind (explicit-env return-types optional-idx)
+        (parse-function-declarations params (loop for f in declare-forms append (rest f)))
+
+      (if optional-idx
+          ;; --- OPTIONAL PARAMETERS: Template Explosion ---
+          (let ((start-idx optional-idx)
+                (end-idx (length explicit-env)))
+            (log:info "Compiling ~a variants for function ~a (Optional Index: ~a)" (- end-idx start-idx) name optional-idx)
+
+            (loop for i from start-idx to end-idx
+                  do (let* ((sub-env (subseq explicit-env 0 i))
+                            (sub-params (mapcar #'first sub-env))
+                            (param-types (mapcar #'second sub-env))
+                            (mangled-name (let ((suffix (mapcar #'mangle-param-type-name param-types)))
+                                            (intern (format nil "~a_~{~a~^_~}" name suffix) (symbol-package name)))))
+
+                       (let ((*current-compiling-function* mangled-name))
+                         (push *current-compiling-function* *single-pass-call-stack*)
+                         (unwind-protect
+                             (let ((semantic-node
+                                    (internal-compile-function
+                                     mangled-name
+                                     sub-env
+                                     return-types
+                                     sub-params
+                                     real-body ; Use full body (is-set? handles missing vars)
+                                     (loop for f in declare-forms append (rest f))
+                                     location)))
+
+                               (when semantic-node
+                                     (log:info "Generating IR for variant ~a" mangled-name)
+                                     (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))
+                           (pop *single-pass-call-stack*))))))
+
+          ;; --- STANDARD Compilation (No Optionals) ---
+          (let ((*current-compiling-function* (second form)))
+            (push *current-compiling-function* *single-pass-call-stack*)
+            (unwind-protect
+                (let ((form-with-location (append form (list :source-location `',location))))
+                  (let ((expanded-form (macroexpand-1 form-with-location)))
+                    ;; Handle implicit templates which return nil
+                    (let ((semantic-node (eval expanded-form)))
+                      (when semantic-node
+                            (log:info "Generating IR for function ~a in module ~a" (second form) module)
+                            (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))))
+              (pop *single-pass-call-stack*)))))))
 
 (defun walk-code-forms (forms visitor-fn)
   "Walks top-level forms, handling macros and progn, and calling visitor-fn on def-function."
@@ -316,14 +365,20 @@
                            (analyze-return-type-from-spec (second fn-decl))
                            (analyze-return-type-from-list declarations)))
 
-         (env (cond
-               ;; Case 1: #'(...) signature
-               (fn-decl
-                 (analyze-environment-from-spec params (second fn-decl)))
+         (env nil)
+         (optional-idx nil))
 
-               ;; Case 2: Interleaved syntax ((a int) (b float))
-               ((some #'listp params)
-                 (loop for p in params
+    ;; Analyze Environment (and Optional Index)
+    (cond
+     ;; Case 1: #'(...) signature
+     (fn-decl
+       (multiple-value-setq (env optional-idx)
+                            (analyze-environment-from-spec params (second fn-decl))))
+
+     ;; Case 2: Interleaved syntax ((a int) (b float))
+     ((some #'listp params)
+       ;; TODO: Support &optional in interleaved syntax if needed.
+       (setf env (loop for p in params
                        collect (if (listp p)
                                    (progn
                                     (unless (>= (length p) 2)
@@ -331,42 +386,68 @@
                                     (let ((name (first p)) (type (second p)))
                                       (unless (valid-type-p type)
                                         (error 'crisp-unknown-type-error :type-name type))
-                                      ;; Start-Of-Change
                                       (let ((parsed (parse-type-specifier type)))
-                                        (let ((result (list name parsed)))
-                                          result))))
-                                   ;; End-Of-Change
-                                   (error "Mixed bare and typed parameters not allowed."))))
+                                        (list name parsed))))
+                                   (error "Mixed bare and typed parameters not allowed.")))))
 
-               ;; Case 3: Standard declarations
-               (t
-                 (analyze-environment-from-list params declarations)))))
-    (values env return-types)))
+     ;; Case 3: Standard declarations
+     (t
+       (setf env (analyze-environment-from-list params declarations))))
+
+    (values env return-types optional-idx)))
+
+(defun mangle-param-type-name (type)
+  "Helper to mangle a type specifier for function names."
+  (cond
+   ((symbolp type) (string-downcase (symbol-name type)))
+   ((listp type) (format nil "~{~a~^_~}" (mapcar #'mangle-param-type-name type)))
+   (t "unknown")))
 
 (defun register-function-signature (form location)
-  "Extracts and registers a function's signature without analyzing its body."
+  "Extracts and registers a function's signature without analyzing its body. 
+   Handles optional parameters by generating overloaded signatures."
   (let* ((name (second form))
          (params (third form))
          (body (cdddr form))
-         (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
-         (existing-signatures (gethash name *function-table*)))
+         (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f)))
     (log:debug "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s" name (package-name (symbol-package name)) declare-forms)
-    (multiple-value-bind (env return-types)
-        (parse-function-declarations params (loop for f in declare-forms append (rest f)))
-      ;(dump-env env)
-      (let ((param-types (mapcar #'second env)))
-        ;; Add the new signature to the list of existing ones.
-        (setf (gethash name *function-table*)
-          (append existing-signatures (list (make-function-signature :name name :parameters param-types :return-types return-types :source-location location))))))
 
-    (defun register-overload (alias real-name)
-      "Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing."
-      (let ((real-sigs (gethash real-name *function-table*))
-            (alias-sigs (gethash alias *function-table*)))
-        (unless real-sigs
-          (error "Cannot register overload: function ~a not found." real-name))
-        (setf (gethash alias *function-table*)
-          (append alias-sigs real-sigs))))))
+    (multiple-value-bind (env return-types optional-idx)
+        (parse-function-declarations params (loop for f in declare-forms append (rest f)))
+
+      ;; Logic for registering variants
+      (let ((start-idx (or optional-idx (length env)))
+            (end-idx (length env)))
+
+        (loop for i from start-idx to end-idx
+              do (let* ((param-subset (subseq env 0 i))
+                        (param-types (mapcar #'second param-subset))
+                        ;; If it's a standard function (no optionals), keep original name.
+                        ;; If optionals exist, we MUST mangle to disambiguate.
+                        (mangled-name (if optional-idx
+                                          (let ((suffix (mapcar #'mangle-param-type-name param-types)))
+                                            (intern (format nil "~a_~{~a~^_~}" name suffix) (symbol-package name)))
+                                          name)))
+
+                   (log:info "Registering variant: ~s (Params: ~s)" mangled-name param-types)
+
+                   (let ((sig (make-function-signature
+                               :name mangled-name
+                               :parameters param-types
+                               :return-types return-types
+                               :source-location location)))
+                     ;; Append to existing signatures
+                     (setf (gethash name *function-table*)
+                       (append (gethash name *function-table*) (list sig))))))))))
+
+(defun register-overload (alias real-name)
+  "Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing."
+  (let ((real-sigs (gethash real-name *function-table*))
+        (alias-sigs (gethash alias *function-table*)))
+    (unless real-sigs
+      (error "Cannot register overload: function ~a not found." real-name))
+    (setf (gethash alias *function-table*)
+      (append alias-sigs real-sigs))))
 
 (defun inject-implicit-arguments (name explicit-env)
   "Injects implicit arguments into the environment if the function is a carrier."
@@ -465,93 +546,97 @@
             (register-template name template-params nil new-def-form signature-list)
             t))))
 
+(defun internal-compile-function (name explicit-env return-type params body declarations location)
+  "Core compilation logic for a function, accepting a pre-parsed environment."
+
+  ;; Defensive Sanitation: If env contains double-nested lists (e.g. key is a list), fix it.
+  (when (and explicit-env (listp (car explicit-env)) (listp (first (car explicit-env))))
+        (log:error "CORRUPTION DETECTED in explicit-env! Fixing. Env: ~s" explicit-env)
+        (setf explicit-env (mapcar (lambda (x) (if (listp (first x)) (first x) x)) explicit-env)))
+
+  ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
+  (let ((name-str (symbol-name name)))
+    (when (and (> (cl:length name-str) 2)
+               (cl:char= (cl:char name-str 0) #\~)
+               (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
+          (unless (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)))
+            (error 'crisp-compiler-error
+              :source-location location
+              :message (format nil "Function name '~a' is reserved (accessors ending in ~~ are not overloadable)." name)))))
+
+  ;; 0-b. Implicit Template Detection
+  (when (detect-and-register-implicit-template name explicit-env return-type params body declarations)
+        (return-from internal-compile-function nil))
+
+  ;; 1. Single-Pass Carrier Look-ahead
+  (scan-for-carriers name body)
+
+  ;; 2. Implicit Argument Handling
+  (let ((env (inject-implicit-arguments name explicit-env)))
+
+    ;; 3. Analyze Body and Validate Return Types
+    (multiple-value-bind (body-nodes inferred-return-types)
+        (validate-return-types name body env return-type location)
+
+      ;; Update the function registry if we inferred a return type and none was declared.
+      (when (and (or (null return-type) (equal return-type '(nil)))
+                 (not (equal inferred-return-types '(nil))))
+            (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
+            (let* ((param-types (mapcar #'second explicit-env))
+                   (sig (find-if (lambda (s) (equal (function-signature-parameters s) param-types))
+                            (gethash name *function-table*))))
+              (when sig
+                    (setf (function-signature-return-types sig) inferred-return-types))))
+
+      ;; 4. Build and return the "blueprint"
+      (let ((return-node (first (last body-nodes))))
+        (make-semantic-function
+         :name name
+         :param-list (loop for (param-name param-type) in env
+                           collect (make-semantic-param :name param-name :type param-type :source-location location))
+         :return-type (cond
+                       ((or (null return-type) (equal return-type '(nil)))
+                         inferred-return-types)
+                       (t
+                         return-type))
+         :body (if (typep return-node 'semantic-explicit-return)
+                   body-nodes
+                   (append (butlast body-nodes)
+                     (list (make-semantic-return
+                            :return-type (let ((nt (semantic-node-type return-node)))
+                                           (if (and (listp nt) (not (valid-type-p nt)))
+                                               nt
+                                               (list nt)))
+                            ;; TRUNCATION LOGIC FOR IMPLICIT RETURN
+                            :value-node (let* ((nt (semantic-node-type return-node))
+                                               (val-types (if (and (listp nt) (not (valid-type-p nt))) nt (list nt)))
+                                               (target-types (cond ((or (null return-type) (equal return-type '(nil))) inferred-return-types)
+                                                                   (t return-type)))
+                                               (target-list (if (and (listp target-types) (not (valid-type-p target-types))) target-types (list target-types))))
+
+                                          (cond
+                                           ;; Case: 1 value needed, >1 provided. Extract index 0.
+                                           ((and (= (length target-list) 1) (> (length val-types) 1))
+                                             (log:info "Implicit Return Truncation: ~a -> ~a" val-types target-list)
+                                             (make-semantic-extract-value
+                                              :type (first target-list)
+                                              :aggregate-node return-node
+                                              :index 0
+                                              :source-location (if return-node (semantic-node-source-location return-node) location)))
+
+                                           ;; TODO: Handle N -> M (where M > 1 and N > M) case if needed.
+                                           ;; For now return original node.
+                                           (t return-node)))
+
+                            :source-location (if return-node (semantic-node-source-location return-node) location)))))
+         :source-location location)))))
+
 (defun internal-def-function (name params declarations body location)
-  "This is the 'Semantic Analyzer' (Pass 2)."
+  "This is a wrapper around internal-compile-function that parses declarations."
   (log:info "Analyzing function ~s" name)
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
-
-    ;; Defensive Sanitation: If env contains double-nested lists (e.g. key is a list), fix it.
-    (when (and explicit-env (listp (car explicit-env)) (listp (first (car explicit-env))))
-          (log:error "CORRUPTION DETECTED in explicit-env! Fixing. Env: ~s" explicit-env)
-          (setf explicit-env (mapcar (lambda (x) (if (listp (first x)) (first x) x)) explicit-env)))
-
-    ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
-    (let ((name-str (symbol-name name)))
-      (when (and (> (cl:length name-str) 2)
-                 (cl:char= (cl:char name-str 0) #\~)
-                 (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
-            (unless (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)))
-              (error 'crisp-compiler-error
-                :source-location location
-                :message (format nil "Function name '~a' is reserved (accessors ending in ~~ are not overloadable)." name)))))
-
-    ;; 0-b. Implicit Template Detection
-    (when (detect-and-register-implicit-template name explicit-env return-type params body declarations)
-          (return-from internal-def-function nil))
-
-    ;; 1. Single-Pass Carrier Look-ahead
-    (scan-for-carriers name body)
-
-    ;; 2. Implicit Argument Handling
-    (let ((env (inject-implicit-arguments name explicit-env)))
-
-      ;; 3. Analyze Body and Validate Return Types
-      (multiple-value-bind (body-nodes inferred-return-types)
-          (validate-return-types name body env return-type location)
-
-        ;; Update the function registry if we inferred a return type and none was declared.
-        (when (and (or (null return-type) (equal return-type '(nil)))
-                   (not (equal inferred-return-types '(nil))))
-              (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
-              (let* ((param-types (mapcar #'second explicit-env))
-                     (sig (find-if (lambda (s) (equal (function-signature-parameters s) param-types))
-                              (gethash name *function-table*))))
-                (when sig
-                      (setf (function-signature-return-types sig) inferred-return-types))))
-
-        ;; 4. Build and return the "blueprint"
-        (let ((return-node (first (last body-nodes))))
-          (make-semantic-function
-           :name name
-           :param-list (loop for (param-name param-type) in env
-                             collect (make-semantic-param :name param-name :type param-type :source-location location))
-           :return-type (cond
-                         ((or (null return-type) (equal return-type '(nil)))
-                           inferred-return-types)
-                         (t
-                           return-type))
-           :body (if (typep return-node 'semantic-explicit-return)
-                     body-nodes
-                     (append (butlast body-nodes)
-                       (list (make-semantic-return
-                              :return-type (let ((nt (semantic-node-type return-node)))
-                                             (if (and (listp nt) (not (valid-type-p nt)))
-                                                 nt
-                                                 (list nt)))
-                              ;; TRUNCATION LOGIC FOR IMPLICIT RETURN
-                              :value-node (let* ((nt (semantic-node-type return-node))
-                                                 (val-types (if (and (listp nt) (not (valid-type-p nt))) nt (list nt)))
-                                                 (target-types (cond ((or (null return-type) (equal return-type '(nil))) inferred-return-types)
-                                                                     (t return-type)))
-                                                 (target-list (if (and (listp target-types) (not (valid-type-p target-types))) target-types (list target-types))))
-
-                                            (cond
-                                             ;; Case: 1 value needed, >1 provided. Extract index 0.
-                                             ((and (= (length target-list) 1) (> (length val-types) 1))
-                                               (log:info "Implicit Return Truncation: ~a -> ~a" val-types target-list)
-                                               (make-semantic-extract-value
-                                                :type (first target-list)
-                                                :aggregate-node return-node
-                                                :index 0
-                                                :source-location (if return-node (semantic-node-source-location return-node) location)))
-
-                                             ;; TODO: Handle N -> M (where M > 1 and N > M) case if needed.
-                                             ;; For now return original node.
-                                             (t return-node)))
-
-                              :source-location (if return-node (semantic-node-source-location return-node) location)))))
-           :source-location location))))))
+    (internal-compile-function name explicit-env return-type params body declarations location)))
 
 ;; ### Helpers
 
@@ -621,18 +706,43 @@
         '(nil))))
 
 (defun analyze-environment-from-spec (params fn-spec)
-  "Builds the environment from the signature."
+  "Builds the environment from the signature. Returns (values env optional-start-index)."
   (let ((arrow-pos (position '=> fn-spec)))
-    (let ((param-type-specs (subseq fn-spec 0 (or arrow-pos (length fn-spec)))))
+    (let ((param-type-specs (subseq fn-spec 0 (or arrow-pos (length fn-spec))))
+          (env '())
+          (optional-start nil)
+          (idx 0))
       (log:debug "Analyzing spec params: ~s, specs: ~s" params param-type-specs)
-      (unless (= (length params) (length param-type-specs))
-        (error 'crisp-signature-arity-error
-          :expected (length param-type-specs)
-          :inferred (length params)
-          :source-location nil))
-      (loop for p in params
-            for ts in param-type-specs
-            collect (list p (parse-type-specifier ts))))))
+
+      (loop while (and params param-type-specs)
+            do (let ((p (first params))
+                     (ts (first param-type-specs)))
+                 (cond
+                  ;; Handle &optional in params
+                  ((eq p '&optional)
+                    (unless (eq ts '&optional)
+                      (error "Signature Mismatch: &optional present in parameter list but found ~s in type declaration. Signatures must match structure." ts))
+                    (when optional-start
+                          (error "Multiple &optional keywords found in signature."))
+                    (setf optional-start idx)
+                    (pop params)
+                    (pop param-type-specs))
+
+                  ;; Handle &optional in types (but disallowed if not in params)
+                  ((eq ts '&optional)
+                    (error "Signature Mismatch: &optional present in type declaration but found ~s in parameter list." p))
+
+                  ;; Normal parameter
+                  (t
+                    (push (list p (parse-type-specifier ts)) env)
+                    (incf idx)
+                    (pop params)
+                    (pop param-type-specs)))))
+
+      (when (or params param-type-specs)
+            (error 'crisp-signature-arity-error :expected (length fn-spec) :inferred (length env) :source-location nil))
+
+      (values (nreverse env) optional-start))))
 
 ;; --- (type ...) Syntax Parsers (The Fallback) ---
 
@@ -828,25 +938,73 @@
          :index physical-index
          :source-location location)))))
 
+(defun analyze-is-set-expression (expr env location)
+  "Analyzes (is-set? var). Returns 1 (true) if var is bound in env, 0 (false) otherwise."
+  (let ((var (second expr)))
+    (unless (symbolp var)
+      (error "is-set? expects a symbol, got ~s" var))
+    ;; Since this is a compile-time check for optional parameters in specialized templates,
+    ;; the 'env' contains *only* the parameters present for this specific specialization.
+    (if (assoc var env)
+        (make-semantic-literal :value-type 'int :value 1 :source-location location)
+        (make-semantic-literal :value-type 'int :value 0 :source-location location))))
+
+(defun analyze-if-expression-impl (expr env location &key enforce-constant)
+  (let* ((cond-node (analyze-expression (second expr) env (append location '(1)))))
+
+    ;; DCE Optimization: If condition is a constant int/bool literal, analyze ONLY the live branch.
+    (when (typep cond-node 'semantic-literal)
+          (let ((val (semantic-literal-value cond-node)))
+            ;; Treat 0 and NIL as false, everything else as true.
+            (if (or (null val) (and (integerp val) (= val 0)))
+                ;; Constant False -> Analyze Else only, skip Then.
+                (if (fourth expr)
+                    (return-from analyze-if-expression-impl (analyze-expression (fourth expr) env (append location '(3))))
+                    (return-from analyze-if-expression-impl (make-semantic-literal :value-type 'int :value 0 :source-location location))) ; Empty else -> Constant False
+                ;; Constant True -> Analyze Then only, skip Else.
+                (return-from analyze-if-expression-impl (analyze-expression (third expr) env (append location '(2)))))))
+
+    ;; If we are here, the condition is NOT a constant.
+    (when enforce-constant
+          (error "IF+ condition failed to evaluate at compile time: ~a" expr))
+
+    (let* ((then-node (analyze-expression (third expr) env (append location '(2))))
+           (else-node (if (fourth expr) (analyze-expression (fourth expr) env (append location '(3))) nil)))
+      (make-semantic-if :type (semantic-node-type then-node)
+                        :condition-node cond-node
+                        :then-node then-node
+                        :else-node else-node
+                        :source-location location))))
+
 (defun analyze-if-expression (expr env location)
-  (let* ((cond-node (analyze-expression (second expr) env (append location '(1))))
-         (then-node (analyze-expression (third expr) env (append location '(2))))
-         (else-node (if (fourth expr) (analyze-expression (fourth expr) env (append location '(3))) nil)))
-    (make-semantic-if :type (semantic-node-type then-node)
-                      :condition-node cond-node
-                      :then-node then-node
-                      :else-node else-node
-                      :source-location location)))
+  (analyze-if-expression-impl expr env location :enforce-constant nil))
+
+(defun analyze-static-if-expression (expr env location)
+  (analyze-if-expression-impl expr env location :enforce-constant t))
 
 (defun analyze-when-expression (expr env location)
-  (let ((cond-node (analyze-expression (second expr) env (append location '(1))))
-        (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
-    (make-semantic-if :type '(nil) :condition-node cond-node :then-node body-node :else-node nil :source-location location)))
+  ;; Delegate to analyze-if-expression to leverage DCE.
+  ;; (when cond body...) -> (if cond (progn body...) nil)
+  (let ((cond (second expr))
+        (body (cons 'progn (cddr expr))))
+    (analyze-if-expression `(if ,cond ,body) env location)))
+
+(defun analyze-static-when-expression (expr env location)
+  (let ((cond (second expr))
+        (body (cons 'progn (cddr expr))))
+    (analyze-static-if-expression `(if ,cond ,body) env location)))
 
 (defun analyze-unless-expression (expr env location)
-  (let ((cond-node (analyze-expression (second expr) env (append location '(1))))
-        (body-node (analyze-progn-expression (cons 'progn (cddr expr)) env (append location '(2)))))
-    (make-semantic-if :type '(nil) :condition-node cond-node :then-node nil :else-node body-node :source-location location)))
+  ;; Delegate to analyze-if-expression to leverage DCE.
+  ;; (unless cond body...) -> (if cond nil (progn body...))
+  (let ((cond (second expr))
+        (body (cons 'progn (cddr expr))))
+    (analyze-if-expression `(if ,cond nil ,body) env location)))
+
+(defun analyze-static-unless-expression (expr env location)
+  (let ((cond (second expr))
+        (body (cons 'progn (cddr expr))))
+    (analyze-static-if-expression `(if ,cond nil ,body) env location)))
 
 (defun get-array-element-type (type)
   "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown."

@@ -261,9 +261,9 @@
    #:compile-crisp-form-to-ir-string
 
    ;; Macros
-   #:when #:unless #:cond #:if+ #:else
+   #:when #:unless #:cond #:if+ #:when+ #:unless+ #:else
    #:c-t-assert #:c-t-output #:compiler-no-op
-   #:!=
+   #:!= #:is-set?
    #:die #:r-t-assert #:r-t-assert-0))
 
 (defpackage :crisp.main
@@ -285,6 +285,7 @@
   (:import-from :crisp.compiler
                 #:def-function
                 #:def-kernel
+                #:when #:unless #:if+ #:when+ #:unless+
                 #:def-struct
 
                 #:def-record
@@ -298,6 +299,7 @@
                 #:make-scratch-cell
                 #:def-enumeration
                 #:address-space
+                #:is-set?
                 #:access
                 #:is-address-space?
                 #:is-access?
