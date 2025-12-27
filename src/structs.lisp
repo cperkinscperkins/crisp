@@ -239,7 +239,6 @@
   (cl:let ((name (if (consp name)
                      (crisp.compiler::mangle-template-struct-name (first name) (rest name))
                      name)))
-    (log:debug "REGISTER-STRUCT: Input Name=~s Sanitzed Name=~s" name name)
     (multiple-value-bind (padded-members total-size)
         (if (eq category :record)
             (compute-record-layout members)

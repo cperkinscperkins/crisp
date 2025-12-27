@@ -242,14 +242,13 @@
                          (value (when is-ct (fourth member-spec))) ;; (name type :c-t value)
                          (accessor-name (intern (format nil "~a~~" member-name) pkg)))
                     (if is-ct
-                        ;; Generate Compile-Time Constant Accessor Macro
-                        `(defmacro ,accessor-name (obj)
-                           (declare (ignore obj))
-                           ;; If a value is provided, return it as a constant.
-                           (if ',value
-                               '',value
-                               ;; Otherwise error? Or return nil? User should provide value.
-                               (error "Compile-time struct member ~a accessed but has no constant value defined." ',member-name)))
+                        (if value
+                            ;; Generate Compile-Time Constant Accessor Macro
+                            `(defmacro ,accessor-name (obj)
+                               (declare (ignore obj))
+                               '',value)
+                            ;; No value provided (incomplete type) -> Do NOT generate macro. Let analyzer handle it.
+                            nil)
                         ;; Generate Runtime Accessor Function
                         (let ((idx runtime-index))
                           (incf runtime-index)
@@ -290,12 +289,16 @@
                   (let* ((member-name (first member-spec))
                          (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
                          (value (when is-ct (fourth member-spec)))
+                         (type (second member-spec))
                          (accessor-name (intern (format nil "~a~~" member-name) pkg)))
                     (if is-ct
-                        `(defmacro ,accessor-name (obj)
-                           (declare (ignore obj))
-                           (if ',value '',value
-                               (error "Compile-time record member ~a accessed but has no constant value defined." ',member-name)))
+                        (if (or (eq type 'type-spec) (eq type 'symbol) (null value))
+                            ;; Skip generating accessors for non-runtime types or undefined values (incomplete types)
+                            nil
+                            `(def-function ,accessor-name ((obj ,name))
+                                           (declare (function ((,name) => ,type)))
+                                           (declare (crisp-system-generated))
+                                           (return ',value)))
                         (let ((idx runtime-index))
                           (incf runtime-index)
                           `(def-function ,accessor-name ((obj ,name))
