@@ -99,8 +99,8 @@ Also `#'(int int => int int)` for multiple value return.
 
 ### cell & make-scratch-cell
 The `cell` Storage Handle data type is available as a composit type (only).
-It is just a placeholder for now, and cannot do actual work. 
-`make-scratch-cell` is similarly available and non-functioning.
+ 
+`make-scratch-cell` is similarly available.
 
 ### Higher Order Functions
 Functions can be passed as arguments to other functions. And, for this, the signature
@@ -188,6 +188,14 @@ not supported yet.
 
 ### compile time struct properties
 These are now available.  They'll be needed for Storage Handles.
+
+### def-record
+`def-record` is available. It undergirds `cell` and `storage` which are both fully 
+realized in the implementation now.
+
+### complete and incomplete types
+`def-record` and `def-struct` introduce "incomplete types" for type polymorphism of
+compile-time properties. This is realized and tested.
 
 Errors
 ======

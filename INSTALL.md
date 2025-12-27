@@ -158,7 +158,27 @@ Some of the tests use `clang` to verify the generated LLVM-IR.
 
 Make sure `clang` is on your `PATH`.
 
-Windows: 
+### Cross Platform
+
+All the E2E and error tests are organized "in order". 
+
+The file ./tests/ci-stop.txt   names a directory inside ./tests/spec
+that the E2E tests will be run up to (inclusive), but no futher.
+
+
+
+```
+# run the unit tests
+$ sbcl --load .\tests\run-ci.lisp     
+
+# run the E2E tests
+$ sbcl --script .\tests\run-specs.lisp  
+
+# run the negative tests (errors)
+$ sbcl --script .\tests\run-error-specs.lisp
+```
+
+### Windows: 
 <!--
 ```
 $env:PATH = "C:\Program Files\LLVM\bin;" + $env:PATH
@@ -168,7 +188,7 @@ $env:PATH = "C:\Program Files\LLVM\bin;" + $env:PATH
 .\tests\run-all-tests.bat
 ```
 
-Linux:
+### Linux:
 
 Test interactively from SBCL
 ---------------------------
