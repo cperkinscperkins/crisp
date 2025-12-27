@@ -1002,6 +1002,52 @@
            node)))
     (t node)))
 
+(defun create-implicit-cast (node target-type location)
+  "Wraps node in an implicit cast to target-type."
+  (make-semantic-value-cast :type target-type
+                            :arg node
+                            :source-location location))
+
+(defun ensure-branch-compatibility (then-node else-node location)
+  "Unifies types of then/else branches. Returns (values unified-type new-then new-else)."
+  (let ((t-type (semantic-node-type then-node)))
+    (unless else-node
+      ;; Propagate THEN type if no ELSE (implicitly returns void/nil or 0? 
+      ;; Actually, for IF expression correctness, missing else implies value is unlikely to be used
+      ;; unless it matches the implicit else value (int 0). 
+      ;; For now, just return t-type. 
+      (return-from ensure-branch-compatibility (values t-type then-node nil)))
+
+    (let ((e-type (semantic-node-type else-node))
+          (t-single (get-single-value-type then-node))
+          (e-single (get-single-value-type else-node)))
+      (if (equal t-type e-type)
+          (values t-type then-node else-node)
+          (let ((promoted (get-promoted-type t-single e-single)))
+            (cond
+             (promoted
+               ;; Insert Casts
+               (values promoted
+                 (if (equal t-type promoted) then-node (create-implicit-cast then-node promoted location))
+                 (if (equal e-type promoted) else-node (create-implicit-cast else-node promoted location))))
+
+             ;; Special Case: Literal 0 (Int) can promote to any Pointer -> NULL
+             ((and (eq t-single 'int) (typep then-node 'semantic-literal) (= (semantic-literal-value then-node) 0)
+                   (listp e-type) (member (first e-type) '(ptr array)))
+               (values e-type (create-implicit-cast then-node e-type location) else-node))
+
+             ((and (eq e-single 'int) (typep else-node 'semantic-literal) (= (semantic-literal-value else-node) 0)
+                   (listp t-type) (member (first t-type) '(ptr array)))
+               (values t-type then-node (create-implicit-cast else-node t-type location)))
+
+             ;; Void Compatibility: If one branch is NIL (void), unify to NIL (void).
+             ;; This supports (when ...) and (unless ...) which return NIL on one path.
+             ((or (null t-single) (null e-single))
+               (values '(nil) then-node else-node))
+
+             (t
+               (error "Branch type mismatch in IF expression. Then: ~a, Else: ~a" t-type e-type))))))))
+
 (defun analyze-if-expression-impl (expr env location &key enforce-constant)
   (let* ((raw-cond-node (analyze-expression (second expr) env (append location '(1))))
          (cond-node (try-constant-fold raw-cond-node)))
@@ -1024,11 +1070,15 @@
 
     (let* ((then-node (analyze-expression (third expr) env (append location '(2))))
            (else-node (if (fourth expr) (analyze-expression (fourth expr) env (append location '(3))) nil)))
-      (make-semantic-if :type (semantic-node-type then-node)
-                        :condition-node cond-node
-                        :then-node then-node
-                        :else-node else-node
-                        :source-location location))))
+
+      (multiple-value-bind (unified-type final-then final-else)
+          (ensure-branch-compatibility then-node else-node location)
+
+        (make-semantic-if :type unified-type
+                          :condition-node cond-node
+                          :then-node final-then
+                          :else-node final-else
+                          :source-location location)))))
 
 (defun analyze-if-expression (expr env location)
   (analyze-if-expression-impl expr env location :enforce-constant nil))

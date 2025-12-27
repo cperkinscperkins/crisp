@@ -1,0 +1,4 @@
+(def-function test-when (a)
+  (declare #'(int => int))
+  (when (< a 5)
+       a))
