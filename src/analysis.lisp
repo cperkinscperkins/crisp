@@ -304,7 +304,7 @@
 (defun parse-function-declarations (params declarations)
   "Parses a function's declarations and returns its environment and return type.
    Supports interleaved type syntax: ((p type))"
-  (log:error "PARSE PARAMS: ~s Type: ~a Length: ~a" params (type-of params) (length params))
+  (log:debug "PARSE PARAMS: ~s Type: ~a Length: ~a" params (type-of params) (length params))
   ;; Defensive patch: unwrap double nested params (bug in def-record)
   (when (and (= (length params) 1) (listp (first params)) (listp (first (first params))) (symbolp (first (first (first params)))))
         (log:warn "Deeply nested params detected! Unwrapping.")
@@ -350,7 +350,7 @@
          (body (cdddr form))
          (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
          (existing-signatures (gethash name *function-table*)))
-    (log:error "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s" name (package-name (symbol-package name)) declare-forms)
+    (log:debug "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s" name (package-name (symbol-package name)) declare-forms)
     (multiple-value-bind (env return-types)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
       ;(dump-env env)
@@ -1317,7 +1317,7 @@
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."
-  (log:error "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
+  (log:debug "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
   (or (types-equivalent-p arg-type param-type)
       ;; Incomplete/Composite Type compatibility:
       ;; 1. (PANTS :COLOR :RED) is compatible with PANTS
@@ -1358,7 +1358,7 @@
         (signature nil))
 
     (unless signatures
-      (log:error "DUMP KEYS: ~s" (loop for k being the hash-keys of *function-table*
+      (log:debug "DUMP KEYS: ~s" (loop for k being the hash-keys of *function-table*
                                          when (string-equal (symbol-name k) (symbol-name op))
                                        collect (format nil "~s (~a)" k (package-name (symbol-package k))))))
     (setf signature (find-if (lambda (sig)
