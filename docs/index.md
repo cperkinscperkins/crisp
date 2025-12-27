@@ -37,9 +37,10 @@
 - [Struct Types](chapters/08_crisp_types/10_struct_types.md)
 - [def-setter](chapters/08_crisp_types/11_def_setter.md)
 - [def-record](chapters/08_crisp_types/12_def_record.md)
-- [Template Types](chapters/08_crisp_types/13_template_types.md)
-- [def-constraint](chapters/08_crisp_types/14_def_constraint.md)
-- [def-type-function](chapters/08_crisp_types/15_def_type_function.md)
+- [Incomplete Types](chapters/08_crisp_types/13_incomplete_types.md)
+- [Template Types](chapters/08_crisp_types/14_template_types.md)
+- [def-constraint](chapters/08_crisp_types/15_def_constraint.md)
+- [def-type-function](chapters/08_crisp_types/16_def_type_function.md)
 
 ## GPU Memory
 

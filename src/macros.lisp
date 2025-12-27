@@ -162,6 +162,25 @@
         ',body-forms ;  '((+ a b))
         ,source-location))))
 
+(defmacro def-kernel (name params &rest body)
+  "Defines a GPU Kernel (Entry Point).
+   
+   Constraint: All parameter types MUST be complete.
+   Incomplete types (missing compile-time properties) are forbidden at the kernel boundary
+   because the host must know the exact layout to marshall arguments."
+
+  ;; 1. Validate Parameter Completeness
+  (dolist (param params)
+    (let ((p-name (first param))
+          (p-type (second param)))
+      (when (incomplete-type-p p-type)
+            (error "Invalid Kernel Parameter '~a' of type '~a': Kernel parameters must be COMPLETE types. Compile-time properties cannot be unspecified at the kernel boundary." p-name p-type))))
+
+  ;; 2. Expand to def-function with entry-point declaration
+  `(def-function ,name ,params
+                 (declare (entry-point)) ;; Mark as kernel for Codegen
+                 ,@body))
+
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
    Bindings: (aos-var [soa-var] [:access type])
@@ -280,6 +299,7 @@
                         (let ((idx runtime-index))
                           (incf runtime-index)
                           `(def-function ,accessor-name ((obj ,name))
+                                         (declare (crisp-system-generated))
                                          (return (%extract-struct-member obj ,idx))))))))
       ,@(let ((runtime-index 0)
               (pkg (symbol-package name)))
