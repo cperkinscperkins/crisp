@@ -1,5 +1,5 @@
 (<T> 
-  (def-struct point
+  (def-record point
       (x T) (y T)))
 
 ;; by virtue of the function signature, the type inference system
