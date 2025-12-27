@@ -972,8 +972,20 @@
   "Analyzes a `(template-instantiation ...)` form, allowing nested def-functions."
   (let ((*allow-nested-def-function* t)
         (body (second expr)))
+    (log:info "ANALYZE-TEMPLATE-INSTANTIATION: Body=~a" body)
+    ;; Eval the body to ensure macros (defmacro) and struct definitions (eval-when)
+    ;; are registered in the current environment BEFORE analysis proceeds.
+    ;; This allows subsequent forms in the function to usage the newly defined macros.
+    ;; This allows subsequent forms in the function to usage the newly defined macros.
+    (eval body)
+
+    (let ((sym (find-symbol "MAKE-POINT_FLOAT" "CRISP-LANGUAGE")))
+      (if sym
+          (log:info "Check: MAKE-POINT_FLOAT in CRISP-LANGUAGE. Macro? ~a" (macro-function sym))
+          (log:info "Check: MAKE-POINT_FLOAT NOT FOUND in CRISP-LANGUAGE")))
+
     ;; The body is typically a PROGN or a single form.
-    ;; We analyze it recursively.
+    ;; We analyze it recursively to generate IR for functions.
     (analyze-expression body env location)))
 
 (defun analyze-eval-when (expr env location)
@@ -2087,7 +2099,10 @@
                                        (analyze-function-call op expr env location))
                                      ;; Case 3e: Otherwise, we don't know what this is.
                                      (t
-                                       (log:debug "  UNSUPPORTED FORM: ~a (pkg: ~a)" op (package-name (symbol-package op)))
+                                       (let ((pkg (symbol-package op)))
+                                         (log:debug "  UNSUPPORTED FORM: ~s (pkg: ~a)" op (if pkg (package-name pkg) "NIL"))
+                                         (log:debug "  Macro Function? ~a" (macro-function op))
+                                         (log:debug "  Bound Function? ~a" (fboundp op)))
                                        (log:debug "  Function Table Keys: ~a" (alexandria:hash-table-keys *function-table*))
                                        (error 'crisp-unsupported-form-error
                                          :form op

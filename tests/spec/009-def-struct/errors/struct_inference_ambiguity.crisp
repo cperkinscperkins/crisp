@@ -1,0 +1,26 @@
+;; CHECK-FAIL: "No matching function overload found"
+
+(<T> 
+  (def-struct point
+      (x T) (y T)))
+
+;; by virtue of the function signature, the type inference system
+;; will be able to infer "make-point" specialized for int.
+;; but the intermediate "make-point" specialized for long might not succeed.
+;; It could be shored up by using gen- or a declare inside a let. 
+
+;; BUT this test simply affirms the negative, that the type inference is NOT working.
+;; and the error message is reasonable.
+
+;; NOTE: if someday this test passes and no longer errors, GREAT!!  Just disable this test.
+;;       The better and stronger the type inference is, the more happy yes.
+
+
+
+(def-function no-gen (xl yl)
+    (declare #'( long long => (point int)))
+    
+    (let ((long-point (make-point :x xl :y yl)))
+        (make-point :x (to-int (x~ long-point))
+                    :y (to-int (y~ long-point)))))
+

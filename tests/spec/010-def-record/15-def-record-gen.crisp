@@ -1,0 +1,29 @@
+(<T> 
+  (def-record point
+      (x T) (y T)))
+
+;; by virtue of the function signature, the type inference system
+;; will be able to infer "make-point" specialized for int.
+;; but the intermediate "make-point" specialized for long might not succeed.
+;; we can shore it up with "gen-point"
+
+;; NOTE:  once declare is supported inside let, that should be another
+;;        avenue for getting around inference failure
+
+;; ---------- top level gen ---------------
+(gen-point long)
+
+(def-function top-gen (xl yl)
+    (declare #'( long long => (point int)))
+    
+    (let ((long-point (make-point :x xl :y yl)))
+        (make-point :x (to-int (x~ long-point))
+                    :y (to-int (y~ long-point)))))
+
+;; ----------- gen in scope ------------------
+(def-function scoped-gen (xf yf)
+    (declare #'( float float => (point int)))
+    (gen-point float)
+    (let ((float-point (make-point :x xf :y yf)))
+        (make-point :x (floor (x~ float-point))
+                    :y (floor (y~ float-point)))))
