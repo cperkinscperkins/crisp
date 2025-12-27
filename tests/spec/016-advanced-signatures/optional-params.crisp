@@ -1,0 +1,30 @@
+
+
+
+(def-function add-some (a &optional b c)
+    (declare #'(int &optional int int => int))
+    (let ((sum a))
+        (when (is-set? b)
+            (set! sum (+ sum b))
+            (when (is-set? c)
+              (set! sum (+ sum c))))
+        sum))
+
+(def-function also-add-some (a &optional b c)
+    (declare #'(int &optional int int => int))
+    (let ((sum a))
+        (when+ (is-set? b)
+            (set! sum (+ sum b))
+            (when+ (is-set? c)
+              (set! sum (+ sum c))))
+        sum))
+
+
+(def-function add-some-runtime (a &optional b c)
+    (declare #'(int &optional int int => int))
+    (let ((sum a))
+        (when (and (is-set? b) (> b 0))
+            (set! sum (+ sum b))
+            (when (and (is-set? c) (> c 10)) 
+              (set! sum (+ sum c))))
+        sum))
