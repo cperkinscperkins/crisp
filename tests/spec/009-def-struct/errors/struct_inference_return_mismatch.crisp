@@ -8,13 +8,11 @@
     (x T) 
     (y T)))
 
-;; Force instantiation of POINT<INT> via return type (known to work)
-(def-function force-int ()
-    (declare #'( => (point int)))
-    (make-point :x (as-int 0) :y (as-int 0)))
+
 
 (def-function inference ()
     (declare #'( => (point long)))
+    (gen-point int)
     ;; This infers POINT<INT> because we explicitly make it so.
     ;; It should mismatch the declared POINT<LONG>.
     (make-point :x (as-int 1) :y (as-int 2)))

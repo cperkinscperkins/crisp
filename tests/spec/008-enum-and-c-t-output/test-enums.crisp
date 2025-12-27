@@ -2,6 +2,23 @@
 
 (def-enumeration color :red (:green 10) :blue)
 
+(def-function test-param-and-return (c)
+  (declare #'(color => color))
+  (return :green))
+
+#|
+;; this test requires either better inference
+;; or support for declare in a let body.  
+(def-function test-the-test-01 ()
+  (declare #'( => color))
+  (let ((c :red))
+    ;(declare (type c color))
+    (test-param-and-return c)))
+|#   
+
+(def-function test-the-test-02 ()
+  (test-param-and-return :red))
+
 (def-function test-enum ()
   (declare (return-type int))
   

@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "Type mismatch! Expected (INT) but inferred (NIL)."
+
+(def-enumeration friends :joey :rachel :chandler :ross (:monica 20))
+
+(def-function who-am-i ()
+    (declare #'(=> int)
+    (return :monica)))

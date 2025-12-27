@@ -1,10 +1,8 @@
 ;; CHECK-FAIL: "Overloading ~Y~ is not allowed."
-(def-record virtual-point 
+(def-struct point 
   (x float) 
   (y int))
 
 (def-function ~y~ (p)
-    (declare #'(virtual-point => int))
+    (declare #'(point => int))
     (+ 2  (y~ p)))
-
-

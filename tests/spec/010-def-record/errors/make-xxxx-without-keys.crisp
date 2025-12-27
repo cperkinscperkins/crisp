@@ -1,11 +1,11 @@
 ;; CHECK-FAIL: "requires keyword arguments"
-(def-struct point 
+(def-record virtual-point 
     (x long) 
     (y long))
 
 ;; this should fail.
-(def-function make-point (x y)
-    (declare #'(long long => point))
-    (make-point  x  y))
+(def-function attempt-make (x y)
+    (declare #'(long long => virtual-point))
+    (make-virtual-point  x  y))
 
 
