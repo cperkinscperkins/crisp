@@ -304,6 +304,12 @@
 (defun parse-function-declarations (params declarations)
   "Parses a function's declarations and returns its environment and return type.
    Supports interleaved type syntax: ((p type))"
+  (log:error "PARSE PARAMS: ~s Type: ~a Length: ~a" params (type-of params) (length params))
+  ;; Defensive patch: unwrap double nested params (bug in def-record)
+  (when (and (= (length params) 1) (listp (first params)) (listp (first (first params))) (symbolp (first (first (first params)))))
+        (log:warn "Deeply nested params detected! Unwrapping.")
+        (setf params (first params)))
+
   (let* ((fn-decl (find 'function declarations :key #'car))
 
          (return-types (if fn-decl
@@ -327,8 +333,8 @@
                                         (error 'crisp-unknown-type-error :type-name type))
                                       ;; Start-Of-Change
                                       (let ((parsed (parse-type-specifier type)))
-                                        (log:info "Parsing Param ~a: Declared ~a -> Parsed ~a" name type parsed)
-                                        (list name parsed))))
+                                        (let ((result (list name parsed)))
+                                          result))))
                                    ;; End-Of-Change
                                    (error "Mixed bare and typed parameters not allowed."))))
 
@@ -344,7 +350,7 @@
          (body (cdddr form))
          (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
          (existing-signatures (gethash name *function-table*)))
-    (log:info "REGISTER: ~s. Found declare-forms: ~s" name declare-forms)
+    (log:error "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s" name (package-name (symbol-package name)) declare-forms)
     (multiple-value-bind (env return-types)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
       ;(dump-env env)
@@ -423,9 +429,13 @@
                                location))))
     (values body-nodes inferred-types)))
 
-(defun detect-and-register-implicit-template (name explicit-env return-type params body)
+(defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
   "Detects if a function is an implicit template (e.g. has function-type args),
    and if so, registers it as a template and returns T. Otherwise returns NIL."
+  (when (or (find 'crisp-system-generated body :key (lambda (x) (if (listp x) (car x) x)) :test #'eq)
+            (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)) :test #'eq))
+        (return-from detect-and-register-implicit-template nil))
+
   (let ((implicit-args (loop for (pname ptype) in explicit-env
                                when (or (and (listp ptype) (eq (first ptype) :function-type))
                                         (incomplete-type-p ptype))
@@ -461,6 +471,11 @@
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
 
+    ;; Defensive Sanitation: If env contains double-nested lists (e.g. key is a list), fix it.
+    (when (and explicit-env (listp (car explicit-env)) (listp (first (car explicit-env))))
+          (log:error "CORRUPTION DETECTED in explicit-env! Fixing. Env: ~s" explicit-env)
+          (setf explicit-env (mapcar (lambda (x) (if (listp (first x)) (first x) x)) explicit-env)))
+
     ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
     (let ((name-str (symbol-name name)))
       (when (and (> (cl:length name-str) 2)
@@ -472,7 +487,7 @@
                 :message (format nil "Function name '~a' is reserved (accessors ending in ~~ are not overloadable)." name)))))
 
     ;; 0-b. Implicit Template Detection
-    (when (detect-and-register-implicit-template name explicit-env return-type params body)
+    (when (detect-and-register-implicit-template name explicit-env return-type params body declarations)
           (return-from internal-def-function nil))
 
     ;; 1. Single-Pass Carrier Look-ahead
@@ -1302,7 +1317,7 @@
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."
-  ;(log:info "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
+  (log:error "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
   (or (types-equivalent-p arg-type param-type)
       ;; Incomplete/Composite Type compatibility:
       ;; 1. (PANTS :COLOR :RED) is compatible with PANTS
@@ -1341,11 +1356,19 @@
    Attempts template instantiation if no immediate match is found."
   (let ((signatures (gethash op *function-table*))
         (signature nil))
+
+    (unless signatures
+      (log:error "DUMP KEYS: ~s" (loop for k being the hash-keys of *function-table*
+                                         when (string-equal (symbol-name k) (symbol-name op))
+                                       collect (format nil "~s (~a)" k (package-name (symbol-package k))))))
     (setf signature (find-if (lambda (sig)
-                               (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
+                               (let ((match (types-list-compatible-p explicit-arg-types (function-signature-parameters sig))))
+                                 (log:error "CHECK SIG: ~s -> ~a" (function-signature-parameters sig) match)
+                                 match))
                         signatures))
 
     (unless signature
+      (log:error "NO SIGNATURE FOUND IMMEDIATELY. TRYING INSTANTIATION.")
       (when *template-instantiator-fn*
             (loop repeat 3 until signature do
                     (if (funcall *template-instantiator-fn* op explicit-arg-types
@@ -1988,9 +2011,12 @@
      (let ((found (assoc expr env)))
        (if found
            (make-semantic-var-read :name expr :type (second found) :source-location location)
-           (error 'crisp-unknown-variable
-             :name expr
-             :source-location location))))
+           (progn
+            (log:error "Unknown Variable Lookup: ~a (pkg: ~a)" expr (package-name (symbol-package expr)))
+            (log:error "Env Keys: ~a" (mapcar (lambda (k) (let ((s (car k))) (if (symbolp s) (format nil "~a (pkg: ~a)" s (package-name (symbol-package s))) (format nil "NON-SYMBOL-KEY: ~a" s)))) env))
+            (error 'crisp-unknown-variable
+              :name expr
+              :source-location location)))))
 
    ;; Case 3: It's a function call, like '(+ a b)'
    ((listp expr) (let ((op (first expr)))

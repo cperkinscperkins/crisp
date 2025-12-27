@@ -299,6 +299,7 @@
                         (let ((idx runtime-index))
                           (incf runtime-index)
                           `(def-function ,accessor-name ((obj ,name))
+                                         (declare (crisp-system-generated))
                                          (return (%extract-struct-member obj ,idx))))))))
       ,@(let ((runtime-index 0)
               (pkg (symbol-package name)))

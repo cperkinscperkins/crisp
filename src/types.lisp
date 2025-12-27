@@ -500,12 +500,15 @@ This supports overloading templates by arity or other factors.")
      ;; 2. It's a struct with required :c-t fields (and no defaults)
      (cl:let ((arity (get-template-arity type-spec))
               (struct-def (find-struct-definition-by-name type-spec)))
+       (log:debug "Checking incompleteness for symbol ~a. Arity: ~a. StructDef: ~a" type-spec arity struct-def)
        (or (and arity (> arity 0))
            (and struct-def
                 (loop for m in (crisp-struct-definition-members struct-def)
                         thereis (cl:let* ((is-ct (and (consp m) (eq (third m) :c-t)))
                                           (default-val (and is-ct (fourth m))))
-                                  (and is-ct (null default-val))))))))
+                                  (cl:when (and is-ct (null default-val))
+                                    (log:debug "  Incomplete due to C-T member: ~a" m)
+                                    t)))))))
 
     ((consp type-spec)
      (cl:let* ((canon (canonicalize-type-specifier type-spec))
@@ -534,8 +537,8 @@ This supports overloading templates by arity or other factors.")
                             (loop while ptr do
                                     (cl:let ((key (cl:first ptr))
                                              (val (second ptr)))
-                                      (when (keywordp key)
-                                            (setf (gethash key provided-props) val))
+                                      (cl:when (keywordp key)
+                                        (setf (gethash key provided-props) val))
                                       (setf ptr (cddr ptr)))))
 
                           ;; Check required :c-t members
