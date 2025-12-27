@@ -2020,9 +2020,9 @@
 
    ;; Case 3: It's a function call, like '(+ a b)'
    ((listp expr) (let ((op (first expr)))
-                   (format *error-output* "DEBUG: analyze-expression list op: ~a (pkg: ~a) macro-function: ~a~%" op (package-name (symbol-package op)) (macro-function op))
+                   (log:debug "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
                    (when (eq op 'quote)
-                         (format *error-output* "DEBUG: ANALYZE-EXPR (NEW): QUOTE check. Analyzer: ~a~%" (gethash op *expression-analyzers*)))
+                         (log:debug "ANALYZE-EXPR (NEW): QUOTE check. Analyzer: ~a" (gethash op *expression-analyzers*)))
                    (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
                    (cond ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
                         ((gethash op *expression-analyzers*)

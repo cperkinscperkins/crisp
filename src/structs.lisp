@@ -163,7 +163,7 @@
   (cl:let ((name (if (consp name)
                      (crisp.compiler::mangle-template-struct-name (first name) (rest name))
                      name)))
-    (format *error-output* "DEBUG: ensure-struct-llvm-type called with ~s (mangled: ~s)~%" name name)
+    (log:debug "ensure-struct-llvm-type called with ~s (mangled: ~s)" name name)
     (cl:let ((def (find-struct-definition-by-name name)))
       (cl:unless def
         (error "Unknown struct type: ~a" name))
@@ -239,7 +239,7 @@
   (cl:let ((name (if (consp name)
                      (crisp.compiler::mangle-template-struct-name (first name) (rest name))
                      name)))
-    (format *error-output* "DEBUG: REGISTER-STRUCT: Input Name=~s Sanitzed Name=~s~%" name name)
+    (log:debug "REGISTER-STRUCT: Input Name=~s Sanitzed Name=~s" name name)
     (multiple-value-bind (padded-members total-size)
         (if (eq category :record)
             (compute-record-layout members)
