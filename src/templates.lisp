@@ -283,7 +283,8 @@
       (error "No template for ~a matches the provided type arguments: ~a" name concrete-types))
 
     ;; Instantiate single template
-    (let* ((params (template-data-parameters tmpl))
+    (let* ((raw-params (template-data-parameters tmpl))
+           (params (mapcar (lambda (p) (if (consp p) (first p) p)) raw-params))
            (arity (length params))
            (substitution-args (subseq concrete-types 0 (min (length concrete-types) arity)))
            (substitutions (pairlis params substitution-args)))
