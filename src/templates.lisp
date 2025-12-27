@@ -283,7 +283,10 @@
       (error "No template for ~a matches the provided type arguments: ~a" name concrete-types))
 
     ;; Instantiate single template
-    (let ((substitutions (pairlis (template-data-parameters tmpl) concrete-types)))
+    (let* ((params (template-data-parameters tmpl))
+           (arity (length params))
+           (substitution-args (subseq concrete-types 0 (min (length concrete-types) arity)))
+           (substitutions (pairlis params substitution-args)))
 
       ;; Check if it's a struct template by inspecting the body
       (let* ((body (template-data-body tmpl))
@@ -364,8 +367,9 @@
     (unless match-sets
       (loop for tmpl in templates
             for params = (template-data-parameters tmpl)
-            do (when (= (length params) (length explicit-arg-types))
-                     ;; Direct match by arity (explicit args are the concrete types)
+              ;; Relaxed check: Allow arguments > parameters if the extras are properties (managed by mangle)
+            do (when (>= (length explicit-arg-types) (length params))
+                     ;; Direct match/superset by arity (explicit args are the concrete types)
                      ;; This assumes explicit-arg-types are the TYPES, not values.
                      (push (list tmpl explicit-arg-types) match-sets))))
 

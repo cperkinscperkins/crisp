@@ -130,10 +130,12 @@ This supports overloading templates by arity or other factors.")
   (cl:unless name (return-from mangle-template-struct-name nil))
   (cl:let ((mangled-params (mapcar (lambda (p)
                                      (if (consp p)
-                                         (mangle-template-struct-name (first p) (rest p))
+                                         (mangle-template-struct-name (cl:first p) (rest p))
                                          p))
                                params)))
-    (intern (format nil "~a_~{~a~^_~}" name mangled-params) (symbol-package name))))
+    (if mangled-params
+        (intern (format nil "~a_~{~a~^_~}" name mangled-params) (symbol-package name))
+        name)))
 
 (defun split-string (string delimiter)
   "Splits a string by a character delimiter."
@@ -185,12 +187,12 @@ This supports overloading templates by arity or other factors.")
           (reconstruct-one-arg tokens package)
         (multiple-value-bind (rest-args remaining-after-rest)
             (reconstruct-n-args remaining-after-one (1- n) package)
-          (values (cons (first one-arg-list) rest-args) remaining-after-rest)))))
+          (values (cons (cl:first one-arg-list) rest-args) remaining-after-rest)))))
 
 (defun reconstruct-one-arg (tokens package)
   "Reads exactly one logical form (atom or template-expr) from tokens."
   (if (null tokens) (values nil nil)
-      (cl:let* ((token-str (first tokens))
+      (cl:let* ((token-str (cl:first tokens))
                 (token-sym (if (cl:char= (cl:char token-str 0) #\:)
                                (cl:intern (cl:subseq token-str 1) :keyword)
                                (cl:let ((existing (cl:find-symbol token-str package)))
@@ -209,21 +211,43 @@ This supports overloading templates by arity or other factors.")
    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL."
   (cl:when (cl:symbolp symbol)
     (cl:let ((name (cl:symbol-name symbol)))
-      (cl:if (cl:and (cl:> (cl:length name) 5) (cl:string-equal (cl:subseq name 0 5) "CELL_"))
-             (cl:let* ((parts (split-string (cl:subseq name 5) #\_))
-                       (reconstructed (reconstruct-template-args parts (symbol-package symbol))))
-               `(cell ,@reconstructed))
-             nil))))
+      (if (find #\_ name)
+          (cl:let* ((parts (split-string name #\_))
+                    (base (first parts))
+                    (reconstructed (reconstruct-template-args (rest parts) (symbol-package symbol))))
+            (if base
+                (cl:let ((base-sym (intern base (symbol-package symbol))))
+                  `(,base-sym ,@reconstructed))
+                nil))
+          ;; No underscore? It might be a base type itself (e.g. SHIRT)
+          ;; Technically unmangle implies retrieving params.
+          ;; If symbol is SHIRT, return (SHIRT).
+          `(,(intern name (symbol-package symbol)))))))
 
 ;; Type Equivalence
 ;; ================
 
 
 (defun expand-storage-handle-type-specifier (spec)
-  "Expands storage handle constructors like (cell) or (cell int) into canonical template forms.
-   Supports keyword arguments."
-  (cl:let ((base (first spec))
-           (args (rest spec)))
+  "Expands legacy/shorthand storage handle specs (cell, vector, etc) into their canonical struct form.
+   e.g. (cell int) -> (cell int :global :read-write)
+   e.g. (vector float 4) -> (vector float 4 :global :read-write)"
+  (cl:cond
+    ((null spec) nil)
+    ((symbolp spec) spec)
+    ((consp spec)
+     (cl:let ((base (first spec)))
+       (if (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)
+           (canonicalize-type-specifier spec)
+           spec)))
+    (t spec)))
+
+(defun canonicalize-type-specifier (spec)
+  "Canonicalizes type specifiers.
+   1. Expands (cell ...) handles.
+   2. Handles incomplete/hybrid syntax for templates (future expansion)."
+  (cl:let ((base (if (consp spec) (cl:first spec) spec))
+           (args (if (consp spec) (rest spec) nil)))
     (cl:cond
       ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
        (cl:let ((arg-map (make-hash-table :test 'eq))
@@ -232,7 +256,7 @@ This supports overloading templates by arity or other factors.")
          ;; Parse arguments manually
          (cl:let ((ptr args))
            (cl:loop while ptr do
-             (cl:let ((item (first ptr)))
+             (cl:let ((item (cl:first ptr)))
                ;; Only treat specific known keywords as key-value pairs
                (cl:if (and (keywordp item)
                            (member item '(:element-type :address-space :access) :test #'eq))
@@ -245,7 +269,7 @@ This supports overloading templates by arity or other factors.")
 
          (setf pos-args (nreverse pos-args))
 
-         (cl:let* ((element-type (or (gethash :element-type arg-map) (first pos-args) :unknown))
+         (cl:let* ((element-type (or (gethash :element-type arg-map) (cl:first pos-args) :unknown))
                    (address-space (or (gethash :address-space arg-map)
                                       (second pos-args)
                                       (if (eq element-type :unknown) :unknown :global)))
@@ -254,7 +278,8 @@ This supports overloading templates by arity or other factors.")
                                (if (eq element-type :unknown) :unknown :read-write))))
 
            `(,base ,element-type ,address-space ,access))))
-      (t spec))))
+      ((consp spec) spec)
+      (t (list spec)))))
 
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, handling template struct canonicalization."
@@ -268,10 +293,10 @@ This supports overloading templates by arity or other factors.")
     ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT equivalence
     ((and (consp t1) (symbolp t2))
      ;; Expand implicit storage handles first (e.g. (cell int) -> (cell int :global :read-write))
-     (let* ((expanded (if (member (symbol-name (first t1)) '("CELL") :test #'string-equal)
-                          (expand-storage-handle-type-specifier t1)
+     (let* ((expanded (if (member (symbol-name (cl:first t1)) '("CELL") :test #'string-equal)
+                          (canonicalize-type-specifier t1)
                           t1))
-            (base-type (first expanded))
+            (base-type (cl:first expanded))
             (params (rest expanded)))
        (if (and (symbolp base-type)
                 (not (excluded-template-base-type-p base-type)))
@@ -310,10 +335,10 @@ This supports overloading templates by arity or other factors.")
     ;; Handle parameterized struct vs parameterized struct (e.g. (CELL INT) vs (CELL INT :GLOBAL))
     ((and (cl:consp t1) (cl:consp t2))
      (cl:let ((e1 (cl:if (cl:member (cl:symbol-name (cl:first t1)) '("CELL") :test #'cl:string-equal)
-                         (expand-storage-handle-type-specifier t1)
+                         (canonicalize-type-specifier t1)
                          t1))
               (e2 (cl:if (cl:member (cl:symbol-name (cl:first t2)) '("CELL") :test #'cl:string-equal)
-                         (expand-storage-handle-type-specifier t2)
+                         (canonicalize-type-specifier t2)
                          t2)))
        (cl:equal e1 e2)))
 
@@ -321,7 +346,20 @@ This supports overloading templates by arity or other factors.")
     ((and (or (eq t1 'keyword) (eq t1 :keyword)) (gethash t2 *crisp-enums*)) t)
     ((and (or (eq t2 'keyword) (eq t2 :keyword)) (gethash t1 *crisp-enums*)) t)
 
+    ;; Handle mismatched wrapping (e.g. (INT) vs INT) - mostly for return type verification contexts
+    ((and (consp t1) (= (length t1) 1) (valid-type-p (cl:first t1)) (types-equivalent-p (cl:first t1) t2)) t)
+    ((and (consp t2) (= (length t2) 1) (valid-type-p (cl:first t2)) (types-equivalent-p t1 (cl:first t2))) t)
+
     (t nil)))
+
+(defun get-template-arity (name)
+  "Returns the arity (number of type parameters) for a registered template, or nil."
+  (or (and (boundp '*template-arity-lookup-fn*)
+           (funcall *template-arity-lookup-fn* name))
+      ;; Fallback to registry if lookup fn not ready
+      (cl:let ((entries (gethash name *template-registry*)))
+        (cl:when entries
+          (length (template-data-parameters (cl:first entries)))))))
 
 (defun type-lists-equivalent-p (l1 l2)
   (and (= (length l1) (length l2))
@@ -346,23 +384,34 @@ This supports overloading templates by arity or other factors.")
 
 (defun valid-function-type-p (type-spec)
   "Checks if type-spec is a valid function literal or descriptor."
-  (or (and (consp type-spec) (eq (first type-spec) :function-literal)
+  (or (and (consp type-spec) (eq (cl:first type-spec) :function-literal)
            (= (length type-spec) 2) (symbolp (second type-spec)))
-      (and (consp type-spec) (eq (first type-spec) :function-type))))
+      (and (consp type-spec) (eq (cl:first type-spec) :function-type))))
 
 (defun valid-parameterized-type-p (type-spec)
   "Checks if type-spec is a valid parameterized type (cell, templates, etc)."
   (cl:when (consp type-spec)
-    (cl:let* ((expanded (expand-storage-handle-type-specifier type-spec))
-              (base-type (first expanded))
+    (cl:let* ((expanded (canonicalize-type-specifier type-spec))
+              (base-type (cl:first expanded))
               (params (rest expanded)))
       (cl:cond
         ((not (symbolp base-type)) nil)
         ((excluded-template-base-type-p base-type) nil)
 
+        ;; 0. Check if base-type identifies a valid type/struct itself.
+        ;; This supports (STRUCT :PROP VAL) syntax for Incomplete/Composite types.
+        ;; BUT we must ensure we don't accidentally match a list of types like (INT INT) or (INT FLOAT).
+        ;; So, if it's not a template, we require that the first parameter be a KEYWORD (prop).
+        ((and (or (gethash base-type *crisp-structs*)
+                  (gethash base-type *crisp-types*))
+              (or (null params) ;; (INT) is valid (wrapper)
+                  (keywordp (first params)))) ;; (INT :BITS 32) is valid. (INT INT) is NOT.
+                                             t)
+
         ;; Standard Template Instantiation
         ((symbolp base-type)
-         (cl:let ((mangled-name (mangle-template-struct-name base-type params)))
+         (cl:let* ((template-args params) ;; Use ALL params, including properties, for mangling
+                                         (mangled-name (mangle-template-struct-name base-type template-args)))
            (log:info "Valid-Param-Type Check: ~a (Mangled: ~a)" type-spec mangled-name)
            (or (gethash mangled-name *crisp-structs*)
                (cl:let ((templates (or (gethash base-type *template-registry*)
@@ -374,10 +423,10 @@ This supports overloading templates by arity or other factors.")
                                          found))))
                  (log:info "  Template Registry for ~a: ~a" base-type templates)
                  (cl:when templates
-                   (log:info "Auto-instantiating struct template: ~a with params ~a" base-type params)
+                   (log:info "Auto-instantiating struct template: ~a with params ~a" base-type template-args)
                    (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
                        (progn
-                        (funcall *template-instantiator-fn* base-type params
+                        (funcall *template-instantiator-fn* base-type template-args
                           (lambda (form loc)
                             (declare (ignore loc))
                             (if (and (boundp '*current-module*) *current-module*)
@@ -424,9 +473,88 @@ This supports overloading templates by arity or other factors.")
     ((and (symbolp type-spec) (gethash type-spec *crisp-enums*))
      (llvm-int32-type))
 
-    ;; Parameterized Structs (e.g. (POINT INT))
-    ((and (consp type-spec) (not (keywordp (first type-spec))) (valid-type-p type-spec))
-     (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
-       (resolve-type-to-llvm mangled)))
+    ;; Parameterized Structs (e.g. (POINT INT)) or Wrapper/Prop types (e.g. (INT) or (PANTS :COLOR :RED))
+    ((and (consp type-spec) (not (keywordp (cl:first type-spec))) (valid-type-p type-spec))
+     (cl:let* ((canon (canonicalize-type-specifier type-spec))
+               (base (cl:first canon))
+               (args (rest canon))
+               (arity (get-template-arity base)))
+
+       (if (and arity (> arity 0))
+           ;; It is a template, mangle it
+           (cl:let* ((template-args args) ;; Use ALL args, including properties
+                                         (mangled (mangle-template-struct-name base template-args)))
+             (resolve-type-to-llvm mangled))
+           ;; It is NOT a template (scalar or basic struct with props), resolve base directly
+           (resolve-type-to-llvm base))))
 
     (t (error "Cannot resolve type to LLVM: ~a" type-spec))))
+
+(defun incomplete-type-p (type-spec)
+  "Checks if a type specifier is incomplete (missing required compile-time properties).
+   Returns T if incomplete, NIL if complete."
+  (cl:cond
+    ((symbolp type-spec)
+     ;; A bare symbol is incomplete if:
+     ;; 1. It's a template with arity > 0
+     ;; 2. It's a struct with required :c-t fields (and no defaults)
+     (cl:let ((arity (get-template-arity type-spec))
+              (struct-def (find-struct-definition-by-name type-spec)))
+       (log:debug "Checking incompleteness for symbol ~a. Arity: ~a. StructDef: ~a" type-spec arity struct-def)
+       (or (and arity (> arity 0))
+           (and struct-def
+                (loop for m in (crisp-struct-definition-members struct-def)
+                        thereis (cl:let* ((is-ct (and (consp m) (eq (third m) :c-t)))
+                                          (default-val (and is-ct (fourth m))))
+                                  (cl:when (and is-ct (null default-val))
+                                    (log:debug "  Incomplete due to C-T member: ~a" m)
+                                    t)))))))
+
+    ((consp type-spec)
+     (cl:let* ((canon (canonicalize-type-specifier type-spec))
+               (base (cl:first canon))
+               (args (rest canon)))
+       (if (symbolp base)
+           (cl:let ((arity (get-template-arity base)))
+             (log:debug "Checking completeness for ~a (Arity: ~a)" base arity)
+             (cl:cond
+               ;; 1. Check Template Arity (Positional Args)
+               ((and arity (< (length args) arity))
+                (log:info "Type ~a is incomplete: missing template args (got ~d, need ~d)" type-spec (length args) arity)
+                t)
+
+               ;; 2. Check Compile-Time Struct Members (Keyword Args)
+               (t
+                (cl:let ((struct-def (find-struct-definition-by-name base)))
+                  (if struct-def
+                      (cl:let ((template-args-count (or arity 0))
+                               (prop-args (if arity (subseq args arity) args)))
+                        (log:debug "Checking properties for ~a. PropArgs: ~a" base prop-args)
+
+                        ;; Map provided properties
+                        (cl:let ((provided-props (make-hash-table :test 'eq)))
+                          (cl:let ((ptr prop-args))
+                            (loop while ptr do
+                                    (cl:let ((key (cl:first ptr))
+                                             (val (second ptr)))
+                                      (cl:when (keywordp key)
+                                        (setf (gethash key provided-props) val))
+                                      (setf ptr (cddr ptr)))))
+
+                          ;; Check required :c-t members
+                          (loop for m in (crisp-struct-definition-members struct-def)
+                                  thereis (cl:let* ((name (cl:first m))
+                                                    (is-ct (and (consp m) (eq (third m) :c-t)))
+                                                    (default-val (and is-ct (fourth m)))
+                                                    (key (intern (symbol-name name) :keyword)))
+                                            ;; It is incomplete if:
+                                            ;; - It is a CT member
+                                            ;; - It has NO default value
+                                            ;; - It is NOT provided in args
+                                            (and is-ct
+                                                 (null default-val)
+                                                 (not (gethash key provided-props)))))))
+                      ;; Struct not found? Assume complete or invalid elsewhere.
+                      nil)))))
+           nil))) ;; Not a symbol base?
+    (t nil)))

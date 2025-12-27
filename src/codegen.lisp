@@ -106,10 +106,16 @@
           (let ((mangled-name (intern (format nil "~a_~{~a~^_~}" base-type (rest type-spec)) (symbol-package base-type))))
             (if (or (gethash mangled-name *crisp-structs*) (find-struct-definition-by-name mangled-name))
                 (resolve-type-to-llvm mangled-name)
-                (error "Internal codegen error: Unknown parameterized type ~a (pkg: ~a). Mangled: ~a"
-                  base-type
-                  (package-name (symbol-package base-type))
-                  mangled-name)))))))
+                ;; Fallback: If mangling fails, check if the base type itself is valid.
+                ;; This supports Incomplete Types / Composite Types with Props (e.g. (PANTS :COLOR :RED))
+                ;; where the type is just PANTS.
+                (if (or (gethash base-type *crisp-structs*)
+                        (gethash base-type *crisp-types*))
+                    (resolve-type-to-llvm base-type)
+                    (error "Internal codegen error: Unknown parameterized type ~a (pkg: ~a). Mangled: ~a"
+                      base-type
+                      (package-name (symbol-package base-type))
+                      mangled-name))))))))
    (t (error "Internal codegen error: Invalid type specifier ~a" type-spec))))
 
 (defun get-expanded-types (type-spec module)

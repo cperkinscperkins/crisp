@@ -16,13 +16,13 @@
 ;; regular :key :value of a struct or record.  The template consumes "int :blue" and then
 ;; the default type constructor gets ":stitching-c :black".
 (def-function two-shirts (complete b)
-    (declare (type complete (shirt int :blue :stitching-c :black))  
-             (type b (shirt long :brown)) ;; incomplete, no stitching specified.
-             (return-type int))
+    (declare (type (shirt int :blue :stitching-c :black) complete)  
+             (type (shirt long :brown) b) ;; incomplete, no stitching specified.
+             (return-type long))
     (+ (size~ complete) (size~ b)))
 
 (def-function two-pants (complete b)
-    (declare (type complete (pants int :blue :stitching-c :black))  
-             (type b (pants long :brown)) ;; incomplete, no stitching specified.
-             (return-type int))
+    (declare (type (pants int :blue :stitching-c :black) complete)  
+             (type (pants long :brown) b) ;; incomplete, no stitching specified.
+             (return-type long))
     (+ (size~ complete) (size~ b)))
