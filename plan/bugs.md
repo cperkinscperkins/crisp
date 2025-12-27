@@ -23,10 +23,5 @@
                                  :source-location location)
 
 
-[ ] 008  --log-level=off is not working. 
+[x] 008  --log-level=off is not working. 
    
-.\bin\crisp-compile.exe .\variadic.crisp --log-level=off
-DEBUG: REGISTER-STRUCT: Input Name=CRISP.COMPILER:STORAGE Sanitzed Name=CRISP.COMPILER:STORAGE
-DEBUG: REGISTER-STRUCT: Input Name=CRISP.COMPILER:STORAGE Sanitzed Name=CRISP.COMPILER:STORAGE
-DEBUG: analyze-expression list op: RETURN (pkg: CRISP.COMPILER) macro-function: #<FUNCTION (MACRO-FUNCTION
-.. and much more

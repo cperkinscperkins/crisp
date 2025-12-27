@@ -232,10 +232,10 @@ SHORT TERM PLAN
 - - [x] cell type constructors (&optional first, maybe not &key quite yet)
 - - [ ] insertion of r-t-assert when set! offset~ or parent~ ?
 - - - [ ] validation against --runtime-checks flag
-- - [ ] incomplete types: formalize and test.
-- - - [ ] polymorphism
-- - - [ ] compile errors if conflict.  
-- - [ ] type constructors for all def-struct / def-record with :c-t props
+- - [x] incomplete types: formalize and test.
+- - - [x] polymorphism
+- - - [x] compile errors if conflict.  
+- - [x] type constructors for all def-struct / def-record with :c-t props
         This _might_ be tested already, check.
 - - [ ] def-type  <--  we will need this to create vector from tensor, etc.
                        I'm tempted to do def-derived-type too
