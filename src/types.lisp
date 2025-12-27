@@ -244,40 +244,34 @@ This supports overloading templates by arity or other factors.")
 
 (defun canonicalize-type-specifier (spec)
   "Canonicalizes type specifiers.
-   1. Expands (cell ...) handles.
-   2. Handles incomplete/hybrid syntax for templates (future expansion)."
+   1. Expands templates with default arguments (e.g. (cell int) -> (cell int :global :read-write)).
+   2. Handles incomplete/hybrid syntax for templates."
   (cl:let ((base (if (consp spec) (cl:first spec) spec))
            (args (if (consp spec) (rest spec) nil)))
     (cl:cond
-      ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
-       (cl:let ((arg-map (make-hash-table :test 'eq))
-                (pos-args nil))
+      ((symbolp base)
+       (cl:let* ((template-data (first (gethash base *template-registry*)))
+                 (params (and template-data (template-data-parameters template-data))))
+         (if params
+             (cl:let ((full-args (loop for param in params
+                                       for i from 0
+                                       for arg = (nth i args)
+                                       collect (if arg
+                                                   arg
+                                                   ;; Check for default value in param spec (Name Default)
+                                                   (if (and (consp param) (second param))
+                                                       (second param)
+                                                       nil)))))
+               ;; Truncate nil tail if strict? Or just return full args?
+               ;; If original args had keywords, we might need more complex handling.
+               ;; For now, assume positional simplicity for templates like CELL.
+               ;; But wait, canonicalize previously handled keyword args for CELL: (cell int :access :rw)
+               ;; We should preserve that hybrid property mapping capability generically too.
+               ;; TODO: Implement hybrid positional/keyword mapping if needed. For now, matching CELL logic.
+               (cons base (remove-if #'null full-args)))
 
-         ;; Parse arguments manually
-         (cl:let ((ptr args))
-           (cl:loop while ptr do
-             (cl:let ((item (cl:first ptr)))
-               ;; Only treat specific known keywords as key-value pairs
-               (cl:if (and (keywordp item)
-                           (member item '(:element-type :address-space :access) :test #'eq))
-                      (progn
-                       (setf (gethash item arg-map) (second ptr))
-                       (setf ptr (cddr ptr)))
-                      (progn
-                       (push item pos-args)
-                       (setf ptr (cdr ptr)))))))
-
-         (setf pos-args (nreverse pos-args))
-
-         (cl:let* ((element-type (or (gethash :element-type arg-map) (cl:first pos-args) :unknown))
-                   (address-space (or (gethash :address-space arg-map)
-                                      (second pos-args)
-                                      (if (eq element-type :unknown) :unknown :global)))
-                   (access (or (gethash :access arg-map)
-                               (third pos-args)
-                               (if (eq element-type :unknown) :unknown :read-write))))
-
-           `(,base ,element-type ,address-space ,access))))
+             ;; Not a template, return as is (normalized to list)
+             (if (consp spec) spec (list spec)))))
       ((consp spec) spec)
       (t (list spec)))))
 
@@ -342,9 +336,13 @@ This supports overloading templates by arity or other factors.")
                          t2)))
        (cl:equal e1 e2)))
 
-    ;; Keyword vs Enum: Allow :KEYWORD or 'KEYWORD to match enum type
-    ((and (or (eq t1 'keyword) (eq t1 :keyword)) (gethash t2 *crisp-enums*)) t)
-    ((and (or (eq t2 'keyword) (eq t2 :keyword)) (gethash t1 *crisp-enums*)) t)
+    ;; Keyword vs Enum: Allow :KEYWORD, 'KEYWORD, 'SYMBOL to match enum type
+    ((and (or (member t1 '(keyword :keyword symbol common-lisp:symbol))
+              (and (symbolp t1) (member (symbol-name t1) '("KEYWORD" "SYMBOL") :test #'string-equal)))
+          (gethash t2 *crisp-enums*)) t)
+    ((and (or (member t2 '(keyword :keyword symbol common-lisp:symbol))
+              (and (symbolp t2) (member (symbol-name t2) '("KEYWORD" "SYMBOL") :test #'string-equal)))
+          (gethash t1 *crisp-enums*)) t)
 
     ;; Handle mismatched wrapping (e.g. (INT) vs INT) - mostly for return type verification contexts
     ((and (consp t1) (= (length t1) 1) (valid-type-p (cl:first t1)) (types-equivalent-p (cl:first t1) t2)) t)

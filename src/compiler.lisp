@@ -71,7 +71,7 @@
   ;; It contains a pointer to the storage struct and an offset.
   ;; It now tracks element-type, address-space, and access as compile-time properties.
 
-  (eval '(with-template-type (To Addr Acc)
+  (eval '(with-template-type ((To T) (Addr :global) (Acc :read-write))
                              (def-record cell
                                          (parent storage) ;; Pointer to STORAGE struct
                                          (offset ulong)
@@ -80,13 +80,13 @@
                                          (access access :c-t Acc))))
 
   ;; Register default ~ accessor as a template
-  (register-template '~ '(To Addr Acc) nil
+  (register-template '~ '(To (Addr :global) (Acc :read-write)) nil
                      '(def-function ~ (c)
                                     (declare (function ((cell To Addr Acc) => To)))
                                     (declare (crisp-system-generated))
                                     (return (~ref~ c)))
                      '((cell To Addr Acc) => To))
-  (register-template '~_SET! '(To Addr Acc) nil
+  (register-template '~_SET! '(To (Addr :global) (Acc :read-write)) nil
                      '(def-function ~_SET! (c v)
                                     (declare (function ((cell To Addr Acc) To) => nil))
                                     (declare (crisp-system-generated))

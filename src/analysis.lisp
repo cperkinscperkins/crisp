@@ -1984,6 +1984,57 @@
 (in-package :crisp.compiler)
 (def-expression-analyzer set! analyze-set!-expression)
 
+;; PATCH: Handle Struct/Record CT Accessors on Incomplete/Parameterized Types
+(defun analyze-incomplete-type-accessor (op expr env location)
+  "Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).
+   Returns a semantic-node (literal) if resolved, or NIL if not applicable."
+  (let ((op-name (symbol-name op)))
+    ;; Check if it looks like an accessor (ends with ~)
+    (when (and (> (length op-name) 1) (alexandria:ends-with #\~ op-name))
+          (let* ((member-name (intern (string-trim "~" op-name) (symbol-package op)))
+                 ;; Analyze the first argument (obj)
+                 (obj-expr (second expr)))
+            (when obj-expr
+                  (log:info "Incomplete Accessor Check: Op=~s Member=~s ObjExpr=~s" op member-name obj-expr)
+                  ;; To avoid double analysis if not resolved, we might need to be careful.
+                  ;; But analyze-expression is side-effect free mostly.
+                  ;; Actually, analyze-expression might error if var not found etc. 
+                  ;; Safe to call.
+                  (let* ((obj-node (analyze-expression obj-expr env (append location '(1))))
+                         (obj-type (semantic-node-type obj-node)))
+
+                    ;; Check if obj-type carries the value
+                    (when (and (consp obj-type) (valid-type-p obj-type))
+                          (let* ((canon (canonicalize-type-specifier obj-type))
+                                 (base (first canon))
+                                 (params (rest canon)))
+                            (log:info "  ObjType: ~s Canon: ~s Params: ~s" obj-type canon params)
+
+                            ;; Only proceed if it is a Record or Struct
+                            (when (or (gethash base *crisp-structs*) (gethash base *crisp-types*))
+                                  ;; Look for the member in the parameters (e.g. :color :blue)
+                                  ;; params is list of args. If keywords used, getf works.
+                                  ;; Note: canonicalize might return positional args too.
+                                  ;; For now assume Keywords for incomplete types (def-record usually).
+
+                                  (let ((kw (intern (symbol-name member-name) "KEYWORD")))
+                                    (let ((val (getf params kw)))
+                                      (if val
+                                          (let ((result
+                                                 (progn
+                                                  (format t "Resolved CT Accessor ~s on ~s -> ~s~%" op obj-type val)
+                                                  (force-output)
+                                                  ;; Return the literal value
+                                                  (cond
+                                                   ((keywordp val) (make-semantic-literal :value-type 'keyword :value val :source-location location))
+                                                   ((symbolp val) (make-semantic-literal :value-type 'symbol :value val :source-location location))
+                                                   ((integerp val) (make-semantic-literal :value-type 'int :value val :source-location location))
+                                                   (t (make-semantic-literal :value-type 'quote :value val :source-location location))))))
+                                            (format t "  AnalyzeIncomplete Returning: ~s~%" result)
+                                            (force-output)
+                                            result)
+                                          nil))))))))))))
+
 ;; Resurrect analyze-expression to force usage of new analyze-set!
 (defun analyze-expression (expr env location)
   "Recursively analyzes a *single* expression."
@@ -1992,59 +2043,72 @@
   (when (null expr)
         (return-from analyze-expression (make-semantic-progn :type '(nil) :body nil :source-location location)))
 
-  (cond
-   ;; Case 1: It's a literal, like 7
-   ((integerp expr)
-     (make-semantic-literal :value-type 'int :value expr :source-location location))
+  (let ((res
+         (cond
+          ;; Case 1: It's a literal, like 7
+          ((integerp expr)
+            (make-semantic-literal :value-type 'int :value expr :source-location location))
 
-   ;; Case 1.1: It's a float literal, like 3.14
-   ((floatp expr)
-     ;; For now, all floating point literals default to the 'float' type.
-     (make-semantic-literal :value-type 'float :value expr :source-location location))
+          ;; Case 1.1: It's a float literal, like 3.14
+          ((floatp expr)
+            ;; For now, all floating point literals default to the 'float' type.
+            (make-semantic-literal :value-type 'float :value expr :source-location location))
 
-   ;; Case 1.5: It's a keyword symbol, like :foo
-   ((keywordp expr)
-     (make-semantic-literal :value-type 'keyword :value expr :source-location location))
+          ;; Case 1.5: It's a keyword symbol, like :foo
+          ((keywordp expr)
+            (make-semantic-literal :value-type 'keyword :value expr :source-location location))
 
-   ;; Case 2: It's a variable, like 'a'
-   ((symbolp expr)
-     (let ((found (assoc expr env)))
-       (if found
-           (make-semantic-var-read :name expr :type (second found) :source-location location)
-           (progn
-            (log:error "Unknown Variable Lookup: ~a (pkg: ~a)" expr (package-name (symbol-package expr)))
-            (log:error "Env Keys: ~a" (mapcar (lambda (k) (let ((s (car k))) (if (symbolp s) (format nil "~a (pkg: ~a)" s (package-name (symbol-package s))) (format nil "NON-SYMBOL-KEY: ~a" s)))) env))
-            (error 'crisp-unknown-variable
-              :name expr
-              :source-location location)))))
+          ;; Case 2: It's a variable, like 'a'
+          ((symbolp expr)
+            (let ((found (assoc expr env)))
+              (if found
+                  (make-semantic-var-read :name expr :type (second found) :source-location location)
+                  (progn
+                   (log:error "Unknown Variable Lookup: ~a (pkg: ~a)" expr (package-name (symbol-package expr)))
+                   (log:error "Env Keys: ~a" (mapcar (lambda (k) (let ((s (car k))) (if (symbolp s) (format nil "~a (pkg: ~a)" s (package-name (symbol-package s))) (format nil "NON-SYMBOL-KEY: ~a" s)))) env))
+                   (error 'crisp-unknown-variable
+                     :name expr
+                     :source-location location)))))
 
-   ;; Case 3: It's a function call, like '(+ a b)'
-   ((listp expr) (let ((op (first expr)))
-                   (log:debug "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
-                   (when (eq op 'quote)
-                         (log:debug "ANALYZE-EXPR (NEW): QUOTE check. Analyzer: ~a" (gethash op *expression-analyzers*)))
-                   (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
-                   (cond ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
-                        ((gethash op *expression-analyzers*)
-                          (funcall (gethash op *expression-analyzers*) expr env location))
-                        ;; Case 3b: Is it a macro?
-                        ((macro-function op)
-                          (analyze-expression (macroexpand-1 expr) env location))
-                        ;; Case 3c: Is it a call to a known user-defined function?
-                        ;; Also check implicit *template-registry* for overloading
-                        ((or (gethash op *function-table*)
-                             (gethash op *template-registry*))
-                          (analyze-function-call op expr env location))
-                        ;; Case 3c: Otherwise, we don't know what this is.
-                        (t
-                          (log:debug "  UNSUPPORTED FORM: ~a (pkg: ~a)" op (package-name (symbol-package op)))
-                          (log:debug "  Function Table Keys: ~a" (alexandria:hash-table-keys *function-table*))
-                          (error 'crisp-unsupported-form-error
-                            :form op
-                            :source-location (append location '(0)))))))
-   (t (error 'crisp-unsupported-form-error
-        :form expr
-        :source-location location))))
+          ;; Case 3: It's a function call, like '(+ a b)'
+          ((listp expr) (let ((op (first expr)))
+                          (log:debug "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
+                          (when (eq op 'quote)
+                                (log:debug "ANALYZE-EXPR (NEW): QUOTE check. Analyzer: ~a" (gethash op *expression-analyzers*)))
+                          (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
+
+                          ;; HOISTED CHECK: Try incomplete accessor first
+                          (let ((hook-res (analyze-incomplete-type-accessor op expr env location)))
+                            (if hook-res
+                                (progn
+                                 (format t "Hoisted Hook Result: ~s~%" hook-res)
+                                 (force-output)
+                                 hook-res)
+                                ;; Otherwise continue with standard checks
+                                (cond ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
+                                     ((gethash op *expression-analyzers*)
+                                       (funcall (gethash op *expression-analyzers*) expr env location))
+                                     ;; Case 3b: Is it a macro?
+                                     ((macro-function op)
+                                       (analyze-expression (macroexpand-1 expr) env location))
+                                     ;; Case 3c: Is it a call to a known user-defined function?
+                                     ;; Also check implicit *template-registry* for overloading
+                                     ((or (gethash op *function-table*)
+                                          (gethash op *template-registry*))
+                                       (analyze-function-call op expr env location))
+                                     ;; Case 3e: Otherwise, we don't know what this is.
+                                     (t
+                                       (log:debug "  UNSUPPORTED FORM: ~a (pkg: ~a)" op (package-name (symbol-package op)))
+                                       (log:debug "  Function Table Keys: ~a" (alexandria:hash-table-keys *function-table*))
+                                       (error 'crisp-unsupported-form-error
+                                         :form op
+                                         :source-location (append location '(0)))))))))
+          (t (error 'crisp-unsupported-form-error
+               :form expr
+               :source-location location)))))
+    (format t "AnalyzeExpression Result for ~s: ~s~%" expr res)
+    (force-output)
+    res))
 
 (defun analyze-quote (expr env location)
   (declare (ignore env))
