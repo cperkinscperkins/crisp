@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "Overloading ~X~ is not allowed."
+(def-struct point 
+  (x float) 
+  (y int))
+
+;; Overriding/Clashing with the auto-generated accessor syntax ~y~
+;; as a setter name should be illegal or cause issues.
+(def-setter ~x~ (p v)
+    (declare #'(point float => nil))
+    (set! (y~ p) (+ 10 v)))
+
+

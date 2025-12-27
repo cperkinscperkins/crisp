@@ -1,0 +1,2 @@
+;; CHECK-FAIL: "unmatched close parenthesis"
+)

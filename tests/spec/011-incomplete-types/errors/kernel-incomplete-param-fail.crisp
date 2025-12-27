@@ -1,0 +1,13 @@
+;; CHECK-FAIL: "Kernel parameters must be COMPLETE types"
+(def-enumeration color :blue :brown :black)
+
+(def-record pants
+    (size int)
+    (color color :c-t))
+
+;; This kernel definition must fail because 'bp' is type 'pants', which is incomplete
+;; (missing required :color property).
+(def-kernel invalid-kernel ((bp pants))
+  (let ((sz (size~ bp)))
+    sz))
+

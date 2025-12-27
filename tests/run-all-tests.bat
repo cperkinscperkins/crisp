@@ -50,16 +50,12 @@ REM ---------------------------------------------------
 echo.
 echo [3/3] Running Failure Tests...
 
-for %%f in (tests\errors\*.crisp) do (
-    echo.
-    echo --- Running failure test: %%f ---
-    bin\crisp-compile.exe %%f >nul 2>&1
-    if errorlevel 1 (
-        echo [PASSED] ^(Expected failure occurred^)
-    ) else (
-        echo [FAILED] Test succeeded but should have failed: %%f
-        exit /b 1
-    )
+
+echo --- Running Negative Specs (Unified Runner) ---
+sbcl --script tests/run-error-specs.lisp
+if errorlevel 1 (
+    echo [FAILED] Negative Specs Runner failed.
+    exit /b 1
 )
 
 echo.

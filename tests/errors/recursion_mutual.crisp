@@ -1,7 +1,0 @@
-(def-function func-a (a)
-    (declare #'(int => int))
-    (func-b a))
-
-(def-function func-b (a)
-    (declare #'(int => int))
-    (func-a a))

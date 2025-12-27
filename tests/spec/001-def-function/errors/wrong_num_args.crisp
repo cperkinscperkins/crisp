@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "No matching function overload found"
+(def-function add-two (a b)
+  (declare #'(int int => int))
+  (+ a b))
+  
+(def-function call-wrong-num (a b c)
+  (declare #'(int int int => int))
+  (add-two a b c))
+

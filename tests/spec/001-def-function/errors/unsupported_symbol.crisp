@@ -1,0 +1,6 @@
+;; CHECK-FAIL: "Type mismatch! Expected (INT) but inferred (SYMBOL)."
+;; This function attempts to return a Lisp symbol, which is not a valid
+;; type in Crisp's runtime.
+(def-function unsupported-symbol ()
+  (declare (return-type int)) 'foo)
+

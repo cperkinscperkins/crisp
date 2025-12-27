@@ -1,0 +1,15 @@
+;; CHECK-FAIL: "Kernel parameters must be COMPLETE types"
+
+(def-record shirt 
+            (size int) 
+            (color keyword :c-t))
+
+;; This kernel definition should fail compilation because 's' is an incomplete type.
+;; The shirt record requires a :color compile-time property, which is missing here.
+
+
+;; def-kernel is not defined yet. Please, let's NOT impelement it right now, there
+;; is other work that needs to come first. 
+(def-kernel my-bad-kernel ((s (shirt int)))
+    (return))
+

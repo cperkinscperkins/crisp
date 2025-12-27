@@ -187,17 +187,19 @@
     (setf spec-files (sort spec-files #'string< :key #'namestring))
 
     (loop for file in spec-files do
-            (let ((dir-name (get-parent-directory-name file)))
-              (when (and stop-target (string> dir-name stop-target))
-                    (unless stop-triggered
-                      (format t "~&--- Reached Stop Target (~a). Stopping. ---~%" stop-target)
-                      (setf stop-triggered t))
-                    (cl:return)))
+            ;; Skip files in 'errors' subdirectories
+            (unless (member "errors" (pathname-directory file) :test #'string=)
+              (let ((dir-name (get-parent-directory-name file)))
+                (when (and stop-target (string> dir-name stop-target))
+                      (unless stop-triggered
+                        (format t "~&--- Reached Stop Target (~a). Stopping. ---~%" stop-target)
+                        (setf stop-triggered t))
+                      (cl:return)))
 
-            (incf total)
-            (if (run-spec-file file)
-                (incf passed)
-                (push (pathname-name file) failed-files)))
+              (incf total)
+              (if (run-spec-file file)
+                  (incf passed)
+                  (push (pathname-name file) failed-files))))
 
     (format t "~&---------------------------~%")
     (format t "Spec Summary: ~a/~a Passed.~%" passed total)
