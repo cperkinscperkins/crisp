@@ -1,0 +1,5 @@
+;; CHECK-FAIL: "Type mismatch for operator '+'"
+;;; tests/errors/illegal_promotion.crisp
+(def-function uchar_to_int (uc i)
+  (declare #'(uchar int => int))
+  (+ uc i))

@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "Overloading ~Y~ is not allowed."
+(def-struct point 
+  (x float) 
+  (y int))
+
+(def-function ~y~ (p)
+    (declare #'(point => int))
+    (+ 2  (y~ p)))
+
+

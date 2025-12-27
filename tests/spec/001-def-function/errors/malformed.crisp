@@ -1,0 +1,5 @@
+;; CHECK-FAIL: "Unexpected end of file"
+;; this is intentionally missing a closing parenthesis.
+(def-function malformed (x)
+   (declare (type a int) (return-type int))
+  (+ x 1)

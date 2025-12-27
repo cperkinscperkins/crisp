@@ -1,9 +1,0 @@
-(def-struct point 
-    (x long) 
-    (y long))
-
-;; this should fail.
-(def-function make-point (x y)
-    (declare #'(long long => point))
-    (make-point  x  y))
-

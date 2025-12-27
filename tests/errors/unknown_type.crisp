@@ -1,2 +1,0 @@
-(def-function inscrutable (x)
-  (declare (type x John-Doe) (return-type Exene-Cervenka)))

@@ -1,3 +1,0 @@
-;; This function declares that it returns an int, but has no body.
-(def-function empty-body () 
-  (declare (return-type int)))
