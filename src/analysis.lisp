@@ -2019,21 +2019,13 @@
 
                                   (let ((kw (intern (symbol-name member-name) "KEYWORD")))
                                     (let ((val (getf params kw)))
-                                      (if val
-                                          (let ((result
-                                                 (progn
-                                                  (format t "Resolved CT Accessor ~s on ~s -> ~s~%" op obj-type val)
-                                                  (force-output)
-                                                  ;; Return the literal value
-                                                  (cond
-                                                   ((keywordp val) (make-semantic-literal :value-type 'keyword :value val :source-location location))
-                                                   ((symbolp val) (make-semantic-literal :value-type 'symbol :value val :source-location location))
-                                                   ((integerp val) (make-semantic-literal :value-type 'int :value val :source-location location))
-                                                   (t (make-semantic-literal :value-type 'quote :value val :source-location location))))))
-                                            (format t "  AnalyzeIncomplete Returning: ~s~%" result)
-                                            (force-output)
-                                            result)
-                                          nil))))))))))))
+                                      (when val
+                                            ;; Return the literal value
+                                            (cond
+                                             ((keywordp val) (make-semantic-literal :value-type 'keyword :value val :source-location location))
+                                             ((symbolp val) (make-semantic-literal :value-type 'symbol :value val :source-location location))
+                                             ((integerp val) (make-semantic-literal :value-type 'int :value val :source-location location))
+                                             (t (make-semantic-literal :value-type 'quote :value val :source-location location)))))))))))))))
 
 ;; Resurrect analyze-expression to force usage of new analyze-set!
 (defun analyze-expression (expr env location)
@@ -2080,10 +2072,7 @@
                           ;; HOISTED CHECK: Try incomplete accessor first
                           (let ((hook-res (analyze-incomplete-type-accessor op expr env location)))
                             (if hook-res
-                                (progn
-                                 (format t "Hoisted Hook Result: ~s~%" hook-res)
-                                 (force-output)
-                                 hook-res)
+                                hook-res
                                 ;; Otherwise continue with standard checks
                                 (cond ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
                                      ((gethash op *expression-analyzers*)
@@ -2106,8 +2095,6 @@
           (t (error 'crisp-unsupported-form-error
                :form expr
                :source-location location)))))
-    (format t "AnalyzeExpression Result for ~s: ~s~%" expr res)
-    (force-output)
     res))
 
 (defun analyze-quote (expr env location)
