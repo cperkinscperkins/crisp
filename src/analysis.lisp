@@ -427,7 +427,8 @@
   "Detects if a function is an implicit template (e.g. has function-type args),
    and if so, registers it as a template and returns T. Otherwise returns NIL."
   (let ((implicit-args (loop for (pname ptype) in explicit-env
-                               when (and (listp ptype) (eq (first ptype) :function-type))
+                               when (or (and (listp ptype) (eq (first ptype) :function-type))
+                                        (incomplete-type-p ptype))
                              collect (list pname ptype))))
     (when implicit-args
           (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
@@ -570,12 +571,21 @@
    ((and (listp spec) (valid-function-type-p spec)) spec)
 
    ;; Generic Parameterized Type: e.g. '(point float)
+   ;; Generic Parameterized Type: e.g. '(point float)
    ((and (listp spec) (valid-type-p spec))
      (log:info "PARSE: Generic path for ~s" spec)
-     (let ((base (first spec))
-           (params (rest spec)))
+     (let* ((base (first spec))
+            (params (rest spec))
+            (arity (get-template-arity base)))
        (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
-         (mangle-template-struct-name base resolved-params))))
+         (if (and arity (> arity 0))
+             (mangle-template-struct-name base resolved-params)
+             ;; If not a template (arity 0 or nil)
+             (if resolved-params
+                 ;; If we have parameters (e.g. incomplete type arguments), keep as list
+                 (cons base resolved-params)
+                 ;; If no parameters (e.g. (INT) or (PANTS)), unwrap to bare symbol
+                 base)))))
 
    ;; Unknown?
    (t
@@ -625,25 +635,53 @@
                                 (t (error 'crisp-unknown-type-error :type-name type-name))))))))
 
 (defun analyze-environment-from-list (params declarations)
-  "Builds the environment from a (type ...) decl."
-  (let ((type-decl (assoc 'type declarations)))
-    ;; This function should ONLY handle (type ...) declarations.
-    ;; If a #'(...) is present, another path handles it. If neither are,
-    ;; and params exist, it's an error.
-    (when (and params (not type-decl) (not (assoc 'function declarations)))
+  "Builds the environment from standard CL (type type-spec vars...) declarations."
+  (let ((env (make-hash-table))
+        (type-decls (loop for d in declarations
+                            when (and (consp d) (eq (first d) 'type))
+                          collect d)))
+
+    ;; Check for missing declarations if no function signature
+    (when (and params (null type-decls) (not (assoc 'function declarations)))
+          (warn "Missing type declarations for parameters: ~a" params)
+          ;; Return environment of (param nil)?? Or error?
+          ;; Original code errored. Let's error.
           (error "Missing type declarations for parameters: ~a" params))
 
-    (when (and params type-decl)
-          (unless (= (length params) (length (butlast (rest type-decl))))
-            (error 'crisp-signature-arity-error
-              :expected (length (butlast (rest type-decl)))
-              :inferred (length params)))
-          (let* ((param-names (butlast (rest type-decl) 1))
-                 (param-type-name (first (last type-decl))))
-            (if (valid-type-p param-type-name)
-                (mapcar #'(lambda (name) (list name (parse-type-specifier param-type-name)))
-                  param-names)
-                (error 'crisp-unknown-type-error :type-name param-type-name))))))
+    ;; Parse declarations
+    (dolist (decl type-decls)
+      (let* ((args (rest decl))
+             (first-arg (first args))
+             (last-arg (car (last args)))
+             (type-spec nil)
+             (vars nil))
+
+        ;; Heuristic: Check if first arg is a valid type (Standard CL: type TYPE VARS...)
+        (if (valid-type-p first-arg)
+            (setf type-spec first-arg
+              vars (rest args))
+            ;; Heuristic: Check if last arg is a valid type (Crisp Style: type VARS... TYPE)
+            (if (valid-type-p last-arg)
+                (setf type-spec last-arg
+                  vars (butlast args))
+                ;; Fallback/Error
+                (error 'crisp-unknown-type-error :type-name first-arg)))
+
+        ;; Validation: Type must be valid (Redundant if we just checked, but good for safety)
+        (unless (valid-type-p type-spec)
+          (error 'crisp-unknown-type-error :type-name type-spec))
+
+        (dolist (var vars)
+          (when (gethash var env)
+                (error "Duplicate type declaration for variable ~a" var))
+          (setf (gethash var env) (parse-type-specifier type-spec)))))
+
+    ;; Ensure all parameters have types and return list in param order
+    (loop for p in params
+          collect (let ((t-spec (gethash p env)))
+                    (unless t-spec
+                      (error "No type declared for parameter ~a" p))
+                    (list p t-spec)))))
 
 (defun get-promoted-type (type-a-name type-b-name)
   "Determines the result type of a binary operation, applying promotion rules."
@@ -1133,7 +1171,10 @@
                         (mangle-template-struct-name (first struct-type-name) (rest struct-type-name))
                         struct-type-name)))
     (log:info "Looking up struct member ~a in type ~a (key: ~a params?: ~a)" member-name struct-type-name search-key (valid-type-p struct-type-name))
-    (let ((struct-def (find-struct-definition-by-name search-key)))
+    (let ((struct-def (or (find-struct-definition-by-name search-key)
+                          ;; Fallback: If mangled name not found, try base type (for incomplete types with props)
+                          (when (and (consp struct-type-name) (valid-type-p struct-type-name))
+                                (find-struct-definition-by-name (first struct-type-name))))))
       ;; Robust Lookup: If not found by symbol, try by name (ignoring package)
       (unless struct-def
         (error "Unknown struct type '~a' during member lookup." struct-type-name))
@@ -1261,7 +1302,22 @@
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."
+  ;(log:info "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
   (or (types-equivalent-p arg-type param-type)
+      ;; Incomplete/Composite Type compatibility:
+      ;; 1. (PANTS :COLOR :RED) is compatible with PANTS
+      (and (listp arg-type)
+           (valid-type-p arg-type)
+           (symbolp param-type)
+           (eq (first arg-type) param-type))
+      ;; 2. PANTS_COLOR_RED (symbol) is compatible with PANTS
+      (and (symbolp arg-type)
+           (symbolp param-type)
+           (let ((unmangled (unmangle-template-struct-name arg-type)))
+             (log:info "COMPAT: Unmangling ~s -> ~s. Param: ~s" arg-type unmangled param-type)
+             (and (consp unmangled)
+                  (eq (first unmangled) param-type))))
+
       (and (listp arg-type) (eq (first arg-type) :function-literal)
            (listp param-type) (eq (first param-type) :function-type)
            ;; Verify signature match
@@ -1602,12 +1658,27 @@
   "Returns the type of a semantic node, assuming a single-value context.
   If the node's type is a list (e.g., from a multi-value function call),
   this returns the first type in the list. Otherwise, it returns the type as-is."
+  ;; Safety: Ensure we have a semantic node, not a type specifier
+  (when (and (listp node) (not (typep node 'structure-object)))
+        (log:warn "get-single-value-type called with list (likely a type spec): ~a. Treating as type." node)
+        (labels ((unwrap (t-spec)
+                         (if (and (listp t-spec) (= (length t-spec) 1) (valid-type-p t-spec)
+                                  (symbolp (first t-spec))
+                                  (not (get-template-arity (first t-spec))))
+                             (unwrap (first t-spec))
+                             t-spec)))
+          (return-from get-single-value-type (unwrap node))))
+
   (let ((type (semantic-node-type node)))
-    ;; If the type is a list, we must check if it's a single parameterized type
-    ;; (like '(cell int)') before assuming it's a list of multiple return values.
-    (if (and (listp type) (not (valid-type-p type)))
-        (first type) ; It's a multi-value list, take the first.
-        type))) ; It's a single value (or a single parameterized type), return as-is.
+    (labels ((unwrap (t-spec)
+                     (if (and (listp t-spec) (= (length t-spec) 1) (valid-type-p t-spec)
+                              (symbolp (first t-spec))
+                              (not (get-template-arity (first t-spec))))
+                         (unwrap (first t-spec))
+                         t-spec)))
+      (if (and (listp type) (not (valid-type-p type)))
+          (unwrap (first type))
+          (unwrap type)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; DWARF Location Mapping

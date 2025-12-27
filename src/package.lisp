@@ -167,6 +167,7 @@
 
    ;; laungage symbols
    #:def-function
+   #:def-kernel
 
    ;; Structs
    #:register-struct-definition
@@ -283,6 +284,7 @@
   ;; --- 1. Import from CRISP.COMPILER ---
   (:import-from :crisp.compiler
                 #:def-function
+                #:def-kernel
                 #:def-struct
 
                 #:def-record
