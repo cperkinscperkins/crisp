@@ -11,11 +11,13 @@
 ;; Simplified ambiguity/inference failure test
 ;; Verifies that mixing types doesn't magically fix the return type mismatch.
 
+
 ;; Need to ensure types are instantiated to find constructors.
 (def-function force-instantiation ()
   (declare (return-type (point long) (point int)))
   (make-point :x (as-long 0) :y (as-long 0))
   (make-point :x (as-int 0) :y (as-int 0)))
+  
 
 ;; Wait, generic functions aren't fully supported like this in tests without macro support nearby.
 ;; Let's simplify the test to just be a straight mismatch with MULTIPLE returns?
@@ -23,7 +25,9 @@
 ;; Let's replicate the structure but with explicit returns.
 
 (def-function failure-to-infer ()
-    (declare #'( => (point long)))
+    (declare #'( => (point int)))
+    ;(gen-point long)
+    ;(gen-point int)
     ;; Return valid long point
     (make-point :x (as-long 1) :y (as-long 2)) 
     ;; Return invalid int point (ambiguity/mismatch)
