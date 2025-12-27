@@ -949,8 +949,62 @@
         (make-semantic-literal :value-type 'int :value 1 :source-location location)
         (make-semantic-literal :value-type 'int :value 0 :source-location location))))
 
+(defun try-constant-fold (node)
+  "Attempts to reduce a semantic node to a semantic-literal if possible."
+  (typecase node
+    (semantic-lt
+     (let ((l (try-constant-fold (semantic-lt-left-arg node)))
+           (r (try-constant-fold (semantic-lt-right-arg node))))
+       (if (and (typep l 'semantic-literal) (typep r 'semantic-literal))
+           (make-semantic-literal :value-type 'int
+                                  :value (if (< (semantic-literal-value l) (semantic-literal-value r)) 1 0)
+                                  :source-location (semantic-lt-source-location node))
+           node)))
+    (semantic-gt
+     (let ((l (try-constant-fold (semantic-gt-left-arg node)))
+           (r (try-constant-fold (semantic-gt-right-arg node))))
+       (if (and (typep l 'semantic-literal) (typep r 'semantic-literal))
+           (make-semantic-literal :value-type 'int
+                                  :value (if (> (semantic-literal-value l) (semantic-literal-value r)) 1 0)
+                                  :source-location (semantic-gt-source-location node))
+           node)))
+    (semantic-le
+     (let ((l (try-constant-fold (semantic-le-left-arg node)))
+           (r (try-constant-fold (semantic-le-right-arg node))))
+       (if (and (typep l 'semantic-literal) (typep r 'semantic-literal))
+           (make-semantic-literal :value-type 'int
+                                  :value (if (<= (semantic-literal-value l) (semantic-literal-value r)) 1 0)
+                                  :source-location (semantic-le-source-location node))
+           node)))
+    (semantic-ge
+     (let ((l (try-constant-fold (semantic-ge-left-arg node)))
+           (r (try-constant-fold (semantic-ge-right-arg node))))
+       (if (and (typep l 'semantic-literal) (typep r 'semantic-literal))
+           (make-semantic-literal :value-type 'int
+                                  :value (if (>= (semantic-literal-value l) (semantic-literal-value r)) 1 0)
+                                  :source-location (semantic-ge-source-location node))
+           node)))
+    (semantic-eq
+     (let ((l (try-constant-fold (semantic-eq-left-arg node)))
+           (r (try-constant-fold (semantic-eq-right-arg node))))
+       (if (and (typep l 'semantic-literal) (typep r 'semantic-literal))
+           (make-semantic-literal :value-type 'int
+                                  :value (if (= (semantic-literal-value l) (semantic-literal-value r)) 1 0)
+                                  :source-location (semantic-eq-source-location node))
+           node)))
+    (semantic-neq
+     (let ((l (try-constant-fold (semantic-neq-left-arg node)))
+           (r (try-constant-fold (semantic-neq-right-arg node))))
+       (if (and (typep l 'semantic-literal) (typep r 'semantic-literal))
+           (make-semantic-literal :value-type 'int
+                                  :value (if (/= (semantic-literal-value l) (semantic-literal-value r)) 1 0)
+                                  :source-location (semantic-neq-source-location node))
+           node)))
+    (t node)))
+
 (defun analyze-if-expression-impl (expr env location &key enforce-constant)
-  (let* ((cond-node (analyze-expression (second expr) env (append location '(1)))))
+  (let* ((raw-cond-node (analyze-expression (second expr) env (append location '(1))))
+         (cond-node (try-constant-fold raw-cond-node)))
 
     ;; DCE Optimization: If condition is a constant int/bool literal, analyze ONLY the live branch.
     (when (typep cond-node 'semantic-literal)
