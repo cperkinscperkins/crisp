@@ -1,0 +1,5 @@
+;; CHECK-FAIL: "Type mismatch! Expected (INT) but inferred (FLOAT)."
+(def-function float_to_int (f i)
+  (declare #'(float int => int))
+  (+ f i))
+

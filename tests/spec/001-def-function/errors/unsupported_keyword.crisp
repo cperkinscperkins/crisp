@@ -1,0 +1,6 @@
+;; CHECK-FAIL: "Type mismatch! Expected (INT) but inferred (KEYWORD)."
+;; This function attempts to return a Lisp keyword, which is not a valid
+;; type in Crisp's runtime.
+(def-function unsupported-keyword ()
+  (declare (return-type int)) :foo)
+

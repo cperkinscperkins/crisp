@@ -1,0 +1,6 @@
+;; CHECK-FAIL: "Type mismatch"
+(def-function type-mismatch ()
+    (declare #'(=> (cell long)))
+  (let ((sc (make-scratch-cell float)))
+    sc))
+

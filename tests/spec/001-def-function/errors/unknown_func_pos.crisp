@@ -1,0 +1,4 @@
+;; CHECK-FAIL: "Unsupported form"
+(def-function unknown-call (a b)
+  (declare (type a b int) (return-type int))
+  (whacked a b))

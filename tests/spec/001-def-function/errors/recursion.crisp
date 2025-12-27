@@ -1,0 +1,4 @@
+;; CHECK-FAIL: "Recursion is not allowed"
+(def-function recurse (a)
+    (declare #'(int => int))
+  (recurse a))

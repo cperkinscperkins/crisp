@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "Type mismatch! Expected (LONG) but inferred (INT)."
+(c-t-assert (= 0 0 ) "this is a top level c-t-assert. It does not trip")
+
+
+;; ultimately, because this assert trips, this will have to be a negative test, in the tests/errors directory
+(def-function test-c-t-assert ()
+    (declare #'(=> long))
+    (c-t-assert (< 1 2) "this message should never be seen")
+    (c-t-assert (< 2 1) "with this assert, this message should be seen")
+    (c-t-assert (= 2 1 ) "unclear for this one. Presumably the previous assertion ends compilation, but...")
+    7)
+
