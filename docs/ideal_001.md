@@ -780,14 +780,18 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
 ;; H -- keyword & optional arguments
 (def-function survive (&key birds fish zombies)
   (declare (return-type NIL) (type birds fish zombies int))
-  ;OR -- this one might need revisiting
+  ;OR 
   (declare #'(&key :birds int :fish int :zombies int => NIL))
+
+  (if (is-set? birds)    ;; <-- use is-set? to check if a variable is set or not.
   ...)
 
 (def-function addSome (x &optional y)
   (declare (return-type NIL) (type x y int))
   ;OR
   (declare #'(int &optional int => NIL))
+
+  (when (is-set? y)    ;; <-- is-set? to check 
   ...)
 
 ; default values do not appear in type signature
@@ -810,6 +814,14 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
    (declare #( v-type v-type &out (v-type :write_only)))
     ...)
 ```
+
+### Lazy Monomorphic Generation
+
+Use of `&optional` and `&key` leads to function generation for
+each option.  In other words, an optional declaration like so:
+ `(def-function foo (&optional a) ...)` 
+ results in TWO possible versions of `foo` being generated. One with zero
+ arguments, and one with `a`.  To avoid combinatorial explosion, the compiler generates these lazily, as needed. 
 
 
 
@@ -10209,6 +10221,27 @@ Returns true if the file is being compiled with the `--logging-output` flag
 `(is-runtime-checking?) => T or nil`
 
 Returns true if the file is being compiled with the `--runtime-checks` flag
+
+### `is-set?`
+`(is-set? someVar) => T or nil`
+
+Used to check `&optional` and `&key` values before use.
+
+Note that if the value has a default set, then is-set? is unnecessary, it will
+always be True.
+```
+(def-function someone (&optional a)
+  (declare #'(&optional int => int))
+  (when+ (is-set? a)
+    ;; do something
+    ...))
+
+(def-function needless (&optional (a 100))
+  (declare #'(&optional int => int))
+  (if (is-set? a)   ; '(is-set? a) is T by virtue of the default value (100)
+    (do-something)
+   (never-called))) 
+```
 
 
 ### `(declare (grid-level))`

@@ -9,6 +9,10 @@
 ;; Global Compiler State
 ;; =====================
 
+(defvar *generic-functions* (make-hash-table :test 'equal)
+        "Registry of generic function templates (functions with &optional or &key parameters) 
+   that are instantiated lazily. Key: function name symbol. Value: generic-function-def struct.")
+
 (defvar *function-table* (make-hash-table)
         "A hash table mapping function names (symbols) to a list of
   FUNCTION-SIGNATURE structs. This supports overloading.")

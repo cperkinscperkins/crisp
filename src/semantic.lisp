@@ -26,6 +26,15 @@
   (is-template-p nil :type boolean)
   (template-params nil :type list))
 
+(defstruct generic-function-def
+  name
+  params
+  env
+  return-types
+  declarations
+  body
+  source-location)
+
 (defstruct crisp-struct-definition
   "Stores the definition of a user-defined struct."
   (name nil :type symbol)

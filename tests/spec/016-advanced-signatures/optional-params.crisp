@@ -28,3 +28,10 @@
             (when (and (is-set? c) (> c 10)) 
               (set! sum (+ sum c))))
         sum))
+
+(def-kernel add_some_already (outc)
+    (declare #'((cell int :global :read-write) => nil))
+    (let ((sum  (add-some 10))
+          (more  (also-add-some 100 200 300))
+          (last  (add-some-runtime 1 2)))
+      (set! (~ outc) (+ (+ sum more) last))))

@@ -403,6 +403,59 @@
    ((listp type) (format nil "~{~a~^_~}" (mapcar #'mangle-param-type-name type)))
    (t "unknown")))
 
+(defun mangle-function-variant-name (base-name param-types)
+  (let ((suffix (mapcar #'mangle-param-type-name param-types)))
+    (intern (format nil "~a_~{~a~^_~}" base-name suffix) (symbol-package base-name))))
+
+(defun instantiate-generic-function (generic-def explicit-arg-types location)
+  "Instantiates a lazy generic function variant for the given argument types."
+  (let* ((name (generic-function-def-name generic-def))
+         (full-env (generic-function-def-env generic-def))
+         (declarations (generic-function-def-declarations generic-def))
+         ;; Robustly filter declarations from body, in case they persisted
+         (body (loop for f in (generic-function-def-body generic-def)
+                       unless (and (listp f) (eq (car f) 'declare))
+                     collect f))
+         (arg-count (length explicit-arg-types))
+         ;; Determine active parameters (truncate environment to match arg count)
+         (active-env (subseq full-env 0 arg-count))
+         (active-param-names (mapcar #'first active-env))
+         (active-param-types (mapcar #'second active-env)))
+
+    ;; Validations (Basic Arity check)
+    (unless (types-list-compatible-p explicit-arg-types active-param-types)
+      (log:warn "Lazy Instantiation Mismatch: ~a called with ~a, expected prefix of ~a" name explicit-arg-types active-param-types)
+      (return-from instantiate-generic-function nil))
+
+    (let ((mangled-name (mangle-function-variant-name name active-param-types)))
+      (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name arg-count active-param-types)
+
+      ;; Compile the specific variant
+      (let ((ast-node (internal-compile-function mangled-name
+                                                 active-env
+                                                 (generic-function-def-return-types generic-def)
+                                                 active-param-names
+                                                 body
+                                                 declarations
+                                                 (or (generic-function-def-source-location generic-def) location))))
+
+        ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
+        ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
+        (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
+                                    (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
+                                                                              (sig (make-function-signature
+                                                                                    :name mangled-name
+                                                                                    :parameters active-param-types
+                                                                                    :return-types final-ret-types
+                                                                                    :source-location (or (generic-function-def-source-location generic-def) location))))
+
+          (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
+          ;; Append to existing signatures (thread safety? single threaded)
+          (setf (gethash mangled-name *function-table*)
+            (append (gethash mangled-name *function-table*) (list sig)))
+
+          sig)))))
+
 (defun register-function-signature (form location)
   "Extracts and registers a function's signature without analyzing its body. 
    Handles optional parameters by generating overloaded signatures."
@@ -415,30 +468,29 @@
     (multiple-value-bind (env return-types optional-idx)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
 
-      ;; Logic for registering variants
-      (let ((start-idx (or optional-idx (length env)))
-            (end-idx (length env)))
+      (if optional-idx
+          (progn
+           (log:info "Registering GENERIC function template: ~s (Lazy Instantiation Mode)" name)
+           (setf (gethash name *generic-functions*)
+             (make-generic-function-def
+              :name name
+              :params params
+              :env env
+              :return-types return-types
+              :declarations (loop for f in declare-forms append (rest f))
+              :body (nthcdr (length declare-forms) body)
+              :source-location location)))
 
-        (loop for i from start-idx to end-idx
-              do (let* ((param-subset (subseq env 0 i))
-                        (param-types (mapcar #'second param-subset))
-                        ;; If it's a standard function (no optionals), keep original name.
-                        ;; If optionals exist, we MUST mangle to disambiguate.
-                        (mangled-name (if optional-idx
-                                          (let ((suffix (mapcar #'mangle-param-type-name param-types)))
-                                            (intern (format nil "~a_~{~a~^_~}" name suffix) (symbol-package name)))
-                                          name)))
-
-                   (log:info "Registering variant: ~s (Params: ~s)" mangled-name param-types)
-
-                   (let ((sig (make-function-signature
-                               :name mangled-name
-                               :parameters param-types
-                               :return-types return-types
-                               :source-location location)))
-                     ;; Append to existing signatures
-                     (setf (gethash name *function-table*)
-                       (append (gethash name *function-table*) (list sig))))))))))
+          ;; Standard Function Registration (Eager)
+          (let* ((param-types (mapcar #'second env))
+                 (sig (make-function-signature
+                       :name name
+                       :parameters param-types
+                       :return-types return-types
+                       :source-location location)))
+            ;; Append to existing signatures
+            (setf (gethash name *function-table*)
+              (append (gethash name *function-table*) (list sig))))))))
 
 (defun register-overload (alias real-name)
   "Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing."
@@ -1643,7 +1695,18 @@
 
     (unless signature
       (log:error "NO SIGNATURE FOUND IMMEDIATELY. TRYING INSTANTIATION.")
-      (when *template-instantiator-fn*
+
+      ;; 1. Try Lazy Instantiation for &optional / &key
+      (let ((generic-def (gethash op *generic-functions*)))
+        (when generic-def
+              (log:info "Found generic function ~a, attempting lazy instantiation..." op)
+              (let ((new-sig (instantiate-generic-function generic-def explicit-arg-types nil ; location unavailable here
+                                                          )))
+                (when new-sig
+                      (setf signature new-sig)))))
+
+      ;; 2. Try Template Instantiator (C++ Style)
+      (when (and (not signature) *template-instantiator-fn*)
             (loop repeat 3 until signature do
                     (if (funcall *template-instantiator-fn* op explicit-arg-types
                           (lambda (form location)
@@ -2356,8 +2419,10 @@
                                        (analyze-expression (macroexpand-1 expr) env location))
                                      ;; Case 3c: Is it a call to a known user-defined function?
                                      ;; Also check implicit *template-registry* for overloading
+                                     ;; AND *generic-functions* for lazy instantiation
                                      ((or (gethash op *function-table*)
-                                          (gethash op *template-registry*))
+                                          (gethash op *template-registry*)
+                                          (gethash op *generic-functions*))
                                        (analyze-function-call op expr env location))
                                      ;; Case 3e: Otherwise, we don't know what this is.
                                      (t

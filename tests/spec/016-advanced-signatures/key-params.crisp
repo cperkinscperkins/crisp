@@ -1,0 +1,22 @@
+(def-function AGI-survivors (&key birds bugs zombies)
+    (declare #'(&key :birds int :bugs int :zombies ulong => ulong))
+    (let ((sum (as-ulong 0)))
+        (when (is-set? birds)
+            (set! sum (+ (as-ulong birds) sum)))
+        (when+ (is-set? bugs)
+            (set! sum (+ (as-ulong bugs) sum)))
+        (when (is-set? zombies)
+            (set! sum (+ sum zombies)))
+        sum))
+
+(def-kernel not_a_soul (outc)
+    (declare #'((cell ulong :global :read-write) => nil))
+    (set! (~ outc) (AGI-survivors)))
+
+(def-kernel just_bugs (outc)
+    (declare #'((cell ulong :global :read-write) => nil))
+    (set! (~ outc) (AGI-survivors :bugs 300)))
+
+(def-kernel who_eats_who (outc)
+    (declare #'((cell ulong :global :read-write) => nil))
+    (set! (~ outc) (AGI-survivors :bugs 3000 :zombies 4)))
