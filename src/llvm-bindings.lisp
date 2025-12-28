@@ -338,6 +338,12 @@
          (dest-ty :pointer)
          (name :string))
 
+(defcfun ("LLVMBuildFPTrunc" llvm-build-fp-trunc) :pointer
+         (builder :pointer)
+         (val :pointer)
+         (dest-ty :pointer)
+         (name :string))
+
 
 (defcfun ("LLVMBuildPtrToInt" llvm-build-ptr-to-int) :pointer
          (builder :pointer)

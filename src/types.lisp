@@ -9,6 +9,10 @@
 ;; Global Compiler State
 ;; =====================
 
+(defvar *generic-functions* (make-hash-table :test 'equal)
+        "Registry of generic function templates (functions with &optional or &key parameters) 
+   that are instantiated lazily. Key: function name symbol. Value: generic-function-def struct.")
+
 (defvar *function-table* (make-hash-table)
         "A hash table mapping function names (symbols) to a list of
   FUNCTION-SIGNATURE structs. This supports overloading.")
@@ -134,7 +138,13 @@ This supports overloading templates by arity or other factors.")
                                          p))
                                params)))
     (if mangled-params
-        (intern (format nil "~a_~{~a~^_~}" name mangled-params) (symbol-package name))
+        (common-lisp:let* ((pkg (common-lisp:symbol-package name))
+                           (pkg-name (common-lisp:package-name pkg)))
+          ;; Avoid interning in locked packages (CL, KEYWORD) by name string
+          (common-lisp:if (common-lisp:or (common-lisp:string= pkg-name "COMMON-LISP")
+                            (common-lisp:string= pkg-name "KEYWORD"))
+                          (common-lisp:intern (common-lisp:format nil "~a_~{~a~^_~}" name mangled-params) *package*)
+                          (common-lisp:intern (common-lisp:format nil "~a_~{~a~^_~}" name mangled-params) pkg)))
         name)))
 
 (defun split-string (string delimiter)
@@ -365,6 +375,7 @@ This supports overloading templates by arity or other factors.")
 
 ;; Predicates
 ;; ==========
+
 
 (defun valid-basic-type-p (type-spec)
   "Checks if type-spec is a valid basic symbol type (built-in, struct, or function reference)."
