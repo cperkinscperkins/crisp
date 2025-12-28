@@ -197,6 +197,13 @@ realized in the implementation now.
 `def-record` and `def-struct` introduce "incomplete types" for type polymorphism of
 compile-time properties. This is realized and tested.
 
+### &optional, &key parameters (and their defaults)
+Advanced function signatures are done now. `&key` `&optional` and even default values.
+We monomorphically create exact overloads for each variant, but instantiated lazily - on demand (stemming from kernels, obviously).  
+
+### is-set?
+Need to know if an optional arg was set?  `is-set?` has your back!
+
 Errors
 ======
 

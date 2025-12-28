@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-25T07:58:12.451518Z
+Generated on 2025-12-28T04:34:20.677064Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
@@ -152,6 +152,9 @@ Generated on 2025-12-25T07:58:12.451518Z
 
 
 ---
+### DEFSTRUCT `GENERIC-FUNCTION-DEF`
+
+---
 ### DEFSTRUCT `CRISP-STRUCT-DEFINITION`
 
   > Stores the definition of a user-defined struct.
@@ -297,6 +300,12 @@ Generated on 2025-12-25T07:58:12.451518Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\types.lisp`
 
+### DEFVAR `*GENERIC-FUNCTIONS*`
+
+  > Registry of generic function templates (functions with &optional or &key parameters)   >    that are instantiated lazily. Key: function name symbol. Value: generic-function-def struct.
+
+
+---
 ### DEFVAR `*FUNCTION-TABLE*`
 
   > A hash table mapping function names (symbols) to a list of  >   FUNCTION-SIGNATURE structs. This supports overloading.
@@ -473,7 +482,14 @@ Generated on 2025-12-25T07:58:12.451518Z
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Expands storage handle constructors like (cell) or (cell int) into canonical template forms.
+  > Expands legacy/shorthand storage handle specs (cell, vector, etc) into their canonical struct form.  >    e.g. (cell int) -> (cell int :global :read-write)  >    e.g. (vector float 4) -> (vector float 4 :global :read-write)
+
+
+---
+### DEFUN `CANONICALIZE-TYPE-SPECIFIER`
+- **Args**: `(SPEC)`
+
+  > Canonicalizes type specifiers.  >    1. Expands templates with default arguments (e.g. (cell int) -> (cell int :global :read-write)).  >    2. Handles incomplete/hybrid syntax for templates.
 
 
 ---
@@ -481,6 +497,13 @@ Generated on 2025-12-25T07:58:12.451518Z
 - **Args**: `(T1 T2)`
 
   > Checks if two types are equivalent, handling template struct canonicalization.
+
+
+---
+### DEFUN `GET-TEMPLATE-ARITY`
+- **Args**: `(NAME)`
+
+  > Returns the arity (number of type parameters) for a registered template, or nil.
 
 
 ---
@@ -527,15 +550,15 @@ Generated on 2025-12-25T07:58:12.451518Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\types-instantiator.lisp`
+### DEFUN `INCOMPLETE-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
 
-### DEFUN `INSTANTIATE-CELL-STRUCT`
-- **Args**: `(ELEMENT-TYPE &OPTIONAL (ADDRESS-SPACE GLOBAL) (ACCESS READ-WRITE))`
-
-  > Programmatically defines the CELL_<ElementType> struct.  >    Members:  >      parent: (storage)  >      offset: (long)  >      element-type: (type :c-t <element-type>)  >      address-space: (address-space :c-t :global)  >      access: (access :c-t :read-write)  >   
+  > Checks if a type specifier is incomplete (missing required compile-time properties).  >    Returns T if incomplete, NIL if complete.
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp\src\types-instantiator.lisp`
+
 ## File: `C:\Users\cperk\Documents\crisp\src\structs.lisp`
 
 ### DEFUN `GET-STD140-BASE-ALIGNMENT`
@@ -567,6 +590,9 @@ Generated on 2025-12-25T07:58:12.451518Z
 
 ---
 ### DEFVAR `*STRUCT-NAME-PREFIX*`
+
+---
+### DEFPARAMETER `*RECORD-DEFINITIONS*`
 
 ---
 ### DEFUN `ENSURE-STRUCT-LLVM-TYPE`
@@ -663,6 +689,13 @@ Generated on 2025-12-25T07:58:12.451518Z
 - **Args**: `(NAME PARAMS &REST BODY-AND-LOCATION)`
 
   > Defines a new, thread-level Crisp function.
+
+
+---
+### DEFMACRO `DEF-KERNEL`
+- **Args**: `(NAME PARAMS &REST BODY)`
+
+  > Defines a GPU Kernel (Entry Point).  >      >    Constraint: All parameter types MUST be complete.  >    Incomplete types (missing compile-time properties) are forbidden at the kernel boundary  >    because the host must know the exact layout to marshall arguments.
 
 
 ---
@@ -785,7 +818,7 @@ Generated on 2025-12-25T07:58:12.451518Z
 - **Args**: `(FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
               LOCATION-MAP)`
 
-  > Compiles a single def-function form.
+  > Compiles a single def-function form. Handles optional parameters by generating overloaded variants.
 
 
 ---
@@ -838,10 +871,35 @@ Generated on 2025-12-25T07:58:12.451518Z
 
 
 ---
+### DEFUN `MANGLE-PARAM-TYPE-NAME`
+- **Args**: `(TYPE)`
+
+  > Helper to mangle a type specifier for function names.
+
+
+---
+### DEFUN `MANGLE-FUNCTION-VARIANT-NAME`
+- **Args**: `(BASE-NAME PARAM-TYPES)`
+
+---
+### DEFUN `INSTANTIATE-GENERIC-FUNCTION`
+- **Args**: `(GENERIC-DEF EXPLICIT-ARG-TYPES LOCATION)`
+
+  > Instantiates a lazy generic function variant for the given argument types.
+
+
+---
 ### DEFUN `REGISTER-FUNCTION-SIGNATURE`
 - **Args**: `(FORM LOCATION)`
 
-  > Extracts and registers a function's signature without analyzing its body.
+  > Extracts and registers a function's signature without analyzing its body.   >    Handles optional parameters by generating overloaded signatures.
+
+
+---
+### DEFUN `REGISTER-OVERLOAD`
+- **Args**: `(ALIAS REAL-NAME)`
+
+  > Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing.
 
 
 ---
@@ -867,16 +925,23 @@ Generated on 2025-12-25T07:58:12.451518Z
 
 ---
 ### DEFUN `DETECT-AND-REGISTER-IMPLICIT-TEMPLATE`
-- **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY)`
+- **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)`
 
   > Detects if a function is an implicit template (e.g. has function-type args),  >    and if so, registers it as a template and returns T. Otherwise returns NIL.
+
+
+---
+### DEFUN `INTERNAL-COMPILE-FUNCTION`
+- **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION)`
+
+  > Core compilation logic for a function, accepting a pre-parsed environment.
 
 
 ---
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > This is the 'Semantic Analyzer' (Pass 2).
+  > This is a wrapper around internal-compile-function that parses declarations.
 
 
 ---
@@ -897,7 +962,7 @@ Generated on 2025-12-25T07:58:12.451518Z
 ### DEFUN `ANALYZE-ENVIRONMENT-FROM-SPEC`
 - **Args**: `(PARAMS FN-SPEC)`
 
-  > Builds the environment from the signature.
+  > Builds the environment from the signature. Returns (values env optional-start-index defaults-alist).
 
 
 ---
@@ -911,7 +976,7 @@ Generated on 2025-12-25T07:58:12.451518Z
 ### DEFUN `ANALYZE-ENVIRONMENT-FROM-LIST`
 - **Args**: `(PARAMS DECLARATIONS)`
 
-  > Builds the environment from a (type ...) decl.
+  > Builds the environment from standard CL (type type-spec vars...) declarations.
 
 
 ---
@@ -964,7 +1029,43 @@ Generated on 2025-12-25T07:58:12.451518Z
 
 
 ---
+### DEFUN `ANALYZE-IS-SET-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes (is-set? var). Returns 1 (true) if var is bound in env, 0 (false) otherwise.
+
+
+---
+### DEFUN `TRY-CONSTANT-FOLD`
+- **Args**: `(NODE)`
+
+  > Attempts to reduce a semantic node to a semantic-literal if possible.
+
+
+---
+### DEFUN `CREATE-IMPLICIT-CAST`
+- **Args**: `(NODE TARGET-TYPE LOCATION)`
+
+  > Wraps node in an implicit cast to target-type.
+
+
+---
+### DEFUN `ENSURE-BRANCH-COMPATIBILITY`
+- **Args**: `(THEN-NODE ELSE-NODE LOCATION)`
+
+  > Unifies types of then/else branches. Returns (values unified-type new-then new-else).
+
+
+---
+### DEFUN `ANALYZE-IF-EXPRESSION-IMPL`
+- **Args**: `(EXPR ENV LOCATION &KEY ENFORCE-CONSTANT)`
+
+---
 ### DEFUN `ANALYZE-IF-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+---
+### DEFUN `ANALYZE-STATIC-IF-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
 ---
@@ -972,7 +1073,15 @@ Generated on 2025-12-25T07:58:12.451518Z
 - **Args**: `(EXPR ENV LOCATION)`
 
 ---
+### DEFUN `ANALYZE-STATIC-WHEN-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+---
 ### DEFUN `ANALYZE-UNLESS-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+---
+### DEFUN `ANALYZE-STATIC-UNLESS-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
 ---
@@ -1214,11 +1323,22 @@ Generated on 2025-12-25T07:58:12.451518Z
 
 
 ---
+### DEFUN `ANALYZE-INCOMPLETE-TYPE-ACCESSOR`
+- **Args**: `(OP EXPR ENV LOCATION)`
+
+  > Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).  >    Returns a semantic-node (literal) if resolved, or NIL if not applicable.
+
+
+---
 ### DEFUN `ANALYZE-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
   > Recursively analyzes a *single* expression.
 
+
+---
+### DEFUN `ANALYZE-QUOTE`
+- **Args**: `(EXPR ENV LOCATION)`
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp\src\codegen.lisp`
@@ -1338,6 +1458,13 @@ Generated on 2025-12-25T07:58:12.451518Z
 - **Args**: `(BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)`
 
   > Recursively generates IR for a single expression node.
+
+
+---
+### DEFUN `RESOLVE-KEYWORD-CONSTANT`
+- **Args**: `(KW)`
+
+  > Resolves a keyword to its integer value by searching all registered enumerations.
 
 
 ---
