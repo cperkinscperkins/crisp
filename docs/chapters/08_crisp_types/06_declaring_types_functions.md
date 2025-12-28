@@ -56,14 +56,18 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
 ;; H -- keyword & optional arguments
 (def-function survive (&key birds fish zombies)
   (declare (return-type NIL) (type birds fish zombies int))
-  ;OR -- this one might need revisiting
+  ;OR 
   (declare #'(&key :birds int :fish int :zombies int => NIL))
+
+  (if (is-set? birds)    ;; <-- use is-set? to check if a variable is set or not.
   ...)
 
 (def-function addSome (x &optional y)
   (declare (return-type NIL) (type x y int))
   ;OR
   (declare #'(int &optional int => NIL))
+
+  (when (is-set? y)    ;; <-- is-set? to check 
   ...)
 
 ; default values do not appear in type signature
@@ -86,6 +90,14 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
    (declare #( v-type v-type &out (v-type :write_only)))
     ...)
 ```
+
+### Lazy Monomorphic Generation
+
+Use of `&optional` and `&key` leads to function generation for
+each option.  In other words, an optional declaration like so:
+ `(def-function foo (&optional a) ...)` 
+ results in TWO possible versions of `foo` being generated. One with zero
+ arguments, and one with `a`.  To avoid combinatorial explosion, the compiler generates these lazily, as needed. 
 
 
 
