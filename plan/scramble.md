@@ -213,6 +213,7 @@ SHORT TERM PLAN
 - [x] revisit "implicit" and "exploded" args - def-record FTW
 - [x] error handling
 - [x] &optional , &key and defaults and is-set?
+- [x] &out
 
 - [ ] def-type  <--  we will need this to create vector from tensor, etc.
                        I'm tempted to do def-derived-type too

@@ -19,7 +19,6 @@
                                              (:file "src/semantic")
                                              (:file "src/errors") ; 3. Conditions
                                              (:file "src/types") ; 4. Type System
-                                             (:file "src/types-instantiator") ; 4a. Parameterized Instantiator
                                              (:file "src/structs") ; 5. Struct Layout
 
                                              (:file "src/macros")
