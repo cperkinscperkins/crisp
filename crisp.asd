@@ -16,6 +16,7 @@
            :components ((:file "src/package") ; 1. Defines all packages
                                              (:file "src/llvm-bindings") ; 2. Uses one package, defines FFI
                                              (:file "src/utils")
+                                             (:file "src/mangling") ;; NEW
                                              (:file "src/semantic")
                                              (:file "src/errors") ; 3. Conditions
                                              (:file "src/types") ; 4. Type System
