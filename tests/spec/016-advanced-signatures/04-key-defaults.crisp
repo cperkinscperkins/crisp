@@ -1,0 +1,17 @@
+(def-function sewing (&key (thread-count 20) (stitch-length 25))
+    (declare #'(&key :thread-count int :stitch-lengh int => int))
+    (* thread-count stitch-length))
+
+(def-function knitting (&key (purl 4) wrap)
+    (declare #'(&key :purl int :wrap int => int))
+    (let ((over 1))
+        (when (is-set? purl)    ;; is-used? is true since a default was provided.
+            (set! over (* over purl)))
+        (when+ (is-set? wrap)   ;; but here is-used? actually matters.
+            (set! over (* over wrap)))
+        over))
+
+(def-kernel sweater (out-thread out-yarn)
+    (declare #'((cell int :global :read-write)  (cell int :global :read-write) => nil))
+    (set! (~ out-thread) (sewing))
+    (set! (~ out-yarn) (knitting)))

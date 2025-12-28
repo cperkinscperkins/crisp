@@ -114,6 +114,27 @@ Returns true if the file is being compiled with the `--logging-output` flag
 
 Returns true if the file is being compiled with the `--runtime-checks` flag
 
+### `is-set?`
+`(is-set? someVar) => T or nil`
+
+Used to check `&optional` and `&key` values before use.
+
+Note that if the value has a default set, then is-set? is unnecessary, it will
+always be True.
+```
+(def-function someone (&optional a)
+  (declare #'(&optional int => int))
+  (when+ (is-set? a)
+    ;; do something
+    ...))
+
+(def-function needless (&optional (a 100))
+  (declare #'(&optional int => int))
+  (if (is-set? a)   ; '(is-set? a) is T by virtue of the default value (100)
+    (do-something)
+   (never-called))) 
+```
+
 
 ### `(declare (grid-level))`
 
