@@ -16,7 +16,7 @@
         (set! (~ D) a)))
 
 (def-function no-tocar (&out out-c)
-    (declare #'((cell int :global :read-write) => nil))
+    (declare #'(&out (cell int :global :read-write) => nil))
     (let ((initial 10))
         (set! (~ out-c) (+ initial 1))))  ;; <-- setting is fine. but reading is not.
 

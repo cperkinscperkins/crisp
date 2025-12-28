@@ -1,9 +1,10 @@
 
+;; CHECK-FAIL: "Illegal access: Cannot read from Output Parameter 'OUT-C'. Output parameters are write-only"
 
 ;; the compile time contract.  No matter the :access, we don't allow reading of &out params.
 
 (def-function no-tocar (&out out-c)
-    (declare #'((cell int :global :read-write) => nil))
+    (declare #'(&out (cell int :global :read-write) => nil))
     (let ((initial (~ out-c)))    ;; <-- read access s.b. a compile time error. 
         (set! (~ out-c) (+ initial 1))))
 
