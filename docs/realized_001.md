@@ -204,6 +204,9 @@ We monomorphically create exact overloads for each variant, but instantiated laz
 ### is-set?
 Need to know if an optional arg was set?  `is-set?` has your back!
 
+### &out, including compile error for access
+The `&out` parameter is now supported. 
+
 Errors
 ======
 
