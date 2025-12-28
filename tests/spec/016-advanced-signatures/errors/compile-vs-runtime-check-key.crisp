@@ -9,3 +9,8 @@
             (when+ (and (is-set? c) (> c 10)) 
               (set! sum (+ sum c))))
         sum))
+
+(def-function main (x)
+  (declare (function (int => int)))
+  ;; Passing a runtime variable X to :b means (> b 0) is not constant.
+  (add-some-runtime 10 :b x))

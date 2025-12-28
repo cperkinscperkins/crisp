@@ -203,11 +203,11 @@
          ;; Extract real body (remove declarations)
          (real-body (nthcdr (length declare-forms) body-and-loc)))
 
-    (multiple-value-bind (explicit-env return-types optional-idx)
+    (multiple-value-bind (explicit-env return-types optional-idx defaults key-idx)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
 
-      (if optional-idx
-          ;; --- OPTIONAL PARAMETERS: Lazy Instantiation (Generic Template) ---
+      (if (or optional-idx key-idx)
+          ;; --- OPTIONAL/KEY PARAMETERS: Lazy Instantiation (Generic Template) ---
           ;; We skip eager compilation here. The specific variants will be compiled
           ;; on-demand by instantiate-generic-function when called.
           (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name)
@@ -334,7 +334,7 @@
         (log:warn "Deeply nested params detected! Unwrapping.")
         (setf params (first params)))
 
-  (let* ((fn-decl (find 'function declarations :key #'car))
+  (let* ((fn-decl (find "FUNCTION" declarations :key (lambda (x) (symbol-name (car x))) :test #'string-equal))
 
          (return-types (if fn-decl
                            (analyze-return-type-from-spec (second fn-decl))
@@ -342,13 +342,14 @@
 
          (env nil)
          (optional-idx nil)
-         (defaults nil))
+         (defaults nil)
+         (key-idx nil))
 
     ;; Analyze Environment (and Optional Index)
     (cond
      ;; Case 1: #'(...) signature
      (fn-decl
-       (multiple-value-setq (env optional-idx defaults)
+       (multiple-value-setq (env optional-idx defaults key-idx)
                             (analyze-environment-from-spec params (second fn-decl))))
 
      ;; Case 2: Interleaved syntax ((a int) (b float))
@@ -370,12 +371,14 @@
      (t
        (setf env (analyze-environment-from-list params declarations))))
 
-    (values env return-types optional-idx defaults)))
+    (values env return-types optional-idx defaults key-idx)))
 
 (defun mangle-param-type-name (type)
   "Helper to mangle a type specifier for function names."
   (cond
    ((symbolp type) (string-downcase (symbol-name type)))
+   ((and (listp type) (eq (first type) 'keyword) (= (length type) 2))
+     (format nil "key_~a" (string-downcase (symbol-name (second type)))))
    ((listp type) (format nil "~{~a~^_~}" (mapcar #'mangle-param-type-name type)))
    (t "unknown")))
 
@@ -393,54 +396,108 @@
                        unless (and (listp f) (eq (car f) 'declare))
                      collect f))
          (arg-count (length explicit-arg-types))
-         ;; Determine active parameters (truncate environment to match arg count)
-         (active-env (subseq full-env 0 arg-count))
-         (active-param-names (mapcar #'first active-env))
-         (active-param-types (mapcar #'second active-env))
+         (key-idx (generic-function-def-keys generic-def))
+         active-env
+         remainder-env
          (defaults (generic-function-def-defaults generic-def)))
 
-    ;; Inject default values for missing optional parameters
-    ;; We wrap the body in LET bindings for any parameter in (subseq full-env arg-count) that has a default.
-    (let ((remainder-env (subseq full-env arg-count)))
-      (loop for (pname ptype) in remainder-env
+    (if key-idx
+        ;; --- KEYWORD PARAMETER LOGIC ---
+        (progn
+         (when (< arg-count key-idx)
+               (log:warn "Keyword Instantiation: Not enough positional arguments. Expected at least ~a, got ~a" key-idx arg-count)
+               (return-from instantiate-generic-function nil))
+
+         (let ((pos-env (subseq full-env 0 key-idx))
+               (key-args (subseq explicit-arg-types key-idx))
+               (key-active-env '())
+               (provided-params '()))
+
+           (unless (evenp (length key-args))
+             (log:warn "Keyword Instantiation: Odd number of keyword arguments: ~a" (length key-args))
+             (return-from instantiate-generic-function nil))
+
+           ;; Parse (Key Val) pairs
+           (loop for (k-type v-type) on key-args by #'cddr
+                 for i from 0
+                 do (progn
+                     ;; k-type must be (keyword :val)
+                     (unless (and (listp k-type) (eq (first k-type) 'keyword) (= (length k-type) 2))
+                       (log:warn "Keyword Instantiation: Expected keyword literal, got ~a" k-type)
+                       (return-from instantiate-generic-function nil))
+
+                     (let* ((key-kw (second k-type)) ;; :bugs
+                                                    (param-name (intern (string-upcase (symbol-name key-kw)) (symbol-package name)))
+                                                    ;; Verify this param exists in the key section of full-env
+                                                    (param-entry (assoc param-name (subseq full-env key-idx))))
+
+                       (unless param-entry
+                         (log:warn "Keyword Instantiation: Unknown keyword argument ~s for function ~s" key-kw name)
+                         ;; If &allow-other-keys support is needed, handle here. For now, strict.
+                         (return-from instantiate-generic-function nil))
+
+                       (push param-name provided-params)
+                       ;; Add to active-env: Key (ignored) + Value (bound to param-name)
+                       ;; Key param name: _k_i
+                       (push (list (intern (format nil "_K~d" i) (symbol-package name)) 'keyword) key-active-env)
+                       (push (list param-name v-type) key-active-env))))
+
+           (setf active-env (append pos-env (nreverse key-active-env)))
+
+           ;; Remainder = All keys declared - Provided (Preserve Order!)
+           (let ((all-keys (subseq full-env key-idx)))
+             (setf remainder-env (remove-if (lambda (p) (member (first p) provided-params)) all-keys)))))
+
+        ;; --- OPTIONAL PARAMETER LOGIC (Standard Prefix) ---
+        (progn
+         (setf active-env (subseq full-env 0 arg-count))
+         (setf remainder-env (subseq full-env arg-count))))
+
+    (let ((active-param-names (mapcar #'first active-env))
+          (active-param-types (mapcar #'second active-env)))
+
+      ;; Inject default values for missing parameters
+      ;; We wrap the body in LET bindings for any parameter in remainder-env that has a default.
+      ;; Must iterate in REVERSE order so that earlier parameters become OUTER bindings.
+      (loop for pname in (reverse (if key-idx (mapcar #'first remainder-env) (mapcar #'first remainder-env)))
             do (let ((def-entry (assoc pname defaults)))
                  (when def-entry
                        (log:info "Type-Checking Default Value Injection: ~a = ~a" pname (cdr def-entry))
-                       (setf body (list `(let ((,pname ,(cdr def-entry))) ,@body)))))))
+                       (setf body (list `(let ((,pname ,(cdr def-entry))) ,@body))))))
 
-    ;; Validations (Basic Arity check)
-    (unless (types-list-compatible-p explicit-arg-types active-param-types)
-      (log:warn "Lazy Instantiation Mismatch: ~a called with ~a, expected prefix of ~a" name explicit-arg-types active-param-types)
-      (return-from instantiate-generic-function nil))
+      ;; Validations (Basic Arity check)
+      (unless (types-list-compatible-p explicit-arg-types active-param-types)
+        (log:warn "Lazy Instantiation Mismatch: ~a called with ~a, expected prefix of ~a" name explicit-arg-types active-param-types)
+        (return-from instantiate-generic-function nil))
 
-    (let ((mangled-name (mangle-function-variant-name name active-param-types)))
-      (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name arg-count active-param-types)
+      (let ((mangled-name (mangle-function-variant-name name active-param-types)))
+        (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name arg-count active-param-types)
 
-      ;; Compile the specific variant
-      (let ((ast-node (internal-compile-function mangled-name
-                                                 active-env
-                                                 (generic-function-def-return-types generic-def)
-                                                 active-param-names
-                                                 body
-                                                 declarations
-                                                 (or (generic-function-def-source-location generic-def) location))))
+        ;; Compile the specific variant
+        (let ((ast-node (internal-compile-function mangled-name
+                                                   active-env
+                                                   (generic-function-def-return-types generic-def)
+                                                   active-param-names
+                                                   body
+                                                   declarations
+                                                   (or (generic-function-def-source-location generic-def) location))))
 
-        ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
-        ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
-        (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
-                                    (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
-                                                                              (sig (make-function-signature
-                                                                                    :name mangled-name
-                                                                                    :parameters active-param-types
-                                                                                    :return-types final-ret-types
-                                                                                    :source-location (or (generic-function-def-source-location generic-def) location))))
+          ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
+          ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
+          (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
+                                      (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
+                                                                                (sig (make-function-signature
+                                                                                      :name mangled-name
+                                                                                      :parameters active-param-types
+                                                                                      :return-types final-ret-types
+                                                                                      :source-location (or (generic-function-def-source-location generic-def) location))))
 
-          (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
-          ;; Append to existing signatures (thread safety? single threaded)
-          (setf (gethash mangled-name *function-table*)
-            (append (gethash mangled-name *function-table*) (list sig)))
+            (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
+            ;; Append to existing signatures (thread safety? single threaded)
+            (setf (gethash mangled-name *function-table*)
+              (append (gethash mangled-name *function-table*) (list sig)))
 
-          sig)))))
+            sig))))))
 
 (defun register-function-signature (form location)
   "Extracts and registers a function's signature without analyzing its body. 
@@ -451,10 +508,10 @@
          (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f)))
     (log:debug "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s" name (package-name (symbol-package name)) declare-forms)
 
-    (multiple-value-bind (env return-types optional-idx extracted-defaults)
+    (multiple-value-bind (env return-types optional-idx extracted-defaults key-idx)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
 
-      (if optional-idx
+      (if (or optional-idx key-idx)
           (progn
            (log:info "Registering GENERIC function template: ~s (Lazy Instantiation Mode)" name)
            (setf (gethash name *generic-functions*)
@@ -465,6 +522,7 @@
               :return-types return-types
               :declarations (loop for f in declare-forms append (rest f))
               :defaults extracted-defaults
+              :keys key-idx
               :body (nthcdr (length declare-forms) body)
               :source-location location)))
 
@@ -751,6 +809,7 @@
           (env '())
           (defaults '())
           (optional-start nil)
+          (key-start nil)
           (idx 0))
       (log:debug "Analyzing spec params: ~s, specs: ~s" params param-type-specs)
 
@@ -761,16 +820,49 @@
                   ;; Handle &optional in params
                   ((eq p '&optional)
                     (unless (eq ts '&optional)
-                      (error "Signature Mismatch: &optional present in parameter list but found ~s in type declaration. Signatures must match structure." ts))
-                    (when optional-start
-                          (error "Multiple &optional keywords found in signature."))
+                      (error "Signature Mismatch: &optional present in parameter list but found ~s in type declaration." ts))
+                    (when optional-start (error "Multiple &optional keywords found."))
+                    (when key-start (error "&optional cannot appear after &key."))
                     (setf optional-start idx)
                     (pop params)
                     (pop param-type-specs))
 
-                  ;; Handle &optional in types (but disallowed if not in params)
-                  ((eq ts '&optional)
-                    (error "Signature Mismatch: &optional present in type declaration but found ~s in parameter list." p))
+                  ;; Handle &key in params
+                  ((eq p '&key)
+                    (unless (eq ts '&key)
+                      (error "Signature Mismatch: &key present in parameter list but found ~s in type declaration." ts))
+                    (when key-start (error "Multiple &key keywords found."))
+                    (setf key-start idx)
+                    (pop params)
+                    (pop param-type-specs))
+
+                  ;; Handle markers in types (Error)
+                  ((or (eq ts '&optional) (eq ts '&key))
+                    (error "Signature Mismatch: ~s present in type declaration but missing in parameter list." ts))
+
+                  ;; Handle &key specialized syntax (:key type)
+                  ((and key-start (keywordp ts))
+                    (let ((name p) (def-val nil)
+                                   (val-type (second param-type-specs)))
+                      ;; Extract (name default) from params
+                      (when (listp p)
+                            (setf name (first p))
+                            (setf def-val (second p))
+                            (push (cons name def-val) defaults))
+
+                      ;; Validate param-type-specs has enough elements
+                      (unless val-type
+                        (error "Signature Mismatch: &key keyword ~s missing type." ts))
+
+                      ;; Validate name match (optional strictness, but good for sanity)
+                      (unless (string-equal (symbol-name name) (symbol-name ts))
+                        (log:warn "Signature key name mismatch: Param ~s vs Keyword spec ~s" name ts))
+
+                      (push (list name (parse-type-specifier val-type)) env)
+                      (incf idx)
+                      (pop params)
+                      (pop param-type-specs) ;; Pop keyword
+                      (pop param-type-specs))) ;; Pop value type
 
                   ;; Normal parameter (symbol or (name default))
                   (t
@@ -790,7 +882,7 @@
       (when (or params param-type-specs)
             (error 'crisp-signature-arity-error :expected (length fn-spec) :inferred (length env) :source-location nil))
 
-      (values (nreverse env) optional-start (nreverse defaults)))))
+      (values (nreverse env) optional-start (nreverse defaults) key-start))))
 
 ;; --- (type ...) Syntax Parsers (The Fallback) ---
 
@@ -1641,6 +1733,13 @@
   "Checks if an argument type is compatible with a parameter type."
   (log:debug "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
   (or (types-equivalent-p arg-type param-type)
+      ;; Keyword Literal -> Keyword Symbol
+      ;; Value: (keyword :foo) or (:keyword :foo), Param: keyword
+      (and (consp arg-type)
+           (or (eq (first arg-type) 'keyword) (eq (first arg-type) :keyword))
+           (or (eq param-type 'keyword) (eq param-type :keyword)
+               (eq param-type 'common-lisp:keyword)))
+
       ;; Incomplete/Composite Type compatibility:
       ;; 1. (PANTS :COLOR :RED) is compatible with PANTS
       (and (listp arg-type)
@@ -1910,8 +2009,9 @@
      (make-semantic-literal :value-type 'float :value expr :source-location location))
 
    ;; Case 1.5: It's a keyword symbol, like :foo
+   ;; Case 1.5: It's a keyword symbol, like :foo
    ((keywordp expr)
-     (error 'crisp-unsupported-form-error :form expr :source-location location))
+     (make-semantic-literal :value-type (list 'keyword expr) :value expr :source-location location))
 
    ;; Case 2: It's a variable, like 'a'
    ((symbolp expr)
@@ -2032,7 +2132,8 @@
                               (not (get-template-arity (first t-spec))))
                          (unwrap (first t-spec))
                          t-spec)))
-      (if (and (listp type) (not (valid-type-p type)))
+      (if (and (listp type) (not (valid-type-p type))
+               (not (eq (first type) 'keyword))) ;; Preserve keyword literal values
           (unwrap (first type))
           (unwrap type)))))
 
@@ -2381,7 +2482,7 @@
 
           ;; Case 1.5: It's a keyword symbol, like :foo
           ((keywordp expr)
-            (make-semantic-literal :value-type 'keyword :value expr :source-location location))
+            (make-semantic-literal :value-type (list 'keyword expr) :value expr :source-location location))
 
           ;; Case 2: It's a variable, like 'a'
           ((symbolp expr)

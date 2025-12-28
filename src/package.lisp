@@ -104,7 +104,7 @@
    #:llvm-build-ui-to-fp
    #:llvm-build-fp-to-si
    #:llvm-build-fp-to-ui
-   #:llvm-build-trunc
+   #:llvm-build-trunc #:llvm-build-fp-trunc
    #:llvm-build-zext #:llvm-build-sext
    #:llvm-build-ptr-to-int
    #:llvm-build-int-to-ptr
@@ -227,6 +227,10 @@
    #:to-long #:as-long
    #:to-float #:as-float
    #:to-double #:as-double
+   #:to-uchar #:as-uchar
+   #:to-ushort #:as-ushort
+   #:to-uint #:as-uint
+   #:to-ulong #:as-ulong
    #:truncate #:floor #:ceil #:round
 
    ;; error conditions

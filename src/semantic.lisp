@@ -33,6 +33,7 @@
   return-types
   declarations
   defaults
+  keys
   body
   source-location)
 
