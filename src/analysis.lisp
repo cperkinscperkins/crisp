@@ -1,6 +1,8 @@
 ;;; src/analysis.lisp
 (in-package :crisp.compiler)
 
+(defvar *analysis-access-mode* :read)
+
 (defun initialize-expression-analyzers ()
   "Registers all expression analyzers."
   (clrhash *expression-analyzers*)
@@ -99,8 +101,8 @@
 
     ;; Pass 2: Now that all signatures are known, compile the function bodies.
     (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
-    ;; After analysis, check the constructed graph for cycles.
     (check-for-recursion-cycles)))
+
 
 (defun propagate-implicit-arguments ()
   "Phase 4: Traverses the call graph backwards from originators to find all carriers."
@@ -364,7 +366,7 @@
                                       (unless (valid-type-p type)
                                         (error 'crisp-unknown-type-error :type-name type))
                                       (let ((parsed (parse-type-specifier type)))
-                                        (list name parsed))))
+                                        (list name parsed :kind :in))))
                                    (error "Mixed bare and typed parameters not allowed.")))))
 
      ;; Case 3: Standard declarations
@@ -810,16 +812,18 @@
           (defaults '())
           (optional-start nil)
           (key-start nil)
+          (out-start nil)
           (idx 0))
       (log:debug "Analyzing spec params: ~s, specs: ~s" params param-type-specs)
 
       (loop while (and params param-type-specs)
             do (let ((p (first params))
                      (ts (first param-type-specs)))
+                 (log:debug "LOOP: p=~s (type: ~a) ts=~s (type: ~a)" p (type-of p) ts (type-of ts))
                  (cond
                   ;; Handle &optional in params
-                  ((eq p '&optional)
-                    (unless (eq ts '&optional)
+                  ((and (symbolp p) (string-equal (symbol-name p) "&OPTIONAL"))
+                    (unless (and (symbolp ts) (string-equal (symbol-name ts) "&OPTIONAL"))
                       (error "Signature Mismatch: &optional present in parameter list but found ~s in type declaration." ts))
                     (when optional-start (error "Multiple &optional keywords found."))
                     (when key-start (error "&optional cannot appear after &key."))
@@ -828,16 +832,30 @@
                     (pop param-type-specs))
 
                   ;; Handle &key in params
-                  ((eq p '&key)
-                    (unless (eq ts '&key)
+                  ((and (symbolp p) (string-equal (symbol-name p) "&KEY"))
+                    (unless (and (symbolp ts) (string-equal (symbol-name ts) "&KEY"))
                       (error "Signature Mismatch: &key present in parameter list but found ~s in type declaration." ts))
                     (when key-start (error "Multiple &key keywords found."))
                     (setf key-start idx)
                     (pop params)
                     (pop param-type-specs))
 
+                  ;; Handle &out in params
+                  ((and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                    (unless (and (symbolp ts) (string-equal (symbol-name ts) "&OUT"))
+                      (error "Signature Mismatch: &out present in parameter list but found ~s in type declaration." ts))
+                    (when out-start (error "Multiple &out keywords found."))
+                    (when optional-start (error "&out cannot appear after &optional."))
+                    (when key-start (error "&out cannot appear after &key."))
+                    (setf out-start idx)
+                    (pop params)
+                    (pop param-type-specs))
+
                   ;; Handle markers in types (Error)
-                  ((or (eq ts '&optional) (eq ts '&key))
+                  ((and (symbolp ts)
+                        (or (string-equal (symbol-name ts) "&OPTIONAL")
+                            (string-equal (symbol-name ts) "&KEY")
+                            (string-equal (symbol-name ts) "&OUT")))
                     (error "Signature Mismatch: ~s present in type declaration but missing in parameter list." ts))
 
                   ;; Handle &key specialized syntax (:key type)
@@ -874,7 +892,8 @@
                             ;; Store default
                             (push (cons name def-val) defaults))
 
-                      (push (list name (parse-type-specifier ts)) env)
+                      (push (list name (parse-type-specifier ts)
+                                  :kind (cond (out-start :out) (t :in))) env)
                       (incf idx)
                       (pop params)
                       (pop param-type-specs))))))
@@ -946,7 +965,7 @@
           collect (let ((t-spec (gethash p env)))
                     (unless t-spec
                       (error "No type declared for parameter ~a" p))
-                    (list p t-spec)))))
+                    (list p t-spec :kind :in)))))
 
 (defun get-promoted-type (type-a-name type-b-name)
   "Determines the result type of a binary operation, applying promotion rules."
@@ -1621,7 +1640,7 @@
           (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
         index))))
 
-(defun analyze-set!-expression-OLD (expr env location)
+(defun analyze-set!-expression (expr env location)
   "Analyzes a (set! target value) expression."
   (let* ((target-form (second expr))
          (value-form (third expr))
@@ -1683,7 +1702,9 @@
 
           ;; Sub-case 2b: It is an expression analyzer (e.g. `~`, `aref`)
           ((gethash op *expression-analyzers*)
-            (let ((target-node (analyze-expression target-form env (append location '(1)))))
+            (let ((target-node
+                   (let ((*analysis-access-mode* :write))
+                     (analyze-expression target-form env (append location '(1))))))
               (make-semantic-set!
                :target-node target-node
                :value-node value-node
@@ -1708,9 +1729,10 @@
                      (struct-node (first arg-nodes))
                      (struct-type (semantic-node-type struct-node)))
 
-                ;; Verify struct node is a variable (l-value)
-                (unless (semantic-var-read-p struct-node)
-                  (error "Cannot set member of non-variable struct form: ~a" (second target-form)))
+                ;; Verify struct node is a variable (l-value) or reference (aref)
+                (unless (or (semantic-var-read-p struct-node)
+                            (semantic-aref-p struct-node))
+                  (error "Cannot set member of non-variable/non-reference struct form: ~a" (second target-form)))
 
                 (let ((member-index (get-struct-member-index struct-type member-sym)))
                   ;; Create the update node
@@ -1872,6 +1894,16 @@
                      (or (equal ret-type '(void)) (eq ret-type 'void)
                          (and (listp ret-type) (string-equal (symbol-name (first ret-type)) "VOID"))))
                 (error "Cannot dereference a Cell of type VOID. Cast it to a concrete type first.")))
+
+        ;; Check for invalid READ access on &out parameters
+        (when (or (string= (symbol-name op) "~") (string= (symbol-name op) "~REF~"))
+              (let ((first-arg (first arg-forms)))
+                (when (symbolp first-arg)
+                      (let ((binding (assoc first-arg env)))
+                        (when (and binding (eq (getf (cddr binding) :kind) :out))
+                              (error 'crisp-illegal-access-error
+                                :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." first-arg)
+                                :source-location location))))))
 
         (make-semantic-call :name (function-signature-name signature)
                             :type (function-signature-return-types signature)
@@ -2270,6 +2302,7 @@
 ;; PATCH: Redefine analyze-aref-expression to fix void cell dereference issue
 (defun analyze-aref-expression (expr env location)
   (let* ((op (first expr))
+         (target-sym (if (symbolp (second expr)) (second expr) nil))
          (array-node (analyze-expression (second expr) env (append location '(1))))
          (index-expr (third expr))
          (index-node (if index-expr
@@ -2277,6 +2310,14 @@
                          ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
                          (make-semantic-literal :value-type 'int :value 0 :source-location location)))
          (elem-type (get-array-element-type (semantic-node-type array-node))))
+
+    ;; Check for invalid READ access on &out parameters
+    (when (and target-sym (not (eq *analysis-access-mode* :write)))
+          (let ((binding (assoc target-sym env)))
+            (when (and binding (eq (getf (cddr binding) :kind) :out))
+                  (error 'crisp-illegal-access-error
+                    :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." target-sym)
+                    :source-location location))))
 
     (if elem-type
         (progn
@@ -2300,133 +2341,6 @@
               (analyze-function-call op expr env location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
 
-;; PATCH: Redefine analyze-set!-expression with deep debugging and fallback check
-(defun analyze-set!-expression (expr env location)
-  "Analyzes a (set! target value) expression."
-  (let* ((target-form (second expr))
-         (value-form (third expr))
-         (value-node (analyze-expression value-form env (append location '(2)))))
-
-    (cond
-     ;; Case 1: Simple variable assignment (set! x v)
-     ((symbolp target-form)
-       (let ((var-info (assoc target-form env)))
-         (unless var-info
-           (error 'crisp-unknown-variable :name target-form :source-location location))
-
-         ;; Verify types match
-         (let ((var-type (second var-info))
-               (val-type (semantic-node-type value-node)))
-           (unless (types-compatible-p val-type var-type)
-             (error 'crisp-type-error :expected var-type :inferred val-type :source-location location)))
-
-         (make-semantic-set!
-          :target-node (make-semantic-var-read :name target-form :type (second var-info) :source-location location)
-          :value-node value-node
-          :source-location location)))
-
-     ;; Case 2: Function Call / Struct Accessor
-     ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
-       (let* ((op (first target-form))
-              (op-args (rest target-form))
-              ;; Analyze the arguments to `(op args...)`
-              (arg-nodes (loop for arg in op-args
-                               for i from 1
-                               collect (analyze-expression arg env (append location (list 1 i)))))
-              (all-arg-nodes (append arg-nodes (list value-node)))
-              (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
-              ;; Check for a matching setter function signature: (op arg1 ... argN value)
-              (full-setter-name (intern (format nil "~a_SET!" op) (symbol-package op)))
-              (signatures (append (gethash op *function-table*)
-                            (gethash full-setter-name *function-table*)))
-              (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
-
-         ;; If no match found, try checking if it's a template we can instantiate
-         (unless match
-           (let ((template-op (if (gethash full-setter-name *template-registry*) full-setter-name op)))
-             (when (gethash template-op *template-registry*)
-                   (ensure-template-instantiation template-op all-arg-types (lambda (f l) (declare (ignore l)) (eval f)))
-                   ;; Re-fetch signatures after possible instantiation
-                   (setf signatures (append (gethash op *function-table*)
-                                      (gethash full-setter-name *function-table*)))
-                   (setf match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))))
-
-         (log:info "DEBUG SET!: op=~s arg-types=~s match=~s signatures-count=~d"
-                   op all-arg-types (if match (function-signature-name match) "NIL") (length signatures))
-
-         ;; Check if value is invalid VOID, regardless of match
-         (let ((val-type (semantic-node-type value-node)))
-           (let ((is-void (or (eq val-type 'void)
-                              (and (symbolp val-type) (string-equal (symbol-name val-type) "VOID"))
-                              (and (consp val-type)
-                                   (let ((head (first val-type)))
-                                     (or (eq head 'void)
-                                         (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
-             (when is-void
-                   (log:info "DEBUG SET!: CAUGHT VOID! val-type=~s" val-type)
-                   (error "Cannot set! using a VOID value."))))
-
-         (cond
-          ;; Sub-case 2a: Found an overloaded setter function -> Call it.
-          (match
-            (make-semantic-call
-             :name (function-signature-name match)
-             :type (function-signature-return-types match)
-             :args all-arg-nodes
-             :signature match
-             :source-location location))
-
-          ;; Sub-case 2b: It is an expression analyzer (e.g. `~`, `aref`)
-          ((gethash op *expression-analyzers*)
-            (let ((target-node (analyze-expression target-form env (append location '(1)))))
-              (make-semantic-set!
-               :target-node target-node
-               :value-node value-node
-               :source-location location)))
-
-          ;; Sub-case 2c: Fallback to Struct Member Update (Legacy Accessor Logic)
-          ;; Only valid if default accessors are used and no explicit setter overrides it.
-          (t
-            (let* ((op-name (symbol-name op))
-                   (is-accessor (or (alexandria:ends-with #\~ op-name)
-                                    (and (alexandria:starts-with #\~ op-name)
-                                         (alexandria:ends-with #\~ op-name)))))
-              (unless is-accessor
-                (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor." target-form))
-
-              ;; The structure member update logic expects the FIRST arg to be the struct.
-              (unless (= (length arg-nodes) 1)
-                (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a." op (length arg-nodes)))
-
-              (let* ((clean-name (string-trim "~" op-name))
-                     (member-sym (intern clean-name (symbol-package op)))
-                     (struct-node (first arg-nodes))
-                     (struct-type (semantic-node-type struct-node)))
-
-                ;; Verify struct node is a variable (l-value) OR a valid place for set!
-                ;; Removed check for semantic-var-read-p to allow generalized places like (~ p)
-                ;; (unless (semantic-var-read-p struct-node)
-                ;;   (error "Cannot set member of non-variable struct form: ~a" (second target-form)))
-
-                (let ((member-index (get-struct-member-index struct-type member-sym)))
-                  ;; Create the update node
-                  (let ((update-node (make-semantic-struct-member-update
-                                      :type struct-type
-                                      :struct-node struct-node
-                                      :member-index member-index
-                                      :value-node value-node
-                                      :source-location location)))
-
-                    ;; Wrap in a set! for the struct variable
-                    (make-semantic-set!
-                     :target-node struct-node
-                     :value-node update-node
-                     :source-location location)))))))))
-
-     (t (error "Invalid set! target structure: ~a" target-form)))))
-
-(in-package :crisp.compiler)
-(def-expression-analyzer set! analyze-set!-expression)
 
 ;; PATCH: Handle Struct/Record CT Accessors on Incomplete/Parameterized Types
 (defun analyze-incomplete-type-accessor (op expr env location)

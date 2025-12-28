@@ -83,3 +83,10 @@
   (:report (lambda (condition stream)
              (format stream "Overloading ~a is not allowed."
                (overload-error-name condition)))))
+
+(define-condition crisp-illegal-access-error (crisp-compiler-error)
+    ()
+  (:report (lambda (condition stream)
+             (format stream "Illegal access: ~a~@[ (Location: ~a)~]"
+               (error-message condition)
+               (error-source-location condition)))))
