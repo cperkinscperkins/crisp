@@ -1,0 +1,23 @@
+#|
+;; CHECK-FAIL: "<insert message here>"
+
+;; &optional must appear before &key.  Error if reversed.
+
+(def-function keys-then-options (a &key d e &optional b c  )
+    (declare #'(int &key :d int :e int &optional int int  => int)) ;; <-- stinky
+    (let ((sum a))
+    
+        (when (is-set? b)
+            (set! sum (+ sum b))
+            (when+ (is-set? c)
+                (set! sum (+ sum c))))
+        (when (is-set? d)
+            (set! sum (+ sum d)))
+        (when (is-set? e)
+            (set! sum (+ sum e)))
+        sum))
+
+(def-kernel exercise-o-k (a b d)
+    (declare #'(int int int => nil))
+    (keys-then-options a :d d b ))
+    |#
