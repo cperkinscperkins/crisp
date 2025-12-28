@@ -1,4 +1,4 @@
-#|
+
 ;; Like in Common Lisp, &optional comes before &key 
 (def-function option-and-keys (a &optional b c &key d e )
     (declare #'(int &optional int int &key :d int :e int => int)) ;; <-- whooo
@@ -50,7 +50,7 @@
         (set! (~ res) sum)))
 
 (def-kernel expertise-o-k (a r e)
-    (declare #'(int &out (cell int :global :write-only)  int => nil))
+    (declare #'(int (cell int :global :write-only)  int => nil))
     (out-and-key a r :e e))
 
 
@@ -72,4 +72,3 @@
     (declare #'(int (cell int :global :read-write) int int => nil))
     (shebang a r b :e e))
 
-|#

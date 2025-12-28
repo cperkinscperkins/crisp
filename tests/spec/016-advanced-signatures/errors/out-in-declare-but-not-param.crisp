@@ -1,0 +1,5 @@
+;; CHECK-FAIL: "Signature Mismatch: CRISP-LANGUAGE::&OUT present in type declaration but missing in parameter list"
+
+(def-function store (a b) ;; <-- missing &out
+    (declare #'(int &out (cell int))) 
+    (set! (~ b) a))

@@ -1,5 +1,5 @@
-#|
 
+;; CHECK-FAIL: "An unexpected error occurred: &optional cannot appear after &key."
 
 ;; &optional must appear before &key.  Error if reversed.
 
@@ -20,4 +20,4 @@
 (def-kernel exercise-o-k (a b d)
     (declare #'(int int int => nil))
     (keys-then-options a :d d b ))
-    |#
+    

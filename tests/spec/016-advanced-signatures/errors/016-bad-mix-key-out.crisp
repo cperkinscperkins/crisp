@@ -1,7 +1,8 @@
+;; CHECK-FAIL: "An unexpected error occurred: &out cannot appear after &key."
 
 ;; &out must come before &key
 ;; it is an error if that order is reversed
-#|
+
 (def-function key-then-out (a &key d e &out res )
     (declare #'(int &key :d int :e int &out (cell int)  => nil))
     (let ((sum a))
@@ -15,4 +16,4 @@
     (declare #'(int &out (cell int :global :write-only)  int => nil))
     (out-and-key a :e e r ))
 
-    |#
+    
