@@ -1,4 +1,4 @@
-;;; src/environment.lisp
+﻿;;; src/environment.lisp
 (in-package :crisp.compiler)
 
 ;;; =========================================================
@@ -94,19 +94,6 @@
        (setf env (analyze-environment-from-list params declarations))))
 
     (values env return-types optional-idx defaults key-idx)))
-
-(defun mangle-param-type-name (type)
-  "Helper to mangle a type specifier for function names."
-  (cond
-   ((symbolp type) (string-downcase (symbol-name type)))
-   ((and (listp type) (eq (first type) 'keyword) (= (length type) 2))
-     (format nil "key_~a" (string-downcase (symbol-name (second type)))))
-   ((listp type) (format nil "~{~a~^_~}" (mapcar #'mangle-param-type-name type)))
-   (t "unknown")))
-
-(defun mangle-function-variant-name (base-name param-types)
-  (let ((suffix (mapcar #'mangle-param-type-name param-types)))
-    (intern (format nil "~a_~{~a~^_~}" base-name suffix) (symbol-package base-name))))
 
 (defun instantiate-generic-function (generic-def explicit-arg-types location)
   "Instantiates a lazy generic function variant for the given argument types."

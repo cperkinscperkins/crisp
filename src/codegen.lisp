@@ -1,4 +1,4 @@
-;;;; Crisp - Lisp for Developing GPU Kernels
+﻿;;;; Crisp - Lisp for Developing GPU Kernels
 ;;;; Copyright (c) 2025 Christopher Perkins
 ;;;;
 ;;;; Licensed under the MIT License. See LICENSE file in the project root.
@@ -63,14 +63,6 @@
 
 (defparameter *cached-int32-type* nil)
 (defparameter *cached-int64-type* nil)
-
-(defun mangle-type-spec (type-spec)
-  "Creates a string representation of a type spec for name mangling."
-  (log:debug "mangle-type-spec: ~s (type-of: ~a)" type-spec (type-of type-spec))
-  (cond
-   ((symbolp type-spec) (string-downcase (symbol-name type-spec)))
-   ((listp type-spec) (format nil "~{~a~^_~}" (mapcar #'mangle-type-spec type-spec)))
-   (t (error "Cannot mangle unknown type specifier: ~a" type-spec))))
 
 (defun crisp-type-to-llvm-type (type-spec module)
   "Resolves a Crisp type specifier (simple or parameterized) to an LLVM type."
