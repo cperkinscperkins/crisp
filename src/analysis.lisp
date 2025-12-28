@@ -207,35 +207,10 @@
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
 
       (if optional-idx
-          ;; --- OPTIONAL PARAMETERS: Template Explosion ---
-          (let ((start-idx optional-idx)
-                (end-idx (length explicit-env)))
-            (log:info "Compiling ~a variants for function ~a (Optional Index: ~a)" (- end-idx start-idx) name optional-idx)
-
-            (loop for i from start-idx to end-idx
-                  do (let* ((sub-env (subseq explicit-env 0 i))
-                            (sub-params (mapcar #'first sub-env))
-                            (param-types (mapcar #'second sub-env))
-                            (mangled-name (let ((suffix (mapcar #'mangle-param-type-name param-types)))
-                                            (intern (format nil "~a_~{~a~^_~}" name suffix) (symbol-package name)))))
-
-                       (let ((*current-compiling-function* mangled-name))
-                         (push *current-compiling-function* *single-pass-call-stack*)
-                         (unwind-protect
-                             (let ((semantic-node
-                                    (internal-compile-function
-                                     mangled-name
-                                     sub-env
-                                     return-types
-                                     sub-params
-                                     real-body ; Use full body (is-set? handles missing vars)
-                                     (loop for f in declare-forms append (rest f))
-                                     location)))
-
-                               (when semantic-node
-                                     (log:info "Generating IR for variant ~a" mangled-name)
-                                     (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))
-                           (pop *single-pass-call-stack*))))))
+          ;; --- OPTIONAL PARAMETERS: Lazy Instantiation (Generic Template) ---
+          ;; We skip eager compilation here. The specific variants will be compiled
+          ;; on-demand by instantiate-generic-function when called.
+          (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name)
 
           ;; --- STANDARD Compilation (No Optionals) ---
           (let ((*current-compiling-function* (second form)))
@@ -366,13 +341,14 @@
                            (analyze-return-type-from-list declarations)))
 
          (env nil)
-         (optional-idx nil))
+         (optional-idx nil)
+         (defaults nil))
 
     ;; Analyze Environment (and Optional Index)
     (cond
      ;; Case 1: #'(...) signature
      (fn-decl
-       (multiple-value-setq (env optional-idx)
+       (multiple-value-setq (env optional-idx defaults)
                             (analyze-environment-from-spec params (second fn-decl))))
 
      ;; Case 2: Interleaved syntax ((a int) (b float))
@@ -394,7 +370,7 @@
      (t
        (setf env (analyze-environment-from-list params declarations))))
 
-    (values env return-types optional-idx)))
+    (values env return-types optional-idx defaults)))
 
 (defun mangle-param-type-name (type)
   "Helper to mangle a type specifier for function names."
@@ -420,7 +396,17 @@
          ;; Determine active parameters (truncate environment to match arg count)
          (active-env (subseq full-env 0 arg-count))
          (active-param-names (mapcar #'first active-env))
-         (active-param-types (mapcar #'second active-env)))
+         (active-param-types (mapcar #'second active-env))
+         (defaults (generic-function-def-defaults generic-def)))
+
+    ;; Inject default values for missing optional parameters
+    ;; We wrap the body in LET bindings for any parameter in (subseq full-env arg-count) that has a default.
+    (let ((remainder-env (subseq full-env arg-count)))
+      (loop for (pname ptype) in remainder-env
+            do (let ((def-entry (assoc pname defaults)))
+                 (when def-entry
+                       (log:info "Type-Checking Default Value Injection: ~a = ~a" pname (cdr def-entry))
+                       (setf body (list `(let ((,pname ,(cdr def-entry))) ,@body)))))))
 
     ;; Validations (Basic Arity check)
     (unless (types-list-compatible-p explicit-arg-types active-param-types)
@@ -465,7 +451,7 @@
          (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f)))
     (log:debug "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s" name (package-name (symbol-package name)) declare-forms)
 
-    (multiple-value-bind (env return-types optional-idx)
+    (multiple-value-bind (env return-types optional-idx extracted-defaults)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
 
       (if optional-idx
@@ -478,6 +464,7 @@
               :env env
               :return-types return-types
               :declarations (loop for f in declare-forms append (rest f))
+              :defaults extracted-defaults
               :body (nthcdr (length declare-forms) body)
               :source-location location)))
 
@@ -758,10 +745,11 @@
         '(nil))))
 
 (defun analyze-environment-from-spec (params fn-spec)
-  "Builds the environment from the signature. Returns (values env optional-start-index)."
+  "Builds the environment from the signature. Returns (values env optional-start-index defaults-alist)."
   (let ((arrow-pos (position '=> fn-spec)))
     (let ((param-type-specs (subseq fn-spec 0 (or arrow-pos (length fn-spec))))
           (env '())
+          (defaults '())
           (optional-start nil)
           (idx 0))
       (log:debug "Analyzing spec params: ~s, specs: ~s" params param-type-specs)
@@ -784,17 +772,25 @@
                   ((eq ts '&optional)
                     (error "Signature Mismatch: &optional present in type declaration but found ~s in parameter list." p))
 
-                  ;; Normal parameter
+                  ;; Normal parameter (symbol or (name default))
                   (t
-                    (push (list p (parse-type-specifier ts)) env)
-                    (incf idx)
-                    (pop params)
-                    (pop param-type-specs)))))
+                    (let ((name p) (def-val nil))
+                      ;; Extract (name default)
+                      (when (listp p)
+                            (setf name (first p))
+                            (setf def-val (second p))
+                            ;; Store default
+                            (push (cons name def-val) defaults))
+
+                      (push (list name (parse-type-specifier ts)) env)
+                      (incf idx)
+                      (pop params)
+                      (pop param-type-specs))))))
 
       (when (or params param-type-specs)
             (error 'crisp-signature-arity-error :expected (length fn-spec) :inferred (length env) :source-location nil))
 
-      (values (nreverse env) optional-start))))
+      (values (nreverse env) optional-start (nreverse defaults)))))
 
 ;; --- (type ...) Syntax Parsers (The Fallback) ---
 

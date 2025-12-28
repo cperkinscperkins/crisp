@@ -32,6 +32,7 @@
   env
   return-types
   declarations
+  defaults
   body
   source-location)
 

@@ -1,9 +1,0 @@
-(def-function add-some (a &optional (b 0))
-    (declare #'(int &optional int => int))
-    (+ a b))
-
-(def-function add-some-again (a &optional (b 0))
-    (declare #'(int &optional int => int))
-    (if+ (is-set? b) ;; <-- if there's a default value, is-set? is TRUE? 
-        (+ a b)
-       a))   ;<-- impossible to reach?
