@@ -244,6 +244,7 @@
    #:type-error-inferred
    #:crisp-unknown-variable
    #:unknown-variable-name
+   #:crisp-illegal-access-error
 
    ;; Semantic Node types
    #:semantic-function #:semantic-return #:semantic-literal

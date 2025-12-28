@@ -1,0 +1,23 @@
+
+;; fortunately, there are no default values for &out
+
+;; single
+(def-function cell-add (A &out C)
+    (declare #'((cell int :global :readable) &out (cell int :global :writeable) => nil))
+    (set! (~ C) (+ (~ A) (~ A))))
+
+;; multiple
+(def-function cell-scatter (A &out B C D)
+    (declare #'((cell int :global :readable)
+                &out (cell int :global :writeable) (cell int :global) (cell int) => nil))
+    (let ((a (~ A)))
+        (set! (~ B) a)
+        (set! (~ C) a)
+        (set! (~ D) a)))
+
+(def-function no-tocar (&out out-c)
+    (declare #'(&out (cell int :global :read-write) => nil))
+    (let ((initial 10))
+        (set! (~ out-c) (+ initial 1))))  ;; <-- setting is fine. but reading is not.
+
+

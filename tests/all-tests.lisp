@@ -136,11 +136,11 @@
              (is equal (list (intern "CELL_LONG_GLOBAL_READ-WRITE" :crisp.compiler)) (analyze-return-type-from-spec '(int => (cell long)))))
 
 (define-test (analyzer environment-from-spec)
-             (is equal '((a int) (b float))
+             (is equal '((a int :kind :in) (b float :kind :in))
                  (analyze-environment-from-spec '(a b) '(int float => nil)))
              (fail (analyze-environment-from-spec '(a) '(bar => nil))
                    'crisp-unknown-type-error)
-             (is equal (list (list 'a (intern "CELL_LONG_GLOBAL_READ-WRITE" :crisp.compiler)))
+             (is equal (list (list 'a (intern "CELL_LONG_GLOBAL_READ-WRITE" :crisp.compiler) :kind :in))
                  (analyze-environment-from-spec '(a) '((cell long) => nil))))
 
 (define-test (analyzer return-type-from-list)
@@ -568,7 +568,7 @@
              (multiple-value-bind (env return-types)
                  (crisp.compiler::parse-function-declarations '(a b)
                                                               '((function (int float => int))))
-               (is equal '((a int) (b float)) env)
+               (is equal '((a int :kind :in) (b float :kind :in)) env)
                (is equal '(int) return-types))
 
              ;; Case 2: Legacy (type ...) and (return-type ...) syntax
@@ -576,12 +576,12 @@
              (multiple-value-bind (env return-types)
                  (crisp.compiler::parse-function-declarations '(x y)
                                                               '((type x y int) (return-type int)))
-               (is equal '((x int) (y int)) env)
+               (is equal '((x int :kind :in) (y int :kind :in)) env)
                (is equal '(int) return-types))
 
              ;; Case 3: Mixed (Function spec takes precedence)
              (multiple-value-bind (env return-types)
                  (crisp.compiler::parse-function-declarations '(a)
                                                               '((function (float => float)) (type a int)))
-               (is equal '((a float)) env)
+               (is equal '((a float :kind :in)) env)
                (is equal '(float) return-types)))
