@@ -1,5 +1,5 @@
 #|
-;; CHECK-FAIL: "<insert message here>"
+
 
 ;; &optional must appear before &key.  Error if reversed.
 

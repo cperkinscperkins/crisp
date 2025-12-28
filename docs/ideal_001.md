@@ -490,8 +490,8 @@ then use `&out` and enlist the compilers help in enforcing usage boundaries.
 
 The `&out` parameter list keyword marks the beginning of the output parameters. 
 All subsequent parameters in the list are treated as output parameters and are subject 
-to the write-only contract within the function's scope. Following  `&out` there can be `&optional` and `&key` paramters, 
-there are NOT considered to be `&out` parameters.
+to the write-only contract within the function's scope. Following  `&out` there can be `&optional` and then `&key` paramters, these are NOT considered to be `&out` parameters.
+Note that these advanced signature constructs are order sensitive. The order is `&out => &optional => &key` and it is a compile error to order them otherwise.
 
 
 
