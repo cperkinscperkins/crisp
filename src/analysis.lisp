@@ -1740,6 +1740,16 @@
            (or (eq param-type 'keyword) (eq param-type :keyword)
                (eq param-type 'common-lisp:keyword)))
 
+      ;; KEYWORD Literal -> Enum Type
+      ;; Value: (keyword :red), Param: color (where :red is in color)
+      (and (consp arg-type)
+           (or (eq (first arg-type) 'keyword) (eq (first arg-type) :keyword))
+           (symbolp param-type)
+           (let ((enum-def (gethash param-type *crisp-enums*))
+                 (key (second arg-type)))
+             (and enum-def
+                  (assoc key (crisp.compiler::enumeration-def-members enum-def)))))
+
       ;; Incomplete/Composite Type compatibility:
       ;; 1. (PANTS :COLOR :RED) is compatible with PANTS
       (and (listp arg-type)
