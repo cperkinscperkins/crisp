@@ -20,6 +20,7 @@
                                              (:file "src/semantic")
                                              (:file "src/errors") ; 3. Conditions
                                              (:file "src/types") ; 4. Type System
+                                             (:file "src/parameters")
                                              (:file "src/structs") ; 5. Struct Layout
 
                                              (:file "src/macros")

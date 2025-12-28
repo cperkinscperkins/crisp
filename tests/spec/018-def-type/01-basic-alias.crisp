@@ -4,8 +4,10 @@
 (def-type iii int)
 
 (def-function add-two (a b)
-    (declare #'(iii int => iii)))
+    (declare #'(iii int => iii))
+    (+ a b))
 
-(def-function submerse-two (a b &out c)
-    (declare #'(iii int &out (cell iii) => nil))
-    (set! (~ c) (+ a b)))
+(def-function submerse-two (a b &out c d)
+    (declare #'(iii int &out (cell int) (cell iii) => nil))
+    (set! (~ c) (add-two b a)) ;; <-- intentionally reverse so b:int is passed as iii, and vice versa.
+    (set! (~ d) (add-two b a)))
