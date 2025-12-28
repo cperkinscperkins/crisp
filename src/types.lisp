@@ -1,4 +1,4 @@
-﻿;;;; Crisp - Lisp for Developing GPU Kernels
+;;;; Crisp - Lisp for Developing GPU Kernels
 ;;;; Copyright (c) 2025 Christopher Perkins
 ;;;;
 ;;;; Licensed under the MIT License. See LICENSE file in the project root.
@@ -164,7 +164,7 @@ This supports overloading templates by arity or other factors.")
                                                        (second param)
                                                        nil)))))
                ;; Truncate nil tail if strict? Or just return full args?
-               ;; If original args had keywords, we might need more complex handling.
+               ;; If original args had keywords, we might need to more complex handling.
                ;; For now, assume positional simplicity for templates like CELL.
                ;; But wait, canonicalize previously handled keyword args for CELL: (cell int :access :rw)
                ;; We should preserve that hybrid property mapping capability generically too.

@@ -1,4 +1,4 @@
-﻿;;; src/analysis.lisp
+;;; src/analysis.lisp
 (in-package :crisp.compiler)
 
 (defvar *analysis-access-mode* :read)

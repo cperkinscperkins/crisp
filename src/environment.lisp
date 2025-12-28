@@ -1,4 +1,4 @@
-﻿;;; src/environment.lisp
+;;; src/environment.lisp
 (in-package :crisp.compiler)
 
 ;;; =========================================================
