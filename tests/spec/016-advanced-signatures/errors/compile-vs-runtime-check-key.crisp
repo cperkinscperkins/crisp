@@ -1,0 +1,16 @@
+;; CHECK-FAIL: "IF+ condition failed to evaluate at compile time"
+
+;; this should fail because when+ demands a compile-time known value.
+(def-function add-some-runtime (a &key b c)
+    (declare #'(int &key :b int :c int => int))
+    (let ((sum a))
+        (when+ (and (is-set? b) (> b 0))
+            (set! sum (+ sum b))
+            (when+ (and (is-set? c) (> c 10)) 
+              (set! sum (+ sum c))))
+        sum))
+
+(def-function main (x)
+  (declare (function (int => int)))
+  ;; Passing a runtime variable X to :b means (> b 0) is not constant.
+  (add-some-runtime 10 :b x))

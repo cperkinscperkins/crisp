@@ -171,10 +171,11 @@
 
   ;; 1. Validate Parameter Completeness
   (dolist (param params)
-    (let ((p-name (first param))
-          (p-type (second param)))
-      (when (incomplete-type-p p-type)
-            (error "Invalid Kernel Parameter '~a' of type '~a': Kernel parameters must be COMPLETE types. Compile-time properties cannot be unspecified at the kernel boundary." p-name p-type))))
+    (when (listp param)
+          (let ((p-name (first param))
+                (p-type (second param)))
+            (when (incomplete-type-p p-type)
+                  (error "Invalid Kernel Parameter '~a' of type '~a': Kernel parameters must be COMPLETE types. Compile-time properties cannot be unspecified at the kernel boundary." p-name p-type)))))
 
   ;; 2. Expand to def-function with entry-point declaration
   `(def-function ,name ,params

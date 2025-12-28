@@ -156,6 +156,7 @@
 
 ;; Global for testing isolation
 (defvar *struct-name-prefix* "")
+(defparameter *record-definitions* (make-hash-table))
 
 (defun ensure-struct-llvm-type (name)
   "Ensures the LLVM struct type exists for the given struct name.

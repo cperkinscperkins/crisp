@@ -87,6 +87,10 @@
      (when (eq type-spec 'long)
            (return-from crisp-type-to-llvm-type
                         (or *cached-int64-type* (llvm-int64-type-in-context (llvm-get-module-context module)))))
+     ;; KEYWORD -> Int32
+     (when (or (eq type-spec 'keyword) (eq type-spec 'symbol))
+           (return-from crisp-type-to-llvm-type
+                        (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module)))))
      (resolve-type-to-llvm type-spec))
    ;; Parameterized type like '(cell int)
    ((listp type-spec)
@@ -103,19 +107,29 @@
             (resolve-type-to-llvm mangled)))
         ;; We try to mangle it and look it up.
         (t
-          (let ((mangled-name (intern (format nil "~a_~{~a~^_~}" base-type (rest type-spec)) (symbol-package base-type))))
-            (if (or (gethash mangled-name *crisp-structs*) (find-struct-definition-by-name mangled-name))
-                (resolve-type-to-llvm mangled-name)
-                ;; Fallback: If mangling fails, check if the base type itself is valid.
-                ;; This supports Incomplete Types / Composite Types with Props (e.g. (PANTS :COLOR :RED))
-                ;; where the type is just PANTS.
-                (if (or (gethash base-type *crisp-structs*)
-                        (gethash base-type *crisp-types*))
-                    (resolve-type-to-llvm base-type)
-                    (error "Internal codegen error: Unknown parameterized type ~a (pkg: ~a). Mangled: ~a"
-                      base-type
-                      (package-name (symbol-package base-type))
-                      mangled-name))))))))
+          (let* ((pkg (symbol-package base-type))
+                 (pkg-name (package-name pkg))
+                 (mangled-str (format nil "~a_~{~a~^_~}" base-type (rest type-spec)))
+                 (mangled-name (if (or (string= pkg-name "COMMON-LISP") (string= pkg-name "KEYWORD"))
+                                   (intern mangled-str *package*)
+                                   (intern mangled-str pkg))))
+            (cond
+             ((or (gethash mangled-name *crisp-structs*) (find-struct-definition-by-name mangled-name))
+               (resolve-type-to-llvm mangled-name))
+             ;; Handle built-in parameterized aliases (KEYWORD args) -> Just i32
+             ((or (eq base-type 'keyword) (eq base-type 'symbol) (eq base-type 'quote))
+               (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
+             ;; Fallback: If mangling fails, check if the base type itself is valid.
+             ;; This supports Incomplete Types / Composite Types with Props (e.g. (PANTS :COLOR :RED))
+             ;; where the type is just PANTS.
+             ((or (gethash base-type *crisp-structs*)
+                  (gethash base-type *crisp-types*))
+               (resolve-type-to-llvm base-type))
+             (t
+               (error "Internal codegen error: Unknown parameterized type ~a (pkg: ~a). Mangled: ~a"
+                 base-type
+                 (package-name (symbol-package base-type))
+                 mangled-name))))))))
    (t (error "Internal codegen error: Invalid type specifier ~a" type-spec))))
 
 (defun get-expanded-types (type-spec module)
@@ -377,7 +391,8 @@
                   (let ((memb (assoc kw (crisp.compiler::enumeration-def-members enum-def))))
                     (when memb (return-from resolve-keyword-constant (cdr memb)))))
                 *crisp-enums*)
-       (error "Unable to resolve keyword constant ~a to an integer value. Is it defined in an enumeration?" kw))))
+       ;; Fallback: Hash the keyword for generic usage (e.g. &key tags)
+       (ldb (byte 32 0) (sxhash kw)))))
 
 ;; -- literal value --
 (defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
@@ -397,6 +412,9 @@
                              ;; For zero-cost abstraction, we don't emit a real function pointer.
                              ;; The type system tracks the identity, but at runtime it's a ghost.
                              (llvm-get-undef llvm-type))
+                           ((or (eq base-type 'keyword) (eq base-type 'symbol))
+                             (let ((ival (resolve-keyword-constant value)))
+                               (llvm-const-int (llvm-int32-type) ival nil)))
                            ((eq base-type 'cell)
                              (let* ((storage-var-name '__storage)
                                     (storage-alloca (gethash storage-var-name var-env)))

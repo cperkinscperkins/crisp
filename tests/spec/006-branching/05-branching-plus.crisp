@@ -12,5 +12,29 @@
        0
        a))
 
+(def-function test-when-plus-true (a)
+  (declare #'(int => int))
+  (when+ (> 10 5)
+       a))
+
+(def-function test-when-plus-false (a)
+  (declare #'(int => int))
+  (when+ (< 10 5)
+       a))
+
+#|
+(def-function test-unless-plus-false (a)
+  (declare #'(int => int))
+  (unless+ (> 10 5)
+       a))
+|#
+
+(def-function test-unless-plus-true (a)
+  (declare #'(int => int))
+  (unless+ (< 10 5)
+       a))
+
+      
+
 ;; Since we can't easily test *compilation failure* in a standard run,
 ;; we test the success paths here.

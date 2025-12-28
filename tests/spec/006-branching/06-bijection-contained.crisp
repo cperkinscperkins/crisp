@@ -1,0 +1,18 @@
+(with-template-type (T)
+  (def-function do-something (v)
+    (declare #'(T => T))
+    (r-t-assert (< v (as T 100)) "value must be less than 100")
+    v))
+
+
+(def-function this-sb-ok (a b c)
+    (declare #'(int long float => long))
+    (if (< a 20)
+        (do-something b)
+      (do-something c))
+    b)
+
+(def-function  also-ok (a b c)
+    (declare #'(int long float => long))
+    (let ((bad (if (< a 20) b c)))
+        b))
