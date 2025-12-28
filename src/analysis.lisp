@@ -1,4 +1,4 @@
-﻿;;; src/analysis.lisp
+;;; src/analysis.lisp
 (in-package :crisp.compiler)
 
 (defvar *analysis-access-mode* :read)
@@ -327,6 +327,10 @@
   (remhash node visiting)
   (setf (gethash node visited) t))
 
+(defun find-variable-in-env (name env)
+  "Finds a variable definition in the environment."
+  (find name env :key #'parameter-def-name))
+
 (defun validate-return-types (name body env declared-return-types location)
   "Analyzes the function body and validates return types."
   (declare (ignore name))
@@ -374,10 +378,8 @@
 (defun internal-compile-function (name explicit-env return-type params body declarations location)
   "Core compilation logic for a function, accepting a pre-parsed environment."
 
-  ;; Defensive Sanitation: If env contains double-nested lists (e.g. key is a list), fix it.
-  (when (and explicit-env (listp (car explicit-env)) (listp (first (car explicit-env))))
-        (log:error "CORRUPTION DETECTED in explicit-env! Fixing. Env: ~s" explicit-env)
-        (setf explicit-env (mapcar (lambda (x) (if (listp (first x)) (first x) x)) explicit-env)))
+  ;; Defensive Sanitation: Obsolete with parameter-def struct change.
+  ;; (when (and explicit-env (listp (car explicit-env)) (listp (first (car explicit-env)))) ...
 
   ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
   (let ((name-str (symbol-name name)))
@@ -407,7 +409,7 @@
       (when (and (or (null return-type) (equal return-type '(nil)))
                  (not (equal inferred-return-types '(nil))))
             (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
-            (let* ((param-types (mapcar #'second explicit-env))
+            (let* ((param-types (mapcar #'parameter-def-type explicit-env))
                    (sig (find-if (lambda (s) (equal (function-signature-parameters s) param-types))
                             (gethash name *function-table*))))
               (when sig
@@ -417,8 +419,10 @@
       (let ((return-node (first (last body-nodes))))
         (make-semantic-function
          :name name
-         :param-list (loop for (param-name param-type) in env
-                           collect (make-semantic-param :name param-name :type param-type :source-location location))
+         :param-list (loop for param in env
+                           collect (make-semantic-param :name (parameter-def-name param)
+                                                        :type (parameter-def-type param)
+                                                        :source-location location))
          :return-type (cond
                        ((or (null return-type) (equal return-type '(nil)))
                          inferred-return-types)
@@ -577,7 +581,7 @@
       (error "is-set? expects a symbol, got ~s" var))
     ;; Since this is a compile-time check for optional parameters in specialized templates,
     ;; the 'env' contains *only* the parameters present for this specific specialization.
-    (if (assoc var env)
+    (if (find-variable-in-env var env)
         (make-semantic-literal :value-type 'int :value 1 :source-location location)
         (make-semantic-literal :value-type 'int :value 0 :source-location location))))
 
@@ -926,7 +930,7 @@
                                 ;; For a single binding, we implicitly take the first return value's type.
                                 (var-type (get-single-value-type init-node)))
                            (push (cons var-name init-node) bindings-list)
-                           (setf current-env (cons (list var-name var-type) current-env))))
+                           (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local) current-env))))
 
                        ;; Case 2: Multiple variable binding (destructuring)
                        ((> (length binding-vars) 1)
@@ -947,7 +951,7 @@
                                                        :index j
                                                        :source-location (semantic-node-source-location init-node))))
                                    (push (cons var-name extract-node) bindings-list)
-                                   (setf current-env (cons (list var-name var-type) current-env)))))
+                                   (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local) current-env)))))
                        (t (error "Malformed let binding: ~a" binding))))))
           ;; The loop builds the bindings list in reverse, so we reverse it back.
           (values current-env (reverse bindings-list)))
@@ -1122,18 +1126,18 @@
     (cond
      ;; Case 1: Simple variable assignment (set! x v)
      ((symbolp target-form)
-       (let ((var-info (assoc target-form env)))
+       (let ((var-info (find-variable-in-env target-form env)))
          (unless var-info
            (error 'crisp-unknown-variable :name target-form :source-location location))
 
          ;; Verify types match
-         (let ((var-type (second var-info))
+         (let ((var-type (parameter-def-type var-info))
                (val-type (semantic-node-type value-node)))
            (unless (types-compatible-p val-type var-type)
              (error 'crisp-type-error :expected var-type :inferred val-type :source-location location)))
 
          (make-semantic-set!
-          :target-node (make-semantic-var-read :name target-form :type (second var-info) :source-location location)
+          :target-node (make-semantic-var-read :name target-form :type (parameter-def-type var-info) :source-location location)
           :value-node value-node
           :source-location location)))
 
@@ -1249,9 +1253,9 @@
              (if implicit-args-required
                  (let ((implicit-arg-nodes
                         (loop for arg-name in '(__storage_ptr __storage_size)
-                              collect (let ((found (assoc arg-name env)))
+                              collect (let ((found (find-variable-in-env arg-name env)))
                                         (if found
-                                            (make-semantic-var-read :name arg-name :type (second found) :source-location location)
+                                            (make-semantic-var-read :name arg-name :type (parameter-def-type found) :source-location location)
                                             (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
                                               *current-compiling-function* arg-name))))))
                    (append implicit-arg-nodes explicit-arg-nodes))
@@ -1274,8 +1278,8 @@
         (when (or (string= (symbol-name op) "~") (string= (symbol-name op) "~REF~"))
               (let ((first-arg (first arg-forms)))
                 (when (symbolp first-arg)
-                      (let ((binding (assoc first-arg env)))
-                        (when (and binding (eq (getf (cddr binding) :kind) :out))
+                      (let ((binding (find-variable-in-env first-arg env)))
+                        (when (and binding (eq (parameter-def-kind binding) :out))
                               (error 'crisp-illegal-access-error
                                 :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." first-arg)
                                 :source-location location))))))
@@ -1641,9 +1645,9 @@
                               collect (let ((arg-name (case kw
                                                         (:storage '__storage)
                                                         (t (error "Unknown implicit arg keyword: ~s" kw)))))
-                                        (let ((found (assoc arg-name env)))
+                                        (let ((found (find-variable-in-env arg-name env)))
                                           (if found
-                                              (make-semantic-var-read :name arg-name :type (second found) :source-location location)
+                                              (make-semantic-var-read :name arg-name :type (parameter-def-type found) :source-location location)
                                               (error "Compiler bug: Carrier function ~s is missing implicit argument ~s (for ~s)."
                                                 *current-compiling-function* arg-name kw)))))))
                    (append implicit-arg-nodes explicit-arg-nodes))
@@ -1688,8 +1692,8 @@
 
     ;; Check for invalid READ access on &out parameters
     (when (and target-sym (not (eq *analysis-access-mode* :write)))
-          (let ((binding (assoc target-sym env)))
-            (when (and binding (eq (getf (cddr binding) :kind) :out))
+          (let ((binding (find-variable-in-env target-sym env)))
+            (when (and binding (eq (parameter-def-kind binding) :out))
                   (error 'crisp-illegal-access-error
                     :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." target-sym)
                     :source-location location))))
@@ -1785,12 +1789,12 @@
 
           ;; Case 2: It's a variable, like 'a'
           ((symbolp expr)
-            (let ((found (assoc expr env)))
+            (let ((found (find-variable-in-env expr env)))
               (if found
-                  (make-semantic-var-read :name expr :type (second found) :source-location location)
+                  (make-semantic-var-read :name expr :type (parameter-def-type found) :source-location location)
                   (progn
                    (log:error "Unknown Variable Lookup: ~a (pkg: ~a)" expr (package-name (symbol-package expr)))
-                   (log:error "Env Keys: ~a" (mapcar (lambda (k) (let ((s (car k))) (if (symbolp s) (format nil "~a (pkg: ~a)" s (package-name (symbol-package s))) (format nil "NON-SYMBOL-KEY: ~a" s)))) env))
+                   (log:error "Env Keys: ~a" (mapcar (lambda (p) (let ((s (parameter-def-name p))) (if (symbolp s) (format nil "~a (pkg: ~a)" s (package-name (symbol-package s))) (format nil "NON-SYMBOL-KEY: ~a" s)))) env))
                    (error 'crisp-unknown-variable
                      :name expr
                      :source-location location)))))
