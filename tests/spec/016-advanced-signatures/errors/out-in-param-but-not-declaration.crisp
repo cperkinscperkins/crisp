@@ -1,0 +1,6 @@
+
+;; CHECK-FAIL: "Signature Mismatch: &out present in parameter list but"
+
+(def-function store (a &out b)
+    (declare #'(int (cell int))) ;; <-- missing &out
+    (set! (~ b) a))

@@ -1,13 +1,13 @@
-#|
+
 ;; Like in Common Lisp, &optional comes before &key 
-(def-function option-and-keys (a &optional b c &key d e )
-    (declare #'(int &optional int int &key :d int :e int => int)) ;; <-- whooo
+;; and when both are used, every optional argument must be realized.
+(def-function option-and-keys (a &optional b  &key d e )
+    (declare #'(int &optional int  &key :d int :e int => int)) ;; <-- whooo
     (let ((sum a))
     ;; this pattern seems like a good defmacro opportunity.
         (when (is-set? b)
-            (set! sum (+ sum b))
-            (when+ (is-set? c)
-                (set! sum (+ sum c))))
+            (set! sum (+ sum b)))
+            
         (when (is-set? d)
             (set! sum (+ sum d)))
         (when (is-set? e)
@@ -19,7 +19,8 @@
 ;; this is not yet the time for that.
 (def-kernel exercise-o-k (a b d)
     (declare #'(int int int => nil))
-    (option-and-keys a b :d d))  ;; return value ignored.
+    (option-and-keys a b :d d)
+    (return))  ;; return value has to match for functions.
 
 
 ;; &out comes before either &optional or &key
@@ -30,14 +31,16 @@
             (set! sum (+ sum b))
             (when+ (is-set? c)
                 (set! sum (* sum c))))
-        (set! (~ res) sum)))
+        (set! (~ res) sum)
+        (return)))
 
 ;; kernels also require COMPLETE storage handle types.
 ;; But, again, out implemention at this time is minimal, and this is likely not enforced (yet),
 ;; and doing so would be premature at this time.
 (def-kernel exorcise-o-a (a r b)
-    (declare #'(int (cell int :global :write-only) int => nil))
-    (out-and-optional a r b))
+    (declare #'(int (cell int :global :read-write) int => nil))
+    (out-and-optional a r b)
+    (return))
 
 
 (def-function out-and-key (a &out res &key d e)
@@ -47,29 +50,31 @@
             (set! sum (+ sum d)))
         (when+ (is-set? e)
             (set! sum (* sum e)))
-        (set! (~ res) sum)))
+        (set! (~ res) sum)
+        (return)))
 
 (def-kernel expertise-o-k (a r e)
-    (declare #'(int &out (cell int :global :write-only)  int => nil))
-    (out-and-key a r :e e))
+    (declare #'(int (cell int :global :read-write)  int => nil))
+    (out-and-key a r :e e)
+    (return))
 
 
 ;; shebang
-(def-function shebang (a &out res &optional b c &key d e)
-    (declare #'(int &out (cell int) &optional int int &key :d int :e int => nil))
+(def-function shebang (a &out res &optional b  &key d e)
+    (declare #'(int &out (cell int) &optional int &key :d int :e int => nil))
     (let ((sum a))
         (when (is-set? b)
-            (set! sum (+ sum b))
-            (when (is-set? c)
-                (set! sum (+ sum c))))
+            (set! sum (+ sum b)))
+
         (when (is-set? d)
             (set! sum (+ sum d)))
         (when (is-set? e)
             (set! sum (* sum e)))
-        (set! (~ res) sum)))
+        (set! (~ res) sum)
+        (return)))
 
 (def-kernel excise (a r b e)
     (declare #'(int (cell int :global :read-write) int int => nil))
-    (shebang a r b :e e))
+    (shebang a r b :e e)
+    (return))
 
-|#
