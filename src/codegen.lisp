@@ -325,7 +325,14 @@
 
       (let ((ret-inst (if is-void-return
                           (llvm-build-ret-void builder)
-                          (llvm-build-ret builder last-val))))
+                          (let* ((ret-type-spec (first return-types))
+                                 (expected-type (crisp-type-to-llvm-type ret-type-spec module))
+                                 (actual-type (llvm-type-of last-val)))
+                            ;; Handle implicit dereference (Handle -> Value)
+                            (if (and (llvm-type-kind-is-pointer? actual-type)
+                                     (not (llvm-type-kind-is-pointer? expected-type)))
+                                (llvm-build-ret builder (llvm-build-load2 builder expected-type last-val "ret_val"))
+                                (llvm-build-ret builder last-val))))))
         (when last-loc (llvm-instruction-set-debug-loc ret-inst last-loc))))))
 
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)

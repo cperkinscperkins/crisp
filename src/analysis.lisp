@@ -1672,11 +1672,23 @@
                        is-void)
                   (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~)."))))
 
-        (make-semantic-call :name (function-signature-name signature)
-                            :type (function-signature-return-types signature)
-                            :args final-arg-nodes
-                            :signature signature
-                            :source-location location)))))
+        (let ((augmented-signature
+               (if implicit-args-required
+                   (let ((implicit-types (mapcar #'semantic-node-type (subseq final-arg-nodes 0 (length implicit-args-required)))))
+                     (make-function-signature
+                      :name (function-signature-name signature)
+                      :parameters (append implicit-types (function-signature-parameters signature))
+                      :return-types (function-signature-return-types signature)
+                      :source-location (function-signature-source-location signature)
+                      :is-template-p (function-signature-is-template-p signature)
+                      :template-params (function-signature-template-params signature)))
+                   signature)))
+
+          (make-semantic-call :name (function-signature-name augmented-signature)
+                              :type (function-signature-return-types augmented-signature)
+                              :args final-arg-nodes
+                              :signature augmented-signature
+                              :source-location location))))))
 
 ;; PATCH: Redefine analyze-aref-expression to fix void cell dereference issue
 (defun analyze-aref-expression (expr env location)
