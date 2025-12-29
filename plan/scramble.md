@@ -259,6 +259,10 @@ SHORT TERM PLAN
 - [ ] def-kernel-exact 
 - [ ] def-kernel  <-- 
 - [ ] expand variadics (+, * etc).  Maybe up to 5 or 7?  (+ a b c d e)
+- [ ] def-function has strict return type checking. Meaning, if it declares nil as return type,
+      it has to return nil ( just add `(return)` ).  This is not necessarily optimal.
+      For def-grid-function and def-kernel, we can have the macro amend that `(return)` so it's a
+      non-issue.  If we want, consider enhancing analyze-body-expressions to correctly handle nil literals as valid void-return expressions (currently they are filtered out).
 
 
 M-V-R

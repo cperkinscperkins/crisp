@@ -22,3 +22,7 @@ Those things are VERY handy:
 (<T>
 (def-function foo (in out &optional (scratch-mem (make-scratch-cell T :name "bar")))
   (declare #'((in-cell T) (out-cell T) &optional (scratch-cell T) => nil)) ...))
+
+
+
+And, for us, one of the important uses of def-type is to first define tensor and then use def-type to define matrix as a tensor arity 2, and vector as a tensor arity 1.  And done.  

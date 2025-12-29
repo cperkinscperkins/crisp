@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-28T04:34:20.677064Z
+Generated on 2025-12-29T00:43:36.554557Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
@@ -135,6 +135,74 @@ Generated on 2025-12-28T04:34:20.677064Z
 - **Args**: `(ENV &KEY (TITLE Environment Dump))`
 
   > Prints the contents of a semantic environment to *debug-io* in a formatted way.  >   The environment is expected to be an alist of (name type) pairs.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\mangling.lisp`
+
+### DEFVAR `*TEMPLATE-ARITY-LOOKUP-FN*`
+
+  > A hook for looking up the arity of a template by name (symbol or string).  >    Should be set by the templates module. Returns integer or nil.
+
+
+---
+### DEFUN `SPLIT-STRING`
+- **Args**: `(STRING DELIMITER)`
+
+  > Splits a string by a character delimiter.
+
+
+---
+### DEFUN `MANGLE-TEMPLATE-STRUCT-NAME`
+- **Args**: `(NAME PARAMS)`
+
+  > Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT
+
+
+---
+### DEFUN `RECONSTRUCT-ONE-ARG`
+- **Args**: `(TOKENS PACKAGE)`
+
+  > Reads exactly one logical form (atom or template-expr) from tokens.
+
+
+---
+### DEFUN `RECONSTRUCT-N-ARGS`
+- **Args**: `(TOKENS N PACKAGE)`
+
+  > Consumes N arguments from tokens.
+
+
+---
+### DEFUN `RECONSTRUCT-TEMPLATE-ARGS`
+- **Args**: `(TOKENS PACKAGE)`
+
+  > Recursively groups tokens into lists based on template arity.  >    tokens: list of strings.  >    package: the fallback package for interning.  >    Returns: (values property-list remaining-tokens)
+
+
+---
+### DEFUN `UNMANGLE-TEMPLATE-STRUCT-NAME`
+- **Args**: `(SYMBOL)`
+
+  > Attempts to reverse mangling for known parameterized types like CELL.  >    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.
+
+
+---
+### DEFUN `MANGLE-PARAM-TYPE-NAME`
+- **Args**: `(TYPE)`
+
+  > Helper to mangle a type specifier for function names.
+
+
+---
+### DEFUN `MANGLE-FUNCTION-VARIANT-NAME`
+- **Args**: `(BASE-NAME PARAM-TYPES)`
+
+---
+### DEFUN `MANGLE-TYPE-SPEC`
+- **Args**: `(TYPE-SPEC)`
+
+  > Creates a string representation of a type spec for name mangling.
 
 
 ---
@@ -431,54 +499,6 @@ Generated on 2025-12-28T04:34:20.677064Z
 
 
 ---
-### DEFVAR `*TEMPLATE-ARITY-LOOKUP-FN*`
-
-  > A hook for looking up the arity of a template by name (symbol or string).  >    Should be set by the templates module. Returns integer or nil.
-
-
----
-### DEFUN `MANGLE-TEMPLATE-STRUCT-NAME`
-- **Args**: `(NAME PARAMS)`
-
-  > Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT
-
-
----
-### DEFUN `SPLIT-STRING`
-- **Args**: `(STRING DELIMITER)`
-
-  > Splits a string by a character delimiter.
-
-
----
-### DEFUN `RECONSTRUCT-TEMPLATE-ARGS`
-- **Args**: `(TOKENS PACKAGE)`
-
-  > Recursively groups tokens into lists based on template arity.  >    tokens: list of strings.  >    package: the fallback package for interning.  >    Returns: (values property-list remaining-tokens)
-
-
----
-### DEFUN `RECONSTRUCT-N-ARGS`
-- **Args**: `(TOKENS N PACKAGE)`
-
-  > Consumes N arguments from tokens.
-
-
----
-### DEFUN `RECONSTRUCT-ONE-ARG`
-- **Args**: `(TOKENS PACKAGE)`
-
-  > Reads exactly one logical form (atom or template-expr) from tokens.
-
-
----
-### DEFUN `UNMANGLE-TEMPLATE-STRUCT-NAME`
-- **Args**: `(SYMBOL)`
-
-  > Attempts to reverse mangling for known parameterized types like CELL.  >    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.
-
-
----
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
@@ -557,8 +577,14 @@ Generated on 2025-12-28T04:34:20.677064Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\types-instantiator.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\parameters.lisp`
 
+### DEFSTRUCT `PARAMETER-DEF`
+
+  > Represents a function parameter with its type, kind, and metadata.  >    Replaces the legacy list format: (name type :kind kind ...)
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp\src\structs.lisp`
 
 ### DEFUN `GET-STD140-BASE-ALIGNMENT`
@@ -779,8 +805,134 @@ Generated on 2025-12-28T04:34:20.677064Z
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp\src\environment.lisp`
+
+### DEFUN `SHALLOW-ANALYZE-BODY`
+- **Args**: `(FORMS)`
+
+  > Performs a shallow, recursive walk of a function's body.  >   Returns two values:  >   1. A boolean indicating if a side-channel originator was found.  >   2. A list of all unique symbols found in the 'car' of lists (potential function calls).
+
+
+---
+### DEFUN `PARSE-FUNCTION-DECLARATIONS`
+- **Args**: `(PARAMS DECLARATIONS)`
+
+  > Parses a function's declarations and returns its environment and return type.  >    Supports interleaved type syntax: ((p type))
+
+
+---
+### DEFUN `INSTANTIATE-GENERIC-FUNCTION`
+- **Args**: `(GENERIC-DEF EXPLICIT-ARG-TYPES LOCATION)`
+
+  > Instantiates a lazy generic function variant for the given argument types.
+
+
+---
+### DEFUN `REGISTER-FUNCTION-SIGNATURE`
+- **Args**: `(FORM LOCATION)`
+
+  > Extracts and registers a function's signature without analyzing its body.   >    Handles optional parameters by generating overloaded signatures.
+
+
+---
+### DEFUN `REGISTER-OVERLOAD`
+- **Args**: `(ALIAS REAL-NAME)`
+
+  > Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing.
+
+
+---
+### DEFUN `INJECT-IMPLICIT-ARGUMENTS`
+- **Args**: `(NAME EXPLICIT-ENV)`
+
+  > Injects implicit arguments into the environment if the function is a carrier.
+
+
+---
+### DEFUN `SCAN-FOR-CARRIERS`
+- **Args**: `(NAME BODY)`
+
+  > Performs a single-pass look-ahead to detect if the function is a carrier.
+
+
+---
+### DEFUN `DETECT-AND-REGISTER-IMPLICIT-TEMPLATE`
+- **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)`
+
+  > Detects if a function is an implicit template (e.g. has function-type args),  >    and if so, registers it as a template and returns T. Otherwise returns NIL.
+
+
+---
+### DEFUN `PARSE-TYPE-SPECIFIER`
+- **Args**: `(SPEC)`
+
+  > Parses a single type specifier, handling basic types, parameterized types,  >    and function types like #'(int => int).
+
+
+---
+### DEFUN `ANALYZE-RETURN-TYPE-FROM-SPEC`
+- **Args**: `(FN-SPEC)`
+
+  > Parses '(int int => int int)' and returns a list of types.
+
+
+---
+### DEFUN `ANALYZE-ENVIRONMENT-FROM-SPEC`
+- **Args**: `(PARAMS FN-SPEC)`
+
+  > Builds the environment from the signature. Returns (values env optional-start-index defaults-alist).
+
+
+---
+### DEFUN `ANALYZE-RETURN-TYPE-FROM-LIST`
+- **Args**: `(DECLARATIONS)`
+
+  > Finds and returns the return-type(s) from a (return-type ...) decl.
+
+
+---
+### DEFUN `ANALYZE-ENVIRONMENT-FROM-LIST`
+- **Args**: `(PARAMS DECLARATIONS)`
+
+  > Builds the environment from standard CL (type type-spec vars...) declarations.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\type-checker.lisp`
+
+### DEFUN `GET-PROMOTED-TYPE`
+- **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
+
+  > Determines the result type of a binary operation, applying promotion rules.
+
+
+---
+### DEFUN `TYPES-COMPATIBLE-P`
+- **Args**: `(ARG-TYPE PARAM-TYPE)`
+
+  > Checks if an argument type is compatible with a parameter type.
+
+
+---
+### DEFUN `TYPES-LIST-COMPATIBLE-P`
+- **Args**: `(ARG-TYPES PARAM-TYPES)`
+
+  > Checks if a list of argument types is compatible with a list of parameter types.
+
+
+---
+### DEFUN `RESOLVE-BEST-SIGNATURE`
+- **Args**: `(OP EXPLICIT-ARG-TYPES)`
+
+  > Finds the best matching function signature for the given operator and argument types.  >    Attempts template instantiation if no immediate match is found.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis.lisp`
 
+### DEFVAR `*ANALYSIS-ACCESS-MODE*`
+
+---
 ### DEFUN `INITIALIZE-EXPRESSION-ANALYZERS`
 
   > Registers all expression analyzers.
@@ -864,56 +1016,10 @@ Generated on 2025-12-28T04:34:20.677064Z
 
 
 ---
-### DEFUN `PARSE-FUNCTION-DECLARATIONS`
-- **Args**: `(PARAMS DECLARATIONS)`
+### DEFUN `FIND-VARIABLE-IN-ENV`
+- **Args**: `(NAME ENV)`
 
-  > Parses a function's declarations and returns its environment and return type.  >    Supports interleaved type syntax: ((p type))
-
-
----
-### DEFUN `MANGLE-PARAM-TYPE-NAME`
-- **Args**: `(TYPE)`
-
-  > Helper to mangle a type specifier for function names.
-
-
----
-### DEFUN `MANGLE-FUNCTION-VARIANT-NAME`
-- **Args**: `(BASE-NAME PARAM-TYPES)`
-
----
-### DEFUN `INSTANTIATE-GENERIC-FUNCTION`
-- **Args**: `(GENERIC-DEF EXPLICIT-ARG-TYPES LOCATION)`
-
-  > Instantiates a lazy generic function variant for the given argument types.
-
-
----
-### DEFUN `REGISTER-FUNCTION-SIGNATURE`
-- **Args**: `(FORM LOCATION)`
-
-  > Extracts and registers a function's signature without analyzing its body.   >    Handles optional parameters by generating overloaded signatures.
-
-
----
-### DEFUN `REGISTER-OVERLOAD`
-- **Args**: `(ALIAS REAL-NAME)`
-
-  > Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing.
-
-
----
-### DEFUN `INJECT-IMPLICIT-ARGUMENTS`
-- **Args**: `(NAME EXPLICIT-ENV)`
-
-  > Injects implicit arguments into the environment if the function is a carrier.
-
-
----
-### DEFUN `SCAN-FOR-CARRIERS`
-- **Args**: `(NAME BODY)`
-
-  > Performs a single-pass look-ahead to detect if the function is a carrier.
+  > Finds a variable definition in the environment.
 
 
 ---
@@ -921,13 +1027,6 @@ Generated on 2025-12-28T04:34:20.677064Z
 - **Args**: `(NAME BODY ENV DECLARED-RETURN-TYPES LOCATION)`
 
   > Analyzes the function body and validates return types.
-
-
----
-### DEFUN `DETECT-AND-REGISTER-IMPLICIT-TEMPLATE`
-- **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)`
-
-  > Detects if a function is an implicit template (e.g. has function-type args),  >    and if so, registers it as a template and returns T. Otherwise returns NIL.
 
 
 ---
@@ -942,48 +1041,6 @@ Generated on 2025-12-28T04:34:20.677064Z
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
   > This is a wrapper around internal-compile-function that parses declarations.
-
-
----
-### DEFUN `PARSE-TYPE-SPECIFIER`
-- **Args**: `(SPEC)`
-
-  > Parses a single type specifier, handling basic types, parameterized types,  >    and function types like #'(int => int).
-
-
----
-### DEFUN `ANALYZE-RETURN-TYPE-FROM-SPEC`
-- **Args**: `(FN-SPEC)`
-
-  > Parses '(int int => int int)' and returns a list of types.
-
-
----
-### DEFUN `ANALYZE-ENVIRONMENT-FROM-SPEC`
-- **Args**: `(PARAMS FN-SPEC)`
-
-  > Builds the environment from the signature. Returns (values env optional-start-index defaults-alist).
-
-
----
-### DEFUN `ANALYZE-RETURN-TYPE-FROM-LIST`
-- **Args**: `(DECLARATIONS)`
-
-  > Finds and returns the return-type(s) from a (return-type ...) decl.
-
-
----
-### DEFUN `ANALYZE-ENVIRONMENT-FROM-LIST`
-- **Args**: `(PARAMS DECLARATIONS)`
-
-  > Builds the environment from standard CL (type type-spec vars...) declarations.
-
-
----
-### DEFUN `GET-PROMOTED-TYPE`
-- **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
-
-  > Determines the result type of a binary operation, applying promotion rules.
 
 
 ---
@@ -1199,31 +1256,10 @@ Generated on 2025-12-28T04:34:20.677064Z
 
 
 ---
-### DEFUN `ANALYZE-SET!-EXPRESSION-OLD`
+### DEFUN `ANALYZE-SET!-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
   > Analyzes a (set! target value) expression.
-
-
----
-### DEFUN `TYPES-COMPATIBLE-P`
-- **Args**: `(ARG-TYPE PARAM-TYPE)`
-
-  > Checks if an argument type is compatible with a parameter type.
-
-
----
-### DEFUN `TYPES-LIST-COMPATIBLE-P`
-- **Args**: `(ARG-TYPES PARAM-TYPES)`
-
-  > Checks if a list of argument types is compatible with a list of parameter types.
-
-
----
-### DEFUN `RESOLVE-BEST-SIGNATURE`
-- **Args**: `(OP EXPLICIT-ARG-TYPES)`
-
-  > Finds the best matching function signature for the given operator and argument types.  >    Attempts template instantiation if no immediate match is found.
 
 
 ---
@@ -1316,13 +1352,6 @@ Generated on 2025-12-28T04:34:20.677064Z
 - **Args**: `(EXPR ENV LOCATION)`
 
 ---
-### DEFUN `ANALYZE-SET!-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
-
-  > Analyzes a (set! target value) expression.
-
-
----
 ### DEFUN `ANALYZE-INCOMPLETE-TYPE-ACCESSOR`
 - **Args**: `(OP EXPR ENV LOCATION)`
 
@@ -1361,13 +1390,6 @@ Generated on 2025-12-28T04:34:20.677064Z
 
 ---
 ### DEFPARAMETER `*CACHED-INT64-TYPE*`
-
----
-### DEFUN `MANGLE-TYPE-SPEC`
-- **Args**: `(TYPE-SPEC)`
-
-  > Creates a string representation of a type spec for name mangling.
-
 
 ---
 ### DEFUN `CRISP-TYPE-TO-LLVM-TYPE`
