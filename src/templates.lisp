@@ -35,6 +35,12 @@
 ;;; with-template-type Macro
 ;;; ----------------------------------------------------------------------------
 
+(defmacro template-instantiation (form)
+  "Identity macro to allow top-level template instantiation logic to be visible to the compiler
+   walker (visit-toplevel-form), preventing 'undefined function' errors."
+  form)
+
+
 (defmacro with-template-type (params &body body)
   "Defines templates for the enclosed forms."
   ;; 1. Parse constraints from the body (if any)
@@ -58,8 +64,9 @@
                          ;; Register the template at compile/load time
                          (eval-when (:compile-toplevel :load-toplevel :execute)
                            (register-template ',name ',params ',constraints ',form ',signature)) ;; Define the generator macro: (gen-NAME ...)
-                         (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
-                           `(template-instantiation ,(instantiate-template ',name concrete-types)))
+                         (eval-when (:compile-toplevel :load-toplevel :execute)
+                           (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
+                             `(template-instantiation ,(instantiate-template ',name concrete-types))))
                          (eval-when (:compile-toplevel :load-toplevel :execute)
                            (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name)))
 

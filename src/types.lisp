@@ -354,7 +354,13 @@ This supports overloading templates by arity or other factors.")
    Handles simple types, parameterized types, and function literals/types."
   (or (valid-basic-type-p type-spec)
       (valid-function-type-p type-spec)
-      (valid-parameterized-type-p type-spec)))
+      (valid-parameterized-type-p type-spec)
+      ;; Check aliases
+      (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
+      (and (listp type-spec) 
+           (symbolp (first type-spec)) 
+           (or (gethash (first type-spec) *crisp-type-aliases*)
+               (gethash (first type-spec) *crisp-template-aliases*)))))
 
 
 ;; Alias for backward compatibility / simplicity
@@ -370,6 +376,10 @@ This supports overloading templates by arity or other factors.")
     ;; Built-in Scalar
     ((and (symbolp type-spec) (gethash type-spec *crisp-types*))
      (funcall (crisp-type-llvm-type-fn (gethash type-spec *crisp-types*))))
+
+    ;; Type Alias (Symbol)
+    ((and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
+     (resolve-type-to-llvm (gethash type-spec *crisp-type-aliases*)))
 
     ;; Struct
     ((and (symbolp type-spec) (find-struct-definition-by-name type-spec))
