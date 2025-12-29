@@ -67,6 +67,12 @@ This supports overloading templates by arity or other factors.")
 (defvar *crisp-structs* (make-hash-table)
         "A hash table mapping struct names to CRISP-STRUCT-DEFINITION structs.")
 
+(defvar *crisp-type-aliases* (make-hash-table)
+  "A hash table mapping alias symbols to their target type specifiers.")
+
+(defvar *crisp-template-aliases* (make-hash-table)
+  "A hash table mapping template alias names to (params . body-type-spec).")
+
 (defstruct enumeration-def
   name
   members ; Alist of (keyword . integer)

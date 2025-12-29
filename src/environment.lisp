@@ -326,6 +326,23 @@
    and function types like #'(int => int)."
   (log:info "PARSE-TYPE-SPECIFIER ENTRY: ~s (type: ~s)" spec (type-of spec))
   (cond
+   ;; 0. Type Aliases
+   ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
+    (parse-type-specifier (gethash spec *crisp-type-aliases*)))
+
+   ;; 0.1 Template Aliases (e.g. (in-cell int))
+   ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
+    (let* ((alias-name (first spec))
+           (args (rest spec))
+           (alias-def (gethash alias-name *crisp-template-aliases*))
+           (params (car alias-def))
+           (body-spec (cdr alias-def)))
+      ;; Substitute args for params in body-spec
+      ;; e.g. params=(T), args=(int), body=(cell T ...) -> (cell int ...)
+      (let ((expanded (sublis (pairlis params args) body-spec)))
+        (log:info "EXPAND-ALIAS: ~a -> ~a" spec expanded)
+        (parse-type-specifier expanded))))
+
    ;; Standard symbol: e.g. 'int'
    ((and (symbolp spec) (valid-type-p spec)) spec)
    ;; Function Type: #'(int => int) or (function int => int)

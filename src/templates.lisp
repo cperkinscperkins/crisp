@@ -100,7 +100,14 @@
                          (let ((mangled (intern (format nil "~a_~{~a~^_~}" ',name concrete-types) (symbol-package ',name))))
                            `',mangled))
                        (eval-when (:compile-toplevel :load-toplevel :execute)
-                         (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name)))))))))))
+                         (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name))))))
+
+                 ((and (listp form) (eq (first form) 'def-type))
+                  (let ((name (second form))
+                        (type-spec (third form)))
+                    `(eval-when (:compile-toplevel :load-toplevel :execute)
+                       (setf (gethash ',name crisp.compiler::*crisp-template-aliases*)
+                         (cons ',params ',type-spec))))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Template Instantiation Logic
