@@ -11636,6 +11636,7 @@ other
 - `~ref~`
 - cell
 - make-cell
+- type-equal
 - vector          [KO]
 - make-vector          [KO]
 - soa-vector      [KO]

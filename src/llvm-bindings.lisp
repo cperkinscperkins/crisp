@@ -78,11 +78,13 @@
 (defconstant +llvm-half-type-kind+ 1)
 (defconstant +llvm-float-type-kind+ 2)
 (defconstant +llvm-double-type-kind+ 3)
-(defconstant +llvm-integer-type-kind+ 11)
-(defconstant +llvm-function-type-kind+ 12)
-(defconstant +llvm-struct-type-kind+ 13)
-(defconstant +llvm-array-type-kind+ 14)
-(defconstant +llvm-pointer-type-kind+ 15)
+;; 4-7 are other FP types and Label
+(defconstant +llvm-integer-type-kind+ 8)
+(defconstant +llvm-function-type-kind+ 9)
+(defconstant +llvm-struct-type-kind+ 10)
+(defconstant +llvm-array-type-kind+ 11)
+(defconstant +llvm-pointer-type-kind+ 12)
+(defconstant +llvm-vector-type-kind+ 13)
 
 (defun llvm-type-kind-is-pointer? (ty)
   (= (llvm-get-type-kind ty) +llvm-pointer-type-kind+))
