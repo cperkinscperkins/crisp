@@ -1,6 +1,6 @@
 ;; cell is a parameterized type. 
-(def-function test-cell-as-arg (c)
-    (declare #'((cell long) => nil))
+(def-function test-cell-as-arg (c1 c2 c3)
+    (declare #'(cell (cell) (cell long) => nil))
     (return))
 
 (with-template-type (T)

@@ -1,0 +1,8 @@
+;;
+
+;; is this error correct?  " Type mismatch! Expected (LONG) but inferred (T)" 
+
+;; ~ accessor requires element-type .  This should fail.
+(def-function fail-cell-accessor (c)
+    (declare #'((cell) => long))
+    (~ c))
