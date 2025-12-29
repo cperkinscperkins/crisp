@@ -30,6 +30,7 @@
    #:llvm-int32-type-in-context #:llvm-int64-type-in-context
    #:llvm-int32-type #:llvm-int8-type #:llvm-int8-type-in-context #:llvm-int16-type #:llvm-int64-type #:llvm-int16-type
    #:llvm-type-kind-is-pointer?
+   #:llvm-get-type-kind
    #:llvm-print-type-to-string
    #:llvm-pointer-type
    #:llvm-size-of
