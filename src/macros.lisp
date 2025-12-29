@@ -219,6 +219,12 @@
 
       `(progn ,@forms))))
 
+(defmacro def-type (name type-spec)
+  "Defines a type alias.
+   Example: (def-type T int)"
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (setf (gethash ',name crisp.compiler::*crisp-type-aliases*) ',type-spec)))
+
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
   (let* ((parsed-members (mapcar #'parse-struct-member-spec members))

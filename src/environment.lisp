@@ -324,8 +324,37 @@
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
    and function types like #'(int => int)."
-  (log:info "PARSE-TYPE-SPECIFIER ENTRY: ~s (type: ~s)" spec (type-of spec))
   (cond
+   ;; 0. Type Aliases
+   ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
+    (let ((res (gethash spec *crisp-type-aliases*)))
+      (log:info "PARSE: Resolving Alias ~a -> ~a" spec res)
+      (parse-type-specifier res)))
+
+   ;; 0.1 Template Aliases (e.g. (in-cell int))
+   ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
+    (let* ((alias-name (first spec))
+           (args (rest spec))
+           (alias-def (gethash alias-name *crisp-template-aliases*))
+           (params (car alias-def))
+           (body-spec (cdr alias-def)))
+      ;; Substitute args for params in body-spec
+      (let ((expanded (sublis (pairlis params args) body-spec)))
+        (log:info "EXPAND-ALIAS: ~a -> ~a" spec expanded)
+        (parse-type-specifier expanded))))
+
+   ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
+   ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
+    (let* ((alias-name (first spec))
+           (args (rest spec))
+           (expanded-base (gethash alias-name *crisp-type-aliases*)))
+      ;; If alias expands to a list, append args. If symbol, make a new list.
+      (let ((final-spec (if (listp expanded-base)
+                            (append expanded-base args)
+                            (cons expanded-base args))))
+        (log:info "EXPAND-ALIAS-HEAD: ~a -> ~a" spec final-spec)
+        (parse-type-specifier final-spec))))
+
    ;; Standard symbol: e.g. 'int'
    ((and (symbolp spec) (valid-type-p spec)) spec)
    ;; Function Type: #'(int => int) or (function int => int)
@@ -399,7 +428,6 @@
       (loop while (and params param-type-specs)
             do (let ((p (first params))
                      (ts (first param-type-specs)))
-                 (log:debug "LOOP: p=~s (type: ~a) ts=~s (type: ~a)" p (type-of p) ts (type-of ts))
                  (cond
                   ;; Handle &optional in params
                   ((and (symbolp p) (string-equal (symbol-name p) "&OPTIONAL"))
