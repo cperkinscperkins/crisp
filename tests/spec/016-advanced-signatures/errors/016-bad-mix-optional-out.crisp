@@ -1,6 +1,8 @@
+;; CHECK-FAIL: "An unexpected error occurred: &out cannot appear after &optional."
+
 ;; &out should come before  &optional 
 ;; it is an error to appear reversed
-#|
+
 (def-function optional-then-out (a &optional b c &out res )
     (declare #'(int &optional int int &out (cell int)  => nil))
     (let ((sum a))
@@ -14,4 +16,4 @@
     (declare #'(int (cell int :global :write-only) int => nil))
     (out-and-optional a b r))
 
-    |#
+    

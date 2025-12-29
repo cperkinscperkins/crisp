@@ -1,0 +1,12 @@
+;; templating, itself, is a sort of aliasing.
+;; so the stunts in this file aren't terribly useful.
+;; we'll see more useful cases later with composite type constructors.
+
+(with-template-type (T)
+  (def-type some-float T))
+
+(gen-some-float half)
+
+(def-function scale (a b)
+    (declare #'(some-float some-float => some-float))
+    (/ (* a (to some-float 100.0)) b))
