@@ -167,7 +167,10 @@
 
    ;; laungage symbols
    #:def-function
+   #:def-function
    #:def-kernel
+   #:def-type ;; <--- NEW
+   #:with-template-type ;; <--- NEW
 
    ;; Structs
    #:register-struct-definition
@@ -195,7 +198,7 @@
    #:with-struct-accessors
    #:def-setter
    #:*crisp-structs*
-   #:with-template-type
+   #:*crisp-structs*
    #:return
    #:declare
    #:return-type
@@ -298,7 +301,9 @@
                 #:def-setter
                 #:return
                 #:declare
+                #:declare
                 #:with-template-type
+                #:def-type ;; <--- NEW
                 #:return-type
                 #:type
                 #:make-scratch-cell
@@ -394,6 +399,8 @@
    ;; Our custom laungage symbols
    #:def-kernel #:def-function #:def-grid-function
    #:def-orchestration #:def-qint #:def-microfloat-block
+   #:def-type ;; <--- NEW
+   #:with-template-type ;; <--- NEW
 
    #:def-type-alias #:def-struct #:def-record #:with-struct-accessors #:def-setter
    #:declare
