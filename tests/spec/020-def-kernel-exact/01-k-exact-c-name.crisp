@@ -1,0 +1,6 @@
+
+;; first kernel does nothing, but has a Case Sensitive name (!) and 
+;; has to follow C-style naming rules ( do we have to enforce? Or can that just be convention?)
+(def-kernel-exact c_Style_Name ()
+    (declare #'(=> nil))
+)

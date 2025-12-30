@@ -1,0 +1,7 @@
+
+;; third kernel STILL does nothing, but "voidp" is an accepted type declaration.
+;; NOTE: voidp type expression is ONLY valid in the context of def-kernel-exact.  
+;; It cannot be used elsewhere and is a compile error.
+(def-kernel-exact voidp_args (byte-size ptr offset)
+    (declare #'(ulong voidp ulong))
+)

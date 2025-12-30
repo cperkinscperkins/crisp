@@ -1,0 +1,6 @@
+
+;; second kernel does nothing but now the "arrow-style" type declaration
+;; doesn't actually need an arrow and a return type. nil is implicit.  
+(def-kernel-exact elide_Return_type ()
+    (declare #'())
+)
