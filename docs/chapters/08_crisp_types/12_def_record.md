@@ -41,8 +41,7 @@ Though there is no equivalent of `soa-vector` for records.
   reuse of    :vss someStruct   
 
   Therefore record-of-struct "explodes-and-flattens" the struct to registers.  
-
-  
-
 -->
+
+> Implementation Note: consider changing `make-` to `marshall-` for `def-record`.
 

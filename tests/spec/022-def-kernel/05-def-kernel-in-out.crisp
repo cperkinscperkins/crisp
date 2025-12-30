@@ -1,0 +1,10 @@
+;;
+
+(def-type in-c (cell long :address-space :global :access :read-only))
+(def-type out-c (cell long :address-space :global :access :write-only))
+
+(def-kernel cell_add (A B &out C)
+    (declare #'(in-c in-c &out out-c))
+    (let ((a (~ A))
+          (b (~ B)))
+       (set! (~ C) (+ a b))))

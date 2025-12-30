@@ -357,6 +357,13 @@
 
    ;; Standard symbol: e.g. 'int'
    ((and (symbolp spec) (valid-type-p spec)) spec)
+   
+   ;; Storage Handle Symbols (e.g. CELL, VECTOR...) 
+   ;; We treat them as (CELL) which expands to default (CELL T)
+   ((and (symbolp spec) (member (symbol-name spec) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+    (log:info "PARSE: Promoting symbol ~a to list (~a)" spec spec)
+    (parse-type-specifier (list spec)))
+
    ;; Function Type: #'(int => int) or (function int => int)
    ((and (listp spec) (member (first spec) '(function common-lisp:function)))
      (let* ((sig (if (listp (second spec)) (second spec) (rest spec))))

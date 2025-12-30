@@ -1,0 +1,10 @@
+(def-function test-tensor-set! (mat y x v)
+    (declare #'((tensor long 2) ulong ulong long => nil))
+    (set! (~ mat y x) v))
+
+(with-template-type (T)
+    (def-function test-templated-tensor-set! (mat y x v)
+        (declare #'((tensor T 2) ulong ulong T => nil))
+        (set! (~ mat y x) v)))
+
+(gen-test-templated-tensor-set! float )

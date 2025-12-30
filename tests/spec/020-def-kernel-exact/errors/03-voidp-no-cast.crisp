@@ -1,0 +1,7 @@
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+(def-kernel-exact return_7 (byte-size ptr offset)
+    (declare #'(ulong voidp ulong))
+    (let ((c (marshall-cell out-c byte-size (as voidp 100000) offset)))
+        (set! (~ c) 7)))
+
