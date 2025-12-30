@@ -1,0 +1,10 @@
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+(def-kernel-exact return_7 (byte-size ptr offset)
+    (declare #'(ulong voidp ulong))
+    (let ((p (+ ptr 8)) ;; ptr can't be implicitly "promoted" to any numeric type. 
+                        ;; and it doesn't support arithmetic.
+                        ;; However, (to long ptr) and (as long ptr) probably should both work.
+          (c (marshall-cell out-c byte-size p offset)))
+        (set! (~ c) 7)))
+

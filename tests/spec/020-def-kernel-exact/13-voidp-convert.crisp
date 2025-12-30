@@ -1,0 +1,13 @@
+;; Not sure this is an important test.
+;; Just trying to dot i and cross t.
+
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+(def-kernel-exact capture_ptr (byte-size-1 ptr-1 offset-1 
+                               byte-size-2 ptr-2 offset-2)
+    (declare #'(ulong voidp ulong 
+                ulong voidp ulong))
+    (let ((c1 (marshall-cell out-c byte-size-1 ptr-1 offset-1))
+          (c2 (marshall-cell out-c byte-size-2 ptr-2 offset-2)))
+        (set! (~ c1) (to ulong ptr-1))
+        (set! (~ c2) (as ulong ptr-2))))
