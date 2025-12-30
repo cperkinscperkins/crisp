@@ -6,6 +6,8 @@
 - def-kernel             [D] [T]
 - def-kernel-exact       [D] [T]
 - def-struct             [D] [T]
+- def-record             [D] [T]
+- def-rec-vec            [D] [T]
 - def-setter             [D] [T]
 - def-const              [D]  (next to, not "within")
 - def-const-vec          [D]

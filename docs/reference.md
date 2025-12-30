@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2025-12-29T00:43:36.554557Z
+Generated on 2025-12-30T04:16:14.025386Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
@@ -31,6 +31,9 @@ Generated on 2025-12-29T00:43:36.554557Z
 
 ---
 ### DEFCONSTANT `+LLVM-POINTER-TYPE-KIND+`
+
+---
+### DEFCONSTANT `+LLVM-VECTOR-TYPE-KIND+`
 
 ---
 ### DEFUN `LLVM-TYPE-KIND-IS-POINTER?`
@@ -467,6 +470,18 @@ Generated on 2025-12-29T00:43:36.554557Z
 
 
 ---
+### DEFVAR `*CRISP-TYPE-ALIASES*`
+
+  > A hash table mapping alias symbols to their target type specifiers.
+
+
+---
+### DEFVAR `*CRISP-TEMPLATE-ALIASES*`
+
+  > A hash table mapping template alias names to (params . body-type-spec).
+
+
+---
 ### DEFSTRUCT `ENUMERATION-DEF`
 
 ---
@@ -729,6 +744,13 @@ Generated on 2025-12-29T00:43:36.554557Z
 - **Args**: `(STRUCT-TYPE BINDINGS &BODY BODY)`
 
   > Iterates over the members of a struct type, binding accessor symbols to the provided variables.  >    Bindings: (aos-var [soa-var] [:access type])  >    Returns a PROGN containing the expanded body forms.
+
+
+---
+### DEFMACRO `DEF-TYPE`
+- **Args**: `(NAME TYPE-SPEC)`
+
+  > Defines a type alias.  >    Example: (def-type T int)
 
 
 ---
@@ -1540,6 +1562,13 @@ Generated on 2025-12-29T00:43:36.554557Z
 - **Args**: `(NAME PARAMS CONSTRAINTS BODY SIGNATURE)`
 
   > Registers a new template definition.
+
+
+---
+### DEFMACRO `TEMPLATE-INSTANTIATION`
+- **Args**: `(FORM)`
+
+  > Identity macro to allow top-level template instantiation logic to be visible to the compiler  >    walker (visit-toplevel-form), preventing 'undefined function' errors.
 
 
 ---
