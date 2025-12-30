@@ -1,0 +1,3 @@
+(def-kernel-exact lisp-style-name ()
+    (declare #'(=> nil))
+)

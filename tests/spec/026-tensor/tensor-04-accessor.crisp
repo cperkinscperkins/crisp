@@ -1,0 +1,15 @@
+
+;; Tensors Accessors require both element-type and arity to be usable.
+;; compiler will error otherwise.
+
+
+(def-function test-tensor-accessor (t x y)
+    (declare #'((tensor long 2) => long))
+    (~ t x y))
+
+(with-template-type (T)
+    (def-function test-templated-tensor-accessor (t1 x)
+        (declare #'((tensor T 1)=> T))
+        (~ t1 x)))
+
+(gen-test-templated-tensor-accessor float)

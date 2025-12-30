@@ -1,0 +1,48 @@
+;; All Storage Handles, including cell, support the properties: offset, parent, element-type
+
+(def-function test-tensor-offset (t1)
+    (declare #'((tensor long 4) => ulong))
+  (offset~ t1)) ;; is this byte offset? or offset of longs? What is it for cell?
+
+(def-function test-tensor-parent (t1)
+    (declare #'((tensor long 3) => ulong))
+ (byte-size~ (parent~ t1)))
+
+(def-function test-element-type (t1)
+    (declare #'((tensor long) => ulong))
+ (c-t-assert (type-equal (element-type~ t1) 'long) "best be long, little doggie")
+ (offset~ t1))
+
+(with-template-type (T)
+    (def-function test-templated-tensor-offset (t1)
+        (declare #'((tensor T) => ulong))
+      (+ (offset~ c) (byte-size~ (parent~ t1)))))
+
+(gen-test-templated-tensor-offset float)
+
+
+;; Tensor Specific Properties : num-dims, length, strides, extents
+
+(def-function test-tensor-arity (t1 t2)
+    (declare #'((tensor long 4) tensor => ulong ulong))
+  (return (num-dims~ t1) (num-dims~ t2)))
+
+;; length is number of elements, not byte size. 
+;; for tensors is H x W x D x .... N
+;; though it is probably just stored.
+(def-function test-tensor-length (t1 t2)
+        (declare #'((tensor long 4) tensor => ulong ulong))
+  (return (length~ t1) (length~ t2))) 
+
+;; getting trickier
+(def-type stride-vec (tensor ulong 1 :global :read-write))
+
+(def-function test-tensor-strides (t1 t2)
+    (declare #'((tensor long 4) tensor => stride-vec stride-vec))
+  (return (strides~ t1) (strides~ t2)))
+
+(def-type extent-vec (tensor ulong 1 :global :read-write))
+
+(def-function test-tensor-extents (t1 t2)
+    (declare #'((tensor long 4) tensor => extent-vec extent-vec))
+  (return (extents~ t1) (extents~ t2)))

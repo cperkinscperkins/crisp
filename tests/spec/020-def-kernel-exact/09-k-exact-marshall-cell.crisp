@@ -1,0 +1,12 @@
+
+;; bringing the heat
+;; 
+;; (marshall-cell <CellTypeExpressiion> StorageByteSize:ulong Ptr:voidp Offset:ulong) => cell:CellTypeExpressiion
+;;
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+(def-kernel-exact return_7 (byte-size ptr offset)
+    (declare #'(ulong voidp ulong))
+    (let ((c (marshall-cell out-c byte-size ptr offset)))
+        (set! (~ c) 7)))
+

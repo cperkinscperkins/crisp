@@ -1713,11 +1713,12 @@
     (if elem-type
         (progn
          ;; Check for VOID element type
-         (let ((is-void (or (eq elem-type 'void)
+         (let ((is-void (or (eq elem-type 'void) (eq elem-type 'T)
                             (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "T"))
                             (and (consp elem-type)
                                  (let ((head (first elem-type)))
-                                   (or (eq head 'void)
+                                   (or (eq head 'void) (eq head 'T)
                                        (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
            (when is-void
                  (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))

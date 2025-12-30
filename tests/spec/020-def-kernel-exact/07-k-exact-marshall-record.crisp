@@ -1,0 +1,11 @@
+;; marshall a record
+
+;; not sure about this test. There is nothing TO DO. 
+;; Also, we don't support the def-kernel => def-kernel-exact transformation for 
+;; arbitrary records.  At least, I wasn't planning on it. Maybe that should be investigated.
+
+(def-record v-point (x int) (y int))
+
+(def-kernel-exact passing_stars (star-x star-y)
+    (declare #'(int int))
+    (let ((star-loc (marshall-v-point :x star-x :y star-y)))))

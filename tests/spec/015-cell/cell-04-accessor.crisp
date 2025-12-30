@@ -1,4 +1,4 @@
-;; tests/tdd/cell-04-accessor.crisp
+
 (def-function test-cell-accessor (c)
     (declare #'((cell long) => long))
     (~ c))

@@ -1,0 +1,19 @@
+;; The simplest variants of tensor, used as arguments.
+
+(def-function test-tensor-as-arg (t1 t2 t3 t4)
+    (declare #'(tensor (tensor) (tensor int) (tensor int 4) => nil))
+    (return))
+
+(with-template-type (T)
+    (def-function test-templated-tensor-as-arg (t1 t2)
+        (declare #'((tensor T) (tensor T 4) => nil))
+        (return)))
+
+(with-template-type (T N)
+    (def-function test-templated-arity-tensor-as-arg (t1)
+        (declare #'((tensor T N) => nil))
+        (return)))
+
+(gen-test-templated-tensor-as-arg float)
+
+(gen-test-templated-arity-tensor-as-arg long)
