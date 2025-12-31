@@ -1,0 +1,5 @@
+
+;; missing keyword
+(def-function cell-missing-keyword (c)
+    (declare #'(cell long :global => ulong)) ;; <-- (cell long :address-space :global) would be correct
+    (byte-size~ (parent~ c)))

@@ -1,0 +1,5 @@
+
+;; at MINIMUM (cell <type>)
+(def-function cell-requires-type-at-minimum (c)
+    (declare #'(cell => ulong)) ;; <-- "cell" alone not allowed
+    (byte-size~ (parent~ c)))

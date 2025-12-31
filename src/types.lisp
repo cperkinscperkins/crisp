@@ -68,10 +68,10 @@ This supports overloading templates by arity or other factors.")
         "A hash table mapping struct names to CRISP-STRUCT-DEFINITION structs.")
 
 (defvar *crisp-type-aliases* (make-hash-table)
-  "A hash table mapping alias symbols to their target type specifiers.")
+        "A hash table mapping alias symbols to their target type specifiers.")
 
 (defvar *crisp-template-aliases* (make-hash-table)
-  "A hash table mapping template alias names to (params . body-type-spec).")
+        "A hash table mapping template alias names to (params . body-type-spec).")
 
 (defstruct enumeration-def
   name
@@ -138,24 +138,52 @@ This supports overloading templates by arity or other factors.")
 (defun expand-storage-handle-type-specifier (spec)
   "Expands legacy/shorthand storage handle specs (cell, vector, etc) into their canonical struct form.
    e.g. (cell int) -> (cell int :global :read-write)
-   e.g. (vector float 4) -> (vector float 4 :global :read-write)"
+   e.g. (cell int :address-space :local) -> (cell int :local :read-write)"
   (cl:cond
     ((null spec) nil)
     ((symbolp spec) spec)
     ((consp spec)
      (cl:let ((base (first spec)))
-       (if (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)
-           ;; If no args provided, default to T (Generic/Raw)
+       (if (and (symbolp base) (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
            (if (null (rest spec))
-               (canonicalize-type-specifier (list base 'T))
-               (canonicalize-type-specifier spec))
+               ;; Disallow bare (cell)
+               (progn (log:warn "Invalid incomplete type specifier: ~a" spec) nil)
+
+               (cl:let* ((args (rest spec))
+                         (element-type (first args))
+                         ;; Detect if we are using keyword syntax
+                         (has-kw (or (member :address-space args) (member :access args))))
+
+                 (if has-kw
+                     ;; Parse Keywords -> Positional
+                     (cl:let* ((pos-args (loop for arg in (rest args)
+                                               while (not (keywordp arg))
+                                               collect arg))
+                               ;; Extract keywords from the remainder
+                               (kw-args (subseq args (+ 1 (length pos-args))))
+                               (addr (or (getf kw-args :address-space) :global))
+                               (acc (or (getf kw-args :access) :read-write)))
+
+                       ;; Return expanded list directly (DO NOT RECURSE into canonicalize here)
+                       (append (list base element-type) pos-args (list addr acc)))
+
+                     ;; Check for implicit defaults (cell int) -> (cell int :global :read-write)
+                     ;; Only expand if it lacks the property args (assumed positional)
+                     ;; If arity matches (cell int global rw), leave it alone.
+                     ;; How do we know arity? 
+                     ;; CELL has 3-4? Element + [Size] + Addr + Acc.
+                     (if (= (length args) 1)
+                         (list base element-type :global :read-write)
+                         spec))))
            spec)))
     (t spec)))
 
 (defun canonicalize-type-specifier (spec)
-  "Canonicalizes type specifiers.
-   1. Expands templates with default arguments (e.g. (cell int) -> (cell int :global :read-write)).
-   2. Handles incomplete/hybrid syntax for templates."
+  "Canonicalizes type specifiers."
+  ;; First, apply storage handle expansion
+  (cl:when (consp spec)
+    (setf spec (expand-storage-handle-type-specifier spec)))
+
   (cl:let ((base (if (consp spec) (cl:first spec) spec))
            (args (if (consp spec) (rest spec) nil)))
     (cl:cond
@@ -276,7 +304,6 @@ This supports overloading templates by arity or other factors.")
 ;; Predicates
 ;; ==========
 
-
 (defun valid-basic-type-p (type-spec)
   "Checks if type-spec is a valid basic symbol type (built-in, struct, or function reference)."
   (cl:when (and (symbolp type-spec) (not (keywordp type-spec)))
@@ -360,11 +387,10 @@ This supports overloading templates by arity or other factors.")
       (valid-parameterized-type-p type-spec)
       ;; Check aliases
       (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
-      (and (listp type-spec) 
-           (symbolp (first type-spec)) 
+      (and (listp type-spec)
+           (symbolp (first type-spec))
            (or (gethash (first type-spec) *crisp-type-aliases*)
                (gethash (first type-spec) *crisp-template-aliases*)))))
-
 
 ;; Alias for backward compatibility / simplicity
 (defun type-equal-p (t1 t2)

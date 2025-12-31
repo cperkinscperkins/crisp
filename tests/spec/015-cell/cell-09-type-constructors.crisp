@@ -13,3 +13,8 @@
     (declare #'((cell long :address-space :global :access :read-only) (cell long :address-space :local :access :read-only) (cell long :address-space :local :access :write-only) => nil))
     (set! (~ C) (to-float (+ (~ A) (~ B)))))
 
+(def-function change-order (A B C)
+    (declare #'((cell float :access :read-only :address-space :local)
+                (cell long :access :read-only)
+                (cell float :address-space :global)))
+    (set! (~ C) (+ (to-float (~ B)) (~ A))))
