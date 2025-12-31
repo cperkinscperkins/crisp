@@ -1,0 +1,20 @@
+;; gen-XXXX  form requires a third argument for kernels: the exact name (C style)
+;; that should be generated. 
+
+
+(with-template-type (T)
+    (def-type out-c (cell T :address-space :global :access :read-write))
+
+    (def-function store-7 (&out c)
+        (declare #'(&out out-c => nil))
+        (set! (~ c) (as T 7)))
+
+    (def-kernel-exact call_function (byte-size ptr offset)
+        (declare #'(ulong voidp ulong))
+        (let ((c (marshall-cell out-c byte-size ptr offset)))
+            (store-7 c))))
+
+(gen-call_function long "call_function")
+(gen-call_function float "call_function_f")
+
+;; Need error files: non-C strings.   colliding strings.  missing third arg. 

@@ -300,7 +300,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
                                           local-id     ;; Input: this thread's local ID
                                           ;; Optional scratch space for atomic counters
                                           &optional (digit-counts (make-scratch-vector uint 256 :align A)))
-    (declare #((vector uint :local) uint &optional (vector uint :local A 256) => uint))
+    (declare #((vector uint :address-space :local) uint &optional (vector uint :address-space :local :align A :length 256) => uint))
 
     ;; initialize the shared counter array
     ;; Need to zero out the 256 counters. This can be done in parallel.

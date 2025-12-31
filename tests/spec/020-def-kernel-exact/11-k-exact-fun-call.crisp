@@ -6,13 +6,14 @@
 ;; In theory, def-kernel-exact COULD support &out. But it seems "inappropriate"
 
 
-;; Call A function. ALWAYS return nil, no matter what operation is in "last place'.
+
 (def-function store-7-return-8 (&out c)
     (declare #'(&out out-c => long))
     (set! (~ c) 7)
     8)
 
+;; kernel ALWAYS return nil, no matter what operation is in "last place'.
 (def-kernel-exact call_function (byte-size ptr offset)
     (declare #'(ulong voidp ulong))
     (let ((c (marshall-cell out-c byte-size ptr offset)))
-        (store-7-return-8 c)))  ; <-- inject implicit (return)  ?
+        (store-7-return-8 c)))  ; <-- inject implicit (return) at end of every kernel ?? something

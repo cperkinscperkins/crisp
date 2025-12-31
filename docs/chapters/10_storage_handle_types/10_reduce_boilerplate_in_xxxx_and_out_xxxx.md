@@ -25,8 +25,8 @@ Example:
 Possible Implmenetionat
 ```
 (<T A>   ;; <-- shorthand notation for with-template-type
-  (def-type in-vec (vector T A :global :readable))
-  (def-type out-vec (vector T A :global :writeable)))
+  (def-type in-vec (vector T :align A :address-space :global :access :readable))
+  (def-type out-vec (vector T :align A :address-space :global :access :writeable)))
 ```
 
 

@@ -1,0 +1,6 @@
+;; bytes~ is NOT a passthrough .  It returns the number of bytes required to record the cell in
+;; the storage.  ie (sizeof T) 
+
+(def-function test-cell-parent (c)
+    (declare #'((cell long) => ulong))
+ (bytes~ c))

@@ -93,7 +93,7 @@ It can take a single symbol (for a vector, implying its length) or a list of sym
 
 ;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
-   (declare (type image-data (vector uchar :global :read_write))
+   (declare (type image-data (vector uchar :address-space :global :access :read-write))
             (type width height ulong)
             (global-size :derive-from '(width height) :strategy :one-thread-per :msg "ensure enough threads for every pixel of image, otherwise use the stepping convolution")) 
   ...)
@@ -183,7 +183,7 @@ has been "rounded up" to a multiple of the workgroup size by the host.
 ```
 ;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
-   (declare (type image-data (vector uchar :global :read_write))
+   (declare (type image-data (vector uchar :address-space :global :access :read-write))
             (type width height ulong)
             (global-size :derive-from ( width height) :strategy :one-thread-per)) ; <-- this sets the upper bound for check-thread-bounds 
   (let ((image-matrix (make-tensor image-data width height)))

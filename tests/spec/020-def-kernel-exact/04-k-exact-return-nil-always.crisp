@@ -1,0 +1,42 @@
+
+;; def-kernel-exact ALWAYS returns nil.  There is absolutely no way to return
+;; a value from a kernel.  If there is an expression in the "last" place
+;; of a kernel, it is overridden.  Maybe kernels can add an implici (return nil) if the
+;; progn doesn't already have a (return) expression.
+
+(def-kernel-exact return_nil_01 ()
+    (declare #'())
+    (return nil))
+
+(def-kernel-exact return_nil_02 ()
+    (declare #'())
+    (return))
+
+;; this is NOT an error. Nor should the user have to add an explicit return like above.
+;; we should accept "4" in the last position and _just ignore it_.
+;; kernel functions are not like regular functions.
+;; in fact, later we will have def-grid-function which ALSO always returns nil 
+;; and has these same "ignore it" semantics.
+(def-kernel-exact return_nil_03 ()
+    (declare #'())
+    4) 
+
+(def-function return-7 ()
+    (declare #'(=> int))
+    7)
+
+(def-kernel-exact return_nil_04 ()
+  (declare #'())
+  (return-7)) ;; <-- once again, just ignore whatever this happens to return.
+
+#|
+Commented out because these ARE errors.
+
+(def-kernel-exact bad_kernel ()
+    (declare #'(=> int)) ;; <-- cannot declare a non-nil return type. 
+    (return 7)) ;; <-- only (return) and (return nil) are valid. any other value
+
+(def-kernel-exact bad_kernel_2 ()
+    (declare #'(=> nil)) 
+    (return 0))   ;; <-- nice try. still an error
+|#

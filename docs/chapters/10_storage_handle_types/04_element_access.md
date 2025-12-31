@@ -47,9 +47,4 @@ access functions cannot be overloaded.   `~ref~` is intended to be used from ove
 (set! (~ref~ <vector> <index>) <value>)
 ```
 
-<!-- NOTE  Is this restriction still in effect?   -->
-The `~ref~` function is NOT supported for tensors. Also, it is very likely that if more abstract 
-tensors are supported in the future (symmetrical, sparse, etc)
-that they may have completely different affordances for access.
-
 

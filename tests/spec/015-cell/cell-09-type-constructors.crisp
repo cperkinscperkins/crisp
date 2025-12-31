@@ -2,15 +2,19 @@
 
 ;; type constructors
 
-;; &optional (cell T &optional :address-space :access)
+;; &key (cell T &key :address-space :access)
 (def-function kernel-proxy (A B C)
-    (declare #'((cell int) (cell int :global) (cell float :local) => nil))
+    (declare #'((cell int) (cell int :address-space :global) (cell float :address-space :local) => nil))
     (let ((quot rem (truncate (~ C))))
         (set! (~ A) quot)
         (set! (~ B) rem)))
 
 (def-function kernel-proximate (A B C)
-    (declare #'((cell long :global :read-only) (cell long :local :read-only) (cell long :local :write-only) => nil))
+    (declare #'((cell long :address-space :global :access :read-only) (cell long :address-space :local :access :read-only) (cell long :address-space :local :access :write-only) => nil))
     (set! (~ C) (to-float (+ (~ A) (~ B)))))
 
-;; &key (cell &key :element-type :address-space :access)
+(def-function change-order (A B C)
+    (declare #'((cell float :access :read-only :address-space :local)
+                (cell long :access :read-only)
+                (cell float :address-space :global)))
+    (set! (~ C) (+ (to-float (~ B)) (~ A))))

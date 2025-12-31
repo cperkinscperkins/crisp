@@ -23,7 +23,7 @@ where `XXXX` is the name of the function, struct, vector, etc that was defined.
 
   ;; -- move-discrete --
   (def-function move-discrete (a b)
-     (declare (type a T) (type b U) (return-type (vector U A)))
+     (declare (type a T) (type b U) (return-type (vector U :address-space A)))
      ...))
 
 ; we can template structs as well
@@ -83,7 +83,7 @@ Example:
 
   ;; -- move-discrete --
   (def-function move-discrete (a b)
-     (declare (type a T) (type b U) (return-type (vector U A)))
+     (declare (type a T) (type b U) (return-type (vector U :address-space A)))
      ...))
 
 (move-discrete int float :global) ; that specfic type. 
@@ -104,7 +104,7 @@ all the needed type information is present (or it'll error :-) )
   ;; -- pair --
   (def-struct pair (first T) (second U)))
 
-(def-type incomplete-p-t (pair nil (vector)))  ;; <-- a pair with a vector in the second type. Who cares what's in the first?
+(def-type incomplete-p-t (pair nil (vector long)))  ;; <-- a pair with a vector in the second type. Who cares what's in the first?
 
 ;; -- sum-length --
 (def-function sum-length (a b)
@@ -166,7 +166,7 @@ which is a string name that the compiler should give the kernel.
 (with-template-type (T)
 
    ;; -- happy_stance --
-   (def-kernel happy_stance (data:(vector T :global :read-write)
+   (def-kernel happy_stance (data:(vector T :address-space :global :access :read-write)
      ...)))
 
 (gen-happy_stance float "happy_stance_f")

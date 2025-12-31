@@ -407,3 +407,24 @@ Not sure how difficult that would be.
 
 - [ ] Investigate Google Antigravity: https://antigravity.google   <-- serious IDE
 - [ ] Investigate Google AI Studio: https://aistudio.google.com    <-- in-browser prototyping and "prompt engineering"
+
+
+
+
+REGROUP
+=======
+
+- revert to main branch. 
+- capture work on tests and docs from def-kernel-exact branches
+- update ALL tests
+- - no "cell" or "(cell)".  only (cell someType)
+- lose &optional variants for cell.  Double check def-record and def-struct 
+  both in design doc and in tests.
+- make- => marshall-  A: BOTH for def-record .  marshall- for cell, but NOT make-
+
+- review not-again.md , matrix-mutable.md and thoughts-on-def-kernel.md
+
+
+* Incomplete
+* Templates are for omitting Structure/Identity (like element-type).
+* The element-type must always be present—either concretely (long) or abstractly (T).

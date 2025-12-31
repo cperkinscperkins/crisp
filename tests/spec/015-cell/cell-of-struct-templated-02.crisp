@@ -1,0 +1,36 @@
+
+;; double 
+(with-template-type (T U)
+    (def-function compare-parent (A B)
+        (declare #'((cell T) (cell U) => int))
+        ;; (equal (parent~ A) (parent~ B)) ;; do we have equal? Do we want it?  Would = work?
+        ;; alternately
+        (= (byte-size~ (parent~ A)) (byte-size~ (parent~ B)))))
+
+
+;; None of these work. Not "top level", "nested" or "inferred".
+
+
+;; top level
+(gen-compare-parent long float)
+(def-function compare-parent-cells-01 (c1 c2)
+    (declare #'((cell long) (cell float) => int))
+    (compare-parent c1 c2))
+
+;; nested
+(def-function compare-parent-cells-02 (c1 c2)
+    (declare #'((cell float) (cell long) => int))
+    (gen-compare-parent float long)
+    (compare-parent c1 c2))
+
+;; inferred (if possible)
+;; if this is not possible, just leave a note and comment out this last
+;; test function. don't delete it.
+
+#|
+(def-function compare-parent-cells-03 (c1 c2)
+    (declare #'((cell uint) (cell double) => int))
+    (compare-parent c1 c2))
+|#
+  
+    

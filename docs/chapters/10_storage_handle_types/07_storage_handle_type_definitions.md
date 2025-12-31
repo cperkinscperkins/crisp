@@ -18,20 +18,12 @@ Therefore, there are several storage handle type functions available in CRISP,
  return incomplete types, which make them flexible. But any operation that accesses the
  actual data of the storage handle will, at minimum, require the element type to be specified.
 
-### Simplest
 
-No argument.
 
-```
-(cell)
-(vector)
-(matrix)
-(tensor)
-```
+### Simplest - Element Type Only
 
-It's a `cell`, `vector`, `matrix` or `tensor`.   
+For tensor, the arity is also required (at minimum).
 
-### Element Type Only
 ```
 (cell <element-type>)
 (vector <element-type>)
@@ -49,41 +41,33 @@ with a `float` element type. It does not specify any particular alignment, addre
 Note that for the `cell` type, this is the minimum information needed to perform element access (`~`).
 
 
-### Using Optional
-After the base element type and dimensions, the other arguments can be provided as "optional" args. 
-
-```
-(cell <element-type> &optional address-space access)
-(vector <element-type> &optional align address-space access length)
-(matrix <element-type> &optional align address-space access length)
-(tensor <element-type> NumDims &optional align address-space access length))
-```
-
-Example: `(vector float :compact)` 
-This example specifies a vector  of floats with `:compact` alignment. 
-It does not specify address-space,  access, or size.
-
-Note that this is the MINIMUM amount of information needed to use element access `(~ someVec i)`
-for the non-cell Storage Handle types.
-If a `XXXX-type` doesn't include `element-type` AND `align` then the body
-of the function won't compile uses of element access (`~`).
-
-The `address-space`, `access` and `length` may appear in order.
-
 ### Using Keys
 For the most flexibility, keys can be used.
-`(XXXX &key element-type num-dims align address-space access length)`
+```
+;; for cell
+(cell <element-type> &key address-space access)
 
-Example: `(vector :access :writeable)`  This specifies that some vector is writeable. 
-It could be of any type, address space, alignment, or size.
+;; for vector and matrix
+(XXXX <element-type> &key align address-space access extent)
 
-Example: `(tensor)`  This specifies merely that something is a `tensor`, but nothing else is known about it.
+;; for tensor
+(tensor <element-type> NumDims &key align address-space access extent)
+```
+
+Note that `:extent` is normally a runtime property and is NOT required to complete the
+type. It can optionally be provided at compile-time and, when provided, is a list of the sizes of each dimension. The sizes cannot be runtime variables, they must be compile-time expressions.
+
+
+Example: `(vector long :access :writeable)`  This specifies that some vector of longs is writeable. 
+It could be of any address space, alignment, or size.
+
+Example: `(tensor float 4)`  This specifies that we have a hypercube of floats, but nothing else is known about it. 
 
 
 
 ### Element Type
 The element type of a Storage Hnadle must be an element of a fixed size known at compile time.
-It cannot be the type of a function.  Nor can it be a `storage` entity.
+It cannot be the type of a function. It cannot be a `def-record`.  Nor can it be a `storage` entity.
 
 ### Access
 The enumeration for access has five different choices in Crisp:
@@ -100,10 +84,10 @@ But note that the last two are not available in the hoisting example code for lo
 ```
 ;; -- count --
 (def-function count (v)
-    (declare (return-type ulong) (type v (vector long :std140 :global :read-only)))
+    (declare (return-type ulong) (type v (vector long :align :std140 :address-space :global :access :read-only)))
  ...)
 
  ;; vectors can be compile-time fixed size
-(vector float :std140 :local :read-write 100)
+(vector float :align :std140 :address-space :local :access :read-write :extent (100))
 ```
 

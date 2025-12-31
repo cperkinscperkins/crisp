@@ -1,0 +1,6 @@
+
+
+
+(def-kernel-exact bad_kernel_2 ()
+    (declare #'(=> nil)) 
+    (return 0))  ;; <-- tricky this one. But still an error.

@@ -1,7 +1,7 @@
 ## Matrices
 
 
-`(def-type matrix (tensor 2))`
+`(def-type matrix (tensor T 2))`
 
 Matrices are simply 2D tensor views. The type alias `matrix` is defined to make coding easier, but any 2D `tensor` can automatically be considered a matrix. It is not a "derived" type.
 

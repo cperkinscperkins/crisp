@@ -90,3 +90,8 @@
              (format stream "Illegal access: ~a~@[ (Location: ~a)~]"
                (error-message condition)
                (error-source-location condition)))))
+
+(define-condition crisp-incomplete-type-error (crisp-compiler-error)
+    ((type-spec :initarg :type-spec :reader incomplete-type-spec))
+  (:report (lambda (condition stream)
+             (format stream "Invalid incomplete type specifier: ~a." (incomplete-type-spec condition)))))
