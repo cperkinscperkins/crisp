@@ -92,7 +92,15 @@
                                     (declare (crisp-system-generated))
                                     (set! (~ref~ c) v)
                                     (return))
-                     '((cell To Addr Acc) To => nil)))
+                     '((cell To Addr Acc) To => nil))
+
+  ;; Register bytes~ helper (sizeof T)
+  (register-template 'bytes~ '(To (Addr :global) (Acc :read-write)) nil
+                     '(def-function bytes~ (c)
+                                    (declare (function ((cell To Addr Acc) => ulong)))
+                                    (declare (crisp-system-generated))
+                                    (return (sizeof To)))
+                     '((cell To Addr Acc) => ulong)))
 
 
 ;; Helpers (Analysis Placeholder)

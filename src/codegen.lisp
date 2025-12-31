@@ -1134,3 +1134,13 @@
                                                    (values loaded-val nil target-ptr)))))))))))
 
        (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)" array-type cell-spec))))))
+
+(defmethod generate-node-ir ((node semantic-sizeof) builder module var-env di-builder di-scope location-map)
+  "Generates IR for a sizeof(T) expression. Returns an i64 constant."
+  (declare (ignore builder var-env di-builder di-scope location-map))
+  (log:info "Generating SIZEOF IR for type node: ~s" node)
+  (let* ((target-type-spec (semantic-sizeof-target-type node))
+         (llvm-type (crisp-type-to-llvm-type target-type-spec module))
+         (size-val (llvm-size-of llvm-type)))
+    ;; size-val is an LLVM Value (ConstantInt), so it's ready to use.
+    (values size-val nil)))

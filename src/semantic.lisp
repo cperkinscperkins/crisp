@@ -202,3 +202,9 @@
   type ; The return type (of the last expression)
   body ; A list of semantic nodes
   source-location)
+
+(defstruct semantic-sizeof
+  "Represents a sizeof(type) expression."
+  type ; Always ulong (or similar integer type)
+  target-type ; The Crisp type to measure
+  source-location)
