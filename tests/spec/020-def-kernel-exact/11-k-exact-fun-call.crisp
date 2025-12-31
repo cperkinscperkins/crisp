@@ -16,4 +16,4 @@
 (def-kernel-exact call_function (byte-size ptr offset)
     (declare #'(ulong voidp ulong))
     (let ((c (marshall-cell out-c byte-size ptr offset)))
-        (store-7-return-8 c)))  ; <-- inject implicit (return) at end of every kernel
+        (store-7-return-8 c)))  ; <-- inject implicit (return) at end of every kernel ?? something
