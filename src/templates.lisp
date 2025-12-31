@@ -110,11 +110,11 @@
                          (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name))))))
 
                  ((and (listp form) (eq (first form) 'def-type))
-                  (let ((name (second form))
-                        (type-spec (third form)))
-                    `(eval-when (:compile-toplevel :load-toplevel :execute)
-                       (setf (gethash ',name crisp.compiler::*crisp-template-aliases*)
-                         (cons ',params ',type-spec))))))))))
+                   (let ((name (second form))
+                         (type-spec (third form)))
+                     `(eval-when (:compile-toplevel :load-toplevel :execute)
+                        (setf (gethash ',name crisp.compiler::*crisp-template-aliases*)
+                          (cons ',params ',type-spec))))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Template Instantiation Logic
@@ -350,7 +350,8 @@
           for sig = (if (and (listp raw-sig) (eq (first raw-sig) 'FUNCTION))
                         (second raw-sig)
                         raw-sig)
-          for params = (template-data-parameters tmpl) ; e.g. (T)
+          for raw-params = (template-data-parameters tmpl)
+          for params = (mapcar (lambda (p) (if (consp p) (first p) p)) raw-params)
             ;; sig is now (T T => T).
           for sig-params = (when sig (butlast sig 2))
 

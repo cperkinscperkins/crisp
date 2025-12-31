@@ -223,6 +223,7 @@
    ;; Accessors
    #:address~ #:byte-size~ #:address-space~ #:access~
    #:parent~ #:offset~ #:element-type~
+   #:bytes~ #:sizeof
 
    ;; All cast/conversion operators
    #:to-char #:as-char
@@ -329,6 +330,7 @@
                 ;; Accessors
                 #:address~ #:byte-size~ #:address-space~ #:access~
                 #:parent~ #:offset~ #:element-type~
+                #:bytes~ #:sizeof
 
                 ;; All cast/conversion operators
                 #:to-char #:as-char
@@ -430,6 +432,7 @@
    #:make-scratch-cell
    #:cell
    #:parent~ #:offset~ #:element-type~
+   #:bytes~ #:sizeof
 
    ;; Enumerations
    #:def-enumeration

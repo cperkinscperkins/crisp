@@ -26,6 +26,7 @@
   (def-expression-analyzer let analyze-let-expression)
   (def-expression-analyzer let* analyze-let-expression)
   (def-expression-analyzer progn analyze-progn-expression)
+  (def-expression-analyzer sizeof analyze-sizeof-expression) ;; NEW
   (def-expression-analyzer compiler-no-op analyze-compiler-no-op) ;; NEW
   (def-expression-analyzer is-set? analyze-is-set-expression) ;; Compile-time predicate
 
@@ -1498,7 +1499,8 @@
     (semantic-extract-value (semantic-extract-value-type node))
     (semantic-struct-construction (semantic-struct-construction-type node))
     (semantic-progn (semantic-progn-type node))
-    (semantic-struct-member-update (semantic-struct-member-update-type node))))
+    (semantic-struct-member-update (semantic-struct-member-update-type node))
+    (semantic-sizeof (semantic-sizeof-type node))))
 
 (defun semantic-node-source-location (node)
   (etypecase node
@@ -1517,6 +1519,7 @@
     (semantic-gt (semantic-gt-source-location node))
     (semantic-le (semantic-le-source-location node))
     (semantic-ge (semantic-ge-source-location node))
+    (semantic-sizeof (semantic-sizeof-source-location node))
     (semantic-eq (semantic-eq-source-location node))
     (semantic-neq (semantic-neq-source-location node))
     (semantic-if (semantic-if-source-location node))
@@ -1861,3 +1864,15 @@
      (t (make-semantic-literal :value-type 'quote :value val :source-location location)))))
 
 (def-expression-analyzer quote analyze-quote)
+
+(defun analyze-sizeof-expression (expr env location)
+  (declare (ignore env))
+  (unless (= (length expr) 2)
+    (error "sizeof expects exactly 1 argument: (sizeof type)"))
+  (let* ((raw-type (second expr))
+         (type-spec (parse-type-specifier raw-type)))
+    (unless (valid-type-p type-spec)
+      (error 'crisp-unknown-type-error :type-name raw-type :source-location location))
+    (make-semantic-sizeof :type 'ulong
+                          :target-type type-spec
+                          :source-location location)))
