@@ -60,9 +60,25 @@
                      ;; Extract signature from function body if present
                      (let* ((sig-decl (find-if (lambda (f) (and (listp f) (eq (car f) 'declare))) fn-body))
                             (signature (when sig-decl
-                                             (let ((raw (second sig-decl))) ;; (return-type <type>)
-                                               (when (eq (first raw) 'return-type)
-                                                     `(function (=> ,(second raw))))))))
+                                             (let ((raw (second sig-decl))) ;; (return-type <type>) or (function <spec>)
+                                               (cond
+                                                ;; Case 1: (declare (return-type ...)) -> old style
+                                                ((eq (first raw) 'return-type)
+                                                  `(function (=> ,(second raw))))
+                                                ;; Case 2: (declare (function ...)) or (declare #'...)
+                                                ((member (first raw) '(function common-lisp:function))
+                                                  ;; raw is (function (args... => ret))
+                                                  ;; We need to clean the args list (remove &out, &key, names if mixed?)
+                                                  ;; Assuming signature specs are types only or keywords.
+                                                  (let* ((inner (second raw))
+                                                         (arrow-pos (position '=> inner))
+                                                         (args (subseq inner 0 (or arrow-pos (length inner))))
+                                                         (clean-args (remove-if (lambda (x)
+                                                                                  (and (symbolp x)
+                                                                                       (member (symbol-name x) '("&OUT" "&KEY" "&OPTIONAL" "&REST") :test #'string-equal)))
+                                                                         args))
+                                                         (ret (when arrow-pos (nth (1+ arrow-pos) inner))))
+                                                    `(function (,@clean-args => ,ret)))))))))
                        (list
                         `(eval-when (:compile-toplevel :load-toplevel :execute)
                            (register-template ',name ',params ',constraints ',form ',signature))
@@ -207,13 +223,32 @@
                  return t)))
 
      ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
+
+     ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
      ((listp sig-type)
        (or (match-list-structure sig-type arg-type inference-map template-params)
            ;; Unmangle struct names to lists for matching (e.g. CELL_FLOAT -> (CELL FLOAT ...))
            (and (symbolp arg-type)
                 (let ((unmangled (crisp.compiler::unmangle-template-struct-name arg-type)))
                   (when unmangled
-                        (match-list-structure sig-type unmangled inference-map template-params))))))
+                        (match-list-structure sig-type unmangled inference-map template-params))))
+           ;; Check for Template Aliases (e.g. (out-c T) -> (cell T ...))
+           (let ((alias-def (and (symbolp (first sig-type))
+                                 (gethash (first sig-type) crisp.compiler::*crisp-template-aliases*))))
+             (when alias-def
+                   (let* ((alias-params (car alias-def))
+                          (alias-body (cdr alias-def))
+                          (args (rest sig-type))
+                          (substitutions (pairlis alias-params args))
+                          (expanded-sig (sublis substitutions alias-body)))
+                     (match-template-arg (crisp.compiler::canonicalize-type-specifier expanded-sig) arg-type inference-map template-params))))))
+
+     ;; NEW: Check for Symbol Alias (e.g. out-c)
+     ((and (symbolp sig-type)
+           (gethash sig-type crisp.compiler::*crisp-template-aliases*))
+       (let* ((alias-def (gethash sig-type crisp.compiler::*crisp-template-aliases*))
+              (alias-body (cdr alias-def)))
+         (match-template-arg (crisp.compiler::canonicalize-type-specifier alias-body) arg-type inference-map template-params)))
 
      ;; 4. Concrete Type (int)
      (t (or (equal sig-type arg-type)
@@ -338,21 +373,7 @@
            (substitutions (pairlis params substitution-args)))
 
       ;; Augment substitutions with template aliases
-      ;; Augment substitutions with template aliases
-      (log:warn "Checking Aliases. Count: ~a. Params: ~a"
-                (hash-table-count crisp.compiler::*crisp-template-aliases*)
-                params)
-      (maphash (lambda (alias-name alias-data)
-                 (let ((alias-params (car alias-data))
-                       (alias-spec (cdr alias-data)))
-                   ;; Heuristic: If alias params match template params (length and names)
-                   (log:warn "ALIAS CHECK: ~a. Params: ~a. Tmpl Params: ~a. Match? ~a"
-                             alias-name alias-params params (equal alias-params params))
-                   (when (equal alias-params params)
-                         (let ((concrete-spec (sublis substitutions alias-spec)))
-                           (log:warn "ALIAS SUBSTITUTION: ~a -> ~a" alias-name concrete-spec)
-                           (push (cons alias-name concrete-spec) substitutions)))))
-               crisp.compiler::*crisp-template-aliases*)
+      ;; (Fixed: Do not aggressively substitute aliases here. Let canonicalize-type-specifier handle them.)
 
       ;; Check if it's a struct template by inspecting the body
       (let* ((body (template-data-body tmpl))
@@ -421,6 +442,8 @@
                      (when (loop for sig-param in sig-params
                                  for arg-type in argument-types
                                    always (match-template-arg sig-param arg-type inference-map params))
+
+                           ;; Ensure all template parameters were inferred
 
                            ;; Ensure all template parameters were inferred
                            (let ((concrete-types (loop for p in params

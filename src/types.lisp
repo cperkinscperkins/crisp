@@ -192,28 +192,35 @@ This supports overloading templates by arity or other factors.")
            (args (if (consp spec) (rest spec) nil)))
     (cl:cond
       ((symbolp base)
-       (cl:let* ((template-data (first (gethash base *template-registry*)))
-                 (params (and template-data (template-data-parameters template-data))))
-         (if params
-             (cl:let ((full-args (loop for param in params
-                                       for i from 0
-                                       for arg = (nth i args)
-                                       collect (if arg
-                                                   arg
-                                                   ;; Check for default value in param spec (Name Default)
-                                                   (if (and (consp param) (second param))
-                                                       (second param)
-                                                       nil)))))
-               ;; Truncate nil tail if strict? Or just return full args?
-               ;; If original args had keywords, we might need to more complex handling.
-               ;; For now, assume positional simplicity for templates like CELL.
-               ;; But wait, canonicalize previously handled keyword args for CELL: (cell int :access :rw)
-               ;; We should preserve that hybrid property mapping capability generically too.
-               ;; TODO: Implement hybrid positional/keyword mapping if needed. For now, matching CELL logic.
-               (cons base (remove-if #'null full-args)))
+       ;; 1. Check Template Aliases (def-type)
+       (cl:let ((alias-def (gethash base *crisp-template-aliases*)))
+         (cl:if alias-def
+                (cl:let ((params (car alias-def))
+                         (type-spec (cdr alias-def)))
+                  ;; Instantiate the alias
+                  (cl:if params
+                         (cl:let ((substitutions (pairlis params args)))
+                           (canonicalize-type-specifier (sublis substitutions type-spec)))
+                         ;; No params? Just return the aliased type
+                         (canonicalize-type-specifier type-spec)))
 
-             ;; Not a template, return as is (normalized to list)
-             (if (consp spec) spec (list spec)))))
+                ;; 2. Standard Templates
+                (cl:let* ((template-data (first (gethash base *template-registry*)))
+                          (params (and template-data (template-data-parameters template-data))))
+                  (cl:if params
+                         (cl:let ((full-args (cl:loop for param in params
+                                             for i from 0
+                                             for arg = (nth i args)
+                                             collect (cl:if arg
+                                                            arg
+                                                            ;; Check for default value in param spec (Name Default)
+                                                            (cl:if (and (consp param) (second param))
+                                                                   (second param)
+                                                                   nil)))))
+                           (cons base (remove-if #'null full-args)))
+
+                         ;; Not a template, return as is (normalized to list)
+                         (cl:if (consp spec) spec (list spec)))))))
       ((consp spec) spec)
       (t (list spec)))))
 
