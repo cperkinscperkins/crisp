@@ -182,6 +182,23 @@
                  (declare (entry-point)) ;; Mark as kernel for Codegen
                  ,@body))
 
+(defmacro def-kernel-exact (name params &rest body)
+  "Defines a GPU Kernel with exact ABI control (Raw Scalars).
+   - Name must be valid C identifier (no dashes).
+   - No implicit arguments or marshalling by the compiler.
+   - Return type is implicitly NIL (void)."
+
+  ;; 1. Validate C-Style Name
+  (let ((name-str (symbol-name name)))
+    (when (find #\- name-str)
+          (error "Invalid Kernel Name '~a': def-kernel-exact requires C-style identifiers (no dashes)." name)))
+
+  ;; 2. Expand to def-function with entry-point
+  `(def-function ,name ,params
+                 (declare (entry-point))
+                 ,@body
+                 (return)))
+
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
    Bindings: (aos-var [soa-var] [:access type])
@@ -353,3 +370,24 @@
 (defmacro r-t-assert-0 (test &rest args)
   "Asserts that TEST is true at runtime (placeholder for thread-0 check)."
   `(r-t-assert ,test ,@args))
+
+(defmacro marshall-cell (type-alias byte-size ptr offset)
+  "Marshals raw kernel arguments into a Cell struct.
+   Usage: (marshall-cell out-c byte-size ptr offset)"
+  (let* ((expanded (or (gethash type-alias *crisp-type-aliases*) type-alias))
+         (canonical (expand-storage-handle-type-specifier expanded))
+         (base (first canonical))
+         (params (rest canonical))
+         (mangled-symbol (mangle-template-struct-name base params))
+         (constructor-name (intern (format nil "MAKE-~a" mangled-symbol) (symbol-package base))))
+
+    ;; Ensure the specific Cell struct is instantiated in the compiler environment
+    ;; so that the constructor macro (make-cell_...) is defined.
+    (let ((code (instantiate-template base params)))
+      (eval code))
+
+    (let ((result `(,constructor-name
+                     :parent (make-storage :address (as c-pointer ,ptr) :byte-size ,byte-size)
+                     :offset ,offset)))
+      (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
+      result)))

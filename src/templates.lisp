@@ -51,31 +51,62 @@
 
     `(progn
       ,@(loop for form in real-body
-              collect
+                append
                 (cond
+                 ;; Case 1: def-function
                  ((and (listp form) (eq (first form) 'def-function))
                    (let ((name (second form))
                          (fn-body (cdddr form)))
                      ;; Extract signature from function body if present
                      (let* ((sig-decl (find-if (lambda (f) (and (listp f) (eq (car f) 'declare))) fn-body))
-                            (signature (when sig-decl (second sig-decl))))
+                            (signature (when sig-decl
+                                             (let ((raw (second sig-decl))) ;; (return-type <type>)
+                                               (when (eq (first raw) 'return-type)
+                                                     `(function (=> ,(second raw))))))))
+                       (list
+                        `(eval-when (:compile-toplevel :load-toplevel :execute)
+                           (register-template ',name ',params ',constraints ',form ',signature))
 
-                       `(progn
-                         ;; Register the template at compile/load time
-                         (eval-when (:compile-toplevel :load-toplevel :execute)
-                           (register-template ',name ',params ',constraints ',form ',signature)) ;; Define the generator macro: (gen-NAME ...)
-                         (eval-when (:compile-toplevel :load-toplevel :execute)
-                           (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
-                             `(template-instantiation ,(instantiate-template ',name concrete-types))))
-                         (eval-when (:compile-toplevel :load-toplevel :execute)
-                           (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name)))
+                        `(eval-when (:compile-toplevel :load-toplevel :execute)
+                           (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
+                             (let* ((arity ,(length params))
+                                    (provided (length args)))
+                               (if (= provided arity)
+                                   `(template-instantiation ,(instantiate-template ',name args))
+                                   (error "Template instantiation for ~a expects ~a type arguments, got ~a." ',name arity provided)))))
 
-                         ;; Define the type helper macro: (NAME-type ...)
-                         (defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
+                        ;; Define the type helper macro: (NAME-type ...)
+                        `(defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
                            `(get-template-signature ',',name ',concrete-types))
-                         (eval-when (:compile-toplevel :load-toplevel :execute)
+
+                        `(eval-when (:compile-toplevel :load-toplevel :execute)
                            (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name)))))))
 
+                 ;; Case 2: def-kernel
+                 ((and (listp form) (member (first form) '(def-kernel def-kernel-exact)))
+                   (let ((name (second form)))
+                     (list
+                      `(eval-when (:compile-toplevel :load-toplevel :execute)
+                         (register-template ',name ',params ',constraints ',form nil))
+
+                      `(eval-when (:compile-toplevel :load-toplevel :execute)
+                         (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
+                           (let* ((arity ,(length params))
+                                  (provided (length args)))
+                             (cond
+                              ((= provided arity)
+                                `(template-instantiation ,(instantiate-template ',name args)))
+                              ((= provided (1+ arity))
+                                (let ((types (subseq args 0 arity))
+                                      (override (nth arity args)))
+                                  `(template-instantiation ,(instantiate-template ',name types override))))
+                              (t
+                                (error "Template instantiation for ~a expects ~a type arguments (plus optional name), got ~a." ',name arity provided))))))
+
+                      `(eval-when (:compile-toplevel :load-toplevel :execute)
+                         (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name))))))
+
+                 ;; Case 3: def-struct
                  ((and (listp form) (member (first form) '(def-struct def-record)))
                    (let* ((name (second form))
                           (members (cddr form))
@@ -83,38 +114,40 @@
                           (member-types (mapcar #'second members))
                           (param-names (mapcar #'first members))
                           (signature `(function (,@member-types => ,name))))
-                     `(progn
-                       ;; Register the template for Struct with synthesized constructor signature
-                       (eval-when (:compile-toplevel :load-toplevel :execute)
+                     (list
+                      `(eval-when (:compile-toplevel :load-toplevel :execute)
                          (register-template ',name ',params ',constraints ',form ',signature))
 
-                       ;; Define the Generic Macro that maps keywords -> positional dispatch
-                       (defmacro ,(intern (format nil "MAKE-~a" name) (symbol-package name)) (&rest args)
-                         (let ((reordered (crisp.compiler::validate-and-reorder-struct-args ',name
-                                                                                            (mapcar (lambda (n) (list n nil)) ',param-names) ;; Hack: pass simplified members
-                                                                                            args)))
-                           `(,(intern (format nil "MAKE-~a%DISPATCH" ',name) (symbol-package ',name)) ,@reordered)))
+                      ;; 1. Generate normal generic constructor GEN-POINT(T U)(x y) wrapper -> make-point_float_float
+                      `(defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
+                         (let ((concrete-types (first args))
+                               (ctor-args (rest args)))
+                           `(make-structure-template-instance ',name ',concrete-types ,@ctor-args)))
 
-                       ;; Define the generator macro: (gen-NAME ...)
-                       (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest concrete-types)
+                      ;; 2. Generate Type Helper GEN-POINT-TYPE(T U) => POINT_FLOAT_FLOAT
+                      `(defmacro ,(intern (format nil "GEN-~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
                          `(template-instantiation ,(instantiate-template ',name concrete-types)))
-                       (eval-when (:compile-toplevel :load-toplevel :execute)
+
+                      `(eval-when (:compile-toplevel :load-toplevel :execute)
                          (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name)))
 
-                       ;; Define the type helper macro: (NAME-type ...)
-                       ;; For structs, this returns the Mangled Name.
-                       (defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
+                      ;; Define the type helper macro: (NAME-type ...)
+                      ;; For structs, this returns the Mangled Name.
+                      `(defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
                          (let ((mangled (intern (format nil "~a_~{~a~^_~}" ',name concrete-types) (symbol-package ',name))))
                            `',mangled))
-                       (eval-when (:compile-toplevel :load-toplevel :execute)
+
+                      `(eval-when (:compile-toplevel :load-toplevel :execute)
                          (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name))))))
 
+                 ;; Case 4: def-type
                  ((and (listp form) (eq (first form) 'def-type))
                    (let ((name (second form))
                          (type-spec (third form)))
-                     `(eval-when (:compile-toplevel :load-toplevel :execute)
-                        (setf (gethash ',name crisp.compiler::*crisp-template-aliases*)
-                          (cons ',params ',type-spec))))))))))
+                     (list
+                      `(eval-when (:compile-toplevel :load-toplevel :execute)
+                         (setf (gethash ',name crisp.compiler::*crisp-template-aliases*)
+                           (cons ',params ',type-spec)))))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Template Instantiation Logic
@@ -279,9 +312,10 @@
 ;;; REDEFINITIONS FOR ROBUST TEMPLATE AMBIGUITY HANDLING
 ;;; ============================================================================
 
-(defun instantiate-template (name-or-tmpl concrete-types)
+(defun instantiate-template (name-or-tmpl concrete-types &optional override-name)
   "Generates the specialized code for a template. 
-   name-or-tmpl can be a symbol (name) or a template-data struct."
+   name-or-tmpl can be a symbol (name) or a template-data struct.
+   override-name: If provided (string or symbol), renames the generated function/kernel."
   (let* ((tmpl (if (template-data-p name-or-tmpl)
                    name-or-tmpl
                    ;; Legacy lookup by name + arity
@@ -302,6 +336,23 @@
            (arity (length params))
            (substitution-args (subseq concrete-types 0 (min (length concrete-types) arity)))
            (substitutions (pairlis params substitution-args)))
+
+      ;; Augment substitutions with template aliases
+      ;; Augment substitutions with template aliases
+      (log:warn "Checking Aliases. Count: ~a. Params: ~a"
+                (hash-table-count crisp.compiler::*crisp-template-aliases*)
+                params)
+      (maphash (lambda (alias-name alias-data)
+                 (let ((alias-params (car alias-data))
+                       (alias-spec (cdr alias-data)))
+                   ;; Heuristic: If alias params match template params (length and names)
+                   (log:warn "ALIAS CHECK: ~a. Params: ~a. Tmpl Params: ~a. Match? ~a"
+                             alias-name alias-params params (equal alias-params params))
+                   (when (equal alias-params params)
+                         (let ((concrete-spec (sublis substitutions alias-spec)))
+                           (log:warn "ALIAS SUBSTITUTION: ~a -> ~a" alias-name concrete-spec)
+                           (push (cons alias-name concrete-spec) substitutions)))))
+               crisp.compiler::*crisp-template-aliases*)
 
       ;; Check if it's a struct template by inspecting the body
       (let* ((body (template-data-body tmpl))
@@ -335,8 +386,17 @@
                 (eval-when (:compile-toplevel :load-toplevel :execute)
                   (crisp.compiler::register-overload ',constructor-alias ',wrapper-name))))
 
-            ;; For Functions: Just substitute types
-            `(progn ,(sublis substitutions body)))))))
+            ;; For Functions/Kernels: Substitute types and optionally rename
+            (let ((substituted-body (sublis substitutions body)))
+              (if override-name
+                  (let ((new-name (if (stringp override-name) (intern override-name (symbol-package name)) override-name)))
+                    (if (and (consp substituted-body)
+                             (member (first substituted-body) '(def-function def-kernel def-kernel-exact)))
+                        ;; Swap the name: (def-X OLD-NAME ...) -> (def-X NEW-NAME ...)
+                        `(progn ,(cons (first substituted-body) (cons new-name (cddr substituted-body))))
+                        ;; Fallback if body structure is unexpected
+                        `(progn ,substituted-body)))
+                  `(progn ,substituted-body))))))))
 
 (defun try-infer-template-types (name argument-types)
   "Attempts to infer template parameters for 'name' given 'argument-types'.
@@ -415,3 +475,14 @@
                     (setf (gethash key *instantiated-templates*) (if is-compiling :compiled :analyzed))
                     (setf did-work t)))))
       did-work)))
+
+(defmacro make-structure-template-instance (template-name concrete-types &rest ctor-args)
+  "Instantiates the struct template ensuring definitions exist, then calls the constructor."
+  (let* ((mangled-name (crisp.compiler::mangle-template-struct-name template-name concrete-types))
+         ;; We rely on instantiate-template to generate the def-struct and wrapper.
+         (instantiation-code (instantiate-template template-name concrete-types))
+         ;; Use the generated wrapper from instantiate-template logic
+         (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package template-name))))
+    `(progn
+      ,instantiation-code
+      (,wrapper-name ,@ctor-args))))

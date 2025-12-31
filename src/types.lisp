@@ -111,6 +111,7 @@ This supports overloading templates by arity or other factors.")
               (double ,#'llvm-double-type 64 :float)
               ;; Void
               (void ,#'llvm-void-type 0 :void)
+              (voidp ,(lambda () (llvm-pointer-type (llvm-int8-type) 0)) 64 :pointer)
               ;; Meta Types
               (type-spec ,#'llvm-void-type 0 :meta)
               ;; Pointer

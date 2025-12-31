@@ -10,7 +10,7 @@
 (def-function store-7-return-8 (&out c)
     (declare #'(&out out-c => long))
     (set! (~ c) 7)
-    8)
+    (as-long 8))
 
 ;; kernel ALWAYS return nil, no matter what operation is in "last place'.
 (def-kernel-exact call_function (byte-size ptr offset)
