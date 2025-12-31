@@ -266,6 +266,8 @@
 
    #:set! #:~ #:~ref~
 
+   #:to #:as
+
    ;; Developer Utilities
    #:compile-crisp-form-to-ir-string
 
@@ -341,6 +343,9 @@
                 #:let
                 #:set! #:~ #:~ref~
 
+                ;; Generic Casts
+                #:to #:as
+
                 ;; NEW: Branching Macros
                 #:when #:unless #:cond #:if+ #:else
                 #:!=
@@ -380,6 +385,7 @@
    #:uchar #:ushort #:uint #:ulong
    #:to-char #:to-short #:to-int #:to-long #:to-float #:to-double #:as-char #:as-short #:as-int #:as-long #:as-float #:as-double
    #:to-uchar #:to-ushort #:to-uint #:to-ulong #:as-uchar #:as-ushort #:as-uint #:as-ulong
+   #:to #:as
    #:truncate #:floor #:ceil #:round
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall

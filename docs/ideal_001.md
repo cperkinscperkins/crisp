@@ -467,7 +467,7 @@ This is a very easy mistake to make, in all languages. For this reason, Crisp
 has the `&out` parameter list specifier.  
 Any variables after `&out` must be a `:global` Storage Handle ( ie an acceptable proxy, like `vector` `soa-vector`, `cell`, `tensor` ).
 
-It is encouraged that the access is set to `:write_only` but this is not a strict requirement.  
+It is encouraged that the access is set to `:write-only` but this is not a strict requirement.  
 Importantly, regardless of the `:access` setting, within the functions scope the compiler enforces a write-only contract. 
 Any attempt to read from an `&out` parameter will result in a compile-time error. 
 Thus protecting you from accidentally making the race condition mistake.
@@ -811,7 +811,7 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
 
 ;; J - &out -- write-only-vectors
 (def-grid-function vector-add (A B &out C)
-   (declare #( v-type v-type &out (v-type :write_only)))
+   (declare #( v-type v-type &out (v-type :write-only)))
     ...)
 ```
 
@@ -929,14 +929,14 @@ including the ones required for the Crisp debug logging and scratch memory.
 which is a function Crisp provides for making Crisp vectors from `void` pointers and byte counts. This function cannot be used in other contexts.
 
 ```
-(def-type float-vec-t (vector float :global :compact))
+(def-type float-vec-t (vector float :address-space :global :align :compact))
 
 ;; -- vector_add_k --
 (def-kernel-exact vector_add_k (APtr ASz BPtr BSz CPtr CSz)
   (declare #'(voidp ulong voidp ulong voidp ulong => nil))
-  (let ((A (marshall-vector APtr ASz (float-vec-t :read_only)))
-        (B (marshall-vector BPtr BSz (float-vec-t :read_only)))
-        (C (marshall-vector CPtr CSz (float-vec-t :write_only))))
+  (let ((A (marshall-vector APtr ASz (float-vec-t :access :read-only)))
+        (B (marshall-vector BPtr BSz (float-vec-t :access :read-only)))
+        (C (marshall-vector CPtr CSz (float-vec-t :access :write-only))))
     (vector-add A B C)))
 ```
 
@@ -1410,7 +1410,7 @@ where `XXXX` is the name of the function, struct, vector, etc that was defined.
 
   ;; -- move-discrete --
   (def-function move-discrete (a b)
-     (declare (type a T) (type b U) (return-type (vector U A)))
+     (declare (type a T) (type b U) (return-type (vector U :address-space A)))
      ...))
 
 ; we can template structs as well
@@ -1470,7 +1470,7 @@ Example:
 
   ;; -- move-discrete --
   (def-function move-discrete (a b)
-     (declare (type a T) (type b U) (return-type (vector U A)))
+     (declare (type a T) (type b U) (return-type (vector U :address-space A)))
      ...))
 
 (move-discrete int float :global) ; that specfic type. 
@@ -1491,7 +1491,7 @@ all the needed type information is present (or it'll error :-) )
   ;; -- pair --
   (def-struct pair (first T) (second U)))
 
-(def-type incomplete-p-t (pair nil (vector)))  ;; <-- a pair with a vector in the second type. Who cares what's in the first?
+(def-type incomplete-p-t (pair nil (vector long)))  ;; <-- a pair with a vector in the second type. Who cares what's in the first?
 
 ;; -- sum-length --
 (def-function sum-length (a b)
@@ -1553,7 +1553,7 @@ which is a string name that the compiler should give the kernel.
 (with-template-type (T)
 
    ;; -- happy_stance --
-   (def-kernel happy_stance (data:(vector T :global :read-write)
+   (def-kernel happy_stance (data:(vector T :address-space :global :access :read-write)
      ...)))
 
 (gen-happy_stance float "happy_stance_f")
@@ -1752,7 +1752,7 @@ which we need to concern ourselves: Global, Local, and Constant.
 
 Global memory is the largest memory space available to the GPU, typically measured in gigabytes (GB). It's accessible by all threads across all workgroups and is the only memory space directly accessible by the host CPU for transferring data to and from the GPU.
 
-Any memory you prepare host-side and pass to the kernel (:readable or :read_write) will reside in global memory. Likewise, any results passed back from the kernel (`&out`) must also be in global memory.
+Any memory you prepare host-side and pass to the kernel (:readable or :read-write) will reside in global memory. Likewise, any results passed back from the kernel (`&out`) must also be in global memory.
 
 But global memory access is slow.
 
@@ -1829,8 +1829,8 @@ Storage Properties
 | Property      | Type          |              |     Description |
 | --------------|---------------|--------------|-----------------|
 | byte-size~         | ulong         | runtime      | the number of bytes in the `storage`. This is immutable.|
-| address-space | address-space | compile-time | one of `:global`, `:local`, `:constant` |
-| access        | access        | compile-time | one of `:read_only` `:write_only` `:read_write` `:readable` `:writeable` |
+| address-space~ | address-space | compile-time | one of `:global`, `:local`, `:constant` |
+| access~        | access        | compile-time | one of `:read-only` `:write-only` `:read-write` `:readable` `:writeable` |
 
 
 The `byte-size~` property for a `storage` is sometimes known at compile time, but is most often a runtime property.
@@ -1862,8 +1862,8 @@ A `cell` has these mutable properties:
 
 | Property | Type    | Description |
 | ---------|---------|-------------|
-| parent   | storage | address of a "parent" storage |
-| offset   | ulong   | offset into parent. |
+| parent~   | storage | address of a "parent" storage |
+| offset~   | ulong   | offset into parent. |
 
 `(offset~ someCell)` `(parent~ someCell)` can be used to access (or change) the `cell` view.
 Note that out-of-bounds checks are not enabled by default. Certain compiler flags (like `--runtime-checks`) will enable them.
@@ -1882,12 +1882,13 @@ Every `tensor` has these runtime properties:
 
 | Name     | Type        | Description |
 |----------|-------------|-------------|
-| length   | ulong       | the number of elements in the `tensor`.  |
-| parent   | vector      | address of a "parent" storage |
-| offset   | ulong       | offset into parent. |
-| num-dims | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
-| strides  | stride-type |  `vector` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
-| extents  | extents-type | `vector` the lenght of `num-dims` that tracks the extent of that particular dimension |
+| length~   | ulong       | the number of elements in the `tensor`. Product of the `extents`. This property cannot be directly `set!` for 2D and higher tensors. But CAN be set for `vector`. |
+| parent~   | vector      | address of a "parent" storage |
+| offsets~   | offset-type       | `def-rec-vec` the length of the `num-dims` that tracks the count to the starting element in the storage. |
+| num-dims~ | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
+| strides~  | stride-type |  `def-rec-vec` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
+| extents~  | extents-type | `def-rec-vec` the lenght of `num-dims` that tracks the extent of that particular dimension |
+| align~   | align-enum | `:std140` or `:compact`. This is a immmutable compile-time property. |
 
 Each of those properties can be accessed by the `XXXX~` function.
 e.g. `(length~ someTensor)` , `(parent~ someTensor)`
@@ -1901,13 +1902,18 @@ These property functions for the mutable properties can be overloaded.  They can
 ### Settable Properties
 
 None of the `storage` properties can be set. Also, excepting `byte-size`, all the `storage` properties are compile time properties. 
-The `bytes` property on a `storage` entity is sometimes a compile time property, but usually it's a runtime property. Regardless, it cannot be changed, .
-But ALL the mutable properties on the Storage Handle view can be set, including `length`.
+The `byte-size` property on a `storage` entity is sometimes a compile time property, but usually it's a runtime property. Regardless, it cannot be changed, .
+But ALL the mutable properties on the Storage Handle view can be set. And `vector` can also set the  `length`.
 
 ```
 (set! (length~ someVector) 10)
 (set! (parent~ someMatrix) otherStorage)   
+;; offset for cell and vector is direct.
+;; but for 2D matrix and higher, requires index
 (set! (offset~ someCell) 100)
+(set! (offset~ someVector) 4)
+(set! (offset~ someMatrix 0) 40)
+(set! (offset~ someMatrix 1) 50)
 ```
 
 Use `def-setter` to overload the property setting function.  `~XXXX~` can also be used to get / set the respective properties
@@ -1970,18 +1976,13 @@ access functions cannot be overloaded.   `~ref~` is intended to be used from ove
 (set! (~ref~ <vector> <index>) <value>)
 ```
 
-<!-- NOTE  Is this restriction still in effect?   -->
-The `~ref~` function is NOT supported for tensors. Also, it is very likely that if more abstract 
-tensors are supported in the future (symmetrical, sparse, etc)
-that they may have completely different affordances for access.
-
 
 Helper Functions
 ----------------
 
 `(element-type~ someStorageHandle)`  a type expression that returns the type of the elements in the Storage Handle.
 
-`(byte-size~ someStorageHandle)`  a helper function that calculates the current number of bytes in the Storage Handle.
+`(bytes~ someStorageHandle)`  a helper function that calculates the current number of bytes in the Storage Handle.
 Note that this is NOT a passthrough. If you want the total number of bytes in the parent `storage`
 you'll need `(byte-size~ (parent~ someStorageHandle))`
 
@@ -2008,6 +2009,7 @@ This would include:
 But it excludes:
 - `storage`
 - `functions` and `kernels`
+- `def-record` and `def-rec-vec`
 
 
 
@@ -2032,20 +2034,12 @@ Therefore, there are several storage handle type functions available in CRISP,
  return incomplete types, which make them flexible. But any operation that accesses the
  actual data of the storage handle will, at minimum, require the element type to be specified.
 
-### Simplest
 
-No argument.
 
-```
-(cell)
-(vector)
-(matrix)
-(tensor)
-```
+### Simplest - Element Type Only
 
-It's a `cell`, `vector`, `matrix` or `tensor`.   
+For tensor, the arity is also required (at minimum).
 
-### Element Type Only
 ```
 (cell <element-type>)
 (vector <element-type>)
@@ -2063,41 +2057,33 @@ with a `float` element type. It does not specify any particular alignment, addre
 Note that for the `cell` type, this is the minimum information needed to perform element access (`~`).
 
 
-### Using Optional
-After the base element type and dimensions, the other arguments can be provided as "optional" args. 
-
-```
-(cell <element-type> &optional address-space access)
-(vector <element-type> &optional align address-space access length)
-(matrix <element-type> &optional align address-space access length)
-(tensor <element-type> NumDims &optional align address-space access length))
-```
-
-Example: `(vector float :compact)` 
-This example specifies a vector  of floats with `:compact` alignment. 
-It does not specify address-space,  access, or size.
-
-Note that this is the MINIMUM amount of information needed to use element access `(~ someVec i)`
-for the non-cell Storage Handle types.
-If a `XXXX-type` doesn't include `element-type` AND `align` then the body
-of the function won't compile uses of element access (`~`).
-
-The `address-space`, `access` and `length` may appear in order.
-
 ### Using Keys
 For the most flexibility, keys can be used.
-`(XXXX &key element-type num-dims align address-space access length)`
+```
+;; for cell
+(cell <element-type> &key address-space access)
 
-Example: `(vector :access :writeable)`  This specifies that some vector is writeable. 
-It could be of any type, address space, alignment, or size.
+;; for vector and matrix
+(XXXX <element-type> &key align address-space access extent)
 
-Example: `(tensor)`  This specifies merely that something is a `tensor`, but nothing else is known about it.
+;; for tensor
+(tensor <element-type> NumDims &key align address-space access extent)
+```
+
+Note that `:extent` is normally a runtime property and is NOT required to complete the
+type. It can optionally be provided at compile-time and, when provided, is a list of the sizes of each dimension. The sizes cannot be runtime variables, they must be compile-time expressions.
+
+
+Example: `(vector long :access :writeable)`  This specifies that some vector of longs is writeable. 
+It could be of any address space, alignment, or size.
+
+Example: `(tensor float 4)`  This specifies that we have a hypercube of floats, but nothing else is known about it. 
 
 
 
 ### Element Type
 The element type of a Storage Hnadle must be an element of a fixed size known at compile time.
-It cannot be the type of a function.  Nor can it be a `storage` entity.
+It cannot be the type of a function. It cannot be a `def-record`.  Nor can it be a `storage` entity.
 
 ### Access
 The enumeration for access has five different choices in Crisp:
@@ -2114,11 +2100,11 @@ But note that the last two are not available in the hoisting example code for lo
 ```
 ;; -- count --
 (def-function count (v)
-    (declare (return-type ulong) (type v (vector long :std140 :global :read-only)))
+    (declare (return-type ulong) (type v (vector long :align :std140 :address-space :global :access :read-only)))
  ...)
 
  ;; vectors can be compile-time fixed size
-(vector float :std140 :local :read-write 100)
+(vector float :align :std140 :address-space :local :access :read-write :extent (100))
 ```
 
 Storage Handle Arguments for Kernels
@@ -2130,8 +2116,8 @@ The number of dimensions is (obviously) implicit for the `cell`, `vector` and `m
 
 
 ```
-(def-type data-from-host-t (vector float :std140 :global :read-only ))
-(def-type result-from-kernel-t (vector float :std140 :global :write-only ))
+(def-type data-from-host-t (vector float :align :std140 :address-space :global :access :read-only ))
+(def-type result-from-kernel-t (vector float :align :std140 :address-space :global :access :write-only ))
 
 ;; -- my_kernel --
 (def-kernel my_kernel (in &out out)
@@ -2166,7 +2152,7 @@ A `vector` can be literally declared using the Lisp `#(...)` syntax.
 
 ```
 (let ((small-vec #(0 1 2 someVal otherVal)))      ;;<-- ideally, type should be inferred
-  (declare (type small-vec (literal-type short))) ;; so that this is not needed.
+  (declare (type small-vec (literal-vector short))) ;; so that this is not needed.
    ...)
 ```
 A `vector` declared like this allocated using private register memory. It is highly recommended
@@ -2214,7 +2200,7 @@ assertion requires compiler flags (like `--runtime-checks`).
 
 
 ```
-(def-type vec-floats-t (vector float :std140 :local :read-write ))
+(def-type vec-floats-t (vector float :align :std140 :address-space :local :access :read-write ))
 (def-type vec-ints-t (literal-vector int))
 
 ;; -- do_things --
@@ -2256,8 +2242,8 @@ Example:
 Possible Implmenetionat
 ```
 (<T A>   ;; <-- shorthand notation for with-template-type
-  (def-type in-vec (vector T A :global :readable))
-  (def-type out-vec (vector T A :global :writeable)))
+  (def-type in-vec (vector T :align A :address-space :global :access :readable))
+  (def-type out-vec (vector T :align A :address-space :global :access :writeable)))
 ```
 
 
@@ -2269,7 +2255,7 @@ soa-vector
 `soa-vector` are templated over `S` where `S` is some struct type. But rather than a contiguous block of 
 memmory consisting of repeating structs, `soa-vector`s are "Structs of Arrays". 
 
-For example, using our `point` type from before, `(vector :element-type point :length 4)` would layout in memory
+For example, using our `point` type from before, `(vector point :length 4)` would layout in memory
 like this:
 `|x0|y0|x1|y1|x2|y2|x3|y3|`.
 Or in C++ we can think of it like this:
@@ -2279,7 +2265,7 @@ Point points[4];
 ```
 
 
-But a `(soa-vector :element-type point :lenth 4)` lays out like this:
+But a `(soa-vector  point :lenth 4)` lays out like this:
 `|x0|x1|x2|x3|y0|y1|y2|y3|`.
 In C++ with can think of it like this:
 ```
@@ -2316,7 +2302,7 @@ Example
 ```
 (def-struct point (x long) (y long))
 
-(let ((sv      (make-soa-vector point :local :read_write :std140 20))
+(let ((sv      (make-soa-vector point :address-space :local :access :read-write :align :std140 :length 20))
       (y       (y~ sv 9))
       (x-vec   (x~ sv)))
     ...)
@@ -2331,7 +2317,7 @@ Owning to memory coalesence, when the index is a thread id from parallel threads
 #### `XXXX~` without index
 
 Whereas constrastingly, in the example above `(x~ sv)` returns the ENTIRE VECTOR of X from the `soa-vector`.
- `x-vec` would be `(vector :element-type long :length 20)`.  
+ `x-vec` would be `(vector long :length 20)`.  
 
 Its primary purpose is to pass a single, contiguous stream of data to another high-performance primitive, like `reduce-vec`
 
@@ -2347,7 +2333,7 @@ creation of a new structure to hold the value.
 ### Helper Functions
 
 Like `vector`, `soa-vector`  supports `element-type` and `bytes` helpers.
-`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding. But remember, the `soa-vector` is a view into some `storage`. Use `(bytes~ (parent~ someSoaVec))` to get the
+`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding. But remember, the `soa-vector` is a view into some `storage`. Use `(byte-size~ (parent~ someSoaVec))` to get the
 full storage bytes.
 
 ### Member Data Rules
@@ -2362,9 +2348,7 @@ This rule is in place to prevent overly complex nested SoA layouts and to ensure
 ### Defining 
 
 ```
-(soa-vector <element-type> &optional address-space access align length)
-
-(soa-vector &key element-type address-space access align length)
+(soa-vector element-type &key address-space access align length)
 ```
 
 ### Creating
@@ -2598,7 +2582,7 @@ the correct allocation size.
 
 Each invocation must be countable by the compiler. This means they cannot appear in loops. 
 
-The invocations take a type expression as their first argument. The "new" Storage Hnadle will have the same type as the source, except that its `:access` may be changed to `:read-write` if the original source was only `:readable` or `:read_only`.   If an existing Storage Handle VALUE is
+The invocations take a type expression as their first argument. The "new" Storage Hnadle will have the same type as the source, except that its `:access` may be changed to `:read-write` if the original source was only `:readable` or `:read-only`.   If an existing Storage Handle VALUE is
 used as the type expression, then the size will be set to be the same. This can be very handy, because if that value originates as 
 a kernel argument, then the example hoisting code will specify that the size should match. 
 
@@ -2637,11 +2621,11 @@ which allows you to state its intended size and purpose.
 
 The `make-scratch-XXXX` routines create "scratch" side-channel memory Storage Handles. 
 
-Scratch memory defaults to `:local` address space,  `:read_write` access and `:std140` alignment, 
+Scratch memory defaults to `:local` address space,  `:read-write` access and `:std140` alignment, 
 but the defaults can be overridden by either using the `&key` arguments to the `make-scratch-XXXX` function
 or by using the second creation function of the pair that uses a Storage Handle type argument.
 
-Note that `:access` is NOT set by a Storage Handle type argument. It is always set to `:read_write` unless 
+Note that `:access` is NOT set by a Storage Handle type argument. It is always set to `:read-write` unless 
 directly overridden with the `:access` key.
 
 
@@ -2800,8 +2784,8 @@ In the example below, this function, if called by a kernel, would cause two addi
 be hoisted, plus a pointer to a unsigned long array.  
 
 ```
-(def-type float-vec (vector float :std140 :global :read_only))
-(def-type ulong-vec (vector ulong :std140 :global :writeable :std140))
+(def-type float-vec (vector float :align :std140 :address-space :global :access :read-only))
+(def-type ulong-vec (vector ulong :align :std140 :address-space :global :access :writeable))
 
 ;; -- calc-final-result --
 (def-grid-function calc-final-result (x y &out A)
@@ -2954,19 +2938,19 @@ It is uwise to overload `~` for all tensors. Use `def-derived-type` when overloa
 
 ```
 ;; source vector is floats ranged 0-1
-(def-derived-type normalized-tv (tensor 1 (vector :element-type float)))
+(def-derived-type normalized-tv (vector float))
 
 ;; we return int values between 0-100
 ;;; ~
-(def-function ~ (tensor index)
+(def-function ~ (tv index)
   (declare #(normalized-tv ulong => int))
-  (round (* (~ tensor index) 100)))
+  (round (* (~ tv index) 100)))
 
 ;; and store those ints back to floats
 ;;; ~  (setter)
-(def-setter ~ ((tensor index) val)
+(def-setter ~ ((tv index) val)
   (declare #(normalized-tv ulong int => nil))
-  (set! (~ tensor index) (/ val 100.0)))
+  (set! (~ tv index) (/ val 100.0)))
 
 ```
 
@@ -3002,7 +2986,7 @@ where all the indeces are equal, which are 1.
 Matrices
 --------
 
-`(def-type matrix (tensor 2))`
+`(def-type matrix (tensor T 2))`
 
 Matrices are simply 2D tensor views. The type alias `matrix` is defined to make coding easier, but any 2D `tensor` can automatically be considered a matrix. It is not a "derived" type.
 
@@ -3196,14 +3180,14 @@ In it's simplest application, it just provides type aliasing.
 (def-type T int)  ;
 (def-type addTwoT  (type-signature-of #'addTwo))
 (def-type addThreeT #'(long long long => long))
-(def-type floatVecT (vector float :global))
+(def-type floatVecT (vector float :address-space :global))
 ```
 
 A **Type Constructor** is a function that takes a type as an argument and returns a new, specialized type. In Crisp, you create these using the `with-template-type` form, which provides a clean and powerful way to define generic types. When you use `with-template-type` to define a new type (like a struct or a vector alias), the compiler automatically generates a corresponding `XXXX` function, which is your type constructor. You can then use this function to create concrete types, such as `(anotherGlobalVecT-type int)` which represents a global vector of integers, which can be used in your function declarations. This approach separates the definition of the generic type from its specific instantiation, making your code more readable and reusable.
 
 ```
 (with-template-type (T)
-  (def-type anotherGlobalVecT (vector T :global)))
+  (def-type anotherGlobalVecT (vector T :address-space :global)))
 
 ;; -- count-ints --
 (def-function count-ints (v)
@@ -3377,7 +3361,7 @@ you can use `def-struct` in conjunction with `set-derived` for this.
 Example:
 ```
 (def-struct MY-VEC 
-    (base (vector))
+    (base (vector int))
     (new-prop int))
 
 (set-derived vector MY-VIEW-type :subst :pass-orig)
@@ -3527,7 +3511,7 @@ QUESTION: `(return-type-of (type-signature-of #'someFunction))` supported?
 ANSWER: I guess. 
 -->
 ```
-(def-type my-vec-t (vector int :local))
+(def-type my-vec-t (vector int :address-space :local))
 
 ;; -- count-if --
 (def-function count-if (v predicate?)
@@ -3558,10 +3542,7 @@ Enumerations
 ```
 (def-enumeration address-space (:global 1) :local :private)
 
-; Both of these are acceptable usage:
-(vector int :global)
-(vector float address-space:global)
-
+(vector int :address-space :global)
 ```
 
 In the example above, `def-enumeration` defines a new type called `address-space`, which is just a set of keywords.
@@ -4189,7 +4170,7 @@ It can take a single symbol (for a vector, implying its length) or a list of sym
 
 ;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
-   (declare (type image-data (vector uchar :global :read_write))
+   (declare (type image-data (vector uchar :address-space :global :access :read-write))
             (type width height ulong)
             (global-size :derive-from '(width height) :strategy :one-thread-per :msg "ensure enough threads for every pixel of image, otherwise use the stepping convolution")) 
   ...)
@@ -4279,7 +4260,7 @@ has been "rounded up" to a multiple of the workgroup size by the host.
 ```
 ;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
-   (declare (type image-data (vector uchar :global :read_write))
+   (declare (type image-data (vector uchar :address-space :global :access :read-write))
             (type width height ulong)
             (global-size :derive-from ( width height) :strategy :one-thread-per)) ; <-- this sets the upper bound for check-thread-bounds 
   (let ((image-matrix (make-tensor image-data width height)))
@@ -4352,8 +4333,8 @@ There are three variants for 1D, 2D and 3D .
 
 ```
 ;; 1D Vector Add
-(def-type source-vec (vector float :global :readable))     
-(def-type result-vec (vector float :global :write_only))    
+(def-type source-vec (vector float :address-space :global :access :readable))     
+(def-type result-vec (vector float :address-space :global :access :write-only))    
 
 ;; -- vector_add --
 (def-kernel vector_add (A B &out C)
@@ -4367,7 +4348,7 @@ There are three variants for 1D, 2D and 3D .
 
 ;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
-   (declare (type image-data (vector uchar :global :read_write))
+   (declare (type image-data (vector uchar :address-space :global :access :read-write))
             (type width height ulong)
             (global-size :derive-from '(width height) :strategy :one-thread-per)) 
   (let ((image-matrix (make-tensor image-data width height)))
@@ -5147,7 +5128,7 @@ going to agree on a convention that the local_work_size is 64.
 ```
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups.
-(def-type result-vec (vector long :std140 :global :writeable :size (get-num-groups)) 
+(def-type result-vec (vector long :align :std140 :address-space :global :access :writeable :size (get-num-groups)) 
 
 ;; -- sum_vector_first_stage --
 (def-kernel sum_vector_first_stage (A &out Res)
@@ -5312,7 +5293,7 @@ This version of vector summing is likely faster than the last one.
 
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups
-(def-type result-vec (vector long :std140 :global :writeable :size (get-num-groups)))  
+(def-type result-vec (vector long :align :std140 :address-space :global :access :writeable :size (get-num-groups)))  
 
 ;; -- calculate-this-thread-sum --
 (def-function calculate-this-thread-sum (A)
@@ -5458,7 +5439,7 @@ Rather than passing a vector of `uint` around, use `def-derived-type` to
 define your own type and do the packing in the setters and getters.
 
 ```
-(def-derived-type my-HSL-vec (vector uint :compact) :subst :no)
+(def-derived-type my-HSL-vec (vector uint :align :compact) :subst :no)
 
 (def-function ~ (vec index)
    (declare #'(my-HSL-vec uint => float float float))
@@ -6870,8 +6851,8 @@ Word Count With Exclusive Scan
 -->
 
 ```
-(def-type text-t (vector uchar :global :readable :std140))
-(def-type index-t (vector ulong :global :writeable :std140))
+(def-type text-t (vector uchar :address-space :global :access :readable :align :std140))
+(def-type index-t (vector ulong :address-space :global :access :writeable :align :std140))
 
 ;; -- word_count --
 (def-kernel word_count (corpus word &out result counter)
@@ -7001,7 +6982,7 @@ Also note that both gather (reading `big-source-vec`) and scatter (writing `big-
 
   ;; -- gather-all --
   (def-grid-function gather-all (big-source-vec index-vec &out basket-vec)
-    (declare #((vector T :alignment A) (vector ulong) &out (result-vec-type T)))
+    (declare #((vector T :align A) (vector ulong) &out (result-vec-type T)))
     (r-t-assert-0 (<= (length~ index-vec) (length~ basket-vec)) "basket-vec cannot be smaller than index-vec")
     (let ((limit (length~ big-source-vec)))
       (loop-vector-stride index-vec (i)
@@ -7061,10 +7042,10 @@ But the count in `count-vec` is correct regardless.
                                     &out result-index-vec ; Output: indices (ulong)
                                     &out result-count-vec) ; Output: final count (ulong, size 1)
     ;; Declare the function signature
-    (declare #((vector T :global :readable A) ; Input data vector
+    (declare #((vector T :address-space :global :access :readable :align A) ; Input data vector
                (predicate-type T) ; Predicate function #(T => bool)
-               &out (vector ulong :global :writeable A) ; Output index vector
-               &out (vector ulong :global :writeable :std140 1) ; Output count vector
+               &out (vector ulong :address-space :global :access :writeable :align A) ; Output index vector
+               &out (vector ulong :address-space :global :access :writeable :align :std140 :length 1) ; Output count vector
                => nil)
              ;; Declare optional local memory buffers for the scan algorithm
              &optional (local-flags (make-scratch-vector uint :match-workgroup-size))
@@ -7270,7 +7251,7 @@ A possible implementation might be
   -- bitonic-sort-workgroup --
   (def-function bitonic-sort-workgroup (data-in data-out &key keyF)
     (declare (local-size :set-to 256 :msg "local-work-size should be a power of 2 for bitonic-sort-workgroup")
-             #((vector T :global :readable) (vector T :global :writeable) 
+             #((vector T :address-space :global :access :readable) (vector T :address-space :global :access :writeable) 
                 &key #'(T => #_is-orderable?) => nil))
     (let ((N   (get-local-linear-size)) ;; should be power of 2.
          (shared-array (make-scratch-vector T :match-workgroup-size))
@@ -7312,7 +7293,7 @@ A possible implementation might be
 
   ;; -- bitonic-sort-workgroup! --
   (def-function bitonic-sort-workgroup! (data &key keyF)
-    (declare #((vector T :global :read_write A) &key (function T => #_is-orderable?) => nil))
+    (declare #((vector T :address-space :global :access :read-write A) &key (function T => #_is-orderable?) => nil))
     (bitonic-sort-workgroup data data :key keyF)))
 
 
@@ -7322,7 +7303,7 @@ A possible implementation might be
 
   -- bitonic_sort_workgroup --
   (def-kernel bitonic_sort_workgroup (data-in data-out)
-    (declare #((vector T :global :readable) (vector T :global :writeable) => nil))
+    (declare #((vector T :address-space :global :access :readable) (vector T :address-space :global :access :writeable) => nil))
     (bitonic-sort-workgroup data-in data-out)))
     
 (with-template-type (T A)
@@ -7330,7 +7311,7 @@ A possible implementation might be
 
   -- bitonic_sort_workgroup_in_place --
   (def-kernel bitonic_sort_workgroup_in_place (data)
-    (declare #((vector T :global :read_write) => nil))
+    (declare #((vector T :address-space :global :access :read-write) => nil))
     (bitonic-sort-workgroup! data)))
 ```
 
@@ -7365,7 +7346,7 @@ Possible Implementation
 
   ;; -- bitonic-merge-pass --
   (def-function bitonic-merge-pass (data j k &key keyF)
-    (declare #((vector T :global :read_write A) ulong ulong &key #'(T => #_is-orderable?) => nil))
+    (declare #((vector T :address-space :global :access :read-write :align A) ulong ulong &key #'(T => #_is-orderable?) => nil))
 
     (let ((i (get-global-id)))
       
@@ -7398,7 +7379,7 @@ Possible Implementation
 
   ;; -- bitonic_merge_pass --
   (def-kernel bitonic_merge_pass (data j k)
-    (declare #((vector T :global :read_write A) ulong ulong => nil))
+    (declare #((vector T :address-space :global :access :read-write :align A) ulong ulong => nil))
     (bitonic-merge-pass data j k)))
 ```
 
@@ -7426,7 +7407,7 @@ Possible implementation.
 
   ;; bitonic_sort_vector_in_place
   (def-kernel bitonic_sort_vector_in_place (vec)
-    (declare #((vector T :global :read_write L)))
+    (declare #((vector T :address-space :global :access :read-write :length L)))
     (bitonic-sort-workgroup vec vec)))
 
 
@@ -7750,7 +7731,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
                                           local-id     ;; Input: this thread's local ID
                                           ;; Optional scratch space for atomic counters
                                           &optional (digit-counts (make-scratch-vector uint 256 :align A)))
-    (declare #((vector uint :local) uint &optional (vector uint :local A 256) => uint))
+    (declare #((vector uint :address-space :local) uint &optional (vector uint :address-space :local :align A :length 256) => uint))
 
     ;; initialize the shared counter array
     ;; Need to zero out the 256 counters. This can be done in parallel.
@@ -7974,10 +7955,10 @@ workgroup will add its sum to the first element of the result vector.
 (def-constant +warp-size+ 32 ulong)
 
 ;; the source vector can be any size. 
-(def-type source-vec (vector long :global :readable))     
+(def-type source-vec (vector long :address-space :global :access :readable))     
 
 ;; the final result vector is just has 1 long value
-(def-type result-vec (vector long :global :writeable :length 1)) 
+(def-type result-vec (vector long :address-space :global :access :writeable :length 1)) 
 
 ;; -- calculate-this-thread-sum --
 (def-grid-function calculate-this-thread-sum (A)
@@ -8025,7 +8006,7 @@ Possible Implementation
   (declare (value-is A #'is-alignment?))
 
   (def-grid-function fill (someVec someValue)
-    (declare #'((vector T A :global :read-write) T))
+    (declare #'((vector T :align A :address-space :global :access :read-write) T))
     (loop-vector-stride someVec (i)
       (set! (~ someVec i) someValue))))
 
@@ -8035,7 +8016,7 @@ Possible Implementation
           (type-is T #'is-scalar?))
 
   (def-grid-function iota (someVec)
-    (declare #'((vector T A :global :read-write)))
+    (declare #'((vector T :align A :address-space :global :access :read-write)))
     (loop-vector-stride someVec (i)
       (set! (~ someVec i) (to T i))))) ;; <-- not supposed to be (to T ...)
 ```
@@ -9282,7 +9263,7 @@ accumulator hardware types like quantized integers and microfloat blocks.
 ;;
   ;; -- precompute-twiddles --
   (def-grid-function precompute-twiddles (N &out twiddle-vec)
-    (declare #(ulong &out (vector (complex-type T) :global :writeable A) => nil))
+    (declare #(ulong &out (vector (complex-type T) :address-space :global :access :writeable :align A) => nil))
 
     ;; Each thread calculates twiddle factors using grid stride
     (loop-vector-stride twiddle-vec (k) ; Loop from k = 0 to N-1 (or length of twiddle-vec)
@@ -9334,9 +9315,9 @@ accumulator hardware types like quantized integers and microfloat blocks.
 
   ;; -- bit-reverse-copy --
   (def-grid-function bit-reverse-copy (input-vec N &out output-vec)
-    (declare #((vector T :global :readable A)
+    (declare #((vector T :address-space :global :access :readable :align A)
                ulong
-               &out (vector T :global :writeable A) => nil))
+               &out (vector T :address-space :global :access :writeable :align A) => nil))
 
     (let ((num-bits (log2 N))) ; Calculate number of bits needed for N indices
       ;; Use grid stride for parallelism - each thread handles multiple indices
@@ -9360,12 +9341,12 @@ accumulator hardware types like quantized integers and microfloat blocks.
 
   ;; -- fft-pass --
   (def-grid-function fft-pass (input-vec twiddle-vec stage pass-stride N &out output-vec)
-    (declare #((vector CT :global :readable A) ; Input data
-               (vector CT :global :readable A) ; Twiddle factors (size N/2)
+    (declare #((vector CT :address-space :global :access :readable :align A) ; Input data
+               (vector CT :address-space :global :access :readable :align A) ; Twiddle factors (size N/2)
                ulong ; Current stage (0 to log2N-1)
                ulong ; Stride for this pass (2^stage)
                ulong ; Total FFT size (power of 2)
-               &out (vector CT :global :writeable A) => nil)) ; Output data
+               &out (vector CT :address-space :global :access :writeable :align A) => nil)) ; Output data
 
     ;; Use grid stride - each thread calculates one butterfly output pair
     (loop-vector-stride output-vec (i)
@@ -9442,11 +9423,11 @@ Now using soa-vector for better performance
   (def-grid-function fft-pass-soa-tiled (input-soa-vec twiddle-vec stage pass-stride N &out output-vec)
       ;; same signature as fft-pass ?
       (declare #((soa-vector CT :global :readable A) ; Input data
-                (vector CT :global :readable A) ; Twiddle factors (size N/2)
+                (vector CT :address-space :global :access :readable :align A) ; Twiddle factors (size N/2)
                 ulong ; Current stage (0 to log2N-1)
                 ulong ; Stride for this pass (2^stage)
                 ulong ; Total FFT size (power of 2)
-                &out (soa-vector CT :global :writeable A) => nil) ; Output data
+                &out (soa-vector CT :address-space :global :access :writeable :align A) => nil) ; Output data
                 (local-size :dims 2 :msg "fft-pass-soa-tiled requires a 2D enqueue"))
       
       ;; Define TWO local memory tiles
@@ -9945,7 +9926,7 @@ When the `--logging-output` flag is set then the compiler alters the compilation
 the debug vector is now in the first param position
 - `(is-logging?)` expression evaluates to T at compile time.
 
-The debug output vector base type is a `(vector ulong :compact :global :write_only)` and it must
+The debug output vector base type is a `(vector ulong :align :compact :address-space :global :access :write-only)` and it must
 be setup by the host. In this part of the document we refer to this vector as "the debug buffer" or 
 just "the buffer". 
 
@@ -10200,7 +10181,7 @@ Example
 `(get-signature function-identifier)` => <Signature>`
 
 ```
-(get-signature #'int_vector_sum) =>  `((vector int :std140 :global :readable) &out (vector int :std140 :global :write_only))
+(get-signature #'int_vector_sum) =>  `((vector int :align :std140  :address-space :global :access :readable) &out (vector int :align :std140  :address-space :global :access :write-only))
 ```
 
 
