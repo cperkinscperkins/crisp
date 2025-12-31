@@ -13,7 +13,7 @@ which we need to concern ourselves: Global, Local, and Constant.
 
 Global memory is the largest memory space available to the GPU, typically measured in gigabytes (GB). It's accessible by all threads across all workgroups and is the only memory space directly accessible by the host CPU for transferring data to and from the GPU.
 
-Any memory you prepare host-side and pass to the kernel (:readable or :read_write) will reside in global memory. Likewise, any results passed back from the kernel (`&out`) must also be in global memory.
+Any memory you prepare host-side and pass to the kernel (:readable or :read-write) will reside in global memory. Likewise, any results passed back from the kernel (`&out`) must also be in global memory.
 
 But global memory access is slow.
 

@@ -154,7 +154,7 @@ you can use `def-struct` in conjunction with `set-derived` for this.
 Example:
 ```
 (def-struct MY-VEC 
-    (base (vector))
+    (base (vector int))
     (new-prop int))
 
 (set-derived vector MY-VIEW-type :subst :pass-orig)

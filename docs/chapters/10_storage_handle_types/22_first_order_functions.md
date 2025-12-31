@@ -12,7 +12,7 @@ QUESTION: `(return-type-of (type-signature-of #'someFunction))` supported?
 ANSWER: I guess. 
 -->
 ```
-(def-type my-vec-t (vector int :local))
+(def-type my-vec-t (vector int :address-space :local))
 
 ;; -- count-if --
 (def-function count-if (v predicate?)

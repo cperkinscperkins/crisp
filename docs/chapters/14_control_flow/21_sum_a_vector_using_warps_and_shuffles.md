@@ -30,7 +30,7 @@ This version of vector summing is likely faster than the last one.
 
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups
-(def-type result-vec (vector long :std140 :global :writeable :size (get-num-groups)))  
+(def-type result-vec (vector long :align :std140 :address-space :global :access :writeable :size (get-num-groups)))  
 
 ;; -- calculate-this-thread-sum --
 (def-function calculate-this-thread-sum (A)

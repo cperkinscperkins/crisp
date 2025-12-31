@@ -86,19 +86,19 @@ It is uwise to overload `~` for all tensors. Use `def-derived-type` when overloa
 
 ```
 ;; source vector is floats ranged 0-1
-(def-derived-type normalized-tv (tensor 1 (vector :element-type float)))
+(def-derived-type normalized-tv (vector float))
 
 ;; we return int values between 0-100
 ;;; ~
-(def-function ~ (tensor index)
+(def-function ~ (tv index)
   (declare #(normalized-tv ulong => int))
-  (round (* (~ tensor index) 100)))
+  (round (* (~ tv index) 100)))
 
 ;; and store those ints back to floats
 ;;; ~  (setter)
-(def-setter ~ ((tensor index) val)
+(def-setter ~ ((tv index) val)
   (declare #(normalized-tv ulong int => nil))
-  (set! (~ tensor index) (/ val 100.0)))
+  (set! (~ tv index) (/ val 100.0)))
 
 ```
 

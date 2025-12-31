@@ -14,7 +14,7 @@ Rather than passing a vector of `uint` around, use `def-derived-type` to
 define your own type and do the packing in the setters and getters.
 
 ```
-(def-derived-type my-HSL-vec (vector uint :compact) :subst :no)
+(def-derived-type my-HSL-vec (vector uint :align :compact) :subst :no)
 
 (def-function ~ (vec index)
    (declare #'(my-HSL-vec uint => float float float))

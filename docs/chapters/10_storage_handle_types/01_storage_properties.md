@@ -6,8 +6,8 @@
 | Property      | Type          |              |     Description |
 | --------------|---------------|--------------|-----------------|
 | byte-size~         | ulong         | runtime      | the number of bytes in the `storage`. This is immutable.|
-| address-space | address-space | compile-time | one of `:global`, `:local`, `:constant` |
-| access        | access        | compile-time | one of `:read_only` `:write_only` `:read_write` `:readable` `:writeable` |
+| address-space~ | address-space | compile-time | one of `:global`, `:local`, `:constant` |
+| access~        | access        | compile-time | one of `:read-only` `:write-only` `:read-write` `:readable` `:writeable` |
 
 
 The `byte-size~` property for a `storage` is sometimes known at compile time, but is most often a runtime property.

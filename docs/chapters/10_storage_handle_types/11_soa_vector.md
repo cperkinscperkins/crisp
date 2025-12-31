@@ -6,7 +6,7 @@
 `soa-vector` are templated over `S` where `S` is some struct type. But rather than a contiguous block of 
 memmory consisting of repeating structs, `soa-vector`s are "Structs of Arrays". 
 
-For example, using our `point` type from before, `(vector :element-type point :length 4)` would layout in memory
+For example, using our `point` type from before, `(vector point :length 4)` would layout in memory
 like this:
 `|x0|y0|x1|y1|x2|y2|x3|y3|`.
 Or in C++ we can think of it like this:
@@ -16,7 +16,7 @@ Point points[4];
 ```
 
 
-But a `(soa-vector :element-type point :lenth 4)` lays out like this:
+But a `(soa-vector  point :lenth 4)` lays out like this:
 `|x0|x1|x2|x3|y0|y1|y2|y3|`.
 In C++ with can think of it like this:
 ```
@@ -53,7 +53,7 @@ Example
 ```
 (def-struct point (x long) (y long))
 
-(let ((sv      (make-soa-vector point :local :read_write :std140 20))
+(let ((sv      (make-soa-vector point :address-space :local :access :read-write :align :std140 :length 20))
       (y       (y~ sv 9))
       (x-vec   (x~ sv)))
     ...)
@@ -68,7 +68,7 @@ Owning to memory coalesence, when the index is a thread id from parallel threads
 #### `XXXX~` without index
 
 Whereas constrastingly, in the example above `(x~ sv)` returns the ENTIRE VECTOR of X from the `soa-vector`.
- `x-vec` would be `(vector :element-type long :length 20)`.  
+ `x-vec` would be `(vector long :length 20)`.  
 
 Its primary purpose is to pass a single, contiguous stream of data to another high-performance primitive, like `reduce-vec`
 
@@ -84,7 +84,7 @@ creation of a new structure to hold the value.
 ### Helper Functions
 
 Like `vector`, `soa-vector`  supports `element-type` and `bytes` helpers.
-`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding. But remember, the `soa-vector` is a view into some `storage`. Use `(bytes~ (parent~ someSoaVec))` to get the
+`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding. But remember, the `soa-vector` is a view into some `storage`. Use `(byte-size~ (parent~ someSoaVec))` to get the
 full storage bytes.
 
 ### Member Data Rules
@@ -99,9 +99,7 @@ This rule is in place to prevent overly complex nested SoA layouts and to ensure
 ### Defining 
 
 ```
-(soa-vector <element-type> &optional address-space access align length)
-
-(soa-vector &key element-type address-space access align length)
+(soa-vector element-type &key address-space access align length)
 ```
 
 ### Creating

@@ -5,3 +5,5 @@
 (def-kernel-exact voidp_args (byte-size ptr offset)
     (declare #'(ulong voidp ulong))
 )
+
+;; errors needed: def-function using voidp, struct using voidp, record using voidp. cell over voidp

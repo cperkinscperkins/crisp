@@ -32,8 +32,8 @@ There are three variants for 1D, 2D and 3D .
 
 ```
 ;; 1D Vector Add
-(def-type source-vec (vector float :global :readable))     
-(def-type result-vec (vector float :global :write_only))    
+(def-type source-vec (vector float :address-space :global :access :readable))     
+(def-type result-vec (vector float :address-space :global :access :write-only))    
 
 ;; -- vector_add --
 (def-kernel vector_add (A B &out C)
@@ -47,7 +47,7 @@ There are three variants for 1D, 2D and 3D .
 
 ;; -- lighten_image --
 (def-kernel lighten_image (image-data width height)
-   (declare (type image-data (vector uchar :global :read_write))
+   (declare (type image-data (vector uchar :address-space :global :access :read-write))
             (type width height ulong)
             (global-size :derive-from '(width height) :strategy :one-thread-per)) 
   (let ((image-matrix (make-tensor image-data width height)))

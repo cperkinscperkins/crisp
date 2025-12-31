@@ -10,14 +10,14 @@ In it's simplest application, it just provides type aliasing.
 (def-type T int)  ;
 (def-type addTwoT  (type-signature-of #'addTwo))
 (def-type addThreeT #'(long long long => long))
-(def-type floatVecT (vector float :global))
+(def-type floatVecT (vector float :address-space :global))
 ```
 
 A **Type Constructor** is a function that takes a type as an argument and returns a new, specialized type. In Crisp, you create these using the `with-template-type` form, which provides a clean and powerful way to define generic types. When you use `with-template-type` to define a new type (like a struct or a vector alias), the compiler automatically generates a corresponding `XXXX` function, which is your type constructor. You can then use this function to create concrete types, such as `(anotherGlobalVecT-type int)` which represents a global vector of integers, which can be used in your function declarations. This approach separates the definition of the generic type from its specific instantiation, making your code more readable and reusable.
 
 ```
 (with-template-type (T)
-  (def-type anotherGlobalVecT (vector T :global)))
+  (def-type anotherGlobalVecT (vector T :address-space :global)))
 
 ;; -- count-ints --
 (def-function count-ints (v)

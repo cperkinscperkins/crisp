@@ -19,7 +19,7 @@ Also note that both gather (reading `big-source-vec`) and scatter (writing `big-
 
   ;; -- gather-all --
   (def-grid-function gather-all (big-source-vec index-vec &out basket-vec)
-    (declare #((vector T :alignment A) (vector ulong) &out (result-vec-type T)))
+    (declare #((vector T :align A) (vector ulong) &out (result-vec-type T)))
     (r-t-assert-0 (<= (length~ index-vec) (length~ basket-vec)) "basket-vec cannot be smaller than index-vec")
     (let ((limit (length~ big-source-vec)))
       (loop-vector-stride index-vec (i)
@@ -79,10 +79,10 @@ But the count in `count-vec` is correct regardless.
                                     &out result-index-vec ; Output: indices (ulong)
                                     &out result-count-vec) ; Output: final count (ulong, size 1)
     ;; Declare the function signature
-    (declare #((vector T :global :readable A) ; Input data vector
+    (declare #((vector T :address-space :global :access :readable :align A) ; Input data vector
                (predicate-type T) ; Predicate function #(T => bool)
-               &out (vector ulong :global :writeable A) ; Output index vector
-               &out (vector ulong :global :writeable :std140 1) ; Output count vector
+               &out (vector ulong :address-space :global :access :writeable :align A) ; Output index vector
+               &out (vector ulong :address-space :global :access :writeable :align :std140 :length 1) ; Output count vector
                => nil)
              ;; Declare optional local memory buffers for the scan algorithm
              &optional (local-flags (make-scratch-vector uint :match-workgroup-size))

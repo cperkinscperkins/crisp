@@ -1,5 +1,5 @@
-;; CHECK-FAIL: "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~)"
-
+;; CHECK-FAIL: "Invalid incomplete type specifier: (CELL)."
+;;
 ;; ~ accessor requires element-type .  This should fail.
 (def-function fail-cell-accessor (c)
     (declare #'((cell) => long))

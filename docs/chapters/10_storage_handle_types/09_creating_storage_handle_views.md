@@ -25,7 +25,7 @@ A `vector` can be literally declared using the Lisp `#(...)` syntax.
 
 ```
 (let ((small-vec #(0 1 2 someVal otherVal)))      ;;<-- ideally, type should be inferred
-  (declare (type small-vec (literal-type short))) ;; so that this is not needed.
+  (declare (type small-vec (literal-vector short))) ;; so that this is not needed.
    ...)
 ```
 A `vector` declared like this allocated using private register memory. It is highly recommended
@@ -73,7 +73,7 @@ assertion requires compiler flags (like `--runtime-checks`).
 
 
 ```
-(def-type vec-floats-t (vector float :std140 :local :read-write ))
+(def-type vec-floats-t (vector float :align :std140 :address-space :local :access :read-write ))
 (def-type vec-ints-t (literal-vector int))
 
 ;; -- do_things --

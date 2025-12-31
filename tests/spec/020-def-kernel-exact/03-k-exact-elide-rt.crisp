@@ -4,3 +4,5 @@
 (def-kernel-exact elide_Return_type ()
     (declare #'())
 )
+
+;; error: def-function with elided return type is an error (but kernels ok)

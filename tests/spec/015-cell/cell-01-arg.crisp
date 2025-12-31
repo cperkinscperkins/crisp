@@ -1,6 +1,9 @@
 ;; cell is a parameterized type. 
-(def-function test-cell-as-arg (c1 c2 c3)
-    (declare #'(cell (cell) (cell long) => nil))
+;; It's type declaration uses &key for :address-space and :access
+;; we no longer attempt to support 'cell' alone or '(cell)'.
+
+(def-function test-cell-as-arg (c1)
+    (declare #'((cell long) => nil))
     (return))
 
 (with-template-type (T)
