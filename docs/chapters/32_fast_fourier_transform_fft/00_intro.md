@@ -37,7 +37,7 @@ accumulator hardware types like quantized integers and microfloat blocks.
 ;;
   ;; -- precompute-twiddles --
   (def-grid-function precompute-twiddles (N &out twiddle-vec)
-    (declare #(ulong &out (vector (complex-type T) :global :writeable A) => nil))
+    (declare #(ulong &out (vector (complex-type T) :address-space :global :access :writeable :align A) => nil))
 
     ;; Each thread calculates twiddle factors using grid stride
     (loop-vector-stride twiddle-vec (k) ; Loop from k = 0 to N-1 (or length of twiddle-vec)
@@ -89,9 +89,9 @@ accumulator hardware types like quantized integers and microfloat blocks.
 
   ;; -- bit-reverse-copy --
   (def-grid-function bit-reverse-copy (input-vec N &out output-vec)
-    (declare #((vector T :global :readable A)
+    (declare #((vector T :address-space :global :access :readable :align A)
                ulong
-               &out (vector T :global :writeable A) => nil))
+               &out (vector T :address-space :global :access :writeable :align A) => nil))
 
     (let ((num-bits (log2 N))) ; Calculate number of bits needed for N indices
       ;; Use grid stride for parallelism - each thread handles multiple indices
@@ -115,12 +115,12 @@ accumulator hardware types like quantized integers and microfloat blocks.
 
   ;; -- fft-pass --
   (def-grid-function fft-pass (input-vec twiddle-vec stage pass-stride N &out output-vec)
-    (declare #((vector CT :global :readable A) ; Input data
-               (vector CT :global :readable A) ; Twiddle factors (size N/2)
+    (declare #((vector CT :address-space :global :access :readable :align A) ; Input data
+               (vector CT :address-space :global :access :readable :align A) ; Twiddle factors (size N/2)
                ulong ; Current stage (0 to log2N-1)
                ulong ; Stride for this pass (2^stage)
                ulong ; Total FFT size (power of 2)
-               &out (vector CT :global :writeable A) => nil)) ; Output data
+               &out (vector CT :address-space :global :access :writeable :align A) => nil)) ; Output data
 
     ;; Use grid stride - each thread calculates one butterfly output pair
     (loop-vector-stride output-vec (i)
@@ -197,11 +197,11 @@ Now using soa-vector for better performance
   (def-grid-function fft-pass-soa-tiled (input-soa-vec twiddle-vec stage pass-stride N &out output-vec)
       ;; same signature as fft-pass ?
       (declare #((soa-vector CT :global :readable A) ; Input data
-                (vector CT :global :readable A) ; Twiddle factors (size N/2)
+                (vector CT :address-space :global :access :readable :align A) ; Twiddle factors (size N/2)
                 ulong ; Current stage (0 to log2N-1)
                 ulong ; Stride for this pass (2^stage)
                 ulong ; Total FFT size (power of 2)
-                &out (soa-vector CT :global :writeable A) => nil) ; Output data
+                &out (soa-vector CT :address-space :global :access :writeable :align A) => nil) ; Output data
                 (local-size :dims 2 :msg "fft-pass-soa-tiled requires a 2D enqueue"))
       
       ;; Define TWO local memory tiles

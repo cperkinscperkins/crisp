@@ -12,7 +12,7 @@ the correct allocation size.
 
 Each invocation must be countable by the compiler. This means they cannot appear in loops. 
 
-The invocations take a type expression as their first argument. The "new" Storage Hnadle will have the same type as the source, except that its `:access` may be changed to `:read-write` if the original source was only `:readable` or `:read_only`.   If an existing Storage Handle VALUE is
+The invocations take a type expression as their first argument. The "new" Storage Hnadle will have the same type as the source, except that its `:access` may be changed to `:read-write` if the original source was only `:readable` or `:read-only`.   If an existing Storage Handle VALUE is
 used as the type expression, then the size will be set to be the same. This can be very handy, because if that value originates as 
 a kernel argument, then the example hoisting code will specify that the size should match. 
 
@@ -51,11 +51,11 @@ which allows you to state its intended size and purpose.
 
 The `make-scratch-XXXX` routines create "scratch" side-channel memory Storage Handles. 
 
-Scratch memory defaults to `:local` address space,  `:read_write` access and `:std140` alignment, 
+Scratch memory defaults to `:local` address space,  `:read-write` access and `:std140` alignment, 
 but the defaults can be overridden by either using the `&key` arguments to the `make-scratch-XXXX` function
 or by using the second creation function of the pair that uses a Storage Handle type argument.
 
-Note that `:access` is NOT set by a Storage Handle type argument. It is always set to `:read_write` unless 
+Note that `:access` is NOT set by a Storage Handle type argument. It is always set to `:read-write` unless 
 directly overridden with the `:access` key.
 
 
@@ -214,8 +214,8 @@ In the example below, this function, if called by a kernel, would cause two addi
 be hoisted, plus a pointer to a unsigned long array.  
 
 ```
-(def-type float-vec (vector float :std140 :global :read_only))
-(def-type ulong-vec (vector ulong :std140 :global :writeable :std140))
+(def-type float-vec (vector float :align :std140 :address-space :global :access :read-only))
+(def-type ulong-vec (vector ulong :align :std140 :address-space :global :access :writeable))
 
 ;; -- calc-final-result --
 (def-grid-function calc-final-result (x y &out A)

@@ -7,8 +7,8 @@ The number of dimensions is (obviously) implicit for the `cell`, `vector` and `m
 
 
 ```
-(def-type data-from-host-t (vector float :std140 :global :read-only ))
-(def-type result-from-kernel-t (vector float :std140 :global :write-only ))
+(def-type data-from-host-t (vector float :align :std140 :address-space :global :access :read-only ))
+(def-type result-from-kernel-t (vector float :align :std140 :address-space :global :access :write-only ))
 
 ;; -- my_kernel --
 (def-kernel my_kernel (in &out out)

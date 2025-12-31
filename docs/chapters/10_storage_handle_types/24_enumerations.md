@@ -4,10 +4,7 @@
 ```
 (def-enumeration address-space (:global 1) :local :private)
 
-; Both of these are acceptable usage:
-(vector int :global)
-(vector float address-space:global)
-
+(vector int :address-space :global)
 ```
 
 In the example above, `def-enumeration` defines a new type called `address-space`, which is just a set of keywords.

@@ -11,6 +11,7 @@ This would include:
 But it excludes:
 - `storage`
 - `functions` and `kernels`
+- `def-record` and `def-rec-vec`
 
 
 

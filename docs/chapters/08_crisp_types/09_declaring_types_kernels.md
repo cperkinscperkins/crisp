@@ -77,14 +77,14 @@ including the ones required for the Crisp debug logging and scratch memory.
 which is a function Crisp provides for making Crisp vectors from `void` pointers and byte counts. This function cannot be used in other contexts.
 
 ```
-(def-type float-vec-t (vector float :global :compact))
+(def-type float-vec-t (vector float :address-space :global :align :compact))
 
 ;; -- vector_add_k --
 (def-kernel-exact vector_add_k (APtr ASz BPtr BSz CPtr CSz)
   (declare #'(voidp ulong voidp ulong voidp ulong => nil))
-  (let ((A (marshall-vector APtr ASz (float-vec-t :read_only)))
-        (B (marshall-vector BPtr BSz (float-vec-t :read_only)))
-        (C (marshall-vector CPtr CSz (float-vec-t :write_only))))
+  (let ((A (marshall-vector APtr ASz (float-vec-t :access :read-only)))
+        (B (marshall-vector BPtr BSz (float-vec-t :access :read-only)))
+        (C (marshall-vector CPtr CSz (float-vec-t :access :write-only))))
     (vector-add A B C)))
 ```
 
