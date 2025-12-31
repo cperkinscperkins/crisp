@@ -1,5 +1,6 @@
 
 ;; at MINIMUM (cell <type>)
+;; CHECK-FAIL: "Invalid incomplete type specifier: (CELL)."
 (def-function cell-requires-type-at-minimum (c)
     (declare #'(cell => ulong)) ;; <-- "cell" alone not allowed
     (byte-size~ (parent~ c)))

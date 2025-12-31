@@ -147,7 +147,7 @@ This supports overloading templates by arity or other factors.")
        (if (and (symbolp base) (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
            (if (null (rest spec))
                ;; Disallow bare (cell)
-               (progn (log:warn "Invalid incomplete type specifier: ~a" spec) nil)
+               (error 'crisp-incomplete-type-error :type-spec spec)
 
                (cl:let* ((args (rest spec))
                          (element-type (first args))
@@ -169,12 +169,15 @@ This supports overloading templates by arity or other factors.")
 
                      ;; Check for implicit defaults (cell int) -> (cell int :global :read-write)
                      ;; Only expand if it lacks the property args (assumed positional)
-                     ;; If arity matches (cell int global rw), leave it alone.
-                     ;; How do we know arity? 
-                     ;; CELL has 3-4? Element + [Size] + Addr + Acc.
-                     (if (= (length args) 1)
-                         (list base element-type :global :read-write)
-                         spec))))
+                     (cl:cond
+                       ((= (length args) 1)
+                        (list base element-type :global :read-write))
+                       ;; Canonical form (CELL T Addr Acc) has 3 args. Pass through.
+                       ((= (length args) 3) spec)
+                       ((and (> (length args) 1) (string-equal (symbol-name base) "CELL"))
+                        ;; (cell int :global) -> Error. Must use keywords.
+                        (error 'crisp-incomplete-type-error :type-spec spec))
+                       (t spec)))))
            spec)))
     (t spec)))
 
