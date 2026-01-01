@@ -95,27 +95,23 @@
 
     (values env return-types optional-idx defaults key-idx)))
 
-(defun instantiate-generic-function (generic-def explicit-arg-types location)
-  "Instantiates a lazy generic function variant for the given argument types."
+(defun resolve-argument-bindings (generic-def explicit-arg-types)
+  "Resolves the active environment and default bindings for a generic instantiation.
+   Returns (values active-env injected-bindings error-message)."
   (let* ((name (generic-function-def-name generic-def))
          (full-env (generic-function-def-env generic-def))
-         (declarations (generic-function-def-declarations generic-def))
-         ;; Robustly filter declarations from body, in case they persisted
-         (body (loop for f in (generic-function-def-body generic-def)
-                       unless (and (listp f) (eq (car f) 'declare))
-                     collect f))
          (arg-count (length explicit-arg-types))
          (key-idx (generic-function-def-keys generic-def))
+         (defaults (generic-function-def-defaults generic-def))
          active-env
-         remainder-env
-         (defaults (generic-function-def-defaults generic-def)))
+         remainder-env)
 
     (if key-idx
         ;; --- KEYWORD PARAMETER LOGIC ---
         (progn
          (when (< arg-count key-idx)
-               (log:warn "Keyword Instantiation: Not enough positional arguments. Expected at least ~a, got ~a" key-idx arg-count)
-               (return-from instantiate-generic-function nil))
+               (return-from resolve-argument-bindings
+                            (values nil nil (format nil "Keyword Instantiation: Not enough positional arguments. Expected at least ~a, got ~a" key-idx arg-count))))
 
          (let ((pos-env (subseq full-env 0 key-idx))
                (key-args (subseq explicit-arg-types key-idx))
@@ -123,8 +119,8 @@
                (provided-params '()))
 
            (unless (evenp (length key-args))
-             (log:warn "Keyword Instantiation: Odd number of keyword arguments: ~a" (length key-args))
-             (return-from instantiate-generic-function nil))
+             (return-from resolve-argument-bindings
+                          (values nil nil (format nil "Keyword Instantiation: Odd number of keyword arguments: ~a" (length key-args)))))
 
            ;; Parse (Key Val) pairs
            (loop for (k-type v-type) on key-args by #'cddr
@@ -132,18 +128,17 @@
                  do (progn
                      ;; k-type must be (keyword :val)
                      (unless (and (listp k-type) (eq (first k-type) 'keyword) (= (length k-type) 2))
-                       (log:warn "Keyword Instantiation: Expected keyword literal, got ~a" k-type)
-                       (return-from instantiate-generic-function nil))
+                       (return-from resolve-argument-bindings
+                                    (values nil nil (format nil "Keyword Instantiation: Expected keyword literal, got ~a" k-type))))
 
-                     (let* ((key-kw (second k-type)) ;; :bugs
-                                                    (param-name (intern (string-upcase (symbol-name key-kw)) (symbol-package name)))
-                                                    ;; Verify this param exists in the key section of full-env
-                                                    (param-entry (find param-name (subseq full-env key-idx) :key #'parameter-def-name)))
+                     (let* ((key-kw (second k-type))
+                            (param-name (intern (string-upcase (symbol-name key-kw)) (symbol-package name)))
+                            ;; Verify this param exists in the key section of full-env
+                            (param-entry (find param-name (subseq full-env key-idx) :key #'parameter-def-name)))
 
                        (unless param-entry
-                         (log:warn "Keyword Instantiation: Unknown keyword argument ~s for function ~s" key-kw name)
-                         ;; If &allow-other-keys support is needed, handle here. For now, strict.
-                         (return-from instantiate-generic-function nil))
+                         (return-from resolve-argument-bindings
+                                      (values nil nil (format nil "Keyword Instantiation: Unknown keyword argument ~s for function ~s" key-kw name))))
 
                        (push param-name provided-params)
                        ;; Add to active-env: Key (ignored) + Value (bound to param-name)
@@ -163,25 +158,53 @@
          (setf active-env (subseq full-env 0 arg-count))
          (setf remainder-env (subseq full-env arg-count))))
 
-    (let ((active-param-names (mapcar #'parameter-def-name active-env))
-          (active-param-types (mapcar #'parameter-def-type active-env)))
-
-      ;; Inject default values for missing parameters
-      ;; We wrap the body in LET bindings for any parameter in remainder-env that has a default.
-      ;; Must iterate in REVERSE order so that earlier parameters become OUTER bindings.
-      (loop for pname in (reverse (if key-idx (mapcar #'parameter-def-name remainder-env) (mapcar #'parameter-def-name remainder-env)))
-            do (let ((def-entry (assoc pname defaults)))
-                 (when def-entry
-                       (log:info "Type-Checking Default Value Injection: ~a = ~a" pname (cdr def-entry))
-                       (setf body (list `(let ((,pname ,(cdr def-entry))) ,@body))))))
+    (let ((active-param-types (mapcar #'parameter-def-type active-env))
+          (bindings-list '()))
 
       ;; Validations (Basic Arity check)
       (unless (types-list-compatible-p explicit-arg-types active-param-types)
-        (log:warn "Lazy Instantiation Mismatch: ~a called with ~a, expected prefix of ~a" name explicit-arg-types active-param-types)
-        (return-from instantiate-generic-function nil))
+        (return-from resolve-argument-bindings
+                     (values nil nil (format nil "Lazy Instantiation Mismatch: ~a called with ~a, expected prefix of ~a" name explicit-arg-types active-param-types))))
 
-      (let ((mangled-name (mangle-function-variant-name name active-param-types)))
-        (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name arg-count active-param-types)
+      ;; Inject default values for missing parameters
+      ;; We collect (param-name default-value) pairs for sequential binding (LET*).
+      ;; remainder-env is in declaration order.
+      (loop for p in remainder-env
+            for pname = (parameter-def-name p)
+            do (let ((def-entry (assoc pname defaults)))
+                 (when def-entry
+                       (log:info "Type-Checking Default Value Injection: ~a = ~a" pname (cdr def-entry))
+                       (push (list pname (cdr def-entry)) bindings-list))))
+      ;; Use nreverse to keep binding order consistent with definition order (for LET* dependencies)
+      (setf bindings-list (nreverse bindings-list))
+
+      (values active-env bindings-list nil))))
+
+(defun instantiate-generic-function (generic-def explicit-arg-types location)
+  "Instantiates a lazy generic function variant for the given argument types."
+  (multiple-value-bind (active-env injected-bindings error-message)
+      (resolve-argument-bindings generic-def explicit-arg-types)
+
+    (when error-message
+          (log:warn "~a" error-message)
+          (return-from instantiate-generic-function nil))
+
+    (let* ((name (generic-function-def-name generic-def))
+           (declarations (generic-function-def-declarations generic-def))
+           ;; Robustly filter declarations from body
+           (body (loop for f in (generic-function-def-body generic-def)
+                         unless (and (listp f) (eq (car f) 'declare))
+                       collect f)))
+
+      ;; Apply injected bindings (Defaults)
+      (when injected-bindings
+            (setf body (list `(let* ,injected-bindings ,@body))))
+
+      (let* ((active-param-names (mapcar #'parameter-def-name active-env))
+             (active-param-types (mapcar #'parameter-def-type active-env))
+             (mangled-name (mangle-function-variant-name name active-param-types)))
+
+        (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name (length explicit-arg-types) active-param-types)
 
         ;; Compile the specific variant
         (let ((ast-node (internal-compile-function mangled-name
@@ -473,8 +496,8 @@
                       (error "Signature Mismatch: &key present in parameter list but found ~s in type declaration." ts))
                     (when key-start (error "Multiple &key keywords found."))
                     (setf key-start idx)
-                    (pop params)
-                    (pop param-type-specs))
+                    (setf params (cdr params))
+                    (setf param-type-specs (cdr param-type-specs)))
 
                   ;; Handle &out in params
                   ((and (symbolp p) (string-equal (symbol-name p) "&OUT"))
