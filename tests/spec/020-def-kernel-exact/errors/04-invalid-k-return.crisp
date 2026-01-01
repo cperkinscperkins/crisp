@@ -1,5 +1,5 @@
 
-
+;; CHECK-FAIL: "Type mismatch! Expected (INT) but inferred (NIL)."
 
 (def-kernel-exact bad_kernel ()
     (declare #'(=> int)) ;; <-- cannot declare a non-nil return type. 

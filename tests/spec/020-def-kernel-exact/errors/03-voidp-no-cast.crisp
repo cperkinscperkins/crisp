@@ -1,3 +1,6 @@
+
+;; CHECK-FAIL: "reasonable error message"
+
 (def-type out-c (cell long :address-space :global :access :read-write))
 
 ;; (as voidp ...) is an error

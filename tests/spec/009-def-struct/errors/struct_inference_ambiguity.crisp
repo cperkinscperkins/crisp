@@ -1,4 +1,7 @@
-;; CHECK-FAIL: "No matching function overload found"
+;;  "No matching function overload found"
+
+
+;; Update: this test now passes.  
 
 (<T> 
   (def-struct point

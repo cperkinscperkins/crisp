@@ -1,4 +1,5 @@
 
+;; CHECK-FAIL: "reasonable error message"
 
 ;; kernels cannot declare they return values 
 (def-kernel-exact too_fancy (a b)
