@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "reasonable error message"
+;; "reasonable error message"
 
 (def-kernel-exact bad_kernel_2 ()
     (declare #'(=> nil)) 

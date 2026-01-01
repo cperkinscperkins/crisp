@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "reasonable error message"
+;;  "reasonable error message"
 
 (def-type out-c (cell long :address-space :global :access :read-write))
 
