@@ -41,6 +41,14 @@
   form)
 
 
+(defun reorder-template-args-from-keywords (args param-names)
+  "Helper to convert keyword args to positional loop for template constructors."
+  (if (keywordp (first args))
+      (loop for name in param-names
+            for key = (intern (symbol-name name) :keyword)
+            collect (getf args key))
+      args))
+
 (defmacro with-template-type (params &body body)
   "Defines templates for the enclosed forms."
   ;; 1. Parse constraints from the body (if any)
@@ -136,13 +144,23 @@
 
                       ;; 1. Generate normal generic constructor GEN-POINT(T U)(x y) wrapper -> make-point_float_float
                       `(defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
-                         (let ((concrete-types (first args))
-                               (ctor-args (rest args)))
-                           `(make-structure-template-instance ',name ',concrete-types ,@ctor-args)))
+                         (let* ((arity ,(length params))
+                                (concrete-types (subseq args 0 arity))
+                                (ctor-args (subseq args arity))
+                                (ordered-ctor-args (crisp.compiler::reorder-template-args-from-keywords ctor-args ',param-names)))
+                           (list* 'make-structure-template-instance
+                             ',name
+                             (list 'quote concrete-types)
+                             ordered-ctor-args)))
 
                       ;; 2. Generate Type Helper GEN-POINT-TYPE(T U) => POINT_FLOAT_FLOAT
                       `(defmacro ,(intern (format nil "GEN-~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
                          `(template-instantiation ,(instantiate-template ',name concrete-types)))
+
+                      ;; 3. Generate generic constructor alias MAKE-POINT -> MAKE-POINT%DISPATCH
+                      `(defmacro ,(intern (format nil "MAKE-~a" name) (symbol-package name)) (&rest args)
+                         (let ((ordered (crisp.compiler::reorder-template-args-from-keywords args ',param-names)))
+                           (cons ',(intern (format nil "MAKE-~a%DISPATCH" name) (symbol-package name)) ordered)))
 
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
                          (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name)))
@@ -158,8 +176,9 @@
 
                  ;; Case 4: def-type
                  ((and (listp form) (eq (first form) 'def-type))
-                   (let ((name (second form))
-                         (type-spec (third form)))
+                   (let* ((raw-name (second form))
+                          (name (if (consp raw-name) (first raw-name) raw-name))
+                          (type-spec (third form)))
                      (list
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
                          (setf (gethash ',name crisp.compiler::*crisp-template-aliases*)
@@ -239,8 +258,15 @@
                    (let* ((alias-params (car alias-def))
                           (alias-body (cdr alias-def))
                           (args (rest sig-type))
-                          (substitutions (pairlis alias-params args))
-                          (expanded-sig (sublis substitutions alias-body)))
+                          (arity (length alias-params))
+                          (required-args (subseq args 0 (min (length args) arity)))
+                          (rest-args (subseq args (length required-args)))
+                          (substitutions (pairlis alias-params required-args))
+                          (expanded-base (sublis substitutions alias-body))
+                          ;; If base expanded to a list, we append the rest args
+                          (expanded-sig (if (and rest-args (consp expanded-base))
+                                            (append expanded-base rest-args)
+                                            expanded-base)))
                      (match-template-arg (crisp.compiler::canonicalize-type-specifier expanded-sig) arg-type inference-map template-params))))))
 
      ;; NEW: Check for Symbol Alias (e.g. out-c)
@@ -444,8 +470,6 @@
                                    always (match-template-arg sig-param arg-type inference-map params))
 
                            ;; Ensure all template parameters were inferred
-
-                           ;; Ensure all template parameters were inferred
                            (let ((concrete-types (loop for p in params
                                                        collect (gethash p inference-map))))
                              (log:info "try-infer: concrete-types = ~a" concrete-types)
@@ -456,11 +480,21 @@
 (defun ensure-template-instantiation (name explicit-arg-types compiler-callback)
   "Called by the compiler to auto-instantiate templates.
    compiler-callback is (lambda (form location) ...)"
-  (let ((templates (gethash name *template-registry*))
-        (match-sets nil))
+  (let* ((templates (gethash name *template-registry*))
+         ;; If not found directly, try stripping "MAKE-" or "MAKE-...%DISPATCH" prefix for struct constructors
+         (struct-name (when (and (null templates) (symbolp name))
+                            (let ((s (symbol-name name)))
+                              (cond
+                               ((alexandria:starts-with-subseq "MAKE-" s)
+                                 (if (alexandria:ends-with-subseq "%DISPATCH" s)
+                                     (intern (subseq s 5 (- (length s) 9)) (symbol-package name)) ;; MAKE-POINT%DISPATCH -> POINT
+                                     (intern (subseq s 5) (symbol-package name)))) ;; MAKE-POINT -> POINT
+                               (t nil)))))
+         (templates (or templates (when struct-name (gethash struct-name *template-registry*))))
+         (match-sets nil))
 
     ;; 1. Try Function Signature Inference
-    (setf match-sets (try-infer-template-types name explicit-arg-types))
+    (setf match-sets (try-infer-template-types (or struct-name name) explicit-arg-types))
 
     ;; 2. If no function match, checking for Struct/Direct Instantiation by Arity
     (unless match-sets
@@ -501,11 +535,25 @@
 
 (defmacro make-structure-template-instance (template-name concrete-types &rest ctor-args)
   "Instantiates the struct template ensuring definitions exist, then calls the constructor."
-  (let* ((mangled-name (crisp.compiler::mangle-template-struct-name template-name concrete-types))
-         ;; We rely on instantiate-template to generate the def-struct and wrapper.
-         (instantiation-code (instantiate-template template-name concrete-types))
+  (let* ((template-name (if (and (consp template-name) (eq (first template-name) 'quote)) (second template-name) template-name))
+         (concrete-types (if (and (consp concrete-types) (eq (first concrete-types) 'quote)) (second concrete-types) concrete-types))
+         (mangled-name (crisp.compiler::mangle-template-struct-name template-name concrete-types))
          ;; Use the generated wrapper from instantiate-template logic
          (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package template-name))))
-    `(progn
-      ,instantiation-code
-      (,wrapper-name ,@ctor-args))))
+
+    ;; Side-effect: Ensure template is instantiated (compiled) immediately
+    (ensure-template-instantiation template-name concrete-types
+                                   (lambda (form location)
+                                     (if (and (boundp 'crisp.compiler::*current-module*) crisp.compiler::*current-module*)
+                                         ;; If we are in the compiler (Pass 2), compile it now.
+                                         (crisp.compiler::compile-toplevel-form form location
+                                                                                crisp.compiler::*current-module*
+                                                                                crisp.compiler::*current-builder*
+                                                                                crisp.compiler::*current-di-builder*
+                                                                                crisp.compiler::*current-di-compile-unit*
+                                                                                crisp.compiler::*current-location-map*)
+                                         ;; Fallback: Eval it (e.g. top-level macro expansion analysis)
+                                         (eval form))))
+
+    ;; Return just the call to the wrapper
+    `(,wrapper-name ,@ctor-args)))

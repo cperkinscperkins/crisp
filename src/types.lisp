@@ -190,6 +190,7 @@ This supports overloading templates by arity or other factors.")
 
   (cl:let ((base (if (consp spec) (cl:first spec) spec))
            (args (if (consp spec) (rest spec) nil)))
+    (log:info "CANONICALIZE: ~s base: ~s aliases: ~a" spec base (alexandria:hash-table-keys *crisp-template-aliases*))
     (cl:cond
       ((symbolp base)
        ;; 1. Check Template Aliases (def-type)
@@ -199,10 +200,21 @@ This supports overloading templates by arity or other factors.")
                          (type-spec (cdr alias-def)))
                   ;; Instantiate the alias
                   (cl:if params
-                         (cl:let ((substitutions (pairlis params args)))
-                           (canonicalize-type-specifier (sublis substitutions type-spec)))
-                         ;; No params? Just return the aliased type
-                         (canonicalize-type-specifier type-spec)))
+                         (cl:let* ((arity (length params))
+                                   (required-args (subseq args 0 (min (length args) arity)))
+                                   (rest-args (subseq args (length required-args)))
+                                   (substitutions (pairlis params required-args)))
+                           ;; Apply substitution to the base spec
+                           (cl:let ((expanded-base (sublis substitutions type-spec)))
+                             ;; Append any extra args (overrides) to the result if it's a list
+                             (cl:if (and rest-args (consp expanded-base))
+                                    (canonicalize-type-specifier (append expanded-base rest-args))
+                                    (canonicalize-type-specifier expanded-base))))
+                         ;; No params? Just return the aliased type + args??
+                         ;; If alias had no params, but we passed args, they are overrides.
+                         (cl:if args
+                                (canonicalize-type-specifier (append (if (consp type-spec) type-spec (list type-spec)) args))
+                                (canonicalize-type-specifier type-spec))))
 
                 ;; 2. Standard Templates
                 (cl:let* ((template-data (first (gethash base *template-registry*)))

@@ -240,6 +240,7 @@
   "Defines a type alias.
    Example: (def-type T int)"
   `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (setf (gethash ',name crisp.compiler::*crisp-template-aliases*) (cons nil ',type-spec))
      (setf (gethash ',name crisp.compiler::*crisp-type-aliases*) ',type-spec)))
 
 (defmacro def-struct (name &rest members)
@@ -374,8 +375,8 @@
 (defmacro marshall-cell (type-alias byte-size ptr offset)
   "Marshals raw kernel arguments into a Cell struct.
    Usage: (marshall-cell out-c byte-size ptr offset)"
-  (let* ((expanded (or (gethash type-alias *crisp-type-aliases*) type-alias))
-         (canonical (expand-storage-handle-type-specifier expanded))
+  (let* ((canonical (crisp.compiler::canonicalize-type-specifier type-alias))
+
          (base (first canonical))
          (params (rest canonical))
          (mangled-symbol (mangle-template-struct-name base params))

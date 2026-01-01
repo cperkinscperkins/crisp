@@ -337,10 +337,17 @@
             (args (rest spec))
             (alias-def (gethash alias-name *crisp-template-aliases*))
             (params (car alias-def))
-            (body-spec (cdr alias-def)))
+            (body-spec (cdr alias-def))
+            (arity (length params))
+            (required-args (subseq args 0 (min (length args) arity)))
+            (rest-args (subseq args (length required-args)))
+            (substitutions (pairlis params required-args))
+            (expanded-base (sublis substitutions body-spec)))
        ;; Substitute args for params in body-spec
-       (let ((expanded (sublis (pairlis params args) body-spec)))
-         (log:info "EXPAND-ALIAS: ~a -> ~a" spec expanded)
+       ;; And append overrides
+       (let ((expanded (if (and rest-args (consp expanded-base))
+                           (append expanded-base rest-args)
+                           expanded-base)))
          (parse-type-specifier expanded))))
 
    ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))

@@ -6,12 +6,12 @@
     (def-type out-c (cell T :address-space :global :access :read-write))
 
     (def-function store-7 (&out c)
-        (declare #'(&out out-c => nil))
+        (declare #'(&out (out-c T) => nil))
         (set! (~ c) (as T 7)))
 
     (def-kernel-exact call_function (byte-size ptr offset)
         (declare #'(ulong voidp ulong))
-        (let ((c (marshall-cell out-c byte-size ptr offset)))
+        (let ((c (marshall-cell (out-c T) byte-size ptr offset)))
             (store-7 c))))
 
 (gen-call_function long "call_function")
