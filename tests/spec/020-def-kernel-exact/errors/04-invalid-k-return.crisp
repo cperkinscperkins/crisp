@@ -1,6 +1,6 @@
 
-
+;; this is forcing return nil.  maybe that's ok?  Think about it.
 
 (def-kernel-exact bad_kernel ()
-    (declare #'(=> int)) ;; <-- cannot declare a non-nil return type. 
+    (declare #'(=> nil))  
     (return 7)) ;; <-- only (return) and (return nil) are valid. any other value to (return XXXX) is bad

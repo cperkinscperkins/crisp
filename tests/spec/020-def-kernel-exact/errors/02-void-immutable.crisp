@@ -1,3 +1,6 @@
+;; CHECK-FAIL: "Cannot operate on VOIDP and INT."
+
+
 (def-type out-c (cell long :address-space :global :access :read-write))
 
 (def-kernel-exact return_7 (byte-size ptr offset)

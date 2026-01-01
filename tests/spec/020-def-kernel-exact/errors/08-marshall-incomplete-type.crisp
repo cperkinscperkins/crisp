@@ -1,4 +1,6 @@
 
+;;  "reasonable error message"
+
 ;; the type expression arg to marshall-cell must be a complete type.
 ;; incomplete types are errors.
 

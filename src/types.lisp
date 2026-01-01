@@ -111,6 +111,7 @@ This supports overloading templates by arity or other factors.")
               (double ,#'llvm-double-type 64 :float)
               ;; Void
               (void ,#'llvm-void-type 0 :void)
+              (voidp ,(lambda () (llvm-pointer-type (llvm-int8-type) 0)) 64 :pointer)
               ;; Meta Types
               (type-spec ,#'llvm-void-type 0 :meta)
               ;; Pointer
@@ -191,34 +192,52 @@ This supports overloading templates by arity or other factors.")
            (args (if (consp spec) (rest spec) nil)))
     (cl:cond
       ((symbolp base)
-       (cl:let* ((template-data (first (gethash base *template-registry*)))
-                 (params (and template-data (template-data-parameters template-data))))
-         (if params
-             (cl:let ((full-args (loop for param in params
-                                       for i from 0
-                                       for arg = (nth i args)
-                                       collect (if arg
-                                                   arg
-                                                   ;; Check for default value in param spec (Name Default)
-                                                   (if (and (consp param) (second param))
-                                                       (second param)
-                                                       nil)))))
-               ;; Truncate nil tail if strict? Or just return full args?
-               ;; If original args had keywords, we might need to more complex handling.
-               ;; For now, assume positional simplicity for templates like CELL.
-               ;; But wait, canonicalize previously handled keyword args for CELL: (cell int :access :rw)
-               ;; We should preserve that hybrid property mapping capability generically too.
-               ;; TODO: Implement hybrid positional/keyword mapping if needed. For now, matching CELL logic.
-               (cons base (remove-if #'null full-args)))
+       ;; 1. Check Template Aliases (def-type)
+       (cl:let ((alias-def (gethash base *crisp-template-aliases*)))
+         (cl:if alias-def
+                (cl:let ((params (car alias-def))
+                         (type-spec (cdr alias-def)))
+                  ;; Instantiate the alias
+                  (cl:if params
+                         (cl:let* ((arity (length params))
+                                   (required-args (subseq args 0 (min (length args) arity)))
+                                   (rest-args (subseq args (length required-args)))
+                                   (substitutions (pairlis params required-args)))
+                           ;; Apply substitution to the base spec
+                           (cl:let ((expanded-base (sublis substitutions type-spec)))
+                             ;; Append any extra args (overrides) to the result if it's a list
+                             (cl:if (and rest-args (consp expanded-base))
+                                    (canonicalize-type-specifier (append expanded-base rest-args))
+                                    (canonicalize-type-specifier expanded-base))))
+                         ;; No params? Just return the aliased type + args??
+                         ;; If alias had no params, but we passed args, they are overrides.
+                         (cl:if args
+                                (canonicalize-type-specifier (append (if (consp type-spec) type-spec (list type-spec)) args))
+                                (canonicalize-type-specifier type-spec))))
 
-             ;; Not a template, return as is (normalized to list)
-             (if (consp spec) spec (list spec)))))
+                ;; 2. Standard Templates
+                (cl:let* ((template-data (first (gethash base *template-registry*)))
+                          (params (and template-data (template-data-parameters template-data))))
+                  (cl:if params
+                         (cl:let ((full-args (cl:loop for param in params
+                                             for i from 0
+                                             for arg = (nth i args)
+                                             collect (cl:if arg
+                                                            arg
+                                                            ;; Check for default value in param spec (Name Default)
+                                                            (cl:if (and (consp param) (second param))
+                                                                   (second param)
+                                                                   nil)))))
+                           (cons base (remove-if #'null full-args)))
+
+                         ;; Not a template, return as is (normalized to list)
+                         (cl:if (consp spec) spec (list spec)))))))
       ((consp spec) spec)
       (t (list spec)))))
 
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, handling template struct canonicalization."
-  (log:debug "types-equivalent-p: ~s vs ~s" t1 t2)
+
   (cl:cond
     ((equal t1 t2) t)
     ;; Treat VOID and NIL as equivalent return types
@@ -254,13 +273,10 @@ This supports overloading templates by arity or other factors.")
 
             ;; Now check mangled name
             (cl:let ((mangled (mangle-template-struct-name base-type params)))
-              (log:debug "types-equivalent-p: mangled=~s vs t2=~s" mangled t2)
-              (log:debug "  packages: ~s vs ~s" (symbol-package mangled) (symbol-package t2))
               (cl:cond
                 ((eq mangled t2) t)
                 ;; Also check string equality as fallback for package issues
                 ((string-equal (symbol-name mangled) (symbol-name t2))
-                 (log:warn "types-equivalent-p: Matched by string, potential package mismatch: ~a vs ~a" mangled t2)
                  t)
                 (t nil))))
            nil)))

@@ -1,4 +1,4 @@
-;;;; Crisp - Lisp for Developing GPU Kernels
+﻿;;;; Crisp - Lisp for Developing GPU Kernels
 ;;;; Copyright (c) 2025 Christopher Perkins
 ;;;;
 ;;;; Licensed under the MIT License. See LICENSE file in the project root.
@@ -25,6 +25,7 @@
                              (:float 4) ; DW_ATE_float
                              (:struct 7) ; Fallback: Treat struct as unsigned blob for now
                              (:record 7) ; Treat record as struct/unsigned for now
+                             (:pointer 7)
                              (:void (return-from get-or-create-di-type (cffi:null-pointer)))))
                  (di-type (llvm-di-builder-create-basic-type
                            di-builder name-str (length name-str)
@@ -73,6 +74,9 @@
      (when (null type-spec)
            (error "Cannot resolve type to LLVM: NIL"))
      ;; HARDCODED BYPASS
+     (when (eq type-spec 'voidp)
+           (return-from crisp-type-to-llvm-type
+                        (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 0)))
      (when (eq type-spec 'int)
            (return-from crisp-type-to-llvm-type
                         (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module)))))
@@ -337,6 +341,12 @@
 
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
+  (log:warn "GENERATE-LLVM-IR: ~a Params: ~a Ret: ~a"
+            (semantic-function-name semantic-function)
+            (semantic-function-param-list semantic-function)
+            (semantic-function-return-type semantic-function))
+  (log:warn "BODY: ~a" (semantic-function-body semantic-function))
+
   (multiple-value-bind (func di-subprogram)
       (generate-function-prototype semantic-function module di-builder di-compile-unit location-map)
     (generate-function-body semantic-function func di-subprogram builder module di-builder location-map)))
@@ -533,7 +543,27 @@
                (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast")
                (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast")))
 
-         (t (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))
+         ;; Integer to Pointer
+         ((and (member (crisp-type-category from-type) '(:signed-int :unsigned-int))
+               (eq (crisp-type-category to-type) :pointer))
+           (llvm-build-int-to-ptr builder from-val to-llvm-type "int2ptr_cast"))
+
+         ;; Pointer to Integer
+         ((and (eq (crisp-type-category from-type) :pointer)
+               (member (crisp-type-category to-type) '(:signed-int :unsigned-int)))
+           (llvm-build-ptr-to-int builder from-val to-llvm-type "ptr2int_cast"))
+
+         ;; Pointer to Pointer
+         ((and (eq (crisp-type-category from-type) :pointer)
+               (eq (crisp-type-category to-type) :pointer))
+           (llvm-build-bit-cast builder from-val to-llvm-type "ptr2ptr_cast"))
+
+         (t
+           (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
+           (log:error "  From Type: ~a (cat: ~a)" from-type (crisp-type-category from-type))
+           (log:error "  To Type:   ~a (cat: ~a)" to-type (crisp-type-category to-type))
+           (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
+           (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))
 
 (defmacro def-binary-op-codegen (node-type int-inst float-inst accessor-prefix)
   (let ((left-accessor (intern (format nil "~a-LEFT-ARG" accessor-prefix)))
@@ -1144,3 +1174,8 @@
          (size-val (llvm-size-of llvm-type)))
     ;; size-val is an LLVM Value (ConstantInt), so it's ready to use.
     (values size-val nil)))
+
+(defmethod generate-node-ir ((node null) builder module var-env di-builder di-scope location-map)
+  "Explict handler for NIL nodes (e.g. empty body return values or missing value nodes)."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (values nil))

@@ -135,79 +135,79 @@
                        (log:warn "Keyword Instantiation: Expected keyword literal, got ~a" k-type)
                        (return-from instantiate-generic-function nil))
 
-                       (let* ((key-kw (second k-type)) ;; :bugs
-                                                      (param-name (intern (string-upcase (symbol-name key-kw)) (symbol-package name)))
-                                                      ;; Verify this param exists in the key section of full-env
-                                                      (param-entry (find param-name (subseq full-env key-idx) :key #'parameter-def-name)))
+                     (let* ((key-kw (second k-type)) ;; :bugs
+                                                    (param-name (intern (string-upcase (symbol-name key-kw)) (symbol-package name)))
+                                                    ;; Verify this param exists in the key section of full-env
+                                                    (param-entry (find param-name (subseq full-env key-idx) :key #'parameter-def-name)))
 
-                         (unless param-entry
-                           (log:warn "Keyword Instantiation: Unknown keyword argument ~s for function ~s" key-kw name)
-                           ;; If &allow-other-keys support is needed, handle here. For now, strict.
-                           (return-from instantiate-generic-function nil))
+                       (unless param-entry
+                         (log:warn "Keyword Instantiation: Unknown keyword argument ~s for function ~s" key-kw name)
+                         ;; If &allow-other-keys support is needed, handle here. For now, strict.
+                         (return-from instantiate-generic-function nil))
 
-                         (push param-name provided-params)
-                         ;; Add to active-env: Key (ignored) + Value (bound to param-name)
-                         ;; Key param name: _k_i
-                         (push (make-parameter-def :name (intern (format nil "_K~d" i) (symbol-package name)) :type 'keyword :kind :in) key-active-env)
-                         (push (make-parameter-def :name param-name :type v-type :kind (parameter-def-kind param-entry)
-                                                   :is-key t :default-value (parameter-def-default-value param-entry)) key-active-env))))
+                       (push param-name provided-params)
+                       ;; Add to active-env: Key (ignored) + Value (bound to param-name)
+                       ;; Key param name: _k_i
+                       (push (make-parameter-def :name (intern (format nil "_K~d" i) (symbol-package name)) :type 'keyword :kind :in) key-active-env)
+                       (push (make-parameter-def :name param-name :type v-type :kind (parameter-def-kind param-entry)
+                                                 :is-key t :default-value (parameter-def-default-value param-entry)) key-active-env))))
 
-            (setf active-env (append pos-env (nreverse key-active-env)))
+           (setf active-env (append pos-env (nreverse key-active-env)))
 
-            ;; Remainder = All keys declared - Provided (Preserve Order!)
-            (let ((all-keys (subseq full-env key-idx)))
-              (setf remainder-env (remove-if (lambda (p) (member (parameter-def-name p) provided-params)) all-keys)))))
+           ;; Remainder = All keys declared - Provided (Preserve Order!)
+           (let ((all-keys (subseq full-env key-idx)))
+             (setf remainder-env (remove-if (lambda (p) (member (parameter-def-name p) provided-params)) all-keys)))))
 
-         ;; --- OPTIONAL PARAMETER LOGIC (Standard Prefix) ---
-         (progn
-          (setf active-env (subseq full-env 0 arg-count))
-          (setf remainder-env (subseq full-env arg-count))))
+        ;; --- OPTIONAL PARAMETER LOGIC (Standard Prefix) ---
+        (progn
+         (setf active-env (subseq full-env 0 arg-count))
+         (setf remainder-env (subseq full-env arg-count))))
 
-     (let ((active-param-names (mapcar #'parameter-def-name active-env))
-           (active-param-types (mapcar #'parameter-def-type active-env)))
+    (let ((active-param-names (mapcar #'parameter-def-name active-env))
+          (active-param-types (mapcar #'parameter-def-type active-env)))
 
-       ;; Inject default values for missing parameters
-       ;; We wrap the body in LET bindings for any parameter in remainder-env that has a default.
-       ;; Must iterate in REVERSE order so that earlier parameters become OUTER bindings.
-       (loop for pname in (reverse (if key-idx (mapcar #'parameter-def-name remainder-env) (mapcar #'parameter-def-name remainder-env)))
-             do (let ((def-entry (assoc pname defaults)))
-                  (when def-entry
-                        (log:info "Type-Checking Default Value Injection: ~a = ~a" pname (cdr def-entry))
-                        (setf body (list `(let ((,pname ,(cdr def-entry))) ,@body))))))
+      ;; Inject default values for missing parameters
+      ;; We wrap the body in LET bindings for any parameter in remainder-env that has a default.
+      ;; Must iterate in REVERSE order so that earlier parameters become OUTER bindings.
+      (loop for pname in (reverse (if key-idx (mapcar #'parameter-def-name remainder-env) (mapcar #'parameter-def-name remainder-env)))
+            do (let ((def-entry (assoc pname defaults)))
+                 (when def-entry
+                       (log:info "Type-Checking Default Value Injection: ~a = ~a" pname (cdr def-entry))
+                       (setf body (list `(let ((,pname ,(cdr def-entry))) ,@body))))))
 
-       ;; Validations (Basic Arity check)
-       (unless (types-list-compatible-p explicit-arg-types active-param-types)
-         (log:warn "Lazy Instantiation Mismatch: ~a called with ~a, expected prefix of ~a" name explicit-arg-types active-param-types)
-         (return-from instantiate-generic-function nil))
+      ;; Validations (Basic Arity check)
+      (unless (types-list-compatible-p explicit-arg-types active-param-types)
+        (log:warn "Lazy Instantiation Mismatch: ~a called with ~a, expected prefix of ~a" name explicit-arg-types active-param-types)
+        (return-from instantiate-generic-function nil))
 
-       (let ((mangled-name (mangle-function-variant-name name active-param-types)))
-         (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name arg-count active-param-types)
+      (let ((mangled-name (mangle-function-variant-name name active-param-types)))
+        (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name arg-count active-param-types)
 
-         ;; Compile the specific variant
-         (let ((ast-node (internal-compile-function mangled-name
-                                                    active-env
-                                                    (generic-function-def-return-types generic-def)
-                                                    active-param-names
-                                                    body
-                                                    declarations
-                                                    (or (generic-function-def-source-location generic-def) location))))
+        ;; Compile the specific variant
+        (let ((ast-node (internal-compile-function mangled-name
+                                                   active-env
+                                                   (generic-function-def-return-types generic-def)
+                                                   active-param-names
+                                                   body
+                                                   declarations
+                                                   (or (generic-function-def-source-location generic-def) location))))
 
-           ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
-           ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
-           (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
-                                       (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
-                                                                                 (sig (make-function-signature
-                                                                                       :name mangled-name
-                                                                                       :parameters active-param-types
-                                                                                       :return-types final-ret-types
-                                                                                       :source-location (or (generic-function-def-source-location generic-def) location))))
+          ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
+          ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
+          (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
+                                      (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
+                                                                                (sig (make-function-signature
+                                                                                      :name mangled-name
+                                                                                      :parameters active-param-types
+                                                                                      :return-types final-ret-types
+                                                                                      :source-location (or (generic-function-def-source-location generic-def) location))))
 
-             (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
-             ;; Append to existing signatures (thread safety? single threaded)
-             (setf (gethash mangled-name *function-table*)
-               (append (gethash mangled-name *function-table*) (list sig)))
+            (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
+            ;; Append to existing signatures (thread safety? single threaded)
+            (setf (gethash mangled-name *function-table*)
+              (append (gethash mangled-name *function-table*) (list sig)))
 
-             sig))))))
+            sig))))))
 
 (defun register-function-signature (form location)
   "Extracts and registers a function's signature without analyzing its body. 
@@ -238,11 +238,25 @@
 
           ;; Standard Function Registration (Eager)
           (let* ((param-types (mapcar #'parameter-def-type env))
+                 ;; --- KERNEL VALIDATION ---
+                 (is-entry-point (loop for f in declare-forms
+                                         thereis (loop for decl-spec in (rest f)
+                                                         thereis (and (consp decl-spec)
+                                                                      (string-equal (first decl-spec) "ENTRY-POINT")))))
+                 (_ (when (and is-entry-point return-types)
+                          (let ((non-void-types (remove-if (lambda (x)
+                                                             (or (null x)
+                                                                 (and (symbolp x) (string-equal x "VOID"))))
+                                                    return-types)))
+                            (when non-void-types
+                                  (error "Kernels cannot declare they return values. Found: ~a. Kernels must return void (nil)." return-types)))))
+
                  (sig (make-function-signature
                        :name name
                        :parameters param-types
                        :return-types return-types
                        :source-location location)))
+            (declare (ignore _))
             ;; Append to existing signatures
             (setf (gethash name *function-table*)
               (append (gethash name *function-table*) (list sig))))))))
@@ -282,8 +296,8 @@
         (return-from detect-and-register-implicit-template nil))
 
   (let ((implicit-args (loop for p in explicit-env
-                               for pname = (parameter-def-name p)
-                               for ptype = (parameter-def-type p)
+                             for pname = (parameter-def-name p)
+                             for ptype = (parameter-def-type p)
                                when (or (and (listp ptype) (eq (first ptype) :function-type))
                                         (incomplete-type-p ptype))
                              collect p)))
@@ -327,42 +341,49 @@
   (cond
    ;; 0. Type Aliases
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
-    (let ((res (gethash spec *crisp-type-aliases*)))
-      (log:info "PARSE: Resolving Alias ~a -> ~a" spec res)
-      (parse-type-specifier res)))
+     (let ((res (gethash spec *crisp-type-aliases*)))
+       (log:info "PARSE: Resolving Alias ~a -> ~a" spec res)
+       (parse-type-specifier res)))
 
    ;; 0.1 Template Aliases (e.g. (in-cell int))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
-    (let* ((alias-name (first spec))
-           (args (rest spec))
-           (alias-def (gethash alias-name *crisp-template-aliases*))
-           (params (car alias-def))
-           (body-spec (cdr alias-def)))
-      ;; Substitute args for params in body-spec
-      (let ((expanded (sublis (pairlis params args) body-spec)))
-        (log:info "EXPAND-ALIAS: ~a -> ~a" spec expanded)
-        (parse-type-specifier expanded))))
+     (let* ((alias-name (first spec))
+            (args (rest spec))
+            (alias-def (gethash alias-name *crisp-template-aliases*))
+            (params (car alias-def))
+            (body-spec (cdr alias-def))
+            (arity (length params))
+            (required-args (subseq args 0 (min (length args) arity)))
+            (rest-args (subseq args (length required-args)))
+            (substitutions (pairlis params required-args))
+            (expanded-base (sublis substitutions body-spec)))
+       ;; Substitute args for params in body-spec
+       ;; And append overrides
+       (let ((expanded (if (and rest-args (consp expanded-base))
+                           (append expanded-base rest-args)
+                           expanded-base)))
+         (parse-type-specifier expanded))))
 
    ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
-    (let* ((alias-name (first spec))
-           (args (rest spec))
-           (expanded-base (gethash alias-name *crisp-type-aliases*)))
-      ;; If alias expands to a list, append args. If symbol, make a new list.
-      (let ((final-spec (if (listp expanded-base)
-                            (append expanded-base args)
-                            (cons expanded-base args))))
-        (log:info "EXPAND-ALIAS-HEAD: ~a -> ~a" spec final-spec)
-        (parse-type-specifier final-spec))))
+     (let* ((alias-name (first spec))
+            (args (rest spec))
+            (expanded-base (gethash alias-name *crisp-type-aliases*)))
+       ;; If alias expands to a list, append args. If symbol, make a new list.
+       (let ((final-spec (if (listp expanded-base)
+                             (append expanded-base args)
+                             (cons expanded-base args))))
+         (log:info "EXPAND-ALIAS-HEAD: ~a -> ~a" spec final-spec)
+         (parse-type-specifier final-spec))))
 
    ;; Standard symbol: e.g. 'int'
    ((and (symbolp spec) (valid-type-p spec)) spec)
-   
+
    ;; Storage Handle Symbols (e.g. CELL, VECTOR...) 
    ;; We treat them as (CELL) which expands to default (CELL T)
    ((and (symbolp spec) (member (symbol-name spec) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
-    (log:info "PARSE: Promoting symbol ~a to list (~a)" spec spec)
-    (parse-type-specifier (list spec)))
+     (log:info "PARSE: Promoting symbol ~a to list (~a)" spec spec)
+     (parse-type-specifier (list spec)))
 
    ;; Function Type: #'(int => int) or (function int => int)
    ((and (listp spec) (member (first spec) '(function common-lisp:function)))
@@ -589,5 +610,3 @@
                    :name p
                    :type (or (gethash p env) t) ;; Default to T if not declared
                    :kind :in))))
-
-
