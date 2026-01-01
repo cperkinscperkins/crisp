@@ -8,4 +8,4 @@
 
 (def-kernel-exact passing_stars (star-x star-y)
     (declare #'(int int))
-    (let ((star-loc (marshall-v-point :x star-x :y star-y)))))
+    (let ((star-loc (make-v-point :x star-x :y star-y)))))

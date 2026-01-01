@@ -210,6 +210,11 @@ Realized.
 ### &out, including compile error for access
 The `&out` parameter is now supported. 
 
+
+### def-kernel-exact and marshall-cell and records
+Yes, you read that right. `def-kernel-exact` is implemented now, along
+with marshalling.  
+
 Errors
 ======
 

@@ -1,3 +1,6 @@
+
+;; CHECK-FAIL: "def-kernel-exact requires C-style identifiers"
+
 (def-kernel-exact lisp-style-name ()
     (declare #'(=> nil))
 )

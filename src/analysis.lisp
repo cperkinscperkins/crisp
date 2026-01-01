@@ -429,36 +429,40 @@
                          inferred-return-types)
                        (t
                          return-type))
-         :body (if (typep return-node 'semantic-explicit-return)
-                   body-nodes
-                   (append (butlast body-nodes)
-                     (list (make-semantic-return
-                            :return-type (let ((nt (semantic-node-type return-node)))
-                                           (if (and (listp nt) (not (valid-type-p nt)))
-                                               nt
-                                               (list nt)))
-                            ;; TRUNCATION LOGIC FOR IMPLICIT RETURN
-                            :value-node (let* ((nt (semantic-node-type return-node))
-                                               (val-types (if (and (listp nt) (not (valid-type-p nt))) nt (list nt)))
-                                               (target-types (cond ((or (null return-type) (equal return-type '(nil))) inferred-return-types)
-                                                                   (t return-type)))
-                                               (target-list (if (and (listp target-types) (not (valid-type-p target-types))) target-types (list target-types))))
+         :body (cond
+                ((null return-node)
+                  (list (make-semantic-return :return-type '(nil) :value-node nil)))
+                ((typep return-node 'semantic-explicit-return)
+                  body-nodes)
+                (t
+                  (append (butlast body-nodes)
+                    (list (make-semantic-return
+                           :return-type (let ((nt (semantic-node-type return-node)))
+                                          (if (and (listp nt) (not (valid-type-p nt)))
+                                              nt
+                                              (list nt)))
+                           ;; TRUNCATION LOGIC FOR IMPLICIT RETURN
+                           :value-node (let* ((nt (semantic-node-type return-node))
+                                              (val-types (if (and (listp nt) (not (valid-type-p nt))) nt (list nt)))
+                                              (target-types (cond ((or (null return-type) (equal return-type '(nil))) inferred-return-types)
+                                                                  (t return-type)))
+                                              (target-list (if (and (listp target-types) (not (valid-type-p target-types))) target-types (list target-types))))
 
-                                          (cond
-                                           ;; Case: 1 value needed, >1 provided. Extract index 0.
-                                           ((and (= (length target-list) 1) (> (length val-types) 1))
-                                             (log:info "Implicit Return Truncation: ~a -> ~a" val-types target-list)
-                                             (make-semantic-extract-value
-                                              :type (first target-list)
-                                              :aggregate-node return-node
-                                              :index 0
-                                              :source-location (if return-node (semantic-node-source-location return-node) location)))
+                                         (cond
+                                          ;; Case: 1 value needed, >1 provided. Extract index 0.
+                                          ((and (= (length target-list) 1) (> (length val-types) 1))
+                                            (log:info "Implicit Return Truncation: ~a -> ~a" val-types target-list)
+                                            (make-semantic-extract-value
+                                             :type (first target-list)
+                                             :aggregate-node return-node
+                                             :index 0
+                                             :source-location (if return-node (semantic-node-source-location return-node) location)))
 
-                                           ;; TODO: Handle N -> M (where M > 1 and N > M) case if needed.
-                                           ;; For now return original node.
-                                           (t return-node)))
+                                          ;; TODO: Handle N -> M (where M > 1 and N > M) case if needed.
+                                          ;; For now return original node.
+                                          (t return-node)))
 
-                            :source-location (if return-node (semantic-node-source-location return-node) location)))))
+                           :source-location (if return-node (semantic-node-source-location return-node) location))))))
          :source-location location)))))
 
 (defun internal-def-function (name params declarations body location)
@@ -930,6 +934,7 @@
                          (let* ((var-name (first binding-vars))
                                 ;; For a single binding, we implicitly take the first return value's type.
                                 (var-type (get-single-value-type init-node)))
+                           (log:warn "ANALYZE-LET VAR: ~a -> Inferred Type: ~a" var-name var-type)
                            (push (cons var-name init-node) bindings-list)
                            (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local) current-env))))
 
@@ -1073,23 +1078,33 @@
                             :arg arg-node
                             :source-location location)))
 
-(defun analyze-generic-as-expression (expr env location)
-  "Analyzes the generic (as type value) form."
+(defun analyze-value-cast-expression (expr env location)
+  "Analyzes the generic (to type value) form."
   (let* ((type-form (second expr))
          (value-form (third expr))
-         (type-name (if (symbolp type-form) type-form (error "Generic AS expects a type symbol, got ~a" type-form)))
-         ;; If it's a template parameter (like T), it should already be substituted? 
-         ;; Or if T is bound in template-params passed down? 
-         ;; For now assume substitution happened.
+         (type-name (if (symbolp type-form) type-form (error "Generic TO expects a type symbol, got ~a" type-form)))
          (target-type (gethash type-name *crisp-types*)))
 
     (unless target-type
       (error 'crisp-unknown-type-error :type-name type-name :source-location location))
 
-    ;; Reuse analyze-cast-expression logic but fake the operator name
-    ;; Or just reimplement dispatch. Reimplementing is cleaner for custom 'as' logic.
     (let ((arg-node (analyze-expression value-form env (append location '(2)))))
       (make-semantic-value-cast :type type-name :arg arg-node :source-location location))))
+
+(defun analyze-generic-as-expression (expr env location)
+  "Analyzes the generic (as type value) form."
+  (let* ((type-form (second expr))
+         (value-form (third expr))
+         (type-name (if (symbolp type-form) type-form (error "Generic AS expects a type symbol, got ~a" type-form)))
+         (target-type (gethash type-name *crisp-types*))
+         (arg-node (analyze-expression value-form env (append location '(2)))))
+
+    (log:warn "ANALYZE-AS: ~s -> Type: ~a. Arg Type: ~a" type-name target-type (semantic-node-type arg-node))
+
+    (unless target-type
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    (make-semantic-value-cast :type type-name :arg arg-node :source-location location)))
 
 (defun get-struct-member-index (struct-type-name member-name)
   "Helper to find the physical index of a struct member, accounting for padding."
@@ -1228,7 +1243,6 @@
                      :source-location location)))))))))
 
      (t (error "Invalid set! target structure: ~a" target-form)))))
-
 
 (defun analyze-function-call-OLD (op expr env location)
   "Analyzes a call to a user-defined function."
@@ -1736,7 +1750,6 @@
               (analyze-function-call op expr env location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
 
-
 ;; PATCH: Handle Struct/Record CT Accessors on Incomplete/Parameterized Types
 (defun analyze-incomplete-type-accessor (op expr env location)
   "Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).
@@ -1807,7 +1820,9 @@
           ((symbolp expr)
             (let ((found (find-variable-in-env expr env)))
               (if found
-                  (make-semantic-var-read :name expr :type (parameter-def-type found) :source-location location)
+                  (let ((type-val (parameter-def-type found)))
+                    (log:warn "ANALYZE-EXPR VAR: ~a -> Type: ~a" expr type-val)
+                    (make-semantic-var-read :name expr :type type-val :source-location location))
                   (progn
                    (log:error "Unknown Variable Lookup: ~a (pkg: ~a)" expr (package-name (symbol-package expr)))
                    (log:error "Env Keys: ~a" (mapcar (lambda (p) (let ((s (parameter-def-name p))) (if (symbolp s) (format nil "~a (pkg: ~a)" s (package-name (symbol-package s))) (format nil "NON-SYMBOL-KEY: ~a" s)))) env))
@@ -1817,9 +1832,9 @@
 
           ;; Case 3: It's a function call, like '(+ a b)'
           ((listp expr) (let ((op (first expr)))
-                          (log:debug "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
+                          (log:warn "analyze-expression list op: ~a (pkg: ~a) macro-function: ~a" op (package-name (symbol-package op)) (macro-function op))
                           (when (eq op 'quote)
-                                (log:debug "ANALYZE-EXPR (NEW): QUOTE check. Analyzer: ~a" (gethash op *expression-analyzers*)))
+                                (log:warn "ANALYZE-EXPR (NEW): QUOTE check. Analyzer: ~a" (gethash op *expression-analyzers*)))
                           (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
 
                           ;; HOISTED CHECK: Try incomplete accessor first
@@ -1832,7 +1847,9 @@
                                        (funcall (gethash op *expression-analyzers*) expr env location))
                                      ;; Case 3b: Is it a macro?
                                      ((macro-function op)
-                                       (analyze-expression (macroexpand-1 expr) env location))
+                                       (let ((expanded (macroexpand-1 expr)))
+                                         (log:warn "ANALYZE-EXPR MACRO: ~s -> ~s" expr expanded)
+                                         (analyze-expression expanded env location)))
                                      ;; Case 3c: Is it a call to a known user-defined function?
                                      ;; Also check implicit *template-registry* for overloading
                                      ;; AND *generic-functions* for lazy instantiation

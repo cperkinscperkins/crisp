@@ -170,6 +170,8 @@
    #:def-function
    #:def-function
    #:def-kernel
+   #:def-kernel-exact
+   #:marshall-cell
    #:def-type ;; <--- NEW
    #:with-template-type ;; <--- NEW
 
@@ -216,7 +218,7 @@
 
    ;; All Crisp types
    #:char #:short #:int #:long
-   #:cell #:c-pointer #:storage
+   #:cell #:c-pointer #:storage #:voidp
    #:uchar #:ushort #:uint #:ulong
    #:half #:bfloat16 #:float #:double
 
@@ -297,6 +299,8 @@
   (:import-from :crisp.compiler
                 #:def-function
                 #:def-kernel
+                #:def-kernel-exact
+                #:marshall-cell
                 #:when #:unless #:if+ #:when+ #:unless+
                 #:def-struct
 
@@ -323,7 +327,7 @@
                 ;; All Crisp types
                 #:char #:short #:int #:long
                 #:cell
-                #:storage #:c-pointer
+                #:storage #:c-pointer #:voidp
                 #:uchar #:ushort #:uint #:ulong
                 #:half #:bfloat16 #:float #:double
 
@@ -406,7 +410,8 @@
    #:null #:atom #:consp #:listp #:symbolp #:not #:and #:or
 
    ;; Our custom laungage symbols
-   #:def-kernel #:def-function #:def-grid-function
+   #:def-kernel #:def-kernel-exact #:def-function #:def-grid-function
+   #:marshall-cell
    #:def-orchestration #:def-qint #:def-microfloat-block
    #:def-type ;; <--- NEW
    #:with-template-type ;; <--- NEW
@@ -430,7 +435,7 @@
    #:vector #:matrix #:tensor
    ;; Storage Handle
    #:make-scratch-cell
-   #:cell
+   #:cell #:voidp
    #:parent~ #:offset~ #:element-type~
    #:bytes~ #:sizeof
 

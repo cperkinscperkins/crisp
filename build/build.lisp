@@ -17,6 +17,13 @@
 (asdf:clear-system "crisp")
 (asdf:clear-system "cffi")
 
+
+(uiop::ensure-directories-exist "bin/")
+(let ((exe (merge-pathnames "bin/crisp-compile.exe" *default-pathname-defaults*)))
+  (when (probe-file exe)
+        (format t "~&; Deleting old executable: ~a~%" exe)
+        (delete-file exe)))
+
 ;; ql:quickload will find crisp.asd, see the dependencies,
 ;; download cffi, and then load crisp.
 ;; Force recompilation to ensure no stale FASLs with bad encodings persist
@@ -24,11 +31,6 @@
 (ql:quickload "crisp")
 (format t "~&; --- System loaded successfully.~%")
 
-(uiop::ensure-directories-exist "bin/")
-(let ((exe (merge-pathnames "bin/crisp-compile.exe" *default-pathname-defaults*)))
-  (when (probe-file exe)
-        (format t "~&; Deleting old executable: ~a~%" exe)
-        (delete-file exe)))
 
 (asdf:make "crisp" :force t)
 (uiop:quit 0)

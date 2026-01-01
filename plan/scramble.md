@@ -149,10 +149,10 @@ LOOSE PRIORITIES
 - [x] Linux?
 - [x] DWARF
 - [ ] def-grid-function
-- [ ] def-kernel - case-sensitive
+- [x] def-kernel - case-sensitive
 - [ ] Hoisting
-- [ ] E2E Test?
-- [ ] with-template-type
+- [x] E2E Test?
+- [x] with-template-type
 - [x] funcction overloading
 - [x] multiple return values
 - [x] let with mv bindings
@@ -162,8 +162,8 @@ LOOSE PRIORITIES
 - - [ ] hardware vector types
 - [x] type promotion &c.
 - - [ ] type promotion in + ? - maybe this requires let to test
-- [ ] &optional &key 
-- [ ] &out
+- [x] &optional &key 
+- [x] &out
 - [x] defmacro
 - [ ] variadic + < = etc
 - [ ] vectors
@@ -215,7 +215,7 @@ SHORT TERM PLAN
 - [x] &optional , &key and defaults and is-set?
 - [x] &out
 
-- [ ] def-type  <--  we will need this to create vector from tensor, etc.
+- [x] def-type  <--  we will need this to create vector from tensor, etc.
                        I'm tempted to do def-derived-type too
 - [ ] damn literal numbers are long overdue.  1.0f 1i 2l  something.
 - - [ ] also, give up on "no (to-int )" already. geebus
@@ -256,7 +256,7 @@ SHORT TERM PLAN
 - - - (access~ someCellOrTensor)
 - - - (address-space~ someCellOrTensor)
 - - [ ] built atop def-struct ? 
-- [ ] def-kernel-exact 
+- [x] def-kernel-exact 
 - [ ] def-kernel  <-- 
 - [ ] expand variadics (+, * etc).  Maybe up to 5 or 7?  (+ a b c d e)
 - [ ] def-function has strict return type checking. Meaning, if it declares nil as return type,
@@ -279,6 +279,25 @@ Debugging
 - [x] .bat to run all .crisp tests from compiler. local E2E easier
 - [x] dump-env to print out all the bindings in an environemnt
 - [ ] plus similar for *function-table* and others
+
+Kernels
+- [x] def-kernel-exact
+- [x] gen-some_kernel T "name"
+- [x] error messages
+- - 06 - kernels can't declare they return values
+- [ ] refactor
+- [ ] deferred errors
+- - [ ] 03 no casting of voidp
+- - [ ] 04 invalid return (return 0)
+- - [ ] 08  complete types for marshall
+- [ ] def-kernel
+- [ ] --ir-target
+- - [ ] spirv
+- - [ ] ptx?
+- [ ] --binary-gpu-target
+- [ ] test on BMG
+- [ ] metadata
+- [ ] hoisting
 
 
 QUESTIONS
@@ -357,9 +376,9 @@ be able to have AntiGravity (or comparable) build the compiler in any language (
 
 Issues and Shortcomings
 -----------------------
-- [ ] "negative tests".  The error files still not split out along the spine.
+- [x] "negative tests".  The error files still not split out along the spine.
 - - [ ] exactly one failure per file seems suboptimal. unpleasant.
-- - [ ] it'd be nice to declare the expected error right with the test.  Sort of like llvm-lit.  
+- - [x] it'd be nice to declare the expected error right with the test.  Sort of like llvm-lit.  
 - - [ ] llvm-lit does warnings as well as errors.   a bit brittle though.
 
 - [ ] flags. no way to capture WHEN any particular flag should be developed.
