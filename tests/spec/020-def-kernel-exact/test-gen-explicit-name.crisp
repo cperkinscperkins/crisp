@@ -1,0 +1,24 @@
+
+;; Verification that explicit naming of generated kernels works
+
+;; Verification that explicit naming of generated kernels works
+
+(with-template-type (T)
+  (def-kernel-exact my_templated_kernel (val)
+    (declare #'(T => nil))
+    (return)))
+
+;; 1. Generate with explicit name via string
+(gen-my_templated_kernel int "MY_CUSTOM_KERNEL_INT")
+
+;; 2. Generate with explicit name via symbol
+(gen-my_templated_kernel float my_custom_kernel_float)
+
+
+;; 3. Verify they exist by calling them from another kernel
+;;    If they weren't generated with these exact names, LLVM would fail to find them.
+(def-kernel-exact verification_caller ()
+  (declare #'(=> nil))
+  (my_custom_kernel_int 10)
+  (my_custom_kernel_float 20.0)
+  (return))
