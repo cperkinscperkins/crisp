@@ -30,6 +30,16 @@
 (def-binary-op-analyzer analyze-mul-expression make-semantic-mul "*")
 (def-binary-op-analyzer analyze-div-expression make-semantic-div "/")
 
+(defmacro def-comparison-analyzer (name node-constructor op-string)
+  `(defun ,name (expr env location)
+     ,(format nil "Analyzes a `(~a ...)` expression." op-string)
+     (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
+            (right-node (analyze-expression (third expr) env (append location '(2)))))
+       ;; We intentionally do not enforce strict numeric types here yet,
+       ;; allowing for potential future pointer comparisons etc.
+       ;; Result is always INT (boolean 0/1).
+       (,node-constructor :type 'int :left-arg left-node :right-arg right-node :source-location location))))
+
 (defun try-constant-fold (node)
   "Attempts to reduce a semantic node to a semantic-literal if possible."
   (typecase node
@@ -83,35 +93,12 @@
            node)))
     (t node)))
 
-(defun analyze-lt-expression (expr env location)
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2)))))
-    (make-semantic-lt :type 'int :left-arg left-node :right-arg right-node :source-location location)))
-
-(defun analyze-gt-expression (expr env location)
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2)))))
-    (make-semantic-gt :type 'int :left-arg left-node :right-arg right-node :source-location location)))
-
-(defun analyze-le-expression (expr env location)
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2)))))
-    (make-semantic-le :type 'int :left-arg left-node :right-arg right-node :source-location location)))
-
-(defun analyze-ge-expression (expr env location)
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2)))))
-    (make-semantic-ge :type 'int :left-arg left-node :right-arg right-node :source-location location)))
-
-(defun analyze-eq-expression (expr env location)
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2)))))
-    (make-semantic-eq :type 'int :left-arg left-node :right-arg right-node :source-location location)))
-
-(defun analyze-neq-expression (expr env location)
-  (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-         (right-node (analyze-expression (third expr) env (append location '(2)))))
-    (make-semantic-neq :type 'int :left-arg left-node :right-arg right-node :source-location location)))
+(def-comparison-analyzer analyze-lt-expression make-semantic-lt "<")
+(def-comparison-analyzer analyze-gt-expression make-semantic-gt ">")
+(def-comparison-analyzer analyze-le-expression make-semantic-le "<=")
+(def-comparison-analyzer analyze-ge-expression make-semantic-ge ">=")
+(def-comparison-analyzer analyze-eq-expression make-semantic-eq "=")
+(def-comparison-analyzer analyze-neq-expression make-semantic-neq "!=")
 
 (defun analyze-inc!-expression (expr env location)
   (declare (ignore expr env location))
