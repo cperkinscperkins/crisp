@@ -190,7 +190,6 @@ This supports overloading templates by arity or other factors.")
 
   (cl:let ((base (if (consp spec) (cl:first spec) spec))
            (args (if (consp spec) (rest spec) nil)))
-    (log:info "CANONICALIZE: ~s base: ~s aliases: ~a" spec base (alexandria:hash-table-keys *crisp-template-aliases*))
     (cl:cond
       ((symbolp base)
        ;; 1. Check Template Aliases (def-type)
@@ -238,7 +237,7 @@ This supports overloading templates by arity or other factors.")
 
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, handling template struct canonicalization."
-  (log:debug "types-equivalent-p: ~s vs ~s" t1 t2)
+
   (cl:cond
     ((equal t1 t2) t)
     ;; Treat VOID and NIL as equivalent return types
@@ -274,13 +273,10 @@ This supports overloading templates by arity or other factors.")
 
             ;; Now check mangled name
             (cl:let ((mangled (mangle-template-struct-name base-type params)))
-              (log:debug "types-equivalent-p: mangled=~s vs t2=~s" mangled t2)
-              (log:debug "  packages: ~s vs ~s" (symbol-package mangled) (symbol-package t2))
               (cl:cond
                 ((eq mangled t2) t)
                 ;; Also check string equality as fallback for package issues
                 ((string-equal (symbol-name mangled) (symbol-name t2))
-                 (log:warn "types-equivalent-p: Matched by string, potential package mismatch: ~a vs ~a" mangled t2)
                  t)
                 (t nil))))
            nil)))

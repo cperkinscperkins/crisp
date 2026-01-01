@@ -472,7 +472,6 @@
                            ;; Ensure all template parameters were inferred
                            (let ((concrete-types (loop for p in params
                                                        collect (gethash p inference-map))))
-                             (log:info "try-infer: concrete-types = ~a" concrete-types)
                              (if (every #'identity concrete-types)
                                  (list (list tmpl concrete-types)) ;; Return pair!
                                  nil)))))))
@@ -555,5 +554,7 @@
                                          ;; Fallback: Eval it (e.g. top-level macro expansion analysis)
                                          (eval form))))
 
-    ;; Return just the call to the wrapper
-    `(,wrapper-name ,@ctor-args)))
+    ;; Return just the call to the wrapper IF args provided, else nil
+    (if ctor-args
+        `(,wrapper-name ,@ctor-args)
+        nil)))

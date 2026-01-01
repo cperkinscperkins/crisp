@@ -8,7 +8,7 @@
 
 (def-function explicit-instantiation (t-l b-r)
     (declare #'((point int) (point int) => (rect int)))
-    ;; (gen-rect int)
+    (gen-rect int)
     (make-rect :p1 t-l :p2 b-r))
 
 (def-function implicit-instantiation (t-l b-r)

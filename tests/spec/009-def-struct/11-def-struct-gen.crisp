@@ -11,7 +11,7 @@
 ;;        avenue for getting around inference failure
 
 ;; ---------- top level gen ---------------
-;; (gen-point long)
+(gen-point long)
 
 (def-function top-gen (xl yl)
     (declare #'( long long => (point int)))
@@ -23,7 +23,7 @@
 ;; ----------- gen in scope ------------------
 (def-function scoped-gen (xf yf)
     (declare #'( float float => (point int)))
-    ;; (gen-point float)
+    (gen-point float)
     (let ((float-point (make-point :x xf :y yf)))
         (make-point :x (floor (x~ float-point))
                     :y (floor (y~ float-point)))))
