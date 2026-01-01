@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "reasonable error message"
+;; CHECK-FAIL: "Kernels cannot declare they return values."
 
 ;; kernels cannot declare they return values 
 (def-kernel-exact too_fancy (a b)

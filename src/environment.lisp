@@ -238,11 +238,25 @@
 
           ;; Standard Function Registration (Eager)
           (let* ((param-types (mapcar #'parameter-def-type env))
+                 ;; --- KERNEL VALIDATION ---
+                 (is-entry-point (loop for f in declare-forms
+                                         thereis (loop for decl-spec in (rest f)
+                                                         thereis (and (consp decl-spec)
+                                                                      (string-equal (first decl-spec) "ENTRY-POINT")))))
+                 (_ (when (and is-entry-point return-types)
+                          (let ((non-void-types (remove-if (lambda (x)
+                                                             (or (null x)
+                                                                 (and (symbolp x) (string-equal x "VOID"))))
+                                                    return-types)))
+                            (when non-void-types
+                                  (error "Kernels cannot declare they return values. Found: ~a. Kernels must return void (nil)." return-types)))))
+
                  (sig (make-function-signature
                        :name name
                        :parameters param-types
                        :return-types return-types
                        :source-location location)))
+            (declare (ignore _))
             ;; Append to existing signatures
             (setf (gethash name *function-table*)
               (append (gethash name *function-table*) (list sig))))))))

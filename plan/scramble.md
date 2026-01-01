@@ -283,7 +283,7 @@ Debugging
 Kernels
 - [x] def-kernel-exact
 - [x] gen-some_kernel T "name"
-- [ ] error messages
+- [x] error messages
 - - 06 - kernels can't declare they return values
 - [ ] refactor
 - [ ] deferred errors
