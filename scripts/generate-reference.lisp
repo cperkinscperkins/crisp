@@ -75,24 +75,29 @@
   (format stream "## File: `~a`~%~%" (uiop:native-namestring file))
 
   (with-open-file (in file :direction :input)
-    (loop for form = (read in nil :eof)
-          until (eq form :eof)
-          do
-            (let ((info (extract-def-info form)))
-              (unless (eq (getf info :type) :skip)
-                (cond
-                 ((eq (getf info :type) :other)
-                   ;; Maybe just log small note?
-                   ;; (format stream "- *Top-level form: ~a*~%" (getf info :name))
-                   nil)
-                 (t
-                   (format stream "### ~a `~a`~%" (getf info :type) (getf info :name))
-                   (when (getf info :args)
-                         (format stream "- **Args**: `~a`~%" (getf info :args)))
-                   (when (getf info :docstring)
-                         (format stream "~%  > ~a~%~%"
-                           (uiop:symbol-call :cl-ppcre :regex-replace-all "\\n" (getf info :docstring) "  > ")))
-                   (format stream "~%---~%"))))))))
+    (loop
+     (let ((form (handler-case (read in nil :eof)
+                   (error (e)
+                     (format t "WARNING: Error reading ~a: ~a. Skipping rest of file.~%" file e)
+                     :read-error))))
+       (when (or (eq form :eof) (eq form :read-error))
+             (return))
+
+       (let ((info (extract-def-info form)))
+         (unless (eq (getf info :type) :skip)
+           (cond
+            ((eq (getf info :type) :other)
+              ;; Maybe just log small note?
+              ;; (format stream "- *Top-level form: ~a*~%" (getf info :name))
+              nil)
+            (t
+              (format stream "### ~a `~a`~%" (getf info :type) (getf info :name))
+              (when (getf info :args)
+                    (format stream "- **Args**: `~a`~%" (getf info :args)))
+              (when (getf info :docstring)
+                    (format stream "~%  > ~a~%~%"
+                      (uiop:symbol-call :cl-ppcre :regex-replace-all "\\n" (getf info :docstring) "  > ")))
+              (format stream "~%---~%")))))))))
 
 (defun main ()
   (load-project)
@@ -107,17 +112,13 @@
       (uiop:symbol-call :local-time :format-timestring nil
         (uiop:symbol-call :local-time :now)))
 
-    (let* ((sys (asdf:find-system "crisp"))
-           ;; Getting components in order.
-           ;; For a simple :serial t system, this usually works.
-           ;; We filter for :file components and construct full path.
-           (components (asdf:component-children sys)))
+    (let* ((files (directory "src/**/*.lisp")))
+      ;; Sort files for deterministic output
+      (setf files (sort files #'string< :key #'namestring))
 
-      (dolist (c components)
-        (when (typep c 'asdf:cl-source-file)
-              (let ((path (asdf:component-pathname c)))
-                (format t "Processing ~a...~%" path)
-                (process-file path stream))))))
+      (dolist (path files)
+        (format t "Processing ~a...~%" path)
+        (process-file path stream))))
 
   (format t "~&Done. Written to docs/reference.md~%")
   (uiop:quit 0))
