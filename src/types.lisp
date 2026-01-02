@@ -331,6 +331,7 @@ This supports overloading templates by arity or other factors.")
       ((gethash type-spec *crisp-structs*) t)
       ((gethash type-spec *crisp-enums*) t)
       ((gethash type-spec *function-table*) t)
+      ((member type-spec '(keyword symbol quote)) t)
       (t
        (log:debug "valid-basic-type-p CHECK FAILED for: ~s (pkg: ~a)" type-spec
                   (if (symbolp type-spec) (package-name (symbol-package type-spec)) "N/A"))
@@ -435,6 +436,11 @@ This supports overloading templates by arity or other factors.")
 
     ;; Enumerations (map to i32)
     ((and (symbolp type-spec) (gethash type-spec *crisp-enums*))
+     (llvm-int32-type))
+
+    ;; Keyword/Symbol/Quote (map to i32) - Handle Symbol and List forms
+    ((or (member type-spec '(keyword symbol quote))
+         (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
      (llvm-int32-type))
 
     ;; Parameterized Structs (e.g. (POINT INT)) or Wrapper/Prop types (e.g. (INT) or (PANTS :COLOR :RED))
