@@ -55,7 +55,9 @@ This supports overloading templates by arity or other factors.")
 (defvar *current-di-builder* nil)
 (defvar *current-di-compile-unit* nil)
 (defvar *current-location-map* nil)
+(defvar *current-location-map* nil)
 (defvar *allow-nested-def-function* nil)
+(defvar *current-function-declarations* nil "Function declarations for current function being compiled.")
 
 
 ;; Type System Globals
@@ -181,6 +183,7 @@ This supports overloading templates by arity or other factors.")
                        (t spec)))))
            spec)))
     (t spec)))
+
 
 (defun canonicalize-type-specifier (spec)
   "Canonicalizes type specifiers."
