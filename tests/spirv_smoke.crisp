@@ -1,0 +1,4 @@
+(def-kernel smoke-test ((c (cell int)))
+  (declare (local-size 64 1 1))
+  (set! (~ c) 42)
+  (return))

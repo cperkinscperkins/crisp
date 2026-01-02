@@ -33,6 +33,7 @@
    #:llvm-get-type-kind
    #:llvm-print-type-to-string
    #:llvm-pointer-type
+   #:llvm-get-pointer-address-space
    #:llvm-size-of
    #:llvm-half-type #:llvm-bfloat-type #:llvm-float-type #:llvm-double-type
    #:llvm-void-type
@@ -110,7 +111,9 @@
    #:llvm-build-ptr-to-int
    #:llvm-build-int-to-ptr
    #:llvm-size-of
+   #:llvm-build-int-to-ptr
    #:llvm-build-bit-cast
+   #:llvm-build-addrspace-cast
    ;; DWARF Debug Info
    #:llvm-create-di-builder
    #:llvm-di-builder-finalize
@@ -165,6 +168,7 @@
    #:initialize-compiler
    #:initialize-expression-analyzers
    #:initialize-templates
+   #:compile-to-spirv ;; <--- NEW
 
    ;; laungage symbols
    #:def-function
@@ -205,6 +209,7 @@
    #:return
    #:declare
    #:return-type
+   #:*target-backend* ;; <--- NEW
 
    ;; Built-in Types
    #:cell

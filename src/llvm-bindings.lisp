@@ -55,6 +55,9 @@
          (type :pointer)
          (address-space :unsigned-int))
 
+(defcfun ("LLVMGetPointerAddressSpace" llvm-get-pointer-address-space) :unsigned-int
+         (type :pointer))
+
 (defcfun ("LLVMSizeOf" llvm-size-of) :pointer
          (type :pointer))
 (defcfun ("LLVMInt64Type" llvm-int64-type) :pointer)
@@ -366,6 +369,12 @@
          (dest-ty :pointer)
          (name :string))
 
+(defcfun ("LLVMBuildAddrSpaceCast" llvm-build-addrspace-cast) :pointer
+         (builder :pointer)
+         (val :pointer)
+         (dest-ty :pointer)
+         (name :string))
+
 (defcfun ("LLVMBuildStructGEP" llvm-build-struct-gep) :pointer
          (builder :pointer)
          (ptr :pointer)
@@ -566,3 +575,28 @@
               "Sets the debug location for the given instruction."
               (inst :pointer)
               (loc :pointer))
+
+
+;; --- Generic Metadata (for specific annotations like kernel args) ---
+
+(defcfun ("LLVMGlobalSetMetadata" llvm-global-set-metadata) :void
+         "Sets a metadata attachment to a global value (e.g. Function)."
+         (global :pointer)
+         (kind :unsigned-int)
+         (md :pointer))
+
+(defcfun ("LLVMGetMDKindIDInContext" llvm-get-md-kind-id-in-context) :unsigned-int
+         "Obtains the ID for a metadata kind (e.g. 'kernel_arg_addr_space')."
+         (context :pointer)
+         (name :string)
+         (slen :unsigned-int))
+
+(defcfun ("LLVMMDNodeInContext2" llvm-md-node-in-context2) :pointer
+         "Creates a metadata node in the context."
+         (context :pointer)
+         (mds :pointer) ; Array of LLVMMetadataRef
+         (count :unsigned-int))
+
+(defcfun ("LLVMValueAsMetadata" llvm-value-as-metadata) :pointer
+         "Wraps a Value (like a ConstantInt) as Metadata."
+         (val :pointer))

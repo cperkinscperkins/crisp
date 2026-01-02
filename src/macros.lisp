@@ -388,7 +388,7 @@
       (eval code))
 
     (let ((result `(,constructor-name
-                     :parent (make-storage :address (as c-pointer ,ptr) :byte-size ,byte-size)
+                     :parent (make-storage :address (as (c-pointer :address-space :global) ,ptr) :byte-size ,byte-size)
                      :offset ,offset)))
       (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
       result)))
