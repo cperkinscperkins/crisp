@@ -289,19 +289,16 @@ Kernels
 - [ ] deferred errors
 - - [x] 03 no casting of voidp
 - - [x] 04 invalid return (return 0)
-- - [ ] 08  complete types for marshall
+- - [ ] 08  complete types for marshall  <-- reoprioritize this highly
 - [x] def-kernel
 - [ ] --ir-target
-- - [ ] llvm-ir (supported via compilation, add flag)
+- - [ ] llvm-ir
 - - [ ] spirv
-- - - [ ] Fix Address Space handling in codegen (Global=1)
-- - - [ ] Implement tool invocation:
-- - - - `clang -cc1 -triple spir64-unknown-unknown -emit-llvm-bc -x ir IN.ll -o TEMP.bc`
-- - - - `llvm-spirv TEMP.bc -o OUT.spv`
 - - [ ] ptx?
-- [ ] --binary-gpu-target (ocloc invocation?)
-- [ ] metadata (kernel arg address spaces)
-- [ ] hoisting (manual .cpp for now)
+- [ ] --binary-gpu-target
+- [ ] test on BMG
+- [ ] metadata
+- [ ] hoisting
 
 
 QUESTIONS

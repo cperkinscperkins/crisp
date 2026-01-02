@@ -1,0 +1,13 @@
+;; this is for testing spir-v generation
+;; ./bin/crisp-compile.exe  ./tests/spec/023-spirv/01-smoke.crisp --ir-target=spv
+
+(def-kernel smoke-test (c)
+  (declare #'((cell int :address-space :global :access :read-write)))
+  (set! (~ c) 42))
+
+#|
+(def-kernel smoke-test ((c (cell int)))
+  (declare (local-size 64 1 1))
+  (set! (~ c) 42)
+  (return))
+|#
