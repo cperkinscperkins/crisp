@@ -322,7 +322,8 @@
   (scan-for-carriers name body)
 
   ;; 2. Implicit Argument Handling
-  (let ((env (inject-implicit-arguments name explicit-env)))
+  (let ((env (inject-implicit-arguments name explicit-env))
+        (*current-function-declarations* declarations))
 
     ;; 3. Analyze Body and Validate Return Types
     (multiple-value-bind (body-nodes inferred-return-types)

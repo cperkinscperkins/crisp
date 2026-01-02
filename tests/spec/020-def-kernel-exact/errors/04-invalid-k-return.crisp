@@ -1,4 +1,5 @@
 
+;; CHECK-FAIL: "Invalid Return: Function declared to return VOID/NIL but returned a value."
 ;; this is forcing return nil.  maybe that's ok?  Think about it.
 
 (def-kernel-exact bad_kernel ()
