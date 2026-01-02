@@ -285,7 +285,7 @@ Kernels
 - [x] gen-some_kernel T "name"
 - [x] error messages
 - - 06 - kernels can't declare they return values
-- [ ] refactor
+- [x] refactor
 - [ ] deferred errors
 - - [ ] 03 no casting of voidp
 - - [ ] 04 invalid return (return 0)
