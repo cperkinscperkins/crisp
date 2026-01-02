@@ -44,12 +44,10 @@
            "-o" (namestring bc-file))
      :log-prefix "[SPIR-V] ")
 
-    ;; 3. llvm-spirv (BC -> SPV)
+    ;; 4. llvm-spirv (BC -> SPV)
     ;; Locate the tool in bin/
-    (let ((tool (merge-pathnames "bin/llvm-spirv.exe" *default-pathname-defaults*)))
-      (unless (probe-file tool)
-        ;; Fallback to non-exe for linux?
-        (setf tool (merge-pathnames "bin/llvm-spirv" *default-pathname-defaults*)))
+    (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-spirv.exe" "bin/llvm-spirv"))
+           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
 
       (unless (probe-file tool)
         (error "llvm-spirv tool not found in bin/"))
@@ -156,7 +154,6 @@
                                     (declare (crisp-system-generated))
                                     (return (sizeof To)))
                      '((cell To Addr Acc) => ulong)))
-
 
 ;; Helpers (Analysis Placeholder)
 ;; ==============================

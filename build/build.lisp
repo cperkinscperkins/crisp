@@ -33,7 +33,9 @@
   (if (probe-file src)
       (progn
        (format t ";   Copying ~a to bin/~%" tool-name)
-       (uiop:copy-file src dest))
+       (uiop:copy-file src dest)
+       (unless (uiop:os-windows-p)
+         (uiop:run-program (list "chmod" "+x" (namestring dest)))))
       (format t ";   WARNING: Tool ~a not found in tools/ directory.~%" tool-name)))
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
