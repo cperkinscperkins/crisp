@@ -1,3 +1,5 @@
+# powershell -ExecutionPolicy Bypass -File .\scripts\fix_BOM_all.ps1
+
 $files = Get-ChildItem "src/*.lisp"
 foreach ($file in $files) {
     $path = $file.FullName
