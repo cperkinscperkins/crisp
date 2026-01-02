@@ -32,6 +32,7 @@
 (load "tests/test-structs.lisp")
 (load "tests/test-struct-layout.lisp")
 (load "tests/test-runtime-checks.lisp")
+(load "tests/test-def-kernel.lisp")
 (unless (parachute:test :crisp.tests)
   (format *error-output* "~&~%*** Crisp CI Tests FAILED! ***~%")
   (uiop:quit 1))
