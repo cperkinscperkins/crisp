@@ -288,7 +288,7 @@ Kernels
 - [x] refactor
 - [ ] deferred errors
 - - [x] 03 no casting of voidp
-- - [ ] 04 invalid return (return 0)
+- - [x] 04 invalid return (return 0)
 - - [ ] 08  complete types for marshall
 - [ ] def-kernel
 - [ ] --ir-target

@@ -213,38 +213,65 @@
          (sig (if current-func (first (gethash current-func *function-table*)) nil))
          (declared-ret (if sig (function-signature-return-types sig) nil))
 
-         ;; Initialize return-types default
-         (return-types all-inferred-types))
+         ;; Check for invalid return (Deferred Error 04)
+         ;; If declared return is NIL (void), we cannot return values.
+         (is-kernel (member '(entry-point) *current-function-declarations* :test #'equal))
+         (invalid-return-p (and declared-ret
+                                (or (null declared-ret) (equal declared-ret '(nil)))
+                                value-nodes
+                                is-kernel
+                                (not (every (lambda (n)
+                                              (let ((t-spec (semantic-node-type n)))
+                                                (or (eq t-spec :void)
+                                                    (eq t-spec 'void)
+                                                    (equal t-spec '(void))
+                                                    (equal t-spec '(nil))
+                                                    (null t-spec))))
+                                         value-nodes)))))
 
-    ;; Truncation Logic
-    (when (and declared-ret (not (equal declared-ret '(nil))))
-          (let ((num-declared (length declared-ret))
-                (num-inferred (length all-inferred-types)))
+    (when invalid-return-p
+          ;; Only error if the value is NOT nil. (return nil) is allowed for void.
+          (let* ((node (first value-nodes))
+                 (is-explicit-nil (and (= (length value-nodes) 1)
+                                       (or (and (typep node 'semantic-literal)
+                                                (null (semantic-literal-value node)))
+                                           (and (typep node 'semantic-progn)
+                                                (equal (semantic-node-type node) '(nil))
+                                                (null (semantic-progn-body node)))))))
+            (unless is-explicit-nil
+              (error 'crisp-compiler-error :message (format nil "Invalid Return: Function declared to return VOID/NIL but returned a value. Declared: ~a" declared-ret) :source-location location))))
 
-            (when (> num-inferred num-declared)
-                  (log:info "Truncating return values for ~a. declared: ~a inferred: ~a" current-func declared-ret all-inferred-types)
-                  (let ((new-nodes '())
-                        (captured 0))
-                    (loop for node in value-nodes
-                          while (< captured num-declared)
-                          do (let* ((type (semantic-node-type node))
-                                    (is-mv (and (listp type) (not (valid-type-p type))))
-                                    (count (if is-mv (length type) 1)))
-                               (cond
-                                (is-mv
-                                  (loop for i from 0 below count
-                                        while (< captured num-declared)
-                                        do (push (make-semantic-extract-value :type (nth i type) :aggregate-node node :index i :source-location (semantic-node-source-location node)) new-nodes)
-                                          (incf captured)))
-                                (t
-                                  (push node new-nodes)
-                                  (incf captured)))))
-                    (setf value-nodes (nreverse new-nodes))
-                    (setf return-types declared-ret)))))
+    (let ((return-types all-inferred-types))
 
-    (make-semantic-explicit-return :type return-types
-                                   :value-nodes value-nodes
-                                   :source-location location)))
+      ;; Truncation Logic
+      (when (and declared-ret (not (equal declared-ret '(nil))))
+            (let ((num-declared (length declared-ret))
+                  (num-inferred (length all-inferred-types)))
+
+              (when (> num-inferred num-declared)
+                    (log:info "Truncating return values for ~a. declared: ~a inferred: ~a" current-func declared-ret all-inferred-types)
+                    (let ((new-nodes '())
+                          (captured 0))
+                      (loop for node in value-nodes
+                            while (< captured num-declared)
+                            do (let* ((type (semantic-node-type node))
+                                      (is-mv (and (listp type) (not (valid-type-p type))))
+                                      (count (if is-mv (length type) 1)))
+                                 (cond
+                                  (is-mv
+                                    (loop for i from 0 below count
+                                          while (< captured num-declared)
+                                          do (push (make-semantic-extract-value :type (nth i type) :aggregate-node node :index i :source-location (semantic-node-source-location node)) new-nodes)
+                                            (incf captured)))
+                                  (t
+                                    (push node new-nodes)
+                                    (incf captured)))))
+                      (setf value-nodes (nreverse new-nodes))
+                      (setf return-types declared-ret)))))
+
+      (make-semantic-explicit-return :type return-types
+                                     :value-nodes value-nodes
+                                     :source-location location))))
 
 (defun analyze-function-literal (expr env location)
   "Analyzes (function x) or #'(...)"
@@ -364,7 +391,6 @@
 
   ;; Return a void literal so it doesn't affect the expression value
   (make-semantic-literal :value-type 'void :value nil :source-location location))
-
 
 (defun analyze-template-instantiation (expr env location)
   "Analyzes a `(template-instantiation ...)` form, allowing nested def-functions."

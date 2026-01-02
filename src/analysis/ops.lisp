@@ -190,6 +190,7 @@
 
     ;; Deferred Error 03: No casting of voidp
     ;; (as voidp ...) is invalid because voidp is an opaque pointer locally, usually used for handles.
+
     (when (or (eq type-name 'voidp)
               (eq (crisp-type-category target-type) :void))
           (error 'crisp-compiler-error :message "Cannot cast to 'voidp'. Use a specific pointer type or handle." :source-location location))
