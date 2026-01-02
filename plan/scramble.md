@@ -290,8 +290,9 @@ Kernels
 - - [x] 03 no casting of voidp
 - - [x] 04 invalid return (return 0)
 - - [ ] 08  complete types for marshall
-- [ ] def-kernel
+- [x] def-kernel
 - [ ] --ir-target
+- - [ ] llvm-ir
 - - [ ] spirv
 - - [ ] ptx?
 - [ ] --binary-gpu-target

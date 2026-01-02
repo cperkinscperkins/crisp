@@ -10783,6 +10783,7 @@ to an IR (Intermediate Representation) file. One file per occurrence of the `--i
 
 | ID       | Extension |  Description       |
 |----------|-----------|--------------------|
+| `ll`     | `llvm-ir` | human readable LLVM-iR |
 | `ptx`    | `ptx`     | CUDA Parallel Thread Execution IR |
 | `spv`    | `spv`     | Khronos SPIR-V IR  |
 
