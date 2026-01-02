@@ -182,6 +182,7 @@ This supports overloading templates by arity or other factors.")
            spec)))
     (t spec)))
 
+
 (defun canonicalize-type-specifier (spec)
   "Canonicalizes type specifiers."
   ;; First, apply storage handle expansion

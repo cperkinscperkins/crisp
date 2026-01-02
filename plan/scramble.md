@@ -287,7 +287,7 @@ Kernels
 - - 06 - kernels can't declare they return values
 - [x] refactor
 - [ ] deferred errors
-- - [ ] 03 no casting of voidp
+- - [x] 03 no casting of voidp
 - - [ ] 04 invalid return (return 0)
 - - [ ] 08  complete types for marshall
 - [ ] def-kernel

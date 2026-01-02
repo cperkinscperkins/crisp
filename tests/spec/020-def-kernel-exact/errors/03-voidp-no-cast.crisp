@@ -1,5 +1,5 @@
 
-;;  "reasonable error message"
+;; CHECK-FAIL: "Cannot cast to 'voidp'"
 
 (def-type out-c (cell long :address-space :global :access :read-write))
 
