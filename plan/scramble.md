@@ -292,13 +292,16 @@ Kernels
 - - [ ] 08  complete types for marshall
 - [x] def-kernel
 - [ ] --ir-target
-- - [ ] llvm-ir
+- - [ ] llvm-ir (supported via compilation, add flag)
 - - [ ] spirv
+- - - [ ] Fix Address Space handling in codegen (Global=1)
+- - - [ ] Implement tool invocation:
+- - - - `clang -cc1 -triple spir64-unknown-unknown -emit-llvm-bc -x ir IN.ll -o TEMP.bc`
+- - - - `llvm-spirv TEMP.bc -o OUT.spv`
 - - [ ] ptx?
-- [ ] --binary-gpu-target
-- [ ] test on BMG
-- [ ] metadata
-- [ ] hoisting
+- [ ] --binary-gpu-target (ocloc invocation?)
+- [ ] metadata (kernel arg address spaces)
+- [ ] hoisting (manual .cpp for now)
 
 
 QUESTIONS

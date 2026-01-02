@@ -24,6 +24,18 @@
         (format t "~&; Deleting old executable: ~a~%" exe)
         (delete-file exe)))
 
+(format t "~&; Deploying Tools...~%")
+(let* ((tool-name (if (uiop:os-windows-p) "llvm-spirv-windows.exe" "llvm-spirv-linux"))
+       (dest-name (if (uiop:os-windows-p) "llvm-spirv.exe" "llvm-spirv"))
+       (src (merge-pathnames (format nil "tools/~a" tool-name) *default-pathname-defaults*))
+       (dest (merge-pathnames (format nil "bin/~a" dest-name) *default-pathname-defaults*)))
+
+  (if (probe-file src)
+      (progn
+       (format t ";   Copying ~a to bin/~%" tool-name)
+       (uiop:copy-file src dest))
+      (format t ";   WARNING: Tool ~a not found in tools/ directory.~%" tool-name)))
+
 ;; ql:quickload will find crisp.asd, see the dependencies,
 ;; download cffi, and then load crisp.
 ;; Force recompilation to ensure no stale FASLs with bad encodings persist

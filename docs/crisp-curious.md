@@ -9,3 +9,6 @@ Curious Things To Know About Crisp
 - all def-record based items lead to Architectural Scalar Replacement of Aggregates (SROA).  When anything based off def-record as passed as a function argument, in the LLVM-IR it gets exploded to the individual properties, each one passed as an argument, and implicitly reassembled by the callee.  
 - def-kernel-exact uses marshall-XXXXX functions to take individual parameters passed by the host to the kernel and "marshall-XXXX" them into Storage Handles (which are based on def-record)
 - def-kernel usually has Storage Handles are parameters, it gets macroexpanded into def-kernel-exact.
+- Crisp does not have the Common Lisp `let` or `let*`. It has its own `let` which is like `let*` except it supports multiple value bind directly.
+- Crisp leverages Common Lisp's macro support. Thus users can use defmacro and some Common Lisp forms to expand to Crisp forms. The supported Common Lisp forms are documented in defmacro-utils.md
+- Crisp also uses Common Lisp macros to expand some of its own forms (def-function and others) into semantic nodes.
