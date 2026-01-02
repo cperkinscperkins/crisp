@@ -403,47 +403,49 @@
 
       ;; Check if it's a struct template by inspecting the body
       (let* ((body (template-data-body tmpl))
-             (is-struct (and (listp body) (member (first body) '(def-struct def-record))))
-             (mangled-name (when is-struct
-                                 (crisp.compiler::mangle-template-struct-name name concrete-types))))
+             (is-struct (and (listp body) (member (first body) '(def-struct def-record)))))
 
         (if is-struct
-            ;; For Structs: Rename the struct to mangled name AND generate overload wrapper
-            (let* ((substituted-body (sublis substitutions (subst mangled-name name body)))
-                   ;; Extract members from SUBSTITUTED body: (def-struct MANGLED-NAME (mem concrete-type)...)
-                   (members (cddr substituted-body))
-                   (all-parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec members))
-                   ;; Filter out compile-time members for the generated wrapper signature
-                   (parsed-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) all-parsed-members))
-                   (param-names (mapcar #'first parsed-members))
-                   ;; Use a UNIQUE wrapper name to avoid LLVM collisions if multiple overloads are generated
-                   (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package name)))
-                   (constructor-alias (intern (format nil "MAKE-~a%DISPATCH" name) (symbol-package name)))
-                   (mangled-constructor (intern (format nil "MAKE-~a" mangled-name) (symbol-package name)))
-                   (keyword-args (loop for name in param-names
-                                       collect (intern (symbol-name name) :keyword)
-                                       collect name)))
-              `(progn
-                ,substituted-body
-                ;; Generate overload wrapper with UNIQUE name: (def-function make-point_float_wrapper ...)
-                (def-function ,wrapper-name ,parsed-members
-                              (declare (return-type ,mangled-name))
-                              (return (,mangled-constructor ,@keyword-args)))
-                ;; Register this wrapper as an overload for the generic constructor name (e.g. MAKE-POINT)
-                (eval-when (:compile-toplevel :load-toplevel :execute)
-                  (crisp.compiler::register-overload ',constructor-alias ',wrapper-name))))
+            (%instantiate-structure-template name body substitutions concrete-types)
+            (%instantiate-callable-template name body substitutions override-name))))))
 
-            ;; For Functions/Kernels: Substitute types and optionally rename
-            (let ((substituted-body (sublis substitutions body)))
-              (if override-name
-                  (let ((new-name (if (stringp override-name) (intern override-name (symbol-package name)) override-name)))
-                    (if (and (consp substituted-body)
-                             (member (first substituted-body) '(def-function def-kernel def-kernel-exact)))
-                        ;; Swap the name: (def-X OLD-NAME ...) -> (def-X NEW-NAME ...)
-                        `(progn ,(cons (first substituted-body) (cons new-name (cddr substituted-body))))
-                        ;; Fallback if body structure is unexpected
-                        `(progn ,substituted-body)))
-                  `(progn ,substituted-body))))))))
+(defun %instantiate-structure-template (name body substitutions concrete-types)
+  (let* ((mangled-name (crisp.compiler::mangle-template-struct-name name concrete-types))
+         (substituted-body (sublis substitutions (subst mangled-name name body)))
+         ;; Extract members from SUBSTITUTED body: (def-struct MANGLED-NAME (mem concrete-type)...)
+         (members (cddr substituted-body))
+         (all-parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec members))
+         ;; Filter out compile-time members for the generated wrapper signature
+         (parsed-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) all-parsed-members))
+         (param-names (mapcar #'first parsed-members))
+         ;; Use a UNIQUE wrapper name to avoid LLVM collisions if multiple overloads are generated
+         (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package name)))
+         (constructor-alias (intern (format nil "MAKE-~a%DISPATCH" name) (symbol-package name)))
+         (mangled-constructor (intern (format nil "MAKE-~a" mangled-name) (symbol-package name)))
+         (keyword-args (loop for name in param-names
+                             collect (intern (symbol-name name) :keyword)
+                             collect name)))
+    `(progn
+      ,substituted-body
+      ;; Generate overload wrapper with UNIQUE name: (def-function make-point_float_wrapper ...)
+      (def-function ,wrapper-name ,parsed-members
+                    (declare (return-type ,mangled-name))
+                    (return (,mangled-constructor ,@keyword-args)))
+      ;; Register this wrapper as an overload for the generic constructor name (e.g. MAKE-POINT)
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (crisp.compiler::register-overload ',constructor-alias ',wrapper-name)))))
+
+(defun %instantiate-callable-template (name body substitutions override-name)
+  (let ((substituted-body (sublis substitutions body)))
+    (if override-name
+        (let ((new-name (if (stringp override-name) (intern override-name (symbol-package name)) override-name)))
+          (if (and (consp substituted-body)
+                   (member (first substituted-body) '(def-function def-kernel def-kernel-exact)))
+              ;; Swap the name: (def-X OLD-NAME ...) -> (def-X NEW-NAME ...)
+              `(progn ,(cons (first substituted-body) (cons new-name (cddr substituted-body))))
+              ;; Fallback if body structure is unexpected
+              `(progn ,substituted-body)))
+        `(progn ,substituted-body))))
 
 (defun try-infer-template-types (name argument-types)
   "Attempts to infer template parameters for 'name' given 'argument-types'.

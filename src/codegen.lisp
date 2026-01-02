@@ -68,65 +68,25 @@
 (defun crisp-type-to-llvm-type (type-spec module)
   "Resolves a Crisp type specifier (simple or parameterized) to an LLVM type."
   (cond
-   ;; Simple type like 'int
-   ((symbolp type-spec)
-     (log:debug "Resolving symbol type: ~a" type-spec)
-     (when (null type-spec)
-           (error "Cannot resolve type to LLVM: NIL"))
-     ;; HARDCODED BYPASS
-     (when (eq type-spec 'voidp)
-           (return-from crisp-type-to-llvm-type
-                        (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 0)))
-     (when (eq type-spec 'int)
-           (return-from crisp-type-to-llvm-type
-                        (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module)))))
-     (when (eq type-spec 'long)
-           (return-from crisp-type-to-llvm-type
-                        (or *cached-int64-type* (llvm-int64-type-in-context (llvm-get-module-context module)))))
-     ;; KEYWORD -> Int32
-     (when (or (eq type-spec 'keyword) (eq type-spec 'symbol))
-           (return-from crisp-type-to-llvm-type
-                        (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module)))))
-     (resolve-type-to-llvm type-spec))
-   ;; Parameterized type like '(cell int)
-   ((listp type-spec)
-     (let ((base-type (first type-spec)))
-       (cond
-        ((null base-type) (llvm-void-type))
-        ((or (eq base-type :function-type) (eq base-type :function-literal))
-          ;; Functions are passed as opaque pointers (void* / i8*)
-          (llvm-pointer-type (llvm-int8-type) 0))
-        ;; Generic Parameterized Structs (e.g. CELL)
-        ((or (eq base-type 'cell) (string= (symbol-name base-type) "CELL") (gethash base-type *template-registry*))
-          (let* ((expanded (if (string= (symbol-name base-type) "CELL") (expand-storage-handle-type-specifier type-spec) type-spec))
-                 (mangled (mangle-template-struct-name (first expanded) (rest expanded))))
-            (resolve-type-to-llvm mangled)))
-        ;; We try to mangle it and look it up.
-        (t
-          (let* ((pkg (symbol-package base-type))
-                 (pkg-name (package-name pkg))
-                 (mangled-str (format nil "~a_~{~a~^_~}" base-type (rest type-spec)))
-                 (mangled-name (if (or (string= pkg-name "COMMON-LISP") (string= pkg-name "KEYWORD"))
-                                   (intern mangled-str *package*)
-                                   (intern mangled-str pkg))))
-            (cond
-             ((or (gethash mangled-name *crisp-structs*) (find-struct-definition-by-name mangled-name))
-               (resolve-type-to-llvm mangled-name))
-             ;; Handle built-in parameterized aliases (KEYWORD args) -> Just i32
-             ((or (eq base-type 'keyword) (eq base-type 'symbol) (eq base-type 'quote))
-               (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
-             ;; Fallback: If mangling fails, check if the base type itself is valid.
-             ;; This supports Incomplete Types / Composite Types with Props (e.g. (PANTS :COLOR :RED))
-             ;; where the type is just PANTS.
-             ((or (gethash base-type *crisp-structs*)
-                  (gethash base-type *crisp-types*))
-               (resolve-type-to-llvm base-type))
-             (t
-               (error "Internal codegen error: Unknown parameterized type ~a (pkg: ~a). Mangled: ~a"
-                 base-type
-                 (package-name (symbol-package base-type))
-                 mangled-name))))))))
-   (t (error "Internal codegen error: Invalid type specifier ~a" type-spec))))
+   ;; Function Types (Passed as opaque pointers)
+   ((and (listp type-spec)
+         (or (eq (first type-spec) :function-type)
+             (eq (first type-spec) :function-literal)))
+     (llvm-pointer-type (llvm-int8-type) 0))
+
+   ;; Context-Aware Optimizations (Optional, but preserves existing behavior)
+   ((eq type-spec 'int)
+     (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
+   ((eq type-spec 'long)
+     (or *cached-int64-type* (llvm-int64-type-in-context (llvm-get-module-context module))))
+   ((or (eq type-spec 'keyword) (eq type-spec 'symbol))
+     (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
+   ((eq type-spec 'voidp)
+     (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 0))
+
+   ;; Delegate everything else to the central type resolver
+   (t
+     (resolve-type-to-llvm type-spec))))
 
 (defun get-expanded-types (type-spec module)
   "Returns a list of LLVM types for a given Crisp type spec.
@@ -450,22 +410,38 @@
                                  (llvm-build-store builder cell-1 cell-handle)
                                  cell-handle)))
                            (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
-                      ;; Handle simple types
-                      ((symbolp type-spec)
-                        (let ((crisp-type (gethash type-spec *crisp-types*)))
+                      ;; Handle simple or singleton types
+                      ((or (symbolp type-spec)
+                           (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
+
+                        (let ((type-sym (if (consp type-spec) (first type-spec) type-spec)))
                           (cond
-                           ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
-                             (if (zerop value)
-                                 (llvm-const-null llvm-type)
-                                 ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
-                                 ;; Generate I64 constant and Truncate if needed.
-                                 (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
-                                   (if (types-equivalent-p llvm-type (llvm-int64-type))
-                                       val-i64
-                                       (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
-                           ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
-                           ((eq (crisp-type-category crisp-type) :void) nil)
-                           (t (error "Codegen for literal of unknown type category: ~a" type-spec)))))
+                           ;; Check if it is an enum or keyword/symbol
+                           ((or (gethash type-spec *crisp-enums*)
+                                (member type-sym '(keyword symbol quote)))
+                             (let ((val (resolve-keyword-constant value))
+                                   (target-type (or llvm-type (llvm-int32-type))))
+                               ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
+                               (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) val) nil)))
+                                 (llvm-build-trunc builder val-i64 target-type "enum_trunc"))))
+
+                           (t
+                             (let ((crisp-type (gethash type-sym *crisp-types*)))
+                               (unless crisp-type
+                                 (error "Codegen: Literal type ~a not found in *crisp-types* or *crisp-enums*" type-spec))
+                               (cond
+                                ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
+                                  (if (zerop value)
+                                      (llvm-const-null llvm-type)
+                                      ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
+                                      ;; Generate I64 constant and Truncate if needed.
+                                      (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
+                                        (if (= (crisp-type-size crisp-type) 64)
+                                            val-i64
+                                            (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
+                                ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
+                                ((eq (crisp-type-category crisp-type) :void) nil)
+                                (t (error "Codegen for literal of unknown type category: ~a" type-spec))))))))
                       (t (error "Codegen not implemented for literal of type ~a" type-spec))))
          (di-location (when (and di-builder di-scope location-map)
                             (let* ((loc (semantic-node-source-location node))
@@ -773,7 +749,7 @@
 
   (let* ((sig (semantic-call-signature node))
          (return-type-names (function-signature-return-types sig))
-         (has-return-value (not (null (remove 'nil return-type-names))))
+
          (llvm-return-type (get-llvm-return-type module return-type-names))
 
          ;; 3. Build the LLVM function *type* (the signature)

@@ -28,7 +28,10 @@
                                              (:file "src/enums")
                                              (:file "src/environment")
                                              (:file "src/type-checker")
-                                             (:file "src/analysis")
+                                             (:file "src/analysis/core")
+                                             (:file "src/analysis/ops")
+                                             (:file "src/analysis/control")
+                                             (:file "src/analysis/structs")
                                              (:file "src/codegen") ; 7. Uses compiler, defines codegen
                                              (:file "src/templates") ; 8. with-template-type macro
                                              (:file "src/main")) ; 9. Uses compiler, defines main
