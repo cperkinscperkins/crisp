@@ -1,0 +1,8 @@
+
+
+(def-kernel cell_add (threshold A B &out C)
+    (declare #'(long in-c in-c &out out-c))
+    (when (> threshold 255)
+        (let ((a (~ A))
+            (b (~ B)))
+        (set! (~ C) (+ a b)))))
