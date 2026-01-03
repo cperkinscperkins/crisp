@@ -1,6 +1,7 @@
 ;;
-;;  "reasonable error mesage"
+;; CHECK-FAIL: "def-kernel-exact parameter 'C' cannot be a storage handle type"
 ;;
+
 
 
 ;; def-kernel-exact DOES NOT accept composite arguments, like Storage Handles (cell/vector/matrix/tensor) 

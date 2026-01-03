@@ -1,0 +1,24 @@
+;; CHECK-FAIL: "Struct constructor for V-POINT missing required compile-time argument: :K-MODE"
+;; "reasonable error message"
+
+;; it's fine for the _type_ expression of a record, when used 
+;; as a parameter or return type, to be incomplete.
+;; but when we go to _make-_ it, that compile-time information needs to be known.
+
+(def-record v-point (x int) (y int) (r-mode int :c-t 0) (k-mode int :c-t))
+
+;; this function makes a vpoint and provides everything but an :r-mode.
+;; but that's fine, because :r-mode has a default. 
+(def-function fancy-ok (xa ya)
+    (declare #'(int int => v-point))
+    (let ((vp (make-v-point :x xa :y ya :k-mode 20))) 
+       ;; do-something fancy 
+        vp))
+
+;; this function is like the one above, but it skips :k-mode.
+;; which does NOT have a default, therefore this one should emit an error.
+(def-function fancy-bad (xa ya)
+    (declare #'(int int => v-point))
+    (let ((vp (make-v-point :x xa :y ya :r-mode -1)))  ;; k-mode not provided. error.
+       ;; do-something fancy 
+        vp))

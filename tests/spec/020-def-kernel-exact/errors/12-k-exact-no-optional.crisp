@@ -1,5 +1,5 @@
 ;;
-;; "not unreasonable error message"
+;; CHECK-FAIL: "Kernels (def-kernel/def-kernel-exact) do not support &optional or &key parameters."
 ;; 
 
 ;; neither def-kernel or def-kernel-exact support &optional or &key

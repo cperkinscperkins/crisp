@@ -290,12 +290,12 @@ Kernels
 - - [x] 03 no casting of voidp
 - - [x] 04 invalid return (return 0)
 - - [ ] 08  complete types for marshall  <-- reoprioritize this highly
-- - [ ] all the def-kernel-exact errors need to be revived for def-kernel.
-- - [ ] and I should probably just write the damn def-kernel transformation macro
+- - [x] all the def-kernel-exact errors need to be revived for def-kernel.
+- - [x] and I should probably just write the damn def-kernel transformation macro
 - [x] def-kernel
-- [ ] --ir-target
+- [x] --ir-target
 - - [ ] llvm-ir
-- - [ ] spirv
+- - [x] spirv
 - - [ ] ptx?
 - [ ] --binary-gpu-target
 - [ ] test on BMG
