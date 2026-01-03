@@ -37,6 +37,9 @@
 (defcfun ("LLVMPrintTypeToString" llvm-print-type-to-string) :string
          (type :pointer))
 
+(defcfun ("LLVMPrintValueToString" llvm-print-value-to-string) :string
+         (val :pointer))
+
 ;; --- Types ---
 (defcfun ("LLVMInt32TypeInContext" llvm-int32-type-in-context) :pointer
          (context :pointer))

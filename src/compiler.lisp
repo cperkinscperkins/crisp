@@ -29,7 +29,7 @@
          (name (pathname-name output-path))
          (ll-file (merge-pathnames (format nil "~a.temp.ll" name) base-path))
          (bc-file (merge-pathnames (format nil "~a.temp.bc" name) base-path))
-         (spv-file output-path)) <!-- Force output path -->
+         (spv-file output-path))
 
     ;; 1. Write Temporary .ll file
     (let ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module))))

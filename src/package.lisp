@@ -25,6 +25,7 @@
    #:llvm-dispose-message
    #:llvm-get-module-context
    #:llvm-type-of
+   #:llvm-print-value-to-string
    ;; Types
    #:llvm-void-type
    #:llvm-int32-type-in-context #:llvm-int64-type-in-context
