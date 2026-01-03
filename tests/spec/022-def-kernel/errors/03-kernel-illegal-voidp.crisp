@@ -1,0 +1,10 @@
+;;
+;; "not unreasonable error message"
+;; 
+
+;; only def-kernel-exact can take voidp arguments.  def-kernel cannot, and will need 
+;; custom screening for them
+
+(def-kernel illegal_voidp (vp)
+    (declare #'(voidp => nil)) ;; <-- nyet
+    (return))

@@ -1,0 +1,14 @@
+
+(with-template-type (T)
+    (def-type in-c (cell T :address-space :global :access :read-only))
+    (def-type out-c (cell T :address-space :global :access :read-write))
+
+    (def-kernel cell_add (threshold A B &out C)
+        (declare #'(long (in-c T) (in-c T) &out (out-c T)))
+        (when (> threshold (as-long 255))
+            (let ((a (~ A))
+                (b (~ B)))
+            (set! (~ C) (+ a b))))))
+
+(gen-cell_add int "cell_add_i")
+(gen-cell_add float "cell_add_f")
