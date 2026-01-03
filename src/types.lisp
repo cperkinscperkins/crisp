@@ -426,15 +426,37 @@ This supports overloading templates by arity or other factors.")
 ;; LLVM Resolution
 ;; ===============
 
+(defvar *target-backend* :generic "The target backend for the current compilation pass.")
+
 (defun encode-address-space (as)
-  "Maps a keyword address space to an integer."
-  (case as
-    (:private 0)
-    (:global 1)
-    (:constant 2)
-    (:local 3)
-    (:generic 4)
-    (t (if (integerp as) as 0))))
+  "Maps a keyword address space to an integer, sensitive to *target-backend*."
+  (cl:let ((backend (if (boundp '*target-backend*) *target-backend* :generic)))
+    (case backend
+      (:spirv
+       (case as
+         (:private 0)
+         (:global 1)
+         (:constant 2)
+         (:local 3)
+         (:generic 4)
+         (t (if (integerp as) as 0))))
+      (:ptx
+       (case as
+         (:generic 0)
+         (:global 1)
+         (:shared 3)
+         (:local 3) ;; In PTX shared is 3, but some implementations map local there? No, local is usually 5.
+         (:constant 4)
+         (:private 5)
+         (t (if (integerp as) as 0))))
+      (t ;; Default / Generic (matches SPIR-V for backwards compatibility)
+        (case as
+          (:private 0)
+          (:global 1)
+          (:constant 2)
+          (:local 3)
+          (:generic 4)
+          (t (if (integerp as) as 0)))))))
 
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference."

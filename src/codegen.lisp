@@ -123,8 +123,8 @@
              (is-global-storage-handle-p type-spec))
         (mapcar (lambda (ty)
                   (if (llvm-type-kind-is-pointer? ty)
-                      ;; Upgrade to Address Space 1 (Global)
-                      (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 1)
+                      ;; Upgrade to Global Address Space
+                      (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) (encode-address-space :global))
                       ty))
             expanded)
         expanded)))

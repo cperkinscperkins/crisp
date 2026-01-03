@@ -1,0 +1,9 @@
+;;
+;; "not unreasonable error message"
+;; 
+
+;; neither def-kernel or def-kernel-exact support &optional or &key
+
+(def-kernel-exact optional_unsupported (a &optional b)
+    (declare #'(int &optional int => nil))
+    nil)

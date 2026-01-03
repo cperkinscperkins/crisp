@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "requires C-style identifiers"
+
+;; def-kernel should be macroexpanded to def-kernel-exact.  
+;; we should get C-style identifier error  message 
+
+(def-kernel lisp-style-name ()
+    (declare #'(=> nil))
+)

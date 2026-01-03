@@ -162,32 +162,6 @@
         ',body-forms ;  '((+ a b))
         ,source-location))))
 
-(defmacro def-kernel (name params &rest body)
-  "Defines a GPU Kernel (Entry Point).
-   
-   Constraint: All parameter types MUST be complete.
-   Incomplete types (missing compile-time properties) are forbidden at the kernel boundary
-   because the host must know the exact layout to marshall arguments."
-
-  ;; 1. Validate C-Style Name (no dashes)
-  (let ((name-str (symbol-name name)))
-    (when (find #\- name-str)
-          (error "Invalid Kernel Name '~a': Kernels requires C-style identifiers (no dashes)." name)))
-
-  ;; 2. Validate Parameter Completeness
-  (dolist (param params)
-    (when (listp param)
-          (let ((p-name (first param))
-                (p-type (second param)))
-            (when (incomplete-type-p p-type)
-                  (error "Invalid Kernel Parameter '~a' of type '~a': Kernel parameters must be COMPLETE types. Compile-time properties cannot be unspecified at the kernel boundary." p-name p-type)))))
-
-  ;; 3. Expand to def-function with entry-point declaration
-  `(def-function ,name ,params
-                 (declare (entry-point)) ;; Mark as kernel for Codegen
-                 ,@body
-                 (return)))
-
 (defmacro def-kernel-exact (name params &rest body)
   "Defines a GPU Kernel with exact ABI control (Raw Scalars).
    - Name must be valid C identifier (no dashes).
@@ -204,6 +178,146 @@
                  (declare (entry-point))
                  ,@body
                  (return)))
+
+(defun %storage-handle-type-p (type-spec)
+  "Returns T if the type-spec refers to a storage handle (cell, tensor, etc.)."
+  (let ((canonical (canonicalize-type-specifier type-spec)))
+    (let ((base (if (consp canonical) (first canonical) canonical)))
+      (and (symbolp base)
+           (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)))))
+
+(defun %explode-kernel-args (params signature)
+  "Explodes storage handle parameters into raw scalars.
+   Returns (VALUES exploded-params exploded-signature-types reassembly-bindings)."
+  (let (exploded-params
+        exploded-types
+        reassembly-bindings
+        (current-params params)
+        (current-types signature))
+
+    (loop while current-params do
+            (let ((p (pop current-params))
+                  (type (pop current-types)))
+
+              ;; Sync &out marker
+              (when (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                    (unless (and (symbolp type) (string-equal (symbol-name type) "&OUT"))
+                      (error "Signature mismatch for &out: found ~s in type-spec." type))
+                    (setf p (pop current-params))
+                    (setf type (pop current-types)))
+
+              (if (%storage-handle-type-p type)
+                  (let* ((canonical (canonicalize-type-specifier type))
+                         (base (if (consp canonical) (first canonical) canonical)))
+                    (cond
+                     ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
+                       (let ((size-sym (intern (format nil "~a_BYTE_SIZE" (symbol-name p)) (symbol-package p)))
+                             (ptr-sym (intern (format nil "~a_PTR" (symbol-name p)) (symbol-package p)))
+                             (off-sym (intern (format nil "~a_OFFSET" (symbol-name p)) (symbol-package p)))
+                             (as (if (consp canonical) (nth 2 canonical) :global)))
+                         (push ptr-sym exploded-params)
+                         (push size-sym exploded-params)
+                         (push off-sym exploded-params)
+                         (push `(c-pointer :address-space ,as) exploded-types)
+                         (push 'ulong exploded-types)
+                         (push 'ulong exploded-types)
+                         (push `(,p (marshall-cell ,type ,size-sym ,ptr-sym ,off-sym)) reassembly-bindings)))
+                     (t (error "Unsupported storage handle: ~a" base))))
+                  (progn
+                   (push p exploded-params)
+                   (push type exploded-types)))))
+
+    (values (reverse exploded-params) (reverse exploded-types) (reverse reassembly-bindings))))
+
+(defmacro def-kernel (name params &rest body)
+  "Defines a GPU Kernel (Entry Point).
+   
+   Constraint: All parameter types MUST be complete.
+   Incomplete types (missing compile-time properties) are forbidden at the kernel boundary
+   because the host must know the exact layout to marshall arguments."
+
+  ;; 1. Validate C-Style Name (no dashes)
+  (let ((name-str (symbol-name name)))
+    (when (find #\- name-str)
+          (error "Invalid Kernel Name '~a': Kernels requires C-style identifiers (no dashes)." name)))
+
+  ;; 2. Extract Types from Body Declarations
+  (let* ((declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
+         (raw-body (nthcdr (length declare-forms) body))
+         (declarations (loop for d in declare-forms append (rest d)))
+         (type-map (make-hash-table :test 'eq)))
+
+    ;; 2.1 Parse (type ...) declarations
+    (loop for d in declarations
+            when (and (consp d) (eq (car d) 'type))
+          do (let* ((args (rest d))
+                    (first-arg (first args))
+                    (last-arg (car (last args))))
+               (cond
+                ((valid-type-p first-arg)
+                  (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
+                ((valid-type-p last-arg)
+                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg))))))
+
+    ;; 2.2 Parse (function ...) declaration (Overriding or providing standard signature)
+    (let ((fn-decl (find "FUNCTION" declarations :key (lambda (x) (and (consp x) (symbol-name (car x)))) :test #'string-equal)))
+      (when fn-decl
+            (let* ((sig (second fn-decl))
+                   (arrow-pos (position '=> sig))
+                   (param-types (subseq sig 0 (or arrow-pos (length sig)))))
+              (let ((p-ptr params)
+                    (t-ptr param-types))
+                (loop while (and p-ptr t-ptr) do
+                        (let ((p (pop p-ptr))
+                              (ts (pop t-ptr)))
+                          (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                              (let ((real-p (pop p-ptr))
+                                    (real-ts (if (and (symbolp ts) (string-equal (symbol-name ts) "&OUT"))
+                                                 (pop t-ptr)
+                                                 ts)))
+                                (setf (gethash real-p type-map) `(&out ,real-ts)))
+                              (setf (gethash p type-map) ts))))))))
+
+    ;; 2.3 Reconstruct Signature Types in parameter order
+    (let ((signature-types nil)
+          (p-ptr params))
+      (loop while p-ptr do
+              (let ((p (pop p-ptr)))
+                (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                    (let* ((real-p (pop p-ptr))
+                           (type (gethash real-p type-map)))
+                      (push '&out signature-types)
+                      (push (if (and (consp type) (eq (car type) '&out)) (second type) type) signature-types))
+                    (push (gethash p type-map) signature-types))))
+      (setf signature-types (nreverse signature-types))
+
+      (unless (every #'identity signature-types)
+        (error "def-kernel ~a: Missing type declarations for parameters: ~a" name
+          (loop for p in params for t-spec in signature-types unless t-spec collect p)))
+
+      ;; 2.4 Validate Completeness and VoidP
+      (loop for t-spec in signature-types
+            do (progn
+                (when (incomplete-type-p t-spec)
+                      (error "Kernel parameters must be COMPLETE types. Found incomplete: ~a" t-spec))
+                (let ((canon (canonicalize-type-specifier t-spec)))
+                  (when (or (eq canon 'voidp)
+                            (and (symbolp canon) (string-equal (symbol-name canon) "VOIDP")))
+                        (error "Kernel parameters cannot be of type 'voidp'. Use a specific pointer type with address space or a storage handle.")))))
+      ;; 3. Explode Parameters
+      (multiple-value-bind (exploded-params exploded-types reassembly-bindings)
+          (%explode-kernel-args params signature-types)
+
+        ;; 4. Expand to def-kernel-exact
+        ;; Preserve OTHER declarations (like local-size)
+        (let ((other-decls (loop for d in declarations
+                                   unless (member (car d) '(function type))
+                                 collect d)))
+          `(def-kernel-exact ,name ,exploded-params
+                             (declare #'(,@exploded-types))
+                             ,@(when other-decls `((declare ,@other-decls)))
+                             (let (,@reassembly-bindings)
+                               ,@raw-body)))))))
 
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
@@ -393,8 +507,9 @@
     (let ((code (instantiate-template base params)))
       (eval code))
 
-    (let ((result `(,constructor-name
-                     :parent (make-storage :address (as (c-pointer :address-space :global) ,ptr) :byte-size ,byte-size)
-                     :offset ,offset)))
+    (let* ((as (if (consp canonical) (nth 2 canonical) :global))
+           (result `(,constructor-name
+                      :parent (make-storage :address (as (c-pointer :address-space ,as) ,ptr) :byte-size ,byte-size)
+                      :offset ,offset)))
       (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
       result)))

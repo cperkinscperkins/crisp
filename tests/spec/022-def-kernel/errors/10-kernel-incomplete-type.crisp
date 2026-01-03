@@ -1,0 +1,12 @@
+
+;; "reasonable error message"
+
+(def-type in-c (cell long :access :read-only)) ;; <-- missing address-space
+(def-type out-c (cell long))                   ;; <-- missing address-space and access
+
+(def-kernel cell_add (threshold A B &out C)
+    (declare #'(long in-c in-c &out out-c))
+    (when (> threshold (as-long 255))
+        (let ((a (~ A))
+            (b (~ B)))
+        (set! (~ C) (+ a b)))))

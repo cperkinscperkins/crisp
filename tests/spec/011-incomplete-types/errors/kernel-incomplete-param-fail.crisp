@@ -7,7 +7,8 @@
 
 ;; This kernel definition must fail because 'bp' is type 'pants', which is incomplete
 ;; (missing required :color property).
-(def-kernel invalid_kernel ((bp pants))
+(def-kernel invalid_kernel (bp)
+  (declare #'(pants => nil))
   (let ((sz (size~ bp)))
     sz))
 
