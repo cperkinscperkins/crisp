@@ -1,5 +1,5 @@
 
-;;  "reasonable error message"
+;; CHECK-FAIL: "marshall-cell argument must be a complete type specification"
 
 ;; the type expression arg to marshall-cell must be a complete type.
 ;; incomplete types are errors.

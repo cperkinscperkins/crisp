@@ -497,6 +497,12 @@
 (defmacro marshall-cell (type-alias byte-size ptr offset)
   "Marshals raw kernel arguments into a Cell struct.
    Usage: (marshall-cell out-c byte-size ptr offset)"
+  (when (and (consp type-alias)
+             (symbolp (first type-alias))
+             (string-equal (symbol-name (first type-alias)) "CELL")
+             (< (length type-alias) 4))
+        (error "marshall-cell argument must be a complete type specification (e.g. (cell int :global :read-write)). Found: ~a" type-alias))
+
   (let* ((canonical (crisp.compiler::canonicalize-type-specifier type-alias))
 
          (base (first canonical))
