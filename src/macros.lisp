@@ -443,7 +443,9 @@
                             `(def-function ,accessor-name ((obj ,name))
                                            (declare (function ((,name) => ,type)))
                                            (declare (crisp-system-generated))
-                                           (return ',value)))
+                                           (return ,(if (or (numberp value) (stringp value) (eq value t) (eq value nil))
+                                                        value
+                                                        `',value))))
                         (let ((idx runtime-index))
                           (incf runtime-index)
                           `(def-function ,accessor-name ((obj ,name))

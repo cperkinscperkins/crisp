@@ -424,16 +424,22 @@
          (mangled-constructor (intern (format nil "MAKE-~a" mangled-name) (symbol-package name)))
          (keyword-args (loop for name in param-names
                              collect (intern (symbol-name name) :keyword)
-                             collect name)))
+                             collect name))
+         ;; Check for incomplete :c-t fields (no default value)
+         (incomplete-fields (remove-if-not (lambda (m) (and (consp m) (eq (third m) :c-t) (null (fourth m)))) all-parsed-members)))
     `(progn
       ,substituted-body
-      ;; Generate overload wrapper with UNIQUE name: (def-function make-point_float_wrapper ...)
-      (def-function ,wrapper-name ,parsed-members
-                    (declare (return-type ,mangled-name))
-                    (return (,mangled-constructor ,@keyword-args)))
-      ;; Register this wrapper as an overload for the generic constructor name (e.g. MAKE-POINT)
-      (eval-when (:compile-toplevel :load-toplevel :execute)
-        (crisp.compiler::register-overload ',constructor-alias ',wrapper-name)))))
+      ;; Only generate runtime wrapper if all :c-t fields have defaults.
+      ;; If there are missing :c-t values, this type cannot be constructed via a runtime function.
+      ,@(unless incomplete-fields
+          `((def-function ,wrapper-name ,parsed-members
+                          (declare (return-type ,mangled-name))
+                          (return (,mangled-constructor ,@keyword-args)))))
+
+      ;; Register this wrapper as an overload (only if we generated it)
+      ,@(unless incomplete-fields
+          `((eval-when (:compile-toplevel :load-toplevel :execute)
+              (crisp.compiler::register-overload ',constructor-alias ',wrapper-name)))))))
 
 (defun %instantiate-callable-template (name body substitutions override-name)
   (let ((substituted-body (sublis substitutions body)))

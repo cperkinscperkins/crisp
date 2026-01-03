@@ -280,10 +280,10 @@
 
 (defun validate-and-reorder-struct-args (struct-name defined-members args)
   "Validates and reorders keyword arguments for a struct constructor macro."
-  ;; 0. Filter out :c-t members from validation - they are not constructor args!
-  ;; Or should they be accepted but ignored? 
-  ;; Since they are compile-time constants fixed in the struct def, they should NOT be passed.
+  ;; 0. Identify Runtime vs Compile-Time members
   (cl:let* ((runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) defined-members))
+            ;; Required CT members are those marked :c-t but have NO value (incomplete)
+            (ct-required-members (remove-if-not (lambda (m) (and (consp m) (eq (third m) :c-t) (null (fourth m)))) defined-members))
             (processed-args (make-hash-table :test 'eq))
             (ordered-values '()))
 
@@ -302,7 +302,7 @@
                 (setf (gethash key processed-args) val)
                 (setf ptr (cddr ptr)))))
 
-    ;; 2. Validate and Reorder
+    ;; 2. Validate and Reorder Runtime Arguments (Construction Payload)
     (loop for (member-name member-type) in runtime-members do
             (cl:let* ((kw (intern (symbol-name member-name) :keyword))
                       (val (gethash kw processed-args)))
@@ -310,11 +310,19 @@
                 (error "Struct constructor for ~a missing required argument: ~s" struct-name kw))
               (push val ordered-values)))
 
-    ;; 3. Check for unknown keys (against ALL members, including compile-time ones)
+    ;; 3. Validate Compile-Time Required Arguments (Validation Only, not part of runtime payload)
+    (loop for member in ct-required-members do
+            (cl:let* ((member-name (first member))
+                      (kw (intern (symbol-name member-name) :keyword))
+                      (val (gethash kw processed-args)))
+              (cl:unless val
+                (error "Struct constructor for ~a missing required compile-time argument: ~s" struct-name kw))))
+
+    ;; 4. Check for unknown keys (against ALL members, including compile-time ones)
     (maphash (lambda (k v)
                (declare (ignore v))
                (cl:unless (find k defined-members :key (lambda (m) (intern (symbol-name (first m)) :keyword)))
-                 (error "Struct constructor for ~a has unknown or compile-time-only argument: ~s" struct-name k)))
+                 (error "Struct constructor for ~a has unknown argument: ~s" struct-name k)))
              processed-args)
 
     (nreverse ordered-values)))

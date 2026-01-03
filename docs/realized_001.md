@@ -217,6 +217,10 @@ with marshalling.
 
 ### def-kernel and cell.
 
+### --ir-target=spv 
+Yes, we are outputting SPIR-V now.  Just add the --ir-target=spv.   Hasn't been checked
+on a real GPU yet, so there may be bugs.
+
 
 Errors
 ======
