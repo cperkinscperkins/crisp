@@ -88,21 +88,46 @@
    (t
      (resolve-type-to-llvm type-spec))))
 
+(defun is-global-storage-handle-p (type-spec)
+  "Returns true if the type-spec represents a handle to global memory."
+  (let* ((canon (canonicalize-type-specifier type-spec))
+         (base (if (consp canon) (first canon) canon)))
+    (and (symbolp base)
+         (member (symbol-name base) '("CELL" "STORAGE" "VECTOR" "MATRIX") :test #'string-equal)
+         ;; If it's a generic buffer type, assume global unless specified otherwise
+         (or (not (consp canon))
+             (member :global canon)
+             (not (or (member :local canon) (member :private canon) (member :generic canon)))))))
+
 (defun get-expanded-types (type-spec module)
   "Returns a list of LLVM types for a given Crisp type spec.
-   For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type)."
-  (let ((type-rec (gethash type-spec *crisp-types*)))
-    (cond
-     ;; Case 1: Record Type -> Explode recursively
-     ((and type-rec (eq (crisp-type-category type-rec) :record))
-       (let* ((struct-def (gethash type-spec *crisp-structs*))
-              (members (crisp-struct-definition-members struct-def))
-              ;; Filter out compile-time members (e.g. :c-t tagged)
-              (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members)))
-         (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members)))
+   For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type).
+   
+   If *target-backend* is :spirv or :ptx, upgrade pointers in storage handles to Global Address Space (1)."
+  (let* ((expanded
+          (let ((type-rec (gethash type-spec *crisp-types*)))
+            (cond
+             ;; Case 1: Record Type -> Explode recursively
+             ((and type-rec (eq (crisp-type-category type-rec) :record))
+               (let* ((struct-def (gethash type-spec *crisp-structs*))
+                      (members (crisp-struct-definition-members struct-def))
+                      ;; Filter out compile-time members (e.g. :c-t tagged)
+                      (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members)))
+                 (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members)))
 
-     ;; Case 2: Standard Type (Struct/Scalar) -> Return as is
-     (t (list (crisp-type-to-llvm-type type-spec module))))))
+             ;; Case 2: Standard Type (Struct/Scalar) -> Return as is
+             (t (list (crisp-type-to-llvm-type type-spec module)))))))
+
+    ;; Post-Processing: Apply Address Spaces for GPU Backends
+    (if (and (or (eq *target-backend* :spirv) (eq *target-backend* :ptx))
+             (is-global-storage-handle-p type-spec))
+        (mapcar (lambda (ty)
+                  (if (llvm-type-kind-is-pointer? ty)
+                      ;; Upgrade to Address Space 1 (Global)
+                      (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 1)
+                      ty))
+            expanded)
+        expanded)))
 
 (defun explode-value (builder agg-val type-spec)
   "Extracts components from an aggregate value if necessary.
@@ -470,40 +495,49 @@
         nil))))
 
 ;; -- addition --
+(defun get-type-cat-safe (type-name type-obj)
+  (cond
+   (type-obj (crisp-type-category type-obj))
+   ((and (consp type-name) (eq (first type-name) 'c-pointer)) :pointer)
+   (t nil)))
+
 (defun build-cast-if-needed (builder from-val from-type-name to-type-name)
   "Builds an LLVM cast instruction if the types differ."
-  (if (eq from-type-name to-type-name)
+  (if (equal from-type-name to-type-name)
       (progn
        (log:debug "build-cast-if-needed: No cast needed for ~s" from-type-name)
        from-val)
-      (let* ((from-type (gethash from-type-name *crisp-types*))
-             (to-type (gethash to-type-name *crisp-types*))
-             (to-llvm-type (funcall (crisp-type-llvm-type-fn to-type))))
+      (let* ((from-type (if (symbolp from-type-name) (gethash from-type-name *crisp-types*) nil))
+             (to-type (if (symbolp to-type-name) (gethash to-type-name *crisp-types*) nil))
+             (to-llvm-type (resolve-type-to-llvm to-type-name))
+             (from-cat (get-type-cat-safe from-type-name from-type))
+             (to-cat (get-type-cat-safe to-type-name to-type)))
+
         (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
         (cond
          ;; Integer to Float
-         ((and (member (crisp-type-category from-type) '(:signed-int :unsigned-int))
-               (eq (crisp-type-category to-type) :float))
-           (if (eq (crisp-type-category from-type) :signed-int)
+         ((and (member from-cat '(:signed-int :unsigned-int))
+               (eq to-cat :float))
+           (if (eq from-cat :signed-int)
                (llvm-build-si-to-fp builder from-val to-llvm-type "si2fp_cast")
                (llvm-build-ui-to-fp builder from-val to-llvm-type "ui2fp_cast")))
 
          ;; Integer to Integer (Ext, Trunc, or Same)
-         ((and (member (crisp-type-category from-type) '(:signed-int :unsigned-int))
-               (member (crisp-type-category to-type) '(:signed-int :unsigned-int)))
+         ((and (member from-cat '(:signed-int :unsigned-int))
+               (member to-cat '(:signed-int :unsigned-int)))
            (let ((from-size (crisp-type-size from-type))
                  (to-size (crisp-type-size to-type)))
              (cond
               ((< to-size from-size)
                 (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
               ((> to-size from-size)
-                (if (eq (crisp-type-category from-type) :signed-int)
+                (if (eq from-cat :signed-int)
                     (llvm-build-sext builder from-val to-llvm-type "sext_cast")
                     (llvm-build-zext builder from-val to-llvm-type "zext_cast")))
               (t from-val)))) ;; Same size
 
          ;; Float Extension / Truncation
-         ((and (eq (crisp-type-category from-type) :float) (eq (crisp-type-category to-type) :float))
+         ((and (eq from-cat :float) (eq to-cat :float))
            (let ((from-size (crisp-type-size from-type))
                  (to-size (crisp-type-size to-type)))
              (cond
@@ -514,30 +548,34 @@
               (t from-val))))
 
          ;; Float to Integer
-         ((and (eq (crisp-type-category from-type) :float) (member (crisp-type-category to-type) '(:signed-int :unsigned-int)))
-           (if (eq (crisp-type-category to-type) :signed-int)
+         ((and (eq from-cat :float) (member to-cat '(:signed-int :unsigned-int)))
+           (if (eq to-cat :signed-int)
                (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast")
                (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast")))
 
          ;; Integer to Pointer
-         ((and (member (crisp-type-category from-type) '(:signed-int :unsigned-int))
-               (eq (crisp-type-category to-type) :pointer))
+         ((and (member from-cat '(:signed-int :unsigned-int))
+               (eq to-cat :pointer))
            (llvm-build-int-to-ptr builder from-val to-llvm-type "int2ptr_cast"))
 
          ;; Pointer to Integer
-         ((and (eq (crisp-type-category from-type) :pointer)
-               (member (crisp-type-category to-type) '(:signed-int :unsigned-int)))
+         ((and (eq from-cat :pointer)
+               (member to-cat '(:signed-int :unsigned-int)))
            (llvm-build-ptr-to-int builder from-val to-llvm-type "ptr2int_cast"))
 
          ;; Pointer to Pointer
-         ((and (eq (crisp-type-category from-type) :pointer)
-               (eq (crisp-type-category to-type) :pointer))
-           (llvm-build-bit-cast builder from-val to-llvm-type "ptr2ptr_cast"))
+         ((and (eq from-cat :pointer)
+               (eq to-cat :pointer))
+           (let ((from-as (llvm-get-pointer-address-space (llvm-type-of from-val)))
+                 (to-as (llvm-get-pointer-address-space to-llvm-type)))
+             (if (= from-as to-as)
+                 (llvm-build-bit-cast builder from-val to-llvm-type "ptr2ptr_cast")
+                 (llvm-build-addrspace-cast builder from-val to-llvm-type "ptr2ptr_ascast"))))
 
          (t
            (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
-           (log:error "  From Type: ~a (cat: ~a)" from-type (crisp-type-category from-type))
-           (log:error "  To Type:   ~a (cat: ~a)" to-type (crisp-type-category to-type))
+           (log:error "  From Type: ~a (cat: ~a)" from-type from-cat)
+           (log:error "  To Type:   ~a (cat: ~a)" to-type to-cat)
            (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
            (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))
 
@@ -1133,7 +1171,8 @@
                                                (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8")))
 
                                                  ;; Cast to Element and Load
-                                                 (let* ((target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type 0) "target_ptr"))
+                                                 (let* ((ptr-as (llvm-get-pointer-address-space (llvm-type-of final-ptr-i8)))
+                                                        (target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type ptr-as) "target_ptr"))
                                                         (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
 
                                                    ;; Return loaded val, nil (loc), AND pointer (for set!)

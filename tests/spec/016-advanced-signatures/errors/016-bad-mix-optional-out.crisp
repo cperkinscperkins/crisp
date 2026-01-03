@@ -12,7 +12,7 @@
                 (set! sum (* sum c))))
         (set! (~ res) sum)))
 
-(def-kernel exorcise-o-a (a r b)
+(def-kernel exorcise_o_a (a r b)
     (declare #'(int (cell int :global :write-only) int => nil))
     (out-and-optional a b r))
 

@@ -169,7 +169,12 @@
    Incomplete types (missing compile-time properties) are forbidden at the kernel boundary
    because the host must know the exact layout to marshall arguments."
 
-  ;; 1. Validate Parameter Completeness
+  ;; 1. Validate C-Style Name (no dashes)
+  (let ((name-str (symbol-name name)))
+    (when (find #\- name-str)
+          (error "Invalid Kernel Name '~a': Kernels requires C-style identifiers (no dashes)." name)))
+
+  ;; 2. Validate Parameter Completeness
   (dolist (param params)
     (when (listp param)
           (let ((p-name (first param))
@@ -177,10 +182,11 @@
             (when (incomplete-type-p p-type)
                   (error "Invalid Kernel Parameter '~a' of type '~a': Kernel parameters must be COMPLETE types. Compile-time properties cannot be unspecified at the kernel boundary." p-name p-type)))))
 
-  ;; 2. Expand to def-function with entry-point declaration
+  ;; 3. Expand to def-function with entry-point declaration
   `(def-function ,name ,params
                  (declare (entry-point)) ;; Mark as kernel for Codegen
-                 ,@body))
+                 ,@body
+                 (return)))
 
 (defmacro def-kernel-exact (name params &rest body)
   "Defines a GPU Kernel with exact ABI control (Raw Scalars).
@@ -388,7 +394,7 @@
       (eval code))
 
     (let ((result `(,constructor-name
-                     :parent (make-storage :address (as c-pointer ,ptr) :byte-size ,byte-size)
+                     :parent (make-storage :address (as (c-pointer :address-space :global) ,ptr) :byte-size ,byte-size)
                      :offset ,offset)))
       (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
       result)))

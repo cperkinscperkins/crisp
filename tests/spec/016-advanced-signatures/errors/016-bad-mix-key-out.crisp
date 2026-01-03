@@ -12,7 +12,7 @@
             (set! sum (* sum e)))
         (set! (~ res) sum)))
 
-(def-kernel expertise-o-k (a r e)
+(def-kernel expertise_o_k (a r e)
     (declare #'(int &out (cell int :global :write-only)  int => nil))
     (out-and-key a :e e r ))
 

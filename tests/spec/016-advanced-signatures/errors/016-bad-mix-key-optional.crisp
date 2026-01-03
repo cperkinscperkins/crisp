@@ -17,7 +17,7 @@
             (set! sum (+ sum e)))
         sum))
 
-(def-kernel exercise-o-k (a b d)
+(def-kernel exercise_o_k (a b d)
     (declare #'(int int int => nil))
     (keys-then-options a :d d b ))
     

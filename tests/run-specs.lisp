@@ -47,10 +47,14 @@
 
 (defun cleanup-ir-string (output)
   "Extracts the IR from the compiler stdout."
-  (let ((marker "--- Generated LLVM IR: ---"))
-    (let ((pos (search marker output)))
-      (if pos
-          (string-trim '(#\Space #\Newline #\Return) (subseq output (+ pos (length marker))))
+  (let ((marker-prefix "--- Generated LLVM IR")
+        (marker-suffix "---"))
+    (let ((prefix-pos (search marker-prefix output)))
+      (if prefix-pos
+          (let ((suffix-pos (search marker-suffix output :start2 (+ prefix-pos (length marker-prefix)))))
+            (if suffix-pos
+                (string-trim '(#\Space #\Newline #\Return) (subseq output (+ suffix-pos (length marker-suffix))))
+                output))
           output))))
 
 (defun run-spec-binary (file)
@@ -95,16 +99,22 @@
 (defun run-spec-file (file)
   (format t "~&Running Spec: ~a... " (pathname-name file))
   (finish-output)
-  (if *use-binary*
-      (run-spec-binary file)
-      (handler-case
-          (let ((ir-string (compile-crisp-file-to-ir-string file)))
-            (if (validate-ir-with-clang ir-string)
-                (progn (format t "PASS~%") t)
-                (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
-        (error (e)
-          (format *error-output* "FAIL (Condition: ~a)~%" e)
-          nil))))
+
+  (let ((is-spirv (search "spirv" (directory-namestring file) :test #'string-equal)))
+    (if *use-binary*
+        (if is-spirv
+            (run-spec-spirv-binary file)
+            (run-spec-binary file))
+        (if is-spirv
+            (run-spec-spirv-in-process file)
+            (handler-case
+                (let ((ir-string (compile-crisp-file-to-ir-string file)))
+                  (if (validate-ir-with-clang ir-string)
+                      (progn (format t "PASS~%") t)
+                      (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
+              (error (e)
+                (format *error-output* "FAIL (Condition: ~a)~%" e)
+                nil))))))
 
 (defun compile-crisp-file-to-ir-string (filepath)
   "Compiles a .crisp file and returns the LLVM IR as a string."
@@ -145,6 +155,73 @@
           (progn
            (format t "~%LLVM Verification Error:~%~a~%" error-output)
            nil)))))
+
+(defun compile-crisp-file-to-spirv (filepath)
+  "Compiles a .crisp file to .spv and returns the output path if successful."
+  (let ((out-path (make-pathname :type "spv" :defaults filepath))
+        (*standard-output* (make-broadcast-stream)))
+    (when (probe-file out-path) (delete-file out-path))
+
+    (let (;; Use a FRESH environment for each spec to ensure isolation
+          (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
+          (forms (progn
+                  ;; Initialize for SPIR-V
+                  (crisp.compiler:initialize-compiler :log-level :warn)
+                  (with-open-file (stream filepath)
+                    (loop for form = (read stream nil :eof)
+                          until (eq form :eof)
+                          collect form)))))
+      (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filepath)))
+             (builder (crisp.llvm-bindings:llvm-create-builder)))
+        (unwind-protect
+            (progn
+             (let ((crisp.compiler:*target-backend* :spirv))
+               (crisp.compiler:compile-module forms module builder nil nil nil)
+               (crisp.compiler:compile-to-spirv module out-path)))
+          (crisp.llvm-bindings:llvm-dispose-builder builder)
+          (crisp.llvm-bindings:llvm-dispose-module module))))
+
+    (if (probe-file out-path)
+        out-path
+        nil)))
+
+(defun run-spec-spirv-in-process (file)
+  (handler-case
+      (let ((out-path (compile-crisp-file-to-spirv file)))
+        (if out-path
+            (progn
+             (format t "PASS (Generated ~a)~%" (file-namestring out-path))
+             ;; Optional: Cleanup generated file
+             (delete-file out-path)
+             t)
+            (progn (format *error-output* "FAIL (No SPV generated)~%") nil)))
+    (error (e)
+      (format *error-output* "FAIL (Condition: ~a)~%" e)
+      nil)))
+
+(defun run-spec-spirv-binary (file)
+  (let ((bin (get-binary-path))
+        (out-path (make-pathname :type "spv" :defaults file))
+        (args (list (uiop:native-namestring file) "--ir-target=spv")))
+    (when (probe-file out-path) (delete-file out-path))
+    (when *compile-debug* (push "--debug" args))
+
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string
+          :error-output :string
+          :ignore-error-status t)
+      (cond
+       ((not (zerop exit-code))
+         (format *error-output* "FAIL (Compiler Exit Code ~a)~%~a~%" exit-code error-output)
+         nil)
+       ((probe-file out-path)
+         (format t "PASS (Generated .spv)~%")
+         (delete-file out-path)
+         t)
+       (t
+         (format *error-output* "FAIL (No SPV generated)~%~a~%" error-output)
+         nil)))))
 
 (defun get-ci-stop-target ()
   "Reads tests/ci-stop.txt to determine the last directory to run."

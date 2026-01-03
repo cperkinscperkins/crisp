@@ -215,6 +215,9 @@ The `&out` parameter is now supported.
 Yes, you read that right. `def-kernel-exact` is implemented now, along
 with marshalling.  
 
+### def-kernel and cell.
+
+
 Errors
 ======
 
