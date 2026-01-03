@@ -28,7 +28,8 @@
 
                (let ((ir (with-output-to-string (s)
                            (let ((*standard-output* s)
-                                 (crisp.compiler::*function-table* (make-hash-table)))
+                                 (crisp.compiler::*function-table* (make-hash-table))
+                                 (crisp.compiler::*target-backend* :spirv))
                              (let* ((module (llvm-module-create "kernel_test"))
                                     (builder (llvm-create-builder)))
                                (unwind-protect
