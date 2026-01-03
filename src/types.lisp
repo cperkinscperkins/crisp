@@ -63,6 +63,10 @@ This supports overloading templates by arity or other factors.")
 ;; Type System Globals
 ;; ===================
 
+(defvar *target-backend* :generic
+        "The active target backend for compilation. 
+   Supported values: :generic, :cpu, :spirv, :ptx.")
+
 (defvar *crisp-types* (make-hash-table)
         "A hash table mapping type names (symbols) to CRISP-TYPE structs.")
 
@@ -422,6 +426,16 @@ This supports overloading templates by arity or other factors.")
 ;; LLVM Resolution
 ;; ===============
 
+(defun encode-address-space (as)
+  "Maps a keyword address space to an integer."
+  (case as
+    (:private 0)
+    (:global 1)
+    (:constant 2)
+    (:local 3)
+    (:generic 4)
+    (t (if (integerp as) as 0))))
+
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference."
   (cl:cond
@@ -432,6 +446,13 @@ This supports overloading templates by arity or other factors.")
     ;; Type Alias (Symbol)
     ((and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
      (resolve-type-to-llvm (gethash type-spec *crisp-type-aliases*)))
+
+    ;; C-Pointer with properties: e.g. (c-pointer :address-space :global)
+    ((and (consp type-spec) (eq (first type-spec) 'c-pointer))
+     (let* ((args (rest type-spec))
+            (as-key (getf args :address-space))
+            (as-val (encode-address-space as-key)))
+       (llvm-pointer-type (llvm-int8-type) as-val)))
 
     ;; Struct
     ((and (symbolp type-spec) (find-struct-definition-by-name type-spec))

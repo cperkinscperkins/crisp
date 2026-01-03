@@ -4,30 +4,29 @@
 (define-test (crisp-compiler struct-registration)
              "Tests that def-struct parses correctly and registers the struct definition."
 
-             ;; Clear registry to ensure clean state
-             (eval '(clrhash crisp.compiler::*crisp-structs*))
+             ;; Use a fresh registry to ensure clean state and avoid polluting global
+             (let ((crisp.compiler::*crisp-structs* (make-hash-table)))
 
-             (let ((form '(def-struct test-point
-                                      (x int)
-                                      (y int))))
+               (let ((form '(def-struct test-point
+                                        (x int)
+                                        (y int))))
 
-               ;; Macroexpand/Eval to trigger registration (since def-struct registers at compile-time/execution-time)
-               (eval form)
+                 ;; Macroexpand/Eval to trigger registration (since def-struct registers at compile-time/execution-time)
+                 (eval form)
 
-               (let ((struct-def (gethash 'test-point crisp.compiler::*crisp-structs*)))
-                 (true struct-def "Struct 'test-point should be registered.")
+                 (let ((struct-def (gethash 'test-point crisp.compiler::*crisp-structs*)))
+                   (true struct-def "Struct 'test-point should be registered.")
 
-                 (when struct-def
-                       (is eq 'test-point (crisp.compiler::crisp-struct-definition-name struct-def))
-                       (let ((members (crisp.compiler::crisp-struct-definition-members struct-def)))
-                         (is = 2 (length members))
-                         ;; Check member 1: (x int)
-                         (is eq 'x (first (first members)))
-                         (is eq 'int (second (first members)))
-                         ;; Check member 2: (y:int) -> Parsed as (y int)
-                         (is eq 'y (first (second members)))
-                         (is eq 'int (second (second members))))))))
-
+                   (when struct-def
+                         (is eq 'test-point (crisp.compiler::crisp-struct-definition-name struct-def))
+                         (let ((members (crisp.compiler::crisp-struct-definition-members struct-def)))
+                           (is = 2 (length members))
+                           ;; Check member 1: (x int)
+                           (is eq 'x (first (first members)))
+                           (is eq 'int (second (first members)))
+                           ;; Check member 2: (y:int) -> Parsed as (y int)
+                           (is eq 'y (first (second members)))
+                           (is eq 'int (second (second members)))))))))
 
 (define-test (crisp-compiler struct-llvm-ir)
              "Tests that using a struct in a function signature generates correct LLVM IR."

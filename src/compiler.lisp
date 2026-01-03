@@ -9,6 +9,59 @@
 ;; Initialization
 ;; ==============
 
+(defun run-tool-command (args &key (log-prefix ""))
+  "Runs a command using uiop:run-program."
+  (log:info "~aRunning: ~{~a~^ ~}" log-prefix args)
+  (let ((output (make-string-output-stream))
+        (error-output (make-string-output-stream)))
+    (handler-case
+        (uiop:run-program args :output output :error-output error-output :force-shell t)
+      (uiop:subprocess-error (e)
+                             (log:error "Command failed with code ~a." (uiop:subprocess-error-code e))
+                             (log:error "Stdout: ~a" (get-output-stream-string output))
+                             (log:error "Stderr: ~a" (get-output-stream-string error-output))
+                             (error "Tool invocation failed: ~{~a~^ ~}" args)))
+    (get-output-stream-string output)))
+
+(defun compile-to-spirv (module output-path)
+  "Compiles an LLVM Module to SPIR-V using the external toolchain."
+  (let* ((base-path (uiop:pathname-directory-pathname output-path))
+         (name (pathname-name output-path))
+         (ll-file (merge-pathnames (format nil "~a.temp.ll" name) base-path))
+         (bc-file (merge-pathnames (format nil "~a.temp.bc" name) base-path))
+         (spv-file output-path))
+
+    ;; 1. Write Temporary .ll file
+    (let ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module))))
+      (with-open-file (stream ll-file :direction :output :if-exists :supersede)
+        (write-string ir stream)))
+
+    ;; 2. Clang -cc1 (LL -> BC)
+    ;; Force the target triple to spir64-unknown-unknown to satisfy llvm-spirv
+    (run-tool-command
+     (list "clang" "-cc1" "-triple" "spir64-unknown-unknown"
+           "-emit-llvm-bc" "-x" "ir" (namestring ll-file)
+           "-o" (namestring bc-file))
+     :log-prefix "[SPIR-V] ")
+
+    ;; 4. llvm-spirv (BC -> SPV)
+    ;; Locate the tool in bin/
+    (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-spirv.exe" "bin/llvm-spirv"))
+           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
+
+      (unless (probe-file tool)
+        (error "llvm-spirv tool not found in bin/"))
+
+      (run-tool-command
+       (list (namestring tool) (namestring bc-file) "-o" (namestring spv-file))
+       :log-prefix "[SPIR-V] "))
+
+    ;; Cleanup temps
+    (when (probe-file ll-file) (delete-file ll-file))
+    (when (probe-file bc-file) (delete-file bc-file))
+
+    (log:info "Generated SPIR-V: ~a" spv-file)))
+
 (defun initialize-compiler (&key (log-level :info) (runtime-checks nil))
   "A master initialization function for the Crisp compiler.
   This should be called by any entry point into the system (REPL, executable, CI)."
@@ -61,7 +114,7 @@
   ;; Redefine STORAGE as a RECORD (Register-based, passed by value)
   ;; This replaces the old "exploded" implicit argument handling.
   (eval '(def-record storage
-                     (address c-pointer)
+                     (address (c-pointer :address-space :global))
                      (byte-size ulong)
                      (address-space address-space :c-t :global)
                      (access access :c-t :read-write)))
@@ -79,21 +132,6 @@
                                          (address-space address-space :c-t Addr)
                                          (access access :c-t Acc))))
 
-  ;; Register default ~ accessor as a template
-  (register-template '~ '(To (Addr :global) (Acc :read-write)) nil
-                     '(def-function ~ (c)
-                                    (declare (function ((cell To Addr Acc) => To)))
-                                    (declare (crisp-system-generated))
-                                    (return (~ref~ c)))
-                     '((cell To Addr Acc) => To))
-  (register-template '~_SET! '(To (Addr :global) (Acc :read-write)) nil
-                     '(def-function ~_SET! (c v)
-                                    (declare (function ((cell To Addr Acc) To) => nil))
-                                    (declare (crisp-system-generated))
-                                    (set! (~ref~ c) v)
-                                    (return))
-                     '((cell To Addr Acc) To => nil))
-
   ;; Register bytes~ helper (sizeof T)
   (register-template 'bytes~ '(To (Addr :global) (Acc :read-write)) nil
                      '(def-function bytes~ (c)
@@ -101,7 +139,6 @@
                                     (declare (crisp-system-generated))
                                     (return (sizeof To)))
                      '((cell To Addr Acc) => ulong)))
-
 
 ;; Helpers (Analysis Placeholder)
 ;; ==============================

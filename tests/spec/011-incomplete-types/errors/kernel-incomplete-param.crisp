@@ -10,6 +10,6 @@
 
 ;; def-kernel is not defined yet. Please, let's NOT impelement it right now, there
 ;; is other work that needs to come first. 
-(def-kernel my-bad-kernel ((s (shirt int)))
+(def-kernel my_bad_kernel ((s (shirt int)))
     (return))
 

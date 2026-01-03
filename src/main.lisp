@@ -40,7 +40,7 @@
      )))
 
 (defun parse-cli-args (args)
-  "Parses command-line arguments and returns (values files output-file debug-p single-pass-p)."
+  "Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets)."
   (let* ((flags (remove-if-not (lambda (arg) (char= (char arg 0) #\-)) args))
          (files (remove-if (lambda (arg) (char= (char arg 0) #\-)) args))
          (log-level-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--log-level=" f)) flags))
@@ -50,7 +50,18 @@
          (single-pass-p (member "--single-pass" flags :test #'string=))
          (debug-p (or (member "-g" flags :test #'string=)
                       (member "--debug" flags :test #'string=)))
-         (runtime-checks-p (member "--runtime-checks" flags :test #'string=)))
+         (runtime-checks-p (member "--runtime-checks" flags :test #'string=))
+
+         ;; Target Parsing
+         (target-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--ir-target=" f)) flags))
+         (targets (mapcar (lambda (f)
+                            (let ((val (string-upcase (subseq f (length "--ir-target=")))))
+                              (cond
+                               ((string= val "SPV") :spirv)
+                               ((string= val "SPIRV") :spirv)
+                               ((string= val "PTX") :ptx)
+                               (t (intern val :keyword)))))
+                      target-flags)))
 
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
@@ -60,70 +71,78 @@
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
       (uiop:quit 1))
 
-    (values files nil debug-p single-pass-p)))
+    (values files nil debug-p single-pass-p targets)))
 
-(defun compile-files (files output-file debug-p single-pass-p)
-  "Compiles the given files."
-  (declare (ignore output-file)) ; For now, we just print to stdout
+(defun compile-files (files output-file debug-p single-pass-p targets)
+  "Compiles the given files, iterating over requested targets."
+  (declare (ignore output-file)) ; Handled per-target
   (let* ((filename (first files))
-         (filepath (uiop:truename* filename)))
-    (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filename)))
-           (builder (crisp.llvm-bindings:llvm-create-builder))
-           ;; Only create the DIBuilder if the debug flag is present.
-           (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module)))
-           (di-compile-unit (when debug-p (initialize-debug-context di-builder filepath))))
-      (unwind-protect
-          (handler-case
-              (progn
-               (with-open-file (stream filename)
-                 (format *error-output* "; Compiling ~a...~%" filename)
-                 (if single-pass-p
-                     ;; --- SINGLE-PASS MODE ---
-                     (let ((toplevel-index 0)
-                           (*package* (find-package :crisp-language)))
-                       (loop for form = (read stream nil :eof)
-                             until (eq form :eof)
-                             do (let ((location (list toplevel-index))
-                                      ;; Each top-level form gets its own stack for direct recursion check.
-                                      (crisp.compiler::*single-pass-call-stack* nil))
-                                  (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
-                                  (incf toplevel-index))))
-                     ;; --- MULTI-PASS MODE (DEFAULT) ---
-                     (let* ((*package* (find-package :crisp-language))
-                            (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form))
-                            (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
-                       (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map))))
+         (filepath (uiop:truename* filename))
+         ;; Default to :generic (stdout) if no targets specified
+         (passes (if targets targets '(:generic))))
 
-               ;; After the loop, print the entire module.
-               (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
-                 (unwind-protect
-                     (format t "--- Generated LLVM IR: ---~%~a~%" (cffi:foreign-string-to-lisp ir-ptr))
-                   (crisp.llvm-bindings:llvm-dispose-message ir-ptr))))
+    (dolist (target-backend passes)
+      (let ((crisp.compiler:*target-backend* target-backend))
+        (format *error-output* "~&; --- Starting Pass for Target: ~a ---~%" target-backend)
 
-            ;; main compiler error handler
-            (crisp.compiler:crisp-compiler-error (c)
-                                                 (print-compiler-error c filename)
-                                                 (uiop:quit 1))
+        (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filename)))
+               (builder (crisp.llvm-bindings:llvm-create-builder))
+               ;; Only create the DIBuilder if the debug flag is present.
+               (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module)))
+               (di-compile-unit (when debug-p (initialize-debug-context di-builder filepath))))
+          (unwind-protect
+              (handler-case
+                  (progn
+                   (with-open-file (stream filename)
+                     (if single-pass-p
+                         ;; --- SINGLE-PASS MODE ---
+                         (let ((toplevel-index 0)
+                               (*package* (find-package :crisp-language)))
+                           (loop for form = (read stream nil :eof)
+                                 until (eq form :eof)
+                                 do (let ((location (list toplevel-index))
+                                          (crisp.compiler::*single-pass-call-stack* nil))
+                                      (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
+                                      (incf toplevel-index))))
+                         ;; --- MULTI-PASS MODE (DEFAULT) ---
+                         (let* ((*package* (find-package :crisp-language))
+                                (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form))
+                                (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
+                           (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map))))
 
-            ;; Handle unexpected EOF from the reader
-            (end-of-file ()
-                         (print-compiler-error (make-condition 'crisp.compiler:crisp-unexpected-eof-error) filename)
-                         (uiop:quit 1))
+                   ;; Output Generation
+                   (case target-backend
+                     (:spirv
+                      (let ((out-path (make-pathname :type "spv" :defaults filepath)))
+                        (crisp.compiler:compile-to-spirv module out-path)))
+                     ;; Default/Generic: Print IR to stdout
+                     (t
+                      (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
+                        (unwind-protect
+                            (format t "--- Generated LLVM IR (~a): ---~%~a~%" target-backend (cffi:foreign-string-to-lisp ir-ptr))
+                          (crisp.llvm-bindings:llvm-dispose-message ir-ptr))))))
 
-            ;; Placeholder error handler
-            (error (c)
-              (format *error-output* "~&An unexpected error occurred: ~a~%" c)
-              (uiop:quit 1)))
-        ;; Cleanup
-        (when di-builder (crisp.llvm-bindings:llvm-di-builder-finalize di-builder))
-        (when di-builder (crisp.llvm-bindings:llvm-dispose-di-builder di-builder))
-        (crisp.llvm-bindings:llvm-dispose-builder builder)
-        (crisp.llvm-bindings:llvm-dispose-module module)))
-    (format *error-output* "; ...Compilation finished.~%")))
+                ;; Error Handling
+                (crisp.compiler:crisp-compiler-error (c)
+                                                     (print-compiler-error c filename)
+                                                     (uiop:quit 1))
+                (end-of-file ()
+                             (print-compiler-error (make-condition 'crisp.compiler:crisp-unexpected-eof-error) filename)
+                             (uiop:quit 1))
+                (error (c)
+                  (format *error-output* "~&An unexpected error occurred: ~a~%" c)
+                  (uiop:quit 1)))
+            ;; Cleanup
+            (when di-builder (crisp.llvm-bindings:llvm-di-builder-finalize di-builder))
+            (when di-builder (crisp.llvm-bindings:llvm-dispose-di-builder di-builder))
+            (crisp.llvm-bindings:llvm-dispose-builder builder)
+            (crisp.llvm-bindings:llvm-dispose-module module)))))
+
+    (format *error-output* "; ...All compilation passes finished.~%")))
 
 (defun main ()
   "Main entry point for the crisp-compile executable."
   (let ((args (uiop:command-line-arguments)))
-    (multiple-value-bind (source-files output-file debug-p single-pass-p)
+    (multiple-value-bind (source-files output-file debug-p single-pass-p targets)
         (parse-cli-args args)
-      (compile-files source-files output-file debug-p single-pass-p))))
+      (compile-files source-files output-file debug-p single-pass-p targets))))

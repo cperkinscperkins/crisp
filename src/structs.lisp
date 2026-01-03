@@ -21,6 +21,7 @@
     ;; TODO: Handle vectors here (will need vector support first)
     ((or (eq type-spec 'bool)) 4) ;; booleans are 4 bytes in std140
     ((eq type-spec 'c-pointer) 8) ;; c-pointer is 8 bytes
+    ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
     ;; Cells are pointers (8 bytes) - Check mangled name
     ((and (symbolp type-spec)
           (> (length (symbol-name type-spec)) 5)
@@ -51,8 +52,9 @@
     ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
     ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
     ((eq type-spec 'bool) 4)
-    ((eq type-spec 'c-pointer) 8)
-    ;; Cells are pointers (8 bytes)
+    ((eq type-spec 'c-pointer) 8) ;; c-pointer is 8 bytes
+    ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
+    ;; Cells are pointers (8 bytes) - Check mangled name
     ((and (symbolp type-spec)
           (> (length (symbol-name type-spec)) 5)
           (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
