@@ -1,0 +1,13 @@
+
+;; TODO: activate this test
+;; at the moment, def-kernel => def-kernel-exact => def-function
+;; in the end, that's not really correct, but it'll serve for now.  
+;; if function disallows voidp, it'll mess up def-kernel-exact
+
+#|
+(def-function illegal-voidp (vp)
+    (declare #'(voidp => int))
+    7)
+
+|#
+

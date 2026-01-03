@@ -1,0 +1,6 @@
+;;  "reasonable error message"
+
+;; voidp is not a legal return type.
+(def-function ()
+    (declare #'(=> voidp))
+    10000)

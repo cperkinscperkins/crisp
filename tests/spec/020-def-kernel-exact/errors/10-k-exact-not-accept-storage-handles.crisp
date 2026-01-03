@@ -1,0 +1,12 @@
+;;
+;;  "reasonable error mesage"
+;;
+
+
+;; def-kernel-exact DOES NOT accept composite arguments, like Storage Handles (cell/vector/matrix/tensor) 
+;; or def-record or def-rec-vec as arguments.
+
+(def-kernel-exact bad_company (c)
+    (declare (type c (cell int :address-space :global :access :read-write)))
+    (let ((v (~ c)))
+        (set! (~ c) (+ v 1))))

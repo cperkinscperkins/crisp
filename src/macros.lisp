@@ -213,12 +213,13 @@
                      ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
                        (let ((size-sym (intern (format nil "~a_BYTE_SIZE" (symbol-name p)) (symbol-package p)))
                              (ptr-sym (intern (format nil "~a_PTR" (symbol-name p)) (symbol-package p)))
-                             (off-sym (intern (format nil "~a_OFFSET" (symbol-name p)) (symbol-package p))))
+                             (off-sym (intern (format nil "~a_OFFSET" (symbol-name p)) (symbol-package p)))
+                             (as (if (consp canonical) (nth 2 canonical) :global)))
                          (push size-sym exploded-params)
                          (push ptr-sym exploded-params)
                          (push off-sym exploded-params)
                          (push 'ulong exploded-types)
-                         (push 'voidp exploded-types)
+                         (push `(c-pointer :address-space ,as) exploded-types)
                          (push 'ulong exploded-types)
                          (push `(,p (marshall-cell ,type ,size-sym ,ptr-sym ,off-sym)) reassembly-bindings)))
                      (t (error "Unsupported storage handle: ~a" base))))
@@ -240,26 +241,83 @@
     (when (find #\- name-str)
           (error "Invalid Kernel Name '~a': Kernels requires C-style identifiers (no dashes)." name)))
 
-  ;; 2. Extract Declaration
-  (let* ((signature-form (find-if (lambda (f) (and (consp f) (eq (car f) 'declare)
-                                                   (consp (cadr f)) (eq (caadr f) 'function)))
-                             body))
-         (raw-body (if signature-form (remove signature-form body) body))
-         (signature-types (if signature-form (first (cdadr signature-form)) nil)))
+  ;; 2. Extract Types from Body Declarations
+  (let* ((declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
+         (raw-body (nthcdr (length declare-forms) body))
+         (declarations (loop for d in declare-forms append (rest d)))
+         (type-map (make-hash-table :test 'eq)))
 
-    (unless signature-form
-      (error "def-kernel '~a' requires a (declare #'(...)) signature." name))
+    ;; 2.1 Parse (type ...) declarations
+    (loop for d in declarations
+            when (and (consp d) (eq (car d) 'type))
+          do (let* ((args (rest d))
+                    (first-arg (first args))
+                    (last-arg (car (last args))))
+               (cond
+                ((valid-type-p first-arg)
+                  (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
+                ((valid-type-p last-arg)
+                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg))))))
 
-    ;; 3. Explode Parameters
-    (multiple-value-bind (exploded-params exploded-types reassembly-bindings)
-        (%explode-kernel-args params signature-types)
+    ;; 2.2 Parse (function ...) declaration (Overriding or providing standard signature)
+    (let ((fn-decl (find "FUNCTION" declarations :key (lambda (x) (and (consp x) (symbol-name (car x)))) :test #'string-equal)))
+      (when fn-decl
+            (let* ((sig (second fn-decl))
+                   (arrow-pos (position '=> sig))
+                   (param-types (subseq sig 0 (or arrow-pos (length sig)))))
+              (let ((p-ptr params)
+                    (t-ptr param-types))
+                (loop while (and p-ptr t-ptr) do
+                        (let ((p (pop p-ptr))
+                              (ts (pop t-ptr)))
+                          (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                              (let ((real-p (pop p-ptr))
+                                    (real-ts (if (and (symbolp ts) (string-equal (symbol-name ts) "&OUT"))
+                                                 (pop t-ptr)
+                                                 ts)))
+                                (setf (gethash real-p type-map) `(&out ,real-ts)))
+                              (setf (gethash p type-map) ts))))))))
 
-      ;; 4. Expand to def-kernel-exact
-      `(def-kernel-exact ,name ,exploded-params
-                         (declare #'(,@exploded-types))
-                         (let (,@reassembly-bindings)
-                           ,@raw-body)))))
+    ;; 2.3 Reconstruct Signature Types in parameter order
+    (let ((signature-types nil)
+          (p-ptr params))
+      (loop while p-ptr do
+              (let ((p (pop p-ptr)))
+                (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                    (let* ((real-p (pop p-ptr))
+                           (type (gethash real-p type-map)))
+                      (push '&out signature-types)
+                      (push (if (and (consp type) (eq (car type) '&out)) (second type) type) signature-types))
+                    (push (gethash p type-map) signature-types))))
+      (setf signature-types (nreverse signature-types))
 
+      (unless (every #'identity signature-types)
+        (error "def-kernel ~a: Missing type declarations for parameters: ~a" name
+          (loop for p in params for t-spec in signature-types unless t-spec collect p)))
+
+      ;; 2.4 Validate Completeness and VoidP
+      (loop for t-spec in signature-types
+            do (progn
+                (when (incomplete-type-p t-spec)
+                      (error "Kernel parameters must be COMPLETE types. Found incomplete: ~a" t-spec))
+                (let ((canon (canonicalize-type-specifier t-spec)))
+                  (when (or (eq canon 'voidp)
+                            (and (symbolp canon) (string-equal (symbol-name canon) "VOIDP")))
+                        (error "Kernel parameters cannot be of type 'voidp'. Use a specific pointer type with address space or a storage handle.")))))
+      ;; 3. Explode Parameters
+      (multiple-value-bind (exploded-params exploded-types reassembly-bindings)
+          (%explode-kernel-args params signature-types)
+
+        ;; 4. Expand to def-kernel-exact
+        ;; Preserve OTHER declarations (like local-size)
+        (let ((other-decls (loop for d in declarations
+                                   unless (member (car d) '(function type))
+                                 collect d)))
+          `(def-kernel-exact ,name ,exploded-params
+                             (declare #'(,@exploded-types))
+                             ,@(when other-decls `((declare ,@other-decls)))
+                             (let (,@reassembly-bindings)
+                               ,@raw-body)))))))
 
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
@@ -449,8 +507,9 @@
     (let ((code (instantiate-template base params)))
       (eval code))
 
-    (let ((result `(,constructor-name
-                     :parent (make-storage :address (as (c-pointer :address-space :global) ,ptr) :byte-size ,byte-size)
-                     :offset ,offset)))
+    (let* ((as (if (consp canonical) (nth 2 canonical) :global))
+           (result `(,constructor-name
+                      :parent (make-storage :address (as (c-pointer :address-space ,as) ,ptr) :byte-size ,byte-size)
+                      :offset ,offset)))
       (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
       result)))
