@@ -1,4 +1,4 @@
-;;;; Crisp - Lisp for Developing GPU Kernels
+﻿;;;; Crisp - Lisp for Developing GPU Kernels
 ;;;; Copyright (c) 2025 Christopher Perkins
 ;;;;
 ;;;; Licensed under the MIT License. See LICENSE file in the project root.
@@ -173,7 +173,44 @@
     (when (find #\- name-str)
           (error "Invalid Kernel Name '~a': def-kernel-exact requires C-style identifiers (no dashes)." name)))
 
-  ;; 2. Expand to def-function with entry-point
+  (when (or (member '&optional params) (member '&key params))
+        (error "Kernels (def-kernel/def-kernel-exact) do not support &optional or &key parameters."))
+
+  ;; 2. Validate Parameter Types (No Storage Handles)
+  (let* ((declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
+         (declarations (loop for d in declare-forms append (rest d)))
+         (type-map (make-hash-table :test 'eq)))
+
+    ;; 2.1 Parse (type ...) declarations
+    (loop for d in declarations
+            when (and (consp d) (eq (car d) 'type))
+          do (let* ((args (rest d))
+                    (first-arg (first args))
+                    (last-arg (car (last args))))
+               (cond
+                ((valid-type-p first-arg)
+                  (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
+                ((valid-type-p last-arg)
+                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg))))))
+
+    ;; 2.2 Parse (function ...) or #'(...) signatures
+    (let ((sig (find-if (lambda (d) (or (eq (car d) 'function) (eq (car d) 'common-lisp:function))) declarations)))
+      (when sig
+            ;; (function (args...) => ret)
+            (let* ((spec (second sig))
+                   (arrow-pos (position '=> spec))
+                   (arg-types (subseq spec 0 (or arrow-pos (length spec)))))
+              (loop for p in params
+                    for t-spec in arg-types
+                    do (setf (gethash p type-map) t-spec)))))
+
+    ;; 2.3 Check against storage handles
+    (dolist (p params)
+      (let ((t-spec (gethash p type-map)))
+        (when (and t-spec (%storage-handle-type-p t-spec))
+              (error "def-kernel-exact parameter '~a' cannot be a storage handle type (~a). Use def-kernel for implicit marshalling or pass raw pointers/sizes." p t-spec)))))
+
+  ;; 3. Expand to def-function with entry-point
   `(def-function ,name ,params
                  (declare (entry-point))
                  ,@body
@@ -186,6 +223,46 @@
       (and (symbolp base)
            (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)))))
 
+(defun %resolve-alias-strict (spec)
+  (let ((base (if (consp spec) (first spec) spec))
+        (args (if (consp spec) (rest spec) nil)))
+    (if (symbolp base)
+        (let ((alias-def (gethash base crisp.compiler::*crisp-template-aliases*)))
+          (if alias-def
+              (let ((params (car alias-def))
+                    (type-spec (cdr alias-def)))
+                (if params
+                    (let* ((arity (length params))
+                           (required-args (subseq args 0 (min (length args) arity)))
+                           (rest-args (subseq args (length required-args)))
+                           (substitutions (pairlis params required-args)))
+                      (let ((expanded (sublis substitutions type-spec)))
+                        (if (and rest-args (consp expanded))
+                            (%resolve-alias-strict (append expanded rest-args))
+                            (%resolve-alias-strict expanded))))
+                    (if args
+                        (%resolve-alias-strict (append (if (consp type-spec) type-spec (list type-spec)) args))
+                        (%resolve-alias-strict type-spec))))
+              (let ((simple (gethash base crisp.compiler::*crisp-type-aliases*)))
+                (if simple
+                    (%resolve-alias-strict simple)
+                    spec))))
+        spec)))
+
+(defun %incomplete-storage-handle-p (type-spec)
+  "Returns T if the type-spec is a storage handle but is missing explicit required keys (address-space, access)."
+  (let ((resolved (%resolve-alias-strict type-spec)))
+    (when (and (consp resolved) (%storage-handle-type-p resolved))
+          (let ((base (first resolved))
+                (args (rest resolved)))
+            (let ((is-kw (or (member :address-space args) (member :access args))))
+              (cond
+               (is-kw
+                 (let ((has-addr (member :address-space args))
+                       (has-acc (member :access args)))
+                   (not (and has-addr has-acc))))
+               ((= (length args) 3) nil)
+               (t t)))))))
 (defun %explode-kernel-args (params signature)
   "Explodes storage handle parameters into raw scalars.
    Returns (VALUES exploded-params exploded-signature-types reassembly-bindings)."
@@ -241,6 +318,9 @@
     (when (find #\- name-str)
           (error "Invalid Kernel Name '~a': Kernels requires C-style identifiers (no dashes)." name)))
 
+  (when (or (member '&optional params) (member '&key params))
+        (error "Kernels (def-kernel/def-kernel-exact) do not support &optional or &key parameters."))
+
   ;; 2. Extract Types from Body Declarations
   (let* ((declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
          (raw-body (nthcdr (length declare-forms) body))
@@ -277,6 +357,12 @@
                                                  ts)))
                                 (setf (gethash real-p type-map) `(&out ,real-ts)))
                               (setf (gethash p type-map) ts))))))))
+
+    ;; 2.3 Validate Completeness of Kernel Parameters
+    (dolist (p params)
+      (let ((t-spec (gethash p type-map)))
+        (when (and t-spec (%incomplete-storage-handle-p t-spec))
+              (error "def-kernel parameter '~a' has incomplete storage handle type ~a. Kernels require fully specified types (e.g. specify :address-space and :access)." p t-spec))))
 
     ;; 2.3 Reconstruct Signature Types in parameter order
     (let ((signature-types nil)
@@ -443,7 +529,9 @@
                             `(def-function ,accessor-name ((obj ,name))
                                            (declare (function ((,name) => ,type)))
                                            (declare (crisp-system-generated))
-                                           (return ',value)))
+                                           (return ,(if (or (numberp value) (stringp value) (eq value t) (eq value nil))
+                                                        value
+                                                        `',value))))
                         (let ((idx runtime-index))
                           (incf runtime-index)
                           `(def-function ,accessor-name ((obj ,name))
@@ -495,6 +583,12 @@
 (defmacro marshall-cell (type-alias byte-size ptr offset)
   "Marshals raw kernel arguments into a Cell struct.
    Usage: (marshall-cell out-c byte-size ptr offset)"
+  (when (and (consp type-alias)
+             (symbolp (first type-alias))
+             (string-equal (symbol-name (first type-alias)) "CELL")
+             (< (length type-alias) 4))
+        (error "marshall-cell argument must be a complete type specification (e.g. (cell int :global :read-write)). Found: ~a" type-alias))
+
   (let* ((canonical (crisp.compiler::canonicalize-type-specifier type-alias))
 
          (base (first canonical))

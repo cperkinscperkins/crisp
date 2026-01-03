@@ -1,5 +1,12 @@
+;;
+;; CHECK-FAIL: "def-kernel parameter 'A' has incomplete storage handle type IN-C. Kernels require fully specified types (e.g. specify :address-space and :access)."
+;;
 
-;; "reasonable error message"
+
+;; it is perfectly reasonable to have a type definition for cell that is incomplete. 
+;; that's grand.  Makes writing polymorphic functions much easier.
+
+;; but it is NOT ok for incomplete types to be used at the kernel param boundary.
 
 (def-type in-c (cell long :access :read-only)) ;; <-- missing address-space
 (def-type out-c (cell long))                   ;; <-- missing address-space and access
