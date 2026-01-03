@@ -132,21 +132,6 @@
                                          (address-space address-space :c-t Addr)
                                          (access access :c-t Acc))))
 
-  ;; Register default ~ accessor as a template
-  (register-template '~ '(To (Addr :global) (Acc :read-write)) nil
-                     '(def-function ~ (c)
-                                    (declare (function ((cell To Addr Acc) => To)))
-                                    (declare (crisp-system-generated))
-                                    (return (~ref~ c)))
-                     '((cell To Addr Acc) => To))
-  (register-template '~_SET! '(To (Addr :global) (Acc :read-write)) nil
-                     '(def-function ~_SET! (c v)
-                                    (declare (function ((cell To Addr Acc) To) => nil))
-                                    (declare (crisp-system-generated))
-                                    (set! (~ref~ c) v)
-                                    (return))
-                     '((cell To Addr Acc) To => nil))
-
   ;; Register bytes~ helper (sizeof T)
   (register-template 'bytes~ '(To (Addr :global) (Acc :read-write)) nil
                      '(def-function bytes~ (c)

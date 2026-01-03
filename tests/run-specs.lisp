@@ -47,10 +47,14 @@
 
 (defun cleanup-ir-string (output)
   "Extracts the IR from the compiler stdout."
-  (let ((marker "--- Generated LLVM IR: ---"))
-    (let ((pos (search marker output)))
-      (if pos
-          (string-trim '(#\Space #\Newline #\Return) (subseq output (+ pos (length marker))))
+  (let ((marker-prefix "--- Generated LLVM IR")
+        (marker-suffix "---"))
+    (let ((prefix-pos (search marker-prefix output)))
+      (if prefix-pos
+          (let ((suffix-pos (search marker-suffix output :start2 (+ prefix-pos (length marker-prefix)))))
+            (if suffix-pos
+                (string-trim '(#\Space #\Newline #\Return) (subseq output (+ suffix-pos (length marker-suffix))))
+                output))
           output))))
 
 (defun run-spec-binary (file)

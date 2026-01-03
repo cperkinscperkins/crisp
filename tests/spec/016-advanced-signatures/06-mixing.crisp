@@ -17,7 +17,7 @@
 ;; kernels will NOT support optional or key (but WILL support &out)
 ;; ATM def-kernel implementation is minimal, so these rules may or may not be enforced yet
 ;; this is not yet the time for that.
-(def-kernel exercise-o-k (a b d)
+(def-kernel exercise_o_k (a b d)
     (declare #'(int int int => nil))
     (option-and-keys a b :d d)
     (return))  ;; return value has to match for functions.
@@ -37,7 +37,7 @@
 ;; kernels also require COMPLETE storage handle types.
 ;; But, again, out implemention at this time is minimal, and this is likely not enforced (yet),
 ;; and doing so would be premature at this time.
-(def-kernel exorcise-o-a (a r b)
+(def-kernel exorcise_o_a (a r b)
     (declare #'(int (cell int :global :read-write) int => nil))
     (out-and-optional a r b)
     (return))
@@ -53,7 +53,7 @@
         (set! (~ res) sum)
         (return)))
 
-(def-kernel expertise-o-k (a r e)
+(def-kernel expertise_o_k (a r e)
     (declare #'(int (cell int :global :read-write)  int => nil))
     (out-and-key a r :e e)
     (return))
