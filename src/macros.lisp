@@ -173,6 +173,9 @@
     (when (find #\- name-str)
           (error "Invalid Kernel Name '~a': def-kernel-exact requires C-style identifiers (no dashes)." name)))
 
+  (when (or (member '&optional params) (member '&key params))
+        (error "Kernels (def-kernel/def-kernel-exact) do not support &optional or &key parameters."))
+
   ;; 2. Validate Parameter Types (No Storage Handles)
   (let* ((declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
          (declarations (loop for d in declare-forms append (rest d)))
@@ -274,6 +277,9 @@
   (let ((name-str (symbol-name name)))
     (when (find #\- name-str)
           (error "Invalid Kernel Name '~a': Kernels requires C-style identifiers (no dashes)." name)))
+
+  (when (or (member '&optional params) (member '&key params))
+        (error "Kernels (def-kernel/def-kernel-exact) do not support &optional or &key parameters."))
 
   ;; 2. Extract Types from Body Declarations
   (let* ((declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
