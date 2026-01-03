@@ -173,7 +173,41 @@
     (when (find #\- name-str)
           (error "Invalid Kernel Name '~a': def-kernel-exact requires C-style identifiers (no dashes)." name)))
 
-  ;; 2. Expand to def-function with entry-point
+  ;; 2. Validate Parameter Types (No Storage Handles)
+  (let* ((declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
+         (declarations (loop for d in declare-forms append (rest d)))
+         (type-map (make-hash-table :test 'eq)))
+
+    ;; 2.1 Parse (type ...) declarations
+    (loop for d in declarations
+            when (and (consp d) (eq (car d) 'type))
+          do (let* ((args (rest d))
+                    (first-arg (first args))
+                    (last-arg (car (last args))))
+               (cond
+                ((valid-type-p first-arg)
+                  (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
+                ((valid-type-p last-arg)
+                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg))))))
+
+    ;; 2.2 Parse (function ...) or #'(...) signatures
+    (let ((sig (find-if (lambda (d) (or (eq (car d) 'function) (eq (car d) 'common-lisp:function))) declarations)))
+      (when sig
+            ;; (function (args...) => ret)
+            (let* ((spec (second sig))
+                   (arrow-pos (position '=> spec))
+                   (arg-types (subseq spec 0 (or arrow-pos (length spec)))))
+              (loop for p in params
+                    for t-spec in arg-types
+                    do (setf (gethash p type-map) t-spec)))))
+
+    ;; 2.3 Check against storage handles
+    (dolist (p params)
+      (let ((t-spec (gethash p type-map)))
+        (when (and t-spec (%storage-handle-type-p t-spec))
+              (error "def-kernel-exact parameter '~a' cannot be a storage handle type (~a). Use def-kernel for implicit marshalling or pass raw pointers/sizes." p t-spec)))))
+
+  ;; 3. Expand to def-function with entry-point
   `(def-function ,name ,params
                  (declare (entry-point))
                  ,@body
