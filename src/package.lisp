@@ -127,7 +127,15 @@
    #:llvm-instruction-set-debug-loc
    #:llvm-di-builder-create-basic-type
    #:llvm-di-builder-create-subroutine-type
-   #:llvm-builder-set-debug-location))
+   #:llvm-builder-set-debug-location
+   ;; Calling Convention and Metadata (for SPIR-V kernels)
+   #:llvm-set-function-call-conv
+   #:llvm-get-function-call-conv
+   #:llvm-set-metadata
+   #:llvm-md-kind-id-in-context
+   #:llvm-md-string-in-context2
+   #:llvm-value-as-metadata
+   #:llvm-md-node-in-context2))
 
 (defpackage :crisp.utils
   (:use :cl)

@@ -58,6 +58,7 @@
   param-list ; A list of types
   return-type ; The *validated* type, e.g., 'i32
   body ; A list of *other* semantic nodes
+  is-entry-point ; T if this is a kernel (has (declare (entry-point)))
   source-location)
 
 ;; blueprint for a 'return' statement

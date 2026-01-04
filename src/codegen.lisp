@@ -250,6 +250,150 @@
               (setf (gethash param-name var-env) alloca)
               (incf llvm-param-index num-expanded)))))
 
+;; Patch to add SPIR-V kernel metadata functions to codegen.lisp
+;; Insert BEFORE the line: (defun generate-function-prototype
+
+(defun ensure-opencl-kernel-metadata (func semantic-function module)
+  "Attaches SPIR-V kernel metadata to a function if it's an entry point.
+   This includes:
+   - Setting spir_kernel calling convention (76)
+   - Adding kernel argument metadata (address space, access qual, type names)
+   Required for llvm-spirv to generate OpEntryPoint in SPIR-V output."
+  (when (semantic-function-is-entry-point semantic-function)
+        (let ((param-list (semantic-function-param-list semantic-function)))
+          (log:info "Marking function ~a as SPIR kernel (cc 76) with ~a parameters"
+                    (semantic-function-name semantic-function) (length param-list))
+
+          ;; 1. Set calling convention to spir_kernel (76)
+          (log:info "About to set calling convention...")
+                    (llvm-set-function-call-conv func 76)
+
+          ;; 2. Add kernel argument metadata
+          (let ((context (llvm-get-module-context module))
+                (addr-spaces '())
+                (access-quals '())
+                (type-names '())
+                (base-types '())
+                (type-quals '()))
+
+            ;; Process each parameter to extract metadata
+            (dolist (param param-list)
+              (let* ((param-type (semantic-param-type param))
+                     (addr-space (get-address-space-for-type param-type))
+                     (access-qual (get-access-qualifier-for-type param-type))
+                     (type-name (get-type-name-for-metadata param-type))
+                     (base-type type-name) ; For simple types, base = type
+                     (type-qual "")) ; Empty for now
+
+                (push addr-space addr-spaces)
+                (push access-qual access-quals)
+                (push type-name type-names)
+                (push base-type base-types)
+                (push type-qual type-quals)))
+
+            ;; Reverse lists to match parameter order
+            (setf addr-spaces (nreverse addr-spaces))
+            (setf access-quals (nreverse access-quals))
+            (setf type-names (nreverse type-names))
+            (setf base-types (nreverse base-types))
+            (setf type-quals (nreverse type-quals))
+
+            (log:info "About to attach metadata...")  
+                        ;; Attach metadata to function
+            (attach-kernel-arg-metadata func context
+                                        addr-spaces access-quals
+                                        type-names base-types type-quals)))))
+
+(defun get-address-space-for-type (type-spec)
+  "Returns the address space integer for a type (0=private, 1=global, 2=constant, 3=local)."
+  (cond
+   ;; Handle parameterized types like (cell int :address-space :global ...)
+   ((and (listp type-spec) (member :address-space type-spec))
+     (let ((as-keyword (getf (cdr type-spec) :address-space)))
+       (case as-keyword
+         (:global 1)
+         (:constant 2)
+         (:local 3)
+         (:private 0)
+         (t 0)))) ; Default to private
+   ;; Default for non-parameterized types
+   (t 0)))
+
+(defun get-access-qualifier-for-type (type-spec)
+  "Returns the access qualifier string for a type."
+  (cond
+   ;; Handle parameterized types with :access keyword
+   ((and (listp type-spec) (member :access type-spec))
+     (let ((acc-keyword (getf (cdr type-spec) :access)))
+       (case acc-keyword
+         (:read-only "read_only")
+         (:write-only "write_only")
+         (:read-write "read_write")
+         (t "none"))))
+   ;; Default
+   (t "none")))
+
+(defun get-type-name-for-metadata (type-spec)
+  "Returns a string representation of the type for SPIR-V metadata."
+  (cond
+   ;; Parameterized type like (cell int ...)
+   ((and (listp type-spec) (not (null type-spec)))
+     (let ((base-type (first type-spec)))
+       (case base-type
+         (cell "int*") ; Cell appears as pointer to element type
+         (vector "int*")
+         (matrix "int*")
+         (tensor "int*")
+         (t (format nil "~a*" (string-downcase (symbol-name base-type)))))))
+   ;; Simple types
+   ((symbolp type-spec)
+     (case type-spec
+       (int "int")
+       (uint "uint")
+       (long "long")
+       (ulong "ulong")
+       (float "float")
+       (double "double")
+       (t (string-downcase (symbol-name type-spec)))))
+   (t "void*")))
+
+(defun attach-kernel-arg-metadata (func context addr-spaces access-quals type-names base-types type-quals)
+  "Attaches kernel argument metadata to a function using LLVM metadata API."
+  (log:info "attach-kernel-arg-metadata called with ~a params" (length addr-spaces))
+    (flet ((create-i32-metadata (value)
+                              (llvm-value-as-metadata
+                               (llvm-const-int (llvm-int32-type) value 0)))
+         (create-string-metadata (str)
+                                 (llvm-md-string-in-context2 context str (length str))))
+
+    ;; Create metadata nodes for each category
+    (let ((addr-space-md (create-metadata-tuple context
+                                                (mapcar #'create-i32-metadata addr-spaces)))
+          (access-qual-md (create-metadata-tuple context
+                                                 (mapcar #'create-string-metadata access-quals)))
+          (type-name-md (create-metadata-tuple context
+                                               (mapcar #'create-string-metadata type-names)))
+          (base-type-md (create-metadata-tuple context
+                                               (mapcar #'create-string-metadata base-types)))
+          (type-qual-md (create-metadata-tuple context
+                                               (mapcar #'create-string-metadata type-quals))))
+
+      ;; Attach to function
+      (llvm-set-metadata func (llvm-md-kind-id-in-context context "kernel_arg_addr_space" 22) addr-space-md)
+      (llvm-set-metadata func (llvm-md-kind-id-in-context context "kernel_arg_access_qual" 23) access-qual-md)
+      (llvm-set-metadata func (llvm-md-kind-id-in-context context "kernel_arg_type" 16) type-name-md)
+      (llvm-set-metadata func (llvm-md-kind-id-in-context context "kernel_arg_base_type" 21) base-type-md)
+      (llvm-set-metadata func (llvm-md-kind-id-in-context context "kernel_arg_type_qual" 21) type-qual-md))))
+
+(defun create-metadata-tuple (context metadata-list)
+  "Creates an LLVM metadata tuple from a list of metadata nodes."
+  (let ((count (length metadata-list)))
+    (cffi:with-foreign-object (args :pointer count)
+                              (loop for md in metadata-list
+                                    for i from 0
+                                    do (setf (cffi:mem-aref args :pointer i) md))
+                              (llvm-md-node-in-context2 context args count))))
+
 (defun generate-function-prototype (semantic-function module di-builder di-compile-unit location-map)
   "Generates the LLVM function prototype and debug info."
   (let* ((return-types (semantic-function-return-type semantic-function))
@@ -334,6 +478,8 @@
 
   (multiple-value-bind (func di-subprogram)
       (generate-function-prototype semantic-function module di-builder di-compile-unit location-map)
+    ;; Attach SPIR-V kernel metadata if this is an entry point
+    (ensure-opencl-kernel-metadata func semantic-function module)
     (generate-function-body semantic-function func di-subprogram builder module di-builder location-map)))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
@@ -1194,3 +1340,4 @@
   "Explict handler for NIL nodes (e.g. empty body return values or missing value nodes)."
   (declare (ignore builder module var-env di-builder di-scope location-map))
   (values nil))
+
