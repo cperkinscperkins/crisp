@@ -14,7 +14,7 @@ and Linux.
 
 Presently it supports the compilation of one (1) .crisp file. 
 
-It also supports four (five) flags:
+It also supports five (six) flags:
 
 ### -g / --debug
 DWARF symbols are inserted when using the `-g` or `--debug` flags.
@@ -31,6 +31,9 @@ The default level is `info`.
 ### --runtime-checks
 Enables runtime checks. When enabled, assertions are compiled into the kernel. When disabled (default), assertions are elided from the bitcode, ensuring zero runtime cost.
 
+### --ir-target=spv
+Will output a SPIRV .spv file in the same location as the .crisp file. This is a runnable kernel.
+
 Pipeline
 ========
 
@@ -41,6 +44,15 @@ The compiler
 - walks the semantic node tree to generate LLVM-IR
 - Side Channels are supported (for the cell datatype, which is WIP)
 - DWARF markup is also supported
+- outputs .spv
+
+Crisp doesn't have a "runtime". There is a simple run_smoke_kernel.lisp which can be used
+to run the crisp/spec/023-spirv/01-smoke.spv  kernel via OpenCL.
+
+- Compile The Smoke Kernel to SPV
+- `.\bin\crisp-compile.exe --ir-target=spv .\tests\spec\023-spirv\01-smoke.crisp`
+- Execute the Smoke Kernel with OpenCL
+- `sbcl --non-interactive --load scripts/run_smoke_kernel.lisp`
 
 
 Available Language Constructs
@@ -218,8 +230,9 @@ with marshalling.
 ### def-kernel and cell.
 
 ### --ir-target=spv 
-Yes, we are outputting SPIR-V now.  Just add the --ir-target=spv.   Hasn't been checked
-on a real GPU yet, so there may be bugs.
+Yes, we are outputting SPIR-V now.  Just add the --ir-target=spv.   
+
+
 
 
 Errors

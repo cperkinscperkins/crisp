@@ -1,4 +1,3 @@
-;; put_temp_files_here/run_smoke_kernel.lisp
 ;; Runs the smoke_test SPIR-V kernel on the BMG GPU
 ;; Run with: sbcl --non-interactive --load scripts/run_smoke_kernel.lisp
 
