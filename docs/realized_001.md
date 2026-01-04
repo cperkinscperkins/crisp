@@ -285,3 +285,9 @@ As a Lisp, what with all the macroexpansion and code conversion, line numbers do
 counting system. You'll see error messages with locations like: (2 3 0 5 8) which means
 the error is in the 2nd s-expression, 3rd s-expression, 0th s-expression, 5th s-expression,
 8th s-expression of the tree.  It's essentially a branch-and-leaf counting system.  Enjoy.
+
+Celebrations
+============
+
+Compiled and successfully ran the first kernel at 1AM Jan 3, 2026.
+![SUCCESS](congrats.png)
