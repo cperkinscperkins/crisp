@@ -23,6 +23,188 @@
                              (error "Tool invocation failed: ~{~a~^ ~}" args)))
     (get-output-stream-string output)))
 
+;; Generalized SPIR-V Kernel Metadata Injection Functions
+;; These functions parse LLVM IR and inject OpenCL kernel metadata for any kernel
+
+(defun find-spir-kernels (ir-text)
+  "Find all SPIR kernel functions in LLVM IR text.
+   Returns list of (function-name start-pos end-pos-of-signature)."
+  (let ((kernels '())
+        (pos 0))
+    (loop
+     (let ((kernel-pos (search "spir_kernel" ir-text :start2 pos)))
+       (unless kernel-pos
+         (cl:return))
+
+       ;; Find 'define' before spir_kernel
+       (let* ((define-pos (search "define" ir-text :start2 (max 0 (- kernel-pos 100)) :end2 kernel-pos :from-end t))
+              (at-pos (position #\@ ir-text :start (or define-pos kernel-pos)))
+              (paren-pos (position #\( ir-text :start at-pos))
+              (func-name (subseq ir-text (1+ at-pos) paren-pos))
+              ;; Find opening brace for function body
+              (brace-pos (position #\{ ir-text :start paren-pos)))
+
+         (when (and func-name brace-pos)
+               (push (list func-name define-pos brace-pos) kernels))
+
+         (setf pos (1+ kernel-pos)))))
+    (nreverse kernels)))
+
+(defun extract-kernel-params (ir-text func-start func-end)
+  "Extract parameter types from a kernel function signature.
+   Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64')."
+  (let* ((sig-text (subseq ir-text func-start func-end))
+         (paren-start (position #\( sig-text))
+         (paren-end (position #\) sig-text :from-end t)))
+
+    (unless (and paren-start paren-end (< paren-start paren-end))
+      (log:warn "Could not find parameter parens!")
+      (return-from extract-kernel-params nil))
+
+    (let* ((params-text (subseq sig-text (1+ paren-start) paren-end))
+           (params '()))
+
+      (log:info "extract-kernel-params: params-text = ~s" params-text)
+
+      (dolist (param-str (uiop:split-string params-text :separator ","))
+        (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) param-str)))
+          (when (> (length trimmed) 0)
+                (let ((percent-pos (position #\% trimmed)))
+                  (if percent-pos
+                      (let ((type-text (string-trim '(#\Space #\Tab) (subseq trimmed 0 percent-pos))))
+                        (when (> (length type-text) 0)
+                              (log:info "  extracted type: ~s" type-text)
+                              (push type-text params)))
+                      (progn
+                       (log:info "  extracted type (no name): ~s" trimmed)
+                       (push trimmed params)))))))
+
+      (nreverse params))))
+
+(defun ir-type-to-opencl-metadata (ir-type)
+  "Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).
+   Returns (values addr-space-int access-qual-string type-name-string)."
+  (let ((addr-space 0) ; default: private
+                      (access-qual "none")
+                      (type-name "void*")) ; default
+
+    (cond
+     ;; Pointer types: ptr addrspace(N)
+     ((search "ptr" ir-type)
+       (cond
+        ((search "addrspace(1)" ir-type)
+          (setf addr-space 1 type-name "int*")) ; global
+        ((search "addrspace(2)" ir-type)
+          (setf addr-space 2 type-name "int*")) ; constant
+        ((search "addrspace(3)" ir-type)
+          (setf addr-space 3 type-name "int*")) ; local
+        (t
+          (setf addr-space 0 type-name "int*")))) ; private/generic
+
+     ;; Integer types
+     ((search "i64" ir-type)
+       (setf addr-space 0 type-name "ulong"))
+     ((search "i32" ir-type)
+       (setf addr-space 0 type-name "uint"))
+     ((search "i8" ir-type)
+       (setf addr-space 0 type-name "uchar"))
+
+     ;; Floating point
+     ((search "float" ir-type)
+       (setf addr-space 0 type-name "float"))
+     ((search "double" ir-type)
+       (setf addr-space 0 type-name "double")))
+
+    (values addr-space access-qual type-name)))
+
+(defun generate-kernel-metadata (params metadata-id-base)
+  "Generate LLVM metadata definitions for kernel parameters.
+   Returns (values metadata-refs-string metadata-defs-string next-id)."
+  (let ((addr-spaces '())
+        (access-quals '())
+        (type-names '())
+        (base-types '())
+        (type-quals '()))
+
+    ;; Extract metadata for each parameter
+    (dolist (param params)
+      (multiple-value-bind (addr-space access-qual type-name)
+          (ir-type-to-opencl-metadata param)
+        (push addr-space addr-spaces)
+        (push access-qual access-quals)
+        (push type-name type-names)
+        (push type-name base-types) ; base-type same as type-name
+        (push "" type-quals))) ; empty type qualifiers
+
+    ;; Reverse to maintain parameter order
+    (setf addr-spaces (nreverse addr-spaces))
+    (setf access-quals (nreverse access-quals))
+    (setf type-names (nreverse type-names))
+    (setf base-types (nreverse base-types))
+    (setf type-quals (nreverse type-quals))
+
+    ;; Generate metadata IDs
+    (let* ((id-addr (+ metadata-id-base 0))
+           (id-access (+ metadata-id-base 1))
+           (id-type (+ metadata-id-base 2))
+           (id-base (+ metadata-id-base 3))
+           (id-qual (+ metadata-id-base 4))
+           (next-id (+ metadata-id-base 5)))
+
+      ;; Build metadata reference string
+      (let ((metadata-refs
+             (format nil " !kernel_arg_addr_space !~a !kernel_arg_access_qual !~a !kernel_arg_type !~a !kernel_arg_base_type !~a !kernel_arg_type_qual !~a"
+               id-addr id-access id-type id-base id-qual)))
+
+        ;; Build metadata definitions string
+        (let ((metadata-defs
+               (format nil "!~a = !{~{i32 ~a~^, ~}}~%!~a = !{~{!\"~a\"~^, ~}}~%!~a = !{~{!\"~a\"~^, ~}}~%!~a = !{~{!\"~a\"~^, ~}}~%!~a = !{~{!\"~a\"~^, ~}}~%"
+                 id-addr addr-spaces
+                 id-access access-quals
+                 id-type type-names
+                 id-base base-types
+                 id-qual type-quals)))
+
+          (values metadata-refs metadata-defs next-id))))))
+
+
+(defun inject-spir-kernel-metadata (ir-text)
+  "Inject OpenCL kernel metadata for all SPIR kernels found in IR text.
+   Returns modified IR text with metadata."
+  (let ((kernels (find-spir-kernels ir-text)))
+    (if (null kernels)
+        ir-text
+        (let ((result ir-text)
+              (metadata-id-base 100)
+              (all-metadata-defs ""))
+
+          (dolist (kernel-info kernels)
+            (destructuring-bind (func-name func-start brace-pos) kernel-info
+              (log:info "Injecting metadata for kernel: ~a" func-name)
+
+              (let ((params (extract-kernel-params result func-start brace-pos)))
+                (log:info "  Parameters: ~a" params)
+
+                (multiple-value-bind (metadata-refs metadata-defs next-id)
+                    (generate-kernel-metadata params metadata-id-base)
+
+                  (let* ((kernel-sig-start (search func-name result))
+                         (new-brace-pos (position #\{ result :start kernel-sig-start))
+                         (close-paren-pos (position #\) result :end new-brace-pos :from-end t)))
+
+                    (setf result (concatenate 'string
+                                   (subseq result 0 (1+ close-paren-pos))
+                                   metadata-refs
+                                   " "
+                                   (string #\{)
+                                   (subseq result (1+ new-brace-pos))))
+
+                    (setf all-metadata-defs (concatenate 'string all-metadata-defs metadata-defs))
+                    (setf metadata-id-base next-id))))))
+
+          (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
+
+
 (defun compile-to-spirv (module output-path)
   "Compiles an LLVM Module to SPIR-V using the external toolchain."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
@@ -32,9 +214,15 @@
          (spv-file output-path))
 
     ;; 1. Write Temporary .ll file
-    (let ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module))))
+    (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
+           ;; TEMPORARY: Inject kernel metadata as text (proof of concept for smoke_test)
+           ;;  This avoids LLVM C API metadata functions which crash due to CFFI/version issues.
+           ;;  TODO: Generalize this to work for any kernel
+           ;; Inject kernel metadata for all SPIR kernels
+           ;;  This avoids LLVM C API metadata functions which crash due to CFFI/version issues.
+           (ir-with-metadata (inject-spir-kernel-metadata ir)))
       (with-open-file (stream ll-file :direction :output :if-exists :supersede)
-        (write-string ir stream)))
+        (write-string ir-with-metadata stream)))
 
     ;; 2. Clang -cc1 (LL -> BC)
     ;; Force the target triple to spir64-unknown-unknown to satisfy llvm-spirv

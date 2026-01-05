@@ -386,6 +386,8 @@
                                           (t return-node)))
 
                            :source-location (if return-node (semantic-node-source-location return-node) location))))))
+         :is-entry-point (loop for decl in declarations
+                               thereis (and (listp decl) (eq (first decl) 'entry-point)))
          :source-location location)))))
 
 (defun internal-def-function (name params declarations body location)
@@ -704,3 +706,4 @@
       (when di-builder (llvm-dispose-di-builder di-builder))
       (llvm-dispose-builder builder)
       (llvm-dispose-module module))))
+

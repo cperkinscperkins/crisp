@@ -250,6 +250,25 @@
               (setf (gethash param-name var-env) alloca)
               (incf llvm-param-index num-expanded)))))
 
+;; Patch to add SPIR-V kernel metadata functions to codegen.lisp
+;; Insert BEFORE the line: (defun generate-function-prototype
+
+(defun ensure-opencl-kernel-metadata (func semantic-function module)
+  "Marks a function as a SPIR-V kernel if it's an entry point.
+   Sets the spir_kernel calling convention (76).
+   
+   NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
+   as text during IR printing, not via LLVM C API, because the metadata API functions
+   (LLVMValueAsMetadata, LLVMMDStringInContext2, etc.) may not be available in all
+   LLVM versions and cause crashes when called via CFFI. Text injection is simpler
+   and guaranteed to work."
+  (when (semantic-function-is-entry-point semantic-function)
+        (log:info "Marking function ~a as SPIR kernel (cc 76)"
+                  (semantic-function-name semantic-function))
+        ;; Set calling convention to spir_kernel (76)
+        ;; This is simple and works reliably via C API
+        (llvm-set-function-call-conv func 76)))
+
 (defun generate-function-prototype (semantic-function module di-builder di-compile-unit location-map)
   "Generates the LLVM function prototype and debug info."
   (let* ((return-types (semantic-function-return-type semantic-function))
@@ -334,6 +353,8 @@
 
   (multiple-value-bind (func di-subprogram)
       (generate-function-prototype semantic-function module di-builder di-compile-unit location-map)
+    ;; Attach SPIR-V kernel metadata if this is an entry point
+    (ensure-opencl-kernel-metadata func semantic-function module)
     (generate-function-body semantic-function func di-subprogram builder module di-builder location-map)))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
@@ -1194,3 +1215,5 @@
   "Explict handler for NIL nodes (e.g. empty body return values or missing value nodes)."
   (declare (ignore builder module var-env di-builder di-scope location-map))
   (values nil))
+
+

@@ -286,10 +286,10 @@ Kernels
 - [x] error messages
 - - 06 - kernels can't declare they return values
 - [x] refactor
-- [ ] deferred errors
+- [x] deferred errors
 - - [x] 03 no casting of voidp
 - - [x] 04 invalid return (return 0)
-- - [ ] 08  complete types for marshall  <-- reoprioritize this highly
+- - [x] 08  complete types for marshall  <-- reoprioritize this highly
 - - [x] all the def-kernel-exact errors need to be revived for def-kernel.
 - - [x] and I should probably just write the damn def-kernel transformation macro
 - [x] def-kernel
@@ -298,7 +298,7 @@ Kernels
 - - [x] spirv
 - - [ ] ptx?
 - [ ] --binary-gpu-target
-- [ ] test on BMG
+- [x] test on BMG
 - [ ] metadata
 - [ ] hoisting
 
