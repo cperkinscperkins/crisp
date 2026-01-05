@@ -213,27 +213,27 @@
          (bc-file (merge-pathnames (format nil "~a.temp.bc" name) base-path))
          (spv-file output-path))
 
+    ;; Set target triple for SPIR-V before writing IR
+    (llvm-set-target module "spir64-unknown-unknown")
+
     ;; 1. Write Temporary .ll file
     (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
-           ;; TEMPORARY: Inject kernel metadata as text (proof of concept for smoke_test)
-           ;;  This avoids LLVM C API metadata functions which crash due to CFFI/version issues.
-           ;;  TODO: Generalize this to work for any kernel
-           ;; Inject kernel metadata for all SPIR kernels
-           ;;  This avoids LLVM C API metadata functions which crash due to CFFI/version issues.
            (ir-with-metadata (inject-spir-kernel-metadata ir)))
       (with-open-file (stream ll-file :direction :output :if-exists :supersede)
         (write-string ir-with-metadata stream)))
 
-    ;; 2. Clang -cc1 (LL -> BC)
-    ;; Force the target triple to spir64-unknown-unknown to satisfy llvm-spirv
-    (run-tool-command
-     (list "clang" "-cc1" "-triple" "spir64-unknown-unknown"
-           "-emit-llvm-bc" "-x" "ir" (namestring ll-file)
-           "-o" (namestring bc-file))
-     :log-prefix "[SPIR-V] ")
+    ;; 2. llvm-as (LL -> BC)
+    (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-as.exe" "bin/llvm-as"))
+           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
 
-    ;; 4. llvm-spirv (BC -> SPV)
-    ;; Locate the tool in bin/
+      (unless (probe-file tool)
+        (error "llvm-as tool not found in bin/"))
+
+      (run-tool-command
+       (list (namestring tool) (namestring ll-file) "-o" (namestring bc-file))
+       :log-prefix "[SPIR-V] "))
+
+    ;; 3. llvm-spirv (BC -> SPV)
     (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-spirv.exe" "bin/llvm-spirv"))
            (tool (merge-pathnames tool-name *default-pathname-defaults*)))
 
@@ -249,6 +249,7 @@
     (when (probe-file bc-file) (delete-file bc-file))
 
     (log:info "Generated SPIR-V: ~a" spv-file)))
+
 
 (defun initialize-compiler (&key (log-level :info) (runtime-checks nil))
   "A master initialization function for the Crisp compiler.

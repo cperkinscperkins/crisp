@@ -129,6 +129,7 @@
    #:llvm-di-builder-create-subroutine-type
    #:llvm-builder-set-debug-location
    ;; Calling Convention and Metadata (for SPIR-V kernels)
+   #:llvm-set-target
    #:llvm-set-function-call-conv
    #:llvm-get-function-call-conv
    #:llvm-set-metadata
