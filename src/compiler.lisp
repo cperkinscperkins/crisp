@@ -204,7 +204,6 @@
 
           (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
 
-
 (defun compile-to-spirv (module output-path)
   "Compiles an LLVM Module to SPIR-V using the external toolchain."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))

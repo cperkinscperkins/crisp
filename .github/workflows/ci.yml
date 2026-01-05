@@ -11,8 +11,26 @@ jobs:
     steps:
       - name: 1. Check out code
         uses: actions/checkout@v4
+        with:
+          lfs: true 
 
-      - name: 2. Install System Dependencies (SBCL & LLVM)
+      - name: 2. Make bundled LLVM tools executable
+        run: |
+          chmod +x tools/llvm-as-linux tools/llvm-spirv-linux tools/llc-linux
+
+      - name: 2.5. Test bundled LLVM tools
+        run: |
+          echo "Testing llvm-as..."
+          ./tools/llvm-as-linux --version || echo "llvm-as failed with code $?"
+          
+          echo "Testing llvm-spirv..."
+          ./tools/llvm-spirv-linux --version || echo "llvm-spirv failed with code $?"
+          
+          echo "Checking dependencies..."
+          ldd ./tools/llvm-as-linux
+          ldd ./tools/llvm-spirv-linux
+
+      - name: 3. Install System Dependencies (SBCL & LLVM)
         run: |
           # Clear potentially stale FASL cache (critical for fixing encoding glitches)
           rm -rf ~/.cache/common-lisp
@@ -34,7 +52,7 @@ jobs:
           # Create a symlink so 'llc' is on the path and our test can find it
           sudo ln -s /usr/bin/llc-21 /usr/bin/llc
 
-      - name: 3. Install Quicklisp
+      - name: 4. Install Quicklisp
         run: |
           # Download quicklisp.lisp
           curl -O https://beta.quicklisp.org/quicklisp.lisp
@@ -49,7 +67,7 @@ jobs:
                          --eval '(ql:add-to-init-file)' \
                          --eval '(quit)'
 
-      - name: 4. Run Crisp Test Script
+      - name: 5. Run Crisp Test Script
         run: |
           # We run the test script and pipe its output to 'tee' so we can see it
           # in the CI log. We save the output to a file.
@@ -59,12 +77,12 @@ jobs:
           # If "Failed: [1-9]" is found, we exit with an error, failing the CI job.
           ! grep -E "Failed: [1-9]" test_output.log
 
-      - name: 5. Build Executable
+      - name: 6. Build Executable
         run: |
           # This runs your new build script
           sbcl --non-interactive --load build/build.lisp
 
-      - name: 6. Run End-to-End Specs (Internal & External)
+      - name: 7. Run End-to-End Specs (Internal & External)
         run: |
           # Exit immediately if a pipeline returns a non-zero status.
           set -o pipefail
