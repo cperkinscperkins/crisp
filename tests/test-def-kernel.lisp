@@ -44,8 +44,8 @@
                  (is-valid-ir ir)
 
                  ;; Verify the signature is unrolled/marshalled
-                 ;; We expect: define void @cell_add_... (i64, ptr, i64, i64, ...)
+                 ;; We expect: define spir_kernel void @cell_add_... (i64, ptr, i64, i64, ...)
                  ;; The exact name mangle depends on types, but we know it should NOT take %CELL structs directly.
-                 (true (search "define void @cell_add_" ir))
+                 (true (search "define spir_kernel void @cell_add_" ir))
                  (true (search "(i64 %0, ptr addrspace(1) %1, i64 %2, i64 %3, ptr addrspace(1) %4, i64 %5, i64 %6, ptr addrspace(1) %7, i64 %8, i64 %9)" ir)
                        "Kernel signature should contain expanded arguments: 1 (long) + 3 (cell) + 3 (cell) + 3 (cell) = 10 args."))))

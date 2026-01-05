@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-02T01:42:48.692583Z
+Generated on 2026-01-03T23:21:18.616322Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -454,10 +454,17 @@ Generated on 2026-01-02T01:42:48.692583Z
 
 
 ---
+### DEFUN `IS-GLOBAL-STORAGE-HANDLE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns true if the type-spec represents a handle to global memory.
+
+
+---
 ### DEFUN `GET-EXPANDED-TYPES`
 - **Args**: `(TYPE-SPEC MODULE)`
 
-  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type).
+  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type).  >      >    If *target-backend* is :spirv or :ptx, upgrade pointers in storage handles to Global Address Space (1).
 
 
 ---
@@ -545,6 +552,10 @@ Generated on 2026-01-02T01:42:48.692583Z
 
 
 ---
+### DEFUN `GET-TYPE-CAT-SAFE`
+- **Args**: `(TYPE-NAME TYPE-OBJ)`
+
+---
 ### DEFUN `BUILD-CAST-IF-NEEDED`
 - **Args**: `(BUILDER FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)`
 
@@ -583,10 +594,22 @@ Generated on 2026-01-02T01:42:48.692583Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\compiler-struct-analysis.lisp`
-
 ## File: `C:\Users\cperk\Documents\crisp\src\compiler.lisp`
 
+### DEFUN `RUN-TOOL-COMMAND`
+- **Args**: `(ARGS &KEY (LOG-PREFIX ))`
+
+  > Runs a command using uiop:run-program.
+
+
+---
+### DEFUN `COMPILE-TO-SPIRV`
+- **Args**: `(MODULE OUTPUT-PATH)`
+
+  > Compiles an LLVM Module to SPIR-V using the external toolchain.
+
+
+---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL))`
 
@@ -613,6 +636,17 @@ Generated on 2026-01-02T01:42:48.692583Z
 - **Args**: `(NAME &REST SPECS)`
 
   > Defines a new enumeration type.  >    Usage: (def-enumeration address-space (:global 1) :local :private)
+
+
+---
+### DEFUN `IS-ADDRESS-SPACE?`
+- **Args**: `(X)`
+
+---
+### DEFUN `ADDRESS-SPACE-VALUE`
+- **Args**: `(K)`
+
+  > Returns the integer value for an address space keyword, sensitive to *target-backend*.
 
 
 ---
@@ -881,17 +915,42 @@ Generated on 2026-01-02T01:42:48.692583Z
 
 
 ---
-### DEFMACRO `DEF-KERNEL`
-- **Args**: `(NAME PARAMS &REST BODY)`
-
-  > Defines a GPU Kernel (Entry Point).  >      >    Constraint: All parameter types MUST be complete.  >    Incomplete types (missing compile-time properties) are forbidden at the kernel boundary  >    because the host must know the exact layout to marshall arguments.
-
-
----
 ### DEFMACRO `DEF-KERNEL-EXACT`
 - **Args**: `(NAME PARAMS &REST BODY)`
 
   > Defines a GPU Kernel with exact ABI control (Raw Scalars).  >    - Name must be valid C identifier (no dashes).  >    - No implicit arguments or marshalling by the compiler.  >    - Return type is implicitly NIL (void).
+
+
+---
+### DEFUN `%STORAGE-HANDLE-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if the type-spec refers to a storage handle (cell, tensor, etc.).
+
+
+---
+### DEFUN `%RESOLVE-ALIAS-STRICT`
+- **Args**: `(SPEC)`
+
+---
+### DEFUN `%INCOMPLETE-STORAGE-HANDLE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if the type-spec is a storage handle but is missing explicit required keys (address-space, access).
+
+
+---
+### DEFUN `%EXPLODE-KERNEL-ARGS`
+- **Args**: `(PARAMS SIGNATURE)`
+
+  > Explodes storage handle parameters into raw scalars.  >    Returns (VALUES exploded-params exploded-signature-types reassembly-bindings).
+
+
+---
+### DEFMACRO `DEF-KERNEL`
+- **Args**: `(NAME PARAMS &REST BODY)`
+
+  > Defines a GPU Kernel (Entry Point).  >      >    Constraint: All parameter types MUST be complete.  >    Incomplete types (missing compile-time properties) are forbidden at the kernel boundary  >    because the host must know the exact layout to marshall arguments.
 
 
 ---
@@ -977,14 +1036,14 @@ Generated on 2026-01-02T01:42:48.692583Z
 ### DEFUN `PARSE-CLI-ARGS`
 - **Args**: `(ARGS)`
 
-  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p).
+  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets).
 
 
 ---
 ### DEFUN `COMPILE-FILES`
-- **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P)`
+- **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS)`
 
-  > Compiles the given files.
+  > Compiles the given files, iterating over requested targets.
 
 
 ---
@@ -1549,6 +1608,12 @@ Generated on 2026-01-02T01:42:48.692583Z
 
 
 ---
+### DEFVAR `*TARGET-BACKEND*`
+
+  > The active target backend for compilation.   >    Supported values: :generic, :cpu, :spirv, :ptx.
+
+
+---
 ### DEFVAR `*CRISP-TYPES*`
 
   > A hash table mapping type names (symbols) to CRISP-TYPE structs.
@@ -1667,6 +1732,19 @@ Generated on 2026-01-02T01:42:48.692583Z
 ---
 ### DEFUN `TYPE-EQUAL-P`
 - **Args**: `(T1 T2)`
+
+---
+### DEFVAR `*TARGET-BACKEND*`
+
+  > The target backend for the current compilation pass.
+
+
+---
+### DEFUN `ENCODE-ADDRESS-SPACE`
+- **Args**: `(AS)`
+
+  > Maps a keyword address space to an integer, sensitive to *target-backend*.
+
 
 ---
 ### DEFUN `RESOLVE-TYPE-TO-LLVM`

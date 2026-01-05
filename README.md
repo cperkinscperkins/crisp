@@ -1,12 +1,9 @@
-# Crisp
-Crisp - Lisp for developing GPU Kernels
-
 Crisp 🚧
 ========
 A Lisp for High-Performance GPU Kernel Development
 
 ### Current Status: Design Phase
-Crisp is currently in the design and specification phase. There is no working compiler or code at this time. This repository contains the living design document for the language and its tooling ecosystem. The goal is to create a robust and well-thought-out language before implementation begins.
+Crisp is currently in the early implementation phase. As the implementation moves forward, it informs and refines the design.  This repository contains the living design document for the language and its tooling ecosystem. 
 
 ### The Vision 💡
 Crisp is a Lisp dialect designed specifically for writing safe, performant, and correct GPU kernels. The focus is on creating a language that:
@@ -21,6 +18,9 @@ Crisp is a Lisp dialect designed specifically for writing safe, performant, and 
 The complete, in-progress design document can be found in the docs directory.
 
 [View the Current Specification](./docs/ideal_001.md)
+
+### The Implementation
+The implementation is nascent (kindly put). It is tracked [here](./docs/realized_001.md)
 
 ## Author
 

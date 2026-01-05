@@ -603,3 +603,36 @@
 (defcfun ("LLVMValueAsMetadata" llvm-value-as-metadata) :pointer
          "Wraps a Value (like a ConstantInt) as Metadata."
          (val :pointer))
+
+;; --- Function Calling Convention ---
+
+(defcfun ("LLVMSetFunctionCallConv" llvm-set-function-call-conv) :void
+         "Sets the calling convention for a function.
+          Common values: 0=C, 76=spir_kernel, 77=spir_func"
+         (fn :pointer)
+         (cc :unsigned-int))
+
+(defcfun ("LLVMGetFunctionCallConv" llvm-get-function-call-conv) :unsigned-int
+         "Gets the calling convention for a function."
+         (fn :pointer))
+
+;; --- Metadata Management ---
+
+(defcfun ("LLVMSetMetadata" llvm-set-metadata) :void
+         "Attaches metadata to an instruction or function.
+          Use with metadata kind IDs from LLVMGetMDKindIDInContext."
+         (val :pointer)
+         (kind-id :unsigned-int)
+         (node :pointer))
+
+(defcfun ("LLVMGetMDKindIDInContext" llvm-md-kind-id-in-context) :unsigned-int
+         "Gets or creates a metadata kind ID for the given name."
+         (context :pointer)
+         (name :string)
+         (slen :unsigned-int))
+
+(defcfun ("LLVMMDStringInContext2" llvm-md-string-in-context2) :pointer
+         "Creates a metadata string in the given context."
+         (context :pointer)
+         (str :string)
+         (slen :unsigned-int))
