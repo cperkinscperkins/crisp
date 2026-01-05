@@ -178,7 +178,8 @@
    #:initialize-compiler
    #:initialize-expression-analyzers
    #:initialize-templates
-   #:compile-to-spirv ;; <--- NEW
+   #:compile-to-spirv
+   #:compile-to-ptx
 
    ;; laungage symbols
    #:def-function
