@@ -25,18 +25,26 @@
         (delete-file exe)))
 
 (format t "~&; Deploying Tools...~%")
-(let* ((tool-name (if (uiop:os-windows-p) "llvm-spirv-windows.exe" "llvm-spirv-linux"))
-       (dest-name (if (uiop:os-windows-p) "llvm-spirv.exe" "llvm-spirv"))
-       (src (merge-pathnames (format nil "tools/~a" tool-name) *default-pathname-defaults*))
-       (dest (merge-pathnames (format nil "bin/~a" dest-name) *default-pathname-defaults*)))
+(dolist (tool-info '(("llvm-spirv" "llvm-spirv")
+                     ("llvm-as" "llvm-as")
+                     ("llc" "llc")))
+  (destructuring-bind (tool-base dest-base) tool-info
+    (let* ((tool-name (if (uiop:os-windows-p)
+                          (format nil "~a-windows.exe" tool-base)
+                          (format nil "~a-linux" tool-base)))
+           (dest-name (if (uiop:os-windows-p)
+                          (format nil "~a.exe" dest-base)
+                          dest-base))
+           (src (merge-pathnames (format nil "tools/~a" tool-name) *default-pathname-defaults*))
+           (dest (merge-pathnames (format nil "bin/~a" dest-name) *default-pathname-defaults*)))
 
-  (if (probe-file src)
-      (progn
-       (format t ";   Copying ~a to bin/~%" tool-name)
-       (uiop:copy-file src dest)
-       (unless (uiop:os-windows-p)
-         (uiop:run-program (list "chmod" "+x" (namestring dest)))))
-      (format t ";   WARNING: Tool ~a not found in tools/ directory.~%" tool-name)))
+      (if (probe-file src)
+          (progn
+           (format t ";   Copying ~a to bin/~%" tool-name)
+           (uiop:copy-file src dest)
+           (unless (uiop:os-windows-p)
+             (uiop:run-program (list "chmod" "+x" (namestring dest)))))
+          (format t ";   WARNING: Tool ~a not found in tools/ directory.~%" tool-name)))))
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
 ;; download cffi, and then load crisp.
