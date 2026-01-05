@@ -29,3 +29,14 @@ Designed and implemented by *Chris Perkins*.
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+
+## Third-Party Tools
+
+- `llc`: LLVM compiler (Apache 2.0 with LLVM exceptions)
+  - License: See LICENSE-llc.txt
+  - Source: https://github.com/llvm/llvm-project
+
+- `llvm-spirv`: LLVM SPIRV Translator
+  - License: See LICENSE-llvm-spirv.txt
+  - Source: https://github.com/KhronosGroup/SPIRV-LLVM-Translator/blob/main/LICENSE.TXT
