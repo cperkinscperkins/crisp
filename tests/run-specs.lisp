@@ -96,25 +96,35 @@
               (format *error-output* "FAIL (Invalid IR via Binary)~%~a~%" error-output)
               nil))))))))
 
+
 (defun run-spec-file (file)
   (format t "~&Running Spec: ~a... " (pathname-name file))
   (finish-output)
 
-  (let ((is-spirv (search "spirv" (directory-namestring file) :test #'string-equal)))
-    (if *use-binary*
-        (if is-spirv
-            (run-spec-spirv-binary file)
-            (run-spec-binary file))
-        (if is-spirv
-            (run-spec-spirv-in-process file)
-            (handler-case
-                (let ((ir-string (compile-crisp-file-to-ir-string file)))
-                  (if (validate-ir-with-clang ir-string)
-                      (progn (format t "PASS~%") t)
-                      (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
-              (error (e)
-                (format *error-output* "FAIL (Condition: ~a)~%" e)
-                nil))))))
+  (let ((dir-name (directory-namestring file)))
+    ;; Detect target backend from directory name
+    (let ((target (cond
+                   ((search "spirv" dir-name :test #'string-equal) :spirv)
+                   ((search "ptx" dir-name :test #'string-equal) :ptx)
+                   (t nil))))
+
+      (if *use-binary*
+          (cond
+           ((eq target :spirv) (run-spec-spirv-binary file))
+           ((eq target :ptx) (run-spec-ptx-binary file))
+           (t (run-spec-binary file)))
+          (cond
+           ((eq target :spirv) (run-spec-spirv-in-process file))
+           ((eq target :ptx) (run-spec-ptx-in-process file))
+           (t (handler-case
+                  (let ((ir-string (compile-crisp-file-to-ir-string file)))
+                    (if (validate-ir-with-clang ir-string)
+                        (progn (format t "PASS~%") t)
+                        (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
+                (error (e)
+                  (format *error-output* "FAIL (Condition: ~a)~%" e)
+                  nil))))))))
+
 
 (defun compile-crisp-file-to-ir-string (filepath)
   "Compiles a .crisp file and returns the LLVM IR as a string."
@@ -222,6 +232,77 @@
        (t
          (format *error-output* "FAIL (No SPV generated)~%~a~%" error-output)
          nil)))))
+
+
+;; tests/run-specs.lisp - Add PTX runner functions (after line 224)
+
+(defun compile-crisp-file-to-ptx (filepath)
+  "Compiles a .crisp file to .ptx and returns the output path if successful."
+  (let ((out-path (make-pathname :type "ptx" :defaults filepath))
+        (*standard-output* (make-broadcast-stream)))
+    (when (probe-file out-path) (delete-file out-path))
+
+    (let (;; Use a FRESH environment for each spec to ensure isolation
+          (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
+          (forms (progn
+                  ;; Initialize for PTX
+                  (crisp.compiler:initialize-compiler :log-level :warn)
+                  (with-open-file (stream filepath)
+                    (loop for form = (read stream nil :eof)
+                          until (eq form :eof)
+                          collect form)))))
+      (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filepath)))
+             (builder (crisp.llvm-bindings:llvm-create-builder)))
+        (unwind-protect
+            (progn
+             (let ((crisp.compiler:*target-backend* :ptx))
+               (crisp.compiler:compile-module forms module builder nil nil nil)
+               (crisp.compiler:compile-to-ptx module out-path)))
+          (crisp.llvm-bindings:llvm-dispose-builder builder)
+          (crisp.llvm-bindings:llvm-dispose-module module))))
+
+    (if (probe-file out-path)
+        out-path
+        nil)))
+
+(defun run-spec-ptx-in-process (file)
+  (handler-case
+      (let ((out-path (compile-crisp-file-to-ptx file)))
+        (if out-path
+            (progn
+             (format t "PASS (Generated ~a)~%" (file-namestring out-path))
+             ;; Optional: Cleanup generated file
+             (delete-file out-path)
+             t)
+            (progn (format *error-output* "FAIL (No PTX generated)~%") nil)))
+    (error (e)
+      (format *error-output* "FAIL (Condition: ~a)~%" e)
+      nil)))
+
+(defun run-spec-ptx-binary (file)
+  (let ((bin (get-binary-path))
+        (out-path (make-pathname :type "ptx" :defaults file))
+        (args (list (uiop:native-namestring file) "--ir-target=ptx")))
+    (when (probe-file out-path) (delete-file out-path))
+    (when *compile-debug* (push "--debug" args))
+
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string
+          :error-output :string
+          :ignore-error-status t)
+      (cond
+       ((not (zerop exit-code))
+         (format *error-output* "FAIL (Compiler Exit Code ~a)~%~a~%" exit-code error-output)
+         nil)
+       ((probe-file out-path)
+         (format t "PASS (Generated .ptx)~%")
+         (delete-file out-path)
+         t)
+       (t
+         (format *error-output* "FAIL (No PTX generated)~%~a~%" error-output)
+         nil)))))
+
 
 (defun get-ci-stop-target ()
   "Reads tests/ci-stop.txt to determine the last directory to run."

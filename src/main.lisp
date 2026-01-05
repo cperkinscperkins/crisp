@@ -115,6 +115,9 @@
                      (:spirv
                       (let ((out-path (make-pathname :type "spv" :defaults filepath)))
                         (crisp.compiler:compile-to-spirv module out-path)))
+                     (:ptx
+                      (let ((out-path (make-pathname :type "ptx" :defaults filepath)))
+                        (crisp.compiler:compile-to-ptx module out-path)))
                      ;; Default/Generic: Print IR to stdout
                      (t
                       (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
