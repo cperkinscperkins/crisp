@@ -34,7 +34,7 @@
     (loop
      (let ((kernel-pos (search "spir_kernel" ir-text :start2 pos)))
        (unless kernel-pos
-         (return))
+         (cl:return))
 
        ;; Find 'define' before spir_kernel
        (let* ((define-pos (search "define" ir-text :start2 (max 0 (- kernel-pos 100)) :end2 kernel-pos :from-end t))
@@ -183,12 +183,17 @@
 
                   ;; Find the brace position in current result (may have shifted)
                   (let* ((kernel-sig-start (search func-name result))
-                         (new-brace-pos (position #\{ result :start kernel-sig-start)))
+                         (new-brace-pos (position #\{ result :start kernel-sig-start))
+                         (close-paren-pos (position #\) result :end new-brace-pos :from-end t)))
 
-                    ;; Insert metadata refs before the {
+                    ;; Insert metadata refs right after ) and before {, ensuring single line
                     (setf result (concatenate 'string
-                                   (subseq result 0 new-brace-pos)
+                                   (subseq result 0 (1+ close-paren-pos))
                                    metadata-refs
+                                   " "
+                                   (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                (subseq result (1+ close-paren-pos) new-brace-pos))
+                                   " "
                                    (subseq result new-brace-pos)))
 
                     ;; Accumulate metadata definitions
@@ -337,5 +342,3 @@
      :value-type `(:function-literal ,fn-name)
      :value fn-name
      :source-location location)))
-
-
