@@ -1,4 +1,5 @@
 ;; Runs the smoke_test SPIR-V kernel on the BMG GPU
+;; ./bin/crisp-compile.exe --ir-target=spv ./tests/spec/023-spirv/01-smoke.crisp
 ;; Run with: sbcl --non-interactive --load scripts/run_smoke_kernel.lisp
 
 (in-package :cl-user)
