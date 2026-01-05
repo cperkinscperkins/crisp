@@ -204,7 +204,6 @@
 
           (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
 
-
 (defun compile-to-spirv (module output-path)
   "Compiles an LLVM Module to SPIR-V using the external toolchain."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
@@ -223,25 +222,29 @@
         (write-string ir-with-metadata stream)))
 
     ;; 2. llvm-as (LL -> BC)
-    (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-as.exe" "bin/llvm-as"))
-           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
-
-      (unless (probe-file tool)
-        (error "llvm-as tool not found in bin/"))
+    ;; On Windows: use bundled binary. On Linux: use system binary (more reliable)
+    (let* ((tool-cmd (if (uiop:os-windows-p)
+                         (let ((tool (merge-pathnames "bin/llvm-as.exe" *default-pathname-defaults*)))
+                           (unless (probe-file tool)
+                             (error "llvm-as.exe not found in bin/"))
+                           (namestring tool))
+                         "llvm-as"))) ; Use system binary on Linux
 
       (run-tool-command
-       (list (namestring tool) (namestring ll-file) "-o" (namestring bc-file))
+       (list tool-cmd (namestring ll-file) "-o" (namestring bc-file))
        :log-prefix "[SPIR-V] "))
 
     ;; 3. llvm-spirv (BC -> SPV)
-    (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-spirv.exe" "bin/llvm-spirv"))
-           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
-
-      (unless (probe-file tool)
-        (error "llvm-spirv tool not found in bin/"))
+    ;; On Windows: use bundled binary. On Linux: use system binary
+    (let* ((tool-cmd (if (uiop:os-windows-p)
+                         (let ((tool (merge-pathnames "bin/llvm-spirv.exe" *default-pathname-defaults*)))
+                           (unless (probe-file tool)
+                             (error "llvm-spirv.exe not found in bin/"))
+                           (namestring tool))
+                         "llvm-spirv"))) ; Use system binary on Linux
 
       (run-tool-command
-       (list (namestring tool) (namestring bc-file) "-o" (namestring spv-file))
+       (list tool-cmd (namestring bc-file) "-o" (namestring spv-file))
        :log-prefix "[SPIR-V] "))
 
     ;; Cleanup temps
