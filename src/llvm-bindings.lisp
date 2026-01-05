@@ -40,6 +40,11 @@
 (defcfun ("LLVMPrintValueToString" llvm-print-value-to-string) :string
          (val :pointer))
 
+(defcfun ("LLVMSetTarget" llvm-set-target) :void
+         "Set the target triple for a module."
+         (module :pointer)
+         (triple :string))
+
 ;; --- Types ---
 (defcfun ("LLVMInt32TypeInContext" llvm-int32-type-in-context) :pointer
          (context :pointer))
