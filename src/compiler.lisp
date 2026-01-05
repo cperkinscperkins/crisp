@@ -55,22 +55,31 @@
    Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64')."
   (let* ((sig-text (subseq ir-text func-start func-end))
          (paren-start (position #\( sig-text))
-         (paren-end (position #\) sig-text :from-end t))
-         (params-text (subseq sig-text (1+ paren-start) paren-end))
-         (params '()))
+         (paren-end (position #\) sig-text :from-end t)))
 
-    ;; Simple parser: split by commas and extract type
-    (dolist (param-str (uiop:split-string params-text :separator ", "))
-      (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) param-str)))
-        (when (> (length trimmed) 0)
-              ;; Extract type (everything before the last space or %)
-              (let* ((parts (uiop:split-string trimmed :separator " "))
-                     ;; Type is everything except the last part (which is the param name)
-                     (type-parts (butlast parts)))
-                (when type-parts
-                      (push (format nil "~{~a~^ ~}" type-parts) params))))))
+    (unless (and paren-start paren-end (< paren-start paren-end))
+      (log:warn "Could not find parameter parens!")
+      (return-from extract-kernel-params nil))
 
-    (nreverse params)))
+    (let* ((params-text (subseq sig-text (1+ paren-start) paren-end))
+           (params '()))
+
+      (log:info "extract-kernel-params: params-text = ~s" params-text)
+
+      (dolist (param-str (uiop:split-string params-text :separator ","))
+        (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) param-str)))
+          (when (> (length trimmed) 0)
+                (let ((percent-pos (position #\% trimmed)))
+                  (if percent-pos
+                      (let ((type-text (string-trim '(#\Space #\Tab) (subseq trimmed 0 percent-pos))))
+                        (when (> (length type-text) 0)
+                              (log:info "  extracted type: ~s" type-text)
+                              (push type-text params)))
+                      (progn
+                       (log:info "  extracted type (no name): ~s" trimmed)
+                       (push trimmed params)))))))
+
+      (nreverse params))))
 
 (defun ir-type-to-opencl-metadata (ir-type)
   "Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).
@@ -158,6 +167,7 @@
 
           (values metadata-refs metadata-defs next-id))))))
 
+
 (defun inject-spir-kernel-metadata (ir-text)
   "Inject OpenCL kernel metadata for all SPIR kernels found in IR text.
    Returns modified IR text with metadata."
@@ -165,42 +175,33 @@
     (if (null kernels)
         ir-text
         (let ((result ir-text)
-              (metadata-id-base 100) ; Start metadata IDs at 100
+              (metadata-id-base 100)
               (all-metadata-defs ""))
 
-          ;; Process each kernel
           (dolist (kernel-info kernels)
             (destructuring-bind (func-name func-start brace-pos) kernel-info
               (log:info "Injecting metadata for kernel: ~a" func-name)
 
-              ;; Extract parameters
               (let ((params (extract-kernel-params result func-start brace-pos)))
                 (log:info "  Parameters: ~a" params)
 
-                ;; Generate metadata
                 (multiple-value-bind (metadata-refs metadata-defs next-id)
                     (generate-kernel-metadata params metadata-id-base)
 
-                  ;; Find the brace position in current result (may have shifted)
                   (let* ((kernel-sig-start (search func-name result))
                          (new-brace-pos (position #\{ result :start kernel-sig-start))
                          (close-paren-pos (position #\) result :end new-brace-pos :from-end t)))
 
-                    ;; Insert metadata refs right after ) and before {, ensuring single line
                     (setf result (concatenate 'string
                                    (subseq result 0 (1+ close-paren-pos))
                                    metadata-refs
                                    " "
-                                   (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                (subseq result (1+ close-paren-pos) new-brace-pos))
-                                   " "
-                                   (subseq result new-brace-pos)))
+                                   (string #\{)
+                                   (subseq result (1+ new-brace-pos))))
 
-                    ;; Accumulate metadata definitions
                     (setf all-metadata-defs (concatenate 'string all-metadata-defs metadata-defs))
                     (setf metadata-id-base next-id))))))
 
-          ;; Append all metadata definitions at end
           (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
 
 
