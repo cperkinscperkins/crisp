@@ -23,6 +23,16 @@
                              (error "Tool invocation failed: ~{~a~^ ~}" args)))
     (get-output-stream-string output)))
 
+(defun resolve-tool-executable (tool-base)
+  "Resolves the path to a tool executable. 
+   Prefers bundled version in bin/, falls back to system PATH."
+  (let* ((ext (if (uiop:os-windows-p) ".exe" ""))
+         (bundled-name (format nil "bin/~a~a" tool-base ext))
+         (bundled-path (merge-pathnames bundled-name *default-pathname-defaults*)))
+    (if (probe-file bundled-path)
+        (namestring bundled-path)
+        tool-base))) ;; Return tool name to trigger PATH search in uiop:run-program
+
 ;; Generalized SPIR-V Kernel Metadata Injection Functions
 ;; These functions parse LLVM IR and inject OpenCL kernel metadata for any kernel
 
@@ -222,25 +232,15 @@
         (write-string ir-with-metadata stream)))
 
     ;; 2. llvm-as (LL -> BC)
-    (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-as.exe" "bin/llvm-as"))
-           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
-
-      (unless (probe-file tool)
-        (error "llvm-as tool not found in bin/"))
-
+    (let ((tool (resolve-tool-executable "llvm-as")))
       (run-tool-command
-       (list (namestring tool) (namestring ll-file) "-o" (namestring bc-file))
+       (list tool (namestring ll-file) "-o" (namestring bc-file))
        :log-prefix "[SPIR-V] "))
 
     ;; 3. llvm-spirv (BC -> SPV)
-    (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-spirv.exe" "bin/llvm-spirv"))
-           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
-
-      (unless (probe-file tool)
-        (error "llvm-spirv tool not found in bin/"))
-
+    (let ((tool (resolve-tool-executable "llvm-spirv")))
       (run-tool-command
-       (list (namestring tool) (namestring bc-file) "-o" (namestring spv-file))
+       (list tool (namestring bc-file) "-o" (namestring spv-file))
        :log-prefix "[SPIR-V] "))
 
     ;; Cleanup temps
@@ -268,14 +268,9 @@
         (write-string ir stream)))
 
     ;; 2. llc: IR -> PTX
-    (let* ((tool-name (if (uiop:os-windows-p) "bin/llc.exe" "bin/llc"))
-           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
-
-      (unless (probe-file tool)
-        (error "llc tool not found in bin/"))
-
+    (let ((tool (resolve-tool-executable "llc")))
       (run-tool-command
-       (list (namestring tool)
+       (list tool
              "-march=nvptx64"
              (format nil "-mcpu=~a" compute-capability)
              (namestring ll-file)
