@@ -5,6 +5,20 @@
   (when (probe-file quicklisp-init)
         (load quicklisp-init)))
 
+;; Parse log level early to suppress noise during system load
+(defvar *log-level*
+        (let ((arg (find-if (lambda (x) (and (stringp x) (>= (length x) 12) (string= (subseq x 0 12) "--log-level=")))
+                       sb-ext:*posix-argv*)))
+          (if arg
+              (intern (string-upcase (subseq arg (length "--log-level="))) :keyword)
+              :info)))
+
+;; Configure logging before loading if possible
+(ql:quickload "log4cl" :silent t)
+(if (eq *log-level* :off)
+    (log:config :off)
+    (log:config :sane :stream *error-output* *log-level*))
+
 ;; Inline build/build.lisp logic without terminating process
 (require "asdf")
 (push *default-pathname-defaults* ql:*local-project-directories*)
@@ -29,13 +43,14 @@
 (in-package :crisp.spec-runner)
 
 ;; Initialize the compiler to ensure types and built-ins are loaded
-(initialize-compiler :log-level :info)
+(initialize-compiler :log-level cl-user::*log-level*)
 (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
 ;; Configuration Globals
 (defvar *use-binary* nil)
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
+;; cl-user::*log-level* is defined at the top
 
 (defun get-binary-path ()
   (let ((exe (merge-pathnames "bin/crisp-compile.exe" (uiop:getcwd)))
@@ -72,6 +87,7 @@
     ;; But let's be safe: exe [flags] [file]
     (setf args (append (when *compile-debug* '("--debug"))
                  (when *compile-single-pass* '("--single-pass"))
+                 (list (format nil "--log-level=~a" cl-user::*log-level*))
                  (list (uiop:native-namestring file))))
 
     (multiple-value-bind (output error-output exit-code)
@@ -132,7 +148,7 @@
     (let (;; Use a FRESH environment for each spec to ensure isolation
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
-                  (crisp.compiler:initialize-compiler :log-level :warn) ;; Standard cleanup
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*) ;; Standard cleanup
                   (with-open-file (stream filepath)
                     (loop for form = (read stream nil :eof)
                           until (eq form :eof)
@@ -176,7 +192,7 @@
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
                   ;; Initialize for SPIR-V
-                  (crisp.compiler:initialize-compiler :log-level :warn)
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
                   (with-open-file (stream filepath)
                     (loop for form = (read stream nil :eof)
                           until (eq form :eof)
@@ -212,7 +228,7 @@
 (defun run-spec-spirv-binary (file)
   (let ((bin (get-binary-path))
         (out-path (make-pathname :type "spv" :defaults file))
-        (args (list (uiop:native-namestring file) "--ir-target=spv")))
+        (args (list (uiop:native-namestring file) "--ir-target=spv" (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
 
@@ -246,7 +262,7 @@
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
                   ;; Initialize for PTX
-                  (crisp.compiler:initialize-compiler :log-level :warn)
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
                   (with-open-file (stream filepath)
                     (loop for form = (read stream nil :eof)
                           until (eq form :eof)
@@ -282,7 +298,7 @@
 (defun run-spec-ptx-binary (file)
   (let ((bin (get-binary-path))
         (out-path (make-pathname :type "ptx" :defaults file))
-        (args (list (uiop:native-namestring file) "--ir-target=ptx")))
+        (args (list (uiop:native-namestring file) "--ir-target=ptx" (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
 
@@ -455,6 +471,9 @@
              ((string= arg "--use-binary") (setf *use-binary* t))
              ((string= arg "--debug") (setf *compile-debug* t))
              ((string= arg "--single-pass") (setf *compile-single-pass* t))))
+
+    ;; Re-initialize with user-requested log level
+    (initialize-compiler :log-level cl-user::*log-level*)
 
     (format t "~&Locating specs in ~a~%" spec-dir)
     (format t "Configuration: Binary: ~a, Debug: ~a, Single-Pass: ~a~%"

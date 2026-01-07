@@ -419,7 +419,7 @@ PASS-WITH also triggers custom test passes for that test.
 
 
 ;; test.crisp
-[ ];; TEST-EXPECT: PASS                           ← Default outcome
+[x];; TEST-EXPECT: PASS                           ← Default outcome
 [ ];; FAIL-WITH[--single-pass]: "error message"   ← Expected failure
 [ ];; PASS-WITH[target=spirv]                     ← Conditional success
 [ ];; PASS-ONLY-WITH[--allow-redefinition]        ← Requires flag

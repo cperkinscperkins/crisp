@@ -25,7 +25,7 @@ to compile in a single pass. If using `--single-pass` all forms must be in rever
 else errors (see below).
  
 ### --log-level=<level>
-Sets the logging verbosity. Accepted levels are (from most to least verbose): `trace`, `debug`, `info`, `warn`, `error`, `fatal`.
+Sets the logging verbosity. Accepted levels are (from most to least verbose): `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `off`.
 The default level is `info`.
 
 ### --runtime-checks
