@@ -1,0 +1,6 @@
+
+;; TEST-WITH[--metadata]
+
+(def-struct point (x int) (y int))
+
+(def-struct rect (ul-corner point) (lr-corner point))
