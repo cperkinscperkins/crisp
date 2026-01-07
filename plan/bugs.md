@@ -28,5 +28,5 @@
 
 [x] 009  casting and conversion for def-type not working.  See tests/spec/018-def-type/04-casting.crisp
 
-[ ] 010  kernel type declaration throwing error when it shouldn't. tests\spec\028-metadata\04-basic-struct.crisp
+[x] 010  kernel type declaration throwing error when it shouldn't. tests\spec\028-metadata\04-basic-struct.crisp
    
