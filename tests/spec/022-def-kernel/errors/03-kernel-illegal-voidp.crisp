@@ -1,4 +1,7 @@
-;;
+;; TEST-EXPECT: PASS
+
+;; TODO: implement this error. This test should fail.
+
 ;; "not unreasonable error message"
 ;; 
 

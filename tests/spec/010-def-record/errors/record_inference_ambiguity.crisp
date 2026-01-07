@@ -1,5 +1,6 @@
-;; "No matching function overload found"
+;; TEST-EXPECT: PASS
 
+;; "No matching function overload found"
 ;; Update: this test now passes.
 
 (<T> 

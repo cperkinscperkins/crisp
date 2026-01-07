@@ -12,10 +12,10 @@
 (define-test signature-parsing)
 
 (define-test (signature-parsing parse-basic-arrow)
-             "Test #'(int float => int) syntax"
+             "Test #'(int crisp.compiler::float => crisp.compiler::int) syntax"
              (multiple-value-bind (env return-types)
                  (crisp.compiler::parse-function-declarations '(a b)
-                                                              '((function (int float => int))))
+                                                              '((crisp.compiler::function (int crisp.compiler::float => crisp.compiler::int))))
                (is equalp (list (make-parameter-def :name 'a :type 'int :kind :in)
                                 (make-parameter-def :name 'b :type 'float :kind :in))
                    env)
@@ -25,15 +25,15 @@
              "Test multiple return types"
              (multiple-value-bind (env return-types)
                  (crisp.compiler::parse-function-declarations '(a b)
-                                                              '((function (int int => int int))))
+                                                              '((crisp.compiler::function (int crisp.compiler::int => crisp.compiler::int crisp.compiler::int))))
                (is = 2 (length env))
-               (is equal '(int int) return-types)))
+               (is equal '(int crisp.compiler::int) return-types)))
 
 (define-test (signature-parsing parse-void)
              "Test void return (no => clause)"
              (multiple-value-bind (env return-types)
                  (crisp.compiler::parse-function-declarations '(a b)
-                                                              '((function (int int))))
+                                                              '((crisp.compiler::function (int crisp.compiler::int))))
                (is = 2 (length env))
                (is eql nil return-types)))
 
@@ -41,10 +41,11 @@
              "Test &optional parameters"
              (multiple-value-bind (env return-types optional-idx)
                  (crisp.compiler::parse-function-declarations '(a b &optional c d)
-                                                              '((function (int int int int => int))))
+                                                              '((crisp.compiler::function (int crisp.compiler::int crisp.compiler::int crisp.compiler::int => crisp.compiler::int))))
                (is = 4 (length env))
                (is = 2 optional-idx)
                (is equal '(int) return-types)))
 
 ;; Run tests - will error if any fail
 (test 'signature-parsing)
+

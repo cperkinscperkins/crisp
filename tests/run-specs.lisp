@@ -313,7 +313,20 @@
               content)))))
 
 (defun get-parent-directory-name (path)
-  (car (last (pathname-directory path))))
+  "Extract the numbered spec directory name (e.g., '001-def-function') from path.
+   Ignores subdirectories like 'errors/'."
+  (let ((dirs (pathname-directory path)))
+    ;; Find the first directory matching NNN-* pattern
+    (dolist (dir (reverse dirs))
+      (when (and (stringp dir)
+                 (>= (length dir) 4)
+                 (digit-char-p (cl:char dir 0))
+                 (digit-char-p (cl:char dir 1))
+                 (digit-char-p (cl:char dir 2))
+                 (char= (cl:char dir 3) #\-))
+            (return-from get-parent-directory-name dir)))
+    ;; Fallback to last directory if no numbered dir found
+    (car (last dirs))))
 
 (defun discover-unit-tests (spec-dir stop-target)
   "Find all *.unit.lisp files in spec tree up to stop-target"
@@ -328,6 +341,8 @@
               (push file filtered-files))))
 
     (sort (nreverse filtered-files) #'string< :key #'namestring)))
+
+;; UNIT TESTS IN SPEC DIRECTORIES    
 
 (defun run-unit-tests (unit-files)
   "Run discovered unit tests using Parachute"
@@ -365,6 +380,63 @@
     ;; Return success if all passed
     (= passed total)))
 
+
+;; Directive parsing for test expectations
+;; Extract header comments from test files containing directives like:
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--single-pass]: "error message"
+
+(defun extract-test-directives (file)
+  "Extract directive comment lines from file header.
+   Stops at first line starting with '(' (non-comment Lisp form)."
+  (with-open-file (stream file)
+    (loop for line = (read-line stream nil)
+          while line
+          until (and (> (length line) 0)
+                     (not (starts-with line ";"))
+                     (cl:char= (cl:char (string-left-trim " " line) 0) #\())
+            when (starts-with line ";;")
+          collect line)))
+
+(defun starts-with (str prefix)
+  "Check if string starts with prefix."
+  (and (>= (length str) (length prefix))
+       (string= str prefix :end1 (length prefix))))
+
+(defun parse-test-expect (directive-lines)
+  "Parse TEST-EXPECT directive from header comments.
+   Returns :PASS, :FAIL, or NIL if not specified."
+  (dolist (line directive-lines)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "TEST-EXPECT:")
+            (let ((value (string-trim " " (subseq trimmed 12))))
+              (cond
+               ((string-equal value "PASS") (cl:return :pass))
+               ((string-equal value "FAIL") (cl:return :fail))
+               (t (warn "Unknown TEST-EXPECT value: ~a" value)
+                  (cl:return nil)))))))
+  nil)
+
+(defun should-expect-failure-p (file)
+  "Determine if test should be expected to fail.
+   Returns T if:
+   1. File is in 'errors/' subdirectory, OR
+   2. TEST-EXPECT: FAIL directive is present
+   
+   TEST-EXPECT directive takes precedence over directory location."
+  (let* ((directives (extract-test-directives file))
+         (expect (parse-test-expect directives))
+         (in-errors-dir (member "errors" (pathname-directory file) :test #'string-equal)))
+
+    (cond
+     ;; Explicit directive overrides directory
+     ((eq expect :fail) t)
+     ((eq expect :pass) nil)
+     ;; No directive, use directory
+     (in-errors-dir t)
+     (t nil))))
+
+
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))
          ;; Assume tests/run-specs.lisp -> tests/spec/
@@ -400,19 +472,38 @@
     (setf spec-files (sort spec-files #'string< :key #'namestring))
 
     (loop for file in spec-files do
-            ;; Skip files in 'errors' subdirectories
-            (unless (member "errors" (pathname-directory file) :test #'string=)
-              (let ((dir-name (get-parent-directory-name file)))
-                (when (and stop-target (string> dir-name stop-target))
-                      (unless stop-triggered
-                        (format t "~&--- Reached Stop Target (~a). Stopping. ---~%" stop-target)
-                        (setf stop-triggered t))
-                      (cl:return)))
+            (let ((dir-name (get-parent-directory-name file))
+                  (expect-failure (should-expect-failure-p file)))
+
+              ;; Check stop target
+              (when (and stop-target (string> dir-name stop-target))
+                    (unless stop-triggered
+                      (format t "~&--- Reached Stop Target (~a). Stopping. ---~%" stop-target)
+                      (setf stop-triggered t))
+                    (cl:return))
 
               (incf total)
-              (if (run-spec-file file)
-                  (incf passed)
-                  (push (pathname-name file) failed-files))))
+
+              ;; Run test and check expectation
+              (let ((test-passed (run-spec-file file)))
+                (cond
+                 ;; Test passed and we expected it to pass
+                 ((and test-passed (not expect-failure))
+                   (incf passed))
+
+                 ;; Test failed and we expected it to fail
+                 ((and (not test-passed) expect-failure)
+                   (format t " (Expected failure)~%")
+                   (incf passed))
+
+                 ;; Test passed but we expected failure
+                 ((and test-passed expect-failure)
+                   (format *error-output* " ERROR: Test passed but was expected to fail!~%")
+                   (push (pathname-name file) failed-files))
+
+                 ;; Test failed but we expected pass
+                 (t
+                   (push (pathname-name file) failed-files))))))
 
     (format t "~&---------------------------~%")
     (format t "Spec Summary: ~a/~a Passed.~%" passed total)
