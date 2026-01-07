@@ -1,0 +1,7 @@
+;;
+;; CHECK-FAIL: "<reasonable error message>"
+;;
+
+;; records can contain other records, but cannot be recursive
+
+(def-record virtual-point (x int) (y int) (vp virtual-point))

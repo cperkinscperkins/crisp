@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "<not unreasonable error message>"
+;;
+
+;; records cannot be mutually recursive
+
+(def-record v-pointish (x int) (y int) (pt v-pointie))
+
+(def-record v-pointie (xx int) (yy int) (pi v-pointish))

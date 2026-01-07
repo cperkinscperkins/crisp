@@ -1,0 +1,7 @@
+;;
+;; CHECK-FAIL: "<reasonable message>"
+;;
+
+;; structs cannot be recursive
+
+(def-struct point (x int) (y int) (pt point))

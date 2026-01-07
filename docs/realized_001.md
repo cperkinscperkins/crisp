@@ -229,8 +229,9 @@ with marshalling.
 
 ### def-kernel and cell.
 
-### --ir-target=spv 
-Yes, we are outputting SPIR-V now.  Just add the --ir-target=spv.   
+### --ir-target=spv  / ptx
+Yes, we are outputting SPIR-V and PTX now.  Just add the --ir-target=spv flag.
+SPIR-V has been tested on BattleMage. PTX has not been tested on real hardware yet.   
 
 
 
