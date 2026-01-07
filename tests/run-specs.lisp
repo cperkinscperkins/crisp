@@ -112,33 +112,50 @@
               nil))))))))
 
 
+(defun run-single-spec-pass (file flags)
+  "Execute a single pass of a spec file with specific flags active."
+  (let ((*use-binary* (or *use-binary* (member "--use-binary" flags :test #'string=)))
+        (*compile-single-pass* (or *compile-single-pass* (member "--single-pass" flags :test #'string=)))
+        (*compile-debug* (or *compile-debug* (member "--debug" flags :test #'string=)))
+
+        ;; Determine IR Target from flags (default to nil/generic)
+        (ir-target (cond
+                    ((member "--ir-target=spv" flags :test #'string=) :spirv)
+                    ((member "--ir-target=ptx" flags :test #'string=) :ptx)
+                    (t nil))))
+
+    ;; Dispatch based on configuration
+    (if *use-binary*
+        (cond
+         ((eq ir-target :spirv) (run-spec-spirv-binary file))
+         ((eq ir-target :ptx) (run-spec-ptx-binary file))
+         (t (run-spec-binary file)))
+
+        ;; In-Process Runner
+        (cond
+         ((eq ir-target :spirv) (run-spec-spirv-in-process file))
+         ((eq ir-target :ptx) (run-spec-ptx-in-process file))
+         (t (run-spec-lisp-loader file))))))
+
 (defun run-spec-file (file)
-  (format t "~&Running Spec: ~a... " (pathname-name file))
-  (finish-output)
+  (let ((directives (extract-test-directives file))
+        (all-passed t))
 
-  (let ((dir-name (directory-namestring file)))
-    ;; Detect target backend from directory name
-    (let ((target (cond
-                   ((search "spirv" dir-name :test #'string-equal) :spirv)
-                   ((search "ptx" dir-name :test #'string-equal) :ptx)
-                   (t nil))))
+    ;; 1. Default Run (Current Global Flags)
+    (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
+    (finish-output) ;; Ensure "Running Spec..." is printed before runner output
+    (unless (run-single-spec-pass file '())
+      (setf all-passed nil))
 
-      (if *use-binary*
-          (cond
-           ((eq target :spirv) (run-spec-spirv-binary file))
-           ((eq target :ptx) (run-spec-ptx-binary file))
-           (t (run-spec-binary file)))
-          (cond
-           ((eq target :spirv) (run-spec-spirv-in-process file))
-           ((eq target :ptx) (run-spec-ptx-in-process file))
-           (t (handler-case
-                  (let ((ir-string (compile-crisp-file-to-ir-string file)))
-                    (if (validate-ir-with-clang ir-string)
-                        (progn (format t "PASS~%") t)
-                        (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
-                (error (e)
-                  (format *error-output* "FAIL (Condition: ~a)~%" e)
-                  nil))))))))
+    ;; 2. Extra Runs (TEST-WITH flags)
+    (let ((extra-runs (parse-test-with directives)))
+      (dolist (flags extra-runs)
+        (format t "~&Running Spec: ~a (Extra ~a)... " (pathname-name file) flags)
+        (finish-output)
+        (unless (run-single-spec-pass file flags)
+          (setf all-passed nil))))
+
+    all-passed))
 
 
 (defun compile-crisp-file-to-ir-string (filepath)
@@ -374,37 +391,27 @@
           until (eq form :eof)
           collect form)))
 
-(defun run-spec-lisp-loader (file)
+;; Used for .unit.lisp files - just load and let Parachute run
+(defun run-unit-test-loader (file)
   (handler-case
       (progn
-       ;; Load the test file (which runs tests via (test 'name))
-       (let ((*standard-output* (make-broadcast-stream))) ; Suppress test output
+       (let ((*standard-output* (make-broadcast-stream)))
          (load file))
-
-       ;; For .crisp files, explicitly trigger compilation
-       (unless (search ".unit.lisp" (namestring file))
-         (let* ((*package* (find-package :crisp-language))
-                (forms (read-crisp-file file))
-                (crisp.compiler:*current-module* nil))
-
-           (unless *package*
-             (error "Package :crisp-language NOT FOUND!"))
-
-           (if *compile-single-pass*
-               ;; Single Pass: Compile form by form (strict ordering)
-               (let ((toplevel-index 0))
-                 (loop for form in forms do
-                         (crisp.compiler:compile-toplevel-form form (list toplevel-index) nil nil nil nil nil)
-                         (incf toplevel-index)))
-
-               ;; Multi Pass: Compile module (resolves forward refs)
-               (crisp.compiler:compile-module forms nil nil nil nil nil))))
-
        (format t "PASS~%")
-       t) ; Success
+       t)
     (error (e)
-      (format t "FAIL~%")
-      (format t "  Error: ~a~%" e)
+      (format t "FAIL~%  Error: ~a~%" e)
+      nil)))
+
+;; Used for .crisp specs - generic backend (IR validation)
+(defun run-spec-lisp-loader (file)
+  (handler-case
+      (let ((ir-string (compile-crisp-file-to-ir-string file)))
+        (if (validate-ir-with-clang ir-string)
+            (progn (format t "PASS~%") t)
+            (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
+    (error (e)
+      (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
 
 (defun discover-unit-tests (spec-dir stop-target)
@@ -438,7 +445,7 @@
       (format t "~&Unit Test: ~a... " (file-namestring file))
       (finish-output)
       (incf total)
-      (if (run-spec-lisp-loader file)
+      (if (run-unit-test-loader file)
           (incf passed)
           (push (file-namestring file) failed-files)))
 
@@ -508,6 +515,21 @@
                       (when active
                             (return-from parse-fail-with t))))))))
   nil)
+
+(defun parse-test-with (directive-lines)
+  "Parses TEST-WITH[--flag1 --flag2] directives.
+   Returns a list of lists, where each sublist is a set of flags for a single run."
+  (let ((runs '()))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "TEST-WITH[")
+              (let* ((end-bracket (position #\] trimmed))
+                     (content (when end-bracket (subseq trimmed 10 end-bracket))))
+                (when (and content (> (length content) 0))
+                      ;; Split by space to get individual flags
+                      (let ((flags (uiop:split-string content :separator " ")))
+                        (push flags runs)))))))
+    (nreverse runs)))
 
 (defun should-expect-failure-p (file)
   "Determine if test should be expected to fail."
