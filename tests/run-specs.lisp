@@ -392,10 +392,11 @@
   (with-open-file (stream file)
     (loop for line = (read-line stream nil)
           while line
-          until (and (> (length line) 0)
-                     (not (starts-with line ";"))
-                     (cl:char= (cl:char (string-left-trim " " line) 0) #\())
-            when (starts-with line ";;")
+          for trimmed = (string-trim '(#\Space #\Tab #\Return #\Newline) line)
+          until (and (> (length trimmed) 0)
+                     (not (starts-with trimmed ";"))
+                     (cl:char= (cl:char trimmed 0) #\())
+            when (starts-with trimmed ";;")
           collect line)))
 
 (defun starts-with (str prefix)
@@ -409,12 +410,12 @@
   (dolist (line directive-lines)
     (let ((trimmed (string-left-trim ";; " line)))
       (when (starts-with trimmed "TEST-EXPECT:")
-            (let ((value (string-trim " " (subseq trimmed 12))))
+            (let ((value (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 12))))
               (cond
-               ((string-equal value "PASS") (cl:return :pass))
-               ((string-equal value "FAIL") (cl:return :fail))
+               ((string-equal value "PASS") (return-from parse-test-expect :pass))
+               ((string-equal value "FAIL") (return-from parse-test-expect :fail))
                (t (warn "Unknown TEST-EXPECT value: ~a" value)
-                  (cl:return nil)))))))
+                  (return-from parse-test-expect nil)))))))
   nil)
 
 (defun should-expect-failure-p (file)
