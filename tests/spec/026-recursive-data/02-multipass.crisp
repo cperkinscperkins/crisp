@@ -2,6 +2,7 @@
 ;;  records can contain records
 ;;  Even  if not in reverse dependency order, they should still compile fine.
 ;;  UNLESS --single-passs is used, then they should error and NOT compile.
+;; FAIL-WITH[--single-pass]: "Recursion is not allowed"
 
 
 (def-record v-rect (ul-corner v-point) (lr-corner v-point))

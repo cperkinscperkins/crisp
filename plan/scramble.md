@@ -395,15 +395,15 @@ Better Spine Testing - Three Proposals
 --------------------------------------
 Filename based.
 
-XXXX.unit.lisp    <-- a parachute unit test. Can do anything. Very flexible.
-XXXX.expected.xx  <-- (xx is .ll  .meta  .spv .spt .ptx .cpp).  Expectation artifact.
+[x] XXXX.unit.lisp    <-- a parachute unit test. Can do anything. Very flexible.
+[ ] XXXX.expected.xx  <-- (xx is .ll  .meta  .spv .spt .ptx .cpp).  Expectation artifact.
                        There are /tests/validators/validate-xx.lisp   for each
                        type that decide how to validate.
-XXXX-l0.cpp       <-- gets compiled and run after kernel.  returns 0 for succes.
+[ ] XXXX-l0.cpp       <-- gets compiled and run after kernel.  returns 0 for succes.
                       -ocl -l0 -cuda.
                       maybe also -bmg  -gpu -cpu  . Not sure.
 
-XXXX.perf         <-- performance boundaries?  
+[ ]XXXX.perf         <-- performance boundaries?  
 
 Errors are handled like they are now. ;; CHECK-FAIL: "<err-msg>"
 
@@ -419,14 +419,14 @@ PASS-WITH also triggers custom test passes for that test.
 
 
 ;; test.crisp
-;; TEST-EXPECT: PASS                           ← Default outcome
-;; FAIL-WITH[--single-pass]: "error message"   ← Expected failure
-;; PASS-WITH[target=spirv]                     ← Conditional success
-;; PASS-ONLY-WITH[--allow-redefinition]        ← Requires flag
-;; TEST-WITH[--metadata]                       ← Run additional test pass 
-;; TEST-WITH[--force-math-precision=fast] : validate_smoke_fast.lisp   ← custom script --load
-;; TEST-WITH[--math-precision=ieee]  : #'validate-ieee                 ← standard function provided by test runner.
-;; CHECK-WARN: "warning text"                  ← Inline warning check
+[x];; TEST-EXPECT: PASS                           ← Default outcome
+[x];; FAIL-WITH[--single-pass]: "error message"   ← Expected failure
+[ ];; PASS-ONLY-WITH[--allow-redefinition]        ← Requires flag
+[x];; TEST-WITH[--metadata]                       ← Run additional test pass 
+[ ];; TEST-WITH[--force-math-precision=fast] : validate_smoke_fast.lisp   ← custom script --load
+[ ];; TEST-WITH[--math-precision=ieee]  : #'validate-ieee                 ← standard function provided by test runner.
+[ ];; CHECK-WARN: "warning text"                  ← Inline warning check
+[ ];; CHECK-FAIL: "failure message" 
 
 Architecture
 ============

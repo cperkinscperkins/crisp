@@ -1,3 +1,4 @@
+;; TEST-EXPECT: PASS
 
 ;; TODO: activate this test
 ;; at the moment, def-kernel => def-kernel-exact => def-function

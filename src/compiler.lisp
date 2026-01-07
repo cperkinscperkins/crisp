@@ -16,15 +16,34 @@
         (error-output (make-string-output-stream)))
     (handler-case
         (uiop:run-program args :output output :error-output error-output :force-shell t)
-      (uiop:subprocess-error (e)
-                             (log:error "Command failed with code ~a." (uiop:subprocess-error-code e))
-                             (log:error "Stdout: ~a" (get-output-stream-string output))
-                             (log:error "Stderr: ~a" (get-output-stream-string error-output))
-                             (error "Tool invocation failed: ~{~a~^ ~}" args)))
+      (error (e)
+        (let ((out-str (get-output-stream-string output))
+              (err-str (get-output-stream-string error-output)))
+          (log:error "Command failed: ~a" e)
+          (unless (uiop:emptyp out-str) (log:error "Stdout: ~a" out-str))
+          (unless (uiop:emptyp err-str) (log:error "Stderr: ~a" err-str))
+          (error "Tool invocation failed: ~{~a~^ ~} (Reason: ~a)" args e))))
     (get-output-stream-string output)))
 
-;; Generalized SPIR-V Kernel Metadata Injection Functions
-;; These functions parse LLVM IR and inject OpenCL kernel metadata for any kernel
+(defun resolve-tool-executable (tool-base)
+  "Resolves the path to a tool executable. 
+   Prefers bundled version in bin/, falls back to system PATH.
+   Overrides:
+   - Environment variable CRISP_USE_SYSTEM_TOOLS=true ignores bin/
+   - Environment variable CRISP_<TOOL_BASE> (e.g. CRISP_LLC) specifies exact path."
+  (let* ((env-key (format nil "CRISP_~a" (string-upcase (substitute #\_ #\- tool-base))))
+         (env-override (uiop:getenv env-key))
+         (use-system (uiop:getenv "CRISP_USE_SYSTEM_TOOLS")))
+    (cond
+     (env-override env-override)
+     ((and use-system (string-not-equal use-system "false")) tool-base)
+     (t
+       (let* ((ext (if (uiop:os-windows-p) ".exe" ""))
+              (bundled-name (format nil "bin/~a~a" tool-base ext))
+              (bundled-path (merge-pathnames bundled-name *default-pathname-defaults*)))
+         (if (probe-file bundled-path)
+             (namestring bundled-path)
+             tool-base))))))
 
 (defun find-spir-kernels (ir-text)
   "Find all SPIR kernel functions in LLVM IR text.
@@ -34,25 +53,21 @@
     (loop
      (let ((kernel-pos (search "spir_kernel" ir-text :start2 pos)))
        (unless kernel-pos
-         (cl:return))
+         (cl:return kernels))
 
-       ;; Find 'define' before spir_kernel
        (let* ((define-pos (search "define" ir-text :start2 (max 0 (- kernel-pos 100)) :end2 kernel-pos :from-end t))
               (at-pos (position #\@ ir-text :start (or define-pos kernel-pos)))
               (paren-pos (position #\( ir-text :start at-pos))
               (func-name (subseq ir-text (1+ at-pos) paren-pos))
-              ;; Find opening brace for function body
               (brace-pos (position #\{ ir-text :start paren-pos)))
 
          (when (and func-name brace-pos)
                (push (list func-name define-pos brace-pos) kernels))
 
-         (setf pos (1+ kernel-pos)))))
-    (nreverse kernels)))
-
+         (setf pos (1+ kernel-pos)))))))
 (defun extract-kernel-params (ir-text func-start func-end)
   "Extract parameter types from a kernel function signature.
-   Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64')."
+ Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64')."
   (let* ((sig-text (subseq ir-text func-start func-end))
          (paren-start (position #\( sig-text))
          (paren-end (position #\) sig-text :from-end t)))
@@ -83,7 +98,7 @@
 
 (defun ir-type-to-opencl-metadata (ir-type)
   "Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).
-   Returns (values addr-space-int access-qual-string type-name-string)."
+ Returns (values addr-space-int access-qual-string type-name-string)."
   (let ((addr-space 0) ; default: private
                       (access-qual "none")
                       (type-name "void*")) ; default
@@ -119,7 +134,7 @@
 
 (defun generate-kernel-metadata (params metadata-id-base)
   "Generate LLVM metadata definitions for kernel parameters.
-   Returns (values metadata-refs-string metadata-defs-string next-id)."
+ Returns (values metadata-refs-string metadata-defs-string next-id)."
   (let ((addr-spaces '())
         (access-quals '())
         (type-names '())
@@ -167,10 +182,9 @@
 
           (values metadata-refs metadata-defs next-id))))))
 
-
 (defun inject-spir-kernel-metadata (ir-text)
   "Inject OpenCL kernel metadata for all SPIR kernels found in IR text.
-   Returns modified IR text with metadata."
+ Returns modified IR text with metadata."
   (let ((kernels (find-spir-kernels ir-text)))
     (if (null kernels)
         ir-text
@@ -222,25 +236,15 @@
         (write-string ir-with-metadata stream)))
 
     ;; 2. llvm-as (LL -> BC)
-    (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-as.exe" "bin/llvm-as"))
-           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
-
-      (unless (probe-file tool)
-        (error "llvm-as tool not found in bin/"))
-
+    (let ((tool (resolve-tool-executable "llvm-as")))
       (run-tool-command
-       (list (namestring tool) (namestring ll-file) "-o" (namestring bc-file))
+       (list tool (namestring ll-file) "-o" (namestring bc-file))
        :log-prefix "[SPIR-V] "))
 
     ;; 3. llvm-spirv (BC -> SPV)
-    (let* ((tool-name (if (uiop:os-windows-p) "bin/llvm-spirv.exe" "bin/llvm-spirv"))
-           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
-
-      (unless (probe-file tool)
-        (error "llvm-spirv tool not found in bin/"))
-
+    (let ((tool (resolve-tool-executable "llvm-spirv")))
       (run-tool-command
-       (list (namestring tool) (namestring bc-file) "-o" (namestring spv-file))
+       (list tool (namestring bc-file) "-o" (namestring spv-file))
        :log-prefix "[SPIR-V] "))
 
     ;; Cleanup temps
@@ -249,11 +253,10 @@
 
     (log:info "Generated SPIR-V: ~a" spv-file)))
 
-
 (defun compile-to-ptx (module output-path &key (compute-capability "sm_50"))
   "Compiles an LLVM Module to PTX using llc.
-   COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)
-                       sm_50 = Maxwell (good default for compatibility)"
+ COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)
+                     sm_50 = Maxwell (good default for compatibility)"
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
          (name (pathname-name output-path))
          (ll-file (merge-pathnames (format nil "~a.temp.ll" name) base-path))
@@ -268,14 +271,9 @@
         (write-string ir stream)))
 
     ;; 2. llc: IR -> PTX
-    (let* ((tool-name (if (uiop:os-windows-p) "bin/llc.exe" "bin/llc"))
-           (tool (merge-pathnames tool-name *default-pathname-defaults*)))
-
-      (unless (probe-file tool)
-        (error "llc tool not found in bin/"))
-
+    (let ((tool (resolve-tool-executable "llc")))
       (run-tool-command
-       (list (namestring tool)
+       (list tool
              "-march=nvptx64"
              (format nil "-mcpu=~a" compute-capability)
              (namestring ll-file)
@@ -287,10 +285,9 @@
 
     (log:info "Generated PTX: ~a" ptx-file)))
 
-
 (defun initialize-compiler (&key (log-level :info) (runtime-checks nil))
   "A master initialization function for the Crisp compiler.
-  This should be called by any entry point into the system (REPL, executable, CI)."
+This should be called by any entry point into the system (REPL, executable, CI)."
 
   (setf *runtime-checks-enabled* runtime-checks)
   ;; Load the LLVM shared library.
