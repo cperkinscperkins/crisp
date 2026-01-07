@@ -483,8 +483,12 @@
                         ;; Generate Runtime Accessor Function
                         (let ((idx runtime-index))
                           (incf runtime-index)
-                          `(def-function ,accessor-name ((obj ,name))
-                                         (return (%extract-struct-member obj ,idx))))))))
+                          `(progn
+                            (def-function ,accessor-name ((obj ,name))
+                                          (return (%extract-struct-member obj ,idx)))
+                            ;; Generate Setter for Runtime Member
+                            (def-setter ,accessor-name ((obj ,name) (val ,(second member-spec)))
+                                        (return (%insert-struct-member obj ,idx val)))))))))
       ,@(let ((runtime-index 0)
               (pkg (symbol-package name)))
           (loop for member-spec in parsed-members
@@ -561,6 +565,24 @@
           (error 'crisp-illegal-overload-error :name name)))
   (let ((setter-name (intern (format nil "~a_SET!" (symbol-name name)) (symbol-package name))))
     `(def-function ,setter-name ,args ,@body (return))))
+
+(defmacro crisp-language::setf (place value &rest pairs)
+  "Custom setf implementation mapping (setf (f x) y) to (f_set! x y)."
+  (if pairs
+      `(progn
+        (setf ,place ,value)
+        (setf ,@pairs))
+      (cond
+       ((symbolp place)
+         `(set! ,place ,value))
+       ((consp place)
+         (let ((op (car place))
+               (args (cdr place)))
+           (if (and (symbolp op) (eq (symbol-package op) (find-package :common-lisp)))
+               `(common-lisp:setf ,place ,value)
+               (let ((setter-name (intern (format nil "~a_SET!" (symbol-name op)) (symbol-package op))))
+                 `(,setter-name ,@args ,value)))))
+       (t (error "Invalid place for setf: ~a" place)))))
 
 (defmacro r-t-assert (test &rest args)
   "Asserts that TEST is true at runtime. If not, terminates kernel.

@@ -218,7 +218,6 @@
    #:with-struct-accessors
    #:def-setter
    #:*crisp-structs*
-   #:*crisp-structs*
    #:return
    #:declare
    #:return-type
@@ -426,6 +425,8 @@
    #:nth #:reverse #:append #:length #:mapcar #:mapc
    #:gensym #:intern #:symbol-name #:string #:concatenate #:format
    #:null #:atom #:consp #:listp #:symbolp #:not #:and #:or
+
+   #:setf ;; <--- NEW EXPORT
 
    ;; Our custom laungage symbols
    #:def-kernel #:def-kernel-exact #:def-function #:def-grid-function

@@ -1096,6 +1096,30 @@
       (let ((val (llvm-build-extract-value builder final-agg-val index (format nil "extract_~d" index))))
         (values val nil)))))
 
+(defmethod generate-node-ir ((node semantic-insert-value) builder module var-env di-builder di-scope location-map)
+  "Generates IR for inserting a value into an aggregate."
+  (let* ((agg-node (semantic-insert-value-aggregate-node node))
+         (index (semantic-insert-value-index node))
+         (value-node (semantic-insert-value-value-node node))
+         (agg-val (generate-node-ir agg-node builder module var-env di-builder di-scope location-map))
+         (value-val (generate-node-ir value-node builder module var-env di-builder di-scope location-map)))
+
+    ;; Recursively resolve the aggregate if it is a handle (ptr)
+    (let ((final-agg-val
+           (if (llvm-type-kind-is-pointer? (llvm-type-of agg-val))
+               (let* ((crisp-type (semantic-node-type agg-node))
+                      (struct-type (if (symbolp crisp-type)
+                                       (ensure-struct-llvm-type crisp-type)
+                                       (error "Cannot insert into non-struct type: ~a" crisp-type))))
+                 (llvm-build-load2 builder struct-type agg-val "loaded_agg"))
+               agg-val)))
+
+      ;; Extract primary value from the value node if needed
+      (let ((final-value-val (extract-primary-value builder value-val (semantic-node-type value-node))))
+        (let ((new-agg-val (llvm-build-insert-value builder final-agg-val final-value-val index (format nil "insert_~d" index))))
+          (values new-agg-val nil))))))
+
+
 (defmethod generate-node-ir ((node semantic-set!) builder module var-env di-builder di-scope location-map)
   "Generates IR for (set! target value)."
   (let* ((target-node (semantic-set!-target-node node))
@@ -1215,5 +1239,3 @@
   "Explict handler for NIL nodes (e.g. empty body return values or missing value nodes)."
   (declare (ignore builder module var-env di-builder di-scope location-map))
   (values nil))
-
-

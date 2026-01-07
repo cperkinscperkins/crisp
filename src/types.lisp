@@ -246,7 +246,9 @@ This supports overloading templates by arity or other factors.")
   "Checks if two types are equivalent, handling template struct canonicalization."
 
   (cl:cond
-    ((equal t1 t2) t)
+    ((or (equal t1 t2)
+         (and (symbolp t1) (symbolp t2) (string-equal (symbol-name t1) (symbol-name t2))))
+     t)
     ;; Treat VOID and NIL as equivalent return types
     ((or (and (symbolp t1) (string-equal t1 "VOID") (null t2))
          (and (null t1) (symbolp t2) (string-equal t2 "VOID")))
