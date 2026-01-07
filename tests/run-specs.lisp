@@ -73,10 +73,7 @@
           output))))
 
 (defun run-spec-binary (file)
-  ;; Filter out known incompatible tests for flags
-  (when (and *compile-single-pass* (search "multipass" (pathname-name file)))
-        (format t "~&Skipping ~a (Incompatible with --single-pass)~%" (pathname-name file))
-        (return-from run-spec-binary t))
+  ;; Filter out known incompatible tests for flags (REMOVED - now handled by FAIL-WITH)
 
   (let ((bin (get-binary-path))
         (args (list (uiop:native-namestring file))))
@@ -95,6 +92,8 @@
           :output :string
           :error-output :string
           :ignore-error-status t)
+      (when (search "multipass" (namestring file))
+            (format t "DEBUG BINARY: Cmd: ~a ~a~%Exit Code: ~a~%Error: ~a~%" bin args exit-code error-output))
       (cond
        ((not (zerop exit-code))
          (format *error-output* "FAIL (Compiler Exit Code ~a)~%~a~%" exit-code error-output)
@@ -157,7 +156,14 @@
              (builder (crisp.llvm-bindings:llvm-create-builder)))
         (unwind-protect
             (progn
-             (crisp.compiler:compile-module forms module builder nil nil nil)
+             (if *compile-single-pass*
+                 (let ((toplevel-index 0)
+                       (crisp.compiler:*current-module* nil))
+                   (loop for form in forms do
+                           (crisp.compiler:compile-toplevel-form form (list toplevel-index) module builder nil nil nil)
+                           (incf toplevel-index)))
+                 (crisp.compiler:compile-module forms module builder nil nil nil))
+
              (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
                (unwind-protect (cffi:foreign-string-to-lisp ir-ptr)
                  (crisp.llvm-bindings:llvm-dispose-message ir-ptr))))
@@ -360,6 +366,63 @@
 
 ;; UNIT TESTS IN SPEC DIRECTORIES    
 
+
+(defun read-crisp-file (filepath)
+  "Reads all forms from a .crisp file."
+  (with-open-file (stream filepath)
+    (loop for form = (read stream nil :eof)
+          until (eq form :eof)
+          collect form)))
+
+(defun run-spec-lisp-loader (file)
+  (handler-case
+      (progn
+       ;; Load the test file (which runs tests via (test 'name))
+       (let ((*standard-output* (make-broadcast-stream))) ; Suppress test output
+         (load file))
+
+       ;; For .crisp files, explicitly trigger compilation
+       (unless (search ".unit.lisp" (namestring file))
+         (let* ((*package* (find-package :crisp-language))
+                (forms (read-crisp-file file))
+                (crisp.compiler:*current-module* nil))
+
+           (unless *package*
+             (error "Package :crisp-language NOT FOUND!"))
+
+           (if *compile-single-pass*
+               ;; Single Pass: Compile form by form (strict ordering)
+               (let ((toplevel-index 0))
+                 (loop for form in forms do
+                         (crisp.compiler:compile-toplevel-form form (list toplevel-index) nil nil nil nil nil)
+                         (incf toplevel-index)))
+
+               ;; Multi Pass: Compile module (resolves forward refs)
+               (crisp.compiler:compile-module forms nil nil nil nil nil))))
+
+       (format t "PASS~%")
+       t) ; Success
+    (error (e)
+      (format t "FAIL~%")
+      (format t "  Error: ~a~%" e)
+      nil)))
+
+(defun discover-unit-tests (spec-dir stop-target)
+  "Find all *.unit.lisp files in spec tree up to stop-target"
+  (let ((unit-files (directory (merge-pathnames "**/*.unit.lisp" spec-dir)))
+        (filtered-files nil))
+
+    ;; Filter by stop-target
+    (dolist (file unit-files)
+      (let ((dir-name (get-parent-directory-name file)))
+        (when (or (not stop-target)
+                  (string<= dir-name stop-target))
+              (push file filtered-files))))
+
+    (sort (nreverse filtered-files) #'string< :key #'namestring)))
+
+;; UNIT TESTS IN SPEC DIRECTORIES    
+
 (defun run-unit-tests (unit-files)
   "Run discovered unit tests using Parachute"
   (when unit-files
@@ -375,17 +438,9 @@
       (format t "~&Unit Test: ~a... " (file-namestring file))
       (finish-output)
       (incf total)
-
-      (handler-case
-          (progn
-           ;; Load the test file (which runs tests via (test 'name))
-           (let ((*standard-output* (make-broadcast-stream))) ; Suppress test output
-             (load file))
-           (format t "PASS~%")
-           (incf passed))
-        (error (e)
-          (format t "FAIL~%  Error: ~a~%" e)
-          (push (file-namestring file) failed-files))))
+      (if (run-spec-lisp-loader file)
+          (incf passed)
+          (push (file-namestring file) failed-files)))
 
     (when unit-files
           (format t "~&---------------------------~%")
@@ -395,7 +450,6 @@
 
     ;; Return success if all passed
     (= passed total)))
-
 
 ;; Directive parsing for test expectations
 ;; Extract header comments from test files containing directives like:
@@ -434,21 +488,42 @@
                   (return-from parse-test-expect nil)))))))
   nil)
 
+(defun parse-fail-with (directive-lines)
+  "Parses FAIL-WITH[--flag]: 'message' directives.
+   Returns T if any directive matches the CURRENT active flags."
+  (dolist (line directive-lines)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "FAIL-WITH[")
+            (let* ((end-bracket (position #\] trimmed))
+                   (colon (position #\: trimmed :start (or end-bracket 0)))
+                   (flag-str (when end-bracket (subseq trimmed 10 end-bracket))))
+
+              (when (and flag-str (> (length flag-str) 0))
+                    ;; Check if flag is active
+                    (let ((active (cond
+                                   ((string= flag-str "--single-pass") *compile-single-pass*)
+                                   ((string= flag-str "--debug") *compile-debug*)
+                                   ((string= flag-str "--use-binary") *use-binary*)
+                                   (t nil)))) ;; Ignore unknown flags for now
+                      (when active
+                            (return-from parse-fail-with t))))))))
+  nil)
+
 (defun should-expect-failure-p (file)
-  "Determine if test should be expected to fail.
-   Returns T if:
-   1. File is in 'errors/' subdirectory, OR
-   2. TEST-EXPECT: FAIL directive is present
-   
-   TEST-EXPECT directive takes precedence over directory location."
+  "Determine if test should be expected to fail."
   (let* ((directives (extract-test-directives file))
          (expect (parse-test-expect directives))
+         (fail-with (parse-fail-with directives))
          (in-errors-dir (member "errors" (pathname-directory file) :test #'string-equal)))
 
     (cond
+     ;; Explicit FAIL-WITH matches active flag -> Expect FAIL
+     (fail-with t)
+
      ;; Explicit directive overrides directory
      ((eq expect :fail) t)
      ((eq expect :pass) nil)
+
      ;; No directive, use directory
      (in-errors-dir t)
      (t nil))))
@@ -466,6 +541,7 @@
          (stop-triggered nil))
 
     ;; Parse Arguments
+    (format t "DEBUG: Raw Args: ~a~%" (uiop:command-line-arguments))
     (loop for arg in (uiop:command-line-arguments) do
             (cond
              ((string= arg "--use-binary") (setf *use-binary* t))
@@ -478,6 +554,8 @@
     (format t "~&Locating specs in ~a~%" spec-dir)
     (format t "Configuration: Binary: ~a, Debug: ~a, Single-Pass: ~a~%"
       *use-binary* *compile-debug* *compile-single-pass*)
+    (format t "DEBUG: Symbols EQ? single-pass: ~a~%"
+      (eq '*compile-single-pass* (find-symbol "*COMPILE-SINGLE-PASS*" :crisp.compiler)))
 
     ;; Discover and run unit tests first
     (let ((unit-files (discover-unit-tests spec-dir stop-target)))
@@ -502,10 +580,16 @@
                       (setf stop-triggered t))
                     (cl:return))
 
+              (format t "Running Spec: ~a... " (pathname-name file))
+              (finish-output)
               (incf total)
 
               ;; Run test and check expectation
               (let ((test-passed (run-spec-file file)))
+                (when (search "multipass" (pathname-name file))
+                      (format t "DEBUG MAIN: File: ~a. TestPassed: ~a. ExpectFail: ~a~%"
+                        (pathname-name file) test-passed expect-failure))
+
                 (cond
                  ;; Test passed and we expected it to pass
                  ((and test-passed (not expect-failure))

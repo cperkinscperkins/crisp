@@ -211,6 +211,7 @@
    #:*enums*
    #:*current-module*
    #:*current-builder*
+   #:*compile-single-pass*
 
    #:def-struct
    #:def-record

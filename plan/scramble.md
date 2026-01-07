@@ -421,12 +421,13 @@ PASS-WITH also triggers custom test passes for that test.
 ;; test.crisp
 [x];; TEST-EXPECT: PASS                           ← Default outcome
 [ ];; FAIL-WITH[--single-pass]: "error message"   ← Expected failure
-[ ];; PASS-WITH[target=spirv]                     ← Conditional success
+[ ];; PASS-WITH[--ir-target=spirv]                     ← Conditional success
 [ ];; PASS-ONLY-WITH[--allow-redefinition]        ← Requires flag
 [ ];; TEST-WITH[--metadata]                       ← Run additional test pass 
 [ ];; TEST-WITH[--force-math-precision=fast] : validate_smoke_fast.lisp   ← custom script --load
 [ ];; TEST-WITH[--math-precision=ieee]  : #'validate-ieee                 ← standard function provided by test runner.
 [ ];; CHECK-WARN: "warning text"                  ← Inline warning check
+[ ];; CHECK-FAIL: "failure message" 
 
 Architecture
 ============
