@@ -1,0 +1,5 @@
+;; TEST-EXPECT: FAIL
+;; This test deliberately has a syntax error to test the directive system
+
+(def-function broken ()
+  (this-is-not-valid-crisp-syntax))

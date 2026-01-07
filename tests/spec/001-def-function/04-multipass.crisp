@@ -1,3 +1,5 @@
+;; FAIL-WITH[--single-pass]: "Unsupported form 'MOAR' found in function body."
+
 (def-function call-another (a b)
   (declare #'(int int => int))
   (moar a b))

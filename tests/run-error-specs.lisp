@@ -55,6 +55,28 @@
                 (values t nil)
                 (values nil (format nil "Expected error '~a' not found. Got:~%~a" expected-error combined))))))))
 
+(defun get-ci-stop-target ()
+  "Reads tests/ci-stop.txt to determine the last directory to run."
+  (let ((path (merge-pathnames "tests/ci-stop.txt" (uiop:getcwd))))
+    (when (probe-file path)
+          (let ((content (string-trim '(#\Space #\Newline #\Return) (uiop:read-file-string path))))
+            (unless (zerop (length content))
+              content)))))
+
+(defun get-parent-directory-name (path)
+  "Extract the numbered spec directory name."
+  (let ((dirs (pathname-directory path)))
+    (dolist (dir (reverse dirs))
+      (when (and (stringp dir)
+                 (>= (length dir) 4)
+                 (digit-char-p (cl:char dir 0))
+                 (digit-char-p (cl:char dir 1))
+                 (digit-char-p (cl:char dir 2))
+                 (char= (cl:char dir 3) #\-))
+            (return-from get-parent-directory-name dir)))
+    (car (last dirs))))
+
+
 (defun main ()
   (let* ((spec-dir (merge-pathnames "tests/spec/" (uiop:getcwd)))
          ;; Find all .crisp files
@@ -62,7 +84,9 @@
          (error-files '())
          (total 0)
          (passed 0)
-         (failed-tests '()))
+         (failed-tests '())
+         (stop-target (get-ci-stop-target))
+         (stop-triggered nil))
 
     ;; Filter for files inside an 'errors' directory
     (dolist (f all-files)
@@ -73,21 +97,30 @@
     (setf error-files (sort error-files #'string< :key #'namestring))
 
     (format t "~&Running Negative Tests (scanned from ~a)~%" spec-dir)
+    (when stop-target
+          (format t "Stop Target Active: Running tests up to directory '~a'~%" stop-target))
 
     (dolist (file error-files)
-      (let ((expected (read-check-fail-header file)))
-        (if expected
-            (progn
-             (incf total)
-             (format t "Running ~a... " (pathname-name file))
-             (finish-output)
-             (multiple-value-bind (success msg) (run-error-check file expected)
-               (if success
-                   (progn (format t "PASS~%") (incf passed))
-                   (progn
-                    (format t "FAIL~%  ~a~%" msg)
-                    (push (cons (pathname-name file) msg) failed-tests)))))
-            (format t "Skipping ~a (No CHECK-FAIL header)~%" (pathname-name file)))))
+      (let ((dir-name (get-parent-directory-name file)))
+        (when (and stop-target (string> dir-name stop-target))
+              (unless stop-triggered
+                (format t "~&--- Reached Stop Target (~a). Stopping. ---~%" stop-target)
+                (setf stop-triggered t))
+              (return))
+
+        (let ((expected (read-check-fail-header file)))
+          (if expected
+              (progn
+               (incf total)
+               (format t "Running ~a... " (pathname-name file))
+               (finish-output)
+               (multiple-value-bind (success msg) (run-error-check file expected)
+                 (if success
+                     (progn (format t "PASS~%") (incf passed))
+                     (progn
+                      (format t "FAIL~%  ~a~%" msg)
+                      (push (cons (pathname-name file) msg) failed-tests)))))
+              (format t "Skipping ~a (No CHECK-FAIL header)~%" (pathname-name file))))))
 
     (format t "~&---------------------------~%")
     (format t "Negative Test Summary: ~a/~a Passed.~%" passed total)

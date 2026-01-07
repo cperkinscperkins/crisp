@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-03T23:21:18.616322Z
+Generated on 2026-01-07T01:47:22.008763Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -511,6 +511,13 @@ Generated on 2026-01-03T23:21:18.616322Z
 
 
 ---
+### DEFUN `ENSURE-OPENCL-KERNEL-METADATA`
+- **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
+
+  > Marks a function as a SPIR-V kernel if it's an entry point.  >    Sets the spir_kernel calling convention (76).  >      >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing, not via LLVM C API, because the metadata API functions  >    (LLVMValueAsMetadata, LLVMMDStringInContext2, etc.) may not be available in all  >    LLVM versions and cause crashes when called via CFFI. Text injection is simpler  >    and guaranteed to work.
+
+
+---
 ### DEFUN `GENERATE-FUNCTION-PROTOTYPE`
 - **Args**: `(SEMANTIC-FUNCTION MODULE DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)`
 
@@ -603,10 +610,52 @@ Generated on 2026-01-03T23:21:18.616322Z
 
 
 ---
+### DEFUN `FIND-SPIR-KERNELS`
+- **Args**: `(IR-TEXT)`
+
+  > Find all SPIR kernel functions in LLVM IR text.  >    Returns list of (function-name start-pos end-pos-of-signature).
+
+
+---
+### DEFUN `EXTRACT-KERNEL-PARAMS`
+- **Args**: `(IR-TEXT FUNC-START FUNC-END)`
+
+  > Extract parameter types from a kernel function signature.  >    Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64').
+
+
+---
+### DEFUN `IR-TYPE-TO-OPENCL-METADATA`
+- **Args**: `(IR-TYPE)`
+
+  > Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).  >    Returns (values addr-space-int access-qual-string type-name-string).
+
+
+---
+### DEFUN `GENERATE-KERNEL-METADATA`
+- **Args**: `(PARAMS METADATA-ID-BASE)`
+
+  > Generate LLVM metadata definitions for kernel parameters.  >    Returns (values metadata-refs-string metadata-defs-string next-id).
+
+
+---
+### DEFUN `INJECT-SPIR-KERNEL-METADATA`
+- **Args**: `(IR-TEXT)`
+
+  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  >    Returns modified IR text with metadata.
+
+
+---
 ### DEFUN `COMPILE-TO-SPIRV`
 - **Args**: `(MODULE OUTPUT-PATH)`
 
   > Compiles an LLVM Module to SPIR-V using the external toolchain.
+
+
+---
+### DEFUN `COMPILE-TO-PTX`
+- **Args**: `(MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_50))`
+
+  > Compiles an LLVM Module to PTX using llc.  >    COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)  >                        sm_50 = Maxwell (good default for compatibility)
 
 
 ---

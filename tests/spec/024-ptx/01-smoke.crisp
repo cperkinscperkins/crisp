@@ -1,3 +1,5 @@
+;; TEST-WITH[--ir-target=ptx]
+
 ;; this is for testing ptx generation
 ;; ./bin/crisp-compile.exe  ./tests/spec/024-ptx/01-smoke.crisp --ir-target=ptx
 

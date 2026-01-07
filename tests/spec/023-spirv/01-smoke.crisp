@@ -1,3 +1,5 @@
+;; TEST-WITH[--ir-target=spv]
+
 ;; this is for testing spir-v generation
 ;; ./bin/crisp-compile.exe  ./tests/spec/023-spirv/01-smoke.crisp --ir-target=spv
 
