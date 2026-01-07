@@ -257,7 +257,7 @@ SHORT TERM PLAN
 - - - (address-space~ someCellOrTensor)
 - - [ ] built atop def-struct ? 
 - [x] def-kernel-exact 
-- [ ] def-kernel  <-- 
+- [x] def-kernel  <-- 
 - [ ] expand variadics (+, * etc).  Maybe up to 5 or 7?  (+ a b c d e)
 - [ ] def-function has strict return type checking. Meaning, if it declares nil as return type,
       it has to return nil ( just add `(return)` ).  This is not necessarily optimal.
@@ -296,7 +296,7 @@ Kernels
 - [x] --ir-target
 - - [ ] llvm-ir
 - - [x] spirv
-- - [ ] ptx?
+- - [x] ptx?
 - [ ] --binary-gpu-target
 - [x] test on BMG
 - [ ] metadata
@@ -369,7 +369,8 @@ LANGUAGE CHANGES
 - [ ] if-reorder <-- see google doc.
 - [ ] change => nil to => void ?? 
 - [x] :read_write vs :read-write 
-
+- [ ] `--allow-redefinition` . Crisp gets Common Lisp super power of "last defined rules".  Will require a COMPLETE extra preperatory pass. Document with the other Code Transformation flags ( --re-output-crisp and --tree-shaking )
+Won't work with defmacro (obviously). But should work with templates. 
 
 
 THE SPINE - testing and ci
@@ -386,10 +387,46 @@ Issues and Shortcomings
 
 - [ ] flags. no way to capture WHEN any particular flag should be developed.
 - - [ ] no way to declare their usage in the spec test.
+- [ ] unit tests. Unit tests need to be broken up across the spine too.
 
 What other things are not properly captured in the spine?
 
+Better Spine Testing - Three Proposals
+--------------------------------------
+Filename based.
 
+XXXX.unit.lisp    <-- a parachute unit test. Can do anything. Very flexible.
+XXXX.expected.xx  <-- (xx is .ll  .meta  .spv .spt .ptx .cpp).  Expectation artifact.
+                       There are /tests/validators/validate-xx.lisp   for each
+                       type that decide how to validate.
+XXXX-l0.cpp       <-- gets compiled and run after kernel.  returns 0 for succes.
+                      -ocl -l0 -cuda.
+                      maybe also -bmg  -gpu -cpu  . Not sure.
+
+XXXX.perf         <-- performance boundaries?  
+
+Errors are handled like they are now. ;; CHECK-FAIL: "<err-msg>"
+
+Warnings like errors.  ;; CHECK-WARN "<msg>"
+
+Comments at header can also include other expectations:
+      ;; FAIL-WITH[--single-pass]: "<error message>"
+      ;; PASS-WITH[target=spv]
+
+PASS-WITH also triggers custom test passes for that test.
+      ;; PASS-ONLY-WITH[--allow-redefinition]
+      ;; TEST-WITH[--metadata]    <--  the --metadata is not normally run with EVERY test. 
+
+
+;; test.crisp
+;; TEST-EXPECT: PASS                           ← Default outcome
+;; FAIL-WITH[--single-pass]: "error message"   ← Expected failure
+;; PASS-WITH[target=spirv]                     ← Conditional success
+;; PASS-ONLY-WITH[--allow-redefinition]        ← Requires flag
+;; TEST-WITH[--metadata]                       ← Run additional test pass 
+;; TEST-WITH[--force-math-precision=fast] : validate_smoke_fast.lisp   ← custom script --load
+;; TEST-WITH[--math-precision=ieee]  : #'validate-ieee                 ← standard function provided by test runner.
+;; CHECK-WARN: "warning text"                  ← Inline warning check
 
 Architecture
 ============
@@ -433,20 +470,3 @@ Not sure how difficult that would be.
 
 
 
-REGROUP
-=======
-
-- revert to main branch. 
-- capture work on tests and docs from def-kernel-exact branches
-- update ALL tests
-- - no "cell" or "(cell)".  only (cell someType)
-- lose &optional variants for cell.  Double check def-record and def-struct 
-  both in design doc and in tests.
-- make- => marshall-  A: BOTH for def-record .  marshall- for cell, but NOT make-
-
-- review not-again.md , matrix-mutable.md and thoughts-on-def-kernel.md
-
-
-* Incomplete
-* Templates are for omitting Structure/Identity (like element-type).
-* The element-type must always be present—either concretely (long) or abstractly (T).

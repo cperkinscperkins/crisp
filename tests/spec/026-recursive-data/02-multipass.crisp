@@ -1,0 +1,12 @@
+;;
+;;  records can contain records
+;;  Even  if not in reverse dependency order, they should still compile fine.
+;;  UNLESS --single-passs is used, then they should error and NOT compile.
+
+
+(def-record v-rect (ul-corner v-point) (lr-corner v-point))
+
+(def-record v-point (x int) (y int))
+
+
+

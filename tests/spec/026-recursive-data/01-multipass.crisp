@@ -1,0 +1,12 @@
+;;
+;;  structs can contain structs
+;;  Even  if not in reverse dependency order, they should still compile fine.
+;;  UNLESS --single-passs is used, then they should error and NOT compile.
+
+
+(def-struct rect (ul-corner point) (lr-corner point))
+
+(def-struct point (x int) (y int))
+
+
+

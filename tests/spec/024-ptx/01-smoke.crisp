@@ -1,0 +1,6 @@
+;; this is for testing ptx generation
+;; ./bin/crisp-compile.exe  ./tests/spec/024-ptx/01-smoke.crisp --ir-target=ptx
+
+(def-kernel smoke_test (c)
+  (declare #'((cell int :address-space :global :access :read-write)))
+  (set! (~ c) 42))

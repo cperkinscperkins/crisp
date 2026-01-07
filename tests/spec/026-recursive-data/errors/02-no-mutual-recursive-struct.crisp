@@ -1,0 +1,10 @@
+;;
+;; CHECK-FAIL: "<not unreasonable error message>"
+;;
+
+;; structs cannot be mutually recursive
+
+(def-struct pointish (x int) (y int) (pt pointie))
+
+(def-struct pointie (xx int) (yy int) (pi pointish))
+
