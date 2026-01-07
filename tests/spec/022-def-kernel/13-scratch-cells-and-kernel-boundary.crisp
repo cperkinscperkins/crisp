@@ -1,0 +1,42 @@
+
+
+
+#|
+Scratch Cells are our first "Side Channel" Storage Handle.
+
+Look at this calling tree
+
+Kernel_A()
+ => B()
+   => C()
+     c = make-scratch-cell
+     => D(c)
+      => E(c)
+
+The scratch cell is instantiated in C(). But kernels cannot allocate memory. So the scratch
+cell needs to implicitly added as a "Side Channel" to call chain from the kernel to C().
+Below that, the cell can be passed explicitly and does not need "Side Channel" modification.
+|#
+
+(def-function fun-D (sc)
+    (declare #'((cell int) => int))
+  ;; ignore sc for now.
+  8)
+
+(def-function fun-C (sc)
+    (declare #'((cell int) => int))
+  (+ 7 (fun-D sc)))
+
+(def-function fun-B (i)
+    (declare #'(int => int))
+  (let ((sc (make-scratch-cell int)))
+    (+ i (fun-C sc))))
+
+(def-function fun-A (i)
+    (declare #'(int => int))
+  (fun-B i))
+
+(def-kernel my_kernel (i)
+    (declare #'(int))
+  (fun-A i))
+
