@@ -11,7 +11,7 @@
                        sb-ext:*posix-argv*)))
           (if arg
               (intern (string-upcase (subseq arg (length "--log-level="))) :keyword)
-              :info)))
+              :error)))
 
 ;; Configure logging before loading if possible
 (ql:quickload "log4cl" :silent t)
