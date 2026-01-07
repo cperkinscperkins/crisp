@@ -83,6 +83,8 @@ jobs:
           sbcl --non-interactive --load build/build.lisp
 
       - name: 7. Run End-to-End Specs (Internal & External)
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
         run: |
           # Exit immediately if a pipeline returns a non-zero status.
           set -o pipefail
