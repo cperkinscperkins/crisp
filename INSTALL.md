@@ -207,14 +207,11 @@ Test interactively from SBCL
 ; or run all the tests
 (parachute:test :crisp.tests)
 
-;; evaluate some functions and see their semantic layout.
-(def-function wow () (declare (return-type int)) 7)
-(def-function adds (a b) (declare (type a b int) (return-type int)) (+ a b))
-(def-function has-let (a) (declare #'(int => int)) (let ((v 100)) (+ a v)))
 
 ;; generate some LLVM-IR (and DWARF) from functions
 (compile-crisp-form-to-ir-string '(def-function wow () (declare (return-type int)) 7) :debug-p T)
 
 ;; or run the CI tests and quit after
 (load #P"./tests/run-ci.lisp")
+(sb-ext:quit)
 ```
