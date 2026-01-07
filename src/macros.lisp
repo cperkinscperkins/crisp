@@ -77,11 +77,11 @@
                  (cond ,@rest))))))
 
 (defmacro return (&optional value)
-  "Crisp's special RETURN form. Expands to a semantic-return node."
+  "Crisp's special RETURN form. Expands to an explicit-return node."
   ;; This macro is intercepted by the semantic analyzer.
   ;; It should NOT expand to CL:RETURN-FROM.
   ;; It is processed directly by analyze-expression.
-  `(semantic-return ,value))
+  `(explicit-return ,value))
 
 (defmacro if+ (test then &optional else)
   "Compile-time conditional. Evaluates TEST at macro-expansion time.
