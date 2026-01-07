@@ -173,6 +173,7 @@
    #:initialize-crisp-types
    #:analyze-return-type-from-spec
    #:analyze-environment-from-spec
+   #:parse-function-declarations
    #:analyze-return-type-from-list
    #:analyze-environment-from-list
    #:initialize-compiler

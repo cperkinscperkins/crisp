@@ -315,6 +315,56 @@
 (defun get-parent-directory-name (path)
   (car (last (pathname-directory path))))
 
+(defun discover-unit-tests (spec-dir stop-target)
+  "Find all *.unit.lisp files in spec tree up to stop-target"
+  (let ((unit-files (directory (merge-pathnames "**/*.unit.lisp" spec-dir)))
+        (filtered-files nil))
+
+    ;; Filter by stop-target
+    (dolist (file unit-files)
+      (let ((dir-name (get-parent-directory-name file)))
+        (when (or (not stop-target)
+                  (string<= dir-name stop-target))
+              (push file filtered-files))))
+
+    (sort (nreverse filtered-files) #'string< :key #'namestring)))
+
+(defun run-unit-tests (unit-files)
+  "Run discovered unit tests using Parachute"
+  (when unit-files
+        ;; Load Parachute test framework
+        (ql:quickload "parachute" :silent t)
+        (format t "~&~%=== Running Unit Tests ===~%"))
+
+  (let ((total 0)
+        (passed 0)
+        (failed-files nil))
+
+    (dolist (file unit-files)
+      (format t "~&Unit Test: ~a... " (file-namestring file))
+      (finish-output)
+      (incf total)
+
+      (handler-case
+          (progn
+           ;; Load the test file (which runs tests via (test 'name))
+           (let ((*standard-output* (make-broadcast-stream))) ; Suppress test output
+             (load file))
+           (format t "PASS~%")
+           (incf passed))
+        (error (e)
+          (format t "FAIL~%  Error: ~a~%" e)
+          (push (file-namestring file) failed-files))))
+
+    (when unit-files
+          (format t "~&---------------------------~%")
+          (format t "Unit Tests: ~a/~a Passed.~%" passed total)
+          (when failed-files
+                (format t "Failed Unit Tests:~%~{  - ~a~%~}" (nreverse failed-files))))
+
+    ;; Return success if all passed
+    (= passed total)))
+
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))
          ;; Assume tests/run-specs.lisp -> tests/spec/
@@ -337,6 +387,11 @@
     (format t "Configuration: Binary: ~a, Debug: ~a, Single-Pass: ~a~%"
       *use-binary* *compile-debug* *compile-single-pass*)
 
+    ;; Discover and run unit tests first
+    (let ((unit-files (discover-unit-tests spec-dir stop-target)))
+      (run-unit-tests unit-files))
+
+    (format t "~&~%=== Running E2E Spec Tests ===~%")
     (format t "~&Locating specs in ~a~%" spec-dir)
     (when stop-target
           (format t "Stop Target Active: Running tests up to directory '~a'~%" stop-target))
