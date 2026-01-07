@@ -1,0 +1,13 @@
+;; TEST-WITH[--metadata]
+
+;; this should appear in the metadata. Used at kernel boundary.
+(def-type iii int)
+
+;; this should NOT appear in the metadata. Not used at kernel boundary.
+;; it might be used by the kernel, but not at the parameter boundary.
+(def-type iv int)
+
+(def-kernel tricky_kernel (i)
+    (declare (type i iii))
+    (let ((j (to iv i)))
+      (r-t-assert (> j 0))))

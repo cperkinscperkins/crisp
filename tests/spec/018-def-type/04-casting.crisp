@@ -1,0 +1,21 @@
+(def-type iii int)
+
+(def-type iv int)
+
+(def-function cast-iv-to-iii (i)
+    (declare (type i iv))
+    (as iii i))
+
+(def-function convert-iv-to-iii (i)
+    (declare (type i iv))
+    (to iii i))
+
+(def-kernel tricky_kernel (i a)
+    (declare (type i iv) (type a int))
+    (let ((j (cast-iv-to-iii i))
+          (k (convert-iv-to-iii i))
+          (b (as iii a))
+          (c (to iv a))
+          (d (as int i))
+          (e (to int i)))
+      (r-t-assert (= j k))))

@@ -1,0 +1,19 @@
+
+;; TEST-WITH[--metadata]
+
+;; both point and rect should appear in the metadata.
+;; by virtue of rect being included at kernel boundary, and rect depending on point.
+(def-struct point (x int) (y int))
+
+(def-struct rect (ul-corner point) (lr-corner point))
+
+;; skipped should not appear in the metadata.
+(def-struct skipped (x int) (y int))
+
+
+(def-kernel fun_kernel (c)
+    (declare (type c (cell rect :address-space :global :access :read-write)))
+  (let ((r (~ c))
+        (p (ul-corner~ r))
+        (loc-x (x~ p)))
+    (setf (x~ p) (+ loc-x 1))))
