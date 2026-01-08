@@ -36,5 +36,5 @@ Workaround: None currently
 Tests affected: Any test using both type aliases in structs AND the setter functionality
 Note: Tests 04 & 06 work because they don't use type aliases; test 08 fails because it does
 
-[ ] 012 - Type Equivalence Issue: The 08-structs-and-aliases.crisp test now gets further but fails with "Type mismatch! Expected III but inferred INT" when calling the setter with an int value.
+[x] 012 - Type Equivalence Issue: The 08-structs-and-aliases.crisp test now gets further but fails with "Type mismatch! Expected III but inferred INT" when calling the setter with an int value.
 The type equivalence function (types-equivalent-p) needs to resolve aliases, but my overlay version broke builtin registration. This is getting complex - we need to carefully modify types-equivalent-p without breaking existing functionality.
