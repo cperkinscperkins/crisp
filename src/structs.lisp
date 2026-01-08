@@ -17,7 +17,7 @@
   (cl:let ((resolved-type (if (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
                               (loop for name = type-spec then (gethash name *crisp-type-aliases*)
                                     while (and (symbolp name) (gethash name *crisp-type-aliases*))
-                                    finally (return name))
+                                    finally (cl:return name))
                               type-spec)))
     (cl:cond
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
@@ -56,7 +56,7 @@
   (cl:let ((resolved-type (if (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
                               (loop for name = type-spec then (gethash name *crisp-type-aliases*)
                                     while (and (symbolp name) (gethash name *crisp-type-aliases*))
-                                    finally (return name))
+                                    finally (cl:return name))
                               type-spec)))
     (cl:cond
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
