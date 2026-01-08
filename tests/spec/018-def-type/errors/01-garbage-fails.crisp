@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "Unknown type 'GARBAGE'."
+
+(def-type foo  garbage)   ;; <-- by itself, this "compiles". (ie, the compiler finishes, no llvm-ir is generated though)
+
+;; but once it is actually used in a function, it (correctly) fails.
+(def-function foo-user (f)
+    (declare #'(foo => foo))
+    (+ f f))

@@ -192,6 +192,14 @@
   index ; The 0-based index to extract
   source-location)
 
+(defstruct semantic-insert-value
+  "Represents inserting a single value into an aggregate (struct)."
+  type ; The type of the result struct
+  aggregate-node ; The semantic node for the aggregate being updated
+  index ; The 0-based index to insert at
+  value-node ; The semantic node for the value being inserted
+  source-location)
+
 (defstruct semantic-struct-construction
   "Represents constructing a struct instance e.g. (%construct-struct 'point ...)."
   type ; The type specifier of the struct (symbol name)

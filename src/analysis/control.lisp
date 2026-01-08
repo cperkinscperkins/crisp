@@ -445,6 +445,7 @@
   (def-expression-analyzer when analyze-when-expression)
   (def-expression-analyzer unless analyze-unless-expression)
   (def-expression-analyzer return analyze-return-expression)
+  (def-expression-analyzer explicit-return analyze-return-expression)
   (def-expression-analyzer semantic-return analyze-return-expression)
   (def-expression-analyzer quote analyze-quote)
 

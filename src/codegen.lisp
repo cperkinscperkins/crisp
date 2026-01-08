@@ -522,83 +522,72 @@
    ((and (consp type-name) (eq (first type-name) 'c-pointer)) :pointer)
    (t nil)))
 
+
 (defun build-cast-if-needed (builder from-val from-type-name to-type-name)
-  "Builds an LLVM cast instruction if the types differ."
-  (if (equal from-type-name to-type-name)
-      (progn
-       (log:debug "build-cast-if-needed: No cast needed for ~s" from-type-name)
-       from-val)
-      (let* ((from-type (if (symbolp from-type-name) (gethash from-type-name *crisp-types*) nil))
-             (to-type (if (symbolp to-type-name) (gethash to-type-name *crisp-types*) nil))
-             (to-llvm-type (resolve-type-to-llvm to-type-name))
-             (from-cat (get-type-cat-safe from-type-name from-type))
-             (to-cat (get-type-cat-safe to-type-name to-type)))
-
-        (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
-        (cond
-         ;; Integer to Float
-         ((and (member from-cat '(:signed-int :unsigned-int))
-               (eq to-cat :float))
-           (if (eq from-cat :signed-int)
-               (llvm-build-si-to-fp builder from-val to-llvm-type "si2fp_cast")
-               (llvm-build-ui-to-fp builder from-val to-llvm-type "ui2fp_cast")))
-
-         ;; Integer to Integer (Ext, Trunc, or Same)
-         ((and (member from-cat '(:signed-int :unsigned-int))
-               (member to-cat '(:signed-int :unsigned-int)))
-           (let ((from-size (crisp-type-size from-type))
-                 (to-size (crisp-type-size to-type)))
-             (cond
-              ((< to-size from-size)
-                (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
-              ((> to-size from-size)
-                (if (eq from-cat :signed-int)
-                    (llvm-build-sext builder from-val to-llvm-type "sext_cast")
-                    (llvm-build-zext builder from-val to-llvm-type "zext_cast")))
-              (t from-val)))) ;; Same size
-
-         ;; Float Extension / Truncation
-         ((and (eq from-cat :float) (eq to-cat :float))
-           (let ((from-size (crisp-type-size from-type))
-                 (to-size (crisp-type-size to-type)))
-             (cond
-              ((< to-size from-size)
-                (llvm-build-fp-trunc builder from-val to-llvm-type "fptrunc_cast"))
-              ((> to-size from-size)
-                (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast"))
-              (t from-val))))
-
-         ;; Float to Integer
-         ((and (eq from-cat :float) (member to-cat '(:signed-int :unsigned-int)))
-           (if (eq to-cat :signed-int)
-               (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast")
-               (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast")))
-
-         ;; Integer to Pointer
-         ((and (member from-cat '(:signed-int :unsigned-int))
-               (eq to-cat :pointer))
-           (llvm-build-int-to-ptr builder from-val to-llvm-type "int2ptr_cast"))
-
-         ;; Pointer to Integer
-         ((and (eq from-cat :pointer)
-               (member to-cat '(:signed-int :unsigned-int)))
-           (llvm-build-ptr-to-int builder from-val to-llvm-type "ptr2int_cast"))
-
-         ;; Pointer to Pointer
-         ((and (eq from-cat :pointer)
-               (eq to-cat :pointer))
-           (let ((from-as (llvm-get-pointer-address-space (llvm-type-of from-val)))
-                 (to-as (llvm-get-pointer-address-space to-llvm-type)))
-             (if (= from-as to-as)
-                 (llvm-build-bit-cast builder from-val to-llvm-type "ptr2ptr_cast")
-                 (llvm-build-addrspace-cast builder from-val to-llvm-type "ptr2ptr_ascast"))))
-
-         (t
-           (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
-           (log:error "  From Type: ~a (cat: ~a)" from-type from-cat)
-           (log:error "  To Type:   ~a (cat: ~a)" to-type to-cat)
-           (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
-           (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name))))))
+  "Builds LLVM cast instruction if types differ, with alias resolution."
+  ;; Resolve aliases first
+  (cl:let ((from-type-name (resolve-type-alias from-type-name))
+           (to-type-name (resolve-type-alias to-type-name)))
+    (if (equal from-type-name to-type-name)
+        (progn
+         (log:debug "build-cast-if-needed: No cast needed for ~s" from-type-name)
+         from-val)
+        (let* ((from-type (if (symbolp from-type-name) (gethash from-type-name *crisp-types*) nil))
+               (to-type (if (symbolp to-type-name) (gethash to-type-name *crisp-types*) nil))
+               (to-llvm-type (resolve-type-to-llvm to-type-name))
+               (from-cat (get-type-cat-safe from-type-name from-type))
+               (to-cat (get-type-cat-safe to-type-name to-type)))
+          (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
+          (cond
+           ((and (member from-cat (quote (:signed-int :unsigned-int)))
+                 (eq to-cat (quote :float)))
+             (if (eq from-cat (quote :signed-int))
+                 (llvm-build-si-to-fp builder from-val to-llvm-type "si2fp_cast")
+                 (llvm-build-ui-to-fp builder from-val to-llvm-type "ui2fp_cast")))
+           ((and (member from-cat (quote (:signed-int :unsigned-int)))
+                 (member to-cat (quote (:signed-int :unsigned-int))))
+             (let ((from-size (crisp-type-size from-type))
+                   (to-size (crisp-type-size to-type)))
+               (cond
+                ((< to-size from-size)
+                  (llvm-build-trunc builder from-val to-llvm-type "trunc_cast"))
+                ((> to-size from-size)
+                  (if (eq from-cat (quote :signed-int))
+                      (llvm-build-sext builder from-val to-llvm-type "sext_cast")
+                      (llvm-build-zext builder from-val to-llvm-type "zext_cast")))
+                (t from-val))))
+           ((and (eq from-cat (quote :float)) (eq to-cat (quote :float)))
+             (let ((from-size (crisp-type-size from-type))
+                   (to-size (crisp-type-size to-type)))
+               (cond
+                ((< to-size from-size)
+                  (llvm-build-fp-trunc builder from-val to-llvm-type "fptrunc_cast"))
+                ((> to-size from-size)
+                  (llvm-build-fp-ext builder from-val to-llvm-type "fpext_cast"))
+                (t from-val))))
+           ((and (eq from-cat (quote :float)) (member to-cat (quote (:signed-int :unsigned-int))))
+             (if (eq to-cat (quote :signed-int))
+                 (llvm-build-fp-to-si builder from-val to-llvm-type "fp2si_cast")
+                 (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast")))
+           ((and (member from-cat (quote (:signed-int :unsigned-int)))
+                 (eq to-cat (quote :pointer)))
+             (llvm-build-int-to-ptr builder from-val to-llvm-type "int2ptr_cast"))
+           ((and (eq from-cat (quote :pointer))
+                 (member to-cat (quote (:signed-int :unsigned-int))))
+             (llvm-build-ptr-to-int builder from-val to-llvm-type "ptr2int_cast"))
+           ((and (eq from-cat (quote :pointer))
+                 (eq to-cat (quote :pointer)))
+             (let ((from-as (llvm-get-pointer-address-space (llvm-type-of from-val)))
+                   (to-as (llvm-get-pointer-address-space to-llvm-type)))
+               (if (= from-as to-as)
+                   (llvm-build-bit-cast builder from-val to-llvm-type "ptr2ptr_cast")
+                   (llvm-build-addrspace-cast builder from-val to-llvm-type "ptr2ptr_ascast"))))
+           (t
+             (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
+             (log:error "  From Type: ~a (cat: ~a)" from-type from-cat)
+             (log:error "  To Type:   ~a (cat: ~a)" to-type to-cat)
+             (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
+             (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name)))))))
 
 (defmacro def-binary-op-codegen (node-type int-inst float-inst accessor-prefix)
   (let ((left-accessor (intern (format nil "~a-LEFT-ARG" accessor-prefix)))
@@ -1096,6 +1085,30 @@
       (let ((val (llvm-build-extract-value builder final-agg-val index (format nil "extract_~d" index))))
         (values val nil)))))
 
+(defmethod generate-node-ir ((node semantic-insert-value) builder module var-env di-builder di-scope location-map)
+  "Generates IR for inserting a value into an aggregate."
+  (let* ((agg-node (semantic-insert-value-aggregate-node node))
+         (index (semantic-insert-value-index node))
+         (value-node (semantic-insert-value-value-node node))
+         (agg-val (generate-node-ir agg-node builder module var-env di-builder di-scope location-map))
+         (value-val (generate-node-ir value-node builder module var-env di-builder di-scope location-map)))
+
+    ;; Recursively resolve the aggregate if it is a handle (ptr)
+    (let ((final-agg-val
+           (if (llvm-type-kind-is-pointer? (llvm-type-of agg-val))
+               (let* ((crisp-type (semantic-node-type agg-node))
+                      (struct-type (if (symbolp crisp-type)
+                                       (ensure-struct-llvm-type crisp-type)
+                                       (error "Cannot insert into non-struct type: ~a" crisp-type))))
+                 (llvm-build-load2 builder struct-type agg-val "loaded_agg"))
+               agg-val)))
+
+      ;; Extract primary value from the value node if needed
+      (let ((final-value-val (extract-primary-value builder value-val (semantic-node-type value-node))))
+        (let ((new-agg-val (llvm-build-insert-value builder final-agg-val final-value-val index (format nil "insert_~d" index))))
+          (values new-agg-val nil))))))
+
+
 (defmethod generate-node-ir ((node semantic-set!) builder module var-env di-builder di-scope location-map)
   "Generates IR for (set! target value)."
   (let* ((target-node (semantic-set!-target-node node))
@@ -1215,5 +1228,3 @@
   "Explict handler for NIL nodes (e.g. empty body return values or missing value nodes)."
   (declare (ignore builder module var-env di-builder di-scope location-map))
   (values nil))
-
-

@@ -166,7 +166,11 @@
   "Analyzes the generic (to type value) form."
   (let* ((type-form (second expr))
          (value-form (third expr))
-         (type-name (if (symbolp type-form) type-form (error "Generic TO expects a type symbol, got ~a" type-form)))
+         (orig-type-name (if (symbolp type-form) type-form (error "Generic TO expects a type symbol, got ~a" type-form)))
+         ;; Generic 'TO' Resolution
+         (type-name (loop for name = orig-type-name then (gethash name *crisp-type-aliases*)
+                          while (and (symbolp name) (gethash name *crisp-type-aliases*))
+                          finally (cl:return name)))
          (target-type (gethash type-name *crisp-types*)))
 
     (unless target-type
@@ -179,13 +183,15 @@
   "Analyzes the generic (as type value) form."
   (let* ((type-form (second expr))
          (value-form (third expr))
-         (type-name (if (or (symbolp type-form) (listp type-form))
-                        type-form
-                        (error "Generic AS expects a type specifier, got ~a" type-form)))
+         (orig-type-name (if (or (symbolp type-form) (listp type-form))
+                             type-form
+                             (error "Generic AS expects a type specifier, got ~a" type-form)))
+         ;; Generic 'AS' Resolution
+         (type-name (loop for name = orig-type-name then (gethash name *crisp-type-aliases*)
+                          while (and (symbolp name) (gethash name *crisp-type-aliases*))
+                          finally (cl:return name)))
          (target-type (if (symbolp type-name) (gethash type-name *crisp-types*) nil))
          (arg-node (analyze-expression value-form env (append location '(2)))))
-
-    (log:warn "ANALYZE-AS: ~s -> Type: ~a. Arg Type: ~a" type-name target-type (semantic-node-type arg-node))
 
     (unless (or target-type (valid-type-p type-name))
       (error 'crisp-unknown-type-error :type-name type-name :source-location location))

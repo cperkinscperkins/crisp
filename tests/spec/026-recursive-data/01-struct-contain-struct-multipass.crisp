@@ -2,7 +2,8 @@
 ;;  structs can contain structs
 ;;  Even  if not in reverse dependency order, they should still compile fine.
 ;;  UNLESS --single-passs is used, then they should error and NOT compile.
-;; FAIL-WITH[--single-pass]: "Recursion is not allowed"
+
+;; FAIL-WITH[--single-pass]: "some reasonable message"
 
 
 (def-struct rect (ul-corner point) (lr-corner point))

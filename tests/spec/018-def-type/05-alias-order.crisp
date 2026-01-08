@@ -1,0 +1,22 @@
+;; this test has both in-order and out-of-order def-type declarations. Passes.
+
+
+;; valid and in order.
+(def-type quux int)
+(def-type quuz quux)
+
+(def-function quuz-user (q)
+    (declare #'(quuz => quuz))
+    (+ q q))
+
+
+
+;; out of order, but otherwisevalid.
+(def-type baz shen)
+(def-type shen int)
+
+(def-function baz-user (b)
+    (declare #'(baz => baz))
+    (+ b b))
+
+

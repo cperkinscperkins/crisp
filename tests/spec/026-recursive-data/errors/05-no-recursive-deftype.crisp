@@ -1,0 +1,10 @@
+;; NOTE: THIS LOCKS UP THE COMPILER.
+
+;; self-recursive (invalid)
+(def-type bar bar)  ;; <-- by itself, this "compiles". 
+
+;; but once it is actually used in a function, it causes the compiler to lock up in an infinite loop.
+;; maybe that design could be improved.
+(def-function bar-user (b)
+    (declare #'(bar => bar))
+    (+ b b))

@@ -1,0 +1,13 @@
+;; TEST-WITH[--metadata]
+
+;; point should appear in the metadata by virtue of being used at the kernel param boundary.
+(def-struct point (x int) (y int))
+
+;; skipped should not appear in the metadata.
+(def-struct skipped (x int) (y int))
+
+(def-kernel my_kernel (c)
+    (declare (type c (cell point :address-space :global :access :read-write)))
+  (let ((loc-x (x~ (~ c))))
+    (set! (x~ (~ c)) (+ loc-x 1))))
+  

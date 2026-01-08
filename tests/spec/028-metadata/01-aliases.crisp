@@ -1,0 +1,11 @@
+;; TEST-WITH[--metadata]
+
+;; this should appear in the metadata. Used at kernel boundary.
+(def-type iii int)
+
+;; this should NOT appear in the metadata. Not used at kernel boundary.
+(def-type iv int)
+
+(def-kernel simple_kernel (i)
+    (declare (type i iii))
+    (r-t-assert (> i 0)))
