@@ -6,31 +6,28 @@
 ;;; =========================================================
 
 (defun get-promoted-type (type-a-name type-b-name)
-  "Determines the result type of a binary operation, applying promotion rules."
-  (if (eq type-a-name type-b-name)
-      type-a-name
-      (let ((type-a (gethash type-a-name *crisp-types*))
-            (type-b (gethash type-b-name *crisp-types*)))
-        (cond
-         ;; If either type is unknown, we cannot promote.
-         ((or (null type-a) (null type-b))
-           nil)
-         ;; Promotion within the same category (e.g., int -> long)
-         ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
-               (> (crisp-type-size type-b) (crisp-type-size type-a)))
-           type-b-name)
-         ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
-               (> (crisp-type-size type-a) (crisp-type-size type-b)))
-           type-a-name)
-         ;; Promotion from any integer to float
-         ((and (member (crisp-type-category type-a) '(:signed-int :unsigned-int))
-               (eq (crisp-type-category type-b) :float))
-           type-b-name)
-         ((and (member (crisp-type-category type-b) '(:signed-int :unsigned-int))
-               (eq (crisp-type-category type-a) :float))
-           type-a-name)
-         ;; No other implicit promotions allowed
-         (t nil)))))
+  "Determines result type of binary operation with alias resolution."
+  (cl:let ((type-a-name (resolve-type-alias type-a-name))
+           (type-b-name (resolve-type-alias type-b-name)))
+    (if (eq type-a-name type-b-name)
+        type-a-name
+        (let ((type-a (gethash type-a-name *crisp-types*))
+              (type-b (gethash type-b-name *crisp-types*)))
+          (cond
+           ((or (null type-a) (null type-b)) nil)
+           ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
+                 (> (crisp-type-size type-b) (crisp-type-size type-a)))
+             type-b-name)
+           ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
+                 (> (crisp-type-size type-a) (crisp-type-size type-b)))
+             type-a-name)
+           ((and (member (crisp-type-category type-a) '(:signed-int :unsigned-int))
+                 (eq (crisp-type-category type-b) :float))
+             type-b-name)
+           ((and (member (crisp-type-category type-b) '(:signed-int :unsigned-int))
+                 (eq (crisp-type-category type-a) :float))
+             type-a-name)
+           (t nil))))))
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."

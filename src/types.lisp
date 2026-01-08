@@ -141,6 +141,19 @@ This supports overloading templates by arity or other factors.")
 ;; Type Equivalence
 ;; ================
 
+(defun resolve-type-alias (type-spec)
+  "Fully resolves a type alias chain with cycle detection."
+  (if (and (symbolp type-spec)
+           (boundp '*crisp-type-aliases*)
+           (gethash type-spec *crisp-type-aliases*))
+      (cl:let ((seen (make-hash-table :test 'eq)))
+        (loop for name = type-spec then (gethash name *crisp-type-aliases*)
+              while (and (symbolp name)
+                         (gethash name *crisp-type-aliases*)
+                         (not (gethash name seen)))
+              do (setf (gethash name seen) t)
+              finally (cl:return name)))
+      type-spec))
 
 (defun expand-storage-handle-type-specifier (spec)
   "Expands legacy/shorthand storage handle specs (cell, vector, etc) into their canonical struct form.
@@ -243,78 +256,70 @@ This supports overloading templates by arity or other factors.")
       (t (list spec)))))
 
 (defun types-equivalent-p (t1 t2)
-  "Checks if two types are equivalent, handling template struct canonicalization."
-
-  (cl:cond
-    ((or (equal t1 t2)
-         (and (symbolp t1) (symbolp t2) (string-equal (symbol-name t1) (symbol-name t2))))
-     t)
-    ;; Treat VOID and NIL as equivalent return types
-    ((or (and (symbolp t1) (string-equal t1 "VOID") (null t2))
-         (and (null t1) (symbolp t2) (string-equal t2 "VOID")))
-     t)
-    ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT equivalence
-    ((and (consp t1) (symbolp t2))
-     ;; Expand implicit storage handles first (e.g. (cell int) -> (cell int :global :read-write))
-     (let* ((expanded (if (member (symbol-name (cl:first t1)) '("CELL") :test #'string-equal)
-                          (canonicalize-type-specifier t1)
-                          t1))
-            (base-type (cl:first expanded))
-            (params (rest expanded)))
-       (if (and (symbolp base-type)
-                (not (excluded-template-base-type-p base-type)))
-           (progn
-            ;; Trigger auto-instantiation if template exists
-            (cl:when (gethash base-type *template-registry*)
-              (cl:let ((instantiated-form
-                        (funcall *template-instantiator-fn* base-type params
-                          (lambda (form location)
-                            (if (boundp '*current-module*)
-                                (compile-toplevel-form form location
-                                                       *current-module*
-                                                       *current-builder*
-                                                       *current-di-builder*
-                                                       *current-di-compile-unit*
-                                                       *current-location-map*)
-                                (eval form))))))
-                instantiated-form
-                t))
-
-            ;; Now check mangled name
-            (cl:let ((mangled (mangle-template-struct-name base-type params)))
-              (cl:cond
-                ((eq mangled t2) t)
-                ;; Also check string equality as fallback for package issues
-                ((string-equal (symbol-name mangled) (symbol-name t2))
-                 t)
-                (t nil))))
-           nil)))
-    ((and (symbolp t1) (consp t2))
-     (types-equivalent-p t2 t1))
-
-    ;; Handle parameterized struct vs parameterized struct (e.g. (CELL INT) vs (CELL INT :GLOBAL))
-    ((and (cl:consp t1) (cl:consp t2))
-     (cl:let ((e1 (cl:if (cl:member (cl:symbol-name (cl:first t1)) '("CELL") :test #'cl:string-equal)
-                         (canonicalize-type-specifier t1)
-                         t1))
-              (e2 (cl:if (cl:member (cl:symbol-name (cl:first t2)) '("CELL") :test #'cl:string-equal)
-                         (canonicalize-type-specifier t2)
-                         t2)))
-       (cl:equal e1 e2)))
-
-    ;; Keyword vs Enum: Allow :KEYWORD, 'KEYWORD, 'SYMBOL to match enum type
-    ((and (or (member t1 '(keyword :keyword symbol common-lisp:symbol))
-              (and (symbolp t1) (member (symbol-name t1) '("KEYWORD" "SYMBOL") :test #'string-equal)))
-          (gethash t2 *crisp-enums*)) t)
-    ((and (or (member t2 '(keyword :keyword symbol common-lisp:symbol))
-              (and (symbolp t2) (member (symbol-name t2) '("KEYWORD" "SYMBOL") :test #'string-equal)))
-          (gethash t1 *crisp-enums*)) t)
-
-    ;; Handle mismatched wrapping (e.g. (INT) vs INT) - mostly for return type verification contexts
-    ((and (consp t1) (= (length t1) 1) (valid-type-p (cl:first t1)) (types-equivalent-p (cl:first t1) t2)) t)
-    ((and (consp t2) (= (length t2) 1) (valid-type-p (cl:first t2)) (types-equivalent-p t1 (cl:first t2))) t)
-
-    (t nil)))
+  "Checks if two types are equivalent, with alias resolution and template handling."
+  ;; Resolve aliases FIRST, then run all other checks on resolved types
+  (cl:let ((t1 (resolve-type-alias t1))
+           (t2 (resolve-type-alias t2)))
+    (cl:cond
+      ((or (equal t1 t2)
+           (and (symbolp t1) (symbolp t2) (string-equal (symbol-name t1) (symbol-name t2))))
+       t)
+      ;; Treat VOID and NIL as equivalent return types
+      ((or (and (symbolp t1) (string-equal t1 "VOID") (null t2))
+           (and (null t1) (symbolp t2) (string-equal t2 "VOID")))
+       t)
+      ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT
+      ((and (consp t1) (symbolp t2))
+       (let* ((expanded (if (member (symbol-name (cl:first t1)) '("CELL") :test #'string-equal)
+                            (canonicalize-type-specifier t1)
+                            t1))
+              (base-type (cl:first expanded))
+              (params (rest expanded)))
+         (if (and (symbolp base-type)
+                  (not (excluded-template-base-type-p base-type)))
+             (progn
+              (cl:when (gethash base-type *template-registry*)
+                (cl:let ((instantiated-form
+                          (funcall *template-instantiator-fn* base-type params
+                            (lambda (form location)
+                              (if (boundp '*current-module*)
+                                  (compile-toplevel-form form location
+                                                         *current-module*
+                                                         *current-builder*
+                                                         *current-di-builder*
+                                                         *current-di-compile-unit*
+                                                         *current-location-map*)
+                                  (eval form))))))
+                  instantiated-form
+                  t))
+              (cl:let ((mangled (mangle-template-struct-name base-type params)))
+                (cl:cond
+                  ((eq mangled t2) t)
+                  ((string-equal (symbol-name mangled) (symbol-name t2)) t)
+                  (t nil))))
+             nil)))
+      ((and (symbolp t1) (consp t2))
+       (types-equivalent-p t2 t1))
+      ;; Parameterized struct vs parameterized struct
+      ((and (cl:consp t1) (cl:consp t2))
+       (cl:let ((e1 (cl:if (cl:member (cl:symbol-name (cl:first t1)) '("CELL") :test #'cl:string-equal)
+                           (canonicalize-type-specifier t1)
+                           t1))
+                (e2 (cl:if (cl:member (cl:symbol-name (cl:first t2)) '("CELL") :test #'cl:string-equal)
+                           (canonicalize-type-specifier t2)
+                           t2)))
+         (cl:equal e1 e2)))
+      ;; Keyword vs Enum
+      ((and (or (member t1 '(keyword :keyword symbol common-lisp:symbol))
+                (and (symbolp t1) (member (symbol-name t1) '("KEYWORD" "SYMBOL") :test #'string-equal)))
+            (gethash t2 *crisp-enums*)) t)
+      ((and (or (member t2 '(keyword :keyword symbol common-lisp:symbol))
+                (and (symbolp t2) (member (symbol-name t2) '("KEYWORD" "SYMBOL") :test #'string-equal)))
+            (gethash t1 *crisp-enums*)) t)
+      ;; Handle mismatched wrapping (e.g. (INT) vs INT)
+      ((and (consp t1) (= (length t1) 1) (valid-type-p (cl:first t1)) (types-equivalent-p (cl:first t1) t2)) t)
+      ((and (consp t2) (= (length t2) 1) (valid-type-p (cl:first t2)) (types-equivalent-p t1 (cl:first t2))) t)
+      (t nil))))
 
 (defun get-template-arity (name)
   "Returns the arity (number of type parameters) for a registered template, or nil."
