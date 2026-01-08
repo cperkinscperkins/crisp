@@ -9,5 +9,5 @@
 (def-kernel my_kernel (c)
     (declare (type c (cell point :address-space :global :access :read-write)))
   (let ((loc-x (x~ (~ c))))
-    (setf (x~ (~ c)) (+ loc-x 1))))
+    (set! (x~ (~ c)) (+ loc-x 1))))
   
