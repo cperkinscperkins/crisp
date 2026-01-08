@@ -13,67 +13,79 @@
   For scalars, N is the size of the scalar.
   For vectors, it is 2N or 4N.
   For arrays/structs, it is rounded up to vec4 alignment (16)."
-  (cl:cond
-    ((or (eq type-spec 'float) (eq type-spec 'int) (eq type-spec 'uint)) 4)
-    ((or (eq type-spec 'double) (eq type-spec 'long) (eq type-spec 'ulong)) 8)
-    ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
-    ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
-    ;; TODO: Handle vectors here (will need vector support first)
-    ((or (eq type-spec 'bool)) 4) ;; booleans are 4 bytes in std140
-    ((eq type-spec 'c-pointer) 8) ;; c-pointer is 8 bytes
-    ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
-    ;; Cells are pointers (8 bytes) - Check mangled name
-    ((and (symbolp type-spec)
-          (> (length (symbol-name type-spec)) 5)
-          (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
-     8)
-    ;; Structs align to 16 bytes (vec4)
-    ((gethash type-spec *crisp-structs*) 16)
-    ;; Parameterized Structs (e.g. (POINT INT))
-    ((and (consp type-spec) (valid-type-p type-spec))
-     (cl:let ((base (first type-spec)))
-       (cl:cond
-         ;; Cells are pointers (8 bytes aligned to 8)
-         ((string-equal (symbol-name base) "CELL") 8)
-         (t
-          (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
-            (if (gethash mangled *crisp-structs*)
-                16
-                (error "Valid type ~a but struct def not found after check alignment." type-spec)))))))
-    (t
-     (error "Unknown type for alignment: ~a" type-spec))))
+  ;; Resolve type aliases first
+  (cl:let ((resolved-type (if (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
+                              (loop for name = type-spec then (gethash name *crisp-type-aliases*)
+                                    while (and (symbolp name) (gethash name *crisp-type-aliases*))
+                                    finally (return name))
+                              type-spec)))
+    (cl:cond
+      ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
+      ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
+      ((or (eq resolved-type 'char) (eq resolved-type 'uchar)) 1)
+      ((or (eq resolved-type 'short) (eq resolved-type 'ushort) (eq resolved-type 'half) (eq resolved-type 'bfloat16)) 2)
+      ;; TODO: Handle vectors here (will need vector support first)
+      ((or (eq resolved-type 'bool)) 4) ;; booleans are 4 bytes in std140
+      ((eq type-spec 'c-pointer) 8) ;; c-pointer is 8 bytes
+      ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
+      ;; Cells are pointers (8 bytes) - Check mangled name
+      ((and (symbolp type-spec)
+            (> (length (symbol-name type-spec)) 5)
+            (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
+       8)
+      ;; Structs align to 16 bytes (vec4)
+      ((gethash type-spec *crisp-structs*) 16)
+      ;; Parameterized Structs (e.g. (POINT INT))
+      ((and (consp type-spec) (valid-type-p type-spec))
+       (cl:let ((base (first type-spec)))
+         (cl:cond
+           ;; Cells are pointers (8 bytes aligned to 8)
+           ((string-equal (symbol-name base) "CELL") 8)
+           (t
+            (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+              (if (gethash mangled *crisp-structs*)
+                  16
+                  (error "Valid type ~a but struct def not found after check alignment." type-spec)))))))
+      (t
+       (error "Unknown type for alignment: ~a" type-spec)))))
 
 
 (defun get-std140-size (type-spec)
   "Returns the size (in bytes) of a type. Does not include padding for alignment context."
-  (cl:cond
-    ((or (eq type-spec 'float) (eq type-spec 'int) (eq type-spec 'uint)) 4)
-    ((or (eq type-spec 'double) (eq type-spec 'long) (eq type-spec 'ulong)) 8)
-    ((or (eq type-spec 'char) (eq type-spec 'uchar)) 1)
-    ((or (eq type-spec 'short) (eq type-spec 'ushort) (eq type-spec 'half) (eq type-spec 'bfloat16)) 2)
-    ((eq type-spec 'bool) 4)
-    ((eq type-spec 'c-pointer) 8) ;; c-pointer is 8 bytes
-    ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
-    ;; Cells are pointers (8 bytes) - Check mangled name
-    ((and (symbolp type-spec)
-          (> (length (symbol-name type-spec)) 5)
-          (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
-     8)
-    ;; Structs - Retrieve cached size
-    ((gethash type-spec *crisp-structs*)
-     (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
-    ;; Parameterized Structs
-    ((and (consp type-spec) (valid-type-p type-spec))
-     (cl:let ((base (first type-spec)))
-       (cl:cond
-         ;; Cells are pointers (8 bytes)
-         ((string-equal (symbol-name base) "CELL") 8)
-         (t
-          (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
-            (if (gethash mangled *crisp-structs*)
-                (crisp-struct-definition-total-size (gethash mangled *crisp-structs*))
-                (error "Valid type ~a but struct def not found after check size." type-spec)))))))
-    (t (error "Unknown type for size: ~a" type-spec))))
+  ;; Resolve type aliases first
+  (cl:let ((resolved-type (if (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
+                              (loop for name = type-spec then (gethash name *crisp-type-aliases*)
+                                    while (and (symbolp name) (gethash name *crisp-type-aliases*))
+                                    finally (return name))
+                              type-spec)))
+    (cl:cond
+      ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
+      ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
+      ((or (eq resolved-type 'char) (eq resolved-type 'uchar)) 1)
+      ((or (eq resolved-type 'short) (eq resolved-type 'ushort) (eq resolved-type 'half) (eq resolved-type 'bfloat16)) 2)
+      ((eq resolved-type 'bool) 4)
+      ((eq resolved-type 'c-pointer) 8) ;; c-pointer is 8 bytes
+      ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
+      ;; Cells are pointers (8 bytes) - Check mangled name
+      ((and (symbolp type-spec)
+            (> (length (symbol-name type-spec)) 5)
+            (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
+       8)
+      ;; Structs - Retrieve cached size
+      ((gethash type-spec *crisp-structs*)
+       (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
+      ;; Parameterized Structs
+      ((and (consp type-spec) (valid-type-p type-spec))
+       (cl:let ((base (first type-spec)))
+         (cl:cond
+           ;; Cells are pointers (8 bytes)
+           ((string-equal (symbol-name base) "CELL") 8)
+           (t
+            (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+              (if (gethash mangled *crisp-structs*)
+                  (crisp-struct-definition-total-size (gethash mangled *crisp-structs*))
+                  (error "Valid type ~a but struct def not found after check size." type-spec)))))))
+      (t (error "Unknown type for size: ~a" type-spec)))))
 
 (defun calculate-std140-padding (current-offset alignment)
   "Calculates padding needed to reach the next alignment boundary."
