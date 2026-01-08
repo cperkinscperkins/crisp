@@ -1,0 +1,21 @@
+(def-type legacy int)
+
+(def-struct point (x legacy) (y int))
+
+;; is failing here
+(def-function operate-on-pt (p)
+    (declare #'(point => nil))
+    (let ((x (x~ p))
+          (y (y~ p)))
+        (set! (x~ p) (+ x 1))
+        (set! (y~ p) (+ y 1))))
+
+
+(def-function operate-on-pt-with-resolution (p)
+    (declare #'(point => nil))
+    (let ((x (x~ p))
+          (y (y~ p)))
+        (set! (x~ p) (+ y 1))
+        (set! (y~ p) (+ x 1))))
+
+

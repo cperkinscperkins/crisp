@@ -1,0 +1,10 @@
+;; NOTE: this locks up the compiler.
+
+;; mutual recursive (invalid)
+(def-type qux zum)
+(def-type zum qux)
+
+;; once again, infinite loop hang when compiling
+(def-function qux-user (q)
+    (declare #'(qux => qux))
+    (+ q q))
