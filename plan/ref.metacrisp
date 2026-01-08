@@ -1,0 +1,71 @@
+;; s-expressions. unenclosed. 
+;; comments like this
+
+;; version and provenance information to be included later. 
+;; as well as compilation flags.  Though few of them are relevant to metadata. 
+
+;; aliases
+(:aliases
+  (def-type iii int))
+
+;; structs are in reverse dependency order
+(:structs
+  (def-struct point (x iii) (y int))
+  (def-struct rect (min point) (max point)))
+
+;; only one kernel per .metacrisp file
+(:kernel "my_kernel")
+(:physical-signature 
+  ;; scratch cell "sc"
+  ;; container
+  (0 ulong) ;; byte-size
+  (1 voidp) ;; data pointer
+  ;; offset
+  (2 ulong) 
+
+  ;; "v"
+  (3 double)
+
+  ;; "in"
+  ;; cell
+  ;; container
+  (4 ulong) ;; byte-size
+  (5 voidp) ;; data pointer
+  ;; offset
+  (6 ulong)  
+
+  ;; "out"
+  ;; cell
+  ;; container
+  (7 ulong) ;; byte-size
+  (8 voidp) ;; data pointer
+  ;; offset
+  (9 ulong))
+
+;; if the cell declarations end up repeating address-space and access, that's fine. 
+
+(:declared-signature 
+  ;; simple scalar
+  (v :type double 
+     :range (3 3))
+  ;; cell
+  (in :type (cell iii ) 
+      :address-space :global 
+      :access :read-only 
+      :range (4 6))
+  ;; cell
+  (out :type (cell double ) 
+       :address-space :global 
+       :access :write-only 
+       :range (7 9)))
+
+
+;; implicit params could be : debug logging vector, scratch Storage Handles, or
+;; user defined 'implicit' params.  
+;; the debug logging one is important to distinguish. 
+(:implicit-params
+  (sc :type (cell iii ) 
+      :debug-logging  :true    
+      :address-space  :local 
+      :access :read-write 
+      :range (0 2)))

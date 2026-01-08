@@ -77,11 +77,11 @@
                  (cond ,@rest))))))
 
 (defmacro return (&optional value)
-  "Crisp's special RETURN form. Expands to a semantic-return node."
+  "Crisp's special RETURN form. Expands to an explicit-return node."
   ;; This macro is intercepted by the semantic analyzer.
   ;; It should NOT expand to CL:RETURN-FROM.
   ;; It is processed directly by analyze-expression.
-  `(semantic-return ,value))
+  `(explicit-return ,value))
 
 (defmacro if+ (test then &optional else)
   "Compile-time conditional. Evaluates TEST at macro-expansion time.
@@ -449,6 +449,9 @@
      (setf (gethash ',name crisp.compiler::*crisp-template-aliases*) (cons nil ',type-spec))
      (setf (gethash ',name crisp.compiler::*crisp-type-aliases*) ',type-spec)))
 
+;; Corrected def-struct macro for src/macros.lisp
+;; Replace the existing def-struct starting at line 452
+
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
   (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
@@ -483,8 +486,14 @@
                         ;; Generate Runtime Accessor Function
                         (let ((idx runtime-index))
                           (incf runtime-index)
-                          `(def-function ,accessor-name ((obj ,name))
-                                         (return (%extract-struct-member obj ,idx))))))))
+                          `(progn
+                            (def-function ,accessor-name ((obj ,name))
+                                          (return (%extract-struct-member obj ,idx)))
+                            ;; Generate Setter for Runtime Member
+                            (def-setter ,accessor-name ((obj ,name) (val ,(second member-spec)))
+                                        ;; Execute insert but don't return the result; return void instead
+                                        (%insert-struct-member obj ,idx val)
+                                        (return nil))))))))
       ,@(let ((runtime-index 0)
               (pkg (symbol-package name)))
           (loop for member-spec in parsed-members
@@ -497,6 +506,7 @@
                     `(def-function ,raw-accessor-name ((obj ,name))
                                    (declare (crisp-system-generated))
                                    (return (%extract-struct-member obj ,idx)))))))))
+
 
 (defmacro def-record (name &rest members)
   "Defines a new Crisp record type (virtual struct)."
@@ -552,7 +562,7 @@
 
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
-   The return type is implicitly nil/void. We append (return) to ensure this."
+   The return type is determined by the body."
   (let ((name-str (symbol-name name)))
     (when (or (string-equal name-str "~REF~")
               (and (> (length name-str) 2)
@@ -560,7 +570,27 @@
                    (cl:char= (cl:char name-str (1- (length name-str))) #\~)))
           (error 'crisp-illegal-overload-error :name name)))
   (let ((setter-name (intern (format nil "~a_SET!" (symbol-name name)) (symbol-package name))))
-    `(def-function ,setter-name ,args ,@body (return))))
+    `(def-function ,setter-name ,args
+                   (declare (return-type nil))
+                   ,@body)))
+
+(defmacro crisp-language::setf (place value &rest pairs)
+  "Custom setf implementation mapping (setf (f x) y) to (f_set! x y)."
+  (if pairs
+      `(progn
+        (setf ,place ,value)
+        (setf ,@pairs))
+      (cond
+       ((symbolp place)
+         `(set! ,place ,value))
+       ((consp place)
+         (let ((op (car place))
+               (args (cdr place)))
+           (if (and (symbolp op) (eq (symbol-package op) (find-package :common-lisp)))
+               `(common-lisp:setf ,place ,value)
+               (let ((setter-name (intern (format nil "~a_SET!" (symbol-name op)) (symbol-package op))))
+                 `(,setter-name ,@args ,value)))))
+       (t (error "Invalid place for setf: ~a" place)))))
 
 (defmacro r-t-assert (test &rest args)
   "Asserts that TEST is true at runtime. If not, terminates kernel.

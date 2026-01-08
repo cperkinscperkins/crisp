@@ -120,6 +120,54 @@
          :source-location location)))))
 
 
+(defun analyze-insert-struct-member-expression (expr env location)
+  "Analyzes a `%insert-struct-member` expression.
+   Form: (%insert-struct-member object-node index-literal value-node)"
+  (let* ((obj-node (analyze-expression (second expr) env (append location '(1))))
+         (index (third expr)) ;; Expecting a raw integer literal from the macro expansion
+         (value-node (analyze-expression (fourth expr) env (append location '(3))))
+         (obj-type (semantic-node-type obj-node)))
+
+    (unless (symbolp obj-type)
+      (error "Cannot insert member into non-struct type ~a" obj-type))
+
+    (let ((struct-def (gethash obj-type *crisp-structs*)))
+      (unless struct-def
+        (error "Unknown struct type ~a in insertion." obj-type))
+
+      (let* ((padded-members (crisp-struct-definition-padded-members struct-def))
+             (physical-index -1)
+             (logical-count -1)
+             (target-member-type nil))
+
+        (loop for m in padded-members
+              for idx from 0
+              do (unless (alexandria:starts-with-subseq "_PAD" (symbol-name (first m)))
+                   (incf logical-count)
+                   (when (= logical-count index)
+                         (setf physical-index idx)
+                         (setf target-member-type (second m))
+                         (cl:return))))
+
+        (when (= physical-index -1)
+              (error "Invalid member index ~a for struct ~a" index obj-type))
+
+        ;; Type-check the value against the target member type
+        (let ((value-type (semantic-node-type value-node)))
+          (unless (types-compatible-p value-type target-member-type)
+            (error 'crisp-type-error
+              :expected target-member-type
+              :inferred value-type
+              :source-location location)))
+
+        (make-semantic-insert-value
+         :type obj-type
+         :aggregate-node obj-node
+         :index physical-index
+         :value-node value-node
+         :source-location location)))))
+
+
 (defun analyze-aref-expression (expr env location)
   (let* ((op (first expr))
          (target-sym (if (symbolp (second expr)) (second expr) nil))
@@ -343,6 +391,7 @@
 (defun register-struct-analyzers ()
   (def-expression-analyzer %construct-struct analyze-struct-construction)
   (def-expression-analyzer %extract-struct-member analyze-extract-struct-member-expression)
+  (def-expression-analyzer %insert-struct-member analyze-insert-struct-member-expression)
   (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
 
   (def-expression-analyzer aref analyze-aref-expression)

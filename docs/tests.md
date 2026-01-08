@@ -2,31 +2,24 @@
 
 ## How to Run Tests
 
-### All Tests (CI Mode)
-```bash
-# Run infrastructure unit tests + E2E spec tests
-sbcl --script tests/run-ci.lisp
-```
 
 ### E2E Spec Tests Only
 ```bash
 # Runs E2E tests + co-located unit tests up to ci-stop.txt
-sbcl --script tests/run-specs.lisp
+sbcl --script tests/run-specs.lisp --log-level=off
 ```
 
 ### Infrastructure Unit Tests Only
 ```bash
 # Traditional unit tests in tests/*.lisp
-sbcl --script tests/run-ci.lisp  # (currently runs all tests)
+sbcl --script tests/run-ci.lisp --log-level=off
 ```
 
 ### Single Test File
 ```bash
 # E2E spec test
-sbcl --load build/build.lisp --eval "(crisp.compiler:compile-file \"tests/spec/001-def-function/01-return_7.crisp\")"
+.\bin\crisp-compile.exe tests/spec/001-def-function/01-return_7.crisp --log-level=off 
 
-# Unit test (must load Parachute first)
-sbcl --eval "(ql:quickload :parachute)" --load tests/spec/001-def-function/signature-parsing.unit.lisp
 ```
 
 ## Test System Architecture
@@ -49,7 +42,6 @@ Crisp uses a **hybrid test system** with two types of tests:
 
 #### E2E Tests
 - **Pattern:** `tests/spec/**/*.crisp`
-- **Excluded:** Files in `errors/` subdirectories
 - **Stop Target:** Tests run up to directory specified in `tests/ci-stop.txt`
 
 #### Unit Tests (Co-located)
@@ -181,14 +173,17 @@ Use `multiple-value-bind` for functions returning multiple values:
   (is = 2 optional-idx))
 ```
 
-## Test Directives (Future)
+## Test Directives
 
-Header comment directives for test expectations (planned but not yet implemented):
+Header comment directives for test expectations:
 
 ```lisp
+;; These are implemented now:
 ;; TEST-EXPECT: PASS
 ;; FAIL-WITH[--single-pass]: "Unsupported form"
 ;; TEST-WITH[--metadata]
+
+;; These are not implemented yet:
 ;; CHECK-WARN: "Type inferred"
 
 (def-function foo () ...)

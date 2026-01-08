@@ -31,7 +31,14 @@
                                   (walk (cadr form)) ; Walk condition.
                                   (walk (caddr form)) ; Walk then.
                                   (when (cadddr form) (walk (cadddr form))) ; Walk else.
+                                  (walk (caddr form)) ; Walk then.
+                                  (when (cadddr form) (walk (cadddr form))) ; Walk else.
                                   t) ; Mark as handled.
+                                ((eq op 'quote) t)
+                                ((eq op 'function) t)
+                                ((member op '(go return-from semantic-return explicit-return semantic-explicit-return))
+                                  (dolist (arg (cdr form)) (walk arg))
+                                  t)
                                 (t nil)) ; Not a special form.
                                nil ; If a special form was handled, do nothing more.
                                ;; --- Default Processing ---

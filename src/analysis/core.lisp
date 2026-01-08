@@ -86,6 +86,11 @@
                                   (walk (caddr form)) ; Walk then.
                                   (when (cadddr form) (walk (cadddr form))) ; Walk else.
                                   t) ; Mark as handled.
+                                ((eq op 'quote) t)
+                                ((eq op 'function) t)
+                                ((member op '(go return-from semantic-return explicit-return semantic-explicit-return))
+                                  (dolist (arg (cdr form)) (walk arg))
+                                  t)
                                 (t nil)) ; Not a special form.
                                nil ; If a special form was handled, do nothing more.
                                ;; --- Default Processing ---
@@ -387,7 +392,7 @@
 
                            :source-location (if return-node (semantic-node-source-location return-node) location))))))
          :is-entry-point (loop for decl in declarations
-                               thereis (and (listp decl) (eq (first decl) 'entry-point)))
+                                 thereis (and (listp decl) (eq (first decl) 'entry-point)))
          :source-location location)))))
 
 (defun internal-def-function (name params declarations body location)
@@ -584,6 +589,7 @@
     (semantic-call (semantic-call-type node))
     (semantic-funcall (semantic-funcall-type node))
     (semantic-extract-value (semantic-extract-value-type node))
+    (semantic-insert-value (semantic-insert-value-type node))
     (semantic-struct-construction (semantic-struct-construction-type node))
     (semantic-progn (semantic-progn-type node))
     (semantic-struct-member-update (semantic-struct-member-update-type node))
@@ -616,6 +622,7 @@
     (semantic-call (semantic-call-source-location node))
     (semantic-funcall (semantic-funcall-source-location node))
     (semantic-extract-value (semantic-extract-value-source-location node))
+    (semantic-insert-value (semantic-insert-value-source-location node))
     (semantic-struct-construction (semantic-struct-construction-source-location node))
     (semantic-progn (semantic-progn-source-location node))
     (semantic-struct-member-update (semantic-struct-member-update-source-location node))))
@@ -706,4 +713,3 @@
       (when di-builder (llvm-dispose-di-builder di-builder))
       (llvm-dispose-builder builder)
       (llvm-dispose-module module))))
-

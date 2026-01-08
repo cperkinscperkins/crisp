@@ -24,4 +24,17 @@
 
 
 [x] 008  --log-level=off is not working. 
+
+
+[x] 009  casting and conversion for def-type not working.  See tests/spec/018-def-type/04-casting.crisp
+
+[x] 010  kernel type declaration throwing error when it shouldn't. tests\spec\028-metadata\04-basic-struct.crisp
    
+[x] 011 - New Bug Discovered (Bug 011): ❌ When a struct uses a type-aliased field AND has setters generated (from Bug 010 fix), compilation fails with "The function CRISP.COMPILER::EXPLICIT-RETURN is undefined."
+Root cause: Macro expansion ordering - setters with (return nil) are being expanded before the analyzer can intercept explicit-return
+Workaround: None currently
+Tests affected: Any test using both type aliases in structs AND the setter functionality
+Note: Tests 04 & 06 work because they don't use type aliases; test 08 fails because it does
+
+[x] 012 - Type Equivalence Issue: The 08-structs-and-aliases.crisp test now gets further but fails with "Type mismatch! Expected III but inferred INT" when calling the setter with an int value.
+The type equivalence function (types-equivalent-p) needs to resolve aliases, but my overlay version broke builtin registration. This is getting complex - we need to carefully modify types-equivalent-p without breaking existing functionality.
