@@ -167,6 +167,10 @@
 (defvar *struct-name-prefix* "")
 (defparameter *record-definitions* (make-hash-table))
 
+;; Recursive / Multipass Support
+;; Recursive / Multipass Support
+;; (Moved globals to types.lisp to allow access from valid-type-p)
+
 (defun ensure-struct-llvm-type (name)
   "Ensures the LLVM struct type exists for the given struct name.
    Handles forward declarations and recursion."
@@ -250,29 +254,81 @@
   (cl:let ((name (if (consp name)
                      (crisp.compiler::mangle-template-struct-name (first name) (rest name))
                      name)))
-    (multiple-value-bind (padded-members total-size)
-        (if (eq category :record)
-            (compute-record-layout members)
-            (compute-std140-layout members))
-      (cl:let ((indices (make-hash-table :test #'eq)))
-        (loop for m in padded-members
-              for i from 0
-              do (setf (gethash (car m) indices) i))
-        (setf (gethash name *crisp-structs*)
-          (make-crisp-struct-definition
-           :name name
-           :members members
-           :padded-members padded-members
-           :field-indices indices
-           :total-size total-size))
+    (handler-case
+        (multiple-value-bind (padded-members total-size)
+            (if (eq category :record)
+                (compute-record-layout members)
+                (compute-std140-layout members))
+          (cl:let ((indices (make-hash-table :test #'eq)))
+            (loop for m in padded-members
+                  for i from 0
+                  do (setf (gethash (car m) indices) i))
+            (setf (gethash name *crisp-structs*)
+              (make-crisp-struct-definition
+               :name name
+               :members members
+               :padded-members padded-members
+               :field-indices indices
+               :total-size total-size))
 
-        ;; Register as a valid Crisp type for type checking
-        (setf (gethash name *crisp-types*)
-          (make-crisp-type
-           :name name
-           :llvm-type-fn (lambda () (ensure-struct-llvm-type name))
-           :size (* total-size 8)
-           :category category))))))
+            ;; Register as a valid Crisp type for type checking
+            (setf (gethash name *crisp-types*)
+              (make-crisp-type
+               :name name
+               :llvm-type-fn (lambda () (ensure-struct-llvm-type name))
+               :size (* total-size 8)
+               :category category))))
+      (error (c)
+        (if *defer-struct-validation*
+            (progn
+             (log:info "Deferring struct registration for ~a. dependency missing/error: ~a" name c)
+             (push (list name members category) *pending-struct-definitions*))
+            (error c))))))
+
+(defun finalize-struct-definitions ()
+  "Iteratively attempts to register pending structs. Errors if a cycle or unknown type persists."
+  (log:info "Finalizing ~d pending struct definitions..." (length *pending-struct-definitions*))
+  (cl:let ((progress-made t))
+    (loop while (and *pending-struct-definitions* progress-made) do
+            (setf progress-made nil)
+            (cl:let ((current-pending (reverse *pending-struct-definitions*))
+                     (still-pending '()))
+              (setf *pending-struct-definitions* nil) ;; Clear global queue for this pass
+
+              (dolist (item current-pending)
+                (cl:let ((name (first item))
+                         (members (second item))
+                         (category (third item)))
+                  (log:debug "Retrying registration for ~a..." name)
+                  (handler-case
+                      (progn
+                       (register-struct-definition name members category)
+                       (cl:cond
+                         ;; If it ended up back in the queue, we didn't succeed (still deferred)
+                         ((find name *pending-struct-definitions* :key #'first :test #'equal)
+                          (push item still-pending))
+                         (t
+                          (setf progress-made t)
+                          (log:info "Successfully registered deferred struct: ~a" name))))
+                    (error (c)
+                      ;; Should not happen given register-struct-definition catches errors,
+                      ;; but for safety:
+                      (log:warn "Unexpected error during finalize: ~a" c)
+                      (push item *pending-struct-definitions*)))))
+
+              ;; Update pending list with those that failed this pass
+              ;; Note: *pending-struct-definitions* might have new items if logic changes,
+              ;; but here we just restore the ones we couldn't handle.
+              ;; Since register-struct-definition pushes to *pending*, we merge or verify.
+              ;; Actually our register-struct-definition pushes ON ERROR. 
+              ;; So if we are running inside finalize, we should probably handle the error LOCALLY
+              ;; to distinguish "still waiting" vs "new error", but reusing the logic is fine.
+              ;; However, we cleared *pending* at the start. So register-struct-definition will have repopulated it.
+        )))
+
+  (cl:when *pending-struct-definitions*
+    (error "Could not resolve all struct definitions. cycles or unknown types detected: ~a"
+      (mapcar #'first *pending-struct-definitions*))))
 
 (defun parse-struct-member-spec (spec)
   "Parses a struct member specification.

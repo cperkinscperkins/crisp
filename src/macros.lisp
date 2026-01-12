@@ -162,6 +162,19 @@
         ',body-forms ;  '((+ a b))
         ,source-location))))
 
+;; Helper for disambiguation (Pass 1 relaxation makes valid-type-p too permissive for symbols)
+(defun strict-valid-type-p (spec)
+  (cond
+   ((symbolp spec)
+     (or (gethash spec *crisp-types*)
+         (gethash spec *crisp-structs*)
+         (gethash spec *crisp-enums*)
+         (gethash spec *crisp-type-aliases*)
+         (gethash spec *crisp-template-aliases*)
+         (and (boundp '*pending-struct-definitions*)
+              (find spec *pending-struct-definitions* :key #'first))))
+   (t (valid-type-p spec))))
+
 (defmacro def-kernel-exact (name params &rest body)
   "Defines a GPU Kernel with exact ABI control (Raw Scalars).
    - Name must be valid C identifier (no dashes).
@@ -188,6 +201,12 @@
                     (first-arg (first args))
                     (last-arg (car (last args))))
                (cond
+                ;; Disambiguate using strict check first
+                ((strict-valid-type-p first-arg)
+                  (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
+                ((strict-valid-type-p last-arg)
+                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg)))
+                ;; Fallback to relaxed check if neither is strictly known (e.g. forward ref)
                 ((valid-type-p first-arg)
                   (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
                 ((valid-type-p last-arg)
@@ -340,6 +359,12 @@
                     (first-arg (first args))
                     (last-arg (car (last args))))
                (cond
+                ;; Disambiguate using strict check first
+                ((strict-valid-type-p first-arg)
+                  (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
+                ((strict-valid-type-p last-arg)
+                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg)))
+                ;; Fallback
                 ((valid-type-p first-arg)
                   (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
                 ((valid-type-p last-arg)

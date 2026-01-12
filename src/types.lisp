@@ -79,6 +79,13 @@ This supports overloading templates by arity or other factors.")
 (defvar *crisp-template-aliases* (make-hash-table)
         "A hash table mapping template alias names to (params . body-type-spec).")
 
+;; Recursive / Multipass Support Globals
+(defvar *defer-struct-validation* nil
+        "If T, register-struct-definition will not error on unknown types but instead queue the definition.")
+
+(defvar *pending-struct-definitions* nil
+        "A list of (name members category) tuples that are waiting for types to be defined.")
+
 (defstruct enumeration-def
   name
   members ; Alist of (keyword . integer)
@@ -369,6 +376,14 @@ This supports overloading templates by arity or other factors.")
       ((gethash type-spec *crisp-structs*) t)
       ((gethash type-spec *crisp-enums*) t)
       ((gethash type-spec *function-table*) t)
+      ;; Check aliases (Fix for regression)
+      ((gethash type-spec *crisp-type-aliases*) t)
+      ;; Should we check pending definitions? Yes.
+      ((and (boundp '*pending-struct-definitions*)
+            (find type-spec *pending-struct-definitions* :key #'first)) t)
+      ;; In Multipass/Deferred mode, any symbol could be a forward reference.
+      ;; We accept it now and let resolve-type-to-llvm catch errors later.
+      ((and (boundp '*defer-struct-validation*) *defer-struct-validation*) t)
       ((member type-spec '(keyword symbol quote)) t)
       (t
        (log:debug "valid-basic-type-p CHECK FAILED for: ~s (pkg: ~a)" type-spec

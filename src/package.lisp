@@ -212,6 +212,8 @@
    #:*current-module*
    #:*current-builder*
    #:*compile-single-pass*
+   #:*defer-struct-validation* ;; <--- NEW
+   #:finalize-struct-definitions ;; <--- NEW
 
    #:def-struct
    #:def-record

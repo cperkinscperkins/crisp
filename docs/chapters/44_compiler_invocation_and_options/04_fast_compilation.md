@@ -41,5 +41,3 @@ With this there is no disk IO and compilation can be performed nearly instantane
 If you are confident that the code you are compiling is completely ready and error free, use the flag that skips the compile time
 checks. 
 
-
-

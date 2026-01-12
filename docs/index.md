@@ -244,6 +244,7 @@
 - [Other Flags](chapters/44_compiler_invocation_and_options/02_other_flags.md)
 - [Compiliation Flags](chapters/44_compiler_invocation_and_options/03_compiliation_flags.md)
 - [Fast Compilation](chapters/44_compiler_invocation_and_options/04_fast_compilation.md)
+- [Compiler Invocations and Files](chapters/44_compiler_invocation_and_options/05_compiler_invocations_and_files.md)
 
 ## Hoisting Code
 
