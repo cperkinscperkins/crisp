@@ -19,7 +19,9 @@
                                              (:file "src/mangling") ;; NEW
                                              (:file "src/semantic")
                                              (:file "src/errors") ; 3. Conditions
-                                             (:file "src/types") ; 4. Type System
+                                             (:file "src/types/definitions")
+                                             (:file "src/types/registry")
+                                             (:file "src/types/validation")
                                              (:file "src/parameters")
                                              (:file "src/structs") ; 5. Struct Layout
 
