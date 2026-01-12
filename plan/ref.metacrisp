@@ -4,68 +4,91 @@
 ;; version and provenance information to be included later. 
 ;; as well as compilation flags.  Though few of them are relevant to metadata. 
 
+;; each def-orchestration results in one .spv file and one .metacrisp file.
+;; if there are NO def-orchestrations, then we generate a default one for each kernel, 
+;; in which case we'll see one .spv and one .metacrisp file per kernel.
+
 ;; aliases
 (:aliases
   (def-type iii int))
 
 ;; structs are in reverse dependency order
+;; we only need to include structs that are used at kernel boundary.
+;; Q: can structs show up in the def-orchestration? 
+;; A: likely yes. But that would mean they'd ALSO be at the kernel boundary. 
 (:structs
   (def-struct point (x iii) (y int))
   (def-struct rect (min point) (max point)))
 
-;; only one kernel per .metacrisp file
-(:kernel "my_kernel")
-(:physical-signature 
-  ;; scratch cell "sc"
-  ;; container
-  (0 ulong) ;; byte-size
-  (1 voidp) ;; data pointer
-  ;; offset
-  (2 ulong) 
+;; the .metacrisp file might have multiple kernels.
+;; the kernels will also have their "strategy" information recorded here. 
+(:kernels 
+    ("my_kernel" 
+      :source "path/to/some.crisp"
+      (:output (:spv "path/to/some/.spv") (:ptx "path/to/some/.ptx"))
+        (:physical-signature 
+        ;; scratch cell "sc"
+        ;; container
+        (0 ulong) ;; byte-size
+        (1 voidp) ;; data pointer
+        ;; offset
+        (2 ulong) 
 
-  ;; "v"
-  (3 double)
+        ;; "v"
+        (3 double)
 
-  ;; "in"
-  ;; cell
-  ;; container
-  (4 ulong) ;; byte-size
-  (5 voidp) ;; data pointer
-  ;; offset
-  (6 ulong)  
+        ;; "in"
+        ;; cell
+        ;; container
+        (4 ulong) ;; byte-size
+        (5 voidp) ;; data pointer
+        ;; offset
+        (6 ulong)  
 
-  ;; "out"
-  ;; cell
-  ;; container
-  (7 ulong) ;; byte-size
-  (8 voidp) ;; data pointer
-  ;; offset
-  (9 ulong))
+        ;; "out"
+        ;; cell
+        ;; container
+        (7 ulong) ;; byte-size
+        (8 voidp) ;; data pointer
+        ;; offset
+        (9 ulong))
 
-;; if the cell declarations end up repeating address-space and access, that's fine. 
+        ;; if the cell declarations end up repeating address-space and access, that's fine. 
 
-(:declared-signature 
-  ;; simple scalar
-  (v :type double 
-     :range (3 3))
-  ;; cell
-  (in :type (cell iii ) 
-      :address-space :global 
-      :access :read-only 
-      :range (4 6))
-  ;; cell
-  (out :type (cell double ) 
-       :address-space :global 
-       :access :write-only 
-       :range (7 9)))
+        (:declared-signature 
+        ;; simple scalar
+        (v :type double 
+            :range (3 3))
+        ;; cell
+        (in :type (cell iii ) 
+            :address-space :global 
+            :access :read-only 
+            :range (4 6))
+        ;; cell
+        (out :type (cell double ) 
+            :address-space :global 
+            :access :write-only 
+            :range (7 9)))
 
 
-;; implicit params could be : debug logging vector, scratch Storage Handles, or
-;; user defined 'implicit' params.  
-;; the debug logging one is important to distinguish. 
-(:implicit-params
-  (sc :type (cell iii ) 
-      :debug-logging  :true    
-      :address-space  :local 
-      :access :read-write 
-      :range (0 2)))
+        ;; implicit params could be : debug logging vector, scratch Storage Handles, or
+        ;; user defined 'implicit' params.  
+        ;; the debug logging one is important to distinguish. 
+        (:implicit-params
+            (sc :type (cell iii ) 
+                :debug-logging  :true    
+                :address-space  :local 
+                :access :read-write 
+                :range (0 2)))
+))
+
+
+;; if there is an orchestration , it is inserted into the .metacrisp file
+;; this is the default one.  
+(def-orchestration just-vector_add
+  (let ((K (my_kernel)) ;; or possibly "gen-my_kernel"
+        (v (hoist-scalar K::v))
+        (in (make-hoist-cell K::in))
+        (out (make-hoist-cell K::out)))
+  (launch-sequential (K v in out))
+  (copy-back out)))
