@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL: "<not unreasonable error message>"
+;; CHECK-FAIL: "Could not resolve all struct definitions. cycles or unknown types detected"
 ;;
 
 ;; records cannot be mutually recursive

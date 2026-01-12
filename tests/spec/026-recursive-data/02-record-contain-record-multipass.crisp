@@ -9,6 +9,3 @@
 (def-record v-rect (ul-corner v-point) (lr-corner v-point))
 
 (def-record v-point (x int) (y int))
-
-
-

@@ -40,7 +40,7 @@
 
 (defun run-error-check (file expected-error)
   (let ((bin (get-binary-path))
-        (args (list (uiop:native-namestring file))))
+        (args (list (uiop:native-namestring file) "--log-level=off")))
 
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)

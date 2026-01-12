@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL: "<reasonable error message>"
+;; CHECK-FAIL: "Could not resolve all struct definitions. cycles or unknown types detected"
 ;;
 
 ;; records can contain other records, but cannot be recursive

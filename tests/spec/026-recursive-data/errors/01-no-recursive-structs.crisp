@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL: "<reasonable message>"
+;; CHECK-FAIL: "Could not resolve all struct definitions. cycles or unknown types detected"
 ;;
 
 ;; structs cannot be recursive
