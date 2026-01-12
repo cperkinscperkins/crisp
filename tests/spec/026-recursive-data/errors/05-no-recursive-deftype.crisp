@@ -1,4 +1,4 @@
-;; NOTE: THIS LOCKS UP THE COMPILER.
+;; CHECK-FAIL: "An unexpected error occurred: Recursive type alias detected: Type alias 'BAR' refers to itself directly or indirectly."
 
 ;; self-recursive (invalid)
 (def-type bar bar)  ;; <-- by itself, this "compiles". 

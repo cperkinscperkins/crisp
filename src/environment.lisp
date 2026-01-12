@@ -372,13 +372,9 @@
    ;; 0. Type Aliases -- FIX: Use resolve-type-alias for cycle detection
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
      (let ((resolved (resolve-type-alias spec)))
+       ;; resolve-type-alias guarantees no cycle (throws error).
        (cond
-        ((equal resolved spec)
-          ;; Cycle detected or identity.
-          ;; Don't recurse. Check validity.
-          (if (valid-type-p spec)
-              spec
-              (error 'crisp-unknown-type-error :type-name spec)))
+        ((equal resolved spec) spec) ;; Identity or leaf
         (t
           (log:info "PARSE: Resolving Alias ~a -> ~a" spec resolved)
           (parse-type-specifier resolved)))))

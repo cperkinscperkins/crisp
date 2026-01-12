@@ -228,9 +228,7 @@
 
 (defun %resolve-alias-strict-checked (spec seen)
   (if (member spec seen :test #'equal)
-      (progn
-       (format *error-output* "[resolve-alias-strict] Cycle detected for ~a. Stopping.~%" spec)
-       spec)
+      (error "Recursive type alias detected during macro expansion: ~a" spec)
       (let ((base (if (consp spec) (first spec) spec))
             (args (if (consp spec) (rest spec) nil))
             (new-seen (cons spec seen)))

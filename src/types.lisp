@@ -143,10 +143,8 @@ This supports overloading templates by arity or other factors.")
 
 (defun resolve-type-alias (type-spec)
   "Fully resolves a type alias chain, returning the underlying type.
-   Includes cycle detection to prevent infinite loops."
-
-  ;; DEBUG LOGGING
-  ;; (format *error-output* "[resolve-type-alias] Checking: ~a~%" type-spec)
+   Includes cycle detection to prevent infinite loops.
+   SIGNALS ERROR if a cycle is detected."
 
   (if (and (symbolp type-spec)
            (boundp '*crisp-type-aliases*)
@@ -158,13 +156,11 @@ This supports overloading templates by arity or other factors.")
                          (gethash name *crisp-type-aliases*)
                          (not (gethash name seen)))
               do
-                ;; (format *error-output* "[resolve-type-alias] Resolving loop: ~a -> ~a~%" name (gethash name *crisp-type-aliases*))
                 (setf (gethash name seen) t)
               finally
                 (if (gethash name seen)
-                    (progn
-                     (format *error-output* "[resolve-type-alias] CYCLE DETECTED for ~a. Stopping.~%" name)
-                     (cl:return name))
+                    ;; CYCLE DETECTED - ABORT IMMEDIATELY
+                    (error "Recursive type alias detected: Type alias '~a' refers to itself directly or indirectly." name)
                     (cl:return name))))
       ;; Not an alias - return as-is
       type-spec))
