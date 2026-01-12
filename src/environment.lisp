@@ -369,11 +369,19 @@
   "Parses a single type specifier, handling basic types, parameterized types,
    and function types like #'(int => int)."
   (cond
-   ;; 0. Type Aliases
+   ;; 0. Type Aliases -- FIX: Use resolve-type-alias for cycle detection
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
-     (let ((res (gethash spec *crisp-type-aliases*)))
-       (log:info "PARSE: Resolving Alias ~a -> ~a" spec res)
-       (parse-type-specifier res)))
+     (let ((resolved (resolve-type-alias spec)))
+       (cond
+        ((equal resolved spec)
+          ;; Cycle detected or identity.
+          ;; Don't recurse. Check validity.
+          (if (valid-type-p spec)
+              spec
+              (error 'crisp-unknown-type-error :type-name spec)))
+        (t
+          (log:info "PARSE: Resolving Alias ~a -> ~a" spec resolved)
+          (parse-type-specifier resolved)))))
 
    ;; 0.1 Template Aliases (e.g. (in-cell int))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
@@ -385,14 +393,14 @@
             (arity (length params))
             (required-args (subseq args 0 (min (length args) arity)))
             (rest-args (subseq args (length required-args)))
-            (substitutions (pairlis params required-args))
-            (expanded-base (sublis substitutions body-spec)))
-       ;; Substitute args for params in body-spec
-       ;; And append overrides
-       (let ((expanded (if (and rest-args (consp expanded-base))
-                           (append expanded-base rest-args)
-                           expanded-base)))
-         (parse-type-specifier expanded))))
+            (substitutions (pairlis params required-args)))
+       (let ((expanded (sublis substitutions body-spec)))
+         (let ((final-spec (if (and rest-args (consp expanded))
+                               (append expanded rest-args)
+                               (if rest-args ;; Fix if expanded is atom but more args exist
+                                   (cons expanded rest-args)
+                                   expanded))))
+           (parse-type-specifier final-spec)))))
 
    ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
@@ -410,33 +418,31 @@
    ((and (symbolp spec) (valid-type-p spec)) spec)
 
    ;; Storage Handle Symbols (e.g. CELL, VECTOR...) 
-   ;; We treat them as (CELL) which expands to default (CELL T)
    ((and (symbolp spec) (member (symbol-name spec) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
      (log:info "PARSE: Promoting symbol ~a to list (~a)" spec spec)
      (parse-type-specifier (list spec)))
 
-   ;; Function Type: #'(int => int) or (function int => int)
+   ;; Function Type: #'(int => int)
    ((and (listp spec) (member (first spec) '(function common-lisp:function)))
      (let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
        `(:function-type ,(analyze-return-type-from-spec sig)
                         :params ,(mapcar #'parse-type-specifier
                                    (subseq sig 0 (position '=> sig))))))
-   ;; Storage Handle Constructor Rules (Explicit expansion)
+
+   ;; Storage Handle Constructor Rules
    ((and (listp spec) (member (symbol-name (first spec)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
      (log:info "PARSE: Calling expand for ~s" spec)
      (let ((canonical (expand-storage-handle-type-specifier spec)))
        (if (valid-type-p canonical)
            (let ((base (first canonical))
                  (params (rest canonical)))
-             ;; Recursively parse params if they are types (e.g. (point int) -> POINT_INT)
              (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
                (mangle-template-struct-name base resolved-params)))
            (error 'crisp-unknown-type-error :type-name spec))))
 
-   ;; Function Type/Literal (e.g. (:function-type ...) or (:function-literal ...))
+   ;; Function Type/Literal
    ((and (listp spec) (valid-function-type-p spec)) spec)
 
-   ;; Generic Parameterized Type: e.g. '(point float)
    ;; Generic Parameterized Type: e.g. '(point float)
    ((and (listp spec) (valid-type-p spec))
      (log:info "PARSE: Generic path for ~s" spec)
@@ -446,11 +452,8 @@
        (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
          (if (and arity (> arity 0))
              (mangle-template-struct-name base resolved-params)
-             ;; If not a template (arity 0 or nil)
              (if resolved-params
-                 ;; If we have parameters (e.g. incomplete type arguments), keep as list
                  (cons base resolved-params)
-                 ;; If no parameters (e.g. (INT) or (PANTS)), unwrap to bare symbol
                  base)))))
 
    ;; Unknown?
