@@ -64,52 +64,75 @@
                    (setf (gethash caller *implicit-arg-map*) '(:storage))
                    (push caller worklist)))))))
 
+;; --- Generic Dependency Scanner ---
+
+(defvar *scan-callees* nil)
+(defvar *scan-is-originator* nil)
+
+(defgeneric scan-form (form)
+  (:documentation "Scans a form to find dependencies and side-channel originators."))
+
+(defmethod scan-form ((form t))
+  ;; Base case: Atoms (symbols, numbers, etc) don't have dependencies we care about here
+  nil)
+
+(defmethod scan-form ((form cons))
+  (let ((op (car form)))
+    (if (symbolp op)
+        (scan-operator op (cdr form))
+        ;; Lambda expression or other cons-car? Walk elements.
+        (dolist (f form) (scan-form f)))))
+
+(defgeneric scan-operator (op args)
+  (:documentation "Handles specific operators for dependency scanning."))
+
+;; Default Handler (Function Calls & Macros)
+(defmethod scan-operator (op args)
+  (cond
+   ((member op *side-channel-originators*)
+     (setf *scan-is-originator* t))
+   (t
+     (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op)))
+           (pushnew op *scan-callees*))
+     (dolist (arg args) (scan-form arg)))))
+
+;; Special Form Handlers
+(defmethod scan-operator ((op (eql 'declare)) args) nil)
+(defmethod scan-operator ((op (eql 'quote)) args) nil)
+(defmethod scan-operator ((op (eql 'function)) args) nil)
+
+(defmethod scan-operator ((op (eql 'let)) args)
+  (let ((bindings (first args))
+        (body (rest args)))
+    (dolist (b bindings)
+      ;; Bindings can be (var val) or var
+      (when (consp b) (scan-form (second b))))
+    (dolist (f body) (scan-form f))))
+
+(defmethod scan-operator ((op (eql 'let*)) args)
+  (scan-operator 'let args))
+
+(defmethod scan-operator ((op (eql 'if)) args)
+  (dolist (arg args) (scan-form arg)))
+
+(defmethod scan-operator ((op (eql 'go)) args) (scan-operator 'progn args))
+(defmethod scan-operator ((op (eql 'return-from)) args) (scan-operator 'progn args))
+(defmethod scan-operator ((op (eql 'semantic-return)) args) (scan-operator 'progn args))
+(defmethod scan-operator ((op (eql 'explicit-return)) args) (scan-operator 'progn args))
+(defmethod scan-operator ((op (eql 'semantic-explicit-return)) args) (scan-operator 'progn args))
+(defmethod scan-operator ((op (eql 'progn)) args)
+  (dolist (arg args) (scan-form arg)))
+
 (defun shallow-analyze-body (forms)
   "Performs a shallow, recursive walk of a function's body.
   Returns two values:
   1. A boolean indicating if a side-channel originator was found.
   2. A list of all unique symbols found in the 'car' of lists (potential function calls)."
-  (let ((is-originator nil)
-        (callees '()))
-    (labels ((walk (form)
-                   (when (consp form)
-                         (let ((op (car form)))
-                           (if (cond
-                                ;; --- Special Forms (handle their own recursion) ---
-                                ((eq op 'declare) t) ; Ignore declare forms completely.
-                                ((member op '(let let*))
-                                  ;; For let, walk the init-forms and the body.
-                                  (let ((bindings (cadr form))
-                                        (body (cddr form)))
-                                    (dolist (binding bindings)
-                                      (walk (cadr binding))) ; Walk the init-form
-                                    (dolist (body-form body)
-                                      (walk body-form)))
-                                  t) ; Mark as handled.
-                                ((eq op 'if)
-                                  (walk (cadr form)) ; Walk condition.
-                                  (walk (caddr form)) ; Walk then.
-                                  (when (cadddr form) (walk (cadddr form))) ; Walk else.
-                                  t) ; Mark as handled.
-                                ((eq op 'quote) t)
-                                ((eq op 'function) t)
-                                ((member op '(go return-from semantic-return explicit-return semantic-explicit-return))
-                                  (dolist (arg (cdr form)) (walk arg))
-                                  t)
-                                (t nil)) ; Not a special form.
-                               nil ; If a special form was handled, do nothing more.
-                               ;; --- Default Processing ---
-                               (progn
-                                (if (member op *side-channel-originators*)
-                                    ;; It's an originator, set the flag and we're done with this form.
-                                    (setf is-originator t)
-                                    ;; Otherwise, it's a potential function call.
-                                    (progn
-                                     (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op))) (pushnew op callees))
-                                     (dolist (sub-form (cdr form)) (walk sub-form))))))))))
-      (dolist (form forms)
-        (walk form))
-      (values is-originator callees))))
+  (let ((*scan-callees* nil)
+        (*scan-is-originator* nil))
+    (dolist (form forms)
+      (scan-form form))
+    (values *scan-is-originator* *scan-callees*)))
 
 (defun visit-toplevel-form (form location visitor-fn)
   "Recursively visits a top-level form, handling macros and progn.

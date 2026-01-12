@@ -5,54 +5,6 @@
 ;;; Environment & Declaration Parsing
 ;;; =========================================================
 
-(defun shallow-analyze-body (forms)
-  "Performs a shallow, recursive walk of a function's body.
-  Returns two values:
-  1. A boolean indicating if a side-channel originator was found.
-  2. A list of all unique symbols found in the 'car' of lists (potential function calls)."
-  (let ((is-originator nil)
-        (callees '()))
-    (labels ((walk (form)
-                   (when (consp form)
-                         (let ((op (car form)))
-                           (if (cond
-                                ;; --- Special Forms (handle their own recursion) ---
-                                ((eq op 'declare) t) ; Ignore declare forms completely.
-                                ((member op '(let let*))
-                                  ;; For let, walk the init-forms and the body.
-                                  (let ((bindings (cadr form))
-                                        (body (cddr form)))
-                                    (dolist (binding bindings)
-                                      (walk (cadr binding))) ; Walk the init-form
-                                    (dolist (body-form body)
-                                      (walk body-form)))
-                                  t) ; Mark as handled.
-                                ((eq op 'if)
-                                  (walk (cadr form)) ; Walk condition.
-                                  (walk (caddr form)) ; Walk then.
-                                  (when (cadddr form) (walk (cadddr form))) ; Walk else.
-                                  (walk (caddr form)) ; Walk then.
-                                  (when (cadddr form) (walk (cadddr form))) ; Walk else.
-                                  t) ; Mark as handled.
-                                ((eq op 'quote) t)
-                                ((eq op 'function) t)
-                                ((member op '(go return-from semantic-return explicit-return semantic-explicit-return))
-                                  (dolist (arg (cdr form)) (walk arg))
-                                  t)
-                                (t nil)) ; Not a special form.
-                               nil ; If a special form was handled, do nothing more.
-                               ;; --- Default Processing ---
-                               (progn
-                                (if (member op *side-channel-originators*)
-                                    ;; It's an originator, set the flag and we're done with this form.
-                                    (setf is-originator t)
-                                    ;; Otherwise, it's a potential function call.
-                                    (progn
-                                     (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op))) (pushnew op callees))
-                                     (dolist (sub-form (cdr form)) (walk sub-form))))))))))
-      (dolist (form forms)
-        (walk form))
-      (values is-originator callees))))
 
 (defun parse-function-declarations (params declarations)
   "Parses a function's declarations and returns its environment and return type.
