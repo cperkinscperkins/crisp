@@ -142,17 +142,27 @@ This supports overloading templates by arity or other factors.")
 ;; ================
 
 (defun resolve-type-alias (type-spec)
-  "Fully resolves a type alias chain with cycle detection."
+  "Fully resolves a type alias chain, returning the underlying type.
+   Includes cycle detection to prevent infinite loops.
+   SIGNALS ERROR if a cycle is detected."
+
   (if (and (symbolp type-spec)
            (boundp '*crisp-type-aliases*)
            (gethash type-spec *crisp-type-aliases*))
+      ;; It's an alias - resolve with cycle detection
       (cl:let ((seen (make-hash-table :test 'eq)))
         (loop for name = type-spec then (gethash name *crisp-type-aliases*)
               while (and (symbolp name)
                          (gethash name *crisp-type-aliases*)
                          (not (gethash name seen)))
-              do (setf (gethash name seen) t)
-              finally (cl:return name)))
+              do
+                (setf (gethash name seen) t)
+              finally
+                (if (gethash name seen)
+                    ;; CYCLE DETECTED - ABORT IMMEDIATELY
+                    (error "Recursive type alias detected: Type alias '~a' refers to itself directly or indirectly." name)
+                    (cl:return name))))
+      ;; Not an alias - return as-is
       type-spec))
 
 (defun expand-storage-handle-type-specifier (spec)
@@ -204,6 +214,10 @@ This supports overloading templates by arity or other factors.")
 
 (defun canonicalize-type-specifier (spec)
   "Canonicalizes type specifiers."
+
+  ;; DEBUG LOGGING
+  ;; (when (symbolp spec) (format *error-output* "[canonicalize] Processing symbol: ~a~%" spec))
+
   ;; First, apply storage handle expansion
   (cl:when (consp spec)
     (setf spec (expand-storage-handle-type-specifier spec)))
@@ -232,8 +246,17 @@ This supports overloading templates by arity or other factors.")
                          ;; No params? Just return the aliased type + args??
                          ;; If alias had no params, but we passed args, they are overrides.
                          (cl:if args
-                                (canonicalize-type-specifier (append (if (consp type-spec) type-spec (list type-spec)) args))
-                                (canonicalize-type-specifier type-spec))))
+                                (canonicalize-type-specifier (append (cl:if (consp type-spec) type-spec (list type-spec)) args))
+
+                                ;; FIX: Use resolve-type-alias cycle detection here! 
+                                (cl:let ((resolved (resolve-type-alias base)))
+                                  (cl:if (equal resolved base)
+                                         ;; Cycle detected (A->A), return base as canonical 
+                                         (progn
+                                          (format *error-output* "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base.~%" base)
+                                          (list base))
+                                         ;; Recurse safely
+                                         (canonicalize-type-specifier resolved))))))
 
                 ;; 2. Standard Templates
                 (cl:let* ((template-data (first (gethash base *template-registry*)))
@@ -254,6 +277,7 @@ This supports overloading templates by arity or other factors.")
                          (cl:if (consp spec) spec (list spec)))))))
       ((consp spec) spec)
       (t (list spec)))))
+
 
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, with alias resolution and template handling."
@@ -358,6 +382,7 @@ This supports overloading templates by arity or other factors.")
            (= (length type-spec) 2) (symbolp (second type-spec)))
       (and (consp type-spec) (eq (cl:first type-spec) :function-type))))
 
+
 (defun valid-parameterized-type-p (type-spec)
   "Checks if type-spec is a valid parameterized type (cell, templates, etc)."
   (cl:when (consp type-spec)
@@ -369,9 +394,6 @@ This supports overloading templates by arity or other factors.")
         ((excluded-template-base-type-p base-type) nil)
 
         ;; 0. Check if base-type identifies a valid type/struct itself.
-        ;; This supports (STRUCT :PROP VAL) syntax for Incomplete/Composite types.
-        ;; BUT we must ensure we don't accidentally match a list of types like (INT INT) or (INT FLOAT).
-        ;; So, if it's not a template, we require that the first parameter be a KEYWORD (prop).
         ((and (or (gethash base-type *crisp-structs*)
                   (gethash base-type *crisp-types*))
               (or (null params) ;; (INT) is valid (wrapper)
@@ -380,9 +402,8 @@ This supports overloading templates by arity or other factors.")
 
         ;; Standard Template Instantiation
         ((symbolp base-type)
-         (cl:let* ((template-args params) ;; Use ALL params, including properties, for mangling
-                                         (mangled-name (mangle-template-struct-name base-type template-args)))
-           (log:info "Valid-Param-Type Check: ~a (Mangled: ~a)" type-spec mangled-name)
+         (cl:let* ((template-args params)
+                   (mangled-name (mangle-template-struct-name base-type template-args)))
            (or (gethash mangled-name *crisp-structs*)
                (cl:let ((templates (or (gethash base-type *template-registry*)
                                        (cl:let ((found nil))
@@ -391,9 +412,7 @@ This supports overloading templates by arity or other factors.")
                                                       (cl:setf found v)))
                                                   *template-registry*)
                                          found))))
-                 (log:info "  Template Registry for ~a: ~a" base-type templates)
                  (cl:when templates
-                   (log:info "Auto-instantiating struct template: ~a with params ~a" base-type template-args)
                    (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
                        (progn
                         (funcall *template-instantiator-fn* base-type template-args
@@ -408,10 +427,10 @@ This supports overloading templates by arity or other factors.")
                                                        *current-location-map*)
                                 (eval form))))
                         (cl:let ((res (gethash mangled-name *crisp-structs*)))
-                          (log:info "  Instantiation Result (crisp-structs check): ~a" res)
                           t)) ;; Always return T if template found/instantiated
                        (progn (log:warn "Template instantiator not bound/found") nil)))))))
         (t nil)))))
+
 
 (defun valid-type-p (type-spec)
   "Checks if a type specifier is valid.
