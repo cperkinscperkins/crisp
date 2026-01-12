@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-07T01:47:22.008763Z
+Generated on 2026-01-12T22:37:24.739909Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -397,6 +397,13 @@ Generated on 2026-01-07T01:47:22.008763Z
 
 
 ---
+### DEFUN `ANALYZE-INSERT-STRUCT-MEMBER-EXPRESSION`
+- **Args**: `(EXPR ENV LOCATION)`
+
+  > Analyzes a `%insert-struct-member` expression.  >    Form: (%insert-struct-member object-node index-literal value-node)
+
+
+---
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
@@ -566,7 +573,7 @@ Generated on 2026-01-07T01:47:22.008763Z
 ### DEFUN `BUILD-CAST-IF-NEEDED`
 - **Args**: `(BUILDER FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)`
 
-  > Builds an LLVM cast instruction if the types differ.
+  > Builds LLVM cast instruction if types differ, with alias resolution.
 
 
 ---
@@ -610,6 +617,13 @@ Generated on 2026-01-07T01:47:22.008763Z
 
 
 ---
+### DEFUN `RESOLVE-TOOL-EXECUTABLE`
+- **Args**: `(TOOL-BASE)`
+
+  > Resolves the path to a tool executable.   >    Prefers bundled version in bin/, falls back to system PATH.  >    Robustness:   >    - Checks versioned suffixes (e.g. llc-21) if base name not in path.  >    - Falls back to bundled tool if system tool is missing even if CRISP_USE_SYSTEM_TOOLS is set.
+
+
+---
 ### DEFUN `FIND-SPIR-KERNELS`
 - **Args**: `(IR-TEXT)`
 
@@ -620,28 +634,28 @@ Generated on 2026-01-07T01:47:22.008763Z
 ### DEFUN `EXTRACT-KERNEL-PARAMS`
 - **Args**: `(IR-TEXT FUNC-START FUNC-END)`
 
-  > Extract parameter types from a kernel function signature.  >    Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64').
+  > Extract parameter types from a kernel function signature.  >  Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64').
 
 
 ---
 ### DEFUN `IR-TYPE-TO-OPENCL-METADATA`
 - **Args**: `(IR-TYPE)`
 
-  > Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).  >    Returns (values addr-space-int access-qual-string type-name-string).
+  > Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).  >  Returns (values addr-space-int access-qual-string type-name-string).
 
 
 ---
 ### DEFUN `GENERATE-KERNEL-METADATA`
 - **Args**: `(PARAMS METADATA-ID-BASE)`
 
-  > Generate LLVM metadata definitions for kernel parameters.  >    Returns (values metadata-refs-string metadata-defs-string next-id).
+  > Generate LLVM metadata definitions for kernel parameters.  >  Returns (values metadata-refs-string metadata-defs-string next-id).
 
 
 ---
 ### DEFUN `INJECT-SPIR-KERNEL-METADATA`
 - **Args**: `(IR-TEXT)`
 
-  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  >    Returns modified IR text with metadata.
+  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  >  Returns modified IR text with metadata.
 
 
 ---
@@ -655,14 +669,14 @@ Generated on 2026-01-07T01:47:22.008763Z
 ### DEFUN `COMPILE-TO-PTX`
 - **Args**: `(MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_50))`
 
-  > Compiles an LLVM Module to PTX using llc.  >    COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)  >                        sm_50 = Maxwell (good default for compatibility)
+  > Compiles an LLVM Module to PTX using llc.  >  COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)  >                      sm_50 = Maxwell (good default for compatibility)
 
 
 ---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL))`
 
-  > A master initialization function for the Crisp compiler.  >   This should be called by any entry point into the system (REPL, executable, CI).
+  > A master initialization function for the Crisp compiler.  > This should be called by any entry point into the system (REPL, executable, CI).
 
 
 ---
@@ -933,7 +947,7 @@ Generated on 2026-01-07T01:47:22.008763Z
 ### DEFMACRO `RETURN`
 - **Args**: `(&OPTIONAL VALUE)`
 
-  > Crisp's special RETURN form. Expands to a semantic-return node.
+  > Crisp's special RETURN form. Expands to an explicit-return node.
 
 
 ---
@@ -964,6 +978,10 @@ Generated on 2026-01-07T01:47:22.008763Z
 
 
 ---
+### DEFUN `STRICT-VALID-TYPE-P`
+- **Args**: `(SPEC)`
+
+---
 ### DEFMACRO `DEF-KERNEL-EXACT`
 - **Args**: `(NAME PARAMS &REST BODY)`
 
@@ -980,6 +998,10 @@ Generated on 2026-01-07T01:47:22.008763Z
 ---
 ### DEFUN `%RESOLVE-ALIAS-STRICT`
 - **Args**: `(SPEC)`
+
+---
+### DEFUN `%RESOLVE-ALIAS-STRICT-CHECKED`
+- **Args**: `(SPEC SEEN)`
 
 ---
 ### DEFUN `%INCOMPLETE-STORAGE-HANDLE-P`
@@ -1034,7 +1056,14 @@ Generated on 2026-01-07T01:47:22.008763Z
 ### DEFMACRO `DEF-SETTER`
 - **Args**: `(NAME ARGS &BODY BODY)`
 
-  > Defines a setter function (which is just a def-function but semantically intended for use with set!).  >    The return type is implicitly nil/void. We append (return) to ensure this.
+  > Defines a setter function (which is just a def-function but semantically intended for use with set!).  >    The return type is determined by the body.
+
+
+---
+### DEFMACRO `SETF`
+- **Args**: `(PLACE VALUE &REST PAIRS)`
+
+  > Custom setf implementation mapping (setf (f x) y) to (f_set! x y).
 
 
 ---
@@ -1326,6 +1355,12 @@ Generated on 2026-01-07T01:47:22.008763Z
 
 
 ---
+### DEFSTRUCT `SEMANTIC-INSERT-VALUE`
+
+  > Represents inserting a single value into an aggregate (struct).
+
+
+---
 ### DEFSTRUCT `SEMANTIC-STRUCT-CONSTRUCTION`
 
   > Represents constructing a struct instance e.g. (%construct-struct 'point ...).
@@ -1349,7 +1384,7 @@ Generated on 2026-01-07T01:47:22.008763Z
 ### DEFUN `GET-STD140-BASE-ALIGNMENT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns the base alignment (N) for a given type according to std140 rules.  >   For scalars, N is the size of the scalar.  >   For vectors, it is 2N or 4N.  >   For arrays/structs, it is rounded up to vec4 alignment (16).
+  > Returns the base alignment (N) for a given type according to std140 rules.  >    For scalars, N is the size of the scalar.  >    For vectors, it is 2N or 4N.  >    For arrays/structs, it is rounded up to vec4 alignment (16).
 
 
 ---
@@ -1405,6 +1440,12 @@ Generated on 2026-01-07T01:47:22.008763Z
 - **Args**: `(NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))`
 
   > Registers a struct or record definition in the global registry.
+
+
+---
+### DEFUN `FINALIZE-STRUCT-DEFINITIONS`
+
+  > Iteratively attempts to register pending structs. Errors if a cycle or unknown type persists.
 
 
 ---
@@ -1534,7 +1575,7 @@ Generated on 2026-01-07T01:47:22.008763Z
 ### DEFUN `GET-PROMOTED-TYPE`
 - **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
 
-  > Determines the result type of a binary operation, applying promotion rules.
+  > Determines result type of binary operation with alias resolution.
 
 
 ---
@@ -1687,6 +1728,18 @@ Generated on 2026-01-07T01:47:22.008763Z
 
 
 ---
+### DEFVAR `*DEFER-STRUCT-VALIDATION*`
+
+  > If T, register-struct-definition will not error on unknown types but instead queue the definition.
+
+
+---
+### DEFVAR `*PENDING-STRUCT-DEFINITIONS*`
+
+  > A list of (name members category) tuples that are waiting for types to be defined.
+
+
+---
 ### DEFSTRUCT `ENUMERATION-DEF`
 
 ---
@@ -1719,6 +1772,13 @@ Generated on 2026-01-07T01:47:22.008763Z
 
 
 ---
+### DEFUN `RESOLVE-TYPE-ALIAS`
+- **Args**: `(TYPE-SPEC)`
+
+  > Fully resolves a type alias chain, returning the underlying type.  >    Includes cycle detection to prevent infinite loops.  >    SIGNALS ERROR if a cycle is detected.
+
+
+---
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
@@ -1736,7 +1796,7 @@ Generated on 2026-01-07T01:47:22.008763Z
 ### DEFUN `TYPES-EQUIVALENT-P`
 - **Args**: `(T1 T2)`
 
-  > Checks if two types are equivalent, handling template struct canonicalization.
+  > Checks if two types are equivalent, with alias resolution and template handling.
 
 
 ---

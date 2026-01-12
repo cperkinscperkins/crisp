@@ -27,7 +27,12 @@
   (let ((*call-graph* (make-hash-table))
         (*originator-functions* (make-hash-table))
         (*implicit-arg-map* (make-hash-table))) ; Rebind for a clean state per module.
-    (analyze-signatures-pass forms)
+    (let ((*defer-struct-validation* t)
+          (*pending-struct-definitions* nil))
+      (analyze-signatures-pass forms)
+
+      ;; Now finalize any structs that were deferred
+      (finalize-struct-definitions))
 
     ;; Pass 1.5: Propagate implicit argument requirements up the call graph.
     (propagate-implicit-arguments)

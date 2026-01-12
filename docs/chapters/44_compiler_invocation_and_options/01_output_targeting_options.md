@@ -31,16 +31,20 @@ to an IR (Intermediate Representation) file. One file per occurrence of the `--i
 | `ptx`    | `ptx`     | CUDA Parallel Thread Execution IR |
 | `spv`    | `spv`     | Khronos SPIR-V IR  |
 
+Unless the `--merge` or `--join` flags are used, one target file (e.g. `spv`) is output per `def-orchestration`.  Loose kernels outside of any orchestration have a default one generated for them.
+
 ### `--binary-gpu-target=<ID>`
 
 This flag can be used repeatedly, each occurrence with a different ID. The compiler will compile the .crisp files to a different binary file for each binary target. The binary file name will be `<output-base-name>_<ID>.<extension>`
 
 `ID` can be one of
+
 | ID      | Extension |  Description       |
 |---------|-----------|--------------------|
 | `sm_90` | `cubin`   | NVidia             |
 | `pvc`   | `bin`     | Intel PonteVechio  |
 
+Unless the `--merge` or `--join` flags are used, one target file (e.g. `cubin`) is output per `def-orchestration`.  Loose kernels outside of any orchestration have a default one generated for them.
 
 ### `--fat-binary`
 
@@ -53,9 +57,10 @@ This flag can be used repeatedly, each occurrence with a different ID. The compi
 The hoist options are paired against their matching IR and Binary targets automatically. You'll get a warning from the compiler if it detects
 incompatible pairings.  Note that if outputting BOTH binary and IR targets then the hoisting code will demonstrate both.
 
-The hoist file name will be `<output-base-name>_hoist_<ID>.<extension>`
+The hoist file name will be `<output-base-name>_<orchestration>_hoist_<ID>.<extension>`
 
 `ID` can be one of
+
 | ID              | Extension |  Description       |
 |-----------------|-----------|--------------------|
 | `OpenCL`        | `cpp`     | OpenCL 3.0 API     |
@@ -67,11 +72,15 @@ The hoist file name will be `<output-base-name>_hoist_<ID>.<extension>`
 
 There are other flags that interoperate with the hoisting, such as `--hoist-unified-memory` and `--hoist-dynamic`
 
+One hoisting file is output per orchestration.
+
 ### `--metadata`
 
 If this flag is present, the compiler will output a metadata file. This file has a lot of the necessary 
 hoisting information about the kernels and their arguments and 
 can be parsed programmatically if desired.
+
+The metadata files are output one per `def-orchestration`. If a kernel does not appear in a `def-orchestration`, a default one is generated for it. 
 
 ### Example
 ```
