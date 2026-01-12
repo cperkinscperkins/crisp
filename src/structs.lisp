@@ -10,15 +10,11 @@
 
 (defun get-std140-base-alignment (type-spec)
   "Returns the base alignment (N) for a given type according to std140 rules.
-  For scalars, N is the size of the scalar.
-  For vectors, it is 2N or 4N.
-  For arrays/structs, it is rounded up to vec4 alignment (16)."
-  ;; Resolve type aliases first
-  (cl:let ((resolved-type (if (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
-                              (loop for name = type-spec then (gethash name *crisp-type-aliases*)
-                                    while (and (symbolp name) (gethash name *crisp-type-aliases*))
-                                    finally (cl:return name))
-                              type-spec)))
+   For scalars, N is the size of the scalar.
+   For vectors, it is 2N or 4N.
+   For arrays/structs, it is rounded up to vec4 alignment (16)."
+  ;; Resolve type aliases first with cycle detection
+  (cl:let ((resolved-type (resolve-type-alias type-spec)))
     (cl:cond
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
@@ -50,14 +46,11 @@
        (error "Unknown type for alignment: ~a" type-spec)))))
 
 
+;; FROM: src/structs.lisp
 (defun get-std140-size (type-spec)
   "Returns the size (in bytes) of a type. Does not include padding for alignment context."
-  ;; Resolve type aliases first
-  (cl:let ((resolved-type (if (and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
-                              (loop for name = type-spec then (gethash name *crisp-type-aliases*)
-                                    while (and (symbolp name) (gethash name *crisp-type-aliases*))
-                                    finally (cl:return name))
-                              type-spec)))
+  ;; Resolve type aliases first with cycle detection
+  (cl:let ((resolved-type (resolve-type-alias type-spec)))
     (cl:cond
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
@@ -71,21 +64,22 @@
             (> (length (symbol-name type-spec)) 5)
             (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
        8)
-      ;; Structs - Retrieve cached size
+      ;; Structs
       ((gethash type-spec *crisp-structs*)
-       (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
+       (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*))) ;; CORRECTED: Use struct accessor!
       ;; Parameterized Structs
       ((and (consp type-spec) (valid-type-p type-spec))
        (cl:let ((base (first type-spec)))
          (cl:cond
-           ;; Cells are pointers (8 bytes)
            ((string-equal (symbol-name base) "CELL") 8)
            (t
             (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
-              (if (gethash mangled *crisp-structs*)
-                  (crisp-struct-definition-total-size (gethash mangled *crisp-structs*))
-                  (error "Valid type ~a but struct def not found after check size." type-spec)))))))
-      (t (error "Unknown type for size: ~a" type-spec)))))
+              (cl:let ((struct-info (gethash mangled *crisp-structs*)))
+                (if struct-info
+                    (crisp-struct-definition-total-size struct-info) ;; CORRECTED: Use struct accessor!
+                    (error "Valid type ~a but struct def not found after check size." type-spec))))))))
+      (t
+       (error "Unknown type for size: ~a" type-spec)))))
 
 (defun calculate-std140-padding (current-offset alignment)
   "Calculates padding needed to reach the next alignment boundary."
@@ -93,6 +87,7 @@
     (if (zerop remainder)
         0
         (- alignment remainder))))
+
 
 (defun compute-std140-layout (members)
   "Takes a list of (name type) members.
@@ -108,8 +103,8 @@
     (dolist (member runtime-members)
       (cl:let* ((name (first member))
                 (type (second member))
-                (alignment (get-std140-base-alignment type))
-                (size (get-std140-size type))
+                (alignment (get-std140-base-alignment type)) ;; Calls new version
+                (size (get-std140-size type)) ;; Calls new version
                 (padding (calculate-std140-padding current-offset alignment)))
         (declare (ignore name))
 
@@ -236,6 +231,7 @@
               nil)
             nil))))
 
+
 (defun compute-record-layout (members)
   "Computes layout for records (virtual, no padding)."
   (cl:let* ((runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
@@ -243,7 +239,7 @@
             (expanded-members '()))
     (dolist (member runtime-members)
       (cl:let* ((type (second member))
-                (size (get-std140-size type)))
+                (size (get-std140-size type))) ;; Calls new version
         (push member expanded-members)
         (incf current-offset size)))
 

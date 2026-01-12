@@ -224,30 +224,36 @@
            (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)))))
 
 (defun %resolve-alias-strict (spec)
-  (let ((base (if (consp spec) (first spec) spec))
-        (args (if (consp spec) (rest spec) nil)))
-    (if (symbolp base)
-        (let ((alias-def (gethash base crisp.compiler::*crisp-template-aliases*)))
-          (if alias-def
-              (let ((params (car alias-def))
-                    (type-spec (cdr alias-def)))
-                (if params
-                    (let* ((arity (length params))
-                           (required-args (subseq args 0 (min (length args) arity)))
-                           (rest-args (subseq args (length required-args)))
-                           (substitutions (pairlis params required-args)))
-                      (let ((expanded (sublis substitutions type-spec)))
-                        (if (and rest-args (consp expanded))
-                            (%resolve-alias-strict (append expanded rest-args))
-                            (%resolve-alias-strict expanded))))
-                    (if args
-                        (%resolve-alias-strict (append (if (consp type-spec) type-spec (list type-spec)) args))
-                        (%resolve-alias-strict type-spec))))
-              (let ((simple (gethash base crisp.compiler::*crisp-type-aliases*)))
-                (if simple
-                    (%resolve-alias-strict simple)
-                    spec))))
-        spec)))
+  (%resolve-alias-strict-checked spec nil))
+
+(defun %resolve-alias-strict-checked (spec seen)
+  (if (member spec seen :test #'equal)
+      (error "Recursive type alias detected during macro expansion: ~a" spec)
+      (let ((base (if (consp spec) (first spec) spec))
+            (args (if (consp spec) (rest spec) nil))
+            (new-seen (cons spec seen)))
+        (if (symbolp base)
+            (let ((alias-def (gethash base *crisp-template-aliases*)))
+              (if alias-def
+                  (let ((params (car alias-def))
+                        (type-spec (cdr alias-def)))
+                    (if params
+                        (let* ((arity (length params))
+                               (required-args (subseq args 0 (min (length args) arity)))
+                               (rest-args (subseq args (length required-args)))
+                               (substitutions (pairlis params required-args)))
+                          (let ((expanded (sublis substitutions type-spec)))
+                            (if (and rest-args (consp expanded))
+                                (%resolve-alias-strict-checked (append expanded rest-args) new-seen)
+                                (%resolve-alias-strict-checked expanded new-seen))))
+                        (if args
+                            (%resolve-alias-strict-checked (append (if (consp type-spec) type-spec (list type-spec)) args) new-seen)
+                            (%resolve-alias-strict-checked type-spec new-seen))))
+                  (let ((simple (gethash base *crisp-type-aliases*)))
+                    (if simple
+                        (%resolve-alias-strict-checked simple new-seen)
+                        spec))))
+            spec))))
 
 (defun %incomplete-storage-handle-p (type-spec)
   "Returns T if the type-spec is a storage handle but is missing explicit required keys (address-space, access)."
