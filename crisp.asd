@@ -19,7 +19,9 @@
                                              (:file "src/mangling") ;; NEW
                                              (:file "src/semantic")
                                              (:file "src/errors") ; 3. Conditions
-                                             (:file "src/types") ; 4. Type System
+                                             (:file "src/types/definitions")
+                                             (:file "src/types/registry")
+                                             (:file "src/types/validation")
                                              (:file "src/parameters")
                                              (:file "src/structs") ; 5. Struct Layout
 
@@ -32,6 +34,7 @@
                                              (:file "src/analysis/ops")
                                              (:file "src/analysis/control")
                                              (:file "src/analysis/structs")
+                                             (:file "src/codegen/abi")
                                              (:file "src/codegen") ; 7. Uses compiler, defines codegen
                                              (:file "src/templates") ; 8. with-template-type macro
                                              (:file "src/main") ; 9. Uses compiler, defines main

@@ -331,12 +331,9 @@
 
     (values (reverse exploded-params) (reverse exploded-types) (reverse reassembly-bindings))))
 
-(defmacro def-kernel (name params &rest body)
-  "Defines a GPU Kernel (Entry Point).
-   
-   Constraint: All parameter types MUST be complete.
-   Incomplete types (missing compile-time properties) are forbidden at the kernel boundary
-   because the host must know the exact layout to marshall arguments."
+(defun parse-kernel-signature (name params body)
+  "Parses kernel parameters and body, performing validation and type extraction.
+   Returns (values exploded-params exploded-types reassembly-bindings raw-body other-decls)."
 
   ;; 1. Validate C-Style Name (no dashes)
   (let ((name-str (symbol-name name)))
@@ -425,16 +422,29 @@
       (multiple-value-bind (exploded-params exploded-types reassembly-bindings)
           (%explode-kernel-args params signature-types)
 
-        ;; 4. Expand to def-kernel-exact
-        ;; Preserve OTHER declarations (like local-size)
+        ;; Determine other declarations to preserve
         (let ((other-decls (loop for d in declarations
                                    unless (member (car d) '(function type))
                                  collect d)))
-          `(def-kernel-exact ,name ,exploded-params
-                             (declare #'(,@exploded-types))
-                             ,@(when other-decls `((declare ,@other-decls)))
-                             (let (,@reassembly-bindings)
-                               ,@raw-body)))))))
+          (values exploded-params exploded-types reassembly-bindings raw-body other-decls))))))
+
+(defmacro def-kernel (name params &rest body)
+  "Defines a GPU Kernel (Entry Point).
+   
+   Constraint: All parameter types MUST be complete.
+   Incomplete types (missing compile-time properties) are forbidden at the kernel boundary
+   because the host must know the exact layout to marshall arguments."
+
+  ;; Use the helper to parse and validate, avoiding code duplication and monolithic macros
+  (multiple-value-bind (exploded-params exploded-types reassembly-bindings raw-body other-decls)
+      (parse-kernel-signature name params body)
+
+    ;; Expand to def-kernel-exact
+    `(def-kernel-exact ,name ,exploded-params
+                       (declare #'(,@exploded-types))
+                       ,@(when other-decls `((declare ,@other-decls)))
+                       (let (,@reassembly-bindings)
+                         ,@raw-body))))
 
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
