@@ -1,4 +1,4 @@
-;; TEST-WITH[--metadata] : validate-metadata-def-type
+;; TEST-WITH[--metadata] : validate-01-aliases
 
 ;; this should appear in the metadata. Used at kernel boundary.
 (def-type iii int)

@@ -269,15 +269,16 @@
 
                         ;; Let's try calling it as (funcall validator meta-path) and let it decide.
 
+                        ;; Dispatch validator with just the meta-path
                         (if (fboundp validator)
-                            (if (funcall validator meta-path 'iii 'int) ;; HARDCODED ARGS FOR NOW TO TEST MECHANISM
+                            (if (funcall validator meta-path)
                                 (progn (format t "Validator PASS. ") t)
                                 (progn (format *error-output* "Validator FAIL. ") nil))
                             (progn
                              ;; Try finding it in crisp.compiler package if symbol has no package
                              (let ((sym (find-symbol (symbol-name validator) :crisp.compiler)))
                                (if (and sym (fboundp sym))
-                                   (if (funcall sym meta-path 'iii 'int)
+                                   (if (funcall sym meta-path)
                                        (progn (format t "Validator PASS. ") t)
                                        (progn (format *error-output* "Validator FAIL. ") nil))
                                    (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))))

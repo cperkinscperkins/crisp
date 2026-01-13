@@ -431,7 +431,7 @@
         (let ((other-decls (loop for d in declarations
                                    unless (member (car d) '(function type))
                                  collect d)))
-          (values exploded-params exploded-types reassembly-bindings raw-body other-decls))))))
+          (values exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types))))))
 
 (defmacro def-kernel (name params &rest body)
   "Defines a GPU Kernel (Entry Point).
@@ -441,15 +441,18 @@
    because the host must know the exact layout to marshall arguments."
 
   ;; Use the helper to parse and validate, avoiding code duplication and monolithic macros
-  (multiple-value-bind (exploded-params exploded-types reassembly-bindings raw-body other-decls)
+  (multiple-value-bind (exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types)
       (parse-kernel-signature name params body)
 
     ;; Expand to def-kernel-exact
-    `(def-kernel-exact ,name ,exploded-params
-                       (declare #'(,@exploded-types))
-                       ,@(when other-decls `((declare ,@other-decls)))
-                       (let (,@reassembly-bindings)
-                         ,@raw-body))))
+    `(progn
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (setf (gethash ',name crisp.compiler::*kernel-declared-signatures*) ',signature-types))
+      (def-kernel-exact ,name ,exploded-params
+                        (declare #'(,@exploded-types))
+                        ,@(when other-decls `((declare ,@other-decls)))
+                        (let (,@reassembly-bindings)
+                          ,@raw-body)))))
 
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.

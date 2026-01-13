@@ -3,11 +3,11 @@
 
 (defpackage :crisp.test.signature-parsing
   (:use :cl :parachute)
-  (:shadow :float) ; Shadow CL:FLOAT to use CRISP:FLOAT (implied by import or usage)
+  (:shadowing-import-from :crisp.compiler #:float)
   (:import-from :crisp.compiler
                 #:parse-function-declarations
                 #:make-parameter-def
-                #:int #:float))
+                #:int))
 
 (in-package :crisp.test.signature-parsing)
 

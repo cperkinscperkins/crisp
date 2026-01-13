@@ -1,5 +1,5 @@
 
-;; TEST-WITH[--metadata]
+;; TEST-WITH[--metadata] : validate-06-nested-structs
 
 ;; both point and rect should appear in the metadata.
 ;; by virtue of rect being included at kernel boundary, and rect depending on point.

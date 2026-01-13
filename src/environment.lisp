@@ -254,11 +254,14 @@
 
             ;; (format *error-output* "DEBUG REGISTRATION FINAL: ~s Params: ~s~%" name param-types)
             (finish-output *error-output*)
-
-            ;; Append to existing signatures
             (setf (gethash name *function-table*)
               (append (gethash name *function-table*) (list sig))))))))
 
+(defvar *template-registry* (make-hash-table :test 'eq)
+        "Maps template names to their generator macros.")
+
+(defvar *kernel-declared-signatures* (make-hash-table :test 'eq)
+        "Maps kernel names to their declared (high-level) parameter types, before explosion.")
 (defun register-overload (alias real-name)
   "Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing."
   (let ((real-sigs (gethash real-name *function-table*))
