@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-12T22:37:24.739909Z
+Generated on 2026-01-13T02:56:33.911690Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -142,6 +142,20 @@ Generated on 2026-01-12T22:37:24.739909Z
 
   > Phase 4: Traverses the call graph backwards from originators to find all carriers.
 
+
+---
+### DEFVAR `*SCAN-CALLEES*`
+
+---
+### DEFVAR `*SCAN-IS-ORIGINATOR*`
+
+---
+### DEFGENERIC `SCAN-FORM`
+- **Args**: `(FORM)`
+
+---
+### DEFGENERIC `SCAN-OPERATOR`
+- **Args**: `(OP ARGS)`
 
 ---
 ### DEFUN `SHALLOW-ANALYZE-BODY`
@@ -441,68 +455,6 @@ Generated on 2026-01-12T22:37:24.739909Z
 
 
 ---
-### DEFUN `GET-LLVM-RETURN-TYPE`
-- **Args**: `(MODULE RETURN-TYPE-NAMES)`
-
-  > Determines the LLVM return type from a list of Crisp type names.  >   Handles single values, void, and multiple values (by creating a struct).
-
-
----
-### DEFPARAMETER `*CACHED-INT32-TYPE*`
-
----
-### DEFPARAMETER `*CACHED-INT64-TYPE*`
-
----
-### DEFUN `CRISP-TYPE-TO-LLVM-TYPE`
-- **Args**: `(TYPE-SPEC MODULE)`
-
-  > Resolves a Crisp type specifier (simple or parameterized) to an LLVM type.
-
-
----
-### DEFUN `IS-GLOBAL-STORAGE-HANDLE-P`
-- **Args**: `(TYPE-SPEC)`
-
-  > Returns true if the type-spec represents a handle to global memory.
-
-
----
-### DEFUN `GET-EXPANDED-TYPES`
-- **Args**: `(TYPE-SPEC MODULE)`
-
-  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type).  >      >    If *target-backend* is :spirv or :ptx, upgrade pointers in storage handles to Global Address Space (1).
-
-
----
-### DEFUN `EXPLODE-VALUE`
-- **Args**: `(BUILDER AGG-VAL TYPE-SPEC)`
-
-  > Extracts components from an aggregate value if necessary.  >    Returns a list of LLVM values.
-
-
----
-### DEFUN `IMPLODE-VALUE`
-- **Args**: `(BUILDER COMPONENTS TYPE-SPEC MODULE)`
-
-  > Combines components into an aggregate value if necessary.  >    Returns a single LLVM value.
-
-
----
-### DEFUN `EXTRACT-PRIMARY-VALUE`
-- **Args**: `(BUILDER VALUE TYPE-SPEC)`
-
-  > If the type indicates an MVR (multiple return value) struct, extract the first element.  >    Otherwise return the value as is.  >    Used when a single-value context receives an MVR result.
-
-
----
-### DEFUN `CREATE-LLVM-FUNCTION-TYPE`
-- **Args**: `(MODULE RETURN-TYPES PARAM-NODES)`
-
-  > Calculates the LLVM function type, handling parameter explosion.
-
-
----
 ### DEFUN `GENERATE-DEBUG-INFO`
 - **Args**: `(DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE
               PARAM-NODES LOCATION-MAP)`
@@ -605,6 +557,70 @@ Generated on 2026-01-12T22:37:24.739909Z
 - **Args**: `(BLOCK)`
 
   > Checks if a basic block already has a terminator instruction.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\codegen\abi.lisp`
+
+### DEFPARAMETER `*CACHED-INT32-TYPE*`
+
+---
+### DEFPARAMETER `*CACHED-INT64-TYPE*`
+
+---
+### DEFUN `GET-LLVM-RETURN-TYPE`
+- **Args**: `(MODULE RETURN-TYPE-NAMES)`
+
+  > Determines the LLVM return type from a list of Crisp type names.  >   Handles single values, void, and multiple values (by creating a struct).
+
+
+---
+### DEFUN `CRISP-TYPE-TO-LLVM-TYPE`
+- **Args**: `(TYPE-SPEC MODULE)`
+
+  > Resolves a Crisp type specifier (simple or parameterized) to an LLVM type.
+
+
+---
+### DEFUN `IS-GLOBAL-STORAGE-HANDLE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns true if the type-spec represents a handle to global memory.
+
+
+---
+### DEFUN `GET-EXPANDED-TYPES`
+- **Args**: `(TYPE-SPEC MODULE)`
+
+  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type).  >      >    If *target-backend* is :spirv or :ptx, upgrade pointers in storage handles to Global Address Space (1).
+
+
+---
+### DEFUN `EXPLODE-VALUE`
+- **Args**: `(BUILDER AGG-VAL TYPE-SPEC)`
+
+  > Extracts components from an aggregate value if necessary.  >    Returns a list of LLVM values.
+
+
+---
+### DEFUN `IMPLODE-VALUE`
+- **Args**: `(BUILDER COMPONENTS TYPE-SPEC MODULE)`
+
+  > Combines components into an aggregate value if necessary.  >    Returns a single LLVM value.
+
+
+---
+### DEFUN `EXTRACT-PRIMARY-VALUE`
+- **Args**: `(BUILDER VALUE TYPE-SPEC)`
+
+  > If the type indicates an MVR (multiple return value) struct, extract the first element.  >    Otherwise return the value as is.  >    Used when a single-value context receives an MVR result.
+
+
+---
+### DEFUN `CREATE-LLVM-FUNCTION-TYPE`
+- **Args**: `(MODULE RETURN-TYPES PARAM-NODES)`
+
+  > Calculates the LLVM function type, handling parameter explosion.
 
 
 ---
@@ -715,17 +731,24 @@ Generated on 2026-01-12T22:37:24.739909Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp\src\environment.lisp`
 
-### DEFUN `SHALLOW-ANALYZE-BODY`
-- **Args**: `(FORMS)`
-
-  > Performs a shallow, recursive walk of a function's body.  >   Returns two values:  >   1. A boolean indicating if a side-channel originator was found.  >   2. A list of all unique symbols found in the 'car' of lists (potential function calls).
-
-
----
 ### DEFUN `PARSE-FUNCTION-DECLARATIONS`
 - **Args**: `(PARAMS DECLARATIONS)`
 
   > Parses a function's declarations and returns its environment and return type.  >    Supports interleaved type syntax: ((p type))
+
+
+---
+### DEFUN `BIND-KEYWORD-ARGS`
+- **Args**: `(FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)`
+
+  > Helper for resolve-argument-bindings. Handles &key argument parsing.  >    Returns (values active-env remainder-env error-message)
+
+
+---
+### DEFUN `INJECT-DEFAULTS`
+- **Args**: `(REMAINDER-ENV DEFAULTS)`
+
+  > Helper for resolve-argument-bindings. Generates bindings for missing parameters.
 
 
 ---
@@ -1015,6 +1038,13 @@ Generated on 2026-01-12T22:37:24.739909Z
 - **Args**: `(PARAMS SIGNATURE)`
 
   > Explodes storage handle parameters into raw scalars.  >    Returns (VALUES exploded-params exploded-signature-types reassembly-bindings).
+
+
+---
+### DEFUN `PARSE-KERNEL-SIGNATURE`
+- **Args**: `(NAME PARAMS BODY)`
+
+  > Parses kernel parameters and body, performing validation and type extraction.  >    Returns (values exploded-params exploded-types reassembly-bindings raw-body other-decls).
 
 
 ---
@@ -1600,7 +1630,12 @@ Generated on 2026-01-12T22:37:24.739909Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\types.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\definitions.lisp`
+
+### DEFSTRUCT `ENUMERATION-DEF`
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\types\registry.lisp`
 
 ### DEFVAR `*GENERIC-FUNCTIONS*`
 
@@ -1686,9 +1721,6 @@ Generated on 2026-01-12T22:37:24.739909Z
 ### DEFVAR `*CURRENT-LOCATION-MAP*`
 
 ---
-### DEFVAR `*CURRENT-LOCATION-MAP*`
-
----
 ### DEFVAR `*ALLOW-NESTED-DEF-FUNCTION*`
 
 ---
@@ -1740,9 +1772,6 @@ Generated on 2026-01-12T22:37:24.739909Z
 
 
 ---
-### DEFSTRUCT `ENUMERATION-DEF`
-
----
 ### DEFVAR `*CRISP-ENUMS*`
 
 ---
@@ -1765,6 +1794,8 @@ Generated on 2026-01-12T22:37:24.739909Z
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp\src\types\validation.lisp`
+
 ### DEFUN `EXCLUDED-TEMPLATE-BASE-TYPE-P`
 - **Args**: `(BASE-TYPE)`
 
@@ -1841,12 +1872,6 @@ Generated on 2026-01-12T22:37:24.739909Z
 ---
 ### DEFUN `TYPE-EQUAL-P`
 - **Args**: `(T1 T2)`
-
----
-### DEFVAR `*TARGET-BACKEND*`
-
-  > The target backend for the current compilation pass.
-
 
 ---
 ### DEFUN `ENCODE-ADDRESS-SPACE`
