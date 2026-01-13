@@ -493,6 +493,8 @@
   "Defines a type alias.
    Example: (def-type T int)"
   `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (unless (crisp.compiler::valid-type-p ',type-spec)
+       (error "Unknown type '~a'." ',type-spec))
      (setf (gethash ',name crisp.compiler::*crisp-template-aliases*) (cons nil ',type-spec))
      (setf (gethash ',name crisp.compiler::*crisp-type-aliases*) ',type-spec)))
 

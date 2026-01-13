@@ -283,6 +283,7 @@
    ;; Accessors for semantic nodes
    #:semantic-function-body
    #:semantic-return-value-node
+   #:function-signature-parameters ;; <--- NEW EXPORT
    #:semantic-let-bindings
    #:semantic-let-body
 
