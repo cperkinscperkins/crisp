@@ -408,8 +408,7 @@
                     (push (gethash p type-map) signature-types))))
       (setf signature-types (nreverse signature-types))
 
-      (format *error-output* "DEBUG PARSE-KERNEL: ~a Params: ~a Types: ~a~%" name params signature-types)
-      (finish-output *error-output*)
+      (log:debug "DEBUG PARSE-KERNEL: ~a Params: ~a Types: ~a" name params signature-types)
 
       (unless (every #'identity signature-types)
         (error "def-kernel ~a: Missing type declarations for parameters: ~a" name

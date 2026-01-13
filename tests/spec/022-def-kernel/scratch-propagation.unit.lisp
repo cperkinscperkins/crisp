@@ -1,3 +1,10 @@
+(in-package :cl-user)
+
+(defpackage :crisp.test.scratch-propagation
+  (:use :cl :parachute))
+
+(in-package :crisp.test.scratch-propagation)
+
 (define-test scratch-propagation
              (let ((file "tests/spec/022-def-kernel/13-scratch-cells-and-kernel-boundary.crisp"))
                ;; Ensure clean state
@@ -32,3 +39,5 @@
                  ;; We can check the generated IR string or just trust the *functions* metadata for now.
                  ;; The metadata inspection is sufficient for this unit test.
       )))
+
+(test 'scratch-propagation)

@@ -130,7 +130,7 @@
                                   (cl:if (equal resolved base)
                                          ;; Cycle detected (A->A), return base as canonical 
                                          (progn
-                                          (format *error-output* "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base.~%" base)
+                                          (log:warn "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base." base)
                                           (list base))
                                          ;; Recurse safely
                                          (canonicalize-type-specifier resolved))))))
