@@ -54,6 +54,66 @@
 
     (values env return-types optional-idx defaults key-idx)))
 
+(defun bind-keyword-args (full-env explicit-args key-idx name)
+  "Helper for resolve-argument-bindings. Handles &key argument parsing.
+   Returns (values active-env remainder-env error-message)"
+  (let ((arg-count (length explicit-args)))
+    (when (< arg-count key-idx)
+          (return-from bind-keyword-args
+                       (values nil nil (format nil "Keyword Instantiation: Not enough positional arguments. Expected at least ~a, got ~a" key-idx arg-count))))
+
+    (let ((pos-env (subseq full-env 0 key-idx))
+          (key-args (subseq explicit-args key-idx))
+          (key-active-env '())
+          (provided-params '()))
+
+      (unless (evenp (length key-args))
+        (return-from bind-keyword-args
+                     (values nil nil (format nil "Keyword Instantiation: Odd number of keyword arguments: ~a" (length key-args)))))
+
+      ;; Parse (Key Val) pairs
+      (loop for (k-type v-type) on key-args by #'cddr
+            for i from 0
+            do (progn
+                ;; k-type must be (keyword :val)
+                (unless (and (listp k-type) (eq (first k-type) 'keyword) (= (length k-type) 2))
+                  (return-from bind-keyword-args
+                               (values nil nil (format nil "Keyword Instantiation: Expected keyword literal, got ~a" k-type))))
+
+                (let* ((key-kw (second k-type))
+                       (param-name (intern (string-upcase (symbol-name key-kw)) (symbol-package name)))
+                       ;; Verify this param exists in the key section of full-env
+                       (param-entry (find param-name (subseq full-env key-idx) :key #'parameter-def-name)))
+
+                  (unless param-entry
+                    (return-from bind-keyword-args
+                                 (values nil nil (format nil "Keyword Instantiation: Unknown keyword argument ~s for function ~s" key-kw name))))
+
+                  (push param-name provided-params)
+                  ;; Add to active-env: Key (ignored) + Value (bound to param-name)
+                  ;; Key param name: _k_i
+                  (push (make-parameter-def :name (intern (format nil "_K~d" i) (symbol-package name)) :type 'keyword :kind :in) key-active-env)
+                  (push (make-parameter-def :name param-name :type v-type :kind (parameter-def-kind param-entry)
+                                            :is-key t :default-value (parameter-def-default-value param-entry)) key-active-env))))
+
+      (let* ((active-env (append pos-env (nreverse key-active-env)))
+             ;; Remainder = All keys declared - Provided (Preserve Order!)
+             (all-keys (subseq full-env key-idx))
+             (remainder-env (remove-if (lambda (p) (member (parameter-def-name p) provided-params)) all-keys)))
+        (values active-env remainder-env nil)))))
+
+(defun inject-defaults (remainder-env defaults)
+  "Helper for resolve-argument-bindings. Generates bindings for missing parameters."
+  (let ((bindings-list '()))
+    (loop for p in remainder-env
+          for pname = (parameter-def-name p)
+          do (let ((def-entry (assoc pname defaults)))
+               (when def-entry
+                     (log:info "Type-Checking Default Value Injection: ~a = ~a" pname (cdr def-entry))
+                     (push (list pname (cdr def-entry)) bindings-list))))
+    ;; Use nreverse to keep binding order consistent with definition order
+    (nreverse bindings-list)))
+
 (defun resolve-argument-bindings (generic-def explicit-arg-types)
   "Resolves the active environment and default bindings for a generic instantiation.
    Returns (values active-env injected-bindings error-message)."
@@ -62,82 +122,32 @@
          (arg-count (length explicit-arg-types))
          (key-idx (generic-function-def-keys generic-def))
          (defaults (generic-function-def-defaults generic-def))
-         active-env
-         remainder-env)
+         (active-env nil)
+         (remainder-env nil)
+         (error-msg nil))
 
+    ;; 1. Determine Active & Remainder Environment
     (if key-idx
-        ;; --- KEYWORD PARAMETER LOGIC ---
-        (progn
-         (when (< arg-count key-idx)
-               (return-from resolve-argument-bindings
-                            (values nil nil (format nil "Keyword Instantiation: Not enough positional arguments. Expected at least ~a, got ~a" key-idx arg-count))))
-
-         (let ((pos-env (subseq full-env 0 key-idx))
-               (key-args (subseq explicit-arg-types key-idx))
-               (key-active-env '())
-               (provided-params '()))
-
-           (unless (evenp (length key-args))
-             (return-from resolve-argument-bindings
-                          (values nil nil (format nil "Keyword Instantiation: Odd number of keyword arguments: ~a" (length key-args)))))
-
-           ;; Parse (Key Val) pairs
-           (loop for (k-type v-type) on key-args by #'cddr
-                 for i from 0
-                 do (progn
-                     ;; k-type must be (keyword :val)
-                     (unless (and (listp k-type) (eq (first k-type) 'keyword) (= (length k-type) 2))
-                       (return-from resolve-argument-bindings
-                                    (values nil nil (format nil "Keyword Instantiation: Expected keyword literal, got ~a" k-type))))
-
-                     (let* ((key-kw (second k-type))
-                            (param-name (intern (string-upcase (symbol-name key-kw)) (symbol-package name)))
-                            ;; Verify this param exists in the key section of full-env
-                            (param-entry (find param-name (subseq full-env key-idx) :key #'parameter-def-name)))
-
-                       (unless param-entry
-                         (return-from resolve-argument-bindings
-                                      (values nil nil (format nil "Keyword Instantiation: Unknown keyword argument ~s for function ~s" key-kw name))))
-
-                       (push param-name provided-params)
-                       ;; Add to active-env: Key (ignored) + Value (bound to param-name)
-                       ;; Key param name: _k_i
-                       (push (make-parameter-def :name (intern (format nil "_K~d" i) (symbol-package name)) :type 'keyword :kind :in) key-active-env)
-                       (push (make-parameter-def :name param-name :type v-type :kind (parameter-def-kind param-entry)
-                                                 :is-key t :default-value (parameter-def-default-value param-entry)) key-active-env))))
-
-           (setf active-env (append pos-env (nreverse key-active-env)))
-
-           ;; Remainder = All keys declared - Provided (Preserve Order!)
-           (let ((all-keys (subseq full-env key-idx)))
-             (setf remainder-env (remove-if (lambda (p) (member (parameter-def-name p) provided-params)) all-keys)))))
-
-        ;; --- OPTIONAL PARAMETER LOGIC (Standard Prefix) ---
+        ;; Keyword Logic
+        (multiple-value-setq (active-env remainder-env error-msg)
+                             (bind-keyword-args full-env explicit-arg-types key-idx name))
+        ;; Optional Logic
         (progn
          (setf active-env (subseq full-env 0 arg-count))
          (setf remainder-env (subseq full-env arg-count))))
 
-    (let ((active-param-types (mapcar #'parameter-def-type active-env))
-          (bindings-list '()))
+    (when error-msg
+          (return-from resolve-argument-bindings (values nil nil error-msg)))
 
-      ;; Validations (Basic Arity check)
+    ;; 2. Validation
+    (let ((active-param-types (mapcar #'parameter-def-type active-env)))
       (unless (types-list-compatible-p explicit-arg-types active-param-types)
         (return-from resolve-argument-bindings
-                     (values nil nil (format nil "Lazy Instantiation Mismatch: ~a called with ~a, expected prefix of ~a" name explicit-arg-types active-param-types))))
+                     (values nil nil (format nil "Lazy Instantiation Mismatch: ~a called with ~a, expected prefix of ~a" name explicit-arg-types active-param-types)))))
 
-      ;; Inject default values for missing parameters
-      ;; We collect (param-name default-value) pairs for sequential binding (LET*).
-      ;; remainder-env is in declaration order.
-      (loop for p in remainder-env
-            for pname = (parameter-def-name p)
-            do (let ((def-entry (assoc pname defaults)))
-                 (when def-entry
-                       (log:info "Type-Checking Default Value Injection: ~a = ~a" pname (cdr def-entry))
-                       (push (list pname (cdr def-entry)) bindings-list))))
-      ;; Use nreverse to keep binding order consistent with definition order (for LET* dependencies)
-      (setf bindings-list (nreverse bindings-list))
-
-      (values active-env bindings-list nil))))
+    ;; 3. Inject Defaults
+    (let ((injected-bindings (inject-defaults remainder-env defaults)))
+      (values active-env injected-bindings nil))))
 
 (defun instantiate-generic-function (generic-def explicit-arg-types location)
   "Instantiates a lazy generic function variant for the given argument types."
