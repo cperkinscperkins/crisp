@@ -61,7 +61,8 @@
                                ((string= val "SPIRV") :spirv)
                                ((string= val "PTX") :ptx)
                                (t (intern val :keyword)))))
-                      target-flags)))
+                      target-flags))
+         (metadata-p (member "--metadata" flags :test #'string=)))
 
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
@@ -71,9 +72,9 @@
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
       (uiop:quit 1))
 
-    (values files nil debug-p single-pass-p targets)))
+    (values files nil debug-p single-pass-p targets metadata-p)))
 
-(defun compile-files (files output-file debug-p single-pass-p targets)
+(defun compile-files (files output-file debug-p single-pass-p targets metadata-p)
   "Compiles the given files, iterating over requested targets."
   (declare (ignore output-file)) ; Handled per-target
   (let* ((filename (first files))
@@ -82,7 +83,8 @@
          (passes (if targets targets '(:generic))))
 
     (dolist (target-backend passes)
-      (let ((crisp.compiler:*target-backend* target-backend))
+      (let ((crisp.compiler:*target-backend* target-backend)
+            (crisp.compiler::*emit-metadata* metadata-p))
         (format *error-output* "~&; --- Starting Pass for Target: ~a ---~%" target-backend)
 
         (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filename)))
@@ -123,7 +125,12 @@
                       (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
                         (unwind-protect
                             (format t "--- Generated LLVM IR (~a): ---~%~a~%" target-backend (cffi:foreign-string-to-lisp ir-ptr))
-                          (crisp.llvm-bindings:llvm-dispose-message ir-ptr))))))
+                          (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))))
+
+                   ;; Metadata Generation
+                   (when metadata-p
+                         (let ((meta-path (make-pathname :type "metacrisp" :defaults filepath)))
+                           (crisp.compiler::generate-metadata-for-file filepath meta-path))))
 
                 ;; Error Handling
                 (crisp.compiler:crisp-compiler-error (c)
@@ -146,6 +153,6 @@
 (defun main ()
   "Main entry point for the crisp-compile executable."
   (let ((args (uiop:command-line-arguments)))
-    (multiple-value-bind (source-files output-file debug-p single-pass-p targets)
+    (multiple-value-bind (source-files output-file debug-p single-pass-p targets metadata-p)
         (parse-cli-args args)
-      (compile-files source-files output-file debug-p single-pass-p targets))))
+      (compile-files source-files output-file debug-p single-pass-p targets metadata-p))))
