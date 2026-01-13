@@ -94,12 +94,11 @@
                                        collect (format nil "~s (~a)" k (package-name (symbol-package k))))))
     (setf signature (find-if (lambda (sig)
                                (let ((match (types-list-compatible-p explicit-arg-types (function-signature-parameters sig))))
-                                 (log:error "CHECK SIG: ~s -> ~a" (function-signature-parameters sig) match)
                                  match))
                         signatures))
 
     (unless signature
-      (log:error "NO SIGNATURE FOUND IMMEDIATELY. TRYING INSTANTIATION.")
+      (log:debug "NO SIGNATURE FOUND IMMEDIATELY. TRYING INSTANTIATION.")
 
       ;; 1. Try Lazy Instantiation for &optional / &key
       (let ((generic-def (gethash op *generic-functions*)))

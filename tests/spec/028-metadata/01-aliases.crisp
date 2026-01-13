@@ -1,4 +1,4 @@
-;; TEST-WITH[--metadata]
+;; TEST-WITH[--metadata] : validate-metadata-def-type
 
 ;; this should appear in the metadata. Used at kernel boundary.
 (def-type iii int)

@@ -1,4 +1,5 @@
 ;; CHECK-FAIL: "Unknown type 'GARBAGE'."
+;; failing with "Cannot operate on FOO and FOO" now
 
 (def-type foo  garbage)   ;; <-- by itself, this "compiles". (ie, the compiler finishes, no llvm-ir is generated though)
 

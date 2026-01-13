@@ -995,18 +995,25 @@
          (cell-val (generate-node-ir array-node builder module var-env di-builder di-scope location-map))
          (index-val (generate-node-ir index-node builder module var-env di-builder di-scope location-map)))
 
-    (let ((cell-spec (if (symbolp array-type)
-                         (unmangle-template-struct-name array-type)
-                         array-type)))
+    (let ((cell-spec (let* ((resolved (resolve-type-alias array-type))
+                            (canon (canonicalize-type-specifier resolved)))
+                       (cond
+                        ;; Case A: Already (CELL ...)
+                        ((and (listp canon) (eq (first canon) 'cell)) canon)
+                        ;; Case B: (CELL_LONG_...) -> Unmangle content
+                        ((and (listp canon) (= (length canon) 1) (symbolp (first canon)))
+                          (unmangle-template-struct-name (first canon)))
+                        ;; Case C: Symbol CELL_LONG_...
+                        ((symbolp canon)
+                          (unmangle-template-struct-name canon))
+                        (t canon)))))
       (cond
        ;; Case 1: CELL parameterized type
        ((and (listp cell-spec) (eq (first cell-spec) 'cell))
          (let* (;; Use element-type from analysis if reliable, otherwise safe to derive
                 (elem-type-spec element-type)
                 (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
-                (mangled-struct-name (if (symbolp array-type)
-                                         array-type
-                                         (mangle-template-struct-name (first array-type) (rest array-type)))))
+                (mangled-struct-name (mangle-template-struct-name (first cell-spec) (rest cell-spec))))
 
            (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
            (let ((cell-struct-type (ensure-struct-llvm-type mangled-struct-name)))

@@ -25,7 +25,7 @@
 (:kernels 
     ("my_kernel" 
       :source "path/to/some.crisp"
-      (:output (:spv "path/to/some/.spv") (:ptx "path/to/some/.ptx"))
+      (:output-targets (:spv "path/to/some/.spv") (:ptx "path/to/some/.ptx"))
         (:physical-signature 
         ;; scratch cell "sc"
         ;; container

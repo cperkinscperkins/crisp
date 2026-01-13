@@ -230,10 +230,13 @@
               (error "def-kernel-exact parameter '~a' cannot be a storage handle type (~a). Use def-kernel for implicit marshalling or pass raw pointers/sizes." p t-spec)))))
 
   ;; 3. Expand to def-function with entry-point
-  `(def-function ,name ,params
-                 (declare (entry-point))
-                 ,@body
-                 (return)))
+  `(progn
+    (eval-when (:compile-toplevel :load-toplevel :execute)
+      (pushnew ',name crisp.compiler::*compiled-kernels*))
+    (def-function ,name ,params
+                  (declare (entry-point))
+                  ,@body
+                  (return))))
 
 (defun %storage-handle-type-p (type-spec)
   "Returns T if the type-spec refers to a storage handle (cell, tensor, etc.)."
@@ -404,6 +407,9 @@
                       (push (if (and (consp type) (eq (car type) '&out)) (second type) type) signature-types))
                     (push (gethash p type-map) signature-types))))
       (setf signature-types (nreverse signature-types))
+
+      (format *error-output* "DEBUG PARSE-KERNEL: ~a Params: ~a Types: ~a~%" name params signature-types)
+      (finish-output *error-output*)
 
       (unless (every #'identity signature-types)
         (error "def-kernel ~a: Missing type declarations for parameters: ~a" name

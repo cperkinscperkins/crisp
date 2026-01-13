@@ -46,13 +46,13 @@
                                         (error 'crisp-unknown-type-error :type-name type))
                                       (let ((parsed (parse-type-specifier type)))
                                         (make-parameter-def :name name :type parsed :kind :in))))
-                                   (error "Mixed bare and typed parameters not allowed.")))))
+                                   (error "Mixed bare and typed parameters not allowed."))))))
 
-     ;; Case 3: Standard declarations
-     (t
-       (setf env (analyze-environment-from-list params declarations))))
+    ;; Case 3: Standard declarations
+    (t
+     (setf env (analyze-environment-from-list params declarations))))
 
-    (values env return-types optional-idx defaults key-idx)))
+  (values env return-types optional-idx defaults key-idx))
 
 (defun bind-keyword-args (full-env explicit-args key-idx name)
   "Helper for resolve-argument-bindings. Handles &key argument parsing.
@@ -208,6 +208,8 @@
          (params (third form))
          (body (cdddr form))
          (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f)))
+    ;; (format *error-output* "DEBUG REGISTER-FUNC: Name ~s Declares: ~s~%" name declare-forms)
+    (finish-output *error-output*)
     (log:debug "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s" name (package-name (symbol-package name)) declare-forms)
 
     (multiple-value-bind (env return-types optional-idx extracted-defaults key-idx)
@@ -249,6 +251,10 @@
                        :return-types return-types
                        :source-location location)))
             (declare (ignore _))
+
+            ;; (format *error-output* "DEBUG REGISTRATION FINAL: ~s Params: ~s~%" name param-types)
+            (finish-output *error-output*)
+
             ;; Append to existing signatures
             (setf (gethash name *function-table*)
               (append (gethash name *function-table*) (list sig))))))))
@@ -333,13 +339,10 @@
   (cond
    ;; 0. Type Aliases -- FIX: Use resolve-type-alias for cycle detection
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
+     ;; Validate cycle but return alias to preserve it for metadata
      (let ((resolved (resolve-type-alias spec)))
-       ;; resolve-type-alias guarantees no cycle (throws error).
-       (cond
-        ((equal resolved spec) spec) ;; Identity or leaf
-        (t
-          (log:info "PARSE: Resolving Alias ~a -> ~a" spec resolved)
-          (parse-type-specifier resolved)))))
+       (valid-type-p resolved) ;; Force instantiation of underlying template
+       spec)) ;; Return alias, NOT resolved
 
    ;; 0.1 Template Aliases (e.g. (in-cell int))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
@@ -447,6 +450,10 @@
       (loop while (and params param-type-specs)
             do (let ((p (first params))
                      (ts (first param-type-specs)))
+
+                 ;; (format *error-output* "DEBUG ANALYZE-ENV: Param ~s TS ~s~%" p ts)
+                 (finish-output *error-output*)
+
                  (cond
                   ;; Handle &optional in params
                   ((and (symbolp p) (string-equal (symbol-name p) "&OPTIONAL"))

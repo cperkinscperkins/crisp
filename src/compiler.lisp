@@ -314,6 +314,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
   (clrhash *crisp-structs*) ;; Reset struct definitions
   (when (boundp '*record-definitions*) (clrhash *record-definitions*)) ;; Reset records (if defined)
 
+  (setf *compiled-kernels* nil) ;; Reset compiled kernels list
+
   (initialize-expression-analyzers) ;; In analysis.lisp, but usually registered.
   ;; Note: analysis.lisp initializes *expression-analyzers* entries via def-expression-analyzer.
   ;; Wait, where is initialize-expression-analyzers defined?
