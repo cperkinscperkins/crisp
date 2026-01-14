@@ -210,12 +210,14 @@
            nil)))))
 
 (defun compile-crisp-file-to-spirv (filepath &key (emit-metadata nil))
-  "Compiles a .crisp file to .spv and returns the output path if successful."
+  "Compiles a .crisp file to .spv and returns the output path and metadata paths if successful."
   (let ((out-path (make-pathname :type "spv" :defaults filepath))
-        (meta-path (make-pathname :type "metacrisp" :defaults filepath))
+        (meta-base-path (make-pathname :type "metacrisp" :defaults filepath))
+        (meta-paths nil)
         (*standard-output* (make-broadcast-stream)))
     (when (probe-file out-path) (delete-file out-path))
-    (when (probe-file meta-path) (delete-file meta-path))
+    ;; We can't delete unknown meta files easily beforehand without knowing them, 
+    ;; but generate-metadata overrides them anyway.
 
     (let (;; Use a FRESH environment for each spec to ensure isolation
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
@@ -236,47 +238,55 @@
                (crisp.compiler:compile-to-spirv module out-path)
 
                (when emit-metadata
-                     (crisp.compiler::generate-metadata-for-file filepath meta-path
-                                                                 :output-targets (list (list :spv out-path))
-                                                                 :forms forms)))
+                     (setf meta-paths
+                       (crisp.compiler::generate-metadata-for-file filepath meta-base-path
+                                                                   :output-targets (list (list :spv out-path))
+                                                                   :forms forms))))
              (crisp.llvm-bindings:llvm-dispose-builder builder)
              (crisp.llvm-bindings:llvm-dispose-module module)))))
 
     (if (probe-file out-path)
-        out-path
+        (values out-path meta-paths)
         nil)))
 
 (defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
   (handler-case
-      (let ((out-path (compile-crisp-file-to-spirv file :emit-metadata emit-metadata)))
+      (multiple-value-bind (out-path meta-paths)
+          (compile-crisp-file-to-spirv file :emit-metadata emit-metadata)
         (if out-path
             (let ((res (if validator
-                           (let ((meta-path (make-pathname :type "metacrisp" :defaults file)))
-                             (format t "(Validator: ~a)... " validator)
-                             (if (probe-file meta-path)
-                                 (progn
-                                  ;; Dispatch validator with just the meta-path
-                                  (if (fboundp validator)
-                                      (if (funcall validator meta-path)
-                                          (progn (format t "Validator PASS. ") t)
-                                          (progn (format *error-output* "Validator FAIL. ") nil))
-                                      (progn
-                                       ;; Try finding it in crisp.compiler package if symbol has no package
-                                       (let ((sym (find-symbol (symbol-name validator) :crisp.compiler)))
-                                         (if (and sym (fboundp sym))
-                                             (if (funcall sym meta-path)
-                                                 (progn (format t "Validator PASS. ") t)
-                                                 (progn (format *error-output* "Validator FAIL. ") nil))
-                                             (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))))
-                                 (progn (format *error-output* "FAIL (No Metadata Generated)~%") nil)))
+                           (progn
+                            (format t "(Validator: ~a)... " validator)
+                            ;; Determine validation target
+                            (let ((val-arg (cond
+                                            ((and (listp meta-paths) (= (length meta-paths) 1)) (first meta-paths))
+                                            (t meta-paths))))
+
+                              (if (or (and (pathnamep val-arg) (probe-file val-arg))
+                                      (and (listp val-arg) (every #'probe-file val-arg)))
+                                  (progn
+                                   ;; Dispatch validator
+                                   (if (fboundp validator)
+                                       (if (funcall validator val-arg)
+                                           (progn (format t "Validator PASS. ") t)
+                                           (progn (format *error-output* "Validator FAIL. ") nil))
+                                       (progn
+                                        ;; Try finding it in crisp.compiler package if symbol has no package
+                                        (let ((sym (find-symbol (symbol-name validator) :crisp.compiler)))
+                                          (if (and sym (fboundp sym))
+                                              (if (funcall sym val-arg)
+                                                  (progn (format t "Validator PASS. ") t)
+                                                  (progn (format *error-output* "Validator FAIL. ") nil))
+                                              (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))))
+                                  (progn (format *error-output* "FAIL (Metadata Missing: ~a)~%" val-arg) nil))))
                            (progn
                             (format t "PASS (Generated ~a)~%" (file-namestring out-path))
                             t))))
 
               ;; Cleanup generated artifacts
               (when (probe-file out-path) (delete-file out-path))
-              (let ((meta-path (make-pathname :type "metacrisp" :defaults file)))
-                (when (probe-file meta-path) (delete-file meta-path)))
+              (dolist (mp (if (listp meta-paths) meta-paths (list meta-paths)))
+                (when (probe-file mp) (delete-file mp)))
 
               res)
             (progn (format *error-output* "FAIL (No SPV generated)~%") nil)))

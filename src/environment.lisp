@@ -46,13 +46,13 @@
                                         (error 'crisp-unknown-type-error :type-name type))
                                       (let ((parsed (parse-type-specifier type)))
                                         (make-parameter-def :name name :type parsed :kind :in))))
-                                   (error "Mixed bare and typed parameters not allowed."))))))
+                                   (error "Mixed bare and typed parameters not allowed.")))))
 
-    ;; Case 3: Standard declarations
-    (t
-     (setf env (analyze-environment-from-list params declarations))))
+     ;; Case 3: Standard declarations
+     (t
+       (setf env (analyze-environment-from-list params declarations))))
 
-  (values env return-types optional-idx defaults key-idx))
+    (values env return-types optional-idx defaults key-idx)))
 
 (defun bind-keyword-args (full-env explicit-args key-idx name)
   "Helper for resolve-argument-bindings. Handles &key argument parsing.
