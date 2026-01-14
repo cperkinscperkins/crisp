@@ -74,7 +74,7 @@
              ;; Find ANY signature of literal-name that matches the expected type
              (some (lambda (sig)
                      (and (equal (function-signature-return-types sig) expected-ret)
-                          (equal (function-signature-parameters sig) expected-params)))
+                          (equal (mapcar #'parameter-def-type (function-signature-parameters sig)) expected-params)))
                  sigs)))))
 
 (defun types-list-compatible-p (arg-types param-types)
@@ -93,7 +93,7 @@
                                          when (string-equal (symbol-name k) (symbol-name op))
                                        collect (format nil "~s (~a)" k (package-name (symbol-package k))))))
     (setf signature (find-if (lambda (sig)
-                               (let ((match (types-list-compatible-p explicit-arg-types (function-signature-parameters sig))))
+                               (let ((match (types-list-compatible-p explicit-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig)))))
                                  match))
                         signatures))
 
@@ -118,7 +118,7 @@
                         (progn
                          (setf signatures (gethash op *function-table*))
                          (setf signature (find-if (lambda (sig)
-                                                    (types-list-compatible-p explicit-arg-types (function-signature-parameters sig)))
+                                                    (types-list-compatible-p explicit-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig))))
                                              signatures)))
                         (cl:return)))))
 

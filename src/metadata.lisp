@@ -97,12 +97,14 @@
         ;; Prefer declared signature (recursive/high-level types) if available
         (let ((declared-types (gethash k-name *kernel-declared-signatures*)))
           (if declared-types
-              (dolist (t-spec declared-types)
-                (push t-spec work-list))
+              (dolist (param-pair declared-types)
+                (let ((t-spec (if (consp param-pair) (cdr param-pair) param-pair)))
+                  (push t-spec work-list)))
               ;; Fallback to physical signatures (likely pointers/voids, but better than nothing)
               (dolist (sig sigs)
-                (dolist (param-type (function-signature-parameters sig))
-                  (push param-type work-list)))))))
+                (dolist (param-def (function-signature-parameters sig))
+                  (let ((param-type (parameter-def-type param-def)))
+                    (push param-type work-list))))))))
 
     ;; 2. Process Work List
     (loop while work-list do
@@ -251,12 +253,9 @@
                       (format s "        ~a~%" arg)))))
 
               ;; Declared Signature (High Level)
-              (when declared-types
-                    (format stream "    :declared-signature ~a~%"
-                      ;; Filter out &out keywords from the list?
-                      (loop for t-spec in declared-types
-                              unless (and (symbolp t-spec) (string-equal (symbol-name t-spec) "&OUT"))
-                            collect t-spec)))
+              (let ((decl-sig (generate-declared-signature sig declared-types)))
+                (when decl-sig
+                      (format stream "    :declared-signature ~a~%" decl-sig)))
 
               (format stream "  )~%")))))
   (format stream "  )~%~%"))
@@ -446,42 +445,44 @@
 
     result))
 
-
-(defun generate-physical-signature (param-types)
+(defun generate-physical-signature (params)
   "Generates the flattened physical signature (C-ABI) for the kernel.
    Returns a list of (index type) pairs."
   (let ((physical-args nil)
         (current-index 0))
 
-    (dolist (type param-types)
-      ;; Handle &out marker (skip)
-      (unless (and (symbolp type) (string-equal (symbol-name type) "&OUT"))
-        (cond
-         ;; Case 1: Storage Handle (Cell) -> Explode
-         ((%storage-handle-type-p type)
-           (let* ((canonical (canonicalize-type-specifier type))
-                  (base (if (consp canonical) (first canonical) canonical)))
-             (cond
-              ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
-                ;; Explode to: Container (ByteSize, DataPtr), Offset
-                ;; 1. Byte Size (ulong)
-                (push (list current-index 'ulong) physical-args)
-                (incf current-index)
-                ;; 2. Data Pointer (voidp)
-                (push (list current-index 'voidp) physical-args)
-                (incf current-index)
-                ;; 3. Offset (ulong)
-                (push (list current-index 'ulong) physical-args)
-                (incf current-index))
-              (t
-                ;; Fallback for other handles if any
-                (push (list current-index type) physical-args)
-                (incf current-index)))))
+    (dolist (param params)
+      (let ((type (if (typep param 'parameter-def)
+                      (parameter-def-type param)
+                      param))) ;; Fallback if passed types directly
+        ;; Handle &out marker (skip)
+        (unless (and (symbolp type) (string-equal (symbol-name type) "&OUT"))
+          (cond
+           ;; Case 1: Storage Handle (Cell) -> Explode
+           ((%storage-handle-type-p type)
+             (let* ((canonical (canonicalize-type-specifier type))
+                    (base (if (consp canonical) (first canonical) canonical)))
+               (cond
+                ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
+                  ;; Explode to: Container (ByteSize, DataPtr), Offset
+                  ;; 1. Byte Size (ulong)
+                  (push (list current-index 'ulong) physical-args)
+                  (incf current-index)
+                  ;; 2. Data Pointer (voidp)
+                  (push (list current-index 'voidp) physical-args)
+                  (incf current-index)
+                  ;; 3. Offset (ulong)
+                  (push (list current-index 'ulong) physical-args)
+                  (incf current-index))
+                (t
+                  ;; Fallback for other handles if any
+                  (push (list current-index type) physical-args)
+                  (incf current-index)))))
 
-         ;; Case 2: Scalar -> Single Arg
-         (t
-           (push (list current-index type) physical-args)
-           (incf current-index)))))
+           ;; Case 2: Scalar -> Single Arg
+           (t
+             (push (list current-index type) physical-args)
+             (incf current-index)))))) ; Added missing paren here
 
     (nreverse physical-args)))
 
@@ -530,4 +531,129 @@
                          (loose-equal (nth 6 phys-sig) '(6 ULONG)))
               (log:error "Physical Signature Mismatch. Got: ~a" phys-sig)
               (return-from validate-14-physical-signature nil))))
+        t))))
+
+(defun get-physical-width (type)
+  "Returns the number of physical arguments consumed by a type."
+  (cond
+   ((%storage-handle-type-p type)
+     (let* ((canonical (canonicalize-type-specifier type))
+            (base (if (consp canonical) (first canonical) canonical)))
+       (cond
+        ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
+          3) ;; Ptr, Size, Offset
+        (t 1)))) ;; Fallback
+   (t 1)))
+
+(defun generate-declared-signature (sig &optional declared-params)
+  "Generates the declared signature metadata list.
+   Format: (NAME :type TYPE :range (START END) [PROPS...])"
+  (let ((declared-args nil)
+        (current-phys-index 0)
+        (params-to-use (or declared-params (function-signature-parameters sig))))
+
+    (dolist (param-def params-to-use)
+      (let* ((name (if (consp param-def) (car param-def) (parameter-def-name param-def)))
+             (type (if (consp param-def) (cdr param-def) (parameter-def-type param-def)))
+             (width (get-physical-width type))
+             ;; Range is exclusive at the end? User said "inclusive counting".
+             ;; "range (start end) where start and end map to the first and last index."
+             ;; So if width is 1, (0 0). If width is 3 (0 1 2), range is (0 2).
+             (start current-phys-index)
+             (end (+ start (max 0 (1- width)))) ;; 1- width because inclusive
+             (entry (list (string-downcase (symbol-name name)))))
+
+        ;; Skip &OUT marker for now, handled by index advancement logic if needed?
+        ;; Usually &OUT is just a marker in parameter list.
+        (unless (and (symbolp name) (string-equal (symbol-name name) "&OUT"))
+
+          ;; :type
+          (setf entry (append entry (list :type type)))
+
+          ;; Extract properties if it's a storage handle (Cell)
+          (when (%storage-handle-type-p type)
+                (let* ((canonical (canonicalize-type-specifier type))
+                       (as (if (consp canonical)
+                               (let ((found (member :address-space canonical)))
+                                 (if found (second found) :global))
+                               :global))
+                       (acc (if (consp canonical)
+                                (let ((found (member :access canonical)))
+                                  (if found (second found) :read-write))
+                                :read-write)))
+                  (setf entry (append entry (list :address-space as :access acc)))))
+
+          ;; :range
+          (setf entry (append entry (list :range (list start end))))
+
+          ;; Collect
+          (push entry declared-args)
+
+          ;; Advance physical index
+          (incf current-phys-index width))))
+
+    (nreverse declared-args)))
+
+(defun validate-16-declared-signature (&optional (paths nil))
+  "Validates the declared signature for 16-declared-signature.crisp."
+  (let ((meta-path (first paths)))
+    (unless meta-path
+      (log:error "Validation Failed: Metadata file for complex_signature_kernel not found in ~a" paths)
+      (return-from validate-16-declared-signature nil))
+
+    (let ((content (uiop:read-file-forms meta-path)))
+      (let* ((kernels (find :kernels content :key #'car))
+             (k-def (find "complex_signature_kernel" (cdr kernels) :key #'car :test #'string-equal)))
+
+        (unless k-def
+          (log:error "Kernel definition not found")
+          (return-from validate-16-declared-signature nil))
+
+        (let ((decl-sig (getf (cdr k-def) :declared-signature)))
+          (unless decl-sig
+            (log:error "Declared signature missing")
+            (return-from validate-16-declared-signature nil))
+
+          (labels ((loose-equal (a b)
+                                (cond ((and (symbolp a) (symbolp b))
+                                        (string-equal (symbol-name a) (symbol-name b)))
+                                      ((and (consp a) (consp b))
+                                        (and (loose-equal (car a) (car b))
+                                             (loose-equal (cdr a) (cdr b))))
+                                      (t (equal a b)))))
+
+            ;; Expected:
+            ;; (v :type float :range (0 0))
+            ;; (c :type (cell float) :address-space :global :access :read-write :range (1 3))
+            ;; (d :type (cell float) :address-space :global :access :read-write :range (4 6)) (but D is &out?)
+            ;; Wait, &out D is still a parameter in the signature?
+            ;; The physical signature has 7 args (0-6).
+            ;; V: 0 (float) -> width 1. Range (0 0).
+            ;; C: 1, 2, 3 (ptr, size, off) -> width 3. Range (1 3). (1 2 3) -> 1 to 1+3-1 = 3.
+            ;; D: 4, 5, 6 (ptr, size, off) -> width 3. Range (4 6).
+
+            ;; NOTE: D is &out. Does generate-declared-signature include it?
+            ;; My implementation: (unless (string-equal name "&OUT") ...)
+            ;; So "&OUT" symbol is skipped. But "D" is processed.
+            ;; So yes, D is included.
+
+            (unless (and (= (length decl-sig) 3)
+                         ;; V
+                         (loose-equal (first decl-sig) '(V :TYPE FLOAT :RANGE (0 0)))
+                         ;; C (In)
+                         (let ((c (second decl-sig)))
+                           (and (string-equal (symbol-name (first c)) "C")
+                                (loose-equal (getf (cdr c) :type) '(CELL FLOAT))
+                                (loose-equal (getf (cdr c) :range) '(1 3))
+                                (loose-equal (getf (cdr c) :address-space) :GLOBAL)
+                                (loose-equal (getf (cdr c) :access) :READ-WRITE)))
+                         ;; D (Out)
+                         (let ((d (third decl-sig)))
+                           (and (string-equal (symbol-name (first d)) "D")
+                                (loose-equal (getf (cdr d) :type) '(CELL FLOAT))
+                                (loose-equal (getf (cdr d) :range) '(4 6))
+                                (loose-equal (getf (cdr d) :address-space) :GLOBAL)
+                                (loose-equal (getf (cdr d) :access) :READ-WRITE))))
+              (log:error "Declared Signature Mismatch. Got: ~a" decl-sig)
+              (return-from validate-16-declared-signature nil))))
         t))))

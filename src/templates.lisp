@@ -299,7 +299,8 @@
             (maphash (lambda (k v) (setf (gethash k temp-map) v)) inference-map)
 
             (if (and (loop for pp in p-params
-                           for cp in (function-signature-parameters concrete-sig)
+                           for cp-def in (function-signature-parameters concrete-sig)
+                           for cp = (parameter-def-type cp-def)
                              always (match-template-arg pp cp temp-map template-params))
                      (match-template-arg p-ret (first (function-signature-return-types concrete-sig)) temp-map template-params))
                 (progn

@@ -190,7 +190,7 @@
                                       (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
                                                                                 (sig (make-function-signature
                                                                                       :name mangled-name
-                                                                                      :parameters active-param-types
+                                                                                      :parameters active-env
                                                                                       :return-types final-ret-types
                                                                                       :source-location (or (generic-function-def-source-location generic-def) location))))
 
@@ -247,7 +247,7 @@
 
                  (sig (make-function-signature
                        :name name
-                       :parameters param-types
+                       :parameters env ;; STORE FULL PARAMETER-DEF STRUCTS (Name + Type)
                        :return-types return-types
                        :source-location location)))
             (declare (ignore _))
@@ -611,3 +611,6 @@
                    :name p
                    :type (or (gethash p env) t) ;; Default to T if not declared
                    :kind :in))))
+
+(defparameter *kernel-declared-signatures* (make-hash-table)
+              "Maps kernel names to their declared signature types (raw pairs of parameters before explosion).")

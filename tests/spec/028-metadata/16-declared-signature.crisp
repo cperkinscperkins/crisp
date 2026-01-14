@@ -1,4 +1,4 @@
-;; TEST-WITH[--metadata]
+;; TEST-WITH[--metadata :validator crisp.compiler::validate-16-declared-signature]
 
 #|
 Now we add the declared signature as well.

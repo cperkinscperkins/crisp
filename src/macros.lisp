@@ -447,7 +447,10 @@
     ;; Expand to def-kernel-exact
     `(progn
       (eval-when (:compile-toplevel :load-toplevel :execute)
-        (setf (gethash ',name crisp.compiler::*kernel-declared-signatures*) ',signature-types))
+        (setf (gethash ',name crisp.compiler::*kernel-declared-signatures*)
+          (loop for p in ',params
+                for t-spec in ',signature-types
+                collect (cons p t-spec))))
       (def-kernel-exact ,name ,exploded-params
                         (declare #'(,@exploded-types))
                         ,@(when other-decls `((declare ,@other-decls)))

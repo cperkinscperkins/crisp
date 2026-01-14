@@ -660,7 +660,7 @@
          (llvm-return-type (get-llvm-return-type module return-type-names))
 
          ;; 3. Build the LLVM function *type* (the signature)
-         (param-nodes (function-signature-parameters sig))
+         (param-nodes (mapcar #'parameter-def-type (function-signature-parameters sig)))
          (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-nodes))
          (param-count (length expanded-param-types))
          (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
@@ -672,7 +672,7 @@
 
     (let* (;; The name of the function in LLVM IR is mangled with its types
            (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
-                           (mapcar #'mangle-type-spec (function-signature-parameters sig))))
+                           (mapcar #'mangle-type-spec (mapcar #'parameter-def-type (function-signature-parameters sig)))))
            (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
            (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
 

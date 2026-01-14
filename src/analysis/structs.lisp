@@ -250,7 +250,7 @@
               (full-setter-name (intern (format nil "~a_SET!" op) (symbol-package op)))
               (signatures (append (gethash op *function-table*)
                             (gethash full-setter-name *function-table*)))
-              (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
+              (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig)))) signatures)))
 
          ;; If no match found, try checking if it's a template we can instantiate
          (unless match
@@ -260,7 +260,7 @@
                    ;; Re-fetch signatures after possible instantiation
                    (setf signatures (append (gethash op *function-table*)
                                       (gethash full-setter-name *function-table*)))
-                   (setf match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))))
+                   (setf match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig)))) signatures)))))
 
          (cond
           ;; Sub-case 2a: Found an overloaded setter function -> Call it.

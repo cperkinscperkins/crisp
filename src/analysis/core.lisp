@@ -367,7 +367,7 @@
                  (not (equal inferred-return-types '(nil))))
             (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
             (let* ((param-types (mapcar #'parameter-def-type explicit-env))
-                   (sig (find-if (lambda (s) (equal (function-signature-parameters s) param-types))
+                   (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
                             (gethash name *function-table*))))
               (when sig
                     (setf (function-signature-return-types sig) inferred-return-types))))
@@ -573,10 +573,11 @@
 
         (let ((augmented-signature
                (if implicit-args-required
-                   (let ((implicit-types (mapcar #'semantic-node-type (subseq final-arg-nodes 0 (length implicit-args-required)))))
+                   (let ((implicit-params (loop for type in (mapcar #'semantic-node-type (subseq final-arg-nodes 0 (length implicit-args-required)))
+                                                collect (make-parameter-def :name '__storage :type type :kind :in))))
                      (make-function-signature
                       :name (function-signature-name signature)
-                      :parameters (append implicit-types (function-signature-parameters signature))
+                      :parameters (append implicit-params (function-signature-parameters signature))
                       :return-types (function-signature-return-types signature)
                       :source-location (function-signature-source-location signature)
                       :is-template-p (function-signature-is-template-p signature)
