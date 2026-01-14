@@ -1,5 +1,5 @@
 
-;; TEST-WITH[--metadata]
+;; TEST-WITH[--metadata]: crisp.compiler::validate-14-physical-signature
 
 #|
 This test validates the physical signature of simple kernels.

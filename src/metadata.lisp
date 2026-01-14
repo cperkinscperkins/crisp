@@ -241,8 +241,14 @@
                     (format stream ")~%"))
 
               ;; Physical Signature (Exploded)
-              (format stream "    :physical-signature ~a~%"
-                (mapcar #'canonicalize-type-specifier (function-signature-parameters sig)))
+              (format stream "    :physical-signature (~%~a)~%"
+                (let ((phys-args
+                       (generate-physical-signature
+                        (function-signature-parameters sig))))
+                  ;; Format as list of lists
+                  (with-output-to-string (s)
+                    (dolist (arg phys-args)
+                      (format s "        ~a~%" arg)))))
 
               ;; Declared Signature (High Level)
               (when declared-types
@@ -439,3 +445,89 @@
            (setf result nil))))
 
     result))
+
+
+(defun generate-physical-signature (param-types)
+  "Generates the flattened physical signature (C-ABI) for the kernel.
+   Returns a list of (index type) pairs."
+  (let ((physical-args nil)
+        (current-index 0))
+
+    (dolist (type param-types)
+      ;; Handle &out marker (skip)
+      (unless (and (symbolp type) (string-equal (symbol-name type) "&OUT"))
+        (cond
+         ;; Case 1: Storage Handle (Cell) -> Explode
+         ((%storage-handle-type-p type)
+           (let* ((canonical (canonicalize-type-specifier type))
+                  (base (if (consp canonical) (first canonical) canonical)))
+             (cond
+              ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
+                ;; Explode to: Container (ByteSize, DataPtr), Offset
+                ;; 1. Byte Size (ulong)
+                (push (list current-index 'ulong) physical-args)
+                (incf current-index)
+                ;; 2. Data Pointer (voidp)
+                (push (list current-index 'voidp) physical-args)
+                (incf current-index)
+                ;; 3. Offset (ulong)
+                (push (list current-index 'ulong) physical-args)
+                (incf current-index))
+              (t
+                ;; Fallback for other handles if any
+                (push (list current-index type) physical-args)
+                (incf current-index)))))
+
+         ;; Case 2: Scalar -> Single Arg
+         (t
+           (push (list current-index type) physical-args)
+           (incf current-index)))))
+
+    (nreverse physical-args)))
+
+(defun %storage-handle-type-p (type-spec)
+  "Returns T if the type-spec refers to a storage handle (cell, tensor, etc.).
+   Duplicated from macros.lisp to avoid dependency cycle if macros is loaded after."
+  (let ((canonical (canonicalize-type-specifier type-spec)))
+    (let ((base (if (consp canonical) (first canonical) canonical)))
+      (and (symbolp base)
+           (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)))))
+
+(defun validate-14-physical-signature (paths)
+  "Validates physical signature of complex kernels."
+  (let ((meta-path (find "complex_signature_kernel.metacrisp" paths :test #'search :key #'namestring)))
+    (unless meta-path
+      (log:error "Validation Failed: Metadata file for complex_signature_kernel not found in ~a" paths)
+      (return-from validate-14-physical-signature nil))
+
+    (let ((content (uiop:read-file-forms meta-path)))
+      (let* ((kernels (find :kernels content :key #'car))
+             (k-def (find "complex_signature_kernel" (cdr kernels) :key #'car :test #'string-equal)))
+
+        (unless k-def
+          (log:error "Kernel definition not found")
+          (return-from validate-14-physical-signature nil))
+
+        (let ((phys-sig (getf (cdr k-def) :physical-signature)))
+
+          (labels ((loose-equal (a b)
+                                (cond ((and (symbolp a) (symbolp b))
+                                        (string-equal (symbol-name a) (symbol-name b)))
+                                      ((and (consp a) (consp b))
+                                        (and (loose-equal (car a) (car b))
+                                             (loose-equal (cdr a) (cdr b))))
+                                      (t (equal a b)))))
+
+            (unless (and (= (length phys-sig) 7)
+                         (loose-equal (nth 0 phys-sig) '(0 FLOAT))
+                         ;; C: Ptr, Size, Off
+                         (loose-equal (nth 1 phys-sig) '(1 (C-POINTER ADDRESS-SPACE GLOBAL)))
+                         (loose-equal (nth 2 phys-sig) '(2 ULONG))
+                         (loose-equal (nth 3 phys-sig) '(3 ULONG))
+                         ;; D: Ptr, Size, Off
+                         (loose-equal (nth 4 phys-sig) '(4 (C-POINTER ADDRESS-SPACE GLOBAL)))
+                         (loose-equal (nth 5 phys-sig) '(5 ULONG))
+                         (loose-equal (nth 6 phys-sig) '(6 ULONG)))
+              (log:error "Physical Signature Mismatch. Got: ~a" phys-sig)
+              (return-from validate-14-physical-signature nil))))
+        t))))
