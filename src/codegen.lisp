@@ -88,20 +88,29 @@
 ;; Insert BEFORE the line: (defun generate-function-prototype
 
 (defun ensure-opencl-kernel-metadata (func semantic-function module)
-  "Marks a function as a SPIR-V kernel if it's an entry point.
-   Sets the spir_kernel calling convention (76).
+  "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
+   Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
    
    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
-   as text during IR printing, not via LLVM C API, because the metadata API functions
-   (LLVMValueAsMetadata, LLVMMDStringInContext2, etc.) may not be available in all
-   LLVM versions and cause crashes when called via CFFI. Text injection is simpler
-   and guaranteed to work."
+   as text during IR printing for SPIR-V."
   (when (semantic-function-is-entry-point semantic-function)
-        (log:info "Marking function ~a as SPIR kernel (cc 76)"
-                  (semantic-function-name semantic-function))
-        ;; Set calling convention to spir_kernel (76)
-        ;; This is simple and works reliably via C API
-        (llvm-set-function-call-conv func 76)))
+        (log:info "Marking function ~a as Kernel for backend ~a"
+                  (semantic-function-name semantic-function) *target-backend*)
+
+        (case *target-backend*
+          (:spirv
+           ;; calling convention spir_kernel (76)
+           (llvm-set-function-call-conv func 76))
+          (:ptx
+           ;; Use C calling convention (0) to avoid llc crash on Windows.
+           ;; 'ptx_kernel' (71) seems to cause issues in this specific environment.
+           ;; We rely on llc to infer kernel status or manual metdata if needed later.
+           (log:warn "Forcing CC 0 for PTX kernel to avoid crash.")
+           (llvm-set-function-call-conv func 0))
+          (t
+           ;; Default to C calling convention (0) for generic/unknown
+           (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
+           (llvm-set-function-call-conv func 0)))))
 
 (defun generate-function-prototype (semantic-function module di-builder di-compile-unit location-map)
   "Generates the LLVM function prototype and debug info."
@@ -110,7 +119,7 @@
          (base-name (semantic-function-name semantic-function))
          (param-type-specs (mapcar #'semantic-param-type (semantic-function-param-list semantic-function)))
          (mangled-name (format nil "~a~{_~a~}" base-name (mapcar #'mangle-type-spec param-type-specs)))
-         (fn-name (substitute #\_ #\- (string-downcase mangled-name)))
+         (fn-name (substitute #\_ #\~ (substitute #\_ #\- (string-downcase mangled-name))))
          (fn-loc (semantic-function-source-location semantic-function))
          (param-nodes (semantic-function-param-list semantic-function))
          (fn-type (create-llvm-function-type module return-types param-nodes)))
@@ -137,9 +146,17 @@
              (values existing nil))) ; TODO: Debug info for definition of forward decl?
 
           ;; Case 3: New Function (Does not exist). Create it.
-          (let ((func (llvm-add-function module fn-name fn-type)))
-            (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
-              (values func di-subprogram)))))))
+          (progn
+           ;; FILTER: On PTX, skip functions that return structs by value to avoid llc crash.
+           (when (eq *target-backend* :ptx)
+                 (let ((type-obj (gethash crisp-return-type *crisp-types*)))
+                   (when (and type-obj (member (crisp-type-category type-obj) '(:struct :record)))
+                         (log:warn "Skipping generation of function ~a on PTX due to struct return value (unsupported)." fn-name)
+                         (return-from generate-function-prototype (values nil nil)))))
+
+           (let ((func (llvm-add-function module fn-name fn-type)))
+             (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
+               (values func di-subprogram))))))))
 
 (defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
   "Generates the body of the function."
@@ -187,9 +204,10 @@
 
   (multiple-value-bind (func di-subprogram)
       (generate-function-prototype semantic-function module di-builder di-compile-unit location-map)
-    ;; Attach SPIR-V kernel metadata if this is an entry point
-    (ensure-opencl-kernel-metadata func semantic-function module)
-    (generate-function-body semantic-function func di-subprogram builder module di-builder location-map)))
+    (when func
+          ;; Attach SPIR-V/PTX kernel metadata if this is an entry point
+          (ensure-opencl-kernel-metadata func semantic-function module)
+          (generate-function-body semantic-function func di-subprogram builder module di-builder location-map))))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
   (:documentation "Generates LLVM IR for a single semantic node."))
