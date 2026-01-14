@@ -248,46 +248,35 @@
   (handler-case
       (let ((out-path (compile-crisp-file-to-spirv file :emit-metadata emit-metadata)))
         (if out-path
-            (progn
-             ;; Optional: Metadata Validation
-             (if validator
-                 (let ((meta-path (make-pathname :type "metacrisp" :defaults file)))
-                   (format t "(Validator: ~a)... " validator)
-                   (if (probe-file meta-path)
-                       (progn
-                        ;; TODO: This assumes the validator takes specific args (path + hardcoded logic) or generic
-                        ;; For 01-aliases, we assume valid-metadata-def-type
-                        ;; But the directive was generic. Let's assume the validator is (funcall validator meta-path)?? 
-                        ;; No, the user prompt said: ` validate-metadata-def-type.lisp` 
-                        ;; Wait, for now let's just assume the validator function signature: (path) -> bool.
-                        ;; AND we need to handle arguments like `iii int` which might be implicit in the test file?
+            (let ((res (if validator
+                           (let ((meta-path (make-pathname :type "metacrisp" :defaults file)))
+                             (format t "(Validator: ~a)... " validator)
+                             (if (probe-file meta-path)
+                                 (progn
+                                  ;; Dispatch validator with just the meta-path
+                                  (if (fboundp validator)
+                                      (if (funcall validator meta-path)
+                                          (progn (format t "Validator PASS. ") t)
+                                          (progn (format *error-output* "Validator FAIL. ") nil))
+                                      (progn
+                                       ;; Try finding it in crisp.compiler package if symbol has no package
+                                       (let ((sym (find-symbol (symbol-name validator) :crisp.compiler)))
+                                         (if (and sym (fboundp sym))
+                                             (if (funcall sym meta-path)
+                                                 (progn (format t "Validator PASS. ") t)
+                                                 (progn (format *error-output* "Validator FAIL. ") nil))
+                                             (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))))
+                                 (progn (format *error-output* "FAIL (No Metadata Generated)~%") nil)))
+                           (progn
+                            (format t "PASS (Generated ~a)~%" (file-namestring out-path))
+                            t))))
 
-                        ;; Hack for 01-aliases.crisp: The validator likely needs to know WHAT to check. 
-                        ;; But the directive syntax is just `validate-metadata-def-type`.
-                        ;; Maybe the VALIDATOR function itself hardcodes the checks for that specific file?
-                        ;; Or we assume the validator is generic and we check for EVERYTHING in the file?
+              ;; Cleanup generated artifacts
+              (when (probe-file out-path) (delete-file out-path))
+              (let ((meta-path (make-pathname :type "metacrisp" :defaults file)))
+                (when (probe-file meta-path) (delete-file meta-path)))
 
-                        ;; Let's try calling it as (funcall validator meta-path) and let it decide.
-
-                        ;; Dispatch validator with just the meta-path
-                        (if (fboundp validator)
-                            (if (funcall validator meta-path)
-                                (progn (format t "Validator PASS. ") t)
-                                (progn (format *error-output* "Validator FAIL. ") nil))
-                            (progn
-                             ;; Try finding it in crisp.compiler package if symbol has no package
-                             (let ((sym (find-symbol (symbol-name validator) :crisp.compiler)))
-                               (if (and sym (fboundp sym))
-                                   (if (funcall sym meta-path)
-                                       (progn (format t "Validator PASS. ") t)
-                                       (progn (format *error-output* "Validator FAIL. ") nil))
-                                   (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))))
-                       (progn (format *error-output* "FAIL (No Metadata Generated)~%") nil)))
-
-                 (progn
-                  (format t "PASS (Generated ~a)~%" (file-namestring out-path))
-                  (when (probe-file out-path) (delete-file out-path))
-                  t)))
+              res)
             (progn (format *error-output* "FAIL (No SPV generated)~%") nil)))
     (error (e)
       (format *error-output* "FAIL (Condition: ~a)~%" e)
