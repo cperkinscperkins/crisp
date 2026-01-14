@@ -117,8 +117,15 @@
   (let* ((return-types (semantic-function-return-type semantic-function))
          (crisp-return-type (first return-types))
          (base-name (semantic-function-name semantic-function))
-         (param-type-specs (mapcar #'semantic-param-type (semantic-function-param-list semantic-function)))
-         (mangled-name (format nil "~a~{_~a~}" base-name (mapcar #'mangle-type-spec param-type-specs)))
+         (is-entry-point (semantic-function-is-entry-point semantic-function))
+
+         ;; For Entry Points (Kernels): Use the exact name (case-insensitive/downcased per convention)
+         ;; For Functions: Mangle with parameter types to support overloading.
+         (mangled-name (if is-entry-point
+                           (string-downcase (symbol-name base-name))
+                           (let ((param-type-specs (mapcar #'semantic-param-type (semantic-function-param-list semantic-function))))
+                             (format nil "~a~{_~a~}" base-name (mapcar #'mangle-type-spec param-type-specs)))))
+
          (fn-name (substitute #\_ #\~ (substitute #\_ #\- (string-downcase mangled-name))))
          (fn-loc (semantic-function-source-location semantic-function))
          (param-nodes (semantic-function-param-list semantic-function))
