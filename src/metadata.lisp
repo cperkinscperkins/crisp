@@ -134,9 +134,22 @@
 
                  ((consp type-spec)
                    ;; Handle composite types: (cell T ...), (vector T ...)
-                   ;; Just push all elements that might be types
+                   ;; 1. Push all sub-elements to ensure we catch recursive types
                    (dolist (sub (rest type-spec))
-                     (push sub work-list)))))))
+                     (push sub work-list))
+
+                   ;; 2. Canonicalize and check if this list maps to a generated struct
+                   ;; e.g. (CELL FLOAT) -> CELL_FLOAT_GLOBAL_READ-WRITE
+                   (let* ((canon (canonicalize-type-specifier type-spec))
+                          (base (first canon))
+                          (args (rest canon)))
+                     (when (symbolp base)
+                           (let ((mangled (mangle-template-struct-name base args)))
+                             (when (and (gethash mangled *crisp-structs*)
+                                        ;; FILTER: Exclude system structs (CELL_*, STORAGE)
+                                        (not (string-equal (symbol-name mangled) "STORAGE"))
+                                        (not (alexandria:starts-with-subseq "CELL_" (symbol-name mangled))))
+                                   (push mangled work-list))))))))))
 
     (values used-aliases used-structs)))
 
@@ -204,54 +217,128 @@
                 (format stream ")~%"))))))
   (format stream "  )~%~%"))
 
-(defun serialize-kernels (stream kernel-names)
+(defun serialize-kernels (stream kernel-names &key source output-targets)
   (format stream "(:kernels~%")
   (dolist (k kernel-names)
     (let ((sig (first (gethash k *function-table*)))
           (declared-types (gethash k *kernel-declared-signatures*)))
 
       (when sig
-            (format stream "  (~a~%" (function-signature-name sig))
+            ;; Name: downcase symbol name for convention
+            (let ((k-name (string-downcase (symbol-name (function-signature-name sig)))))
+              (format stream "  (~s~%" k-name) ;; Use ~s to quote string
 
-            ;; Physical Signature (Exploded)
-            (format stream "    (:physical-signature ~a)~%"
-              (mapcar #'canonicalize-type-specifier (function-signature-parameters sig)))
+              ;; Source Path
+              (when source
+                    (format stream "    :source ~s~%" source))
 
-            ;; Declared Signature (High Level)
-            (when declared-types
-                  (format stream "    (:declared-signature ~a)~%"
-                    ;; Filter out &out keywords from the list?
-                    ;; declared-types includes symbols like &out.
-                    ;; We should probably keep them or remove them depending on what 'declared signature' means.
-                    ;; The ref.metacrisp implies structured output.
-                    ;; For now, let's dump the sequence. 
-                    (loop for t-spec in declared-types
-                            unless (and (symbolp t-spec) (string-equal (symbol-name t-spec) "&OUT"))
-                          collect t-spec)))
+              ;; Output Targets
+              (when output-targets
+                    (format stream "    :output-targets (")
+                    (dolist (target output-targets)
+                      ;; target is (:spv "path")
+                      (format stream " (~s ~s)" (first target) (second target)))
+                    (format stream ")~%"))
 
-            (format stream "  )~%"))))
+              ;; Physical Signature (Exploded)
+              (format stream "    :physical-signature ~a~%"
+                (mapcar #'canonicalize-type-specifier (function-signature-parameters sig)))
+
+              ;; Declared Signature (High Level)
+              (when declared-types
+                    (format stream "    :declared-signature ~a~%"
+                      ;; Filter out &out keywords from the list?
+                      (loop for t-spec in declared-types
+                              unless (and (symbolp t-spec) (string-equal (symbol-name t-spec) "&OUT"))
+                            collect t-spec)))
+
+              (format stream "  )~%")))))
   (format stream "  )~%~%"))
+
+;;; Extraction
+;;; ----------
+
+(defun extract-defined-kernels (forms)
+  "Scans a list of forms for (def-kernel name ...) and returns a list of names."
+  (let ((names nil))
+    (dolist (f forms)
+      (when (and (consp f) (eq (first f) 'def-kernel))
+            (push (second f) names)))
+    (nreverse names)))
 
 ;;; Main Entry Point
 ;;; ----------------
 
-(defun generate-metadata-for-file (source-path output-path)
-  "Generates a .metacrisp file containing type definitions, structs, and kernel info."
+(defun generate-metadata-for-file (input-path output-path &key (output-targets nil) (source-file nil) (forms nil))
+  "Generates a .metacrisp file for the given input."
 
-  (log:info "Generating Metadata for ~a -> ~a" source-path output-path)
+  ;; Determine kernels to process:
+  ;; 1. If forms provided, extract explicitly defined kernels.
+  ;; 2. Fallback: Dump everything (Legacy/Debug behavior, but deprecated for clean builds)
+  (let ((kernel-names (if forms
+                          (extract-defined-kernels forms)
+                          (alexandria:hash-table-keys *function-table*))))
 
-  ;; Collect dependencies for ALL compiled kernels (in *compiled-kernels*)
-  ;; In a real orchestration, we'd only filter relevant ones.
-  ;; For now, loose kernels = all compiled kernels?
-  ;; Note: compiling multiple files in one session accumulates *compiled-kernels*.
-  ;; But run-specs.lisp isolates each run.
+    ;; Determine source to record
+    (let ((src-path (or source-file
+                        (let ((native-input (uiop:native-namestring input-path)))
+                          (namestring input-path)))))
 
-  (multiple-value-bind (aliases structs) (collect-kernel-dependencies *compiled-kernels*)
+      (multiple-value-bind (aliases structs)
+          (collect-kernel-dependencies kernel-names)
 
-    (with-open-file (stream output-path :direction :output :if-exists :supersede)
-      (format stream ";; Metadata for ~a~%" (file-namestring source-path))
-      (format stream ";; Generated by Crisp Compiler~%~%")
+        (with-open-file (stream output-path :direction :output :if-exists :supersede)
+          (format stream ";; generated by crisp-compile~%~%")
 
-      (serialize-aliases stream aliases)
-      (serialize-structs stream structs)
-      (serialize-kernels stream *compiled-kernels*))))
+          (when (> (hash-table-count aliases) 0)
+                (serialize-aliases stream aliases))
+
+          (when (> (hash-table-count structs) 0)
+                (serialize-structs stream structs))
+
+          (when kernel-names
+                (serialize-kernels stream kernel-names :source src-path :output-targets output-targets)))))))
+
+;;; Validation
+;;; ----------
+
+(defun validate-kernel-metadata (metadata-path kernel-name &key (targets nil targets-p))
+  (let ((forms (uiop:read-file-forms metadata-path)))
+    (unless forms
+      (log:error "Validation Failed: Empty metadata file ~a" metadata-path)
+      (return-from validate-kernel-metadata nil))
+
+    (let ((kernels (rest (assoc :kernels forms))))
+      (unless kernels
+        (log:error "Validation Failed: No :kernels section found")
+        (return-from validate-kernel-metadata nil))
+
+      (let ((k-def (find kernel-name kernels :key #'first :test #'string=)))
+        (unless k-def
+          (log:error "Validation Failed: Kernel ~s not found" kernel-name)
+          (return-from validate-kernel-metadata nil))
+
+        ;; Check Source
+        (let ((src (getf (rest k-def) :source)))
+          (unless src
+            (log:error "Validation Failed: No :source found for kernel ~s" kernel-name)
+            (return-from validate-kernel-metadata nil)))
+
+        ;; Check Output Targets
+        (let ((output-targets (getf (rest k-def) :output-targets)))
+          (when targets-p
+                (let ((found-targets (mapcar #'first output-targets)))
+                  (dolist (req targets)
+                    (unless (member req found-targets)
+                      (log:error "Validation Failed: Expected target ~s not found in ~s" req found-targets)
+                      (return-from validate-kernel-metadata nil))))))))
+    t))
+
+(defun validate-10-basics-meta (path)
+  (validate-kernel-metadata path "basic_kernel" :targets nil))
+
+(defun validate-10-basics-spv (path)
+  (validate-kernel-metadata path "basic_kernel" :targets '(:spv)))
+
+(defun validate-10-basics-multi (path)
+  (validate-kernel-metadata path "basic_kernel" :targets '(:spv)))

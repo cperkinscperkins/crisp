@@ -12,7 +12,7 @@
   "Prints a formatted compiler error to *error-output*."
   (format *error-output* "~&~%Crisp compilation failed in ~a~@[ at ~a~]:~%  ~a~&"
     filename
-    (crisp.compiler:error-source-location c)
+    (ignore-errors (crisp.compiler:error-source-location c))
     c))
 
 (defun initialize-debug-context (di-builder filepath)
@@ -82,73 +82,82 @@
          ;; Default to :generic (stdout) if no targets specified
          (passes (if targets targets '(:generic))))
 
-    (dolist (target-backend passes)
-      (let ((crisp.compiler:*target-backend* target-backend)
-            (crisp.compiler::*emit-metadata* metadata-p))
-        (format *error-output* "~&; --- Starting Pass for Target: ~a ---~%" target-backend)
+    (let ((generated-outputs nil)
+          (captured-forms nil))
+      (dolist (target-backend passes)
+        (let ((crisp.compiler:*target-backend* target-backend)
+              (crisp.compiler::*emit-metadata* metadata-p))
+          (format *error-output* "~&; --- Starting Pass for Target: ~a ---~%" target-backend)
 
-        (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filename)))
-               (builder (crisp.llvm-bindings:llvm-create-builder))
-               ;; Only create the DIBuilder if the debug flag is present.
-               (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module)))
-               (di-compile-unit (when debug-p (initialize-debug-context di-builder filepath))))
-          (unwind-protect
-              (handler-case
-                  (progn
-                   (with-open-file (stream filename)
-                     (if single-pass-p
-                         ;; --- SINGLE-PASS MODE ---
-                         (let ((toplevel-index 0)
-                               (*package* (find-package :crisp-language)))
-                           (loop for form = (read stream nil :eof)
-                                 until (eq form :eof)
-                                 do (let ((location (list toplevel-index))
-                                          (crisp.compiler::*single-pass-call-stack* nil))
-                                      (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
-                                      (incf toplevel-index))))
-                         ;; --- MULTI-PASS MODE (DEFAULT) ---
-                         (let* ((*package* (find-package :crisp-language))
-                                (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form))
-                                (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
-                           (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map))))
+          (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filename)))
+                 (builder (crisp.llvm-bindings:llvm-create-builder))
+                 ;; Only create the DIBuilder if the debug flag is present.
+                 (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module)))
+                 (di-compile-unit (when debug-p (initialize-debug-context di-builder filepath))))
+            (unwind-protect
+                (handler-case
+                    (progn
+                     (with-open-file (stream filename)
+                       (if single-pass-p
+                           ;; --- SINGLE-PASS MODE ---
+                           (let ((toplevel-index 0)
+                                 (*package* (find-package :crisp-language)))
+                             (loop for form = (read stream nil :eof)
+                                   until (eq form :eof)
+                                   do (let ((location (list toplevel-index))
+                                            (crisp.compiler::*single-pass-call-stack* nil))
+                                        (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
+                                        (incf toplevel-index))))
+                           ;; --- MULTI-PASS MODE (DEFAULT) ---
+                           (let* ((*package* (find-package :crisp-language))
+                                  (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form))
+                                  (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
+                             (setf captured-forms forms)
+                             (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map))))
 
-                   ;; Output Generation
-                   (case target-backend
-                     (:spirv
-                      (let ((out-path (make-pathname :type "spv" :defaults filepath)))
-                        (crisp.compiler:compile-to-spirv module out-path)))
-                     (:ptx
-                      (let ((out-path (make-pathname :type "ptx" :defaults filepath)))
-                        (crisp.compiler:compile-to-ptx module out-path)))
-                     ;; Default/Generic: Print IR to stdout
-                     (t
-                      (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
-                        (unwind-protect
-                            (format t "--- Generated LLVM IR (~a): ---~%~a~%" target-backend (cffi:foreign-string-to-lisp ir-ptr))
-                          (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))))
+                     ;; Output Generation
+                     (case target-backend
+                       (:spirv
+                        (let ((out-path (make-pathname :type "spv" :defaults filepath)))
+                          (crisp.compiler:compile-to-spirv module out-path)
+                          (push (list :spv out-path) generated-outputs)))
+                       (:ptx
+                        (let ((out-path (make-pathname :type "ptx" :defaults filepath)))
+                          (crisp.compiler:compile-to-ptx module out-path)
+                          (push (list :ptx out-path) generated-outputs)))
+                       ;; Default/Generic: Print IR to stdout
+                       (t
+                        (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
+                          (unwind-protect
+                              (format t "--- Generated LLVM IR (~a): ---~%~a~%" target-backend (cffi:foreign-string-to-lisp ir-ptr))
+                            (crisp.llvm-bindings:llvm-dispose-message ir-ptr))))))
 
-                   ;; Metadata Generation
-                   (when metadata-p
-                         (let ((meta-path (make-pathname :type "metacrisp" :defaults filepath)))
-                           (crisp.compiler::generate-metadata-for-file filepath meta-path))))
+                  ;; Error Handling
+                  (crisp.compiler:crisp-compiler-error (c)
+                                                       (print-compiler-error c filename)
+                                                       (uiop:quit 1))
+                  (end-of-file ()
+                               (print-compiler-error (make-condition 'crisp.compiler:crisp-unexpected-eof-error) filename)
+                               (uiop:quit 1))
+                  (error (c)
+                    (print-compiler-error c filename)
+                    (uiop:quit 1)))
 
-                ;; Error Handling
-                (crisp.compiler:crisp-compiler-error (c)
-                                                     (print-compiler-error c filename)
-                                                     (uiop:quit 1))
-                (end-of-file ()
-                             (print-compiler-error (make-condition 'crisp.compiler:crisp-unexpected-eof-error) filename)
-                             (uiop:quit 1))
-                (error (c)
-                  (format *error-output* "~&An unexpected error occurred: ~a~%" c)
-                  (uiop:quit 1)))
-            ;; Cleanup
-            (when di-builder (crisp.llvm-bindings:llvm-di-builder-finalize di-builder))
-            (when di-builder (crisp.llvm-bindings:llvm-dispose-di-builder di-builder))
-            (crisp.llvm-bindings:llvm-dispose-builder builder)
-            (crisp.llvm-bindings:llvm-dispose-module module)))))
+              ;; Cleanup resources
+              (when debug-p
+                    (crisp.llvm-bindings:llvm-di-builder-finalize di-builder)
+                    (crisp.llvm-bindings:llvm-dispose-di-builder di-builder))
+              (crisp.llvm-bindings:llvm-dispose-builder builder)
+              (crisp.llvm-bindings:llvm-dispose-module module)))))
 
-    (format *error-output* "; ...All compilation passes finished.~%")))
+      ;; Metadata Generation (Once, after collecting all outputs)
+      (when metadata-p
+            (let ((meta-path (make-pathname :type "metacrisp" :defaults filepath)))
+              (crisp.compiler::generate-metadata-for-file filepath meta-path
+                                                          :output-targets (reverse generated-outputs)
+                                                          :forms captured-forms)))
+
+      (format *error-output* "; ...All compilation passes finished.~%"))))
 
 (defun main ()
   "Main entry point for the crisp-compile executable."

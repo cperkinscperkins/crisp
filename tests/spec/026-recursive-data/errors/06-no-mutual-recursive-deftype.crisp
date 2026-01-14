@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "An unexpected error occurred: Recursive type alias detected: Type alias 'QUX' refers to itself directly or indirectly."
+;; CHECK-FAIL: "Recursive type alias detected: Type alias 'QUX' refers to itself directly or indirectly."
 
 ;; mutual recursive (invalid)
 (def-type qux zum)

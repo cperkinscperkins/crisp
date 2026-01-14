@@ -236,9 +236,11 @@
                (crisp.compiler:compile-to-spirv module out-path)
 
                (when emit-metadata
-                     (crisp.compiler::generate-metadata-for-file filepath meta-path))))
-          (crisp.llvm-bindings:llvm-dispose-builder builder)
-          (crisp.llvm-bindings:llvm-dispose-module module))))
+                     (crisp.compiler::generate-metadata-for-file filepath meta-path
+                                                                 :output-targets (list (list :spv out-path))
+                                                                 :forms forms)))
+             (crisp.llvm-bindings:llvm-dispose-builder builder)
+             (crisp.llvm-bindings:llvm-dispose-module module)))))
 
     (if (probe-file out-path)
         out-path
@@ -305,7 +307,6 @@
        (t
          (format *error-output* "FAIL (No SPV generated)~%~a~%" error-output)
          nil)))))
-
 
 ;; tests/run-specs.lisp - Add PTX runner functions (after line 224)
 
@@ -376,7 +377,6 @@
          (format *error-output* "FAIL (No PTX generated)~%~a~%" error-output)
          nil)))))
 
-
 (defun get-ci-stop-target ()
   "Reads tests/ci-stop.txt to determine the last directory to run."
   (let ((path (merge-pathnames "tests/ci-stop.txt" (uiop:getcwd))))
@@ -416,7 +416,6 @@
     (sort (nreverse filtered-files) #'string< :key #'namestring)))
 
 ;; UNIT TESTS IN SPEC DIRECTORIES    
-
 
 (defun read-crisp-file (filepath)
   "Reads all forms from a .crisp file."
@@ -593,7 +592,6 @@
      ;; No directive, use directory
      (in-errors-dir t)
      (t nil))))
-
 
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))

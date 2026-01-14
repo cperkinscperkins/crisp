@@ -1,7 +1,6 @@
-
-;; TEST-WITH[--metadata]
-;; TEST-WITH[--metadata --ir-target=spv]
-;; TEST-WITH[--metadata --ir-target=spv --ir-target=ptx]
+;; TEST-WITH[--metadata] : validate-10-basics-meta
+;; TEST-WITH[--metadata --ir-target=spv] : validate-10-basics-spv
+;; TEST-WITH[--metadata --ir-target=spv --ir-target=ptx] : validate-10-basics-multi
 
 #|
 This first kernel metadata test only validates the most basic information.
