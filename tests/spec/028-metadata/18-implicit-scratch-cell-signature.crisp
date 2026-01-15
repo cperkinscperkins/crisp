@@ -1,0 +1,73 @@
+
+;; TEST-WITH[--metadata] : crisp.compiler::validate-18-implicit-signature
+
+#|
+
+Call Tree:
+top_kernel
+    fun-A
+        fun-B  <-- SCRATCH CELL HERE
+            fun-C
+                fun-D
+
+
+The scratch cell is instantiated in fun-B. But kernels cannot allocate memory. So the scratch
+cell needs to implicitly added as a "Side Channel" to call chain from the kernel to fun-B().
+Below that, the cell can be passed explicitly and does not need "Side Channel" modification.
+
+(:kernels 
+    ("top_kernel" 
+      :source "path/to/some.crisp"
+      (:output-targets (:spv "path/to/some/.spv") (:ptx "path/to/some/.ptx"))
+        (:physical-signature 
+        ;; scratch cell "sc"
+        ;; container
+        (0 ulong) ;; byte-size
+        (1 voidp) ;; data pointer
+        ;; offset
+        (2 ulong) 
+
+        ;; "i"
+        ;; simple scalar
+        (3 int)
+        
+        (:declared-signature 
+        ;; simple scalar
+        (i :type int 
+            :range (3 3))))
+
+        ;; implicit params could be : debug logging vector, scratch Storage Handles, or
+        ;; user defined 'implicit' params.  
+        ;; the debug logging one is important to distinguish. 
+        (:implicit-params
+            (sc :type (cell int ) 
+                :debug-logging  nil    
+                :address-space  :local 
+                :access :read-write 
+                :range (0 2)))
+    ))
+
+
+|#
+
+(def-function fun-D (sc)
+    (declare #'((cell int) => int))
+  ;; ignore sc for now.
+  8)
+
+(def-function fun-C (sc)
+    (declare #'((cell int) => int))
+  (+ 7 (fun-D sc)))
+
+(def-function fun-B (i)
+    (declare #'(int => int))
+  (let ((sc (make-scratch-cell int)))
+    (+ i (fun-C sc))))
+
+(def-function fun-A (i)
+    (declare #'(int => int))
+  (fun-B i))
+
+(def-kernel top_kernel (i)
+    (declare #'(int => int))
+  (fun-A i))

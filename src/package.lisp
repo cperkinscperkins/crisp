@@ -181,6 +181,7 @@
    #:initialize-templates
    #:compile-to-spirv
    #:compile-to-ptx
+   #:validate-18-implicit-signature
 
    ;; laungage symbols
    #:def-function

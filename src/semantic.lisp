@@ -24,7 +24,8 @@
   (return-types nil :type list)
   (source-location nil :type list)
   (is-template-p nil :type boolean)
-  (template-params nil :type list))
+  (template-params nil :type list)
+  (implicit-parameters nil :type list)) ; List of parameter-def for implicit args (e.g. __storage)
 
 (defstruct generic-function-def
   name

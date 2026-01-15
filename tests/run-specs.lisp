@@ -250,7 +250,10 @@
         nil)))
 
 (defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
-  (handler-case
+  (block :runner
+    (handler-bind ((error (lambda (e)
+                            (format *error-output* "FAIL (Condition: ~a)~%" e)
+                            (return-from :runner nil))))
       (multiple-value-bind (out-path meta-paths)
           (compile-crisp-file-to-spirv file :emit-metadata emit-metadata)
         (if out-path
@@ -289,10 +292,7 @@
                 (when (probe-file mp) (delete-file mp)))
 
               res)
-            (progn (format *error-output* "FAIL (No SPV generated)~%") nil)))
-    (error (e)
-      (format *error-output* "FAIL (Condition: ~a)~%" e)
-      nil)))
+            (progn (format *error-output* "FAIL (No SPV generated)~%") nil))))))
 
 (defun run-spec-spirv-binary (file)
   (let ((bin (get-binary-path))

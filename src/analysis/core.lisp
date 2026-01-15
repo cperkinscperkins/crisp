@@ -372,6 +372,22 @@
               (when sig
                     (setf (function-signature-return-types sig) inferred-return-types))))
 
+      ;; Update implicit parameters in recursive registry
+      ;; Implicit args are those in ENV that are NOT in EXPLICIT-ENV.
+      ;; Typically injected at the front.
+      (let* ((num-explicit (length explicit-env))
+             (num-total (length env)))
+        (when (> num-total num-explicit)
+              (let* ((implicit-count (- num-total num-explicit))
+                     (implicit-params (subseq env 0 implicit-count))
+                     ;; Find the signature again (or reuse if I refactor, but robust to find it)
+                     (param-types (mapcar #'parameter-def-type explicit-env))
+                     (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
+                              (gethash name *function-table*))))
+                (when sig
+                      (log:info "Persisting implicit parameters for ~a: ~s" name implicit-params)
+                      (setf (function-signature-implicit-parameters sig) implicit-params)))))
+
       ;; 4. Build and return the "blueprint"
       (let ((return-node (first (last body-nodes))))
         (make-semantic-function
