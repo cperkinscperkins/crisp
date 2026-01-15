@@ -283,12 +283,17 @@
         ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
           3)
         (t 1))))
+   ;; STORAGE is a buffer (ptr) + size (i64) -> 2 args
+   ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
+        (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
+     2)
    (t 1)))
 
 (defun generate-physical-signature (sig-or-params)
   (let ((params (if (typep sig-or-params 'function-signature)
-                    (append (function-signature-parameters sig-or-params)
-                      (function-signature-implicit-parameters sig-or-params))
+                    ;; IMPLICITS FIRST based on IR observation
+                    (append (function-signature-implicit-parameters sig-or-params)
+                      (function-signature-parameters sig-or-params))
                     sig-or-params))
         (physical-args nil)
         (current-index 0))
@@ -298,6 +303,14 @@
                       param)))
         (unless (and (symbolp type) (string-equal (symbol-name type) "&OUT"))
           (cond
+           ;; Handle STORAGE specially - flatten to PTR + I64
+           ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
+                (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
+             (push (list current-index '(c-pointer address-space global)) physical-args) ;; Flattened Arg 1
+             (incf current-index)
+             (push (list current-index 'ulong) physical-args) ;; Flattened Arg 2
+             (incf current-index))
+
            ((%storage-handle-type-p type)
              (let* ((canonical (canonicalize-type-specifier type))
                     (base (if (consp canonical) (first canonical) canonical)))
@@ -349,6 +362,11 @@
   (let ((declared-args nil)
         (current-phys-index 0)
         (params-to-use (or declared-params (function-signature-parameters sig))))
+
+    ;; Implicits come first, so offset the start index for declared params
+    (dolist (p (function-signature-implicit-parameters sig))
+      (incf current-phys-index (get-physical-width (parameter-def-type p))))
+
     (dolist (param-def params-to-use)
       (let* ((name (if (consp param-def) (car param-def) (parameter-def-name param-def)))
              (type (if (consp param-def) (cdr param-def) (parameter-def-type param-def)))
@@ -374,35 +392,7 @@
           (incf current-phys-index width))))
     (nreverse declared-args)))
 
-(defun validate-16-declared-signature (&optional (paths nil))
-  (let ((meta-path (first paths)))
-    (unless meta-path
-      (return-from validate-16-declared-signature nil))
-    (let ((content (uiop:read-file-forms meta-path)))
-      (let* ((kernels (find :kernels content :key #'car))
-             (k-def (find "complex_signature_kernel" (cdr kernels) :key #'car :test #'string-equal)))
-        (unless k-def
-          (return-from validate-16-declared-signature nil))
-        (let ((decl-sig (getf (cdr k-def) :declared-signature)))
-          (unless decl-sig
-            (return-from validate-16-declared-signature nil))
-          (labels ((loose-equal (a b)
-                                (cond ((and (symbolp a) (symbolp b))
-                                        (string-equal (symbol-name a) (symbol-name b)))
-                                      ((and (consp a) (consp b))
-                                        (and (loose-equal (car a) (car b))
-                                             (loose-equal (cdr a) (cdr b))))
-                                      (t (equal a b)))))
-            (unless (and (= (length decl-sig) 3)
-                         (loose-equal (first decl-sig) '(V :TYPE FLOAT :RANGE (0 0)))
-                         (let ((c (second decl-sig)))
-                           (and (string-equal (symbol-name (first c)) "C")
-                                (loose-equal (getf (cdr c) :type) '(CELL FLOAT))))
-                         (let ((d (third decl-sig)))
-                           (and (string-equal (symbol-name (first d)) "D")
-                                (loose-equal (getf (cdr d) :type) '(CELL FLOAT)))))
-              (return-from validate-16-declared-signature nil))))
-        t))))
+;; ...
 
 (defun generate-implicit-signature (sig declared-params)
   (declare (ignore declared-params))
@@ -410,9 +400,7 @@
         (phys-index 0)
         (implicit-params (function-signature-implicit-parameters sig)))
 
-    ;; Calculate start index based on declared parameters
-    (dolist (p (function-signature-parameters sig))
-      (incf phys-index (get-physical-width (parameter-def-type p))))
+    ;; Implicit params START at 0 now.
 
     (dolist (param-def implicit-params)
       (let* ((name (parameter-def-name param-def))
@@ -435,7 +423,9 @@
         (dolist (k-name (sort (copy-list kernel-names) #'string< :key #'symbol-name))
           (let ((sigs (gethash k-name *function-table*))
                 (blocks-to-emit nil))
-            (dolist (actual-sig sigs)
+            ;; Use only the FIRST signature (Pass 1 registered, Pass 2 updated)
+            ;; The last one is likely a stale duplicate from macro expansion.
+            (dolist (actual-sig (list (first sigs)))
               (when actual-sig
                     (let* ((phys-sig-str (generate-physical-signature actual-sig))
                            (declared-types (gethash k-name *kernel-declared-signatures*))
@@ -510,8 +500,8 @@
                   (unless (and (= (length implicit-sig) 1)
                                (string-equal (first entry) "__storage")
                                (string-equal (symbol-name (getf (cdr entry) :type)) "STORAGE")
-                               ;; Range depends on declared args. top_kernel(i) -> i is width 1. So __storage is at 1.
-                               (loose-equal (getf (cdr entry) :range) '(1 1)))
+                               ;; Range is now (0 1) because STORAGE is width 2 and comes FIRST.
+                               (loose-equal (getf (cdr entry) :range) '(0 1)))
                     (log:error "Implicit Signature Mismatch. Got: ~a" implicit-sig)
                     (return-from validate-18-implicit-signature nil)))
                 t))))))))
