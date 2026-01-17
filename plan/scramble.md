@@ -227,6 +227,9 @@ SHORT TERM PLAN
 - [ ] make-scratch-cell should use make-implicit-cell  => tests for :name / :msg in the metadata
 - [ ] move validators all to one file (or some files). And change compilation
       so that the compiler doesn't load them. Only the spec runner?
+- [ ] new test ( tests\spec\010-def-record\17-record-compare-struct.crisp ) needs validation and kernel?
+- [ ] we aren't testing explosion of def-record, etc.  The metadata support will give us that opportutnity.
+     otherwise, need to either --ir-target=llvm-ir or something more complicated for the validators
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - - [x] Storage Properties  (cannot be set)
 - - - [x] address-space

@@ -38,7 +38,8 @@
                                              (:file "src/codegen") ; 7. Uses compiler, defines codegen
                                              (:file "src/templates") ; 8. with-template-type macro
                                              (:file "src/metadata") ; 9. Metadata generation
-                                             (:file "src/main") ; 10. Uses compiler, defines main
+                                             (:file "src/metadata-val") ; 10. Metadata validators
+                                             (:file "src/main") ; 11. Uses compiler, defines main
 
                                              ;; overlays - when testings out new functions, we just
                                              ;;            amend them to the overlay for that package

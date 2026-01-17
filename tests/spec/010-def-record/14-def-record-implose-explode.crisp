@@ -1,6 +1,4 @@
 
-;; TEST-WITH[--metadata] : validate-def-record-explosion
-
 ;; Verifies that records are passed as EXPLODED parameters (SROA), not aggregates.
 
 (def-record v-point (x int) (y int))

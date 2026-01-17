@@ -41,7 +41,7 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
 
 [x] 013 - Recursive def-type hangs
 
-[ ] 015 - scratch cells records, when flattened, should have three slots:
+[x] 015 - scratch cells records, when flattened, should have three slots:
           storage-ptr, storage-bytesize, and cell-offset.
           But, right now, when scratch cells are implicitly added to the parameter
           list, they only have two slots: storage-ptr and storage-bytesize.

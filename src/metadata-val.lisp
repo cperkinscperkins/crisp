@@ -1,3 +1,6 @@
+;; src/metadata-val.lisp
+(in-package :crisp.compiler)
+
 (defun validate-12-multiple-kernels (paths)
   "Validates that multiple kernel metadata files are generated."
   (unless (listp paths)
@@ -109,3 +112,31 @@
               (return-from validate-scratch-cell-explosion nil))
 
             t))))))
+;; src/metadata-val.lisp
+;; IR-based validator for Bug 015 (def-record explosion)
+(defun validate-def-record-explosion-ir (ir-path)
+  "Validates that def-record types are exploded in LLVM IR signatures.
+   Takes a path to a .ll file containing LLVM IR."
+  (unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-def-record-explosion-ir nil))
+
+  (let ((ir-content (uiop:read-file-string ir-path)))
+    ;; Check for the exploded signature: define void @make_and_pass(i32 %0, i32 %1)
+    ;; V-POINT has 2 INT fields, so should be exploded to 2 i32 parameters
+    (cond
+     ((search "define void @make_and_pass(i32 %0, i32 %1)" ir-content)
+       ;; Also verify take_point is exploded
+       (if (search "define i32 @take_point_v_point(i32 %0, i32 %1)" ir-content)
+           t
+           (progn
+            (log:error "take_point not exploded in IR")
+            nil)))
+
+     ((search "define void @make_and_pass(%V-POINT" ir-content)
+       (log:error "make_and_pass signature NOT exploded - found V-POINT aggregate")
+       nil)
+
+     (t
+       (log:error "Could not find make_and_pass signature in IR")
+       nil))))

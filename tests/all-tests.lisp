@@ -142,8 +142,8 @@
              (fail (analyze-environment-from-spec '(a) '(bar => nil))
                    'crisp-unknown-type-error)
              (is equalp (list (crisp.compiler::make-parameter-def :name 'a
-                                                 :type (intern "CELL_LONG_GLOBAL_READ-WRITE" :crisp.compiler)
-                                                 :kind :in))
+                                                                  :type (intern "CELL_LONG_GLOBAL_READ-WRITE" :crisp.compiler)
+                                                                  :kind :in))
                  (analyze-environment-from-spec '(a) '((cell long) => nil))))
 
 (define-test (analyzer return-type-from-list)
@@ -307,6 +307,9 @@
                (setf (gethash 'fun-c crisp.compiler::*call-graph*) '(fun-d))
                (setf (gethash 'fun-d crisp.compiler::*call-graph*) nil)
                (setf (gethash 'fun-b crisp.compiler::*originator-functions*) t)
+               ;; Seed the implicit-arg-map for fun-b (originator) with the new (name . type) format
+               (setf (gethash 'fun-b crisp.compiler::*implicit-arg-map*)
+                 '((__sc . (cell int global read-write))))
 
                ;; 2. Run the propagation function.
                (crisp.compiler::propagate-implicit-arguments)
@@ -451,15 +454,15 @@
              "Tests that def-record types are exploded into individual parameters in the IR."
              (let ((ir (compile-crisp-file-to-string "tests/spec/010-def-record/14-def-record-implose-explode.crisp")))
                (is-valid-ir ir)
-               (true (search "define i32 @take_point_point(i32 %0, i32 %1)" ir)
+               (true (search "define i32 @take_point_v_point(i32 %0, i32 %1)" ir)
                      "Function signature should be exploded into individual fields (i32, i32).")
-               (true (search "insertvalue %POINT undef, i32 %0, 0" ir)
-                     "Should start reconstructing the POINT record from the first argument.")
-               (true (search "insertvalue %POINT %X_ins, i32 %1, 1" ir)
-                     "Should continue reconstructing the POINT record from the second argument.")
-               (true (search "extractvalue %POINT" ir)
-                     "Should extract values from the POINT record to pass them.")
-               (true (search "call i32 @take_point_point(i32 %X_val, i32 %Y_val)" ir)
+               (true (search "insertvalue %V-POINT undef, i32 %0, 0" ir)
+                     "Should start reconstructing the V-POINT record from the first argument.")
+               (true (search "insertvalue %V-POINT %X_ins, i32 %1, 1" ir)
+                     "Should continue reconstructing the V-POINT record from the second argument.")
+               (true (search "extractvalue %V-POINT" ir)
+                     "Should extract values from the V-POINT record to pass them.")
+               (true (search "call i32 @take_point_v_point(i32 %X_val, i32 %Y_val)" ir)
                      "Should call the function with exploded arguments.")))
 
 

@@ -182,6 +182,9 @@
    #:compile-to-spirv
    #:compile-to-ptx
    #:validate-18-implicit-signature
+   #:validate-def-record-explosion
+   #:validate-def-record-explosion-ir
+   #:validate-scratch-cell-explosion
 
    ;; laungage symbols
    #:def-function
