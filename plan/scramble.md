@@ -221,6 +221,12 @@ SHORT TERM PLAN
 - - [ ] also, give up on "no (to-int )" already. geebus
 - [ ] DENY setf and aref.  
 - [ ] &out has no verification that the argument is NOT READ FROM.
+- [ ] fix STYLE-WARNINGS. Too many unused vars.
+- [ ] unit tests aren't picking up overlay?  Fix that.
+- [ ] make-implicit-XXXX with :msg and :name
+- [ ] make-scratch-cell should use make-implicit-cell  => tests for :name / :msg in the metadata
+- [ ] move validators all to one file (or some files). And change compilation
+      so that the compiler doesn't load them. Only the spec runner?
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - - [x] Storage Properties  (cannot be set)
 - - - [x] address-space

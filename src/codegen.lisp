@@ -275,87 +275,83 @@
          (value (semantic-literal-value node))
          (llvm-type (unless (member type-spec '(keyword symbol quote))
                       (crisp-type-to-llvm-type type-spec module)))
-         (result (cond ;; Handle parameterized types
-                      ((or (eq type-spec 'keyword) (eq type-spec 'symbol) (eq type-spec 'quote))
-                        (let ((ival (resolve-keyword-constant value)))
-                          (llvm-const-int (llvm-int32-type) ival nil)))
-                      ((listp type-spec)
-                        (let ((base-type (first type-spec)))
-                          (cond
-                           ((or (eq base-type :function-literal) (eq base-type :function-type))
-                             ;; For zero-cost abstraction, we don't emit a real function pointer.
-                             ;; The type system tracks the identity, but at runtime it's a ghost.
-                             (llvm-get-undef llvm-type))
-                           ((or (eq base-type 'keyword) (eq base-type 'symbol))
-                             (let ((ival (resolve-keyword-constant value)))
-                               (llvm-const-int (llvm-int32-type) ival nil)))
-                           ((eq base-type 'cell)
-                             (let* ((storage-var-name '__storage)
-                                    (storage-alloca (gethash storage-var-name var-env)))
-                               (unless storage-alloca
-                                 (error "Missing implicit argument __storage for make-scratch-cell. Environment keys: ~s" (alexandria:hash-table-keys var-env)))
+         (result
+          (cond
+           ;; Handle parameterized types
+           ((or (eq type-spec 'keyword) (eq type-spec 'symbol) (eq type-spec 'quote))
+             (let ((ival (resolve-keyword-constant value)))
+               (llvm-const-int (llvm-int32-type) ival nil)))
 
-                               (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
-                                      (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
+           ((listp type-spec)
+             (let ((base-type (first type-spec)))
+               (cond
+                ((or (eq base-type :function-literal) (eq base-type :function-type))
+                  (llvm-get-undef llvm-type))
 
-                                      ;; 2. Create CELL struct { parent:storage, offset:ulong, ... }
-                                      ;; We must resolve the PHYSICAL struct type, not the logical pointer type.
-                                      (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
+                ((or (eq base-type 'keyword) (eq base-type 'symbol))
+                  (let ((ival (resolve-keyword-constant value)))
+                    (llvm-const-int (llvm-int32-type) ival nil)))
 
-                                      (cell-struct-type (ensure-struct-llvm-type mangled-name))
-                                      (cell-undef (llvm-get-undef cell-struct-type))
+                ((eq base-type 'cell)
+                  ;; FIXED: Check for both __sc (new convention) and __storage (legacy)
+                  (let* ((storage-var-name (or (when (gethash '__sc var-env) '__sc) '__storage))
+                         (storage-alloca (gethash storage-var-name var-env)))
+                    (unless storage-alloca
+                      (error "Missing implicit argument ~a for make-scratch-cell. Environment keys: ~s"
+                        storage-var-name (alexandria:hash-table-keys var-env)))
 
-                                      ;; STORAGE is now BY VALUE in CELL.
-                                      (cell-0 (llvm-build-insert-value builder cell-undef storage-val 0 "parent"))
-                                      ;; Initialize offset to 0
-                                      (cell-1 (llvm-build-insert-value builder cell-0 (llvm-const-int (llvm-int64-type) 0 nil) 1 "offset"))
+                    (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
+                           (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
+                           (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
+                           (cell-struct-type (ensure-struct-llvm-type mangled-name))
+                           (cell-undef (llvm-get-undef cell-struct-type))
+                           (cell-0 (llvm-build-insert-value builder cell-undef storage-val 0 "parent"))
+                           (cell-1 (llvm-build-insert-value builder cell-0
+                                                            (llvm-const-int (llvm-int64-type) 0 nil)
+                                                            1 "offset"))
+                           (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
+                      (llvm-build-store builder cell-1 cell-handle)
+                      cell-handle)))
 
-                                      ;; 3. Spill to stack (Handle)
-                                      (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
-                                 (llvm-build-store builder cell-1 cell-handle)
-                                 cell-handle)))
-                           (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
-                      ;; Handle simple or singleton types
-                      ((or (symbolp type-spec)
-                           (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
+                (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
 
-                        (let ((type-sym (if (consp type-spec) (first type-spec) type-spec)))
-                          (cond
-                           ;; Check if it is an enum or keyword/symbol
-                           ((or (gethash type-spec *crisp-enums*)
-                                (member type-sym '(keyword symbol quote)))
-                             (let ((val (resolve-keyword-constant value))
-                                   (target-type (or llvm-type (llvm-int32-type))))
-                               ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
-                               (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) val) nil)))
-                                 (llvm-build-trunc builder val-i64 target-type "enum_trunc"))))
+           ;; Handle simple or singleton types
+           ((or (symbolp type-spec)
+                (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
+             (let ((type-sym (if (consp type-spec) (first type-spec) type-spec)))
+               (cond
+                ((or (gethash type-spec *crisp-enums*)
+                     (member type-sym '(keyword symbol quote)))
+                  (let* ((val (resolve-keyword-constant value))
+                         (target-type (or llvm-type (llvm-int32-type)))
+                         (val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) val) nil)))
+                    (llvm-build-trunc builder val-i64 target-type "enum_trunc")))
 
-                           (t
-                             (let ((crisp-type (gethash type-sym *crisp-types*)))
-                               (unless crisp-type
-                                 (error "Codegen: Literal type ~a not found in *crisp-types* or *crisp-enums*" type-spec))
-                               (cond
-                                ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
-                                  (if (zerop value)
-                                      (llvm-const-null llvm-type)
-                                      ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
-                                      ;; Generate I64 constant and Truncate if needed.
-                                      (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
-                                        (if (= (crisp-type-size crisp-type) 64)
-                                            val-i64
-                                            (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
-                                ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
-                                ((eq (crisp-type-category crisp-type) :void) nil)
-                                (t (error "Codegen for literal of unknown type category: ~a" type-spec))))))))
-                      (t (error "Codegen not implemented for literal of type ~a" type-spec))))
-         (di-location (when (and di-builder di-scope location-map)
-                            (let* ((loc (semantic-node-source-location node))
-                                   (line (gethash loc location-map 0)))
-                              (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                     line
-                                                                     0 ; column
-                                                                     di-scope
-                                                                     (cffi:null-pointer)))))) ; InlinedAt
+                (t
+                  (let ((crisp-type (gethash type-sym *crisp-types*)))
+                    (unless crisp-type
+                      (error "Codegen: Literal type ~a not found in *crisp-types* or *crisp-enums*" type-spec))
+                    (cond
+                     ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
+                       (if (zerop value)
+                           (llvm-const-null llvm-type)
+                           (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
+                             (if (= (crisp-type-size crisp-type) 64)
+                                 val-i64
+                                 (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
+                     ((eq (crisp-type-category crisp-type) :float)
+                       (llvm-const-real llvm-type (coerce value 'double-float)))
+                     ((eq (crisp-type-category crisp-type) :void) nil)
+                     (t (error "Codegen for literal of unknown type category: ~a" type-spec))))))))
+
+           (t (error "Codegen not implemented for literal of type ~a" type-spec))))
+
+         (di-location
+          (when (and di-builder di-scope location-map)
+                (let* ((loc (semantic-node-source-location node))
+                       (line (gethash loc location-map 0)))
+                  (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                         line 0 di-scope (cffi:null-pointer))))))
     (values result di-location)))
 
 ;; -- reading a variable --

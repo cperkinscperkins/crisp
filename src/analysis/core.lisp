@@ -44,27 +44,43 @@
 
 (defun propagate-implicit-arguments ()
   "Phase 4: Traverses the call graph backwards from originators to find all carriers."
+  (log:info "OVERLAY: propagate-implicit-arguments called with ~a originators"
+            (hash-table-count *originator-functions*))
   (let ((worklist '()))
-    ;; 1. Seed the map and worklist with all originator functions.
+    ;; 1. Seed the worklist with all originator functions.
+    ;; NOTE: Don't set their *implicit-arg-map* here - analyze-scratch-expression already did
     (loop for fn-name being the hash-keys of *originator-functions*
-          do (setf (gethash fn-name *implicit-arg-map*) '(:storage))
-            (push fn-name worklist))
+          do (progn
+              (log:info "OVERLAY: Originator ~a has implicit-args: ~a"
+                        fn-name (gethash fn-name *implicit-arg-map*))
+              (push fn-name worklist)))
 
     ;; 2. Process the worklist until it's empty.
     (loop while worklist
           do (let* ((callee (pop worklist))
+                    (callee-implicit (gethash callee *implicit-arg-map*))
                     ;; Find all functions that call the current callee.
                     (callers (loop for caller being the hash-keys of *call-graph*
                                    using (hash-value callees)
                                      when (member callee callees)
                                    collect caller)))
+               (log:debug "OVERLAY: Processing callee ~a with implicit ~a, callers: ~a"
+                          callee callee-implicit callers)
                (dolist (caller callers)
-                 ;; If this caller isn't already marked as a carrier, mark it and add to worklist.
+                 ;; If this caller isn't already marked as a carrier, copy from callee and add to worklist.
                  (unless (gethash caller *implicit-arg-map*)
-                   (setf (gethash caller *implicit-arg-map*) '(:storage))
-                   (push caller worklist)))))))
+                   ;; BEFORE: (setf (gethash caller *implicit-arg-map*) '(:storage))
+                   ;; AFTER: Copy from callee
+                   (when callee-implicit
+                         (log:info "OVERLAY: Marking ~a as carrier (copied from ~a): ~a"
+                                   caller callee callee-implicit)
+                         (setf (gethash caller *implicit-arg-map*) callee-implicit)
+                         (push caller worklist))))))))
 
 ;; --- Generic Dependency Scanner ---
+
+(defvar *scanning-function-name* nil
+        "The name of the function currently being scanned in Pass 1.")
 
 (defvar *scan-callees* nil)
 (defvar *scan-is-originator* nil)
@@ -122,6 +138,47 @@
 (defmethod scan-operator ((op (eql 'semantic-explicit-return)) args) (scan-operator 'progn args))
 (defmethod scan-operator ((op (eql 'progn)) args)
   (dolist (arg args) (scan-form arg)))
+
+
+;; This specialized scan-operator method handles make-scratch-cell specifically
+(defmethod scan-operator ((op (eql 'make-scratch-cell)) args)
+  "Scans make-scratch-cell and extracts the type for *implicit-arg-map*."
+  (setf *scan-is-originator* t)
+
+  ;; Extract the type argument: (make-scratch-cell TYPE)
+  (when (and args (symbolp (first args)))
+        (let* ((inner-type (first args))
+               (raw-spec (list 'cell inner-type))
+               (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
+          ;; Store in *implicit-arg-map* for this function
+          ;; Use generated name __sc for now
+          (log:debug "Pass 1: Detected make-scratch-cell with type ~a in ~a"
+                     canonical-spec *scanning-function-name*)
+          (setf (gethash *scanning-function-name* *implicit-arg-map*)
+            (list (cons '__sc canonical-spec)))))
+
+  ;; Continue scanning arguments
+  (dolist (arg args) (scan-form arg)))
+
+
+(defun mark-carriers-pass (originators)
+  "Marks carrier functions during two-pass mode."
+  (let ((work-list (copy-list originators))
+        (visited (make-hash-table)))
+    (loop while work-list
+          for fn-name = (pop work-list)
+          do (unless (gethash fn-name visited)
+               (setf (gethash fn-name visited) t)
+               ;; Copy implicit info from callee if it has any
+               (let ((callers (gethash fn-name *reverse-call-graph*)))
+                 (dolist (caller callers)
+                   (unless (gethash caller *implicit-arg-map*)
+                     ;; BEFORE: (setf (gethash caller *implicit-arg-map*) '(:storage))
+                     ;; AFTER: Copy from callee
+                     (let ((callee-implicit (gethash fn-name *implicit-arg-map*)))
+                       (when callee-implicit
+                             (setf (gethash caller *implicit-arg-map*) callee-implicit)
+                             (push caller work-list))))))))))
 
 (defun shallow-analyze-body (forms)
   "Performs a shallow, recursive walk of a function's body.
@@ -208,11 +265,13 @@
                        ;; 1. Register the explicit signature.
                        (register-function-signature form location)
                        ;; 2. Perform shallow analysis for call graph and originators.
-                       (multiple-value-bind (is-originator callees)
-                           (shallow-analyze-body body)
-                         (when is-originator
-                               (setf (gethash name *originator-functions*) t))
-                         (setf (gethash name *call-graph*) callees))))))
+                       ;; FIXED: Bind the function name so scan-operator can access it
+                       (let ((*scanning-function-name* name))
+                         (multiple-value-bind (is-originator callees)
+                             (shallow-analyze-body body)
+                           (when is-originator
+                                 (setf (gethash name *originator-functions*) t))
+                           (setf (gethash name *call-graph*) callees)))))))
 
 (defun compile-forms-pass (forms module builder di-builder di-compile-unit location-map)
   "Pass 2: Iterates through forms to perform full analysis and codegen."
@@ -556,15 +615,14 @@
       (let ((final-arg-nodes
              (if implicit-args-required
                  (let ((implicit-arg-nodes
-                        (loop for kw in implicit-args-required
-                              collect (let ((arg-name (case kw
-                                                        (:storage '__storage)
-                                                        (t (error "Unknown implicit arg keyword: ~s" kw)))))
-                                        (let ((found (find-variable-in-env arg-name env)))
-                                          (if found
-                                              (make-semantic-var-read :name arg-name :type (parameter-def-type found) :source-location location)
-                                              (error "Compiler bug: Carrier function ~s is missing implicit argument ~s (for ~s)."
-                                                *current-compiling-function* arg-name kw)))))))
+                        ;; BEFORE: Loop through keywords :storage
+                        ;; AFTER: Loop through cons cells (name . type)
+                        (loop for (param-name . param-type) in implicit-args-required
+                              collect (let ((found (find-variable-in-env param-name env)))
+                                        (if found
+                                            (make-semantic-var-read :name param-name :type (parameter-def-type found) :source-location location)
+                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
+                                              *current-compiling-function* param-name))))))
                    (append implicit-arg-nodes explicit-arg-nodes))
                  explicit-arg-nodes)))
 
@@ -574,37 +632,27 @@
             :inferred (length explicit-arg-types)
             :source-location location))
 
-        ;; Check for invalid use of ~ on VOID cells (Robust Check)
+        ;; ... rest of function unchanged ...
         (let ((ret-type (function-signature-return-types signature)))
-          ;; Robust check for VOID (symbol, string, list wrapped)
-          (let ((is-void (or (eq ret-type 'void)
-                             (and (symbolp ret-type) (string-equal (symbol-name ret-type) "VOID"))
-                             (and (consp ret-type)
-                                  (let ((head (first ret-type)))
-                                    (or (eq head 'void)
-                                        (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
-            (when (and (or (string= (symbol-name op) "~") (string= (symbol-name op) "~REF~"))
-                       is-void)
-                  (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~)."))))
 
-        (let ((augmented-signature
-               (if implicit-args-required
-                   (let ((implicit-params (loop for type in (mapcar #'semantic-node-type (subseq final-arg-nodes 0 (length implicit-args-required)))
-                                                collect (make-parameter-def :name '__storage :type type :kind :in))))
-                     (make-function-signature
-                      :name (function-signature-name signature)
-                      :parameters (append implicit-params (function-signature-parameters signature))
-                      :return-types (function-signature-return-types signature)
-                      :source-location (function-signature-source-location signature)
-                      :is-template-p (function-signature-is-template-p signature)
-                      :template-params (function-signature-template-params signature)))
-                   signature)))
+          (let ((augmented-signature
+                 (if implicit-args-required
+                     (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
+                                                  collect (make-parameter-def :name param-name :type param-type :kind :in))))
+                       (make-function-signature
+                        :name (function-signature-name signature)
+                        :parameters (append implicit-params (function-signature-parameters signature))
+                        :return-types (function-signature-return-types signature)
+                        :source-location (function-signature-source-location signature)
+                        :is-template-p (function-signature-is-template-p signature)
+                        :template-params (function-signature-template-params signature)))
+                     signature)))
 
-          (make-semantic-call :name (function-signature-name augmented-signature)
-                              :type (function-signature-return-types augmented-signature)
-                              :args final-arg-nodes
-                              :signature augmented-signature
-                              :source-location location))))))
+            (make-semantic-call :name (function-signature-name augmented-signature)
+                                :type (function-signature-return-types augmented-signature)
+                                :args final-arg-nodes
+                                :signature augmented-signature
+                                :source-location location)))))))
 
 
 ;; --- Helper to get the type from any node ---

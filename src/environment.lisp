@@ -277,9 +277,14 @@
 
 (defun inject-implicit-arguments (name explicit-env)
   "Injects implicit arguments into the environment if the function is a carrier."
-  (let* ((implicit-args (gethash name *implicit-arg-map*))
-         (implicit-env (when implicit-args
-                             (list (make-parameter-def :name '__storage :type 'storage :kind :in)))))
+  (let* ((implicit-info (gethash name *implicit-arg-map*))
+         (implicit-env (when implicit-info
+                             ;; implicit-info is now: ((name . type) ...)
+                             (loop for (param-name . param-type) in implicit-info
+                                   collect (make-parameter-def
+                                            :name param-name
+                                            :type param-type
+                                            :kind :in)))))
     (append implicit-env explicit-env)))
 
 (defun scan-for-carriers (name body)
@@ -291,7 +296,16 @@
                                               (member callee *side-channel-originators*)))
                                       callees))
                 (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
-                (setf (gethash name *implicit-arg-map*) '(:storage))))))
+                ;; BEFORE: (setf (gethash name *implicit-arg-map*) '(:storage))
+                ;; AFTER: Copy from first callee that has implicit params
+                (let ((callee-with-implicits
+                       (find-if (lambda (c) (gethash c *implicit-arg-map*)) callees)))
+                  (if callee-with-implicits
+                      ;; Copy from callee
+                      (setf (gethash name *implicit-arg-map*)
+                        (gethash callee-with-implicits *implicit-arg-map*))
+                      ;; Originator case - will be set later by analyze-scratch-expression
+                      nil))))))
 
 (defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
   "Detects if a function is an implicit template (e.g. has function-type args),
