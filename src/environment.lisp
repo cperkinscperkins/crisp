@@ -10,6 +10,7 @@
   "Parses a function's declarations and returns its environment and return type.
    Supports interleaved type syntax: ((p type))"
   (log:debug "PARSE PARAMS: ~s Type: ~a Length: ~a" params (type-of params) (length params))
+
   ;; Defensive patch: unwrap double nested params (bug in def-record)
   (when (and (= (length params) 1) (listp (first params)) (listp (first (first params))) (symbolp (first (first (first params)))))
         (log:warn "Deeply nested params detected! Unwrapping.")
@@ -30,11 +31,13 @@
     (cond
      ;; Case 1: #'(...) signature
      (fn-decl
+       (log:debug "PARSE CASE 1: Function decl found: ~s" fn-decl)
        (multiple-value-setq (env optional-idx defaults key-idx)
                             (analyze-environment-from-spec params (second fn-decl))))
 
      ;; Case 2: Interleaved syntax ((a int) (b float))
      ((some #'listp params)
+       (log:debug "PARSE CASE 2: Interleaved syntax detected. Params: ~s" params)
        ;; TODO: Support &optional in interleaved syntax if needed.
        (setf env (loop for p in params
                        collect (if (listp p)
@@ -50,6 +53,7 @@
 
      ;; Case 3: Standard declarations
      (t
+       (log:debug "PARSE CASE 3: Standard declarations. Params: ~s" params)
        (setf env (analyze-environment-from-list params declarations))))
 
     (values env return-types optional-idx defaults key-idx)))
