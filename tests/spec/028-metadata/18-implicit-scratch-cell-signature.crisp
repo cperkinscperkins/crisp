@@ -1,5 +1,5 @@
 
-;; TEST-WITH[--metadata] : crisp.compiler::validate-18-implicit-signature
+;; TEST-WITH[--metadata] : validate-scratch-cell-explosion
 
 #|
 

@@ -1,6 +1,8 @@
 
+;; TEST-WITH[--metadata] : validate-def-record-explosion
+
 ;; 20-storage-record.crisp
-;; Verifies that records are passed as aggregates (structs), not exploded.
+;; Verifies that records are passed as EXPLODED parameters (SROA), not aggregates.
 
 (def-record Point (x int) (y int))
 ;; Expected: %POINT = type { i32, i32 }
@@ -11,7 +13,8 @@
   ;; Expected: define i32 @take_point_point(i32 %0, i32 %1) -> CORRECT (Exploded)
   (return (+ (x~ p) (y~ p))))
 
-(def-function make-and-pass ()
+(def-kernel make_and_pass ()
   (declare (return-type int))
   (let ((p (make-point :x 10 :y 20)))
     (take-point p)))
+
