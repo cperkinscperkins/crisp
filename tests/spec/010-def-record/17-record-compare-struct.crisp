@@ -1,0 +1,11 @@
+
+;; These should differ in their LLVM-IR output. 
+
+(def-struct point-s (x int) (y int) (d-kernel int :c-t 10))
+
+(def-record point-r (x int) (y int) (d-kernel int :c-t 10))
+
+(def-function use-point-r (p)
+  (declare #'(point-r => int))
+  (set! (x~ p) 99)  ; Mutate
+  (x~ p))           ; Return mutated value
