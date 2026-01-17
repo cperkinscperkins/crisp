@@ -46,7 +46,9 @@
                                              ;;            When the feature is done, they'll be incorporated 
                                              ;;            back to /src and the file cleared.
                                              (:file "overlays/crisp-llvm-bindings-overlay")
-                                             (:file "overlays/crisp-compiler-overlay")
+                                             (:file "overlays/crisp-compiler-overlay" :around-compile (lambda (thunk)
+                                                                                                        (handler-bind ((warning #'muffle-warning))
+                                                                                                          (funcall thunk))))
                                              (:file "overlays/crisp-language-overlay"))
 
            ;; --- Build Instructions ---
