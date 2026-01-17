@@ -23,10 +23,10 @@
           (log:error "Physical signature missing")
           (return-from validate-def-record-explosion nil))
 
-        ;; Point def-record has 2 runtime members (x int, y int)
+        ;; V-POINT def-record has 2 runtime members (x int, y int)
         ;; So it should explode to 2 parameters
         (unless (= (length phys-sig) 2)
-          (log:error "Expected 2 exploded parameters for Point, got ~a: ~a" (length phys-sig) phys-sig)
+          (log:error "Expected 2 exploded parameters for V-POINT, got ~a: ~a" (length phys-sig) phys-sig)
           (return-from validate-def-record-explosion nil))
 
         ;; Verify both are INT type
