@@ -1,20 +1,18 @@
 
 ;; TEST-WITH[--metadata] : validate-def-record-explosion
 
-;; 20-storage-record.crisp
 ;; Verifies that records are passed as EXPLODED parameters (SROA), not aggregates.
 
-(def-record Point (x int) (y int))
+(def-record v-point (x int) (y int))
 ;; Expected: %POINT = type { i32, i32 }
 
 (def-function take-point (p)
-  (declare (type p Point) (return-type int))
-  ;; Expected: define i32 @take_point_point_point(%POINT %0) -> INCORRECT
+  (declare (type p v-point) (return-type int))
   ;; Expected: define i32 @take_point_point(i32 %0, i32 %1) -> CORRECT (Exploded)
   (return (+ (x~ p) (y~ p))))
 
-(def-kernel make_and_pass ()
-  (declare (return-type int))
-  (let ((p (make-point :x 10 :y 20)))
-    (take-point p)))
+(def-kernel make_and_pass (p)
+  (declare (type p v-point) (return-type int))
+  ;; Point should explode to 2 int parameters in physical signature
+  (take-point p))
 
