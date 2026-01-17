@@ -230,6 +230,7 @@ SHORT TERM PLAN
 - [ ] new test ( tests\spec\010-def-record\17-record-compare-struct.crisp ) needs validation and kernel?
 - [ ] we aren't testing explosion of def-record, etc.  The metadata support will give us that opportutnity.
      otherwise, need to either --ir-target=llvm-ir or something more complicated for the validators
+- [ ] review the validators in the 028-metadata directory.  I have a feeling they are only cursory. (probably just listp or something)
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - - [x] Storage Properties  (cannot be set)
 - - - [x] address-space

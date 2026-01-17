@@ -407,11 +407,24 @@
              (type (parameter-def-type param-def))
              (width (get-physical-width type))
              (start phys-index)
-             (end (+ phys-index width -1)))
+             (end (+ phys-index width -1))
+             ;; Parse cell types: (CELL inner-type address-space access)
+             (address-space (if (and (consp type)
+                                     (symbolp (first type))
+                                     (string-equal (symbol-name (first type)) "CELL")
+                                     (>= (length type) 3))
+                                (nth 2 type) ; Position 2 is address-space
+                                :local))
+             (access (if (and (consp type)
+                              (symbolp (first type))
+                              (string-equal (symbol-name (first type)) "CELL")
+                              (>= (length type) 4))
+                         (nth 3 type) ; Position 3 is access
+                         :read-write)))
         (let ((entry (list (string-downcase (symbol-name name))
                            :type type
-                           :address-space (or (if (consp type) (getf (cdr type) :address-space)) :local)
-                           :access (or (if (consp type) (getf (cdr type) :access)) :read-write)
+                           :address-space address-space
+                           :access access
                            :range (list start end))))
           (push entry implicit-args))
         (incf phys-index width)))
