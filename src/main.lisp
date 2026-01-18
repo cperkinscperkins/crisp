@@ -125,6 +125,14 @@
                         (let ((out-path (make-pathname :type "ptx" :defaults filepath)))
                           (crisp.compiler:compile-to-ptx module out-path)
                           (push (list :ptx out-path) generated-outputs)))
+                       (:llvmir
+                        (let ((out-path (make-pathname :type "ll" :defaults filepath)))
+                          (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
+                            (unwind-protect
+                                (with-open-file (stream out-path :direction :output :if-exists :supersede)
+                                  (write-string (cffi:foreign-string-to-lisp ir-ptr) stream))
+                              (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))
+                          (push (list :llvmir out-path) generated-outputs)))
                        ;; Default/Generic: Print IR to stdout
                        (t
                         (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))

@@ -221,8 +221,8 @@ SHORT TERM PLAN
 - - [ ] also, give up on "no (to-int )" already. geebus
 - [ ] DENY setf and aref.  
 - [ ] &out has no verification that the argument is NOT READ FROM.
-- [ ] fix STYLE-WARNINGS. Too many unused vars.
-- [ ] Refactor:
+- [x] fix STYLE-WARNINGS. Too many unused vars.
+- [x] Refactor:
    x valid-parameterized-type-p   in types/validation.lisp
    x register-function-signature in environment.lisp
    - compile-def-function in analysis/core.lisp. triple nested let?
