@@ -447,7 +447,7 @@
 
             (dolist (blk blocks-to-emit)
               (format output-stream "  (:name ~s~%" (getf blk :name))
-              (format output-stream "    :source ~s~%" (getf blk :source))
+              (format output-stream "    :source ~s~%" (pathname (getf blk :source)))
               (when (getf blk :output) (format output-stream "    :output-targets ~s~%" (getf blk :output)))
               (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
               (format output-stream "    :declared-signature ")
