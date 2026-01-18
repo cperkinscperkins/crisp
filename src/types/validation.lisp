@@ -268,6 +268,51 @@
       (and (consp type-spec) (eq (cl:first type-spec) :function-type))))
 
 
+(defun %instantiate-template-if-needed (base-type template-args mangled-name)
+  "Helper: Attempts to instantiate a template if not already instantiated.
+   Returns T if template exists/instantiated successfully, NIL otherwise."
+  (cl:let ((templates (or (gethash base-type *template-registry*)
+                          (cl:let ((found nil))
+                            (maphash (cl:lambda (k v)
+                                       (cl:when (and (symbolp k)
+                                                     (string-equal (symbol-name k)
+                                                                   (symbol-name base-type)))
+                                         (cl:setf found v)))
+                                     *template-registry*)
+                            found))))
+    (cl:cond
+      ;; No templates found for this base type
+      ((null templates) nil)
+
+      ;; Template instantiator not available
+      ((not (and (boundp '*template-instantiator-fn*)
+                 *template-instantiator-fn*))
+       (log:warn "Template instantiator not bound/found")
+       nil)
+
+      ;; Instantiate the template
+      (t
+       (funcall *template-instantiator-fn* base-type template-args
+         (lambda (form loc)
+           (declare (ignore loc))
+           (if (and (boundp '*current-module*) *current-module*)
+               (compile-toplevel-form form nil
+                                      *current-module*
+                                      *current-builder*
+                                      *current-di-builder*
+                                      *current-di-compile-unit*
+                                      *current-location-map*)
+               (eval form))))
+       ;; Return T if template was found and instantiated
+       t))))
+
+(defun %validate-template-instantiation (base-type template-args)
+  "Helper: Validates a template instantiation, checking if it's already defined
+   or can be instantiated. Returns T if valid, NIL otherwise."
+  (cl:let ((mangled-name (mangle-template-struct-name base-type template-args)))
+    (or (gethash mangled-name *crisp-structs*)
+        (%instantiate-template-if-needed base-type template-args mangled-name))))
+
 (defun valid-parameterized-type-p (type-spec)
   "Checks if type-spec is a valid parameterized type (cell, templates, etc)."
   (cl:when (consp type-spec)
@@ -275,47 +320,27 @@
               (base-type (cl:first expanded))
               (params (rest expanded)))
       (cl:cond
+        ;; Base type must be a symbol
         ((not (symbolp base-type)) nil)
+
+        ;; Exclude special forms (FUNCTION, QUOTE, etc.)
         ((excluded-template-base-type-p base-type) nil)
 
-        ;; 0. Check if base-type identifies a valid type/struct itself.
+        ;; Handle valid struct/type with optional keyword properties
+        ;; e.g., (INT) or (INT :BITS 32) are valid
+        ;; but (INT INT) is NOT valid
         ((and (or (gethash base-type *crisp-structs*)
                   (gethash base-type *crisp-types*))
-              (or (null params) ;; (INT) is valid (wrapper)
-                  (keywordp (first params)))) ;; (INT :BITS 32) is valid. (INT INT) is NOT.
+              (or (null params) ;; (INT) wrapper
+                  (keywordp (first params)))) ;; (INT :BITS 32) properties
                                              t)
 
-        ;; Standard Template Instantiation
+        ;; Standard template instantiation
         ((symbolp base-type)
-         (cl:let* ((template-args params)
-                   (mangled-name (mangle-template-struct-name base-type template-args)))
-           (or (gethash mangled-name *crisp-structs*)
-               (cl:let ((templates (or (gethash base-type *template-registry*)
-                                       (cl:let ((found nil))
-                                         (maphash (cl:lambda (k v)
-                                                    (cl:when (and (symbolp k) (string-equal (symbol-name k) (symbol-name base-type)))
-                                                      (cl:setf found v)))
-                                                  *template-registry*)
-                                         found))))
-                 (cl:when templates
-                   (if (and (boundp '*template-instantiator-fn*) *template-instantiator-fn*)
-                       (progn
-                        (funcall *template-instantiator-fn* base-type template-args
-                          (lambda (form loc)
-                            (declare (ignore loc))
-                            (if (and (boundp '*current-module*) *current-module*)
-                                (compile-toplevel-form form nil
-                                                       *current-module*
-                                                       *current-builder*
-                                                       *current-di-builder*
-                                                       *current-di-compile-unit*
-                                                       *current-location-map*)
-                                (eval form))))
-                        (cl:let ((res (gethash mangled-name *crisp-structs*)))
-                          t)) ;; Always return T if template found/instantiated
-                       (progn (log:warn "Template instantiator not bound/found") nil)))))))
-        (t nil)))))
+         (%validate-template-instantiation base-type params))
 
+        ;; Default: invalid
+        (t nil)))))
 
 (defun valid-type-p (type-spec)
   "Checks if a type specifier is valid.
@@ -458,8 +483,7 @@
                (t
                 (cl:let ((struct-def (find-struct-definition-by-name base)))
                   (if struct-def
-                      (cl:let ((template-args-count (or arity 0))
-                               (prop-args (if arity (subseq args arity) args)))
+                      (cl:let ((prop-args (if arity (subseq args arity) args)))
                         (log:debug "Checking properties for ~a. PropArgs: ~a" base prop-args)
 
                         ;; Map provided properties

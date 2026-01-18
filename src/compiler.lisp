@@ -374,19 +374,3 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                     (declare (crisp-system-generated))
                                     (return (sizeof To)))
                      '((cell To Addr Acc) => ulong)))
-
-;; Helpers (Analysis Placeholder)
-;; ==============================
-
-(defun analyze-function-literal (expr env location)
-  "Analyzes a (function name) form, e.g., #'foo."
-  (declare (ignore env))
-  (cl:let ((fn-name (second expr)))
-    ;; Check if the function exists (simplistic check for now)
-    (cl:unless (or (fboundp fn-name) (gethash fn-name *function-table*))
-      (log:warn "Function literal ~a refers to unknown function (at compile time)." fn-name))
-
-    (make-semantic-literal
-     :value-type `(:function-literal ,fn-name)
-     :value fn-name
-     :source-location location)))

@@ -1,6 +1,39 @@
 ;; src/metadata-val.lisp
 (in-package :crisp.compiler)
 
+;;; Validation
+;;; ----------
+
+(defun validate-kernel-metadata (metadata-path kernel-name &key (targets nil targets-p))
+  (let* ((forms (uiop:read-file-forms metadata-path))
+         (kernels (if forms (rest (assoc :kernels forms)) nil))
+         (k-def (if kernels (find kernel-name kernels :key #'first :test #'string=) nil)))
+
+    (unless k-def
+      (return-from validate-kernel-metadata nil))
+
+    (let ((src (getf (rest k-def) :source)))
+      (unless src
+        (return-from validate-kernel-metadata nil)))
+
+    (let ((output-targets (getf (rest k-def) :output-targets)))
+      (when targets-p
+            (let ((found-targets (mapcar #'first output-targets)))
+              (dolist (req targets)
+                (unless (member req found-targets)
+                  (return-from validate-kernel-metadata nil))))))
+    t))
+
+(defun validate-10-basics-meta (path)
+  (validate-kernel-metadata path "basic_kernel" :targets nil))
+
+(defun validate-10-basics-spv (path)
+  (validate-kernel-metadata path "basic_kernel" :targets '(:spv)))
+
+(defun validate-10-basics-multi (path)
+  (validate-kernel-metadata path "basic_kernel" :targets '(:spv)))
+
+
 (defun validate-12-multiple-kernels (paths)
   "Validates that multiple kernel metadata files are generated."
   (unless (listp paths)
