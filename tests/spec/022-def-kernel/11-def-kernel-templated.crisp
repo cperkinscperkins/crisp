@@ -1,4 +1,7 @@
 
+;; TEST-WITH[--ir-target=llvmir] : validate-cell-add-i-ir
+;; TEST-WITH[--ir-target=llvmir] : validate-cell-add-f-ir
+
 (with-template-type (T)
     (def-type in-c (cell T :address-space :global :access :read-only))
     (def-type out-c (cell T :address-space :global :access :read-write))

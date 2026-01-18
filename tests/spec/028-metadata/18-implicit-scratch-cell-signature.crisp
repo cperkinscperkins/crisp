@@ -1,5 +1,6 @@
 
 ;; TEST-WITH[--metadata] : validate-scratch-cell-explosion
+;; TEST-WITH[--ir-target=llvmir] : validate-top-kernel-4-args-ir
 
 #|
 
