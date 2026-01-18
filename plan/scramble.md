@@ -224,7 +224,7 @@ SHORT TERM PLAN
 - [ ] fix STYLE-WARNINGS. Too many unused vars.
 - [ ] Refactor:
    x valid-parameterized-type-p   in types/validation.lisp
-   - register-function-signature in environment.lisp
+   x register-function-signature in environment.lisp
    - compile-def-function in analysis/core.lisp. triple nested let?
 
 - [x] WTF: mark-carriers-pass in core.lisp has *reverse-call-graph* which does not exist.

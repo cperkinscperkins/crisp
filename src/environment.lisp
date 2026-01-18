@@ -205,61 +205,88 @@
 
             sig))))))
 
+
+(defun %find-entry-point-declaration (declare-forms)
+  "Helper: Returns T if any declare form contains an entry-point declaration."
+  (loop for f in declare-forms
+          thereis (loop for decl-spec in (rest f)
+                          thereis (and (consp decl-spec)
+                                       (string-equal (first decl-spec) "ENTRY-POINT")))))
+
+(defun %validate-kernel-return-type (return-types)
+  "Helper: Validates that kernel return types are void. Signals error if non-void."
+  (when return-types
+        (let ((non-void-types (remove-if (lambda (x)
+                                           (or (null x)
+                                               (and (symbolp x)
+                                                    (string-equal x "VOID"))))
+                                  return-types)))
+          (when non-void-types
+                (error "Kernels cannot declare they return values. Found: ~a. Kernels must return void (nil)."
+                  return-types)))))
+
+(defun %register-generic-function (name params env return-types declare-forms extracted-defaults key-idx body location)
+  "Helper: Registers a generic function (with &optional or &key parameters) for lazy instantiation."
+  (log:info "Registering GENERIC function template: ~s (Lazy Instantiation Mode)" name)
+  (setf (gethash name *generic-functions*)
+    (make-generic-function-def
+     :name name
+     :params params
+     :env env
+     :return-types return-types
+     :declarations (loop for f in declare-forms append (rest f))
+     :defaults extracted-defaults
+     :keys key-idx
+     :body (nthcdr (length declare-forms) body)
+     :source-location location)))
+
+(defun %register-standard-function (name env return-types declare-forms location)
+  "Helper: Registers a standard function signature (eager registration)."
+  (let* ((is-entry-point (%find-entry-point-declaration declare-forms)))
+
+    ;; Validate kernel return type
+    (when is-entry-point
+          (%validate-kernel-return-type return-types))
+
+    ;; Create and register signature
+    (let ((sig (make-function-signature
+                :name name
+                :parameters env ;; STORE FULL PARAMETER-DEF STRUCTS (Name + Type)
+                :return-types return-types
+                :source-location location)))
+
+      (finish-output *error-output*)
+      (setf (gethash name *function-table*)
+        (append (gethash name *function-table*) (list sig))))))
+
 (defun register-function-signature (form location)
-  "Extracts and registers a function's signature without analyzing its body. 
+  "Extracts and registers a function's signature without analyzing its body.
    Handles optional parameters by generating overloaded signatures."
   (let* ((name (second form))
          (params (third form))
          (body (cdddr form))
-         (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f)))
-    ;; (format *error-output* "DEBUG REGISTER-FUNC: Name ~s Declares: ~s~%" name declare-forms)
+         (declare-forms (loop for f in body
+                              while (and (listp f) (eq (car f) 'declare))
+                              collect f)))
+
     (finish-output *error-output*)
-    (log:debug "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s" name (package-name (symbol-package name)) declare-forms)
+    (log:debug "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s"
+               name
+               (package-name (symbol-package name))
+               declare-forms)
 
     (multiple-value-bind (env return-types optional-idx extracted-defaults key-idx)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
 
-      (if (or optional-idx key-idx)
-          (progn
-           (log:info "Registering GENERIC function template: ~s (Lazy Instantiation Mode)" name)
-           (setf (gethash name *generic-functions*)
-             (make-generic-function-def
-              :name name
-              :params params
-              :env env
-              :return-types return-types
-              :declarations (loop for f in declare-forms append (rest f))
-              :defaults extracted-defaults
-              :keys key-idx
-              :body (nthcdr (length declare-forms) body)
-              :source-location location)))
+      (cond
+       ;; Generic function (has &optional or &key)
+       ((or optional-idx key-idx)
+         (%register-generic-function name params env return-types declare-forms
+                                     extracted-defaults key-idx body location))
 
-          ;; Standard Function Registration (Eager)
-          (let* ((param-types (mapcar #'parameter-def-type env))
-                 ;; --- KERNEL VALIDATION ---
-                 (is-entry-point (loop for f in declare-forms
-                                         thereis (loop for decl-spec in (rest f)
-                                                         thereis (and (consp decl-spec)
-                                                                      (string-equal (first decl-spec) "ENTRY-POINT")))))
-                 (_ (when (and is-entry-point return-types)
-                          (let ((non-void-types (remove-if (lambda (x)
-                                                             (or (null x)
-                                                                 (and (symbolp x) (string-equal x "VOID"))))
-                                                    return-types)))
-                            (when non-void-types
-                                  (error "Kernels cannot declare they return values. Found: ~a. Kernels must return void (nil)." return-types)))))
-
-                 (sig (make-function-signature
-                       :name name
-                       :parameters env ;; STORE FULL PARAMETER-DEF STRUCTS (Name + Type)
-                       :return-types return-types
-                       :source-location location)))
-            (declare (ignore _))
-
-            ;; (format *error-output* "DEBUG REGISTRATION FINAL: ~s Params: ~s~%" name param-types)
-            (finish-output *error-output*)
-            (setf (gethash name *function-table*)
-              (append (gethash name *function-table*) (list sig))))))))
+       ;; Standard function (eager registration)
+       (t
+         (%register-standard-function name env return-types declare-forms location))))))
 
 (defvar *template-registry* (make-hash-table :test 'eq)
         "Maps template names to their generator macros.")
