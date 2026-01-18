@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-18T04:34:18.654201Z
+Generated on 2026-01-18T21:24:49.344913Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -164,13 +164,6 @@ Generated on 2026-01-18T04:34:18.654201Z
 - **Args**: `(OP ARGS)`
 
 ---
-### DEFUN `MARK-CARRIERS-PASS`
-- **Args**: `(ORIGINATORS)`
-
-  > Marks carrier functions during two-pass mode.
-
-
----
 ### DEFUN `SHALLOW-ANALYZE-BODY`
 - **Args**: `(FORMS)`
 
@@ -182,6 +175,14 @@ Generated on 2026-01-18T04:34:18.654201Z
 - **Args**: `(FORM LOCATION VISITOR-FN)`
 
   > Recursively visits a top-level form, handling macros and progn.  >    Visitor-fn is called as (visitor-fn form location) for def-function forms.  >    Other forms are evaluated if they are not special forms handled by the walker.
+
+
+---
+### DEFUN `%COMPILE-STANDARD-FUNCTION`
+- **Args**: `(FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
+              LOCATION-MAP)`
+
+  > Helper: Compiles a standard (non-generic) function definition.
 
 
 ---
@@ -490,6 +491,22 @@ Generated on 2026-01-18T04:34:18.654201Z
 
 
 ---
+### DEFUN `%CHECK-EXISTING-FUNCTION`
+- **Args**: `(EXISTING FN-NAME DI-BUILDER DI-COMPILE-UNIT FUNC
+              CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC MODULE FN-TYPE)`
+
+  > Helper: Handles redefinition or forward declaration of existing functions.
+
+
+---
+### DEFUN `%CREATE-NEW-FUNCTION`
+- **Args**: `(FN-NAME FN-TYPE MODULE DI-BUILDER DI-COMPILE-UNIT
+              CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC)`
+
+  > Helper: Creates a new function and its debug info.
+
+
+---
 ### DEFUN `GENERATE-FUNCTION-PROTOTYPE`
 - **Args**: `(SEMANTIC-FUNCTION MODULE DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)`
 
@@ -531,6 +548,34 @@ Generated on 2026-01-18T04:34:18.654201Z
 
 
 ---
+### DEFUN `%GENERATE-KEYWORD-LITERAL-IR`
+- **Args**: `(VALUE)`
+
+  > Helper: Generates IR for keyword/symbol/quote literals.
+
+
+---
+### DEFUN `%GENERATE-CELL-LITERAL-IR`
+- **Args**: `(BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)`
+
+  > Helper: Generates IR for cell literals (scratch cells).
+
+
+---
+### DEFUN `%GENERATE-ENUM-LITERAL-IR`
+- **Args**: `(BUILDER VALUE LLVM-TYPE)`
+
+  > Helper: Generates IR for enum literals.
+
+
+---
+### DEFUN `%GENERATE-SCALAR-LITERAL-IR`
+- **Args**: `(BUILDER VALUE LLVM-TYPE CRISP-TYPE)`
+
+  > Helper: Generates IR for scalar (int/float) literals.
+
+
+---
 ### DEFUN `GET-TYPE-CAT-SAFE`
 - **Args**: `(TYPE-NAME TYPE-OBJ)`
 
@@ -563,6 +608,30 @@ Generated on 2026-01-18T04:34:18.654201Z
               PARAM-TYPES PARAM-COUNT)`
 
   > Prepares arguments for a function call by generating IR, exploding values, and filling a CFFI array.
+
+
+---
+### DEFUN `%HANDLE-DIE-INTRINSIC`
+- **Args**: `(BUILDER MODULE)`
+
+  > Helper: Handles the compiler intrinsic DIE (llvm.trap).
+
+
+---
+### DEFUN `%BUILD-FUNCTION-CALL`
+- **Args**: `(BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE SIG
+              CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT
+              RETURN-TYPE-NAMES)`
+
+  > Helper: Builds the actual function call instruction.
+
+
+---
+### DEFUN `%GENERATE-LET-BINDING`
+- **Args**: `(BINDING BUILDER MODULE LET-ENV DI-BUILDER DI-SCOPE LOCATION-MAP
+              MEMOIZED-AGGREGATES)`
+
+  > Helper: Generates IR for a single let binding.  >    Updates let-env with the new binding and returns the alloca.
 
 
 ---
@@ -715,13 +784,6 @@ Generated on 2026-01-18T04:34:18.654201Z
 
 
 ---
-### DEFUN `ANALYZE-FUNCTION-LITERAL`
-- **Args**: `(EXPR ENV LOCATION)`
-
-  > Analyzes a (function name) form, e.g., #'foo.
-
-
----
 ## File: `C:\Users\cperk\Documents\crisp\src\enums.lisp`
 
 ### DEFMACRO `DEF-ENUMERATION`
@@ -779,10 +841,39 @@ Generated on 2026-01-18T04:34:18.654201Z
 
 
 ---
+### DEFUN `%FIND-ENTRY-POINT-DECLARATION`
+- **Args**: `(DECLARE-FORMS)`
+
+  > Helper: Returns T if any declare form contains an entry-point declaration.
+
+
+---
+### DEFUN `%VALIDATE-KERNEL-RETURN-TYPE`
+- **Args**: `(RETURN-TYPES)`
+
+  > Helper: Validates that kernel return types are void. Signals error if non-void.
+
+
+---
+### DEFUN `%REGISTER-GENERIC-FUNCTION`
+- **Args**: `(NAME PARAMS ENV RETURN-TYPES DECLARE-FORMS EXTRACTED-DEFAULTS
+              KEY-IDX BODY LOCATION)`
+
+  > Helper: Registers a generic function (with &optional or &key parameters) for lazy instantiation.
+
+
+---
+### DEFUN `%REGISTER-STANDARD-FUNCTION`
+- **Args**: `(NAME ENV RETURN-TYPES DECLARE-FORMS LOCATION)`
+
+  > Helper: Registers a standard function signature (eager registration).
+
+
+---
 ### DEFUN `REGISTER-FUNCTION-SIGNATURE`
 - **Args**: `(FORM LOCATION)`
 
-  > Extracts and registers a function's signature without analyzing its body.   >    Handles optional parameters by generating overloaded signatures.
+  > Extracts and registers a function's signature without analyzing its body.  >    Handles optional parameters by generating overloaded signatures.
 
 
 ---
@@ -1072,6 +1163,20 @@ Generated on 2026-01-18T04:34:18.654201Z
 
 
 ---
+### DEFUN `%PARSE-KERNEL-TYPE-DECLARATIONS`
+- **Args**: `(PARAMS DECLARATIONS)`
+
+  > Helper: Parses type declarations and builds a hash map of param -> type.
+
+
+---
+### DEFUN `%VALIDATE-KERNEL-PARAMETERS`
+- **Args**: `(PARAMS TYPE-MAP NAME)`
+
+  > Helper: Validates that kernel parameters are complete and not voidp.
+
+
+---
 ### DEFUN `PARSE-KERNEL-SIGNATURE`
 - **Args**: `(NAME PARAMS BODY)`
 
@@ -1097,6 +1202,20 @@ Generated on 2026-01-18T04:34:18.654201Z
 - **Args**: `(NAME TYPE-SPEC)`
 
   > Defines a type alias.  >    Example: (def-type T int)
+
+
+---
+### DEFUN `%GENERATE-STRUCT-ACCESSOR`
+- **Args**: `(MEMBER-SPEC NAME PKG RUNTIME-INDEX)`
+
+  > Helper: Generates accessor (and setter) for a single struct member.  >    Returns (values accessor-form new-runtime-index).
+
+
+---
+### DEFUN `%GENERATE-RAW-ACCESSOR`
+- **Args**: `(MEMBER-SPEC NAME PKG RUNTIME-INDEX)`
+
+  > Helper: Generates raw accessor for a runtime struct member.  >    Returns (values accessor-form new-runtime-index).
 
 
 ---
@@ -1262,6 +1381,22 @@ Generated on 2026-01-18T04:34:18.654201Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp\src\metadata-val.lisp`
 
+### DEFUN `VALIDATE-KERNEL-METADATA`
+- **Args**: `(METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL TARGETS-P))`
+
+---
+### DEFUN `VALIDATE-10-BASICS-META`
+- **Args**: `(PATH)`
+
+---
+### DEFUN `VALIDATE-10-BASICS-SPV`
+- **Args**: `(PATH)`
+
+---
+### DEFUN `VALIDATE-10-BASICS-MULTI`
+- **Args**: `(PATH)`
+
+---
 ### DEFUN `VALIDATE-12-MULTIPLE-KERNELS`
 - **Args**: `(PATHS)`
 
@@ -1341,30 +1476,6 @@ Generated on 2026-01-18T04:34:18.654201Z
 ### DEFUN `GENERATE-METADATA-FOR-FILE`
 - **Args**: `(INPUT-PATH OUTPUT-PATH &KEY (OUTPUT-TARGETS NIL)
               (SOURCE-FILE NIL) (FORMS NIL))`
-
----
-### DEFUN `VALIDATE-KERNEL-METADATA`
-- **Args**: `(METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL TARGETS-P))`
-
----
-### DEFUN `VALIDATE-10-BASICS-META`
-- **Args**: `(PATH)`
-
----
-### DEFUN `VALIDATE-10-BASICS-SPV`
-- **Args**: `(PATH)`
-
----
-### DEFUN `VALIDATE-10-BASICS-MULTI`
-- **Args**: `(PATH)`
-
----
-### DEFUN `VALIDATE-12-MULTIPLE-KERNELS`
-- **Args**: `(PATHS)`
-
----
-### DEFUN `%STORAGE-HANDLE-TYPE-P`
-- **Args**: `(TYPE-SPEC)`
 
 ---
 ### DEFUN `GET-PHYSICAL-WIDTH`
@@ -1745,10 +1856,38 @@ Generated on 2026-01-18T04:34:18.654201Z
 - **Args**: `(NAME BODY SUBSTITUTIONS OVERRIDE-NAME)`
 
 ---
+### DEFUN `%UNWRAP-FUNCTION-SIGNATURE`
+- **Args**: `(RAW-SIG)`
+
+  > Helper: Unwraps (FUNCTION ...) wrapper if present.
+
+
+---
+### DEFUN `%INFER-FROM-SINGLE-TEMPLATE`
+- **Args**: `(TMPL ARGUMENT-TYPES)`
+
+  > Helper: Attempts to infer template types for a single template.  >    Returns NIL on failure, or (list template-data concrete-types) on success.
+
+
+---
 ### DEFUN `TRY-INFER-TEMPLATE-TYPES`
 - **Args**: `(NAME ARGUMENT-TYPES)`
 
   > Attempts to infer template parameters for 'name' given 'argument-types'.  >    Returns a LIST OF LISTS of (template-data concrete-types).
+
+
+---
+### DEFUN `%RESOLVE-TEMPLATE-NAME`
+- **Args**: `(NAME)`
+
+  > Helper: Resolves constructor names (MAKE-POINT, MAKE-POINT%DISPATCH) to base struct names.
+
+
+---
+### DEFUN `%SHOULD-INSTANTIATE-TEMPLATE`
+- **Args**: `(KEY STATUS IS-COMPILING)`
+
+  > Helper: Determines if a template should be instantiated based on cache status.  >    Returns T if instantiation should proceed, NIL otherwise.
 
 
 ---
@@ -2031,6 +2170,20 @@ Generated on 2026-01-18T04:34:18.654201Z
 - **Args**: `(TYPE-SPEC)`
 
   > Checks if type-spec is a valid function literal or descriptor.
+
+
+---
+### DEFUN `%INSTANTIATE-TEMPLATE-IF-NEEDED`
+- **Args**: `(BASE-TYPE TEMPLATE-ARGS MANGLED-NAME)`
+
+  > Helper: Attempts to instantiate a template if not already instantiated.  >    Returns T if template exists/instantiated successfully, NIL otherwise.
+
+
+---
+### DEFUN `%VALIDATE-TEMPLATE-INSTANTIATION`
+- **Args**: `(BASE-TYPE TEMPLATE-ARGS)`
+
+  > Helper: Validates a template instantiation, checking if it's already defined  >    or can be instantiated. Returns T if valid, NIL otherwise.
 
 
 ---
