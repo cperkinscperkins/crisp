@@ -485,19 +485,30 @@
                                  (list (list tmpl concrete-types)) ;; Return pair!
                                  nil)))))))
 
+
+(defun %resolve-template-name (name)
+  "Helper: Resolves constructor names (MAKE-POINT, MAKE-POINT%DISPATCH) to base struct names."
+  (when (and (null (gethash name *template-registry*)) (symbolp name))
+        (let ((s (symbol-name name)))
+          (cond
+           ((alexandria:starts-with-subseq "MAKE-" s)
+             (if (alexandria:ends-with-subseq "%DISPATCH" s)
+                 (intern (subseq s 5 (- (length s) 9)) (symbol-package name)) ;; MAKE-POINT%DISPATCH -> POINT
+                 (intern (subseq s 5) (symbol-package name)))) ;; MAKE-POINT -> POINT
+           (t nil)))))
+
+(defun %should-instantiate-template (key status is-compiling)
+  "Helper: Determines if a template should be instantiated based on cache status.
+   Returns T if instantiation should proceed, NIL otherwise."
+  (not (or (eq status :compiled)
+           (and (eq status :analyzed) (not is-compiling)))))
+
 (defun ensure-template-instantiation (name explicit-arg-types compiler-callback)
   "Called by the compiler to auto-instantiate templates.
    compiler-callback is (lambda (form location) ...)"
   (let* ((templates (gethash name *template-registry*))
          ;; If not found directly, try stripping "MAKE-" or "MAKE-...%DISPATCH" prefix for struct constructors
-         (struct-name (when (and (null templates) (symbolp name))
-                            (let ((s (symbol-name name)))
-                              (cond
-                               ((alexandria:starts-with-subseq "MAKE-" s)
-                                 (if (alexandria:ends-with-subseq "%DISPATCH" s)
-                                     (intern (subseq s 5 (- (length s) 9)) (symbol-package name)) ;; MAKE-POINT%DISPATCH -> POINT
-                                     (intern (subseq s 5) (symbol-package name)))) ;; MAKE-POINT -> POINT
-                               (t nil)))))
+         (struct-name (%resolve-template-name name))
          (templates (or templates (when struct-name (gethash struct-name *template-registry*))))
          (match-sets nil))
 
@@ -508,7 +519,7 @@
     (unless match-sets
       (loop for tmpl in templates
             for params = (template-data-parameters tmpl)
-              ;; Relaxed check: Allow arguments > parameters if the extras are properties (managed by mangle)
+              ;; Relaxed check: Allow arguments >= parameters if the extras are properties (managed by mangle)
             do (when (>= (length explicit-arg-types) (length params))
                      ;; Direct match/superset by arity (explicit args are the concrete types)
                      ;; This assumes explicit-arg-types are the TYPES, not values.
@@ -521,24 +532,20 @@
                      (is-compiling (and (boundp 'crisp.compiler::*current-module*)
                                         crisp.compiler::*current-module*)))
 
-                ;; Smart Cache Check:
-                ;; - If :compiled, we are done.
-                ;; - If :analyzed and we are in analysis pass (not compiling), done.
-                ;; - If :analyzed and we ARE compiling, we must proceed to generate IR.
-                ;; - If nil, proceed.
-                (unless (or (eq status :compiled)
-                            (and (eq status :analyzed) (not is-compiling)))
+                ;; Smart Cache Check: Only proceed if needed
+                (when (%should-instantiate-template key status is-compiling)
+                      (log:info "Auto-specializing template ~a for types ~a (Status: ~a, Is-Compiling: ~a)"
+                                name inferred-types status is-compiling)
 
-                  (log:info "Auto-specializing template ~a for types ~a (Status: ~a, Is-Compiling: ~a)" name inferred-types status is-compiling)
-                  ;; 1. Instantiate the template using the SPECIFIC template object found
-                  (let ((instantiated-code (instantiate-template tmpl inferred-types)))
-                    ;; 2. Compile the instantiated code (it's a PROGN of DEF-FUNCTIONs)
-                    (loop for form in (rest instantiated-code) ; skip 'progn
-                          do (funcall compiler-callback form nil))
+                      ;; 1. Instantiate the template using the SPECIFIC template object found
+                      (let ((instantiated-code (instantiate-template tmpl inferred-types)))
+                        ;; 2. Compile the instantiated code (it's a PROGN of DEF-FUNCTIONs)
+                        (loop for form in (rest instantiated-code) ; skip 'progn
+                              do (funcall compiler-callback form nil))
 
-                    ;; Update status
-                    (setf (gethash key *instantiated-templates*) (if is-compiling :compiled :analyzed))
-                    (setf did-work t)))))
+                        ;; Update status
+                        (setf (gethash key *instantiated-templates*) (if is-compiling :compiled :analyzed))
+                        (setf did-work t)))))
       did-work)))
 
 (defmacro make-structure-template-instance (template-name concrete-types &rest ctor-args)

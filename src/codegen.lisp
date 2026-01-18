@@ -702,26 +702,61 @@
                                                        (agg-1 (llvm-build-insert-value builder agg-0 rem-val 1 "res_r")))
       (values agg-1 nil))))
 
+
+(defun %handle-die-intrinsic (builder module)
+  "Helper: Handles the compiler intrinsic DIE (llvm.trap)."
+  (let ((trap-name "llvm.trap"))
+    (let ((f (llvm-get-named-function module trap-name)))
+      (when (cffi:null-pointer-p f)
+            (let ((ft (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)))
+              (setf f (llvm-add-function module trap-name ft))))
+      (llvm-build-call2 builder
+                        (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)
+                        f
+                        (cffi:null-pointer)
+                        0
+                        ""))
+    (values nil nil)))
+
+(defun %build-function-call (builder module var-env di-builder di-scope location-map node sig callee-name llvm-fn-type param-nodes param-count return-type-names)
+  "Helper: Builds the actual function call instruction."
+  (let* ((arg-nodes (semantic-call-args node))
+         (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
+                                             arg-nodes param-nodes param-count))
+         (call-inst (llvm-build-call2 builder
+                                      llvm-fn-type
+                                      (let ((f (llvm-get-named-function module callee-name)))
+                                        (if (cffi:null-pointer-p f)
+                                            (llvm-add-function module callee-name llvm-fn-type)
+                                            f))
+                                      args-array
+                                      param-count
+                                      (if (or (null return-type-names)
+                                              (equal return-type-names '(nil))
+                                              (and (consp return-type-names) (eq (first return-type-names) 'void)))
+                                          ""
+                                          "call_tmp")))
+         (di-location (when (and di-builder di-scope location-map)
+                            (let* ((loc (semantic-node-source-location node))
+                                   (line (gethash loc location-map 0)))
+                              (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                     line 0 di-scope (cffi:null-pointer))))))
+    (when di-location
+          (llvm-instruction-set-debug-loc call-inst di-location))
+    (values call-inst di-location)))
+
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
 
   ;; Special handling for compiler intrinsic DIE
   (when (eq (semantic-call-name node) 'die)
-        (let ((trap-name "llvm.trap"))
-          (let ((f (llvm-get-named-function module trap-name)))
-            (when (cffi:null-pointer-p f)
-                  (let ((ft (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)))
-                    (setf f (llvm-add-function module trap-name ft))))
-            (llvm-build-call2 builder (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)
-                              f (cffi:null-pointer) 0 "")))
-        (return-from generate-node-ir (values nil nil)))
+        (return-from generate-node-ir (%handle-die-intrinsic builder module)))
 
   (let* ((sig (semantic-call-signature node))
          (return-type-names (function-signature-return-types sig))
-
          (llvm-return-type (get-llvm-return-type module return-type-names))
 
-         ;; 3. Build the LLVM function *type* (the signature)
+         ;; Build the LLVM function *type* (the signature)
          (param-nodes (mapcar #'parameter-def-type (function-signature-parameters sig)))
          (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-nodes))
          (param-count (length expanded-param-types))
@@ -736,38 +771,13 @@
            (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
                            (mapcar #'mangle-type-spec (mapcar #'parameter-def-type (function-signature-parameters sig)))))
            (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
-           (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
+           (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil)))
 
-           (callee (progn
-                    (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module)
-                    (let ((f (llvm-get-named-function module callee-name)))
-                      (if (cffi:null-pointer-p f)
-                          ;; If not in this module, declare it
-                          (llvm-add-function module callee-name llvm-fn-type)
-                          f))))
+      (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module)
 
-           (arg-nodes (semantic-call-args node))
-           (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
-                                               arg-nodes param-nodes param-count)))
-
-      (let* ((call-inst (llvm-build-call2 builder
-                                          llvm-fn-type
-                                          callee
-                                          args-array
-                                          param-count
-                                          (if (or (null return-type-names)
-                                                  (equal return-type-names '(nil))
-                                                  (and (consp return-type-names) (eq (first return-type-names) 'void))) ;; Explicitly check for void
-                                              ""
-                                              "call_tmp")))
-             (di-location (when (and di-builder di-scope location-map)
-                                (let* ((loc (semantic-node-source-location node))
-                                       (line (gethash loc location-map 0)))
-                                  (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                         line 0 di-scope (cffi:null-pointer))))))
-        (when di-location
-              (llvm-instruction-set-debug-loc call-inst di-location))
-        (values call-inst di-location)))))
+      ;; Build and return the call
+      (%build-function-call builder module var-env di-builder di-scope location-map node sig
+                            callee-name llvm-fn-type param-nodes param-count return-type-names))))
 
 (defmethod generate-node-ir ((node semantic-extract-value) builder module var-env di-builder di-scope location-map)
   "Generates IR for extracting a value from an aggregate."

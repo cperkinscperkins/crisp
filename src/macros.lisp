@@ -525,6 +525,53 @@
 
 ;; Corrected def-struct macro for src/macros.lisp
 ;; Replace the existing def-struct starting at line 452
+(defun %generate-struct-accessor (member-spec name pkg runtime-index)
+  "Helper: Generates accessor (and setter) for a single struct member.
+   Returns (values accessor-form new-runtime-index)."
+  (let* ((member-name (first member-spec))
+         (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
+         (value (when is-ct (fourth member-spec)))
+         (accessor-name (intern (format nil "~a~~" member-name) pkg)))
+
+    (cond
+     ;; Compile-time member with value -> constant accessor macro
+     ((and is-ct value)
+       (values `(defmacro ,accessor-name (obj)
+                  (declare (ignore obj))
+                  '',value)
+         runtime-index))
+
+     ;; Compile-time member without value -> skip (incomplete type)
+     (is-ct
+       (values nil runtime-index))
+
+     ;; Runtime member -> function accessor + setter
+     (t
+       (let ((idx runtime-index))
+         (values `(progn
+                   (def-function ,accessor-name ((obj ,name))
+                                 (return (%extract-struct-member obj ,idx)))
+
+                   ;; Generate Setter for Runtime Member
+                   (def-setter ,accessor-name ((obj ,name) (val ,(second member-spec)))
+                               ;; Execute insert but don't return the result; return void instead
+                               (%insert-struct-member obj ,idx val)
+                               (return nil)))
+           (1+ runtime-index)))))))
+
+(defun %generate-raw-accessor (member-spec name pkg runtime-index)
+  "Helper: Generates raw accessor for a runtime struct member.
+   Returns (values accessor-form new-runtime-index)."
+  (let* ((is-ct (and (consp member-spec) (eq (third member-spec) :c-t))))
+    (if is-ct
+        (values nil runtime-index)
+        (let* ((member-name (first member-spec))
+               (raw-accessor-name (intern (format nil "~~~a~~" member-name) pkg))
+               (idx runtime-index))
+          (values `(def-function ,raw-accessor-name ((obj ,name))
+                                 (declare (crisp-system-generated))
+                                 (return (%extract-struct-member obj ,idx)))
+            (1+ runtime-index))))))
 
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
@@ -541,45 +588,29 @@
         (let ((reordered (validate-and-reorder-struct-args ',name ',parsed-members args)))
           `(%construct-struct ,',name ,@reordered)))
 
+      ;; Generate accessors
       ,@(let ((runtime-index 0)
-              (pkg (symbol-package name)))
-          (loop for member-spec in parsed-members
-                collect
-                  (let* ((member-name (first member-spec))
-                         (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
-                         (value (when is-ct (fourth member-spec))) ;; (name type :c-t value)
-                         (accessor-name (intern (format nil "~a~~" member-name) pkg)))
-                    (if is-ct
-                        (if value
-                            ;; Generate Compile-Time Constant Accessor Macro
-                            `(defmacro ,accessor-name (obj)
-                               (declare (ignore obj))
-                               '',value)
-                            ;; No value provided (incomplete type) -> Do NOT generate macro. Let analyzer handle it.
-                            nil)
-                        ;; Generate Runtime Accessor Function
-                        (let ((idx runtime-index))
-                          (incf runtime-index)
-                          `(progn
-                            (def-function ,accessor-name ((obj ,name))
-                                          (return (%extract-struct-member obj ,idx)))
-                            ;; Generate Setter for Runtime Member
-                            (def-setter ,accessor-name ((obj ,name) (val ,(second member-spec)))
-                                        ;; Execute insert but don't return the result; return void instead
-                                        (%insert-struct-member obj ,idx val)
-                                        (return nil))))))))
+              (pkg (symbol-package name))
+              (forms '()))
+          (dolist (member-spec parsed-members)
+            (multiple-value-bind (accessor-form new-idx)
+                (%generate-struct-accessor member-spec name pkg runtime-index)
+              (when accessor-form
+                    (push accessor-form forms))
+              (setf runtime-index new-idx)))
+          (nreverse forms))
+
+      ;; Generate raw accessors
       ,@(let ((runtime-index 0)
-              (pkg (symbol-package name)))
-          (loop for member-spec in parsed-members
-                  unless (and (consp member-spec) (eq (third member-spec) :c-t))
-                collect
-                  (let* ((member-name (first member-spec))
-                         (raw-accessor-name (intern (format nil "~~~a~~" member-name) pkg))
-                         (idx runtime-index))
-                    (incf runtime-index)
-                    `(def-function ,raw-accessor-name ((obj ,name))
-                                   (declare (crisp-system-generated))
-                                   (return (%extract-struct-member obj ,idx)))))))))
+              (pkg (symbol-package name))
+              (forms '()))
+          (dolist (member-spec parsed-members)
+            (multiple-value-bind (raw-form new-idx)
+                (%generate-raw-accessor member-spec name pkg runtime-index)
+              (when raw-form
+                    (push raw-form forms))
+              (setf runtime-index new-idx)))
+          (nreverse forms)))))
 
 
 (defmacro def-record (name &rest members)
