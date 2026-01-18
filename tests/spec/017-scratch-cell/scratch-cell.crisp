@@ -1,3 +1,5 @@
+;; TEST-WITH[--ir-target=llvmir] : validate-scratch-cell-explosion-ir
+
 ;; temporary test 
 
 ;; Phase 1 and Phase 2 tests

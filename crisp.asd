@@ -8,7 +8,8 @@
            :depends-on (#:cffi
                         #:alexandria
                         #:log4cl
-                        #:parachute)
+                        #:parachute
+                        #:cl-ppcre)
 
            ;; --- File Definitions ---
            ;; load components in exactly this order
