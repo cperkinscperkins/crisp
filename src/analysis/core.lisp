@@ -161,25 +161,6 @@
   (dolist (arg args) (scan-form arg)))
 
 
-(defun mark-carriers-pass (originators)
-  "Marks carrier functions during two-pass mode."
-  (let ((work-list (copy-list originators))
-        (visited (make-hash-table)))
-    (loop while work-list
-          for fn-name = (pop work-list)
-          do (unless (gethash fn-name visited)
-               (setf (gethash fn-name visited) t)
-               ;; Copy implicit info from callee if it has any
-               (let ((callers (gethash fn-name *reverse-call-graph*)))
-                 (dolist (caller callers)
-                   (unless (gethash caller *implicit-arg-map*)
-                     ;; BEFORE: (setf (gethash caller *implicit-arg-map*) '(:storage))
-                     ;; AFTER: Copy from callee
-                     (let ((callee-implicit (gethash fn-name *implicit-arg-map*)))
-                       (when callee-implicit
-                             (setf (gethash caller *implicit-arg-map*) callee-implicit)
-                             (push caller work-list))))))))))
-
 (defun shallow-analyze-body (forms)
   "Performs a shallow, recursive walk of a function's body.
   Returns two values:
