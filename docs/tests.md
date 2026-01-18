@@ -9,6 +9,11 @@
 sbcl --script tests/run-specs.lisp --log-level=off
 ```
 
+#### Specs can be run individually
+```bash
+sbcl --script tests/run-specs.lisp  --filter=<spec-name>
+```
+
 ### Infrastructure Unit Tests Only
 ```bash
 # Traditional unit tests in tests/*.lisp
@@ -19,8 +24,14 @@ sbcl --script tests/run-ci.lisp --log-level=off
 ```bash
 # E2E spec test
 .\bin\crisp-compile.exe tests/spec/001-def-function/01-return_7.crisp --log-level=off 
-
+# or
+sbcl --script tests/run-specs.lisp  --filter=01-return_7
 ```
+
+
+### IMPORTANT NOTE
+ The spec runner is nice because it validates the LLVM-iR using llc.exe and it will also run a "validator" if a spec test requests one (see below).
+ BUT it probably should not be the first line tool for you when debugging.  Better results are had just invoking the compiler directly on a file.  So after a change  - build the compiler, then invoke it on some spec test (or some temporary .crisp if that suits you), and there is even a --log-level flag that can be used for the compiler.   Once THAT is working , then use the spec runner.
 
 ## Test System Architecture
 

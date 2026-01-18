@@ -3,15 +3,16 @@
 
 (defun get-array-element-type (type)
   "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown."
-  (cond
-   ((listp type) (second type)) ;; e.g. (ptr float), (array float 10)
-   ((symbolp type)
-     ;; Check if it is a Mangled Cell
-     (let ((unmangled (unmangle-template-struct-name type)))
-       (if (and (consp unmangled) (eq (first unmangled) 'cell))
-           (second unmangled)
-           nil)))
-   (t nil)))
+  (let ((type (resolve-type-alias type)))
+    (cond
+     ((listp type) (second type)) ;; e.g. (ptr float), (array float 10)
+     ((symbolp type)
+       ;; Check if it is a Mangled Cell
+       (let ((unmangled (unmangle-template-struct-name type)))
+         (if (and (consp unmangled) (eq (first unmangled) 'cell))
+             (second unmangled)
+             nil)))
+     (t nil))))
 
 (defun get-struct-member-index (struct-type-name member-name)
   "Helper to find the physical index of a struct member, accounting for padding."
@@ -249,7 +250,7 @@
               (full-setter-name (intern (format nil "~a_SET!" op) (symbol-package op)))
               (signatures (append (gethash op *function-table*)
                             (gethash full-setter-name *function-table*)))
-              (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))
+              (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig)))) signatures)))
 
          ;; If no match found, try checking if it's a template we can instantiate
          (unless match
@@ -259,7 +260,7 @@
                    ;; Re-fetch signatures after possible instantiation
                    (setf signatures (append (gethash op *function-table*)
                                       (gethash full-setter-name *function-table*)))
-                   (setf match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (function-signature-parameters sig))) signatures)))))
+                   (setf match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig)))) signatures)))))
 
          (cond
           ;; Sub-case 2a: Found an overloaded setter function -> Call it.
@@ -356,19 +357,24 @@
                                              ((integerp val) (make-semantic-literal :value-type 'int :value val :source-location location))
                                              (t (make-semantic-literal :value-type 'quote :value val :source-location location)))))))))))))))
 
+
 (defun analyze-scratch-expression (expr env location)
-  "Analyzes a `(make-scratch-cell ...)` expression.
-  In single-pass mode, this marks the current function as an originator."
+  "Analyzes a (make-scratch-cell ...) expression.
+ This marks the current function as an originator in BOTH analysis modes."
   (declare (ignore env)) ; We don't use env yet.
   (unless (and (= (length expr) 2) (symbolp (cadr expr)))
     (error "Malformed make-scratch-cell form: ~a. Expected (make-scratch-cell <type>)" expr))
 
-  ;; --- Phase 5: Single-Pass Originator Detection ---
-  ;; If *call-graph* is nil, we are in single-pass mode.
-  (when (null *call-graph*)
-        (log:debug "Single-pass: Found originator form in ~s. Marking it." *current-compiling-function*)
-        (setf (gethash *current-compiling-function* *implicit-arg-map*)
-          '(:storage)))
+  ;; --- Originator Detection (both single-pass and two-pass) ---
+  ;; Store the actual cell type and name in *implicit-arg-map*
+  (log:debug "Originator: Found make-scratch-cell in ~s" *current-compiling-function*)
+  (let* ((inner-type (cadr expr))
+         (raw-spec (list 'cell inner-type))
+         (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
+    ;; Store: (name . type) - for now use generated name __sc
+    ;; Later: extract :name from make-scratch-cell keywords
+    (setf (gethash *current-compiling-function* *implicit-arg-map*)
+      (list (cons '__sc canonical-spec))))
 
   (let ((inner-type (cadr expr)))
     ;; Ensure the inner type is valid
@@ -376,7 +382,6 @@
       (error 'crisp-unknown-type-error :type-name inner-type :source-location location))
 
     ;; Construct raw spec and expand/canonicalize it (e.g. inject defaults)
-    ;; We use expand-storage-handle-type-specifier directly to get the LIST form, not the mangled symbol.
     (let* ((raw-spec (list 'cell inner-type))
            (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
 

@@ -37,7 +37,9 @@
                                              (:file "src/codegen/abi")
                                              (:file "src/codegen") ; 7. Uses compiler, defines codegen
                                              (:file "src/templates") ; 8. with-template-type macro
-                                             (:file "src/main") ; 9. Uses compiler, defines main
+                                             (:file "src/metadata") ; 9. Metadata generation
+                                             (:file "src/metadata-val") ; 10. Metadata validators
+                                             (:file "src/main") ; 11. Uses compiler, defines main
 
                                              ;; overlays - when testings out new functions, we just
                                              ;;            amend them to the overlay for that package
@@ -45,7 +47,9 @@
                                              ;;            When the feature is done, they'll be incorporated 
                                              ;;            back to /src and the file cleared.
                                              (:file "overlays/crisp-llvm-bindings-overlay")
-                                             (:file "overlays/crisp-compiler-overlay")
+                                             (:file "overlays/crisp-compiler-overlay" :around-compile (lambda (thunk)
+                                                                                                        (handler-bind ((warning #'muffle-warning))
+                                                                                                          (funcall thunk))))
                                              (:file "overlays/crisp-language-overlay"))
 
            ;; --- Build Instructions ---

@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "An unexpected error occurred: &out cannot appear after &key."
+;; CHECK-FAIL: "&out cannot appear after &key."
 
 ;; &out must come before &key
 ;; it is an error if that order is reversed

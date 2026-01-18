@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "An unexpected error occurred: &out cannot appear after &optional."
+;; CHECK-FAIL: "&out cannot appear after &optional."
 
 ;; &out should come before  &optional 
 ;; it is an error to appear reversed

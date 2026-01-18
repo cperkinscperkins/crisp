@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "An unexpected error occurred: &optional cannot appear after &key."
+;; CHECK-FAIL: "&optional cannot appear after &key."
 
 ;; &optional must appear before &key.  Error if reversed.
 

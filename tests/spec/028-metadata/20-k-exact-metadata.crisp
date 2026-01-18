@@ -1,0 +1,17 @@
+;; xEST-WITH[--metadata]
+
+;; at this time, def-kernel-exact produces no metadata at all. 
+;; we can revisit this later.
+
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+
+(def-function store-7-return-8 (&out c)
+    (declare #'(&out out-c => long))
+    (set! (~ c) 7)
+    (as-long 8))
+
+(def-kernel-exact call_function (byte-size ptr offset)
+    (declare #'(ulong voidp ulong))
+    (let ((c (marshall-cell out-c byte-size ptr offset)))
+        (store-7-return-8 c))) 

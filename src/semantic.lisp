@@ -24,7 +24,8 @@
   (return-types nil :type list)
   (source-location nil :type list)
   (is-template-p nil :type boolean)
-  (template-params nil :type list))
+  (template-params nil :type list)
+  (implicit-parameters nil :type list)) ; List of parameter-def for implicit args (e.g. __storage)
 
 (defstruct generic-function-def
   name
@@ -55,7 +56,8 @@
 ;; blueprint for a function
 (defstruct semantic-function
   name ; 'my-func
-  param-list ; A list of types
+  param-list ; A list of declared parameter nodes
+  implicit-params ; A list of implicit parameter nodes (e.g., __sc for scratch cells)
   return-type ; The *validated* type, e.g., 'i32
   body ; A list of *other* semantic nodes
   is-entry-point ; T if this is a kernel (has (declare (entry-point)))

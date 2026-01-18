@@ -220,6 +220,17 @@ SHORT TERM PLAN
 - [ ] damn literal numbers are long overdue.  1.0f 1i 2l  something.
 - - [ ] also, give up on "no (to-int )" already. geebus
 - [ ] DENY setf and aref.  
+- [ ] &out has no verification that the argument is NOT READ FROM.
+- [ ] fix STYLE-WARNINGS. Too many unused vars.
+- [ ] unit tests aren't picking up overlay?  Fix that. (I think this is not true)
+- [ ] make-implicit-XXXX with :msg and :name
+- [ ] make-scratch-cell should use make-implicit-cell  => tests for :name / :msg in the metadata
+- [ ] move validators all to one file (or some files). And change compilation
+      so that the compiler doesn't load them. Only the spec runner?
+- [ ] new test ( tests\spec\010-def-record\17-record-compare-struct.crisp ) needs validation and kernel?
+- [ ] we aren't testing explosion of def-record, etc.  The metadata support will give us that opportutnity.
+     otherwise, need to either --ir-target=llvm-ir or something more complicated for the validators
+- [ ] review the validators in the 028-metadata directory.  I have a feeling they are only cursory. (probably just listp or something)
 - [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - - [x] Storage Properties  (cannot be set)
 - - - [x] address-space
@@ -260,7 +271,7 @@ SHORT TERM PLAN
 - [x] def-kernel-exact 
 - [x] def-kernel  <-- 
 - [ ] expand variadics (+, * etc).  Maybe up to 5 or 7?  (+ a b c d e)
-- [ ] def-function has strict return type checking. Meaning, if it declares nil as return type,
+- [x] def-function has strict return type checking. Meaning, if it declares nil as return type,
       it has to return nil ( just add `(return)` ).  This is not necessarily optimal.
       For def-grid-function and def-kernel, we can have the macro amend that `(return)` so it's a
       non-issue.  If we want, consider enhancing analyze-body-expressions to correctly handle nil literals as valid void-return expressions (currently they are filtered out).
@@ -384,11 +395,11 @@ Issues and Shortcomings
 - [x] "negative tests".  The error files still not split out along the spine.
 - - [ ] exactly one failure per file seems suboptimal. unpleasant.
 - - [x] it'd be nice to declare the expected error right with the test.  Sort of like llvm-lit.  
-- - [ ] llvm-lit does warnings as well as errors.   a bit brittle though.
+- - [x] llvm-lit does warnings as well as errors.   a bit brittle though.
 
-- [ ] flags. no way to capture WHEN any particular flag should be developed.
-- - [ ] no way to declare their usage in the spec test.
-- [ ] unit tests. Unit tests need to be broken up across the spine too.
+- [x] flags. no way to capture WHEN any particular flag should be developed.
+- - [x] no way to declare their usage in the spec test.
+- [x] unit tests. Unit tests need to be broken up across the spine too.
 
 What other things are not properly captured in the spine?
 

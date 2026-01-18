@@ -1,0 +1,21 @@
+;; TEST-WITH[--metadata]: validate-12-multiple-kernels
+
+#|
+
+Each "loose" kernel in a .crisp fil that is not part of a def-orchestration gets
+its own orchestration and own .metacrisp file.
+
+At this point in the development spine, we do not yet support def-orchestration in 
+source .crisp files.  So each kernel will get its own .metacrisp file.
+
+|#
+
+(def-kernel k_one (c)
+    (declare (type c (cell float :address-space :global :access :read-write)))
+  (let ((f (~ c)))
+    (set! (~ c) (+ f 1.0))))
+
+(def-kernel k_two (c)
+    (declare (type c (cell float :address-space :global :access :read-write)))
+  (let ((f (~ c)))
+    (set! (~ c) (+ f 2.0))))

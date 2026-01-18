@@ -130,7 +130,7 @@
                                   (cl:if (equal resolved base)
                                          ;; Cycle detected (A->A), return base as canonical 
                                          (progn
-                                          (format *error-output* "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base.~%" base)
+                                          (log:warn "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base." base)
                                           (list base))
                                          ;; Recurse safely
                                          (canonicalize-type-specifier resolved))))))
@@ -412,8 +412,14 @@
              (resolve-type-to-llvm mangled))
            ;; It is NOT a template (scalar or basic struct with props), resolve base directly
            (resolve-type-to-llvm base))))
-
-    (t (error "Cannot resolve type to LLVM: ~a" type-spec))))
+    (t
+     ;; Fallback: Check for alias by name (package mismatch handling)
+     (cl:let ((alias-match (loop for k being the hash-keys of *crisp-type-aliases*
+                                   when (string-equal (symbol-name k) (symbol-name type-spec))
+                                   return k)))
+       (if alias-match
+           (resolve-type-to-llvm (gethash alias-match *crisp-type-aliases*))
+           (error "Cannot resolve type to LLVM: ~a" type-spec))))))
 
 (defun incomplete-type-p (type-spec)
   "Checks if a type specifier is incomplete (missing required compile-time properties).

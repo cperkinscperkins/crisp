@@ -1,4 +1,4 @@
-;; TEST-WITH[--metadata]
+;; TEST-WITH[--metadata] : validate-04-basic-struct
 
 ;; point should appear in the metadata by virtue of being used at the kernel param boundary.
 (def-struct point (x int) (y int))

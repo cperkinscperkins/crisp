@@ -40,3 +40,22 @@ Note: Tests 04 & 06 work because they don't use type aliases; test 08 fails beca
 The type equivalence function (types-equivalent-p) needs to resolve aliases, but my overlay version broke builtin registration. This is getting complex - we need to carefully modify types-equivalent-p without breaking existing functionality.
 
 [x] 013 - Recursive def-type hangs
+
+[x] 015 - scratch cells records, when flattened, should have three slots:
+          storage-ptr, storage-bytesize, and cell-offset.
+          But, right now, when scratch cells are implicitly added to the parameter
+          list, they only have two slots: storage-ptr and storage-bytesize.
+          We should a) check that this is only true of SCRATCH CELLS, and not ALL cells.
+          b) fix.
+
+[ ] 016 - This is part of the metdata for the 01-aliases.crisp
+          :declared-signature (("i" :TYPE CRISP-LANGUAGE::III :RANGE (0 0)))
+          Note how CRISP-LANGUAGE appears there. It should not. Crisp does
+          not expose package names outside itself. 
+
+[x] 017 - the tests\spec\028-metadata\18-implicit-scratch-cell-signature.crisp
+         has a scratch cell. While it'll be in the :physical-signature, it is NOT in the :declared-signature. Therefore they are listed separately. This is almost working:
+         :implicit-params (("__storage" :TYPE CRISP.COMPILER:STORAGE :ADDRESS-SPACE
+                       :LOCAL :ACCESS :READ-WRITE :RANGE (0 1)))
+
+        But note that this is "__storage". . That's wrong.  I suspect this is a consequence of bug 015, and may not be an independent bug. 

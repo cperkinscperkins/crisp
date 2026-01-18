@@ -25,7 +25,7 @@
 (:kernels 
     ("my_kernel" 
       :source "path/to/some.crisp"
-      (:output (:spv "path/to/some/.spv") (:ptx "path/to/some/.ptx"))
+      (:output-targets (:spv "path/to/some/.spv") (:ptx "path/to/some/.ptx"))
         (:physical-signature 
         ;; scratch cell "sc"
         ;; container
@@ -75,7 +75,9 @@
         ;; user defined 'implicit' params.  
         ;; the debug logging one is important to distinguish. 
         (:implicit-params
-            (sc :type (cell iii ) 
+            (:name "sc"
+             :msg  "please add an extra 10 bytes" 
+                :type (cell iii ) 
                 :debug-logging  :true    
                 :address-space  :local 
                 :access :read-write 
