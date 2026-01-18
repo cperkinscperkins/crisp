@@ -359,7 +359,7 @@
              (width (get-physical-width type))
              (start current-phys-index)
              (end (+ start (max 0 (1- width))))
-             (entry (list (string-downcase (symbol-name name)))))
+             (entry (list :name (string-downcase (symbol-name name)))))
         (unless (and (symbolp name) (string-equal (symbol-name name) "&OUT"))
           (setf entry (append entry (list :type (strip-package-qualifiers type))))
           (when (%storage-handle-type-p type)
@@ -407,7 +407,7 @@
                               (>= (length type) 4))
                          (nth 3 type) ; Position 3 is access
                          :read-write)))
-        (let ((entry (list (string-downcase (symbol-name name))
+        (let ((entry (list :name (string-downcase (symbol-name name))
                            :type (strip-package-qualifiers type)
                            :address-space address-space
                            :access access
@@ -446,7 +446,7 @@
             (setf blocks-to-emit (remove-duplicates (nreverse blocks-to-emit) :test #'equalp))
 
             (dolist (blk blocks-to-emit)
-              (format output-stream "  (~s~%" (getf blk :name))
+              (format output-stream "  (:name ~s~%" (getf blk :name))
               (format output-stream "    :source ~s~%" (getf blk :source))
               (when (getf blk :output) (format output-stream "    :output-targets ~s~%" (getf blk :output)))
               (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
