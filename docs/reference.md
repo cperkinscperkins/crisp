@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-17T17:10:08.852292Z
+Generated on 2026-01-18T04:34:18.654201Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -144,6 +144,12 @@ Generated on 2026-01-17T17:10:08.852292Z
 
 
 ---
+### DEFVAR `*SCANNING-FUNCTION-NAME*`
+
+  > The name of the function currently being scanned in Pass 1.
+
+
+---
 ### DEFVAR `*SCAN-CALLEES*`
 
 ---
@@ -156,6 +162,13 @@ Generated on 2026-01-17T17:10:08.852292Z
 ---
 ### DEFGENERIC `SCAN-OPERATOR`
 - **Args**: `(OP ARGS)`
+
+---
+### DEFUN `MARK-CARRIERS-PASS`
+- **Args**: `(ORIGINATORS)`
+
+  > Marks carrier functions during two-pass mode.
+
 
 ---
 ### DEFUN `SHALLOW-ANALYZE-BODY`
@@ -439,7 +452,7 @@ Generated on 2026-01-17T17:10:08.852292Z
 ### DEFUN `ANALYZE-SCRATCH-EXPRESSION`
 - **Args**: `(EXPR ENV LOCATION)`
 
-  > Analyzes a `(make-scratch-cell ...)` expression.  >   In single-pass mode, this marks the current function as an originator.
+  > Analyzes a (make-scratch-cell ...) expression.  >  This marks the current function as an originator in BOTH analysis modes.
 
 
 ---
@@ -592,7 +605,7 @@ Generated on 2026-01-17T17:10:08.852292Z
 ### DEFUN `GET-EXPANDED-TYPES`
 - **Args**: `(TYPE-SPEC MODULE)`
 
-  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type).  >      >    If *target-backend* is :spirv or :ptx, upgrade pointers in storage handles to Global Address Space (1).
+  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64 i64). For 'storage', returns (ptr i64). For records, explodes recursively. For others, returns (type).  >      >    If *target-backend* is :spirv or :ptx, upgrade pointers in storage handles to Global Address Space (1).
 
 
 ---
@@ -1253,6 +1266,27 @@ Generated on 2026-01-17T17:10:08.852292Z
 - **Args**: `(PATHS)`
 
   > Validates that multiple kernel metadata files are generated.
+
+
+---
+### DEFUN `VALIDATE-DEF-RECORD-EXPLOSION`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates that def-record types are exploded in physical signatures.
+
+
+---
+### DEFUN `VALIDATE-SCRATCH-CELL-EXPLOSION`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates that scratch cells explode to 3 slots in metadata.
+
+
+---
+### DEFUN `VALIDATE-DEF-RECORD-EXPLOSION-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates that def-record types are exploded in LLVM IR signatures.  >    Takes a path to a .ll file containing LLVM IR.
 
 
 ---
