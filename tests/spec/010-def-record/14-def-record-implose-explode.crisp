@@ -1,4 +1,6 @@
 
+;; TEST-WITH[--ir-target=llvmir] : validate-def-record-explode-ir
+
 ;; Verifies that records are passed as EXPLODED parameters (SROA), not aggregates.
 
 (def-record v-point (x int) (y int))

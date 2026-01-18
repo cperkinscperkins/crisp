@@ -1,3 +1,6 @@
+;; TEST-WITH[--ir-target=llvmir] : validate-call-function-ir
+;; TEST-WITH[--ir-target=llvmir] : validate-call-function-f-ir
+
 ;; gen-XXXX  form requires a third argument for kernels: the exact name (C style)
 ;; that should be generated. 
 

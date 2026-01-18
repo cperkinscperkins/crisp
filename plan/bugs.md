@@ -59,3 +59,8 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
                        :LOCAL :ACCESS :READ-WRITE :RANGE (0 1)))
 
         But note that this is "__storage". . That's wrong.  I suspect this is a consequence of bug 015, and may not be an independent bug. 
+
+[ ] 018 - kernel names are being lower cased, not case preserved. 
+        THere may not be a simple fix for this. Kernel names are most definitely interned as symbols now
+        and used in tons of lookups.  Changing to string will mean touching a lot of code. 
+        Decide what to do. Having lower-case is not world ending.

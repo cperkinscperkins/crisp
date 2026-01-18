@@ -1,3 +1,5 @@
+;; TEST-WITH[--ir-target=llvmir] : validate-return-7-ir
+
 ;; With def-kernel-exact realized
 ;; then def-kernel expands to the def-kernel-exact with args and marshalling of Storage Handles 
 
