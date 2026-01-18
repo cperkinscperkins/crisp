@@ -222,6 +222,12 @@ SHORT TERM PLAN
 - [ ] DENY setf and aref.  
 - [ ] &out has no verification that the argument is NOT READ FROM.
 - [ ] fix STYLE-WARNINGS. Too many unused vars.
+- [ ] Refactor:
+   - valid-parameterized-type-p   in types/validation.lisp
+   - register-function-signature in environment.lisp
+   - compile-def-function in analysis/core.lisp. triple nested let?
+
+- [ ] WTF: mark-carriers-pass in core.lisp has *reverse-call-graph* which does not exist.
 - [ ] unit tests aren't picking up overlay?  Fix that. (I think this is not true)
 - [ ] make-implicit-XXXX with :msg and :name
 - [ ] make-scratch-cell should use make-implicit-cell  => tests for :name / :msg in the metadata

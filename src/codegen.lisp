@@ -1007,6 +1007,7 @@
          ;; Insert the new value
          (new-struct-val (llvm-build-insert-value builder struct-val new-member-val member-index "struct_update")))
     (values new-struct-val nil)))
+
 (defmethod generate-node-ir ((node semantic-aref) builder module var-env di-builder di-scope location-map)
   "Generates IR for array access (aref). Currently supports CELL types."
   (let* ((array-node (semantic-aref-array-node node))

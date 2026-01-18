@@ -224,9 +224,7 @@
          (params (third form))
          (body-and-loc (cdddr form))
          ;; Extract declarations manually to check for optional args
-         (declare-forms (loop for f in body-and-loc while (and (listp f) (eq (car f) 'declare)) collect f))
-         ;; Extract real body (remove declarations)
-         (real-body (nthcdr (length declare-forms) body-and-loc)))
+         (declare-forms (loop for f in body-and-loc while (and (listp f) (eq (car f) 'declare)) collect f)))
 
     (multiple-value-bind (explicit-env return-types optional-idx defaults key-idx)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
@@ -632,27 +630,24 @@
             :inferred (length explicit-arg-types)
             :source-location location))
 
-        ;; ... rest of function unchanged ...
-        (let ((ret-type (function-signature-return-types signature)))
+        (let ((augmented-signature
+               (if implicit-args-required
+                   (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
+                                                collect (make-parameter-def :name param-name :type param-type :kind :in))))
+                     (make-function-signature
+                      :name (function-signature-name signature)
+                      :parameters (append implicit-params (function-signature-parameters signature))
+                      :return-types (function-signature-return-types signature)
+                      :source-location (function-signature-source-location signature)
+                      :is-template-p (function-signature-is-template-p signature)
+                      :template-params (function-signature-template-params signature)))
+                   signature)))
 
-          (let ((augmented-signature
-                 (if implicit-args-required
-                     (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
-                                                  collect (make-parameter-def :name param-name :type param-type :kind :in))))
-                       (make-function-signature
-                        :name (function-signature-name signature)
-                        :parameters (append implicit-params (function-signature-parameters signature))
-                        :return-types (function-signature-return-types signature)
-                        :source-location (function-signature-source-location signature)
-                        :is-template-p (function-signature-is-template-p signature)
-                        :template-params (function-signature-template-params signature)))
-                     signature)))
-
-            (make-semantic-call :name (function-signature-name augmented-signature)
-                                :type (function-signature-return-types augmented-signature)
-                                :args final-arg-nodes
-                                :signature augmented-signature
-                                :source-location location)))))))
+          (make-semantic-call :name (function-signature-name augmented-signature)
+                              :type (function-signature-return-types augmented-signature)
+                              :args final-arg-nodes
+                              :signature augmented-signature
+                              :source-location location))))))
 
 
 ;; --- Helper to get the type from any node ---

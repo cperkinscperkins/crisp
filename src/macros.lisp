@@ -281,8 +281,7 @@
   "Returns T if the type-spec is a storage handle but is missing explicit required keys (address-space, access)."
   (let ((resolved (%resolve-alias-strict type-spec)))
     (when (and (consp resolved) (%storage-handle-type-p resolved))
-          (let ((base (first resolved))
-                (args (rest resolved)))
+          (let ((args (rest resolved)))
             (let ((is-kw (or (member :address-space args) (member :access args))))
               (cond
                (is-kw
@@ -291,6 +290,7 @@
                    (not (and has-addr has-acc))))
                ((= (length args) 3) nil)
                (t t)))))))
+
 (defun %explode-kernel-args (params signature)
   "Explodes storage handle parameters into raw scalars.
    Returns (VALUES exploded-params exploded-signature-types reassembly-bindings)."

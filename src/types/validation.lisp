@@ -458,8 +458,7 @@
                (t
                 (cl:let ((struct-def (find-struct-definition-by-name base)))
                   (if struct-def
-                      (cl:let ((template-args-count (or arity 0))
-                               (prop-args (if arity (subseq args arity) args)))
+                      (cl:let ((prop-args (if arity (subseq args arity) args)))
                         (log:debug "Checking properties for ~a. PropArgs: ~a" base prop-args)
 
                         ;; Map provided properties
