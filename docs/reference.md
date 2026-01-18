@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-18T21:24:49.344913Z
+Generated on 2026-01-18T23:06:26.409351Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -1423,6 +1423,65 @@ Generated on 2026-01-18T21:24:49.344913Z
 
   > Validates that def-record types are exploded in LLVM IR signatures.  >    Takes a path to a .ll file containing LLVM IR.
 
+
+---
+### DEFUN `VALIDATE-SCRATCH-CELL-EXPLOSION-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates that scratch cells explode to 3 LLVM parameters in IR signatures.  >    Checks for: ptr addrspace(N), i64 (size), i64 (offset).  >      >    Example expected signature:  >    define i32 @kernel_cell_int_global_read_write_int(ptr addrspace(1) %0, i64 %1, i64 %2, i32 %3)  >    where %0, %1, %2 are the exploded cell (ptr, size, offset) and %3 is the explicit int param.
+
+
+---
+### DEFUN `VALIDATE-TOP-KERNEL-4-ARGS-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates that top_kernel has exactly 4 parameters (3 from cell + 1 int).
+
+
+---
+### DEFUN `VALIDATE-DEF-RECORD-EXPLODE-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates that v-point def-record explodes to 2 i32 parameters.
+
+
+---
+### DEFUN `VALIDATE-MY-KERNEL-SCRATCH-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates that my_kernel has implicit scratch cell parameters.
+
+
+---
+### DEFUN `VALIDATE-KERNEL-NAME-EXACT-IR`
+- **Args**: `(IR-PATH EXPECTED-NAME)`
+
+  > Validates that kernel has exact name (case-sensitive).
+
+
+---
+### DEFUN `VALIDATE-C-STYLE-NAME-IR`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-CALL-FUNCTION-IR`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-CALL-FUNCTION-F-IR`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-RETURN-7-IR`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-CELL-ADD-I-IR`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-CELL-ADD-F-IR`
+- **Args**: `(IR-PATH)`
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp\src\metadata.lisp`

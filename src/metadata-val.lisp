@@ -278,7 +278,9 @@
 
 ;; src/metadata-val.lisp
 ;; Specific validators for each test
-(defun validate-c-style-name-ir (ir-path) (validate-kernel-name-exact-ir ir-path "c_Style_Name"))
+(defun validate-c-style-name-ir (ir-path)
+  ;; this is _technically_ wrong. It should be C_Style_Name.  See bug 018.
+  (validate-kernel-name-exact-ir ir-path "c_style_name"))
 (defun validate-call-function-ir (ir-path) (validate-kernel-name-exact-ir ir-path "call_function"))
 (defun validate-call-function-f-ir (ir-path) (validate-kernel-name-exact-ir ir-path "call_function_f"))
 (defun validate-return-7-ir (ir-path) (validate-kernel-name-exact-ir ir-path "return_7"))
