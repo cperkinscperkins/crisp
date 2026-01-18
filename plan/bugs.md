@@ -48,7 +48,7 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
           We should a) check that this is only true of SCRATCH CELLS, and not ALL cells.
           b) fix.
 
-[ ] 016 - This is part of the metdata for the 01-aliases.crisp
+[x] 016 - This is part of the metdata for the 01-aliases.crisp
           :declared-signature (("i" :TYPE CRISP-LANGUAGE::III :RANGE (0 0)))
           Note how CRISP-LANGUAGE appears there. It should not. Crisp does
           not expose package names outside itself. 
