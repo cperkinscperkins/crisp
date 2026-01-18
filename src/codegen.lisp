@@ -787,39 +787,45 @@
       (setf last-val (generate-node-ir sub-node builder module var-env di-builder di-scope location-map)))
     (values last-val nil)))
 
+
+(defun %generate-let-binding (binding builder module let-env di-builder di-scope location-map memoized-aggregates)
+  "Helper: Generates IR for a single let binding.
+   Updates let-env with the new binding and returns the alloca."
+  (let* ((var-name (car binding))
+         (val-node (cdr binding))
+         (llvm-type-name (get-single-value-type val-node)))
+
+    (let ((val-ir
+           (if (typep val-node 'semantic-extract-value)
+               ;; If it's an extract, check if we've already generated the aggregate.
+               (let* ((agg-node (semantic-extract-value-aggregate-node val-node))
+                      (agg-val (or (gethash agg-node memoized-aggregates)
+                                   ;; If not, generate and memoize it.
+                                   (let ((new-agg-val (generate-expression-ir builder module let-env di-builder di-scope location-map agg-node)))
+                                     (setf (gethash agg-node memoized-aggregates) new-agg-val)
+                                     new-agg-val)))
+                      (index (semantic-extract-value-index val-node)))
+                 (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index)))
+               ;; Otherwise, it's a simple binding, generate as before.
+               (generate-expression-ir builder module let-env di-builder di-scope location-map val-node))))
+
+      ;; Allocate and store
+      (let ((alloca (llvm-build-alloca builder (crisp-type-to-llvm-type llvm-type-name module) (string-downcase var-name))))
+        (llvm-build-store builder val-ir alloca)
+        (setf (gethash var-name let-env) alloca)
+        alloca))))
+
 (defmethod generate-node-ir ((node semantic-let) builder module var-env di-builder di-scope location-map)
   "Generates IR for a let expression."
   ;; Create a new environment for the let block that inherits from the outer one.
-  ;; We don't actually need to copy, we'll just add to it and the new bindings
-  ;; will shadow outer ones if names conflict.
   (let ((let-env (alexandria:copy-hash-table var-env))
         (memoized-aggregates (make-hash-table :test 'eq)))
-    ;; 1. Generate code for each binding.
+
+    ;; Generate code for each binding
     (dolist (binding (semantic-let-bindings node))
-      (let* ((var-name (car binding))
-             (val-node (cdr binding))
-             (llvm-type-name (get-single-value-type val-node)))
+      (%generate-let-binding binding builder module let-env di-builder di-scope location-map memoized-aggregates))
 
-        (let ((val-ir
-               (if (typep val-node 'semantic-extract-value)
-                   ;; If it's an extract, check if we've already generated the aggregate.
-                   (let* ((agg-node (semantic-extract-value-aggregate-node val-node))
-                          (agg-val (or (gethash agg-node memoized-aggregates)
-                                       ;; If not, generate and memoize it.
-                                       (let ((new-agg-val (generate-expression-ir builder module let-env di-builder di-scope location-map agg-node)))
-                                         (setf (gethash agg-node memoized-aggregates) new-agg-val)
-                                         new-agg-val)))
-                          (index (semantic-extract-value-index val-node)))
-                     (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index)))
-                   ;; Otherwise, it's a simple binding, generate as before.
-                   (generate-expression-ir builder module let-env di-builder di-scope location-map val-node))))
-
-          ;; Now that we have the correct value (val-ir), allocate and store it.
-          (let ((alloca (llvm-build-alloca builder (crisp-type-to-llvm-type llvm-type-name module) (string-downcase var-name))))
-            (llvm-build-store builder val-ir alloca)
-            (setf (gethash var-name let-env) alloca)))))
-
-    ;; 2. Generate code for the body, using the extended environment.
+    ;; Generate code for the body, using the extended environment.
     ;; The result of the let is the result of the last expression in the body.
     (let ((last-val nil)
           (last-loc nil))
