@@ -195,6 +195,22 @@
    (t
      (eval form))))
 
+
+(defun %compile-standard-function (form location module builder di-builder di-compile-unit location-map)
+  "Helper: Compiles a standard (non-generic) function definition."
+  (let* ((name (second form))
+         (*current-compiling-function* name))
+    (push *current-compiling-function* *single-pass-call-stack*)
+    (unwind-protect
+        (let* ((form-with-location (append form (list :source-location `',location)))
+               (expanded-form (macroexpand-1 form-with-location))
+               (semantic-node (eval expanded-form)))
+          ;; Handle implicit templates which return nil
+          (when semantic-node
+                (log:info "Generating IR for function ~a in module ~a" name module)
+                (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))
+      (pop *single-pass-call-stack*))))
+
 (defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
   "Compiles a single def-function form. Handles optional parameters by generating overloaded variants."
   ;; In single-pass mode, the signature won't be registered yet.
@@ -205,29 +221,25 @@
          (params (third form))
          (body-and-loc (cdddr form))
          ;; Extract declarations manually to check for optional args
-         (declare-forms (loop for f in body-and-loc while (and (listp f) (eq (car f) 'declare)) collect f)))
+         (declare-forms (loop for f in body-and-loc
+                              while (and (listp f) (eq (car f) 'declare))
+                              collect f)))
 
     (multiple-value-bind (explicit-env return-types optional-idx defaults key-idx)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
+      (declare (ignore explicit-env return-types defaults))
 
-      (if (or optional-idx key-idx)
-          ;; --- OPTIONAL/KEY PARAMETERS: Lazy Instantiation (Generic Template) ---
-          ;; We skip eager compilation here. The specific variants will be compiled
-          ;; on-demand by instantiate-generic-function when called.
-          (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name)
+      (cond
+       ;; --- OPTIONAL/KEY PARAMETERS: Lazy Instantiation (Generic Template) ---
+       ;; We skip eager compilation here. The specific variants will be compiled
+       ;; on-demand by instantiate-generic-function when called.
+       ((or optional-idx key-idx)
+         (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name))
 
-          ;; --- STANDARD Compilation (No Optionals) ---
-          (let ((*current-compiling-function* (second form)))
-            (push *current-compiling-function* *single-pass-call-stack*)
-            (unwind-protect
-                (let ((form-with-location (append form (list :source-location `',location))))
-                  (let ((expanded-form (macroexpand-1 form-with-location)))
-                    ;; Handle implicit templates which return nil
-                    (let ((semantic-node (eval expanded-form)))
-                      (when semantic-node
-                            (log:info "Generating IR for function ~a in module ~a" (second form) module)
-                            (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))))
-              (pop *single-pass-call-stack*)))))))
+       ;; --- STANDARD Compilation (No Optionals) ---
+       (t
+         (%compile-standard-function form location module builder di-builder di-compile-unit location-map))))))
+
 
 (defun walk-code-forms (forms visitor-fn)
   "Walks top-level forms, handling macros and progn, and calling visitor-fn on def-function."
