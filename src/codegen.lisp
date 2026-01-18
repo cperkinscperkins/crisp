@@ -130,6 +130,27 @@
            (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
            (llvm-set-function-call-conv func 0)))))
 
+(defun %check-existing-function (existing fn-name di-builder di-compile-unit func crisp-return-type param-nodes location-map fn-loc module fn-type)
+  "Helper: Handles redefinition or forward declaration of existing functions."
+  (cond
+   ;; Case 1: Redefinition (Function has a body already). We must Replace it.
+   ((> (llvm-count-basic-blocks existing) 0)
+     (log:warn "Redefining function ~a (replacing existing definition)." fn-name)
+     (llvm-delete-function existing)
+     (let ((new-func (llvm-add-function module fn-name fn-type)))
+       (let ((di-subprogram (generate-debug-info di-builder di-compile-unit new-func fn-name fn-loc crisp-return-type param-nodes location-map)))
+         (values new-func di-subprogram))))
+
+   ;; Case 2: Forward Declaration (Function has no body). Reuse it.
+   (t
+     (values existing nil)))) ; TODO: Debug info for definition of forward decl?
+
+(defun %create-new-function (fn-name fn-type module di-builder di-compile-unit crisp-return-type param-nodes location-map fn-loc)
+  "Helper: Creates a new function and its debug info."
+  (let ((func (llvm-add-function module fn-name fn-type)))
+    (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
+      (values func di-subprogram))))
+
 (defun generate-function-prototype (semantic-function module di-builder di-compile-unit location-map)
   "Generates the LLVM function prototype and debug info."
   (let* ((return-types (semantic-function-return-type semantic-function))
@@ -155,33 +176,25 @@
     (setf *cached-int32-type* (llvm-int32-type))
     (setf *cached-int64-type* (llvm-int64-type))
     (log:debug "Cached INT32 (Global): ~a" *cached-int32-type*)
+
+    ;; FILTER: On PTX, skip functions that return structs by value to avoid llc crash.
+    (when (eq *target-backend* :ptx)
+          (let ((type-obj (gethash crisp-return-type *crisp-types*)))
+            (when (and type-obj (member (crisp-type-category type-obj) '(:struct :record)))
+                  (log:warn "Skipping generation of function ~a on PTX due to struct return value (unsupported)." fn-name)
+                  (return-from generate-function-prototype (values nil nil)))))
+
     ;; Check if already exists (forward declaration or redefinition)
     (let ((existing (llvm-get-named-function module fn-name)))
       (if (and existing (not (cffi:null-pointer-p existing)))
-          (cond
-           ;; Case 1: Redefinition (Function has a body already). We must Replace it.
-           ((> (llvm-count-basic-blocks existing) 0)
-             (log:warn "Redefining function ~a (replacing existing definition)." fn-name)
-             (llvm-delete-function existing)
-             (let ((func (llvm-add-function module fn-name fn-type)))
-               (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
-                 (values func di-subprogram))))
-           ;; Case 2: Forward Declaration (Function has no body). Reuse it.
-           (t
-             (values existing nil))) ; TODO: Debug info for definition of forward decl?
+          ;; Handle existing function (redefinition or forward decl)
+          (%check-existing-function existing fn-name di-builder di-compile-unit
+                                    (llvm-add-function module fn-name fn-type) ;; This is just for the prototype signature
+                                    crisp-return-type param-nodes location-map fn-loc module fn-type)
 
-          ;; Case 3: New Function (Does not exist). Create it.
-          (progn
-           ;; FILTER: On PTX, skip functions that return structs by value to avoid llc crash.
-           (when (eq *target-backend* :ptx)
-                 (let ((type-obj (gethash crisp-return-type *crisp-types*)))
-                   (when (and type-obj (member (crisp-type-category type-obj) '(:struct :record)))
-                         (log:warn "Skipping generation of function ~a on PTX due to struct return value (unsupported)." fn-name)
-                         (return-from generate-function-prototype (values nil nil)))))
-
-           (let ((func (llvm-add-function module fn-name fn-type)))
-             (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
-               (values func di-subprogram))))))))
+          ;; Create new function
+          (%create-new-function fn-name fn-type module di-builder di-compile-unit
+                                crisp-return-type param-nodes location-map fn-loc)))))
 
 (defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
   "Generates the body of the function."
