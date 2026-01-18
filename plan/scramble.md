@@ -222,7 +222,7 @@ SHORT TERM PLAN
 - [ ] DENY setf and aref.  
 - [ ] &out has no verification that the argument is NOT READ FROM.
 - [ ] fix STYLE-WARNINGS. Too many unused vars.
-- [ ] unit tests aren't picking up overlay?  Fix that.
+- [ ] unit tests aren't picking up overlay?  Fix that. (I think this is not true)
 - [ ] make-implicit-XXXX with :msg and :name
 - [ ] make-scratch-cell should use make-implicit-cell  => tests for :name / :msg in the metadata
 - [ ] move validators all to one file (or some files). And change compilation

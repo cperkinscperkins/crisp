@@ -53,7 +53,7 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
           Note how CRISP-LANGUAGE appears there. It should not. Crisp does
           not expose package names outside itself. 
 
-[ ] 017 - the tests\spec\028-metadata\18-implicit-scratch-cell-signature.crisp
+[x] 017 - the tests\spec\028-metadata\18-implicit-scratch-cell-signature.crisp
          has a scratch cell. While it'll be in the :physical-signature, it is NOT in the :declared-signature. Therefore they are listed separately. This is almost working:
          :implicit-params (("__storage" :TYPE CRISP.COMPILER:STORAGE :ADDRESS-SPACE
                        :LOCAL :ACCESS :READ-WRITE :RANGE (0 1)))

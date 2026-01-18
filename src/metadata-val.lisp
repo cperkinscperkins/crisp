@@ -92,9 +92,9 @@
           (return-from validate-scratch-cell-explosion nil))
 
         (let ((entry (first implicit-sig)))
-          ;; Check name is "sc" (the actual scratch cell variable name)
-          (unless (string-equal (first entry) "sc")
-            (log:error "Expected implicit param name 'sc', got '~a'" (first entry))
+          ;; Check name is "__sc" (the actual scratch cell variable name with __ prefix)
+          (unless (string-equal (first entry) "__sc")
+            (log:error "Expected implicit param name '__sc', got '~a'" (first entry))
             (return-from validate-scratch-cell-explosion nil))
 
           ;; Check type is (CELL INT) not just STORAGE
