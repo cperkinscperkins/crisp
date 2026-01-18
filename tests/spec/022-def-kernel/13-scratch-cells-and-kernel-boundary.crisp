@@ -1,4 +1,5 @@
 
+;; TEST-WITH[--ir-target=llvmir] : validate-my-kernel-scratch-ir
 
 
 #|
