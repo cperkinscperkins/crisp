@@ -218,59 +218,6 @@
 
       (nreverse generated-files))))
 
-;;; Validation
-;;; ----------
-
-(defun validate-kernel-metadata (metadata-path kernel-name &key (targets nil targets-p))
-  (let* ((forms (uiop:read-file-forms metadata-path))
-         (kernels (if forms (rest (assoc :kernels forms)) nil))
-         (k-def (if kernels (find kernel-name kernels :key #'first :test #'string=) nil)))
-
-    (unless k-def
-      (return-from validate-kernel-metadata nil))
-
-    (let ((src (getf (rest k-def) :source)))
-      (unless src
-        (return-from validate-kernel-metadata nil)))
-
-    (let ((output-targets (getf (rest k-def) :output-targets)))
-      (when targets-p
-            (let ((found-targets (mapcar #'first output-targets)))
-              (dolist (req targets)
-                (unless (member req found-targets)
-                  (return-from validate-kernel-metadata nil))))))
-    t))
-
-(defun validate-10-basics-meta (path)
-  (validate-kernel-metadata path "basic_kernel" :targets nil))
-
-(defun validate-10-basics-spv (path)
-  (validate-kernel-metadata path "basic_kernel" :targets '(:spv)))
-
-(defun validate-10-basics-multi (path)
-  (validate-kernel-metadata path "basic_kernel" :targets '(:spv)))
-
-(defun validate-12-multiple-kernels (paths)
-  (unless (listp paths)
-    (return-from validate-12-multiple-kernels nil))
-  (let ((result t))
-    (let ((p1 (find "_k_one.metacrisp" paths :test #'search :key #'namestring)))
-      (if p1
-          (unless (validate-kernel-metadata p1 "k_one")
-            (setf result nil))
-          (setf result nil)))
-    (let ((p2 (find "_k_two.metacrisp" paths :test #'search :key #'namestring)))
-      (if p2
-          (unless (validate-kernel-metadata p2 "k_two")
-            (setf result nil))
-          (setf result nil)))
-    result))
-
-(defun %storage-handle-type-p (type-spec)
-  (let ((canonical (canonicalize-type-specifier type-spec)))
-    (let ((base (if (consp canonical) (first canonical) canonical)))
-      (and (symbolp base)
-           (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)))))
 
 (defun get-physical-width (type)
   (cond
