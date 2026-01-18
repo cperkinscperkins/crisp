@@ -39,25 +39,43 @@
 (defun generate-debug-info (di-builder di-compile-unit func fn-name fn-loc return-type param-nodes location-map)
   "Generates and attaches DWARF debug info for the function."
   (when di-builder
-        (let* ((di-type-cache (make-hash-table)) (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
-                                                 (line-num (if location-map (or (gethash fn-loc location-map) 0) 0))
-                                                 (di-return-type (get-or-create-di-type (gethash return-type *crisp-types*) di-builder di-type-cache))
-                                                 (di-param-types (cons di-return-type
-                                                                       (loop for param in param-nodes
-                                                                             collect (get-or-create-di-type
-                                                                                      (gethash (semantic-param-type param) *crisp-types*)
-                                                                                      di-builder di-type-cache))))
-                                                 (di-param-array (let ((ptr (cffi:foreign-alloc :pointer :count (length di-param-types))))
-                                                                   (loop for i from 0 for type in di-param-types
-                                                                         do (setf (cffi:mem-aref ptr :pointer i) type))
-                                                                   ptr))
-                                                 (di-fn-type (llvm-di-builder-create-subroutine-type
-                                                              di-builder di-file di-param-array (length di-param-types) 0))
-                                                 (subprogram (llvm-di-builder-create-function
-                                                              di-builder di-compile-unit fn-name (length fn-name) fn-name (length fn-name)
-                                                              di-file line-num di-fn-type nil t 0 0 nil)))
-          (llvm-set-subprogram func subprogram)
-          subprogram)))
+        (let ((di-type-cache (make-hash-table)))
+          ;; File info
+          (let* ((di-file (when di-compile-unit
+                                (llvm-di-builder-create-file di-builder
+                                                             "test.crisp" (length "test.crisp")
+                                                             "/tmp/" (length "/tmp/"))))
+                 (line-num (if location-map (or (gethash fn-loc location-map) 0) 0)))
+
+            ;; Type info
+            (let* ((di-return-type (get-or-create-di-type (gethash return-type *crisp-types*)
+                                                          di-builder
+                                                          di-type-cache))
+                   (di-param-types (cons di-return-type
+                                         (loop for param in param-nodes
+                                               collect (get-or-create-di-type
+                                                        (gethash (semantic-param-type param) *crisp-types*)
+                                                        di-builder
+                                                        di-type-cache)))))
+
+              ;; Parameter array
+              (let* ((di-param-array (let ((ptr (cffi:foreign-alloc :pointer :count (length di-param-types))))
+                                       (loop for i from 0
+                                             for type in di-param-types
+                                             do (setf (cffi:mem-aref ptr :pointer i) type))
+                                       ptr))
+                     ;; Function type
+                     (di-fn-type (llvm-di-builder-create-subroutine-type
+                                  di-builder di-file di-param-array (length di-param-types) 0))
+                     ;; Subprogram
+                     (subprogram (llvm-di-builder-create-function
+                                  di-builder di-compile-unit
+                                  fn-name (length fn-name)
+                                  fn-name (length fn-name)
+                                  di-file line-num di-fn-type nil t 0 0 nil)))
+
+                (llvm-set-subprogram func subprogram)
+                subprogram))))))
 
 (defun initialize-function-parameters (builder func param-nodes module var-env)
   "Allocates stack space and stores function parameters."
@@ -269,6 +287,66 @@
        (ldb (byte 32 0) (sxhash kw)))))
 
 ;; -- literal value --
+
+(defun %generate-keyword-literal-ir (value)
+  "Helper: Generates IR for keyword/symbol/quote literals."
+  (let ((ival (resolve-keyword-constant value)))
+    (llvm-const-int (llvm-int32-type) ival nil)))
+
+(defun %generate-cell-literal-ir (builder module var-env type-spec value)
+  "Helper: Generates IR for cell literals (scratch cells)."
+  (declare (ignore value))
+  (let* ((base-type (first type-spec))
+         (storage-var-name (or (when (gethash '__sc var-env) '__sc) '__storage))
+         (storage-alloca (gethash storage-var-name var-env)))
+
+    (unless storage-alloca
+      (error "Missing implicit argument ~a for make-scratch-cell. Environment keys: ~s"
+        storage-var-name (alexandria:hash-table-keys var-env)))
+
+    (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
+           (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
+           (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
+           (cell-struct-type (ensure-struct-llvm-type mangled-name))
+           (cell-undef (llvm-get-undef cell-struct-type))
+           (cell-0 (llvm-build-insert-value builder cell-undef storage-val 0 "parent"))
+           (cell-1 (llvm-build-insert-value builder cell-0
+                                            (llvm-const-int (llvm-int64-type) 0 nil)
+                                            1 "offset"))
+           (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
+      (llvm-build-store builder cell-1 cell-handle)
+      cell-handle)))
+
+(defun %generate-enum-literal-ir (builder value llvm-type)
+  "Helper: Generates IR for enum literals."
+  (let* ((val (resolve-keyword-constant value))
+         (target-type (or llvm-type (llvm-int32-type)))
+         (val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) val) nil)))
+    (llvm-build-trunc builder val-i64 target-type "enum_trunc")))
+
+(defun %generate-scalar-literal-ir (builder value llvm-type crisp-type)
+  "Helper: Generates IR for scalar (int/float) literals."
+  (cond
+   ;; Integer types
+   ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
+     (if (zerop value)
+         (llvm-const-null llvm-type)
+         (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
+           (if (= (crisp-type-size crisp-type) 64)
+               val-i64
+               (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
+
+   ;; Float types
+   ((eq (crisp-type-category crisp-type) :float)
+     (llvm-const-real llvm-type (coerce value 'double-float)))
+
+   ;; Void
+   ((eq (crisp-type-category crisp-type) :void)
+     nil)
+
+   (t
+     (error "Codegen for literal of unknown type category: ~a" (crisp-type-name crisp-type)))))
+
 (defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
   "Generates IR for a literal value."
   (let* ((type-spec (semantic-literal-value-type node))
@@ -277,74 +355,48 @@
                       (crisp-type-to-llvm-type type-spec module)))
          (result
           (cond
-           ;; Handle parameterized types
+           ;; Keywords/symbols/quotes (simple case)
            ((or (eq type-spec 'keyword) (eq type-spec 'symbol) (eq type-spec 'quote))
-             (let ((ival (resolve-keyword-constant value)))
-               (llvm-const-int (llvm-int32-type) ival nil)))
+             (%generate-keyword-literal-ir value))
 
+           ;; Parameterized types (lists)
            ((listp type-spec)
              (let ((base-type (first type-spec)))
                (cond
+                ;; Function literals
                 ((or (eq base-type :function-literal) (eq base-type :function-type))
                   (llvm-get-undef llvm-type))
 
+                ;; Keywords/symbols in list form
                 ((or (eq base-type 'keyword) (eq base-type 'symbol))
-                  (let ((ival (resolve-keyword-constant value)))
-                    (llvm-const-int (llvm-int32-type) ival nil)))
+                  (%generate-keyword-literal-ir value))
 
+                ;; Cell literals
                 ((eq base-type 'cell)
-                  ;; FIXED: Check for both __sc (new convention) and __storage (legacy)
-                  (let* ((storage-var-name (or (when (gethash '__sc var-env) '__sc) '__storage))
-                         (storage-alloca (gethash storage-var-name var-env)))
-                    (unless storage-alloca
-                      (error "Missing implicit argument ~a for make-scratch-cell. Environment keys: ~s"
-                        storage-var-name (alexandria:hash-table-keys var-env)))
+                  (%generate-cell-literal-ir builder module var-env type-spec value))
 
-                    (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
-                           (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
-                           (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
-                           (cell-struct-type (ensure-struct-llvm-type mangled-name))
-                           (cell-undef (llvm-get-undef cell-struct-type))
-                           (cell-0 (llvm-build-insert-value builder cell-undef storage-val 0 "parent"))
-                           (cell-1 (llvm-build-insert-value builder cell-0
-                                                            (llvm-const-int (llvm-int64-type) 0 nil)
-                                                            1 "offset"))
-                           (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
-                      (llvm-build-store builder cell-1 cell-handle)
-                      cell-handle)))
+                (t
+                  (error "Codegen not implemented for literal of type ~a" type-spec)))))
 
-                (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
-
-           ;; Handle simple or singleton types
+           ;; Simple or singleton types
            ((or (symbolp type-spec)
                 (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
              (let ((type-sym (if (consp type-spec) (first type-spec) type-spec)))
                (cond
+                ;; Enums or keywords
                 ((or (gethash type-spec *crisp-enums*)
                      (member type-sym '(keyword symbol quote)))
-                  (let* ((val (resolve-keyword-constant value))
-                         (target-type (or llvm-type (llvm-int32-type)))
-                         (val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) val) nil)))
-                    (llvm-build-trunc builder val-i64 target-type "enum_trunc")))
+                  (%generate-enum-literal-ir builder value llvm-type))
 
+                ;; Scalars (int/float)
                 (t
                   (let ((crisp-type (gethash type-sym *crisp-types*)))
                     (unless crisp-type
                       (error "Codegen: Literal type ~a not found in *crisp-types* or *crisp-enums*" type-spec))
-                    (cond
-                     ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
-                       (if (zerop value)
-                           (llvm-const-null llvm-type)
-                           (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
-                             (if (= (crisp-type-size crisp-type) 64)
-                                 val-i64
-                                 (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
-                     ((eq (crisp-type-category crisp-type) :float)
-                       (llvm-const-real llvm-type (coerce value 'double-float)))
-                     ((eq (crisp-type-category crisp-type) :void) nil)
-                     (t (error "Codegen for literal of unknown type category: ~a" type-spec))))))))
+                    (%generate-scalar-literal-ir builder value llvm-type crisp-type))))))
 
-           (t (error "Codegen not implemented for literal of type ~a" type-spec))))
+           (t
+             (error "Codegen not implemented for literal of type ~a" type-spec))))
 
          (di-location
           (when (and di-builder di-scope location-map)
@@ -353,6 +405,7 @@
                   (llvm-di-builder-create-debug-location (llvm-get-module-context module)
                                                          line 0 di-scope (cffi:null-pointer))))))
     (values result di-location)))
+
 
 ;; -- reading a variable --
 (defmethod generate-node-ir ((node semantic-var-read) builder module var-env di-builder di-scope location-map)
