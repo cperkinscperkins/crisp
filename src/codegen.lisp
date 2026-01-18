@@ -39,25 +39,43 @@
 (defun generate-debug-info (di-builder di-compile-unit func fn-name fn-loc return-type param-nodes location-map)
   "Generates and attaches DWARF debug info for the function."
   (when di-builder
-        (let* ((di-type-cache (make-hash-table)) (di-file (when di-compile-unit (llvm-di-builder-create-file di-builder "test.crisp" (length "test.crisp") "/tmp/" (length "/tmp/")))) ; Placeholder
-                                                 (line-num (if location-map (or (gethash fn-loc location-map) 0) 0))
-                                                 (di-return-type (get-or-create-di-type (gethash return-type *crisp-types*) di-builder di-type-cache))
-                                                 (di-param-types (cons di-return-type
-                                                                       (loop for param in param-nodes
-                                                                             collect (get-or-create-di-type
-                                                                                      (gethash (semantic-param-type param) *crisp-types*)
-                                                                                      di-builder di-type-cache))))
-                                                 (di-param-array (let ((ptr (cffi:foreign-alloc :pointer :count (length di-param-types))))
-                                                                   (loop for i from 0 for type in di-param-types
-                                                                         do (setf (cffi:mem-aref ptr :pointer i) type))
-                                                                   ptr))
-                                                 (di-fn-type (llvm-di-builder-create-subroutine-type
-                                                              di-builder di-file di-param-array (length di-param-types) 0))
-                                                 (subprogram (llvm-di-builder-create-function
-                                                              di-builder di-compile-unit fn-name (length fn-name) fn-name (length fn-name)
-                                                              di-file line-num di-fn-type nil t 0 0 nil)))
-          (llvm-set-subprogram func subprogram)
-          subprogram)))
+        (let ((di-type-cache (make-hash-table)))
+          ;; File info
+          (let* ((di-file (when di-compile-unit
+                                (llvm-di-builder-create-file di-builder
+                                                             "test.crisp" (length "test.crisp")
+                                                             "/tmp/" (length "/tmp/"))))
+                 (line-num (if location-map (or (gethash fn-loc location-map) 0) 0)))
+
+            ;; Type info
+            (let* ((di-return-type (get-or-create-di-type (gethash return-type *crisp-types*)
+                                                          di-builder
+                                                          di-type-cache))
+                   (di-param-types (cons di-return-type
+                                         (loop for param in param-nodes
+                                               collect (get-or-create-di-type
+                                                        (gethash (semantic-param-type param) *crisp-types*)
+                                                        di-builder
+                                                        di-type-cache)))))
+
+              ;; Parameter array
+              (let* ((di-param-array (let ((ptr (cffi:foreign-alloc :pointer :count (length di-param-types))))
+                                       (loop for i from 0
+                                             for type in di-param-types
+                                             do (setf (cffi:mem-aref ptr :pointer i) type))
+                                       ptr))
+                     ;; Function type
+                     (di-fn-type (llvm-di-builder-create-subroutine-type
+                                  di-builder di-file di-param-array (length di-param-types) 0))
+                     ;; Subprogram
+                     (subprogram (llvm-di-builder-create-function
+                                  di-builder di-compile-unit
+                                  fn-name (length fn-name)
+                                  fn-name (length fn-name)
+                                  di-file line-num di-fn-type nil t 0 0 nil)))
+
+                (llvm-set-subprogram func subprogram)
+                subprogram))))))
 
 (defun initialize-function-parameters (builder func param-nodes module var-env)
   "Allocates stack space and stores function parameters."
@@ -112,6 +130,27 @@
            (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
            (llvm-set-function-call-conv func 0)))))
 
+(defun %check-existing-function (existing fn-name di-builder di-compile-unit func crisp-return-type param-nodes location-map fn-loc module fn-type)
+  "Helper: Handles redefinition or forward declaration of existing functions."
+  (cond
+   ;; Case 1: Redefinition (Function has a body already). We must Replace it.
+   ((> (llvm-count-basic-blocks existing) 0)
+     (log:warn "Redefining function ~a (replacing existing definition)." fn-name)
+     (llvm-delete-function existing)
+     (let ((new-func (llvm-add-function module fn-name fn-type)))
+       (let ((di-subprogram (generate-debug-info di-builder di-compile-unit new-func fn-name fn-loc crisp-return-type param-nodes location-map)))
+         (values new-func di-subprogram))))
+
+   ;; Case 2: Forward Declaration (Function has no body). Reuse it.
+   (t
+     (values existing nil)))) ; TODO: Debug info for definition of forward decl?
+
+(defun %create-new-function (fn-name fn-type module di-builder di-compile-unit crisp-return-type param-nodes location-map fn-loc)
+  "Helper: Creates a new function and its debug info."
+  (let ((func (llvm-add-function module fn-name fn-type)))
+    (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
+      (values func di-subprogram))))
+
 (defun generate-function-prototype (semantic-function module di-builder di-compile-unit location-map)
   "Generates the LLVM function prototype and debug info."
   (let* ((return-types (semantic-function-return-type semantic-function))
@@ -137,33 +176,25 @@
     (setf *cached-int32-type* (llvm-int32-type))
     (setf *cached-int64-type* (llvm-int64-type))
     (log:debug "Cached INT32 (Global): ~a" *cached-int32-type*)
+
+    ;; FILTER: On PTX, skip functions that return structs by value to avoid llc crash.
+    (when (eq *target-backend* :ptx)
+          (let ((type-obj (gethash crisp-return-type *crisp-types*)))
+            (when (and type-obj (member (crisp-type-category type-obj) '(:struct :record)))
+                  (log:warn "Skipping generation of function ~a on PTX due to struct return value (unsupported)." fn-name)
+                  (return-from generate-function-prototype (values nil nil)))))
+
     ;; Check if already exists (forward declaration or redefinition)
     (let ((existing (llvm-get-named-function module fn-name)))
       (if (and existing (not (cffi:null-pointer-p existing)))
-          (cond
-           ;; Case 1: Redefinition (Function has a body already). We must Replace it.
-           ((> (llvm-count-basic-blocks existing) 0)
-             (log:warn "Redefining function ~a (replacing existing definition)." fn-name)
-             (llvm-delete-function existing)
-             (let ((func (llvm-add-function module fn-name fn-type)))
-               (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
-                 (values func di-subprogram))))
-           ;; Case 2: Forward Declaration (Function has no body). Reuse it.
-           (t
-             (values existing nil))) ; TODO: Debug info for definition of forward decl?
+          ;; Handle existing function (redefinition or forward decl)
+          (%check-existing-function existing fn-name di-builder di-compile-unit
+                                    (llvm-add-function module fn-name fn-type) ;; This is just for the prototype signature
+                                    crisp-return-type param-nodes location-map fn-loc module fn-type)
 
-          ;; Case 3: New Function (Does not exist). Create it.
-          (progn
-           ;; FILTER: On PTX, skip functions that return structs by value to avoid llc crash.
-           (when (eq *target-backend* :ptx)
-                 (let ((type-obj (gethash crisp-return-type *crisp-types*)))
-                   (when (and type-obj (member (crisp-type-category type-obj) '(:struct :record)))
-                         (log:warn "Skipping generation of function ~a on PTX due to struct return value (unsupported)." fn-name)
-                         (return-from generate-function-prototype (values nil nil)))))
-
-           (let ((func (llvm-add-function module fn-name fn-type)))
-             (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
-               (values func di-subprogram))))))))
+          ;; Create new function
+          (%create-new-function fn-name fn-type module di-builder di-compile-unit
+                                crisp-return-type param-nodes location-map fn-loc)))))
 
 (defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
   "Generates the body of the function."
@@ -269,6 +300,66 @@
        (ldb (byte 32 0) (sxhash kw)))))
 
 ;; -- literal value --
+
+(defun %generate-keyword-literal-ir (value)
+  "Helper: Generates IR for keyword/symbol/quote literals."
+  (let ((ival (resolve-keyword-constant value)))
+    (llvm-const-int (llvm-int32-type) ival nil)))
+
+(defun %generate-cell-literal-ir (builder module var-env type-spec value)
+  "Helper: Generates IR for cell literals (scratch cells)."
+  (declare (ignore value))
+  (let* ((base-type (first type-spec))
+         (storage-var-name (or (when (gethash '__sc var-env) '__sc) '__storage))
+         (storage-alloca (gethash storage-var-name var-env)))
+
+    (unless storage-alloca
+      (error "Missing implicit argument ~a for make-scratch-cell. Environment keys: ~s"
+        storage-var-name (alexandria:hash-table-keys var-env)))
+
+    (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
+           (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
+           (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
+           (cell-struct-type (ensure-struct-llvm-type mangled-name))
+           (cell-undef (llvm-get-undef cell-struct-type))
+           (cell-0 (llvm-build-insert-value builder cell-undef storage-val 0 "parent"))
+           (cell-1 (llvm-build-insert-value builder cell-0
+                                            (llvm-const-int (llvm-int64-type) 0 nil)
+                                            1 "offset"))
+           (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
+      (llvm-build-store builder cell-1 cell-handle)
+      cell-handle)))
+
+(defun %generate-enum-literal-ir (builder value llvm-type)
+  "Helper: Generates IR for enum literals."
+  (let* ((val (resolve-keyword-constant value))
+         (target-type (or llvm-type (llvm-int32-type)))
+         (val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) val) nil)))
+    (llvm-build-trunc builder val-i64 target-type "enum_trunc")))
+
+(defun %generate-scalar-literal-ir (builder value llvm-type crisp-type)
+  "Helper: Generates IR for scalar (int/float) literals."
+  (cond
+   ;; Integer types
+   ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
+     (if (zerop value)
+         (llvm-const-null llvm-type)
+         (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
+           (if (= (crisp-type-size crisp-type) 64)
+               val-i64
+               (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
+
+   ;; Float types
+   ((eq (crisp-type-category crisp-type) :float)
+     (llvm-const-real llvm-type (coerce value 'double-float)))
+
+   ;; Void
+   ((eq (crisp-type-category crisp-type) :void)
+     nil)
+
+   (t
+     (error "Codegen for literal of unknown type category: ~a" (crisp-type-name crisp-type)))))
+
 (defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
   "Generates IR for a literal value."
   (let* ((type-spec (semantic-literal-value-type node))
@@ -277,74 +368,48 @@
                       (crisp-type-to-llvm-type type-spec module)))
          (result
           (cond
-           ;; Handle parameterized types
+           ;; Keywords/symbols/quotes (simple case)
            ((or (eq type-spec 'keyword) (eq type-spec 'symbol) (eq type-spec 'quote))
-             (let ((ival (resolve-keyword-constant value)))
-               (llvm-const-int (llvm-int32-type) ival nil)))
+             (%generate-keyword-literal-ir value))
 
+           ;; Parameterized types (lists)
            ((listp type-spec)
              (let ((base-type (first type-spec)))
                (cond
+                ;; Function literals
                 ((or (eq base-type :function-literal) (eq base-type :function-type))
                   (llvm-get-undef llvm-type))
 
+                ;; Keywords/symbols in list form
                 ((or (eq base-type 'keyword) (eq base-type 'symbol))
-                  (let ((ival (resolve-keyword-constant value)))
-                    (llvm-const-int (llvm-int32-type) ival nil)))
+                  (%generate-keyword-literal-ir value))
 
+                ;; Cell literals
                 ((eq base-type 'cell)
-                  ;; FIXED: Check for both __sc (new convention) and __storage (legacy)
-                  (let* ((storage-var-name (or (when (gethash '__sc var-env) '__sc) '__storage))
-                         (storage-alloca (gethash storage-var-name var-env)))
-                    (unless storage-alloca
-                      (error "Missing implicit argument ~a for make-scratch-cell. Environment keys: ~s"
-                        storage-var-name (alexandria:hash-table-keys var-env)))
+                  (%generate-cell-literal-ir builder module var-env type-spec value))
 
-                    (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
-                           (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
-                           (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
-                           (cell-struct-type (ensure-struct-llvm-type mangled-name))
-                           (cell-undef (llvm-get-undef cell-struct-type))
-                           (cell-0 (llvm-build-insert-value builder cell-undef storage-val 0 "parent"))
-                           (cell-1 (llvm-build-insert-value builder cell-0
-                                                            (llvm-const-int (llvm-int64-type) 0 nil)
-                                                            1 "offset"))
-                           (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
-                      (llvm-build-store builder cell-1 cell-handle)
-                      cell-handle)))
+                (t
+                  (error "Codegen not implemented for literal of type ~a" type-spec)))))
 
-                (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
-
-           ;; Handle simple or singleton types
+           ;; Simple or singleton types
            ((or (symbolp type-spec)
                 (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
              (let ((type-sym (if (consp type-spec) (first type-spec) type-spec)))
                (cond
+                ;; Enums or keywords
                 ((or (gethash type-spec *crisp-enums*)
                      (member type-sym '(keyword symbol quote)))
-                  (let* ((val (resolve-keyword-constant value))
-                         (target-type (or llvm-type (llvm-int32-type)))
-                         (val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) val) nil)))
-                    (llvm-build-trunc builder val-i64 target-type "enum_trunc")))
+                  (%generate-enum-literal-ir builder value llvm-type))
 
+                ;; Scalars (int/float)
                 (t
                   (let ((crisp-type (gethash type-sym *crisp-types*)))
                     (unless crisp-type
                       (error "Codegen: Literal type ~a not found in *crisp-types* or *crisp-enums*" type-spec))
-                    (cond
-                     ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
-                       (if (zerop value)
-                           (llvm-const-null llvm-type)
-                           (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
-                             (if (= (crisp-type-size crisp-type) 64)
-                                 val-i64
-                                 (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
-                     ((eq (crisp-type-category crisp-type) :float)
-                       (llvm-const-real llvm-type (coerce value 'double-float)))
-                     ((eq (crisp-type-category crisp-type) :void) nil)
-                     (t (error "Codegen for literal of unknown type category: ~a" type-spec))))))))
+                    (%generate-scalar-literal-ir builder value llvm-type crisp-type))))))
 
-           (t (error "Codegen not implemented for literal of type ~a" type-spec))))
+           (t
+             (error "Codegen not implemented for literal of type ~a" type-spec))))
 
          (di-location
           (when (and di-builder di-scope location-map)
@@ -353,6 +418,7 @@
                   (llvm-di-builder-create-debug-location (llvm-get-module-context module)
                                                          line 0 di-scope (cffi:null-pointer))))))
     (values result di-location)))
+
 
 ;; -- reading a variable --
 (defmethod generate-node-ir ((node semantic-var-read) builder module var-env di-builder di-scope location-map)
@@ -636,26 +702,61 @@
                                                        (agg-1 (llvm-build-insert-value builder agg-0 rem-val 1 "res_r")))
       (values agg-1 nil))))
 
+
+(defun %handle-die-intrinsic (builder module)
+  "Helper: Handles the compiler intrinsic DIE (llvm.trap)."
+  (let ((trap-name "llvm.trap"))
+    (let ((f (llvm-get-named-function module trap-name)))
+      (when (cffi:null-pointer-p f)
+            (let ((ft (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)))
+              (setf f (llvm-add-function module trap-name ft))))
+      (llvm-build-call2 builder
+                        (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)
+                        f
+                        (cffi:null-pointer)
+                        0
+                        ""))
+    (values nil nil)))
+
+(defun %build-function-call (builder module var-env di-builder di-scope location-map node sig callee-name llvm-fn-type param-nodes param-count return-type-names)
+  "Helper: Builds the actual function call instruction."
+  (let* ((arg-nodes (semantic-call-args node))
+         (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
+                                             arg-nodes param-nodes param-count))
+         (call-inst (llvm-build-call2 builder
+                                      llvm-fn-type
+                                      (let ((f (llvm-get-named-function module callee-name)))
+                                        (if (cffi:null-pointer-p f)
+                                            (llvm-add-function module callee-name llvm-fn-type)
+                                            f))
+                                      args-array
+                                      param-count
+                                      (if (or (null return-type-names)
+                                              (equal return-type-names '(nil))
+                                              (and (consp return-type-names) (eq (first return-type-names) 'void)))
+                                          ""
+                                          "call_tmp")))
+         (di-location (when (and di-builder di-scope location-map)
+                            (let* ((loc (semantic-node-source-location node))
+                                   (line (gethash loc location-map 0)))
+                              (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                     line 0 di-scope (cffi:null-pointer))))))
+    (when di-location
+          (llvm-instruction-set-debug-loc call-inst di-location))
+    (values call-inst di-location)))
+
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
 
   ;; Special handling for compiler intrinsic DIE
   (when (eq (semantic-call-name node) 'die)
-        (let ((trap-name "llvm.trap"))
-          (let ((f (llvm-get-named-function module trap-name)))
-            (when (cffi:null-pointer-p f)
-                  (let ((ft (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)))
-                    (setf f (llvm-add-function module trap-name ft))))
-            (llvm-build-call2 builder (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)
-                              f (cffi:null-pointer) 0 "")))
-        (return-from generate-node-ir (values nil nil)))
+        (return-from generate-node-ir (%handle-die-intrinsic builder module)))
 
   (let* ((sig (semantic-call-signature node))
          (return-type-names (function-signature-return-types sig))
-
          (llvm-return-type (get-llvm-return-type module return-type-names))
 
-         ;; 3. Build the LLVM function *type* (the signature)
+         ;; Build the LLVM function *type* (the signature)
          (param-nodes (mapcar #'parameter-def-type (function-signature-parameters sig)))
          (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-nodes))
          (param-count (length expanded-param-types))
@@ -670,38 +771,13 @@
            (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
                            (mapcar #'mangle-type-spec (mapcar #'parameter-def-type (function-signature-parameters sig)))))
            (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
-           (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
+           (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil)))
 
-           (callee (progn
-                    (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module)
-                    (let ((f (llvm-get-named-function module callee-name)))
-                      (if (cffi:null-pointer-p f)
-                          ;; If not in this module, declare it
-                          (llvm-add-function module callee-name llvm-fn-type)
-                          f))))
+      (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module)
 
-           (arg-nodes (semantic-call-args node))
-           (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
-                                               arg-nodes param-nodes param-count)))
-
-      (let* ((call-inst (llvm-build-call2 builder
-                                          llvm-fn-type
-                                          callee
-                                          args-array
-                                          param-count
-                                          (if (or (null return-type-names)
-                                                  (equal return-type-names '(nil))
-                                                  (and (consp return-type-names) (eq (first return-type-names) 'void))) ;; Explicitly check for void
-                                              ""
-                                              "call_tmp")))
-             (di-location (when (and di-builder di-scope location-map)
-                                (let* ((loc (semantic-node-source-location node))
-                                       (line (gethash loc location-map 0)))
-                                  (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                         line 0 di-scope (cffi:null-pointer))))))
-        (when di-location
-              (llvm-instruction-set-debug-loc call-inst di-location))
-        (values call-inst di-location)))))
+      ;; Build and return the call
+      (%build-function-call builder module var-env di-builder di-scope location-map node sig
+                            callee-name llvm-fn-type param-nodes param-count return-type-names))))
 
 (defmethod generate-node-ir ((node semantic-extract-value) builder module var-env di-builder di-scope location-map)
   "Generates IR for extracting a value from an aggregate."
@@ -721,39 +797,45 @@
       (setf last-val (generate-node-ir sub-node builder module var-env di-builder di-scope location-map)))
     (values last-val nil)))
 
+
+(defun %generate-let-binding (binding builder module let-env di-builder di-scope location-map memoized-aggregates)
+  "Helper: Generates IR for a single let binding.
+   Updates let-env with the new binding and returns the alloca."
+  (let* ((var-name (car binding))
+         (val-node (cdr binding))
+         (llvm-type-name (get-single-value-type val-node)))
+
+    (let ((val-ir
+           (if (typep val-node 'semantic-extract-value)
+               ;; If it's an extract, check if we've already generated the aggregate.
+               (let* ((agg-node (semantic-extract-value-aggregate-node val-node))
+                      (agg-val (or (gethash agg-node memoized-aggregates)
+                                   ;; If not, generate and memoize it.
+                                   (let ((new-agg-val (generate-expression-ir builder module let-env di-builder di-scope location-map agg-node)))
+                                     (setf (gethash agg-node memoized-aggregates) new-agg-val)
+                                     new-agg-val)))
+                      (index (semantic-extract-value-index val-node)))
+                 (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index)))
+               ;; Otherwise, it's a simple binding, generate as before.
+               (generate-expression-ir builder module let-env di-builder di-scope location-map val-node))))
+
+      ;; Allocate and store
+      (let ((alloca (llvm-build-alloca builder (crisp-type-to-llvm-type llvm-type-name module) (string-downcase var-name))))
+        (llvm-build-store builder val-ir alloca)
+        (setf (gethash var-name let-env) alloca)
+        alloca))))
+
 (defmethod generate-node-ir ((node semantic-let) builder module var-env di-builder di-scope location-map)
   "Generates IR for a let expression."
   ;; Create a new environment for the let block that inherits from the outer one.
-  ;; We don't actually need to copy, we'll just add to it and the new bindings
-  ;; will shadow outer ones if names conflict.
   (let ((let-env (alexandria:copy-hash-table var-env))
         (memoized-aggregates (make-hash-table :test 'eq)))
-    ;; 1. Generate code for each binding.
+
+    ;; Generate code for each binding
     (dolist (binding (semantic-let-bindings node))
-      (let* ((var-name (car binding))
-             (val-node (cdr binding))
-             (llvm-type-name (get-single-value-type val-node)))
+      (%generate-let-binding binding builder module let-env di-builder di-scope location-map memoized-aggregates))
 
-        (let ((val-ir
-               (if (typep val-node 'semantic-extract-value)
-                   ;; If it's an extract, check if we've already generated the aggregate.
-                   (let* ((agg-node (semantic-extract-value-aggregate-node val-node))
-                          (agg-val (or (gethash agg-node memoized-aggregates)
-                                       ;; If not, generate and memoize it.
-                                       (let ((new-agg-val (generate-expression-ir builder module let-env di-builder di-scope location-map agg-node)))
-                                         (setf (gethash agg-node memoized-aggregates) new-agg-val)
-                                         new-agg-val)))
-                          (index (semantic-extract-value-index val-node)))
-                     (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index)))
-                   ;; Otherwise, it's a simple binding, generate as before.
-                   (generate-expression-ir builder module let-env di-builder di-scope location-map val-node))))
-
-          ;; Now that we have the correct value (val-ir), allocate and store it.
-          (let ((alloca (llvm-build-alloca builder (crisp-type-to-llvm-type llvm-type-name module) (string-downcase var-name))))
-            (llvm-build-store builder val-ir alloca)
-            (setf (gethash var-name let-env) alloca)))))
-
-    ;; 2. Generate code for the body, using the extended environment.
+    ;; Generate code for the body, using the extended environment.
     ;; The result of the let is the result of the last expression in the body.
     (let ((last-val nil)
           (last-loc nil))
@@ -1007,6 +1089,7 @@
          ;; Insert the new value
          (new-struct-val (llvm-build-insert-value builder struct-val new-member-val member-index "struct_update")))
     (values new-struct-val nil)))
+
 (defmethod generate-node-ir ((node semantic-aref) builder module var-env di-builder di-scope location-map)
   "Generates IR for array access (aref). Currently supports CELL types."
   (let* ((array-node (semantic-aref-array-node node))

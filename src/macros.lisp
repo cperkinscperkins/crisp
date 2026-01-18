@@ -281,8 +281,7 @@
   "Returns T if the type-spec is a storage handle but is missing explicit required keys (address-space, access)."
   (let ((resolved (%resolve-alias-strict type-spec)))
     (when (and (consp resolved) (%storage-handle-type-p resolved))
-          (let ((base (first resolved))
-                (args (rest resolved)))
+          (let ((args (rest resolved)))
             (let ((is-kw (or (member :address-space args) (member :access args))))
               (cond
                (is-kw
@@ -291,6 +290,7 @@
                    (not (and has-addr has-acc))))
                ((= (length args) 3) nil)
                (t t)))))))
+
 (defun %explode-kernel-args (params signature)
   "Explodes storage handle parameters into raw scalars.
    Returns (VALUES exploded-params exploded-signature-types reassembly-bindings)."
@@ -334,11 +334,94 @@
 
     (values (reverse exploded-params) (reverse exploded-types) (reverse reassembly-bindings))))
 
+
+(defun %parse-kernel-type-declarations (params declarations)
+  "Helper: Parses type declarations and builds a hash map of param -> type."
+  (let ((type-map (make-hash-table :test 'eq)))
+
+    ;; Parse (type ...) declarations
+    (loop for d in declarations
+            when (and (consp d) (eq (car d) 'type))
+          do (let* ((args (rest d))
+                    (first-arg (first args))
+                    (last-arg (car (last args))))
+               (cond
+                ((strict-valid-type-p first-arg)
+                  (dolist (v (rest args))
+                    (setf (gethash v type-map) first-arg)))
+                ((strict-valid-type-p last-arg)
+                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg)))
+                ((valid-type-p first-arg)
+                  (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
+                ((valid-type-p last-arg)
+                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg))))))
+
+    ;; Parse (function ...) declaration
+    (let ((fn-decl (find "FUNCTION" declarations
+                     :key (lambda (x) (and (consp x) (symbol-name (car x))))
+                     :test #'string-equal)))
+      (when fn-decl
+            (let* ((sig (second fn-decl))
+                   (arrow-pos (position '=> sig))
+                   (param-types (subseq sig 0 (or arrow-pos (length sig))))
+                   (p-ptr params)
+                   (t-ptr param-types))
+              (loop while (and p-ptr t-ptr) do
+                      (let ((p (pop p-ptr))
+                            (ts (pop t-ptr)))
+                        (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                            (let ((real-p (pop p-ptr))
+                                  (real-ts (if (and (symbolp ts) (string-equal (symbol-name ts) "&OUT"))
+                                               (pop t-ptr)
+                                               ts)))
+                              (setf (gethash real-p type-map) `(&out ,real-ts)))
+                            (setf (gethash p type-map) ts)))))))
+
+    type-map))
+
+(defun %validate-kernel-parameters (params type-map name)
+  "Helper: Validates that kernel parameters are complete and not voidp."
+  (dolist (p params)
+    (let ((t-spec (gethash p type-map)))
+      ;; Check for incomplete storage handles
+      (when (and t-spec (%incomplete-storage-handle-p t-spec))
+            (error "def-kernel parameter '~a' has incomplete storage handle type ~a. Kernels require fully specified types (e.g. specify :address-space and :access)."
+              p t-spec))))
+
+  ;; Build signature types for validation
+  (let ((signature-types nil)
+        (p-ptr params))
+    (loop while p-ptr do
+            (let ((p (pop p-ptr)))
+              (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                  (let* ((real-p (pop p-ptr))
+                         (type (gethash real-p type-map)))
+                    (push '&out signature-types)
+                    (push (if (and (consp type) (eq (car type) '&out)) (second type) type) signature-types))
+                  (push (gethash p type-map) signature-types))))
+    (setf signature-types (nreverse signature-types))
+
+    ;; Check completeness
+    (unless (every #'identity signature-types)
+      (error "def-kernel ~a: Missing type declarations for parameters: ~a" name
+        (loop for p in params for t-spec in signature-types unless t-spec collect p)))
+
+    ;; Validate types
+    (loop for t-spec in signature-types
+          do (when (incomplete-type-p t-spec)
+                   (error "Kernel parameters must be COMPLETE types. Found incomplete: ~a" t-spec))
+            (let ((canon (canonicalize-type-specifier t-spec)))
+              (when (or (eq canon 'voidp)
+                        (and (symbolp canon) (string-equal (symbol-name canon) "VOIDP")))
+                    (error "Kernel parameters cannot be of type 'voidp'. Use a specific pointer type with address space or a storage handle."))))
+
+    signature-types))
+
 (defun parse-kernel-signature (name params body)
   "Parses kernel parameters and body, performing validation and type extraction.
    Returns (values exploded-params exploded-types reassembly-bindings raw-body other-decls)."
 
-  ;; 1. Validate C-Style Name (no dashes)
+  ;; Validate C-Style Name
   (let ((name-str (symbol-name name)))
     (when (find #\- name-str)
           (error "Invalid Kernel Name '~a': Kernels requires C-style identifiers (no dashes)." name)))
@@ -346,92 +429,29 @@
   (when (or (member '&optional params) (member '&key params))
         (error "Kernels (def-kernel/def-kernel-exact) do not support &optional or &key parameters."))
 
-  ;; 2. Extract Types from Body Declarations
+  ;; Extract declarations
   (let* ((declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f))
          (raw-body (nthcdr (length declare-forms) body))
-         (declarations (loop for d in declare-forms append (rest d)))
-         (type-map (make-hash-table :test 'eq)))
+         (declarations (loop for d in declare-forms append (rest d))))
 
-    ;; 2.1 Parse (type ...) declarations
-    (loop for d in declarations
-            when (and (consp d) (eq (car d) 'type))
-          do (let* ((args (rest d))
-                    (first-arg (first args))
-                    (last-arg (car (last args))))
-               (cond
-                ;; Disambiguate using strict check first
-                ((strict-valid-type-p first-arg)
-                  (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
-                ((strict-valid-type-p last-arg)
-                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg)))
-                ;; Fallback
-                ((valid-type-p first-arg)
-                  (dolist (v (rest args)) (setf (gethash v type-map) first-arg)))
-                ((valid-type-p last-arg)
-                  (dolist (v (butlast args)) (setf (gethash v type-map) last-arg))))))
+    ;; Parse type declarations into a map
+    (let ((type-map (%parse-kernel-type-declarations params declarations)))
 
-    ;; 2.2 Parse (function ...) declaration (Overriding or providing standard signature)
-    (let ((fn-decl (find "FUNCTION" declarations :key (lambda (x) (and (consp x) (symbol-name (car x)))) :test #'string-equal)))
-      (when fn-decl
-            (let* ((sig (second fn-decl))
-                   (arrow-pos (position '=> sig))
-                   (param-types (subseq sig 0 (or arrow-pos (length sig)))))
-              (let ((p-ptr params)
-                    (t-ptr param-types))
-                (loop while (and p-ptr t-ptr) do
-                        (let ((p (pop p-ptr))
-                              (ts (pop t-ptr)))
-                          (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
-                              (let ((real-p (pop p-ptr))
-                                    (real-ts (if (and (symbolp ts) (string-equal (symbol-name ts) "&OUT"))
-                                                 (pop t-ptr)
-                                                 ts)))
-                                (setf (gethash real-p type-map) `(&out ,real-ts)))
-                              (setf (gethash p type-map) ts))))))))
+      ;; Validate parameters and build signature types
+      (let ((signature-types (%validate-kernel-parameters params type-map name)))
 
-    ;; 2.3 Validate Completeness of Kernel Parameters
-    (dolist (p params)
-      (let ((t-spec (gethash p type-map)))
-        (when (and t-spec (%incomplete-storage-handle-p t-spec))
-              (error "def-kernel parameter '~a' has incomplete storage handle type ~a. Kernels require fully specified types (e.g. specify :address-space and :access)." p t-spec))))
+        (log:debug "DEBUG PARSE-KERNEL: ~a Params: ~a Types: ~a" name params signature-types)
 
-    ;; 2.3 Reconstruct Signature Types in parameter order
-    (let ((signature-types nil)
-          (p-ptr params))
-      (loop while p-ptr do
-              (let ((p (pop p-ptr)))
-                (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
-                    (let* ((real-p (pop p-ptr))
-                           (type (gethash real-p type-map)))
-                      (push '&out signature-types)
-                      (push (if (and (consp type) (eq (car type) '&out)) (second type) type) signature-types))
-                    (push (gethash p type-map) signature-types))))
-      (setf signature-types (nreverse signature-types))
+        ;; Explode parameters
+        (multiple-value-bind (exploded-params exploded-types reassembly-bindings)
+            (%explode-kernel-args params signature-types)
 
-      (log:debug "DEBUG PARSE-KERNEL: ~a Params: ~a Types: ~a" name params signature-types)
+          ;; Determine other declarations to preserve
+          (let ((other-decls (loop for d in declarations
+                                     unless (member (car d) '(function type))
+                                   collect d)))
+            (values exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types)))))))
 
-      (unless (every #'identity signature-types)
-        (error "def-kernel ~a: Missing type declarations for parameters: ~a" name
-          (loop for p in params for t-spec in signature-types unless t-spec collect p)))
-
-      ;; 2.4 Validate Completeness and VoidP
-      (loop for t-spec in signature-types
-            do (progn
-                (when (incomplete-type-p t-spec)
-                      (error "Kernel parameters must be COMPLETE types. Found incomplete: ~a" t-spec))
-                (let ((canon (canonicalize-type-specifier t-spec)))
-                  (when (or (eq canon 'voidp)
-                            (and (symbolp canon) (string-equal (symbol-name canon) "VOIDP")))
-                        (error "Kernel parameters cannot be of type 'voidp'. Use a specific pointer type with address space or a storage handle.")))))
-      ;; 3. Explode Parameters
-      (multiple-value-bind (exploded-params exploded-types reassembly-bindings)
-          (%explode-kernel-args params signature-types)
-
-        ;; Determine other declarations to preserve
-        (let ((other-decls (loop for d in declarations
-                                   unless (member (car d) '(function type))
-                                 collect d)))
-          (values exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types))))))
 
 (defmacro def-kernel (name params &rest body)
   "Defines a GPU Kernel (Entry Point).
@@ -505,6 +525,53 @@
 
 ;; Corrected def-struct macro for src/macros.lisp
 ;; Replace the existing def-struct starting at line 452
+(defun %generate-struct-accessor (member-spec name pkg runtime-index)
+  "Helper: Generates accessor (and setter) for a single struct member.
+   Returns (values accessor-form new-runtime-index)."
+  (let* ((member-name (first member-spec))
+         (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
+         (value (when is-ct (fourth member-spec)))
+         (accessor-name (intern (format nil "~a~~" member-name) pkg)))
+
+    (cond
+     ;; Compile-time member with value -> constant accessor macro
+     ((and is-ct value)
+       (values `(defmacro ,accessor-name (obj)
+                  (declare (ignore obj))
+                  '',value)
+         runtime-index))
+
+     ;; Compile-time member without value -> skip (incomplete type)
+     (is-ct
+       (values nil runtime-index))
+
+     ;; Runtime member -> function accessor + setter
+     (t
+       (let ((idx runtime-index))
+         (values `(progn
+                   (def-function ,accessor-name ((obj ,name))
+                                 (return (%extract-struct-member obj ,idx)))
+
+                   ;; Generate Setter for Runtime Member
+                   (def-setter ,accessor-name ((obj ,name) (val ,(second member-spec)))
+                               ;; Execute insert but don't return the result; return void instead
+                               (%insert-struct-member obj ,idx val)
+                               (return nil)))
+           (1+ runtime-index)))))))
+
+(defun %generate-raw-accessor (member-spec name pkg runtime-index)
+  "Helper: Generates raw accessor for a runtime struct member.
+   Returns (values accessor-form new-runtime-index)."
+  (let* ((is-ct (and (consp member-spec) (eq (third member-spec) :c-t))))
+    (if is-ct
+        (values nil runtime-index)
+        (let* ((member-name (first member-spec))
+               (raw-accessor-name (intern (format nil "~~~a~~" member-name) pkg))
+               (idx runtime-index))
+          (values `(def-function ,raw-accessor-name ((obj ,name))
+                                 (declare (crisp-system-generated))
+                                 (return (%extract-struct-member obj ,idx)))
+            (1+ runtime-index))))))
 
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type."
@@ -521,45 +588,29 @@
         (let ((reordered (validate-and-reorder-struct-args ',name ',parsed-members args)))
           `(%construct-struct ,',name ,@reordered)))
 
+      ;; Generate accessors
       ,@(let ((runtime-index 0)
-              (pkg (symbol-package name)))
-          (loop for member-spec in parsed-members
-                collect
-                  (let* ((member-name (first member-spec))
-                         (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
-                         (value (when is-ct (fourth member-spec))) ;; (name type :c-t value)
-                         (accessor-name (intern (format nil "~a~~" member-name) pkg)))
-                    (if is-ct
-                        (if value
-                            ;; Generate Compile-Time Constant Accessor Macro
-                            `(defmacro ,accessor-name (obj)
-                               (declare (ignore obj))
-                               '',value)
-                            ;; No value provided (incomplete type) -> Do NOT generate macro. Let analyzer handle it.
-                            nil)
-                        ;; Generate Runtime Accessor Function
-                        (let ((idx runtime-index))
-                          (incf runtime-index)
-                          `(progn
-                            (def-function ,accessor-name ((obj ,name))
-                                          (return (%extract-struct-member obj ,idx)))
-                            ;; Generate Setter for Runtime Member
-                            (def-setter ,accessor-name ((obj ,name) (val ,(second member-spec)))
-                                        ;; Execute insert but don't return the result; return void instead
-                                        (%insert-struct-member obj ,idx val)
-                                        (return nil))))))))
+              (pkg (symbol-package name))
+              (forms '()))
+          (dolist (member-spec parsed-members)
+            (multiple-value-bind (accessor-form new-idx)
+                (%generate-struct-accessor member-spec name pkg runtime-index)
+              (when accessor-form
+                    (push accessor-form forms))
+              (setf runtime-index new-idx)))
+          (nreverse forms))
+
+      ;; Generate raw accessors
       ,@(let ((runtime-index 0)
-              (pkg (symbol-package name)))
-          (loop for member-spec in parsed-members
-                  unless (and (consp member-spec) (eq (third member-spec) :c-t))
-                collect
-                  (let* ((member-name (first member-spec))
-                         (raw-accessor-name (intern (format nil "~~~a~~" member-name) pkg))
-                         (idx runtime-index))
-                    (incf runtime-index)
-                    `(def-function ,raw-accessor-name ((obj ,name))
-                                   (declare (crisp-system-generated))
-                                   (return (%extract-struct-member obj ,idx)))))))))
+              (pkg (symbol-package name))
+              (forms '()))
+          (dolist (member-spec parsed-members)
+            (multiple-value-bind (raw-form new-idx)
+                (%generate-raw-accessor member-spec name pkg runtime-index)
+              (when raw-form
+                    (push raw-form forms))
+              (setf runtime-index new-idx)))
+          (nreverse forms)))))
 
 
 (defmacro def-record (name &rest members)

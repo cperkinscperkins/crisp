@@ -276,10 +276,15 @@
 (defun analyze-function-literal (expr env location)
   "Analyzes (function x) or #'(...)"
   (declare (ignore env))
-  (let ((target (second expr)))
-    (make-semantic-literal :value-type (list :function-literal target)
-                           :value target
-                           :source-location location)))
+  (let ((fn-name (second expr)))
+    ;; Check if the function exists (simplistic check for now)
+    (unless (or (fboundp fn-name) (gethash fn-name *function-table*))
+      (log:warn "Function literal ~a refers to unknown function (at compile time)." fn-name))
+
+    (make-semantic-literal
+     :value-type `(:function-literal ,fn-name)
+     :value fn-name
+     :source-location location)))
 
 (defun analyze-funcall-expression (expr env location)
   "Analyzes a (funcall f args...) form."
