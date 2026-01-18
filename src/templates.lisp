@@ -454,6 +454,36 @@
               `(progn ,substituted-body)))
         `(progn ,substituted-body))))
 
+
+(defun %unwrap-function-signature (raw-sig)
+  "Helper: Unwraps (FUNCTION ...) wrapper if present."
+  (if (and (listp raw-sig) (eq (first raw-sig) 'FUNCTION))
+      (second raw-sig)
+      raw-sig))
+
+(defun %infer-from-single-template (tmpl argument-types)
+  "Helper: Attempts to infer template types for a single template.
+   Returns NIL on failure, or (list template-data concrete-types) on success."
+  (let* ((raw-sig (template-data-signature tmpl))
+         (sig (%unwrap-function-signature raw-sig))
+         (raw-params (template-data-parameters tmpl))
+         (params (mapcar (lambda (p) (if (consp p) (first p) p)) raw-params))
+         ;; sig is now (T T => T)
+         (sig-params (when sig (butlast sig 2))))
+
+    ;; Check arity match between args and signature params
+    (when (and sig-params (= (length sig-params) (length argument-types)))
+          (let ((inference-map (make-hash-table)))
+            (when (loop for sig-param in sig-params
+                        for arg-type in argument-types
+                          always (match-template-arg sig-param arg-type inference-map params))
+
+                  ;; Ensure all template parameters were inferred
+                  (let ((concrete-types (loop for p in params
+                                              collect (gethash p inference-map))))
+                    (when (every #'identity concrete-types)
+                          (list (list tmpl concrete-types))))))))) ; Return pair!
+
 (defun try-infer-template-types (name argument-types)
   "Attempts to infer template parameters for 'name' given 'argument-types'.
    Returns a LIST OF LISTS of (template-data concrete-types)."
@@ -461,29 +491,7 @@
     (unless templates (return-from try-infer-template-types nil))
 
     (loop for tmpl in templates
-          for raw-sig = (template-data-signature tmpl)
-            ;; Unwrap (FUNCTION ...) if present
-          for sig = (if (and (listp raw-sig) (eq (first raw-sig) 'FUNCTION))
-                        (second raw-sig)
-                        raw-sig)
-          for raw-params = (template-data-parameters tmpl)
-          for params = (mapcar (lambda (p) (if (consp p) (first p) p)) raw-params)
-            ;; sig is now (T T => T).
-          for sig-params = (when sig (butlast sig 2))
-
-            ;; 1. Check arity match between args and signature params
-            when (and sig-params (= (length sig-params) (length argument-types)))
-            append (let ((inference-map (make-hash-table)))
-                     (when (loop for sig-param in sig-params
-                                 for arg-type in argument-types
-                                   always (match-template-arg sig-param arg-type inference-map params))
-
-                           ;; Ensure all template parameters were inferred
-                           (let ((concrete-types (loop for p in params
-                                                       collect (gethash p inference-map))))
-                             (if (every #'identity concrete-types)
-                                 (list (list tmpl concrete-types)) ;; Return pair!
-                                 nil)))))))
+            append (or (%infer-from-single-template tmpl argument-types) '()))))
 
 
 (defun %resolve-template-name (name)
