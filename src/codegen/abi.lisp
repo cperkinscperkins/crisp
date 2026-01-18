@@ -41,26 +41,39 @@
 
 (defun crisp-type-to-llvm-type (type-spec module)
   "Resolves a Crisp type specifier (simple or parameterized) to an LLVM type."
-  (cond
-   ;; Function Types (Passed as opaque pointers)
-   ((and (listp type-spec)
-         (or (eq (first type-spec) :function-type)
-             (eq (first type-spec) :function-literal)))
-     (llvm-pointer-type (llvm-int8-type) 0))
+  ;; Mangle list-form storage handle types FIRST
+  (let ((canonical-spec (if (and (consp type-spec)
+                                 (symbolp (first type-spec))
+                                 (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+                            (progn
+                             (log:debug "crisp-type-to-llvm-type: Mangling storage handle list form: ~s" type-spec)
+                             (mangle-template-struct-name (first type-spec) (rest type-spec)))
+                            type-spec)))
+    (let ((result
+           (cond
+            ;; Function Types (Passed as opaque pointers)
+            ((and (listp canonical-spec)
+                  (or (eq (first canonical-spec) :function-type)
+                      (eq (first canonical-spec) :function-literal)))
+              (llvm-pointer-type (llvm-int8-type) 0))
 
-   ;; Context-Aware Optimizations (Optional, but preserves existing behavior)
-   ((eq type-spec 'int)
-     (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
-   ((eq type-spec 'long)
-     (or *cached-int64-type* (llvm-int64-type-in-context (llvm-get-module-context module))))
-   ((or (eq type-spec 'keyword) (eq type-spec 'symbol))
-     (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
-   ((eq type-spec 'voidp)
-     (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 0))
+            ;; Context-Aware Optimizations (Optional, but preserves existing behavior)
+            ((eq canonical-spec 'int)
+              (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
+            ((eq canonical-spec 'long)
+              (or *cached-int64-type* (llvm-int64-type-in-context (llvm-get-module-context module))))
+            ((or (eq canonical-spec 'keyword) (eq canonical-spec 'symbol))
+              (or *cached-int32-type* (llvm-int32-type-in-context (llvm-get-module-context module))))
+            ((eq canonical-spec 'voidp)
+              (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) 0))
 
-   ;; Delegate everything else to the central type resolver
-   (t
-     (resolve-type-to-llvm type-spec))))
+            ;; Delegate everything else to the central type resolver
+            (t
+              (resolve-type-to-llvm canonical-spec)))))
+      ;; Defensive check
+      (when (or (null result) (cffi:null-pointer-p result))
+            (error "Failed to resolve LLVM type for type-spec: ~s (canonical: ~s)" type-spec canonical-spec))
+      result)))
 
 (defun is-global-storage-handle-p (type-spec)
   "Returns true if the type-spec represents a handle to global memory."
@@ -75,22 +88,53 @@
 
 (defun get-expanded-types (type-spec module)
   "Returns a list of LLVM types for a given Crisp type spec.
-   For 'cell', returns (ptr i64). For 'storage', returns (ptr i64). For others, returns (type).
+   For 'cell', returns (ptr i64 i64). For 'storage', returns (ptr i64). For records, explodes recursively. For others, returns (type).
    
    If *target-backend* is :spirv or :ptx, upgrade pointers in storage handles to Global Address Space (1)."
   (let* ((expanded
-          (let ((type-rec (gethash type-spec *crisp-types*)))
+          ;; For storage handle types in list form like (CELL INT :GLOBAL :READ-WRITE), mangle to CELL_INT_GLOBAL_READ-WRITE
+          (let* ((is-storage-list (and (consp type-spec)
+                                       (symbolp (first type-spec))
+                                       (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)))
+                 (lookup-spec (if is-storage-list
+                                  (progn
+                                   (log:debug "GET-EXPANDED-TYPES: Storage handle list form detected: ~s" type-spec)
+                                   (log:debug "  Base: ~s  Params: ~s" (first type-spec) (rest type-spec))
+                                   (let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+                                     (log:debug "  Mangled to: ~s (package: ~a)" mangled (package-name (symbol-package mangled)))
+                                     mangled))
+                                  type-spec))
+                 ;; Try lookup in current package first, then fallback to CRISP-LANGUAGE
+                 (type-rec (or (gethash lookup-spec *crisp-types*)
+                               (when (and is-storage-list (symbolp lookup-spec))
+                                     (let ((alt-symbol (intern (symbol-name lookup-spec) (find-package :crisp-language))))
+                                       (log:debug "  Trying alternate package lookup: ~s" alt-symbol)
+                                       (gethash alt-symbol *crisp-types*)))))
+                 (struct-def (or (gethash lookup-spec *crisp-structs*)
+                                 (when (and is-storage-list (symbolp lookup-spec))
+                                       (gethash (intern (symbol-name lookup-spec) (find-package :crisp-language)) *crisp-structs*))))
+                 ;; Use the actual key that was found
+                 (actual-key (cond
+                              ((gethash lookup-spec *crisp-types*) lookup-spec)
+                              ((and is-storage-list (symbolp lookup-spec))
+                                (intern (symbol-name lookup-spec) (find-package :crisp-language)))
+                              (t lookup-spec))))
+            (log:debug "GET-EXPANDED-TYPES: lookup-spec=~s  found-type=~a  found-struct=~a  category=~a"
+                       actual-key
+                       (if type-rec "YES" "NO")
+                       (if struct-def "YES" "NO")
+                       (when type-rec (crisp-type-category type-rec)))
             (cond
              ;; Case 1: Record Type -> Explode recursively
              ((and type-rec (eq (crisp-type-category type-rec) :record))
-               (let* ((struct-def (gethash type-spec *crisp-structs*))
-                      (members (crisp-struct-definition-members struct-def))
-                      ;; Filter out compile-time members (e.g. :c-t tagged)
-                      (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members)))
-                 (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members)))
+               (when struct-def
+                     (let* ((members (crisp-struct-definition-members struct-def))
+                            ;; Filter out compile-time members (e.g. :c-t tagged)
+                            (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members)))
+                       (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members))))
 
              ;; Case 2: Standard Type (Struct/Scalar) -> Return as is
-             (t (list (crisp-type-to-llvm-type type-spec module)))))))
+             (t (list (crisp-type-to-llvm-type actual-key module)))))))
 
     ;; Post-Processing: Apply Address Spaces for GPU Backends
     (if (and (or (eq *target-backend* :spirv) (eq *target-backend* :ptx))
@@ -106,10 +150,16 @@
 (defun explode-value (builder agg-val type-spec)
   "Extracts components from an aggregate value if necessary.
    Returns a list of LLVM values."
-  (let ((type-rec (gethash type-spec *crisp-types*)))
+  ;; Mangle list-form storage handle types to their symbol form for lookup
+  (let* ((lookup-spec (if (and (consp type-spec)
+                               (symbolp (first type-spec))
+                               (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+                          (mangle-template-struct-name (first type-spec) (rest type-spec))
+                          type-spec))
+         (type-rec (gethash lookup-spec *crisp-types*)))
     (cond
      ((and type-rec (eq (crisp-type-category type-rec) :record))
-       (let* ((struct-def (gethash type-spec *crisp-structs*))
+       (let* ((struct-def (gethash lookup-spec *crisp-structs*))
               (members (crisp-struct-definition-members struct-def))
               (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
               (values '()))
@@ -168,7 +218,15 @@
 (defun create-llvm-function-type (module return-types param-nodes)
   "Calculates the LLVM function type, handling parameter explosion."
   (let* ((return-type (get-llvm-return-type module return-types))
-         (expanded-param-types (mapcan (lambda (p) (get-expanded-types (semantic-param-type p) module)) param-nodes))
+         (expanded-param-types (mapcan (lambda (p)
+                                         (let ((type-spec (semantic-param-type p))
+                                               (expanded (get-expanded-types (semantic-param-type p) module)))
+                                           (log:debug "PARAM: ~a TYPE: ~a EXPANDED-COUNT: ~a"
+                                                      (semantic-param-name p)
+                                                      type-spec
+                                                      (length expanded))
+                                           expanded))
+                                   param-nodes))
          (param-count (length expanded-param-types))
          (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
     (loop for i from 0

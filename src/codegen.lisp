@@ -569,12 +569,12 @@
   (let ((args-array (cffi:foreign-alloc 'llvm-value-ref :count param-count))
         (idx 0))
     (loop for arg-node in arg-nodes
-          for param-type in param-types
+          for param-type-spec in param-types ; param-types is already a list of type-specs
           do (multiple-value-bind (arg-val arg-loc) (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)
                (declare (ignore arg-loc))
                (let* ((arg-type-spec (semantic-node-type arg-node))
                       (prim-val (extract-primary-value builder arg-val arg-type-spec))
-                      (exploded-vals (explode-value builder prim-val param-type)))
+                      (exploded-vals (explode-value builder prim-val param-type-spec)))
                  (dolist (val exploded-vals)
                    (setf (cffi:mem-aref args-array 'llvm-value-ref idx) val)
                    (incf idx)))))
