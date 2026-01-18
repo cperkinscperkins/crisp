@@ -151,13 +151,52 @@
 ;;; Serialization
 ;;; -------------
 
+(defun strip-package-qualifiers (type-spec)
+  "Recursively strips package qualifiers from symbols in a type specification.
+   Returns the type spec with bare symbol names (no CRISP.COMPILER:: prefixes).
+   
+   Examples:
+     CRISP.COMPILER:INT -> INT
+     (CRISP.COMPILER:CELL CRISP.COMPILER:FLOAT :GLOBAL :READ-WRITE) 
+       -> (CELL FLOAT :GLOBAL :READ-WRITE)
+     (C-POINTER ADDRESS-SPACE GLOBAL) -> (C-POINTER ADDRESS-SPACE GLOBAL)"
+  (cond
+   ;; Nil/empty
+   ((null type-spec) nil)
+
+   ;; Symbol: strip package, return just name as unqualified symbol
+   ((symbolp type-spec)
+     (intern (symbol-name type-spec) :crisp-language))
+
+   ;; String: return as-is
+   ((stringp type-spec) type-spec)
+
+   ;; Number: return as-is
+   ((numberp type-spec) type-spec)
+
+   ;; List: recursively process each element
+   ((consp type-spec)
+     (mapcar #'strip-package-qualifiers type-spec))
+
+   ;; Fallback
+   (t type-spec)))
+
+(defun print-without-packages (obj stream)
+  "Prints an object to stream without any package qualifiers.
+   Uses *package* context to avoid printing qualifiers."
+  (let ((*package* (find-package :crisp-language))
+        (*print-case* :upcase))
+    (prin1 obj stream)))
+
 (defun serialize-aliases (stream aliases-hash)
   (format stream "(:aliases~%")
   (let ((aliases (alexandria:hash-table-keys aliases-hash)))
     (setf aliases (sort aliases #'string< :key #'symbol-name))
     (dolist (alias aliases)
       (let ((target (gethash alias *crisp-type-aliases*)))
-        (format stream "  (def-type ~a ~a)~%" alias target))))
+        (format stream "  (def-type ~a ~a)~%"
+          (strip-package-qualifiers alias)
+          (strip-package-qualifiers target)))))
   (format stream "  )~%~%"))
 
 (defun serialize-structs (stream structs-hash)
@@ -167,9 +206,11 @@
       (dolist (name sorted-names)
         (let ((def (gethash name *crisp-structs*)))
           (when def
-                (format stream "  (def-struct ~a" name)
+                (format stream "  (def-struct ~a" (strip-package-qualifiers name))
                 (dolist (m (crisp-struct-definition-members def))
-                  (format stream " (~a ~a)" (first m) (second m)))
+                  (format stream " (~a ~a)"
+                    (strip-package-qualifiers (first m))
+                    (strip-package-qualifiers (second m))))
                 (format stream ")~%"))))))
   (format stream "  )~%~%"))
 
@@ -251,9 +292,9 @@
            ;; Handle STORAGE specially - flatten to PTR + I64
            ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
                 (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
-             (push (list current-index '(c-pointer address-space global)) physical-args) ;; Flattened Arg 1
+             (push (list current-index (strip-package-qualifiers '(c-pointer address-space global))) physical-args) ;; Flattened Arg 1
              (incf current-index)
-             (push (list current-index 'ulong) physical-args) ;; Flattened Arg 2
+             (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) ;; Flattened Arg 2
              (incf current-index))
 
            ((%storage-handle-type-p type)
@@ -261,17 +302,17 @@
                     (base (if (consp canonical) (first canonical) canonical)))
                (cond
                 ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
-                  (push (list current-index 'ulong) physical-args)
+                  (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
                   (incf current-index)
-                  (push (list current-index 'voidp) physical-args)
+                  (push (list current-index (strip-package-qualifiers 'voidp)) physical-args)
                   (incf current-index)
-                  (push (list current-index 'ulong) physical-args)
+                  (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
                   (incf current-index))
                 (t
-                  (push (list current-index type) physical-args)
+                  (push (list current-index (strip-package-qualifiers type)) physical-args)
                   (incf current-index)))))
            (t
-             (push (list current-index type) physical-args)
+             (push (list current-index (strip-package-qualifiers type)) physical-args)
              (incf current-index))))))
     (nreverse physical-args)))
 
@@ -320,7 +361,7 @@
              (end (+ start (max 0 (1- width))))
              (entry (list (string-downcase (symbol-name name)))))
         (unless (and (symbolp name) (string-equal (symbol-name name) "&OUT"))
-          (setf entry (append entry (list :type type)))
+          (setf entry (append entry (list :type (strip-package-qualifiers type))))
           (when (%storage-handle-type-p type)
                 (let* ((canonical (canonicalize-type-specifier type))
                        (as (if (consp canonical)
@@ -367,7 +408,7 @@
                          (nth 3 type) ; Position 3 is access
                          :read-write)))
         (let ((entry (list (string-downcase (symbol-name name))
-                           :type type
+                           :type (strip-package-qualifiers type)
                            :address-space address-space
                            :access access
                            :range (list start end))))
@@ -409,9 +450,13 @@
               (format output-stream "    :source ~s~%" (getf blk :source))
               (when (getf blk :output) (format output-stream "    :output-targets ~s~%" (getf blk :output)))
               (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
-              (format output-stream "    :declared-signature ~s~%" (getf blk :decl))
+              (format output-stream "    :declared-signature ")
+              (print-without-packages (getf blk :decl) output-stream)
+              (format output-stream "~%")
               (when (getf blk :impl)
-                    (format output-stream "    :implicit-params ~s~%" (getf blk :impl)))
+                    (format output-stream "    :implicit-params ")
+                    (print-without-packages (getf blk :impl) output-stream)
+                    (format output-stream "~%"))
               (format output-stream "  )~%"))))
         (format output-stream "  )~%")))
 

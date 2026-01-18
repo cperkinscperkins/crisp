@@ -34,6 +34,16 @@ Enables runtime checks. When enabled, assertions are compiled into the kernel. W
 ### --ir-target=spv
 Will output a SPIRV .spv file in the same location as the .crisp file. This is a runnable kernel.
 
+### --ir-target=ptx
+Yes, we are outputting SPIR-V and PTX now.  Just add the --ir-target=spv flag.
+SPIR-V has been tested on BattleMage. PTX has not been tested on real hardware yet.  
+
+### --ir-target=llvm-ir
+Will output a LLVM IR .ll file in the same location as the .crisp file.
+
+### --metadata
+outputs a .metacrisp file. 
+
 Pipeline
 ========
 
@@ -228,10 +238,6 @@ Yes, you read that right. `def-kernel-exact` is implemented now, along
 with marshalling.  
 
 ### def-kernel and cell.
-
-### --ir-target=spv  / ptx
-Yes, we are outputting SPIR-V and PTX now.  Just add the --ir-target=spv flag.
-SPIR-V has been tested on BattleMage. PTX has not been tested on real hardware yet.   
 
 
 
