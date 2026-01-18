@@ -1,0 +1,22 @@
+;; TEST-WITH[--metadata] : validate-10-basics-meta
+;; TEST-WITH[--metadata --ir-target=spv] : validate-10-basics-spv
+;; TEST-WITH[--metadata --ir-target=spv --ir-target=ptx] : validate-10-basics-multi
+
+#|
+This first kernel metadata test only validates the most basic information.
+
+In some cases there may not be any IR or binary targets specified, so :output-targets might be empty or optional
+
+(:kernels 
+    ("basic_kernel" 
+      :source "path/to/some.crisp"
+      (:output-targets (:spv "path/to/some/.spv") (:ptx "path/to/some/.ptx"))
+    ))
+      
+
+|#
+
+(def-kernel basic_kernel (c)
+    (declare (type c (cell float :address-space :global :access :read-write)))
+  (let ((f (~ c)))
+    (set! (~ c) (+ f 1.0))))

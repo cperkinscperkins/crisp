@@ -314,7 +314,7 @@
                   (arg-types (mapcar #'semantic-node-type arg-nodes))
                   (signatures (gethash name *function-table*))
                   (match (find-if (lambda (sig)
-                                    (equal arg-types (function-signature-parameters sig)))
+                                    (equal arg-types (mapcar #'parameter-def-type (function-signature-parameters sig))))
                              signatures)))
              (unless match
                (error "No matching signature for funcall of literal ~a with types ~a. Table count: ~a" name arg-types (hash-table-count *function-table*)))

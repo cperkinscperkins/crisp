@@ -230,10 +230,13 @@
               (error "def-kernel-exact parameter '~a' cannot be a storage handle type (~a). Use def-kernel for implicit marshalling or pass raw pointers/sizes." p t-spec)))))
 
   ;; 3. Expand to def-function with entry-point
-  `(def-function ,name ,params
-                 (declare (entry-point))
-                 ,@body
-                 (return)))
+  `(progn
+    (eval-when (:compile-toplevel :load-toplevel :execute)
+      (pushnew ',name crisp.compiler::*compiled-kernels*))
+    (def-function ,name ,params
+                  (declare (entry-point))
+                  ,@body
+                  (return))))
 
 (defun %storage-handle-type-p (type-spec)
   "Returns T if the type-spec refers to a storage handle (cell, tensor, etc.)."
@@ -405,6 +408,8 @@
                     (push (gethash p type-map) signature-types))))
       (setf signature-types (nreverse signature-types))
 
+      (log:debug "DEBUG PARSE-KERNEL: ~a Params: ~a Types: ~a" name params signature-types)
+
       (unless (every #'identity signature-types)
         (error "def-kernel ~a: Missing type declarations for parameters: ~a" name
           (loop for p in params for t-spec in signature-types unless t-spec collect p)))
@@ -426,7 +431,7 @@
         (let ((other-decls (loop for d in declarations
                                    unless (member (car d) '(function type))
                                  collect d)))
-          (values exploded-params exploded-types reassembly-bindings raw-body other-decls))))))
+          (values exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types))))))
 
 (defmacro def-kernel (name params &rest body)
   "Defines a GPU Kernel (Entry Point).
@@ -436,15 +441,21 @@
    because the host must know the exact layout to marshall arguments."
 
   ;; Use the helper to parse and validate, avoiding code duplication and monolithic macros
-  (multiple-value-bind (exploded-params exploded-types reassembly-bindings raw-body other-decls)
+  (multiple-value-bind (exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types)
       (parse-kernel-signature name params body)
 
     ;; Expand to def-kernel-exact
-    `(def-kernel-exact ,name ,exploded-params
-                       (declare #'(,@exploded-types))
-                       ,@(when other-decls `((declare ,@other-decls)))
-                       (let (,@reassembly-bindings)
-                         ,@raw-body))))
+    `(progn
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (setf (gethash ',name crisp.compiler::*kernel-declared-signatures*)
+          (loop for p in ',params
+                for t-spec in ',signature-types
+                collect (cons p t-spec))))
+      (def-kernel-exact ,name ,exploded-params
+                        (declare #'(,@exploded-types))
+                        ,@(when other-decls `((declare ,@other-decls)))
+                        (let (,@reassembly-bindings)
+                          ,@raw-body)))))
 
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
@@ -487,6 +498,8 @@
   "Defines a type alias.
    Example: (def-type T int)"
   `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (unless (crisp.compiler::valid-type-p ',type-spec)
+       (error "Unknown type '~a'." ',type-spec))
      (setf (gethash ',name crisp.compiler::*crisp-template-aliases*) (cons nil ',type-spec))
      (setf (gethash ',name crisp.compiler::*crisp-type-aliases*) ',type-spec)))
 

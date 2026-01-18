@@ -27,7 +27,7 @@
         `(let ((,var ,val))
            (log:debug "let-d: ~a => ~s" ',var ,var)
            (let-d ,(rest bindings)
-             ,@body)))))
+                  ,@body)))))
 
 (defun advise-function (fn-symbol)
   "Replaces a function's definition with a logging wrapper.
@@ -52,6 +52,7 @@
   (let ((functions-to-advise
          ;; Add function symbols here, e.g., 'crisp.compiler::analyze-expression
          ;'( crisp.compiler::analyze-signatures-pass))) 
+
          '()))
     (dolist (fn-sym functions-to-advise)
       (advise-function fn-sym))))

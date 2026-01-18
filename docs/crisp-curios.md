@@ -12,4 +12,5 @@ Curious Things To Know About Crisp
 - Crisp does not have the Common Lisp `let` or `let*`. It has its own `let` which is like `let*` except it supports multiple value bind directly.
 - Crisp leverages Common Lisp's macro support. Thus users can use defmacro and some Common Lisp forms to expand to Crisp forms. The supported Common Lisp forms are documented in defmacro-utils.md
 - Crisp also uses Common Lisp macros to expand some of its own forms (def-function and others) into semantic nodes.
-- the Spir-V metatadata is injected manually, rather than using LLVM Dev bindings.  
+- the Spir-V metatadata is injected manually, rather than using LLVM Dev bindings.
+- By default, the LLVM-IR is output to *standard-output*, and Log4CL messages are sent to *error-output*.    

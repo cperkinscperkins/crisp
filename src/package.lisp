@@ -181,6 +181,10 @@
    #:initialize-templates
    #:compile-to-spirv
    #:compile-to-ptx
+   #:validate-18-implicit-signature
+   #:validate-def-record-explosion
+   #:validate-def-record-explosion-ir
+   #:validate-scratch-cell-explosion
 
    ;; laungage symbols
    #:def-function
@@ -283,6 +287,7 @@
    ;; Accessors for semantic nodes
    #:semantic-function-body
    #:semantic-return-value-node
+   #:function-signature-parameters ;; <--- NEW EXPORT
    #:semantic-let-bindings
    #:semantic-let-body
 

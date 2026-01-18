@@ -153,7 +153,7 @@
          ;; 7. Create kernel
          (format t "7. Creating kernel...~%")
          (cffi:with-foreign-object (err :int)
-                                   (setf kernel (cl-create-kernel program "smoke_test_c_pointer_address_space_global_ulong_ulong" err))
+                                   (setf kernel (cl-create-kernel program "smoke_test" err))
                                    (check-cl (cffi:mem-ref err :int))
                                    (format t "   Kernel created: ~a~%" kernel))
 

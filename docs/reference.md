@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-13T02:56:33.911690Z
+Generated on 2026-01-17T17:10:08.852292Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -473,7 +473,7 @@ Generated on 2026-01-13T02:56:33.911690Z
 ### DEFUN `ENSURE-OPENCL-KERNEL-METADATA`
 - **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
 
-  > Marks a function as a SPIR-V kernel if it's an entry point.  >    Sets the spir_kernel calling convention (76).  >      >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing, not via LLVM C API, because the metadata API functions  >    (LLVMValueAsMetadata, LLVMMDStringInContext2, etc.) may not be available in all  >    LLVM versions and cause crashes when called via CFFI. Text injection is simpler  >    and guaranteed to work.
+  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >      >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.
 
 
 ---
@@ -773,6 +773,18 @@ Generated on 2026-01-13T02:56:33.911690Z
 
 
 ---
+### DEFVAR `*TEMPLATE-REGISTRY*`
+
+  > Maps template names to their generator macros.
+
+
+---
+### DEFVAR `*KERNEL-DECLARED-SIGNATURES*`
+
+  > Maps kernel names to their declared (high-level) parameter types, before explosion.
+
+
+---
 ### DEFUN `REGISTER-OVERLOAD`
 - **Args**: `(ALIAS REAL-NAME)`
 
@@ -833,6 +845,12 @@ Generated on 2026-01-13T02:56:33.911690Z
 - **Args**: `(PARAMS DECLARATIONS)`
 
   > Builds the environment from standard CL (type type-spec vars...) declarations.
+
+
+---
+### DEFPARAMETER `*KERNEL-DECLARED-SIGNATURES*`
+
+  > Maps kernel names to their declared signature types (raw pairs of parameters before explosion).
 
 
 ---
@@ -1149,7 +1167,7 @@ Generated on 2026-01-13T02:56:33.911690Z
 
 ---
 ### DEFUN `COMPILE-FILES`
-- **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS)`
+- **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P)`
 
   > Compiles the given files, iterating over requested targets.
 
@@ -1227,6 +1245,120 @@ Generated on 2026-01-13T02:56:33.911690Z
 
   > Creates a string representation of a type spec for name mangling.
 
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\metadata-val.lisp`
+
+### DEFUN `VALIDATE-12-MULTIPLE-KERNELS`
+- **Args**: `(PATHS)`
+
+  > Validates that multiple kernel metadata files are generated.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\metadata.lisp`
+
+### DEFVAR `*EMIT-METADATA*`
+
+  > If T, the compiler will generate a .metacrisp sidecar file for each orchestration/kernel.
+
+
+---
+### DEFUN `VALIDATE-METADATA-DEF-TYPE`
+- **Args**: `(METADATA-PATH TYPE-NAME TARGET-TYPE)`
+
+---
+### DEFUN `VALIDATE-01-ALIASES`
+- **Args**: `(METADATA-PATH)`
+
+---
+### DEFUN `VALIDATE-STRUCT-PRESENCE`
+- **Args**: `(METADATA-PATH EXPECTED-STRUCTS &KEY (UNEXPECTED-STRUCTS NIL))`
+
+---
+### DEFUN `VALIDATE-04-BASIC-STRUCT`
+- **Args**: `(METADATA-PATH)`
+
+---
+### DEFUN `VALIDATE-06-NESTED-STRUCTS`
+- **Args**: `(METADATA-PATH)`
+
+---
+### DEFUN `COLLECT-KERNEL-DEPENDENCIES`
+- **Args**: `(KERNEL-NAMES)`
+
+---
+### DEFUN `SORT-STRUCTS-BY-DEPENDENCY`
+- **Args**: `(STRUCT-NAMES)`
+
+---
+### DEFUN `SERIALIZE-ALIASES`
+- **Args**: `(STREAM ALIASES-HASH)`
+
+---
+### DEFUN `SERIALIZE-STRUCTS`
+- **Args**: `(STREAM STRUCTS-HASH)`
+
+---
+### DEFUN `EXTRACT-DEFINED-KERNELS`
+- **Args**: `(FORMS)`
+
+---
+### DEFUN `GENERATE-METADATA-FOR-FILE`
+- **Args**: `(INPUT-PATH OUTPUT-PATH &KEY (OUTPUT-TARGETS NIL)
+              (SOURCE-FILE NIL) (FORMS NIL))`
+
+---
+### DEFUN `VALIDATE-KERNEL-METADATA`
+- **Args**: `(METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL TARGETS-P))`
+
+---
+### DEFUN `VALIDATE-10-BASICS-META`
+- **Args**: `(PATH)`
+
+---
+### DEFUN `VALIDATE-10-BASICS-SPV`
+- **Args**: `(PATH)`
+
+---
+### DEFUN `VALIDATE-10-BASICS-MULTI`
+- **Args**: `(PATH)`
+
+---
+### DEFUN `VALIDATE-12-MULTIPLE-KERNELS`
+- **Args**: `(PATHS)`
+
+---
+### DEFUN `%STORAGE-HANDLE-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+---
+### DEFUN `GET-PHYSICAL-WIDTH`
+- **Args**: `(TYPE)`
+
+---
+### DEFUN `GENERATE-PHYSICAL-SIGNATURE`
+- **Args**: `(SIG-OR-PARAMS)`
+
+---
+### DEFUN `VALIDATE-14-PHYSICAL-SIGNATURE`
+- **Args**: `(PATHS)`
+
+---
+### DEFUN `GENERATE-DECLARED-SIGNATURE`
+- **Args**: `(SIG &OPTIONAL DECLARED-PARAMS)`
+
+---
+### DEFUN `GENERATE-IMPLICIT-SIGNATURE`
+- **Args**: `(SIG DECLARED-PARAMS)`
+
+---
+### DEFUN `SERIALIZE-KERNELS`
+- **Args**: `(OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)`
+
+---
+### DEFUN `VALIDATE-18-IMPLICIT-SIGNATURE`
+- **Args**: `(&OPTIONAL (PATHS NIL))`
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
@@ -1727,6 +1859,18 @@ Generated on 2026-01-13T02:56:33.911690Z
 ### DEFVAR `*CURRENT-FUNCTION-DECLARATIONS*`
 
   > Function declarations for current function being compiled.
+
+
+---
+### DEFVAR `*COMPILED-KERNELS*`
+
+  > List of kernel names (symbols) compiled in the current session.
+
+
+---
+### DEFVAR `*EMIT-METADATA*`
+
+  > If T, generate .metacrisp file.
 
 
 ---

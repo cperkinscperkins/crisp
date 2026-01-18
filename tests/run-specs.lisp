@@ -50,6 +50,7 @@
 (defvar *use-binary* nil)
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
+(defvar *test-filter* nil)
 ;; cl-user::*log-level* is defined at the top
 
 (defun get-binary-path ()
@@ -112,28 +113,30 @@
               nil))))))))
 
 
-(defun run-single-spec-pass (file flags)
+(defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active."
   (let ((*use-binary* (or *use-binary* (member "--use-binary" flags :test #'string=)))
         (*compile-single-pass* (or *compile-single-pass* (member "--single-pass" flags :test #'string=)))
         (*compile-debug* (or *compile-debug* (member "--debug" flags :test #'string=)))
+        (emit-metadata (member "--metadata" flags :test #'string=))
 
         ;; Determine IR Target from flags (default to nil/generic)
         (ir-target (cond
                     ((member "--ir-target=spv" flags :test #'string=) :spirv)
                     ((member "--ir-target=ptx" flags :test #'string=) :ptx)
+                    ((member "--metadata" flags :test #'string=) :spirv) ;; Metadata usually implies SPIR-V for now
                     (t nil))))
 
     ;; Dispatch based on configuration
     (if *use-binary*
         (cond
-         ((eq ir-target :spirv) (run-spec-spirv-binary file))
+         ((eq ir-target :spirv) (run-spec-spirv-binary file)) ;; Binary doesn't support metadata/validator yet in harness
          ((eq ir-target :ptx) (run-spec-ptx-binary file))
          (t (run-spec-binary file)))
 
         ;; In-Process Runner
         (cond
-         ((eq ir-target :spirv) (run-spec-spirv-in-process file))
+         ((eq ir-target :spirv) (run-spec-spirv-in-process file :emit-metadata emit-metadata :validator validator))
          ((eq ir-target :ptx) (run-spec-ptx-in-process file))
          (t (run-spec-lisp-loader file))))))
 
@@ -149,11 +152,12 @@
 
     ;; 2. Extra Runs (TEST-WITH flags)
     (let ((extra-runs (parse-test-with directives)))
-      (dolist (flags extra-runs)
-        (format t "~&Running Spec: ~a (Extra ~a)... " (pathname-name file) flags)
-        (finish-output)
-        (unless (run-single-spec-pass file flags)
-          (setf all-passed nil))))
+      (dolist (run extra-runs)
+        (destructuring-bind (flags &optional validator) run
+          (format t "~&Running Spec: ~a (Extra ~a~@[ : ~a~])... " (pathname-name file) flags validator)
+          (finish-output)
+          (unless (run-single-spec-pass file flags validator)
+            (setf all-passed nil)))))
 
     all-passed))
 
@@ -205,11 +209,15 @@
            (format t "~%LLVM Verification Error:~%~a~%" error-output)
            nil)))))
 
-(defun compile-crisp-file-to-spirv (filepath)
-  "Compiles a .crisp file to .spv and returns the output path if successful."
+(defun compile-crisp-file-to-spirv (filepath &key (emit-metadata nil))
+  "Compiles a .crisp file to .spv and returns the output path and metadata paths if successful."
   (let ((out-path (make-pathname :type "spv" :defaults filepath))
+        (meta-base-path (make-pathname :type "metacrisp" :defaults filepath))
+        (meta-paths nil)
         (*standard-output* (make-broadcast-stream)))
     (when (probe-file out-path) (delete-file out-path))
+    ;; We can't delete unknown meta files easily beforehand without knowing them, 
+    ;; but generate-metadata overrides them anyway.
 
     (let (;; Use a FRESH environment for each spec to ensure isolation
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
@@ -224,29 +232,67 @@
              (builder (crisp.llvm-bindings:llvm-create-builder)))
         (unwind-protect
             (progn
-             (let ((crisp.compiler:*target-backend* :spirv))
+             (let ((crisp.compiler:*target-backend* :spirv)
+                   (crisp.compiler::*emit-metadata* emit-metadata))
                (crisp.compiler:compile-module forms module builder nil nil nil)
-               (crisp.compiler:compile-to-spirv module out-path)))
-          (crisp.llvm-bindings:llvm-dispose-builder builder)
-          (crisp.llvm-bindings:llvm-dispose-module module))))
+               (crisp.compiler:compile-to-spirv module out-path)
+
+               (when emit-metadata
+                     (setf meta-paths
+                       (crisp.compiler::generate-metadata-for-file filepath meta-base-path
+                                                                   :output-targets (list (list :spv out-path))
+                                                                   :forms forms))))
+             (crisp.llvm-bindings:llvm-dispose-builder builder)
+             (crisp.llvm-bindings:llvm-dispose-module module)))))
 
     (if (probe-file out-path)
-        out-path
+        (values out-path meta-paths)
         nil)))
 
-(defun run-spec-spirv-in-process (file)
-  (handler-case
-      (let ((out-path (compile-crisp-file-to-spirv file)))
+(defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
+  (block :runner
+    (handler-bind ((error (lambda (e)
+                            (format *error-output* "FAIL (Condition: ~a)~%" e)
+                            (return-from :runner nil))))
+      (multiple-value-bind (out-path meta-paths)
+          (compile-crisp-file-to-spirv file :emit-metadata emit-metadata)
         (if out-path
-            (progn
-             (format t "PASS (Generated ~a)~%" (file-namestring out-path))
-             ;; Optional: Cleanup generated file
-             (delete-file out-path)
-             t)
-            (progn (format *error-output* "FAIL (No SPV generated)~%") nil)))
-    (error (e)
-      (format *error-output* "FAIL (Condition: ~a)~%" e)
-      nil)))
+            (let ((res (if validator
+                           (progn
+                            (format t "(Validator: ~a)... " validator)
+                            ;; Determine validation target
+                            (let ((val-arg (cond
+                                            ((and (listp meta-paths) (= (length meta-paths) 1)) (first meta-paths))
+                                            (t meta-paths))))
+
+                              (if (or (and (pathnamep val-arg) (probe-file val-arg))
+                                      (and (listp val-arg) (every #'probe-file val-arg)))
+                                  (progn
+                                   ;; Dispatch validator
+                                   (if (fboundp validator)
+                                       (if (funcall validator val-arg)
+                                           (progn (format t "Validator PASS. ") t)
+                                           (progn (format *error-output* "Validator FAIL. ") nil))
+                                       (progn
+                                        ;; Try finding it in crisp.compiler package if symbol has no package
+                                        (let ((sym (find-symbol (symbol-name validator) :crisp.compiler)))
+                                          (if (and sym (fboundp sym))
+                                              (if (funcall sym val-arg)
+                                                  (progn (format t "Validator PASS. ") t)
+                                                  (progn (format *error-output* "Validator FAIL. ") nil))
+                                              (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))))
+                                  (progn (format *error-output* "FAIL (Metadata Missing: ~a)~%" val-arg) nil))))
+                           (progn
+                            (format t "PASS (Generated ~a)~%" (file-namestring out-path))
+                            t))))
+
+              ;; Cleanup generated artifacts
+              (when (probe-file out-path) (delete-file out-path))
+              (dolist (mp (if (listp meta-paths) meta-paths (list meta-paths)))
+                (when (probe-file mp) (delete-file mp)))
+
+              res)
+            (progn (format *error-output* "FAIL (No SPV generated)~%") nil))))))
 
 (defun run-spec-spirv-binary (file)
   (let ((bin (get-binary-path))
@@ -271,7 +317,6 @@
        (t
          (format *error-output* "FAIL (No SPV generated)~%~a~%" error-output)
          nil)))))
-
 
 ;; tests/run-specs.lisp - Add PTX runner functions (after line 224)
 
@@ -342,7 +387,6 @@
          (format *error-output* "FAIL (No PTX generated)~%~a~%" error-output)
          nil)))))
 
-
 (defun get-ci-stop-target ()
   "Reads tests/ci-stop.txt to determine the last directory to run."
   (let ((path (merge-pathnames "tests/ci-stop.txt" (uiop:getcwd))))
@@ -382,7 +426,6 @@
     (sort (nreverse filtered-files) #'string< :key #'namestring)))
 
 ;; UNIT TESTS IN SPEC DIRECTORIES    
-
 
 (defun read-crisp-file (filepath)
   "Reads all forms from a .crisp file."
@@ -517,18 +560,24 @@
   nil)
 
 (defun parse-test-with (directive-lines)
-  "Parses TEST-WITH[--flag1 --flag2] directives.
-   Returns a list of lists, where each sublist is a set of flags for a single run."
+  "Parses TEST-WITH[--flag1 --flag2] : validator-name directives.
+   Returns a list of runs, where each run is (flags validator-fn)."
   (let ((runs '()))
     (dolist (line directive-lines)
       (let ((trimmed (string-left-trim ";; " line)))
         (when (starts-with trimmed "TEST-WITH[")
               (let* ((end-bracket (position #\] trimmed))
-                     (content (when end-bracket (subseq trimmed 10 end-bracket))))
+                     (content (when end-bracket (subseq trimmed 10 end-bracket)))
+                     (colon (position #\: trimmed :start (or end-bracket 0)))
+                     (validator (when colon
+                                      (let ((v-str (string-trim '(#\Space #\Tab) (subseq trimmed (1+ colon)))))
+                                        (if (starts-with v-str "#'")
+                                            (subseq v-str 2) ;; Remove #' prefix if present
+                                            v-str)))))
                 (when (and content (> (length content) 0))
                       ;; Split by space to get individual flags
                       (let ((flags (uiop:split-string content :separator " ")))
-                        (push flags runs)))))))
+                        (push (list flags (when validator (read-from-string validator))) runs)))))))
     (nreverse runs)))
 
 (defun should-expect-failure-p (file)
@@ -546,10 +595,13 @@
      ((eq expect :fail) t)
      ((eq expect :pass) nil)
 
+     ;; Check filter
+     ((and *test-filter* (not (search *test-filter* (namestring file))))
+       nil) ;; Should not happen if filtered in loop, but whatever.
+
      ;; No directive, use directory
      (in-errors-dir t)
      (t nil))))
-
 
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))
@@ -568,7 +620,9 @@
             (cond
              ((string= arg "--use-binary") (setf *use-binary* t))
              ((string= arg "--debug") (setf *compile-debug* t))
-             ((string= arg "--single-pass") (setf *compile-single-pass* t))))
+             ((string= arg "--single-pass") (setf *compile-single-pass* t))
+             ((and (> (length arg) 9) (string= (subseq arg 0 9) "--filter="))
+               (setf *test-filter* (subseq arg 9)))))
 
     ;; Re-initialize with user-requested log level
     (initialize-compiler :log-level cl-user::*log-level*)
@@ -592,44 +646,45 @@
     (setf spec-files (sort spec-files #'string< :key #'namestring))
 
     (loop for file in spec-files do
-            (let ((dir-name (get-parent-directory-name file))
-                  (expect-failure (should-expect-failure-p file)))
+            (when (or (not *test-filter*) (search *test-filter* (namestring file)))
+                  (let ((dir-name (get-parent-directory-name file))
+                        (expect-failure (should-expect-failure-p file)))
 
-              ;; Check stop target
-              (when (and stop-target (string> dir-name stop-target))
-                    (unless stop-triggered
-                      (format t "~&--- Reached Stop Target (~a). Stopping. ---~%" stop-target)
-                      (setf stop-triggered t))
-                    (cl:return))
+                    ;; Check stop target
+                    (when (and stop-target (string> dir-name stop-target))
+                          (unless stop-triggered
+                            (format t "~&--- Reached Stop Target (~a). Stopping. ---~%" stop-target)
+                            (setf stop-triggered t))
+                          (cl:return))
 
-              (format t "Running Spec: ~a... " (pathname-name file))
-              (finish-output)
-              (incf total)
+                    (format t "Running Spec: ~a... " (pathname-name file))
+                    (finish-output)
+                    (incf total)
 
-              ;; Run test and check expectation
-              (let ((test-passed (run-spec-file file)))
-                (when (search "multipass" (pathname-name file))
-                      (format t "DEBUG MAIN: File: ~a. TestPassed: ~a. ExpectFail: ~a~%"
-                        (pathname-name file) test-passed expect-failure))
+                    ;; Run test and check expectation
+                    (let ((test-passed (run-spec-file file)))
+                      (when (search "multipass" (pathname-name file))
+                            (format t "DEBUG MAIN: File: ~a. TestPassed: ~a. ExpectFail: ~a~%"
+                              (pathname-name file) test-passed expect-failure))
 
-                (cond
-                 ;; Test passed and we expected it to pass
-                 ((and test-passed (not expect-failure))
-                   (incf passed))
+                      (cond
+                       ;; Test passed and we expected it to pass
+                       ((and test-passed (not expect-failure))
+                         (incf passed))
 
-                 ;; Test failed and we expected it to fail
-                 ((and (not test-passed) expect-failure)
-                   (format t " (Expected failure)~%")
-                   (incf passed))
+                       ;; Test failed and we expected it to fail
+                       ((and (not test-passed) expect-failure)
+                         (format t " (Expected failure)~%")
+                         (incf passed))
 
-                 ;; Test passed but we expected failure
-                 ((and test-passed expect-failure)
-                   (format *error-output* " ERROR: Test passed but was expected to fail!~%")
-                   (push (pathname-name file) failed-files))
+                       ;; Test passed but we expected failure
+                       ((and test-passed expect-failure)
+                         (format *error-output* " ERROR: Test passed but was expected to fail!~%")
+                         (push (pathname-name file) failed-files))
 
-                 ;; Test failed but we expected pass
-                 (t
-                   (push (pathname-name file) failed-files))))))
+                       ;; Test failed but we expected pass
+                       (t
+                         (push (pathname-name file) failed-files)))))))
 
     (format t "~&---------------------------~%")
     (format t "Spec Summary: ~a/~a Passed.~%" passed total)

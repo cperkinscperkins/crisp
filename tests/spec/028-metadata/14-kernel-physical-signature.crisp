@@ -1,0 +1,44 @@
+
+;; TEST-WITH[--metadata]: crisp.compiler::validate-14-physical-signature
+
+#|
+This test validates the physical signature of simple kernels.
+(:kernels 
+    ("complex_signature_kernel" 
+      :source "path/to/some.crisp"
+      (:output-targets nil)
+        (:physical-signature 
+
+        ;; "v"
+        ;; simple scalar
+        (0 float)
+
+        ;; "c"
+        ;; cell
+        ;; container
+        (1 ulong) ;; byte-size
+        (2 voidp) ;; data pointer
+        ;; offset
+        (3 ulong)
+
+        ;; "d"
+        ;; cell
+        ;; container
+        (4 ulong) ;; byte-size
+        (5 voidp) ;; data pointer
+        ;; offset
+        (6 ulong))))
+
+
+|#
+
+(def-kernel basic_signature_kernel (c)
+    (declare (type c (cell float :address-space :global :access :read-write)))
+  (let ((f (~ c)))
+    (set! (~ c) (+ f 1.0))))
+
+(def-kernel complex_signature_kernel (v c &out d)
+    (declare (type c d (cell float :address-space :global :access :read-write))
+             (type v float))
+  (let ((f (~ c)))
+    (set! (~ d) (+ f v))))

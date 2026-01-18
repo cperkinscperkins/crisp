@@ -88,29 +88,45 @@
 ;; Insert BEFORE the line: (defun generate-function-prototype
 
 (defun ensure-opencl-kernel-metadata (func semantic-function module)
-  "Marks a function as a SPIR-V kernel if it's an entry point.
-   Sets the spir_kernel calling convention (76).
+  "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
+   Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
    
    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
-   as text during IR printing, not via LLVM C API, because the metadata API functions
-   (LLVMValueAsMetadata, LLVMMDStringInContext2, etc.) may not be available in all
-   LLVM versions and cause crashes when called via CFFI. Text injection is simpler
-   and guaranteed to work."
+   as text during IR printing for SPIR-V."
   (when (semantic-function-is-entry-point semantic-function)
-        (log:info "Marking function ~a as SPIR kernel (cc 76)"
-                  (semantic-function-name semantic-function))
-        ;; Set calling convention to spir_kernel (76)
-        ;; This is simple and works reliably via C API
-        (llvm-set-function-call-conv func 76)))
+        (log:info "Marking function ~a as Kernel for backend ~a"
+                  (semantic-function-name semantic-function) *target-backend*)
+
+        (case *target-backend*
+          (:spirv
+           ;; calling convention spir_kernel (76)
+           (llvm-set-function-call-conv func 76))
+          (:ptx
+           ;; Use C calling convention (0) to avoid llc crash on Windows.
+           ;; 'ptx_kernel' (71) seems to cause issues in this specific environment.
+           ;; We rely on llc to infer kernel status or manual metdata if needed later.
+           (log:warn "Forcing CC 0 for PTX kernel to avoid crash.")
+           (llvm-set-function-call-conv func 0))
+          (t
+           ;; Default to C calling convention (0) for generic/unknown
+           (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
+           (llvm-set-function-call-conv func 0)))))
 
 (defun generate-function-prototype (semantic-function module di-builder di-compile-unit location-map)
   "Generates the LLVM function prototype and debug info."
   (let* ((return-types (semantic-function-return-type semantic-function))
          (crisp-return-type (first return-types))
          (base-name (semantic-function-name semantic-function))
-         (param-type-specs (mapcar #'semantic-param-type (semantic-function-param-list semantic-function)))
-         (mangled-name (format nil "~a~{_~a~}" base-name (mapcar #'mangle-type-spec param-type-specs)))
-         (fn-name (substitute #\_ #\- (string-downcase mangled-name)))
+         (is-entry-point (semantic-function-is-entry-point semantic-function))
+
+         ;; For Entry Points (Kernels): Use the exact name (case-insensitive/downcased per convention)
+         ;; For Functions: Mangle with parameter types to support overloading.
+         (mangled-name (if is-entry-point
+                           (string-downcase (symbol-name base-name))
+                           (let ((param-type-specs (mapcar #'semantic-param-type (semantic-function-param-list semantic-function))))
+                             (format nil "~a~{_~a~}" base-name (mapcar #'mangle-type-spec param-type-specs)))))
+
+         (fn-name (substitute #\_ #\~ (substitute #\_ #\- (string-downcase mangled-name))))
          (fn-loc (semantic-function-source-location semantic-function))
          (param-nodes (semantic-function-param-list semantic-function))
          (fn-type (create-llvm-function-type module return-types param-nodes)))
@@ -137,9 +153,17 @@
              (values existing nil))) ; TODO: Debug info for definition of forward decl?
 
           ;; Case 3: New Function (Does not exist). Create it.
-          (let ((func (llvm-add-function module fn-name fn-type)))
-            (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
-              (values func di-subprogram)))))))
+          (progn
+           ;; FILTER: On PTX, skip functions that return structs by value to avoid llc crash.
+           (when (eq *target-backend* :ptx)
+                 (let ((type-obj (gethash crisp-return-type *crisp-types*)))
+                   (when (and type-obj (member (crisp-type-category type-obj) '(:struct :record)))
+                         (log:warn "Skipping generation of function ~a on PTX due to struct return value (unsupported)." fn-name)
+                         (return-from generate-function-prototype (values nil nil)))))
+
+           (let ((func (llvm-add-function module fn-name fn-type)))
+             (let ((di-subprogram (generate-debug-info di-builder di-compile-unit func fn-name fn-loc crisp-return-type param-nodes location-map)))
+               (values func di-subprogram))))))))
 
 (defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
   "Generates the body of the function."
@@ -187,9 +211,10 @@
 
   (multiple-value-bind (func di-subprogram)
       (generate-function-prototype semantic-function module di-builder di-compile-unit location-map)
-    ;; Attach SPIR-V kernel metadata if this is an entry point
-    (ensure-opencl-kernel-metadata func semantic-function module)
-    (generate-function-body semantic-function func di-subprogram builder module di-builder location-map)))
+    (when func
+          ;; Attach SPIR-V/PTX kernel metadata if this is an entry point
+          (ensure-opencl-kernel-metadata func semantic-function module)
+          (generate-function-body semantic-function func di-subprogram builder module di-builder location-map))))
 
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
   (:documentation "Generates LLVM IR for a single semantic node."))
@@ -250,87 +275,83 @@
          (value (semantic-literal-value node))
          (llvm-type (unless (member type-spec '(keyword symbol quote))
                       (crisp-type-to-llvm-type type-spec module)))
-         (result (cond ;; Handle parameterized types
-                      ((or (eq type-spec 'keyword) (eq type-spec 'symbol) (eq type-spec 'quote))
-                        (let ((ival (resolve-keyword-constant value)))
-                          (llvm-const-int (llvm-int32-type) ival nil)))
-                      ((listp type-spec)
-                        (let ((base-type (first type-spec)))
-                          (cond
-                           ((or (eq base-type :function-literal) (eq base-type :function-type))
-                             ;; For zero-cost abstraction, we don't emit a real function pointer.
-                             ;; The type system tracks the identity, but at runtime it's a ghost.
-                             (llvm-get-undef llvm-type))
-                           ((or (eq base-type 'keyword) (eq base-type 'symbol))
-                             (let ((ival (resolve-keyword-constant value)))
-                               (llvm-const-int (llvm-int32-type) ival nil)))
-                           ((eq base-type 'cell)
-                             (let* ((storage-var-name '__storage)
-                                    (storage-alloca (gethash storage-var-name var-env)))
-                               (unless storage-alloca
-                                 (error "Missing implicit argument __storage for make-scratch-cell. Environment keys: ~s" (alexandria:hash-table-keys var-env)))
+         (result
+          (cond
+           ;; Handle parameterized types
+           ((or (eq type-spec 'keyword) (eq type-spec 'symbol) (eq type-spec 'quote))
+             (let ((ival (resolve-keyword-constant value)))
+               (llvm-const-int (llvm-int32-type) ival nil)))
 
-                               (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
-                                      (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
+           ((listp type-spec)
+             (let ((base-type (first type-spec)))
+               (cond
+                ((or (eq base-type :function-literal) (eq base-type :function-type))
+                  (llvm-get-undef llvm-type))
 
-                                      ;; 2. Create CELL struct { parent:storage, offset:ulong, ... }
-                                      ;; We must resolve the PHYSICAL struct type, not the logical pointer type.
-                                      (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
+                ((or (eq base-type 'keyword) (eq base-type 'symbol))
+                  (let ((ival (resolve-keyword-constant value)))
+                    (llvm-const-int (llvm-int32-type) ival nil)))
 
-                                      (cell-struct-type (ensure-struct-llvm-type mangled-name))
-                                      (cell-undef (llvm-get-undef cell-struct-type))
+                ((eq base-type 'cell)
+                  ;; FIXED: Check for both __sc (new convention) and __storage (legacy)
+                  (let* ((storage-var-name (or (when (gethash '__sc var-env) '__sc) '__storage))
+                         (storage-alloca (gethash storage-var-name var-env)))
+                    (unless storage-alloca
+                      (error "Missing implicit argument ~a for make-scratch-cell. Environment keys: ~s"
+                        storage-var-name (alexandria:hash-table-keys var-env)))
 
-                                      ;; STORAGE is now BY VALUE in CELL.
-                                      (cell-0 (llvm-build-insert-value builder cell-undef storage-val 0 "parent"))
-                                      ;; Initialize offset to 0
-                                      (cell-1 (llvm-build-insert-value builder cell-0 (llvm-const-int (llvm-int64-type) 0 nil) 1 "offset"))
+                    (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
+                           (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
+                           (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
+                           (cell-struct-type (ensure-struct-llvm-type mangled-name))
+                           (cell-undef (llvm-get-undef cell-struct-type))
+                           (cell-0 (llvm-build-insert-value builder cell-undef storage-val 0 "parent"))
+                           (cell-1 (llvm-build-insert-value builder cell-0
+                                                            (llvm-const-int (llvm-int64-type) 0 nil)
+                                                            1 "offset"))
+                           (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
+                      (llvm-build-store builder cell-1 cell-handle)
+                      cell-handle)))
 
-                                      ;; 3. Spill to stack (Handle)
-                                      (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
-                                 (llvm-build-store builder cell-1 cell-handle)
-                                 cell-handle)))
-                           (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
-                      ;; Handle simple or singleton types
-                      ((or (symbolp type-spec)
-                           (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
+                (t (error "Codegen not implemented for literal of type ~a" type-spec)))))
 
-                        (let ((type-sym (if (consp type-spec) (first type-spec) type-spec)))
-                          (cond
-                           ;; Check if it is an enum or keyword/symbol
-                           ((or (gethash type-spec *crisp-enums*)
-                                (member type-sym '(keyword symbol quote)))
-                             (let ((val (resolve-keyword-constant value))
-                                   (target-type (or llvm-type (llvm-int32-type))))
-                               ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
-                               (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) val) nil)))
-                                 (llvm-build-trunc builder val-i64 target-type "enum_trunc"))))
+           ;; Handle simple or singleton types
+           ((or (symbolp type-spec)
+                (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
+             (let ((type-sym (if (consp type-spec) (first type-spec) type-spec)))
+               (cond
+                ((or (gethash type-spec *crisp-enums*)
+                     (member type-sym '(keyword symbol quote)))
+                  (let* ((val (resolve-keyword-constant value))
+                         (target-type (or llvm-type (llvm-int32-type)))
+                         (val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) val) nil)))
+                    (llvm-build-trunc builder val-i64 target-type "enum_trunc")))
 
-                           (t
-                             (let ((crisp-type (gethash type-sym *crisp-types*)))
-                               (unless crisp-type
-                                 (error "Codegen: Literal type ~a not found in *crisp-types* or *crisp-enums*" type-spec))
-                               (cond
-                                ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
-                                  (if (zerop value)
-                                      (llvm-const-null llvm-type)
-                                      ;; WORKAROUND: LLVMConstInt(Int32) crashes on Windows.
-                                      ;; Generate I64 constant and Truncate if needed.
-                                      (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
-                                        (if (= (crisp-type-size crisp-type) 64)
-                                            val-i64
-                                            (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
-                                ((eq (crisp-type-category crisp-type) :float) (llvm-const-real llvm-type (coerce value 'double-float)))
-                                ((eq (crisp-type-category crisp-type) :void) nil)
-                                (t (error "Codegen for literal of unknown type category: ~a" type-spec))))))))
-                      (t (error "Codegen not implemented for literal of type ~a" type-spec))))
-         (di-location (when (and di-builder di-scope location-map)
-                            (let* ((loc (semantic-node-source-location node))
-                                   (line (gethash loc location-map 0)))
-                              (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                     line
-                                                                     0 ; column
-                                                                     di-scope
-                                                                     (cffi:null-pointer)))))) ; InlinedAt
+                (t
+                  (let ((crisp-type (gethash type-sym *crisp-types*)))
+                    (unless crisp-type
+                      (error "Codegen: Literal type ~a not found in *crisp-types* or *crisp-enums*" type-spec))
+                    (cond
+                     ((member (crisp-type-category crisp-type) '(:signed-int :unsigned-int))
+                       (if (zerop value)
+                           (llvm-const-null llvm-type)
+                           (let ((val-i64 (llvm-const-int (llvm-int64-type) (ldb (byte 64 0) value) nil)))
+                             (if (= (crisp-type-size crisp-type) 64)
+                                 val-i64
+                                 (llvm-build-trunc builder val-i64 llvm-type "int_trunc")))))
+                     ((eq (crisp-type-category crisp-type) :float)
+                       (llvm-const-real llvm-type (coerce value 'double-float)))
+                     ((eq (crisp-type-category crisp-type) :void) nil)
+                     (t (error "Codegen for literal of unknown type category: ~a" type-spec))))))))
+
+           (t (error "Codegen not implemented for literal of type ~a" type-spec))))
+
+         (di-location
+          (when (and di-builder di-scope location-map)
+                (let* ((loc (semantic-node-source-location node))
+                       (line (gethash loc location-map 0)))
+                  (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                         line 0 di-scope (cffi:null-pointer))))))
     (values result di-location)))
 
 ;; -- reading a variable --
@@ -548,12 +569,12 @@
   (let ((args-array (cffi:foreign-alloc 'llvm-value-ref :count param-count))
         (idx 0))
     (loop for arg-node in arg-nodes
-          for param-type in param-types
+          for param-type-spec in param-types ; param-types is already a list of type-specs
           do (multiple-value-bind (arg-val arg-loc) (generate-node-ir arg-node builder module var-env di-builder di-scope location-map)
                (declare (ignore arg-loc))
                (let* ((arg-type-spec (semantic-node-type arg-node))
                       (prim-val (extract-primary-value builder arg-val arg-type-spec))
-                      (exploded-vals (explode-value builder prim-val param-type)))
+                      (exploded-vals (explode-value builder prim-val param-type-spec)))
                  (dolist (val exploded-vals)
                    (setf (cffi:mem-aref args-array 'llvm-value-ref idx) val)
                    (incf idx)))))
@@ -635,7 +656,7 @@
          (llvm-return-type (get-llvm-return-type module return-type-names))
 
          ;; 3. Build the LLVM function *type* (the signature)
-         (param-nodes (function-signature-parameters sig))
+         (param-nodes (mapcar #'parameter-def-type (function-signature-parameters sig)))
          (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-nodes))
          (param-count (length expanded-param-types))
          (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
@@ -647,7 +668,7 @@
 
     (let* (;; The name of the function in LLVM IR is mangled with its types
            (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
-                           (mapcar #'mangle-type-spec (function-signature-parameters sig))))
+                           (mapcar #'mangle-type-spec (mapcar #'parameter-def-type (function-signature-parameters sig)))))
            (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
            (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
 
@@ -995,18 +1016,25 @@
          (cell-val (generate-node-ir array-node builder module var-env di-builder di-scope location-map))
          (index-val (generate-node-ir index-node builder module var-env di-builder di-scope location-map)))
 
-    (let ((cell-spec (if (symbolp array-type)
-                         (unmangle-template-struct-name array-type)
-                         array-type)))
+    (let ((cell-spec (let* ((resolved (resolve-type-alias array-type))
+                            (canon (canonicalize-type-specifier resolved)))
+                       (cond
+                        ;; Case A: Already (CELL ...)
+                        ((and (listp canon) (eq (first canon) 'cell)) canon)
+                        ;; Case B: (CELL_LONG_...) -> Unmangle content
+                        ((and (listp canon) (= (length canon) 1) (symbolp (first canon)))
+                          (unmangle-template-struct-name (first canon)))
+                        ;; Case C: Symbol CELL_LONG_...
+                        ((symbolp canon)
+                          (unmangle-template-struct-name canon))
+                        (t canon)))))
       (cond
        ;; Case 1: CELL parameterized type
        ((and (listp cell-spec) (eq (first cell-spec) 'cell))
          (let* (;; Use element-type from analysis if reliable, otherwise safe to derive
                 (elem-type-spec element-type)
                 (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
-                (mangled-struct-name (if (symbolp array-type)
-                                         array-type
-                                         (mangle-template-struct-name (first array-type) (rest array-type)))))
+                (mangled-struct-name (mangle-template-struct-name (first cell-spec) (rest cell-spec))))
 
            (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
            (let ((cell-struct-type (ensure-struct-llvm-type mangled-struct-name)))

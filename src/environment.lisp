@@ -10,6 +10,7 @@
   "Parses a function's declarations and returns its environment and return type.
    Supports interleaved type syntax: ((p type))"
   (log:debug "PARSE PARAMS: ~s Type: ~a Length: ~a" params (type-of params) (length params))
+
   ;; Defensive patch: unwrap double nested params (bug in def-record)
   (when (and (= (length params) 1) (listp (first params)) (listp (first (first params))) (symbolp (first (first (first params)))))
         (log:warn "Deeply nested params detected! Unwrapping.")
@@ -30,11 +31,13 @@
     (cond
      ;; Case 1: #'(...) signature
      (fn-decl
+       (log:debug "PARSE CASE 1: Function decl found: ~s" fn-decl)
        (multiple-value-setq (env optional-idx defaults key-idx)
                             (analyze-environment-from-spec params (second fn-decl))))
 
      ;; Case 2: Interleaved syntax ((a int) (b float))
      ((some #'listp params)
+       (log:debug "PARSE CASE 2: Interleaved syntax detected. Params: ~s" params)
        ;; TODO: Support &optional in interleaved syntax if needed.
        (setf env (loop for p in params
                        collect (if (listp p)
@@ -50,6 +53,7 @@
 
      ;; Case 3: Standard declarations
      (t
+       (log:debug "PARSE CASE 3: Standard declarations. Params: ~s" params)
        (setf env (analyze-environment-from-list params declarations))))
 
     (values env return-types optional-idx defaults key-idx)))
@@ -190,7 +194,7 @@
                                       (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
                                                                                 (sig (make-function-signature
                                                                                       :name mangled-name
-                                                                                      :parameters active-param-types
+                                                                                      :parameters active-env
                                                                                       :return-types final-ret-types
                                                                                       :source-location (or (generic-function-def-source-location generic-def) location))))
 
@@ -208,6 +212,8 @@
          (params (third form))
          (body (cdddr form))
          (declare-forms (loop for f in body while (and (listp f) (eq (car f) 'declare)) collect f)))
+    ;; (format *error-output* "DEBUG REGISTER-FUNC: Name ~s Declares: ~s~%" name declare-forms)
+    (finish-output *error-output*)
     (log:debug "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s" name (package-name (symbol-package name)) declare-forms)
 
     (multiple-value-bind (env return-types optional-idx extracted-defaults key-idx)
@@ -245,14 +251,21 @@
 
                  (sig (make-function-signature
                        :name name
-                       :parameters param-types
+                       :parameters env ;; STORE FULL PARAMETER-DEF STRUCTS (Name + Type)
                        :return-types return-types
                        :source-location location)))
             (declare (ignore _))
-            ;; Append to existing signatures
+
+            ;; (format *error-output* "DEBUG REGISTRATION FINAL: ~s Params: ~s~%" name param-types)
+            (finish-output *error-output*)
             (setf (gethash name *function-table*)
               (append (gethash name *function-table*) (list sig))))))))
 
+(defvar *template-registry* (make-hash-table :test 'eq)
+        "Maps template names to their generator macros.")
+
+(defvar *kernel-declared-signatures* (make-hash-table :test 'eq)
+        "Maps kernel names to their declared (high-level) parameter types, before explosion.")
 (defun register-overload (alias real-name)
   "Registers the signature(s) of `real-name` under `alias` to generic overloading/aliasing."
   (let ((real-sigs (gethash real-name *function-table*))
@@ -264,9 +277,14 @@
 
 (defun inject-implicit-arguments (name explicit-env)
   "Injects implicit arguments into the environment if the function is a carrier."
-  (let* ((implicit-args (gethash name *implicit-arg-map*))
-         (implicit-env (when implicit-args
-                             (list (make-parameter-def :name '__storage :type 'storage :kind :in)))))
+  (let* ((implicit-info (gethash name *implicit-arg-map*))
+         (implicit-env (when implicit-info
+                             ;; implicit-info is now: ((name . type) ...)
+                             (loop for (param-name . param-type) in implicit-info
+                                   collect (make-parameter-def
+                                            :name param-name
+                                            :type param-type
+                                            :kind :in)))))
     (append implicit-env explicit-env)))
 
 (defun scan-for-carriers (name body)
@@ -278,7 +296,16 @@
                                               (member callee *side-channel-originators*)))
                                       callees))
                 (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
-                (setf (gethash name *implicit-arg-map*) '(:storage))))))
+                ;; BEFORE: (setf (gethash name *implicit-arg-map*) '(:storage))
+                ;; AFTER: Copy from first callee that has implicit params
+                (let ((callee-with-implicits
+                       (find-if (lambda (c) (gethash c *implicit-arg-map*)) callees)))
+                  (if callee-with-implicits
+                      ;; Copy from callee
+                      (setf (gethash name *implicit-arg-map*)
+                        (gethash callee-with-implicits *implicit-arg-map*))
+                      ;; Originator case - will be set later by analyze-scratch-expression
+                      nil))))))
 
 (defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
   "Detects if a function is an implicit template (e.g. has function-type args),
@@ -333,13 +360,10 @@
   (cond
    ;; 0. Type Aliases -- FIX: Use resolve-type-alias for cycle detection
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
+     ;; Validate cycle but return alias to preserve it for metadata
      (let ((resolved (resolve-type-alias spec)))
-       ;; resolve-type-alias guarantees no cycle (throws error).
-       (cond
-        ((equal resolved spec) spec) ;; Identity or leaf
-        (t
-          (log:info "PARSE: Resolving Alias ~a -> ~a" spec resolved)
-          (parse-type-specifier resolved)))))
+       (valid-type-p resolved) ;; Force instantiation of underlying template
+       spec)) ;; Return alias, NOT resolved
 
    ;; 0.1 Template Aliases (e.g. (in-cell int))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
@@ -447,6 +471,10 @@
       (loop while (and params param-type-specs)
             do (let ((p (first params))
                      (ts (first param-type-specs)))
+
+                 ;; (format *error-output* "DEBUG ANALYZE-ENV: Param ~s TS ~s~%" p ts)
+                 (finish-output *error-output*)
+
                  (cond
                   ;; Handle &optional in params
                   ((and (symbolp p) (string-equal (symbol-name p) "&OPTIONAL"))
@@ -601,3 +629,6 @@
                    :name p
                    :type (or (gethash p env) t) ;; Default to T if not declared
                    :kind :in))))
+
+(defparameter *kernel-declared-signatures* (make-hash-table)
+              "Maps kernel names to their declared signature types (raw pairs of parameters before explosion).")
