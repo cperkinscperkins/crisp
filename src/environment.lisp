@@ -656,6 +656,3 @@
                    :name p
                    :type (or (gethash p env) t) ;; Default to T if not declared
                    :kind :in))))
-
-(defparameter *kernel-declared-signatures* (make-hash-table)
-              "Maps kernel names to their declared signature types (raw pairs of parameters before explosion).")

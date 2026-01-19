@@ -64,3 +64,8 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
         THere may not be a simple fix for this. Kernel names are most definitely interned as symbols now
         and used in tons of lookups.  Changing to string will mean touching a lot of code. 
         Decide what to do. Having lower-case is not world ending.
+
+[ ] 019 - def-kernel-exact does not generate metadata. This is low priority because if someoen 
+          id using def-kernel-exact they have their own enqueue infra and wouldn't need ours.
+          It's not trivial to fix, because of ... reasons.  Also def-kernel-exact wouldn't 
+          even have a :declared-signature anyway. Decide later. 
