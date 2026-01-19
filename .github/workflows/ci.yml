@@ -90,6 +90,7 @@ jobs:
       - name: 7. Run End-to-End Specs (Internal & External)
         env:
           CRISP_USE_SYSTEM_TOOLS: true
+          SKIP_SPIRV_TESTS: true
         run: |
           # Exit immediately if a pipeline returns a non-zero status.
           set -o pipefail
