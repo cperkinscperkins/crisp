@@ -1,0 +1,8 @@
+;; TEST-HOIST[L0] : validate-l0-alias-typedef
+
+(def-type iii int)
+
+
+(def-kernel alias_typedef (i)
+    (declare (type i iii))
+    (set! i (+ i 1)))

@@ -1,0 +1,13 @@
+
+;; TEST-HOIST[L0] : validate-l0-struct-not-on-kernel-boundary
+
+;; Here we use a struct in a kernel, but it is not on the kernel boundary.
+;; It should not appear in the metadata. Nor in the .cpp
+
+(def-struct point (x int) (y int))
+
+
+(def-kernel struct_align (x1 y1)
+    (declare (type x1 y1 int))
+    (let ((p (make-point x1 y1)))
+        (set! (x~ p) (+ (x~ p) 1))))

@@ -1,0 +1,13 @@
+;; TEST-HOIST[L0] : validate-l0-cell-address-space
+
+
+;; Expected in generated C++:
+;; - 'g' and 'gc' → zeMemAllocDevice (global device memory)
+;; - 'l' → Local memory setup (via kernel group size, no explicit allocation)
+
+(def-kernel address_space_test (g l &out gc)
+    (declare (type g (cell int :address-space :global :access :read-write))
+             (type l (cell int :address-space :local :access :read-write))
+             (type gc (cell int :address-space :global :access :read-write)))
+    (set! (~ l) 17) ;; setup local
+    (set! (~ gc) (+ (~ g) (~ l))))

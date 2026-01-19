@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-18T23:06:26.409351Z
+Generated on 2026-01-19T18:12:05.572129Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -952,13 +952,72 @@ Generated on 2026-01-18T23:06:26.409351Z
 
 
 ---
-### DEFPARAMETER `*KERNEL-DECLARED-SIGNATURES*`
+## File: `C:\Users\cperk\Documents\crisp\src\errors.lisp`
 
-  > Maps kernel names to their declared signature types (raw pairs of parameters before explosion).
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\main.lisp`
+
+### DEFUN `MAIN`
+
+  > Entry point for crisp-hoist-l0.exe
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\errors.lisp`
+### DEFUN `GENERATE-L0-LAUNCHER`
+- **Args**: `(METACRISP-PATH)`
+
+  > Generate Level Zero C++ launcher code from metacrisp file.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\package.lisp`
+
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\codegen-base.lisp`
+
+### DEFUN `CRISP-TYPE-TO-CPP-TYPE`
+- **Args**: `(CRISP-TYPE)`
+
+  > Convert a Crisp type to C++ type string.
+
+
+---
+### DEFUN `FORMAT-CPP-IDENTIFIER`
+- **Args**: `(LISP-SYMBOL)`
+
+  > Convert Lisp symbol to C++-safe identifier.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\common.lisp`
+
+### DEFUN `PARSE-METACRISP-FILE`
+- **Args**: `(FILEPATH)`
+
+  > Parse a .metacrisp file and return the data structure.
+
+
+---
+### DEFUN `METACRISP-KERNELS`
+- **Args**: `(METACRISP-DATA)`
+
+  > Extract kernels list from metacrisp data.
+
+
+---
+### DEFUN `METACRISP-ALIASES`
+- **Args**: `(METACRISP-DATA)`
+
+  > Extract type aliases from metacrisp data.
+
+
+---
+### DEFUN `METACRISP-STRUCTS`
+- **Args**: `(METACRISP-DATA)`
+
+  > Extract struct definitions from metacrisp data.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\package.lisp`
 
 ## File: `C:\Users\cperk\Documents\crisp\src\llvm-bindings.lisp`
 
@@ -1518,6 +1577,20 @@ Generated on 2026-01-18T23:06:26.409351Z
 ---
 ### DEFUN `SORT-STRUCTS-BY-DEPENDENCY`
 - **Args**: `(STRUCT-NAMES)`
+
+---
+### DEFUN `STRIP-PACKAGE-QUALIFIERS`
+- **Args**: `(TYPE-SPEC)`
+
+  > Recursively strips package qualifiers from symbols in a type specification.  >    Returns the type spec with bare symbol names (no CRISP.COMPILER:: prefixes).  >      >    Examples:  >      CRISP.COMPILER:INT -> INT  >      (CRISP.COMPILER:CELL CRISP.COMPILER:FLOAT :GLOBAL :READ-WRITE)   >        -> (CELL FLOAT :GLOBAL :READ-WRITE)  >      (C-POINTER ADDRESS-SPACE GLOBAL) -> (C-POINTER ADDRESS-SPACE GLOBAL)
+
+
+---
+### DEFUN `PRINT-WITHOUT-PACKAGES`
+- **Args**: `(OBJ STREAM)`
+
+  > Prints an object to stream without any package qualifiers.  >    Uses *package* context to avoid printing qualifiers.
+
 
 ---
 ### DEFUN `SERIALIZE-ALIASES`
