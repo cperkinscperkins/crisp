@@ -45,14 +45,17 @@ jobs:
           # Manually add the LLVM repository source file
           echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
           
-          # Now install the system packages
+          # Install core packages (these should always work)
           sudo apt-get update
-          sudo apt-get install -y sbcl llvm-21-dev llvm-21 llvm-spirv-21 || sudo apt-get install -y sbcl llvm-21-dev llvm-21
+          sudo apt-get install -y sbcl llvm-21-dev llvm-21
 
-          # Create a symlink so 'llc' is on the path and our test can find it
+          # Try to install llvm-spirv-21 (may not be available)
+          sudo apt-get install -y llvm-spirv-21 || echo "⚠️ llvm-spirv-21 not available in apt"
+
+          # Create symlinks
           sudo ln -s /usr/bin/llc-21 /usr/bin/llc
           sudo ln -s /usr/bin/llvm-as-21 /usr/bin/llvm-as
-          sudo ln -s /usr/bin/llvm-spirv-21 /usr/bin/llvm-spirv || true
+          sudo ln -s /usr/bin/llvm-spirv-21 /usr/bin/llvm-spirv || echo "⚠️ llvm-spirv-21 not found, SPIRV tests will fail"
 
       - name: 4. Install Quicklisp
         run: |
