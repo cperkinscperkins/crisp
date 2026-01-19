@@ -7,16 +7,21 @@
 (defun validate-kernel-metadata (metadata-path kernel-name &key (targets nil targets-p))
   (let* ((forms (uiop:read-file-forms metadata-path))
          (kernels (if forms (rest (assoc :kernels forms)) nil))
-         (k-def (if kernels (find kernel-name kernels :key #'first :test #'string=) nil)))
+         (k-def (if kernels
+                    (block find-kernel
+                      (dolist (k kernels)
+                        (when (string-equal (getf k :name) kernel-name)
+                              (return-from find-kernel k))))
+                    nil)))
 
     (unless k-def
       (return-from validate-kernel-metadata nil))
 
-    (let ((src (getf (rest k-def) :source)))
+    (let ((src (getf k-def :source)))
       (unless src
         (return-from validate-kernel-metadata nil)))
 
-    (let ((output-targets (getf (rest k-def) :output-targets)))
+    (let ((output-targets (getf k-def :output-targets)))
       (when targets-p
             (let ((found-targets (mapcar #'first output-targets)))
               (dolist (req targets)
@@ -109,13 +114,16 @@
 
   (let ((content (uiop:read-file-forms metadata-path)))
     (let* ((kernels (find :kernels content :key #'car))
-           (k-def (find "top_kernel" (cdr kernels) :key #'car :test #'string-equal)))
+           (k-def (block find-kernel
+                    (dolist (k (cdr kernels))
+                      (when (string-equal (getf k :name) "top_kernel")
+                            (return-from find-kernel k))))))
       (unless k-def
         (log:error "Kernel definition for 'top_kernel' not found")
         (return-from validate-scratch-cell-explosion nil))
 
       ;; Check implicit params
-      (let ((implicit-sig (getf (cdr k-def) :implicit-params)))
+      (let ((implicit-sig (getf k-def :implicit-params)))
         (unless implicit-sig
           (log:error "Implicit signature missing (Expected scratch cell)")
           (return-from validate-scratch-cell-explosion nil))
@@ -125,20 +133,20 @@
           (return-from validate-scratch-cell-explosion nil))
 
         (let ((entry (first implicit-sig)))
-          ;; Check name is "__sc" (the actual scratch cell variable name with __ prefix)
-          (unless (string-equal (first entry) "__sc")
-            (log:error "Expected implicit param name '__sc', got '~a'" (first entry))
+          ;; Check name is "__sc" - now it's under :name key
+          (unless (string-equal (getf entry :name) "__sc")
+            (log:error "Expected implicit param name '__sc', got '~a'" (getf entry :name))
             (return-from validate-scratch-cell-explosion nil))
 
           ;; Check type is (CELL INT) not just STORAGE
-          (let ((param-type (getf (cdr entry) :type)))
+          (let ((param-type (getf entry :type)))
             (unless (and (listp param-type)
                          (string-equal (symbol-name (first param-type)) "CELL"))
               (log:error "Expected type (CELL ...), got ~a" param-type)
               (return-from validate-scratch-cell-explosion nil)))
 
           ;; Check range is (0 2) for 3 slots
-          (let ((range (getf (cdr entry) :range)))
+          (let ((range (getf entry :range)))
             (unless (and (listp range) (= (length range) 2)
                          (= (first range) 0) (= (second range) 2))
               (log:error "Expected range (0 2) for 3 slots, got ~a" range)
