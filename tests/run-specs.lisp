@@ -285,10 +285,13 @@
         (uiop:run-program (cons (uiop:native-namestring bin) args)
           :output :string :error-output :string :ignore-error-status t)
       (if (zerop exit-code)
-          ;; Find generated .cpp files in same directory as .crisp file
-          (directory (make-pathname :name :wild
-                                    :type "cpp"
-                                    :defaults file))
+          ;; Find generated .cpp files matching this test's base name
+          (let ((base-name (pathname-name file)))
+            (remove-if-not
+                (lambda (path) (alexandria:starts-with-subseq base-name (pathname-name path)))
+                (directory (make-pathname :name :wild
+                                          :type "cpp"
+                                          :defaults file))))
           (progn
            (format *error-output* "FAIL (Hoist Compilation failed with exit code ~a)~%~a~%" exit-code error-output)
            nil)))))
