@@ -30,14 +30,11 @@
          (kernels (metacrisp-kernels data))
          (base-name (pathname-name metacrisp-path)))
 
-    (format t "DEBUG: data = ~s~%" data)
-    (format t "DEBUG: kernels = ~s~%" kernels)
     (format t "Processing ~a~%" metacrisp-path)
     (format t "  Kernels: ~a~%" (length kernels))
 
     ;; Generate one .cpp file per kernel
     (dolist (kernel kernels)
-      (format t "DEBUG: kernel = ~s~%" kernel)
       (let* ((kernel-name (getf kernel :name))
              (output-name (format nil "~a_~a_hoist_L0.cpp" base-name kernel-name))
              (output-path (make-pathname :name (pathname-name output-name)
