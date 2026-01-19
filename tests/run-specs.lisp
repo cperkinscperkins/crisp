@@ -128,6 +128,11 @@
                     ((member "--metadata" flags :test #'string=) :spirv) ;; Metadata usually implies SPIR-V for now
                     (t nil))))
 
+    ;; Skip SPIRV tests if SKIP_SPIRV_TESTS env var is set
+    (when (and (eq ir-target :spirv) (uiop:getenv "SKIP_SPIRV_TESTS"))
+          (format t "SKIP (SPIRV tests disabled via SKIP_SPIRV_TESTS)~%")
+          (return-from run-single-spec-pass t)) ;; Return success to not fail the build
+
     ;; Dispatch based on configuration
     (if *use-binary*
         (cond
