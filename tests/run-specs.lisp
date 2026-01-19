@@ -167,6 +167,23 @@
           (unless (run-single-spec-pass file flags validator)
             (setf all-passed nil)))))
 
+    ;; 3. Hoist Tests (TEST-HOIST[backend]: validator)
+    (let ((hoist-directives (parse-test-hoist directives)))
+      (dolist (directive hoist-directives)
+        (let ((backend (car directive))
+              (validator-name (cdr directive)))
+          (format t "~&Running Spec: ~a (Hoist[~a] -> ~a)... " (pathname-name file) backend validator-name)
+          (finish-output)
+          (let ((cpp-files (run-spec-with-hoist file backend)))
+            ;; Use find-symbol to look up the existing function symbol
+            (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
+              (if (fboundp validator-sym)
+                  (unless (funcall validator-sym file cpp-files)
+                    (setf all-passed nil))
+                  (progn
+                   (format t "FAIL (Validator ~a not found)~%" validator-name)
+                   (setf all-passed nil))))))))
+
     all-passed))
 
 
@@ -256,6 +273,64 @@
     (if (probe-file out-path)
         (values out-path meta-paths)
         nil)))
+
+(defun run-spec-with-hoist (file backend)
+  "Compiles .crisp file with --hoist=backend flag and returns list of generated .cpp files."
+  (let* ((hoist-arg (format nil "--hoist=~a" backend))
+         (bin (get-binary-path))
+         (args (list hoist-arg
+                     (format nil "--log-level=~a" cl-user::*log-level*)
+                     (uiop:native-namestring file))))
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string :error-output :string :ignore-error-status t)
+      (if (zerop exit-code)
+          ;; Find generated .cpp files in same directory as .crisp file
+          (directory (make-pathname :name :wild
+                                    :type "cpp"
+                                    :defaults file))
+          (progn
+           (format *error-output* "FAIL (Hoist Compilation failed with exit code ~a)~%~a~%" exit-code error-output)
+           nil)))))
+
+;;; L0 Validators for TEST-HOIST directives
+
+(defun validate-l0-empty-kernel (crisp-file cpp-files)
+  "Validates minimal C++ generation (Phase 1 check)."
+  (if (null cpp-files)
+      (progn
+       (format t "FAIL: No C++ files generated~%")
+       nil)
+      (progn
+       (format t "Generated ~a C++ file(s)~%" (length cpp-files))
+       (dolist (cpp cpp-files)
+         (format t "  - ~a~%" (file-namestring cpp)))
+       (format t "PASS~%")
+       t)))
+
+(defun validate-l0-compile-only (crisp-file cpp-files)
+  "Validates C++ compiles with clang++ -fsyntax-only."
+  (if (null cpp-files)
+      (progn
+       (format t "FAIL: No C++ files to validate~%")
+       nil)
+      (progn
+       (dolist (cpp cpp-files)
+         (multiple-value-bind (output error-output exit-code)
+             (uiop:run-program
+               (list "clang++" "-fsyntax-only"
+                     "-I" "C:/Users/cperk/Documents/level-zero/include"
+                     (uiop:native-namestring cpp))
+               :output :string :error-output :string :ignore-error-status t)
+           (declare (ignore output))
+           (if (zerop exit-code)
+               (format t "PASS: ~a compiles~%" (file-namestring cpp))
+               (progn
+                (format t "FAIL: ~a compilation error~%~a~%"
+                  (file-namestring cpp) error-output)
+                (return-from validate-l0-compile-only nil)))))
+       t)))
+
 
 (defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
   (block :runner
@@ -665,6 +740,28 @@
                       (let ((flags (uiop:split-string content :separator " ")))
                         (push (list flags (when validator (read-from-string validator))) runs)))))))
     (nreverse runs)))
+
+(defun parse-test-hoist (directive-lines)
+  "Parses TEST-HOIST[backend]: validator-name directives.
+   Returns a list of (backend . validator-name) pairs."
+  (let ((directives nil))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "TEST-HOIST[")
+              (let* ((bracket-end (position #\] trimmed))
+                     (colon-pos (position #\: trimmed :start (or bracket-end 0)))
+                     (backend (when (and bracket-end (> bracket-end 11))
+                                    (string-trim '(#\Space #\Tab)
+                                                 (subseq trimmed 11 bracket-end))))
+                     (validator (when (and colon-pos (< colon-pos (length trimmed)))
+                                      (string-trim '(#\Space #\Tab)
+                                                   (subseq trimmed (1+ colon-pos))))))
+                (when (and backend validator)
+                      (push (cons (intern (string-upcase backend) :keyword)
+                                  (read-from-string validator)) ;; Convert to symbol!
+                            directives))))))
+    (nreverse directives)))
+
 
 (defun should-expect-failure-p (file)
   "Determine if test should be expected to fail."
