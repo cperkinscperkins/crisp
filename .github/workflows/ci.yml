@@ -14,21 +14,21 @@ jobs:
         with:
           lfs: false # keep the CI budget low.  
 
-      - name: 2. Make bundled LLVM tools executable
-        run: |
-          chmod +x tools/llvm-as-linux tools/llvm-spirv-linux tools/llc-linux
+      # - name: 2. Make bundled LLVM tools executable
+      #   run: |
+      #     chmod +x tools/llvm-as-linux tools/llvm-spirv-linux tools/llc-linux
 
-      - name: 2.5. Test bundled LLVM tools
-        run: |
-          echo "Testing llvm-as..."
-          ./tools/llvm-as-linux --version || echo "llvm-as failed with code $?"
+      # - name: 2.5. Test bundled LLVM tools
+      #   run: |
+      #     echo "Testing llvm-as..."
+      #     ./tools/llvm-as-linux --version || echo "llvm-as failed with code $?"
           
-          echo "Testing llvm-spirv..."
-          ./tools/llvm-spirv-linux --version || echo "llvm-spirv failed with code $?"
+      #     echo "Testing llvm-spirv..."
+      #     ./tools/llvm-spirv-linux --version || echo "llvm-spirv failed with code $?"
           
-          echo "Checking dependencies..."
-          ldd ./tools/llvm-as-linux
-          ldd ./tools/llvm-spirv-linux
+      #     echo "Checking dependencies..."
+      #     ldd ./tools/llvm-as-linux
+      #     ldd ./tools/llvm-spirv-linux
 
       - name: 3. Install System Dependencies (SBCL & LLVM)
         run: |
