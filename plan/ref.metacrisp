@@ -71,6 +71,7 @@
         ;; cell
         (:name out 
          :type (cell double ) 
+         :direction :out
          :address-space :global 
          :access :write-only 
          :range (7 9)))
