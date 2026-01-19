@@ -12,7 +12,7 @@ jobs:
       - name: 1. Check out code
         uses: actions/checkout@v4
         with:
-          lfs: true 
+          lfs: false # keep the CI budget low.  
 
       - name: 2. Make bundled LLVM tools executable
         run: |
