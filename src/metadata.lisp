@@ -322,10 +322,13 @@
       (return-from validate-14-physical-signature nil))
     (let ((content (uiop:read-file-forms meta-path)))
       (let* ((kernels (find :kernels content :key #'car))
-             (k-def (find "complex_signature_kernel" (cdr kernels) :key #'car :test #'string-equal)))
+             (k-def (block find-kernel
+                      (dolist (k (cdr kernels))
+                        (when (string-equal (getf k :name) "complex_signature_kernel")
+                              (return-from find-kernel k))))))
         (unless k-def
           (return-from validate-14-physical-signature nil))
-        (let ((phys-sig (getf (cdr k-def) :physical-signature)))
+        (let ((phys-sig (getf k-def :physical-signature)))
           (labels ((loose-equal (a b)
                                 (cond ((and (symbolp a) (symbolp b))
                                         (string-equal (symbol-name a) (symbol-name b)))
@@ -479,14 +482,14 @@
 
           (let ((k-def (block find-k-def
                          (dolist (k (cdr kernels))
-                           (when (string-equal (car k) "top_kernel")
+                           (when (string-equal (getf k :name) "top_kernel")
                                  (return-from find-k-def k))))))
 
             (unless k-def
               (log:error "Kernel definition for 'top_kernel' not found")
               (return-from validate-18-implicit-signature nil))
 
-            (let ((implicit-sig (getf (cdr k-def) :implicit-params)))
+            (let ((implicit-sig (getf k-def :implicit-params)))
               (unless implicit-sig
                 (log:error "Implicit signature missing (Expected sc)")
                 (return-from validate-18-implicit-signature nil))
