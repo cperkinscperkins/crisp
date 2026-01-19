@@ -185,7 +185,7 @@
   "Prints an object to stream without any package qualifiers.
    Uses *package* context to avoid printing qualifiers."
   (let ((*package* (find-package :crisp-language))
-        (*print-case* :upcase))
+        (*print-case* :downcase))
     (prin1 obj stream)))
 
 (defun serialize-aliases (stream aliases-hash)
