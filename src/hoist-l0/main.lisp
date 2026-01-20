@@ -5,7 +5,7 @@
   (handler-case
       (let ((args (uiop:command-line-arguments)))
         (format t "Crisp Hoist L0 - Level Zero C++ Launcher Generator~%")
-        (format t "Version: 0.2.0~%~%")
+        (format t "Version: 0.3.0~%~%")
 
         (unless args
           (format t "Usage: crisp-hoist-l0 <path-to-metacrisp-file>~%")
@@ -28,6 +28,7 @@
   "Generate Level Zero C++ launcher code from metacrisp file."
   (let* ((data (parse-metacrisp-file metacrisp-path))
          (kernels (metacrisp-kernels data))
+         (aliases (metacrisp-aliases data))
          (base-name (pathname-name metacrisp-path)))
 
     (format t "Processing ~a~%" metacrisp-path)
@@ -51,6 +52,7 @@
         (with-open-file (stream output-path :direction :output :if-exists :supersede)
           (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
           (generate-cpp-includes stream)
+          (generate-cpp-typedefs stream aliases)
           (generate-cpp-helpers stream)
           (generate-cpp-main stream kernel-name spv-path declared-sig))
 
@@ -76,6 +78,17 @@
   (format stream "#include <fstream>~%")
   (format stream "#include <vector>~%")
   (format stream "#include <cstring>~%~%"))
+
+(defun generate-cpp-typedefs (stream aliases)
+  "Generate C++ typedef declarations from type aliases"
+  (when aliases
+        (format stream "// Type aliases~%")
+        (dolist (alias-def aliases)
+          (when (and (listp alias-def) (>= (length alias-def) 3))
+                (let ((alias-name (string-downcase (symbol-name (second alias-def))))
+                      (target-type (string-downcase (symbol-name (third alias-def)))))
+                  (format stream "typedef ~a ~a;~%" target-type alias-name))))
+        (format stream "~%")))
 
 (defun generate-cpp-helpers (stream)
   "Generate C++ helper functions"

@@ -1,4 +1,4 @@
-;; TEST-HOIST[L0] : validate-l0-alias-typedef
+;; TEST-HOIST[L0]: validate-l0-compile-only
 
 (def-type iii int)
 
