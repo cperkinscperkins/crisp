@@ -1,4 +1,4 @@
-;; TEST-HOIST[L0] : validate-l0compile-only
+;; TEST-HOIST[L0]: validate-l0-compile-only
 
 (def-kernel mixed_scalar (i f d)
     (declare #'(int float double => nil))
