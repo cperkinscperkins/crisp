@@ -4,5 +4,3 @@
 ;; All code has been promoted to src/ - this file is kept for the .asd hook
 
 (in-package :crisp.compiler)
-
-;; Empty - all overlays have been promoted to main source files

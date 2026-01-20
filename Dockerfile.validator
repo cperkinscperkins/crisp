@@ -1,0 +1,18 @@
+# Crisp C Validator - Minimal Alpine Linux with GCC/G++ and Level Zero headers
+FROM alpine:latest
+
+# Install GCC, G++, and build essentials
+RUN apk add --no-cache gcc g++ musl-dev
+
+# Create include directory for Level Zero
+RUN mkdir -p /usr/local/include
+
+#Copy Level Zero headers (will be added via build context)
+# Note: Run with: docker build --build-arg COPY_L0_HEADERS=1 ...
+# Or: copy headers manually after build
+
+# Set working directory
+WORKDIR /workspace
+
+# Default command (can be overridden)
+CMD ["gcc", "--version"]

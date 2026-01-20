@@ -311,28 +311,63 @@
        (format t "PASS~%")
        t)))
 
+;; Docker-based C validator (updated from old clang++ version)
 (defun validate-l0-compile-only (crisp-file cpp-files)
-  "Validates C++ compiles with clang++ -fsyntax-only."
+  "Validates C compiles with Docker gcc (or native clang as fallback)."
   (if (null cpp-files)
       (progn
        (format t "FAIL: No C++ files to validate~%")
        nil)
-      (progn
-       (dolist (cpp cpp-files)
-         (multiple-value-bind (output error-output exit-code)
-             (uiop:run-program
-               (list "clang++" "-fsyntax-only"
-                     "-I" "C:/Users/cperk/Documents/level-zero/include"
-                     (uiop:native-namestring cpp))
-               :output :string :error-output :string :ignore-error-status t)
-           (declare (ignore output))
-           (if (zerop exit-code)
-               (format t "PASS: ~a compiles~%" (file-namestring cpp))
-               (progn
-                (format t "FAIL: ~a compilation error~%~a~%"
-                  (file-namestring cpp) error-output)
-                (return-from validate-l0-compile-only nil)))))
-       t)))
+      (let ((docker-available (zerop (nth-value 2 (uiop:run-program
+                                                    '("docker" "--version")
+                                                    :ignore-error-status t
+                                                    :output nil
+                                                    :error-output nil)))))
+        (if docker-available
+            ;; Use Docker for validation
+            (progn
+             (dolist (cpp cpp-files)
+               (let* ((workspace-path "/workspace")
+                      ;; Convert Windows path to Docker workspace path
+                      (relative-path (enough-namestring cpp (uiop:getcwd)))
+                      (docker-path (format nil "~a/~a" workspace-path
+                                     (substitute #\/ #\\ (namestring relative-path)))))
+                 (multiple-value-bind (output error-output exit-code)
+                     (uiop:run-program
+                       (list "docker" "run" "--rm"
+                             "-v" (format nil "~a:~a"
+                                    (substitute #\/ #\\ (namestring (uiop:getcwd)))
+                                    workspace-path)
+                             "-v" "C:/Users/cperk/Documents/level-zero/include:/usr/local/include"
+                             "crisp-c-validator"
+                             "gcc" "-fsyntax-only" "-I/usr/local/include" docker-path)
+                       :output :string :error-output :string :ignore-error-status t)
+                   (declare (ignore output))
+                   (if (zerop exit-code)
+                       (format t "PASS: ~a compiles (Docker)~%" (file-namestring cpp))
+                       (progn
+                        (format t "FAIL: ~a compilation error~%~a~%"
+                          (file-namestring cpp) error-output)
+                        (return-from validate-l0-compile-only nil))))))
+             t)
+            ;; Fallback to native clang (will likely fail, but try anyway)
+            (progn
+             (format t "WARNING: Docker not available, falling back to native clang~%")
+             (dolist (cpp cpp-files)
+               (multiple-value-bind (output error-output exit-code)
+                   (uiop:run-program
+                     (list "clang" "-fsyntax-only"
+                           "-I" "C:/Users/cperk/Documents/level-zero/include"
+                           (uiop:native-namestring cpp))
+                     :output :string :error-output :string :ignore-error-status t)
+                 (declare (ignore output))
+                 (if (zerop exit-code)
+                     (format t "PASS: ~a compiles~%" (file-namestring cpp))
+                     (progn
+                      (format t "FAIL: ~a compilation error~%~a~%"
+                        (file-namestring cpp) error-output)
+                      (return-from validate-l0-compile-only nil)))))
+             t)))))
 
 
 (defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))

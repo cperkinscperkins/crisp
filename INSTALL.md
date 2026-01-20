@@ -215,3 +215,23 @@ Test interactively from SBCL
 (load #P"./tests/run-ci.lisp")
 (sb-ext:quit)
 ```
+
+Generate C Code
+===============
+
+The Crisp compiler can generate C "hoisting" code. Presently, LevelZero is the only backend, but
+others will follow.
+
+```
+# this will compile the kernel to .spv and also output a .c file which can "hoist" it .
+.\bin\crisp-compile.exe --ir-target=spv --hoist=l0 ./tests/spec/029-hoist-l0/01-minimal-kernl.crisp
+
+# use any C compiler.  If docker is available, this Crisp installation can use that 
+# with it's own crisp-c-validator image.
+
+docker run --rm `
+  -v "${PWD}:/workspace" `
+  -v "C:\Users\cperk\Documents\level-zero\include:/usr/local/include" `
+  crisp-c-validator gcc -c -I/usr/local/include `
+  /workspace/tests/spec/029-hoist-l0/01-minimal-kernel_noop_noop_hoist_L0.cpp
+```
