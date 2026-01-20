@@ -1,4 +1,4 @@
-;; TEST-HOIST[L0] : validate-l0compile-only
+;; TEST-HOIST[L0]: validate-l0-compile-only
 
 (def-kernel simple_scalar (x)
     (declare #'(int => nil))
