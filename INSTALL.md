@@ -224,11 +224,33 @@ others will follow.
 
 ```
 # this will compile the kernel to .spv and also output a .c file which can "hoist" it .
-.\bin\crisp-compile.exe --ir-target=spv --hoist=l0 ./tests/spec/029-hoist-l0/01-minimal-kernl.crisp
+.\bin\crisp-compile.exe --ir-target=spv --hoist=l0 ./tests/spec/029-hoist-l0/01-minimal-kernel.crisp
 
 # use any C compiler.  If docker is available, this Crisp installation can use that 
 # with it's own crisp-c-validator image.
 
+clang++ -o my_kernel_launcher -I<path-to-level-zero-include> <path-to-generated-c-file>
+```
+
+
+Working with the Docker C Validator
+===================================
+
+Crisp is using a docker image `crisp-c-validator` to build and test the .cpp hoist files it generates.
+
+```
+# Rebuild the validator image (one time setup)
+docker build -f Dockerfile.validator -t crisp-c-validator .
+
+# run the validator
+# Syntax check only (what the test validator does)
+docker run --rm `
+  -v "${PWD}:/workspace" `
+  -v "C:\Users\cperk\Documents\level-zero\include:/usr/local/include" `
+  crisp-c-validator gcc -fsyntax-only -I/usr/local/include `
+  /workspace/tests/spec/029-hoist-l0/01-minimal-kernel_noop_noop_hoist_L0.cpp
+
+# Compile to object file (verifies more thoroughly)
 docker run --rm `
   -v "${PWD}:/workspace" `
   -v "C:\Users\cperk\Documents\level-zero\include:/usr/local/include" `
