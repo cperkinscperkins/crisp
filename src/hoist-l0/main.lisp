@@ -212,7 +212,7 @@
 
   ;; Set kernel arguments if any
   (when declared-sig
-        (generate-kernel-arguments stream declared-sig))
+        (generate-kernel-arguments-with-usm stream declared-sig "context" "device"))
 
   ;; Create command list and queue
   (format stream "    // Create command list~%")
@@ -269,3 +269,80 @@
               (incf arg-index))))
     (when (> arg-index 0)
           (format stream "~%"))))
+;; Helper function to check if a type is a cell
+(defun cell-type-p (param-type)
+  "Check if a parameter type is a cell type"
+  (and (listp param-type)
+       (symbolp (first param-type))
+       (string-equal (symbol-name (first param-type)) "CELL")))
+
+;; Helper function to extract base type from cell
+(defun cell-base-type (param-type)
+  "Extract the base type from a cell type like (cell int ...)"
+  (when (cell-type-p param-type)
+        (second param-type)))
+
+;; Updated generate-kernel-arguments to handle both scalars and cells
+(defun generate-kernel-arguments-with-usm (stream declared-sig context-var device-var)
+  "Generate kernel argument setup code with USM allocation for cells"
+  (format stream "    // Set up kernel arguments~%")
+  (let ((arg-index 0)
+        (allocations '())) ; Track allocations for cleanup
+
+    (dolist (param declared-sig)
+      (let ((param-name (getf param :name))
+            (param-type (getf param :type))
+            (param-dir (getf param :direction)))
+
+        (cond
+         ;; Handle cell parameters (pointers/buffers)
+         ((cell-type-p param-type)
+           (let* ((base-type (cell-base-type param-type))
+                  (base-type-str (string-downcase (symbol-name base-type)))
+                  (size-var (format nil "~a_size" param-name))
+                  (ptr-var (format nil "~a_ptr" param-name)))
+
+             ;; Allocate USM shared memory
+             (format stream "~%    // Allocate USM memory for ~a~%" param-name)
+             (format stream "    size_t ~a = 16;  // TODO: Actual size~%" size-var)
+             (format stream "    ~a* ~a = nullptr;~%" base-type-str ptr-var)
+             (format stream "    result = zeMemAllocShared(~a, ~a, ~%"
+               context-var device-var)
+             (format stream "        nullptr, ~a * sizeof(~a), 1, &~a);~%"
+               size-var base-type-str ptr-var)
+             (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+             (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
+               param-name)
+             (format stream "        return 1;~%")
+             (format stream "    }~%")
+
+             ;; Initialize input buffers
+             (when (eq param-dir :in)
+                   (format stream "    // Initialize input data~%")
+                   (format stream "    for (size_t i = 0; i < ~a; i++) {~%" size-var)
+                   (format stream "        ~a[i] = static_cast<~a>(i);  // TODO: Actual data~%"
+                     ptr-var base-type-str)
+                   (format stream "    }~%"))
+
+             ;; Set kernel argument
+             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%~%"
+               arg-index ptr-var)
+
+             ;; Track allocation for cleanup
+             (push (list :name param-name :ptr ptr-var) allocations)
+             (incf arg-index)))
+
+         ;; Handle scalar parameters  
+         ((symbolp param-type)
+           (format stream "    ~a ~a_arg = ~d;  // TODO: Set actual value~%"
+             (string-downcase (symbol-name param-type))
+             param-name
+             (+ arg-index 42))
+           (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a_arg);~%~%"
+             arg-index
+             (string-downcase (symbol-name param-type))
+             param-name)
+           (incf arg-index)))))
+
+    ;; Return allocations for later cleanup
+    (nreverse allocations)))

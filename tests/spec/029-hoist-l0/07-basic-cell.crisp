@@ -1,6 +1,6 @@
 
 
-;; TEST-HOIST[L0] : validate-l0-basic-cell
+;; TEST-HOIST[L0]: validate-l0-compile-only
 
 ;; This test can not just be tested for compile, but also actually does something.
 ;; we can validate 
@@ -9,4 +9,4 @@
 
 (def-kernel basic_cell (in-cell &out out-cell)
     (declare (type in-cell out-cell (cell int :address-space :global :access :read-write)))
-    (set! out-cell (+ in-cell 1)))
+    (set! (~ out-cell) (+ (~ in-cell) 1)))
