@@ -286,6 +286,11 @@
 (defun generate-kernel-arguments-with-usm (stream declared-sig context-var device-var)
   "Generate kernel argument setup code with USM allocation for cells"
   (format stream "    // Set up kernel arguments~%")
+
+  ;; Declare USM descriptors once (used by all allocations)
+  (format stream "    ze_device_mem_alloc_desc_t deviceDesc = { ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC };~%")
+  (format stream "    ze_host_mem_alloc_desc_t hostDesc = { ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC };~%~%")
+
   (let ((arg-index 0)
         (allocations '())) ; Track allocations for cleanup
 
@@ -299,17 +304,19 @@
          ((cell-type-p param-type)
            (let* ((base-type (cell-base-type param-type))
                   (base-type-str (string-downcase (symbol-name base-type)))
-                  (size-var (format nil "~a_size" param-name))
-                  (ptr-var (format nil "~a_ptr" param-name)))
+                  ;; Convert hyphens to underscores for valid C++ identifiers
+                  (param-name-cpp (substitute #\_ #\- param-name))
+                  (size-var (format nil "~a_size" param-name-cpp))
+                  (ptr-var (format nil "~a_ptr" param-name-cpp)))
 
              ;; Allocate USM shared memory
              (format stream "~%    // Allocate USM memory for ~a~%" param-name)
              (format stream "    size_t ~a = 16;  // TODO: Actual size~%" size-var)
              (format stream "    ~a* ~a = nullptr;~%" base-type-str ptr-var)
-             (format stream "    result = zeMemAllocShared(~a, ~a, ~%"
-               context-var device-var)
-             (format stream "        nullptr, ~a * sizeof(~a), 1, &~a);~%"
-               size-var base-type-str ptr-var)
+             (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
+               context-var)
+             (format stream "        ~a * sizeof(~a), 1, ~a, (void**)&~a);~%"
+               size-var base-type-str device-var ptr-var)
              (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
              (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
                param-name)
