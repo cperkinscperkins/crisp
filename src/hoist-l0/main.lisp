@@ -53,6 +53,7 @@
           (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
           (generate-cpp-includes stream)
           (generate-cpp-typedefs stream aliases)
+          (generate-cpp-structs stream (metacrisp-structs data))
           (generate-cpp-helpers stream)
           (generate-cpp-main stream kernel-name spv-path declared-sig))
 
@@ -78,6 +79,23 @@
   (format stream "#include <fstream>~%")
   (format stream "#include <vector>~%")
   (format stream "#include <cstring>~%~%"))
+
+(defun generate-cpp-structs (stream structs)
+  "Generate C++ struct definitions from metadata"
+  (when structs
+        (format stream "// Struct Definitions~%")
+        (dolist (struct-def structs)
+          (let* ((struct-name (second struct-def))
+                 (struct-name-str (substitute #\_ #\- (string-downcase (symbol-name struct-name))))
+                 (members (cddr struct-def)))
+            (format stream "struct alignas(16) ~a {~%" struct-name-str)
+            (dolist (member members)
+              (let* ((member-name (first member))
+                     (member-type (second member))
+                     (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name))))
+                     (member-type-str (substitute #\_ #\- (string-downcase (symbol-name member-type)))))
+                (format stream "    ~a ~a;~%" member-type-str member-name-str)))
+            (format stream "};~%~%")))))
 
 (defun generate-cpp-typedefs (stream aliases)
   "Generate C++ typedef declarations from type aliases"
@@ -327,7 +345,7 @@
              (when (eq param-dir :in)
                    (format stream "    // Initialize input data~%")
                    (format stream "    for (size_t i = 0; i < ~a; i++) {~%" size-var)
-                   (format stream "        ~a[i] = static_cast<~a>(i);  // TODO: Actual data~%"
+                   (format stream "        memset(&~a[i], 0, sizeof(~a)); // Zero-init~%"
                      ptr-var base-type-str)
                    (format stream "    }~%"))
 

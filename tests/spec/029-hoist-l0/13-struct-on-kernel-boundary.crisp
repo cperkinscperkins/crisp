@@ -1,5 +1,5 @@
 
-;; TEST-HOIST[L0] : validate-l0-struct-on-kernel-boundary
+;; TEST-HOIST[L0]: validate-l0-compile-only
 
 
 ;; This kernel is mildly interesting, because it modifies an incoming struct.

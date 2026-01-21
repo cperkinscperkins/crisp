@@ -1,5 +1,5 @@
 
-;; TEST-HOIST[L0] : validate-l0-struct-not-on-kernel-boundary
+;; TEST-HOIST[L0]: validate-l0-compile-only
 
 ;; Here we use a struct in a kernel, but it is not on the kernel boundary.
 ;; It should not appear in the metadata. Nor in the .cpp
@@ -9,5 +9,5 @@
 
 (def-kernel struct_align (x1 y1)
     (declare (type x1 y1 int))
-    (let ((p (make-point x1 y1)))
+    (let ((p (make-point :x x1 :y y1)))
         (set! (x~ p) (+ (x~ p) 1))))
