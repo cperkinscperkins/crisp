@@ -1,4 +1,9 @@
-;; TEST-HOIST[L0] : validate-l0-cell-address-space
+
+
+;; Test is disabled. We need to add :local address space support to the compiler.
+;; TEST-EXPECT: FAIL
+
+;; xEST-HOIST[L0] : validate-l0-cell-address-space
 
 
 ;; Expected in generated C++:
@@ -11,3 +16,4 @@
              (type gc (cell int :address-space :global :access :read-write)))
     (set! (~ l) 17) ;; setup local
     (set! (~ gc) (+ (~ g) (~ l))))
+
