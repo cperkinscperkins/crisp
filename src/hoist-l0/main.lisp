@@ -55,7 +55,7 @@
           (generate-cpp-typedefs stream aliases)
           (generate-cpp-structs stream (metacrisp-structs data))
           (generate-cpp-helpers stream)
-          (generate-cpp-main stream kernel-name spv-path declared-sig))
+          (generate-cpp-main stream kernel-name spv-path declared-sig aliases))
 
         (format t "  Done: ~a~%" (namestring output-path))))))
 
@@ -103,9 +103,13 @@
         (format stream "// Type aliases~%")
         (dolist (alias-def aliases)
           (when (and (listp alias-def) (>= (length alias-def) 3))
-                (let ((alias-name (string-downcase (symbol-name (second alias-def))))
-                      (target-type (string-downcase (symbol-name (third alias-def)))))
-                  (format stream "typedef ~a ~a;~%" target-type alias-name))))
+                (let ((alias-name (second alias-def))
+                      (target-type (third alias-def)))
+                  (if (symbolp target-type)
+                      (format stream "typedef ~a ~a;~%"
+                        (string-downcase (symbol-name target-type))
+                        (string-downcase (symbol-name alias-name)))
+                      (format t "Warning: Skipping complex typedef for ~a: ~a~%" alias-name target-type)))))
         (format stream "~%")))
 
 (defun generate-cpp-helpers (stream)
@@ -123,7 +127,7 @@
   (format stream "    return buffer;~%")
   (format stream "}~%~%"))
 
-(defun generate-cpp-main (stream kernel-name spv-path declared-sig)
+(defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases)
   "Generate C++ main function"
   (format stream "int main() {~%")
   (format stream "    ze_result_t result;~%")
@@ -137,7 +141,7 @@
         (generate-module-loading stream spv-path))
 
   ;; Kernel creation and launch
-  (generate-kernel-launch stream kernel-name declared-sig)
+  (generate-kernel-launch stream kernel-name declared-sig aliases)
 
   (format stream "    std::cout << \"Success!\" << std::endl;~%")
   (format stream "    return 0;~%")
@@ -216,7 +220,7 @@
   (format stream "    }~%")
   (format stream "    std::cout << \"Module loaded successfully\" << std::endl;~%~%"))
 
-(defun generate-kernel-launch (stream kernel-name declared-sig)
+(defun generate-kernel-launch (stream kernel-name declared-sig aliases)
   "Generate kernel creation and launch code"
   (format stream "    // Create kernel~%")
   (format stream "    ze_kernel_desc_t kernelDesc = { ZE_STRUCTURE_TYPE_KERNEL_DESC };~%")
@@ -230,7 +234,7 @@
 
   ;; Set kernel arguments if any
   (when declared-sig
-        (generate-kernel-arguments-with-usm stream declared-sig "context" "device"))
+        (generate-kernel-arguments-with-usm stream declared-sig aliases "context" "device"))
 
   ;; Create command list and queue
   (format stream "    // Create command list~%")
@@ -288,6 +292,15 @@
     (when (> arg-index 0)
           (format stream "~%"))))
 ;; Helper function to check if a type is a cell
+(defun resolve-type-alias (type aliases)
+  (if (symbolp type)
+      (let ((alias-def (find type aliases :key #'second)))
+        (if alias-def
+            (resolve-type-alias (third alias-def) aliases)
+            type))
+      type))
+
+;; Helper function to check if a type is a cell
 (defun cell-type-p (param-type)
   "Check if a parameter type is a cell type"
   (and (listp param-type)
@@ -301,7 +314,7 @@
         (second param-type)))
 
 ;; Updated generate-kernel-arguments to handle both scalars and cells
-(defun generate-kernel-arguments-with-usm (stream declared-sig context-var device-var)
+(defun generate-kernel-arguments-with-usm (stream declared-sig aliases context-var device-var)
   "Generate kernel argument setup code with USM allocation for cells"
   (format stream "    // Set up kernel arguments~%")
 
@@ -313,9 +326,10 @@
         (allocations '())) ; Track allocations for cleanup
 
     (dolist (param declared-sig)
-      (let ((param-name (getf param :name))
-            (param-type (getf param :type))
-            (param-dir (getf param :direction)))
+      (let* ((param-name (getf param :name))
+             (raw-type (getf param :type))
+             (param-type (resolve-type-alias raw-type aliases))
+             (param-dir (getf param :direction)))
 
         (cond
          ;; Handle cell parameters (pointers/buffers)
