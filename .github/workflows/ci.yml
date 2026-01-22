@@ -51,7 +51,7 @@ jobs:
 
           # Extract llvm-spirv from OneAPI image (dynamically finding it)
           docker run --rm -v ${{ github.workspace }}:/work intel/oneapi-basekit:latest bash -c "cp \$(find /opt/intel -name llvm-spirv -type f -executable | head -n 1) /work/llvm-spirv"
-          chmod +x ./llvm-spirv
+          sudo chmod +x ./llvm-spirv
           sudo mv ./llvm-spirv /usr/bin/llvm-spirv
 
           # Create symlinks
