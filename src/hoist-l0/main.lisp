@@ -38,6 +38,13 @@
     (dolist (kernel kernels)
       (let* ((kernel-name (getf kernel :name))
              (declared-sig (getf kernel :declared-signature))
+             (implicit-sig (getf kernel :implicit-params))
+             ;; Robustly extract range start for sorting
+             (comparable-range-start (lambda (param)
+                                       (let ((r (getf param :range)))
+                                         (if (listp r) (first r) -1))))
+             (full-sig (sort (append declared-sig implicit-sig) #'<
+                         :key comparable-range-start))
              (output-targets (getf kernel :output-targets))
              (spv-path (when output-targets
                              (second (first output-targets)))) ;; Get first .spv path
@@ -55,7 +62,7 @@
           (generate-cpp-typedefs stream aliases)
           (generate-cpp-structs stream (metacrisp-structs data))
           (generate-cpp-helpers stream)
-          (generate-cpp-main stream kernel-name spv-path declared-sig aliases))
+          (generate-cpp-main stream kernel-name spv-path full-sig aliases))
 
         (format t "  Done: ~a~%" (namestring output-path))))))
 

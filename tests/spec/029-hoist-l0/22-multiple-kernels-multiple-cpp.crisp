@@ -1,6 +1,6 @@
 
 
-;; TEST-HOIST[L0] : validate-l0-multiple-kernels-multiple-cpp
+;; TEST-HOIST[L0] : validate-l0-compile-only
 
 #|
 

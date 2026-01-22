@@ -1,15 +1,16 @@
 
 
 
-;; TEST-HOIST[L0] : validate-l0-implicit-scratch-cell
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out-c: 8 0 0
 
 (def-type out-cell (cell int :address-space :global :access :read-write))
 
-(def-type scratch-cell (cell int :address-space :local :access :read-write))
+(def-type scratch-cell (cell int :address-space :global :access :read-write))
 
 (def-function fun-D (sc &out out-cell)
     (declare #'(scratch-cell &out out-cell => nil))
-  (set! out-cell (+ (~ sc) 1)))
+  (set! (~ out-cell) (+ (~ sc) 1)))
 
 (def-function fun-C (sc)
     (declare #'(scratch-cell => nil))
@@ -17,7 +18,7 @@
 
 (def-function fun-B (&out out-cell)
     (declare #'(&out out-cell => int))
-  (let ((sc (make-scratch-cell int :address-space :local)))  ;; workaround for bug 020
+  (let ((sc (make-scratch-cell int)))
      (fun-C sc)
      (fun-D sc out-cell)
      (return 42))) ;; keep us on our toes. Is ignored.

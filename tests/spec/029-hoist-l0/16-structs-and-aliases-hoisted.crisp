@@ -1,5 +1,5 @@
 
-;; TEST-HOIST[L0] : validate-l0-structs-and-aliases-hoisted
+;; TEST-HOIST[L0] : validate-l0-compile-only
 
 
 

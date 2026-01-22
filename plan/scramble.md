@@ -68,6 +68,8 @@ Target #9 - Deploy Crisp on QuickLisp
 - [ ] ?
 
 Target #10 - Hoisting
+- [x] Level Zero Backend C++ Generation
+
 
 Target #11 - C API for Compilation
 
@@ -319,8 +321,8 @@ Kernels
 - [ ] --binary-gpu-target
 - [x] test on BMG
 - [x] metadata
-- [ ] hoisting
-- [ ] .cpp gen
+- [x] hoisting
+- [x] .cpp gen
 - [ ] how to run on CI
 - [ ] .cpp gen using buffer 16 always. not sized correctly?
 - [ ] .cpp gen errrors: incompatible flags
@@ -504,6 +506,12 @@ Not sure how difficult that would be.
 
 - [ ] Investigate Google Antigravity: https://antigravity.google   <-- serious IDE
 - [ ] Investigate Google AI Studio: https://aistudio.google.com    <-- in-browser prototyping and "prompt engineering"
+
+Milestones
+==========
+- **2026-01-03**: Compiled first `.spv` from Crisp and successfully ran it with a bespoke OpenCL script. Massive milestone.
+- **2026-01-22**: Crisp toolset can now generate (hoist) `.cpp` files for those kernels, and the testing system runs them on actual GPU iron via Level Zero.
+
 
 
 

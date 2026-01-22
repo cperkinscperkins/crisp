@@ -310,8 +310,13 @@ This should be called by any entry point into the system (REPL, executable, CI).
 
   ;; Initialize the compiler's internal state.
   (initialize-crisp-types)
+  (initialize-crisp-types)
   (clrhash *function-table*) ;; Reset function table
   (clrhash *crisp-structs*) ;; Reset struct definitions
+  (clrhash *crisp-type-aliases*) ;; Reset type aliases
+  (clrhash *crisp-template-aliases*) ;; Reset template aliases
+  (clrhash *generic-functions*) ;; Reset generic functions
+  (clrhash *kernel-declared-signatures*) ;; Reset kernel signatures
   (when (boundp '*record-definitions*) (clrhash *record-definitions*)) ;; Reset records (if defined)
 
   (setf *compiled-kernels* nil) ;; Reset compiled kernels list
