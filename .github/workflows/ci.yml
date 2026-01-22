@@ -49,17 +49,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sbcl llvm-21-dev llvm-21
 
-          # Extract llvm-spirv from OneAPI image (since apt package is missing/unreliable)
-          docker create --name extractor intel/oneapi-basekit:latest
-          docker cp extractor:/usr/bin/llvm-spirv ./llvm-spirv
-          docker rm extractor
+          # Extract llvm-spirv from OneAPI image (dynamically finding it)
+          docker run --rm -v ${{ github.workspace }}:/work intel/oneapi-basekit:latest bash -c "cp \$(find /opt/intel -name llvm-spirv -type f -executable | head -n 1) /work/llvm-spirv"
           chmod +x ./llvm-spirv
           sudo mv ./llvm-spirv /usr/bin/llvm-spirv
 
           # Create symlinks
           sudo ln -s /usr/bin/llc-21 /usr/bin/llc
           sudo ln -s /usr/bin/llvm-as-21 /usr/bin/llvm-as
-          # We just installed llvm-spirv manually, so no link needed or it's already there
+          # We just installed llvm-spirv manually, check it
           llvm-spirv --version || echo "⚠️ llvm-spirv extraction failed"
 
       - name: 4. Install Quicklisp
