@@ -81,7 +81,7 @@
   (format stream " * Kernel: ~a~%" kernel-name)
   (format stream " *~%")
   (format stream " * Compilation:~%")
-  (format stream " *   g++ -o launcher ~a -I<path-to-level-zero>/include~%" output-name)
+  (format stream " *   g++ -o launcher ~a -I<path-to-level-zero>/include -lze_loader~%" output-name)
   (format stream " *~%")
   (format stream " * Level Zero SDK: https://github.com/oneapi-src/level-zero/releases~%")
   (format stream " */~%~%"))
@@ -402,7 +402,7 @@
 
              ;; Allocate USM shared memory
              (format stream "~%    // Allocate USM memory for ~a~%" param-name)
-             (format stream "    size_t ~a = 16;  // TODO: Actual size~%" size-var)
+             (format stream "    size_t ~a = 1;  // Cell is a single scalar~%" size-var)
              (format stream "    ~a* ~a = nullptr;~%" base-type-str ptr-var)
              (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
                context-var)
