@@ -216,10 +216,10 @@ Test interactively from SBCL
 (sb-ext:quit)
 ```
 
-Generate C Code
-===============
+Generate C++ Code
+=================
 
-The Crisp compiler can generate C "hoisting" code. Presently, LevelZero is the only backend, but
+The Crisp compiler can generate C++ "hoisting" code. Presently, LevelZero is the only backend, but
 others will follow.
 
 ```
@@ -229,7 +229,14 @@ others will follow.
 # use any C compiler.  If docker is available, this Crisp installation can use that 
 # with it's own crisp-c-validator image.
 
-clang++ -o my_kernel_launcher -I<path-to-level-zero-include> <path-to-generated-c-file>
+clang++ -o my_kernel_launcher -I<path-to-level-zero-include> <path-to-generated-c-file> <path-to-ze_loader-lib>
+```
+
+Example
+-------
+
+```
+..\llvm-mingw-20251216-ucrt-x86_64\bin\clang++.exe .\tests\spec\029-hoist-l0\13-struct-on-kernel-boundary_struct_on_kernel_boundary_struct_on_kernel_boundary_hoist_L0.cpp C:\Windows\System32\ze_loader.dll -I..\level-zero\include -o fancy_three.exe
 ```
 
 

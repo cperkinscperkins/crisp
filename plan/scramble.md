@@ -321,6 +321,7 @@ Kernels
 - [x] metadata
 - [ ] hoisting
 - [ ] .cpp gen
+- [ ] how to run on CI
 - [ ] .cpp gen using buffer 16 always. not sized correctly?
 - [ ] .cpp gen errrors: incompatible flags
 - [ ] .cpp gen temp files ? (ie .metacrisp) Given In Memory Compilation API, I'd actually like to avoid temp files as much as possible.
