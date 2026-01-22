@@ -1,5 +1,5 @@
 
-;; TEST-HOIST[L0]: validate-l0-compile-only
+;; TEST-HOIST[L0]: validate-l0-host-run
 
 
 ;; This kernel is mildly interesting, because it modifies an incoming struct.

@@ -22,8 +22,8 @@
 ;; Inline build/build.lisp logic without terminating process
 (require "asdf")
 (push *default-pathname-defaults* ql:*local-project-directories*)
-(asdf:clear-system "crisp")
-(asdf:load-system "crisp" :force t)
+;; Load the compiler system
+(asdf:load-system :crisp)
 (ql:quickload "crisp")
 
 ;; Load the LLVM foreign library (defined in src/llvm-bindings.lisp but not auto-loaded)
