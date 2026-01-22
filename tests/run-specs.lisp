@@ -328,9 +328,11 @@
 ;; Updated Validator: Tries Native (MinGW) first, then Docker
 (defun resolve-clang-executable ()
   "Finds clang++.exe in PATH or common locations."
-  ;; probe-file doesn't check the PATH env var.
-  (when (probe-file #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe")
-        #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe"))
+  (if (uiop:os-windows-p)
+      (if (probe-file #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe")
+          #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe"
+          "clang++") ;; Fallback to path on windows if specific one missing
+      "clang++")) ;; On Linux/CI, just use clang++ from path
 
 (defun resolve-ze-loader ()
   "Finds ze_loader.dll in System32."
