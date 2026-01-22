@@ -372,8 +372,22 @@
                        (uiop:run-program (uiop:native-namestring exe-path)
                          :output :string :error-output :string :ignore-error-status t)
                      (format t "Output:~%~a~%" run-out)
+                     (format t "Output:~%~a~%" run-out)
                      (if (zerop run-code)
-                         (format t "PASS: ~a ran successfully!~%" (file-namestring cpp))
+                         ;; Check Expectations
+                         (let ((expectations (parse-hoist-expect (extract-test-directives crisp-file)))
+                               (passed t))
+                           (when expectations
+                                 (dolist (exp expectations)
+                                   (unless (search exp run-out)
+                                     (format t "FAIL: Expectation not found in output: '~a'~%" exp)
+                                     (setf passed nil))))
+
+                           (if passed
+                               (progn
+                                (format t "PASS: ~a ran successfully!~%" (file-namestring cpp))
+                                t)
+                               nil))
                          (progn
                           (format t "FAIL: ~a execution failed (Code ~a)~%Error: ~a~%"
                             (file-namestring exe-path) run-code run-err)
@@ -833,7 +847,7 @@
                      (content (when end-bracket (subseq trimmed 10 end-bracket)))
                      (colon (position #\: trimmed :start (or end-bracket 0)))
                      (validator (when colon
-                                      (let ((v-str (string-trim '(#\Space #\Tab) (subseq trimmed (1+ colon)))))
+                                      (let ((v-str (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed (1+ colon)))))
                                         (if (starts-with v-str "#'")
                                             (subseq v-str 2) ;; Remove #' prefix if present
                                             v-str)))))
@@ -850,19 +864,25 @@
     (dolist (line directive-lines)
       (let ((trimmed (string-left-trim ";; " line)))
         (when (starts-with trimmed "TEST-HOIST[")
-              (let* ((bracket-end (position #\] trimmed))
-                     (colon-pos (position #\: trimmed :start (or bracket-end 0)))
-                     (backend (when (and bracket-end (> bracket-end 11))
-                                    (string-trim '(#\Space #\Tab)
-                                                 (subseq trimmed 11 bracket-end))))
-                     (validator (when (and colon-pos (< colon-pos (length trimmed)))
-                                      (string-trim '(#\Space #\Tab)
-                                                   (subseq trimmed (1+ colon-pos))))))
-                (when (and backend validator)
-                      (push (cons (intern (string-upcase backend) :keyword)
-                                  (read-from-string validator)) ;; Convert to symbol!
-                            directives))))))
+              (let* ((end-bracket (position #\] trimmed))
+                     (backend-str (when end-bracket (subseq trimmed 11 end-bracket)))
+                     (colon (position #\: trimmed :start (or end-bracket 0)))
+                     (validator (when colon (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed (1+ colon))))))
+                (when (and backend-str validator)
+                      (push (cons (intern (string-upcase backend-str) :keyword) validator) directives))))))
     (nreverse directives)))
+
+(defun parse-hoist-expect (directive-lines)
+  "Parse HOIST-EXPECT: <string> lines.
+   Returns list of expected strings."
+  (let ((expectations '()))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "HOIST-EXPECT:")
+              (let ((value (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 13))))
+                (push value expectations)))))
+    (nreverse expectations)))
+
 
 (defun should-expect-failure-p (file)
   "Determine if test should be expected to fail."

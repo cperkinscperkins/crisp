@@ -1,5 +1,6 @@
 
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: { x=1 y=0 }
 
 
 ;; This kernel is mildly interesting, because it modifies an incoming struct.

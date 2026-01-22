@@ -78,7 +78,8 @@
   (format stream "#include <iostream>~%")
   (format stream "#include <fstream>~%")
   (format stream "#include <vector>~%")
-  (format stream "#include <cstring>~%~%"))
+  (format stream "#include <cstring>~%")
+  (format stream "#include <cstdint>~%~%"))
 
 (defun generate-cpp-structs (stream structs)
   "Generate C++ struct definitions from metadata"
@@ -95,6 +96,19 @@
                      (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name))))
                      (member-type-str (substitute #\_ #\- (string-downcase (symbol-name member-type)))))
                 (format stream "    ~a ~a;~%" member-type-str member-name-str)))
+            (format stream "    friend std::ostream& operator<<(std::ostream& os, const ~a& obj) {~%" struct-name-str)
+            (format stream "        os << \"{\";~%")
+            (let ((first-member t))
+              (dolist (member members)
+                (let ((member-name (first member))
+                      (member-name-str (substitute #\_ #\- (string-downcase (symbol-name (first member))))))
+                  (unless first-member
+                    (format stream "        os << \" \";~%"))
+                  (setf first-member nil)
+                  (format stream "        os << \"~a=\" << obj.~a;~%" member-name-str member-name-str))))
+            (format stream "        os << \"}\";~%")
+            (format stream "        return os;~%")
+            (format stream "    }~%")
             (format stream "};~%~%")))))
 
 (defun generate-cpp-typedefs (stream aliases)
@@ -141,11 +155,33 @@
         (generate-module-loading stream spv-path))
 
   ;; Kernel creation and launch
-  (generate-kernel-launch stream kernel-name declared-sig aliases)
+  (let ((allocations (generate-kernel-launch stream kernel-name declared-sig aliases)))
 
-  (format stream "    std::cout << \"Success!\" << std::endl;~%")
-  (format stream "    return 0;~%")
-  (format stream "}~%"))
+    ;; Print output buffers
+    (format stream "    // Verify Output~%")
+    (dolist (alloc allocations)
+      (let ((name (getf alloc :name))
+            (ptr (getf alloc :ptr))
+            (size-v (getf alloc :size-var)) ;; Need to capture size variable name
+            (dir (getf alloc :direction))
+            (access (getf alloc :access)))
+
+        ;; Determine if we should print this buffer
+        ;; Criterion: Explicit :out OR (no explicit :out exist AND is writeable)
+        ;; For now, simplistic approach: Print anything that is NOT pure input.
+        ;; :in pointers are initialized but USM is shared, so technically readable?
+        ;; But usually we only care about side effects.
+        ;; Let's try printing ALL buffers correctly typed.
+
+        (format stream "    std::cout << \"BUFFER ~a: \";~%" name)
+        (format stream "    for (size_t i = 0; i < ~a; i++) {~%" size-v)
+        (format stream "        std::cout << ~a[i] << (i == ~a - 1 ? \"\" : \" \");~%" ptr size-v)
+        (format stream "    }~%")
+        (format stream "    std::cout << std::endl;~%")))
+
+    (format stream "    std::cout << \"Success!\" << std::endl;~%")
+    (format stream "    return 0;~%")
+    (format stream "}~%")))
 
 (defun generate-l0-init (stream)
   "Generate Level Zero initialization code"
@@ -221,7 +257,7 @@
   (format stream "    std::cout << \"Module loaded successfully\" << std::endl;~%~%"))
 
 (defun generate-kernel-launch (stream kernel-name declared-sig aliases)
-  "Generate kernel creation and launch code"
+  "Generate kernel creation and launch code. Returns list of USM allocations."
   (format stream "    // Create kernel~%")
   (format stream "    ze_kernel_desc_t kernelDesc = { ZE_STRUCTURE_TYPE_KERNEL_DESC };~%")
   (format stream "    kernelDesc.pKernelName = \"~a\";~%" kernel-name)
@@ -233,43 +269,52 @@
   (format stream "    }~%~%")
 
   ;; Set kernel arguments if any
-  (when declared-sig
-        (generate-kernel-arguments-with-usm stream declared-sig aliases "context" "device"))
+  (let ((allocations '()))
+    (when declared-sig
+          (setf allocations (generate-kernel-arguments-with-usm stream declared-sig aliases "context" "device")))
 
-  ;; Create command list and queue
-  (format stream "    // Create command list~%")
-  (format stream "    ze_command_list_desc_t cmdListDesc = { ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC };~%")
-  (format stream "    ze_command_list_handle_t cmdList;~%")
-  (format stream "    result = zeCommandListCreate(context, device, &cmdListDesc, &cmdList);~%")
-  (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
-  (format stream "        std::cerr << \"ERROR: zeCommandListCreate failed: \" << result << std::endl;~%")
-  (format stream "        return 1;~%")
-  (format stream "    }~%~%")
+    ;; Create command list and queue
+    (format stream "    // Create command list~%")
+    (format stream "    ze_command_list_desc_t cmdListDesc = { ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC };~%")
+    (format stream "    ze_command_list_handle_t cmdList;~%")
+    (format stream "    result = zeCommandListCreate(context, device, &cmdListDesc, &cmdList);~%")
+    (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+    (format stream "        std::cerr << \"ERROR: zeCommandListCreate failed: \" << result << std::endl;~%")
+    (format stream "        return 1;~%")
+    (format stream "    }~%~%")
 
-  (format stream "    // Create command queue~%")
-  (format stream "    ze_command_queue_desc_t cmdQueueDesc = { ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC };~%")
-  (format stream "    ze_command_queue_handle_t cmdQueue;~%")
-  (format stream "    result = zeCommandQueueCreate(context, device, &cmdQueueDesc, &cmdQueue);~%")
-  (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
-  (format stream "        std::cerr << \"ERROR: zeCommandQueueCreate failed: \" << result << std::endl;~%")
-  (format stream "        return 1;~%")
-  (format stream "    }~%~%")
+    (format stream "    // Create command queue~%")
+    (format stream "    ze_command_queue_desc_t cmdQueueDesc = { ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC };~%")
+    (format stream "    ze_command_queue_handle_t cmdQueue;~%")
+    (format stream "    result = zeCommandQueueCreate(context, device, &cmdQueueDesc, &cmdQueue);~%")
+    (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+    (format stream "        std::cerr << \"ERROR: zeCommandQueueCreate failed: \" << result << std::endl;~%")
+    (format stream "        return 1;~%")
+    (format stream "    }~%~%")
 
-  ;; Launch kernel
-  (format stream "    // Launch kernel~%")
-  (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%")
-  (format stream "    result = zeCommandListAppendLaunchKernel(cmdList, kernel, &groupCount, nullptr, 0, nullptr);~%")
-  (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
-  (format stream "        std::cerr << \"ERROR: zeCommandListAppendLaunchKernel failed: \" << result << std::endl;~%")
-  (format stream "        return 1;~%")
-  (format stream "    }~%~%")
+    ;; Launch kernel
+    (format stream "    // Launch kernel~%")
+    (format stream "    // Set group size~%")
+    (format stream "    result = zeKernelSetGroupSize(kernel, 1, 1, 1);~%")
+    (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+    (format stream "        std::cerr << \"ERROR: zeKernelSetGroupSize failed: \" << result << std::endl;~%")
+    (format stream "        return 1;~%")
+    (format stream "    }~%~%")
+    (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%")
+    (format stream "    result = zeCommandListAppendLaunchKernel(cmdList, kernel, &groupCount, nullptr, 0, nullptr);~%")
+    (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+    (format stream "        std::cerr << \"ERROR: zeCommandListAppendLaunchKernel failed: \" << result << std::endl;~%")
+    (format stream "        return 1;~%")
+    (format stream "    }~%~%")
 
-  (format stream "    // Close and execute command list~%")
-  (format stream "    zeCommandListClose(cmdList);~%")
-  (format stream "    zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr);~%")
-  (format stream "    zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%~%")
+    (format stream "    // Close and execute command list~%")
+    (format stream "    zeCommandListClose(cmdList);~%")
+    (format stream "    zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr);~%")
+    (format stream "    zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%~%")
 
-  (format stream "    std::cout << \"Kernel executed successfully\" << std::endl;~%~%"))
+    (format stream "    std::cout << \"Kernel executed successfully\" << std::endl;~%~%")
+
+    allocations))
 
 (defun generate-kernel-arguments (stream declared-sig)
   "Generate kernel argument setup code"
@@ -323,7 +368,7 @@
   (format stream "    ze_host_mem_alloc_desc_t hostDesc = { ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC };~%~%")
 
   (let ((arg-index 0)
-        (allocations '())) ; Track allocations for cleanup
+        (allocations '())) ; Track allocations for cleanup and printing
 
     (dolist (param declared-sig)
       (let* ((param-name (getf param :name))
@@ -355,21 +400,38 @@
              (format stream "        return 1;~%")
              (format stream "    }~%")
 
-             ;; Initialize input buffers
-             (when (eq param-dir :in)
-                   (format stream "    // Initialize input data~%")
+             ;; Always zero-initialize first
+             (format stream "    // Initialize data~%")
+             (format stream "    memset(~a, 0, ~a * sizeof(~a));~%" ptr-var size-var base-type-str)
+
+             ;; If input or read-write, add some test data pattern (1, 2, 3...)
+             ;; This ensures we can distinguish "copied zeros" from "actual data"
+             (when (or (eq param-dir :in) (eq param-dir :read-write))
                    (format stream "    for (size_t i = 0; i < ~a; i++) {~%" size-var)
-                   (format stream "        memset(&~a[i], 0, sizeof(~a)); // Zero-init~%"
-                     ptr-var base-type-str)
+                   (format stream "        // Dangerous for structs if index exceeds member bounds, but fine for now~%")
+                   (format stream "        // Only doing this specifically for int/long buffers or safe structs would be better~%")
+                   (format stream "        // For now, let's just leave it zero for structs to avoid misalignment/padding issues~%")
+                   (format stream "        // memset is safest. The Spec 13 kernel adds 1 to 0, so 1 is expected.~%")
                    (format stream "    }~%"))
 
-             ;; Set kernel argument
-             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%~%"
+             ;; Set kernel argument (Fat Pointer: Ptr, Size, Offset)
+             (format stream "    // Arg ~d: Base Pointer~%" arg-index)
+             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
                arg-index ptr-var)
 
+             (format stream "    // Arg ~d: Size (bytes)~%" (+ arg-index 1))
+             (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
+             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_bytes);~%"
+               (+ arg-index 1) size-var)
+
+             (format stream "    // Arg ~d: Offset (bytes)~%" (+ arg-index 2))
+             (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_offset);~%~%"
+               (+ arg-index 2) param-name-cpp)
+
              ;; Track allocation for cleanup
-             (push (list :name param-name :ptr ptr-var) allocations)
-             (incf arg-index)))
+             (push (list :name param-name :ptr ptr-var :size-var size-var :direction param-dir :type base-type) allocations)
+             (incf arg-index 3)))
 
          ;; Handle scalar parameters  
          ((symbolp param-type)
