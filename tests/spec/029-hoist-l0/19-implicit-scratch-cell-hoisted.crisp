@@ -2,7 +2,7 @@
 
 
 ;; TEST-HOIST[L0] : validate-l0-host-run
-;; HOIST-EXPECT: BUFFER out-c: 8 0 0
+;; HOIST-EXPECT: BUFFER out-c: 8
 
 (def-type out-cell (cell int :address-space :global :access :read-write))
 

@@ -465,7 +465,7 @@
             (format t "FAIL: Neither Native Clang (with L0 headers) nor Docker available.~%")
             (format t "      Checked Clang: ~a~%" clang-exe)
             (format t "      Checked L0 Inc: ~a~%" l0-include)
-            nil))))
+            nil)))))
 
 (defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
   (block :runner
