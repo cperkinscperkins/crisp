@@ -327,9 +327,10 @@ Kernels
 - [ ] how to run on CI
 - [ ] .cpp gen using buffer 16 always. not sized correctly?
 - [ ] .cpp gen errrors: incompatible flags
+- - [ ] flags will need to be recorded in metadata
 - [ ] .cpp gen temp files ? (ie .metacrisp) Given In Memory Compilation API, I'd actually like to avoid temp files as much as possible.
 - [x] clean up files during hoist validation.
-- [ ] shorten names?
+- [x] shorten names?
 - [ ] use log4cl in spec runner.
 - [ ] bundle libLLVM.dll shared library
 - [x] try using llvm-mingw which is smaller than LLVM and works on windows

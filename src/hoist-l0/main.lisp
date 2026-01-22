@@ -48,7 +48,14 @@
              (output-targets (getf kernel :output-targets))
              (spv-path (when output-targets
                              (second (first output-targets)))) ;; Get first .spv path
-             (output-name (format nil "~a_~a_hoist_L0.cpp" base-name kernel-name))
+             
+             ;; Deduplicate kernel name in filename if present
+             (suffix (format nil "_~a" kernel-name))
+             (name-part (if (uiop:string-suffix-p base-name suffix)
+                            base-name
+                            (format nil "~a~a" base-name suffix)))
+             
+             (output-name (format nil "~a_L0.cpp" name-part))
              (output-path (make-pathname :name (pathname-name output-name)
                                          :type "cpp"
                                          :defaults metacrisp-path)))
