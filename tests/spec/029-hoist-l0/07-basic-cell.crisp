@@ -1,6 +1,6 @@
 
 
-;; TEST-HOIST[L0]: validate-l0-compile-only
+;; TEST-HOIST[L0]: validate-l0-host-run
 
 ;; This test can not just be tested for compile, but also actually does something.
 ;; we can validate 
