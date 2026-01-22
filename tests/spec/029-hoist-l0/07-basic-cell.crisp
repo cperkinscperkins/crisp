@@ -7,6 +7,9 @@
 ;; - copyback
 ;; - the value is incremented
 
+(def-type cell-int (cell int :address-space :global :access :read-write))
+
 (def-kernel basic_cell (in-cell &out out-cell)
-    (declare (type in-cell out-cell (cell int :address-space :global :access :read-write)))
+    ;(declare (type in-cell out-cell (cell int :address-space :global :access :read-write)))
+    (declare #'(cell-int &out cell-int => nil))
     (set! (~ out-cell) (+ (~ in-cell) 1)))

@@ -311,64 +311,77 @@
        (format t "PASS~%")
        t)))
 
-;; Docker-based C validator (updated from old clang++ version)
-(defun validate-l0-compile-only (crisp-file cpp-files)
-  "Validates C compiles with Docker gcc (or native clang as fallback)."
-  (if (null cpp-files)
-      (progn
-       (format t "FAIL: No C++ files to validate~%")
-       nil)
-      (let ((docker-available (zerop (nth-value 2 (uiop:run-program
-                                                    '("docker" "--version")
-                                                    :ignore-error-status t
-                                                    :output nil
-                                                    :error-output nil)))))
-        (if docker-available
-            ;; Use Docker for validation
-            (progn
-             (dolist (cpp cpp-files)
-               (let* ((workspace-path "/workspace")
-                      ;; Convert Windows path to Docker workspace path
-                      (relative-path (enough-namestring cpp (uiop:getcwd)))
-                      (docker-path (format nil "~a/~a" workspace-path
-                                     (substitute #\/ #\\ (namestring relative-path)))))
-                 (multiple-value-bind (output error-output exit-code)
-                     (uiop:run-program
-                       (list "docker" "run" "--rm"
-                             "-v" (format nil "~a:~a"
-                                    (substitute #\/ #\\ (namestring (uiop:getcwd)))
-                                    workspace-path)
-                             "-v" "C:/Users/cperk/Documents/level-zero/include:/usr/local/include"
-                             "crisp-c-validator"
-                             "gcc" "-fsyntax-only" "-I/usr/local/include" docker-path)
-                       :output :string :error-output :string :ignore-error-status t)
-                   (declare (ignore output))
-                   (if (zerop exit-code)
-                       (format t "PASS: ~a compiles (Docker)~%" (file-namestring cpp))
-                       (progn
-                        (format t "FAIL: ~a compilation error~%~a~%"
-                          (file-namestring cpp) error-output)
-                        (return-from validate-l0-compile-only nil))))))
-             t)
-            ;; Fallback to native clang (will likely fail, but try anyway)
-            (progn
-             (format t "WARNING: Docker not available, falling back to native clang~%")
-             (dolist (cpp cpp-files)
-               (multiple-value-bind (output error-output exit-code)
-                   (uiop:run-program
-                     (list "clang" "-fsyntax-only"
-                           "-I" "C:/Users/cperk/Documents/level-zero/include"
-                           (uiop:native-namestring cpp))
-                     :output :string :error-output :string :ignore-error-status t)
-                 (declare (ignore output))
-                 (if (zerop exit-code)
-                     (format t "PASS: ~a compiles~%" (file-namestring cpp))
-                     (progn
-                      (format t "FAIL: ~a compilation error~%~a~%"
-                        (file-namestring cpp) error-output)
-                      (return-from validate-l0-compile-only nil)))))
-             t)))))
+;; Updated Validator: Tries Native (MinGW) first, then Docker
+(defun resolve-clang-executable ()
+  "Finds clang++.exe in PATH or common locations."
+  ;; probe-file doesn't check the PATH env var.
+  (when (probe-file #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe")
+        #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe"))
 
+
+(defun resolve-l0-include-dir ()
+  "Finds Level Zero include directory."
+  (let ((candidates (list #P"C:/Users/cperk/Documents/level-zero/include"
+                          (uiop:getenv "CRISP_L0_INCLUDE"))))
+    (find-if (lambda (p) (and p (probe-file p))) candidates)))
+
+(defun validate-l0-compile-only (crisp-file cpp-files)
+  "Validates C++ files compile. Tries Native Clang first, then Docker."
+  (if (null cpp-files)
+      (progn (format t "FAIL: No C++ files to validate~%") nil)
+
+      (let ((clang-exe (resolve-clang-executable))
+            (l0-include (resolve-l0-include-dir))
+            (docker-available (zerop (nth-value 2 (uiop:run-program '("docker" "--version") :ignore-error-status t :output nil)))))
+        (format t "DEBUG: clang-exe=~s l0-include=~s docker-available=~s~%" clang-exe l0-include docker-available)
+
+        ;; 1. Try Native Compilation
+        (cond ((and clang-exe l0-include)
+                (format t "Validating with Native Clang: ~a~%" clang-exe)
+                (dolist (cpp cpp-files)
+                  (multiple-value-bind (output error-output exit-code)
+                      (uiop:run-program
+                        (list clang-exe "-fsyntax-only"
+                              "-I" (namestring l0-include)
+                              "-std=c++17"
+                              (uiop:native-namestring cpp))
+                        :output :string :error-output :string :ignore-error-status t)
+                    (declare (ignore output))
+                    (if (zerop exit-code)
+                        (format t "PASS: ~a compiles (Native)~%" (file-namestring cpp))
+                        (progn
+                         (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
+                         (return-from validate-l0-compile-only nil)))))
+                t)
+
+              (docker-available
+                ;; 2. Fallback to Docker
+                (format t "Native tools not found. Validating with Docker...~%")
+                (dolist (cpp cpp-files)
+                  (let* ((workspace-path "/workspace")
+                         (relative-path (enough-namestring cpp (uiop:getcwd)))
+                         (docker-path (format nil "~a/~a" workspace-path (substitute #\/ #\\ (namestring relative-path)))))
+                    (multiple-value-bind (output error-output exit-code)
+                        (uiop:run-program
+                          (list "docker" "run" "--rm"
+                                "-v" (format nil "~a:~a" (substitute #\/ #\\ (namestring (uiop:getcwd))) workspace-path)
+                                "-v" "C:/Users/cperk/Documents/level-zero/include:/usr/local/include"
+                                "crisp-c-validator"
+                                "g++" "-fsyntax-only" "-I/usr/local/include" "-std=c++17" docker-path)
+                          :output :string :error-output :string :ignore-error-status t)
+                      (declare (ignore output))
+                      (if (zerop exit-code)
+                          (format t "PASS: ~a compiles (Docker)~%" (file-namestring cpp))
+                          (progn
+                           (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
+                           (return-from validate-l0-compile-only nil)))))))
+
+              ;; 3. No tools available
+              (T
+                (format t "FAIL: Neither Native Clang (with L0 headers) nor Docker available.~%")
+                (format t "      Checked Clang: ~a~%" clang-exe)
+                (format t "      Checked L0 Inc: ~a~%" l0-include)
+                nil)))))
 
 (defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
   (block :runner
@@ -585,7 +598,6 @@
          (format *error-output* "FAIL (No LLVM IR generated)~%~a~%" error-output)
          nil)))))
 
-
 (defun get-ci-stop-target ()
   "Reads tests/ci-stop.txt to determine the last directory to run."
   (let ((path (merge-pathnames "tests/ci-stop.txt" (uiop:getcwd))))
@@ -799,7 +811,6 @@
                                   (read-from-string validator)) ;; Convert to symbol!
                             directives))))))
     (nreverse directives)))
-
 
 (defun should-expect-failure-p (file)
   "Determine if test should be expected to fail."
