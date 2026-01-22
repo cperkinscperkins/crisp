@@ -323,11 +323,12 @@ Kernels
 - [x] metadata
 - [x] hoisting
 - [x] .cpp gen
+- [ ] add overlay to spec runner. 
 - [ ] how to run on CI
 - [ ] .cpp gen using buffer 16 always. not sized correctly?
 - [ ] .cpp gen errrors: incompatible flags
 - [ ] .cpp gen temp files ? (ie .metacrisp) Given In Memory Compilation API, I'd actually like to avoid temp files as much as possible.
-- [ ] clean up files during hoist validation.
+- [x] clean up files during hoist validation.
 - [ ] shorten names?
 - [ ] use log4cl in spec runner.
 - [ ] bundle libLLVM.dll shared library

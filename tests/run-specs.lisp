@@ -51,6 +51,7 @@
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
 (defvar *test-filter* nil)
+(defvar *keep-work* nil)
 ;; cl-user::*log-level* is defined at the top
 
 (defun get-binary-path ()
@@ -182,10 +183,23 @@
                     (setf all-passed nil))
                   (progn
                    (format t "FAIL (Validator ~a not found)~%" validator-name)
-                   (setf all-passed nil))))))))
+                   (setf all-passed nil))))))
+
+        ;; Cleanup Hoist Files on Success
+        (when (and all-passed (not *keep-work*))
+              (let* ((base-name (pathname-name file))
+                     (dir (pathname-directory file))
+                     (cpp-files (directory (make-pathname :directory dir :name :wild :type "cpp" :defaults file)))
+                     (exe-files (directory (make-pathname :directory dir :name :wild :type "exe" :defaults file)))
+                     (spv-files (directory (make-pathname :directory dir :name :wild :type "spv" :defaults file)))
+                     (meta-files (directory (make-pathname :directory dir :name :wild :type "metacrisp" :defaults file)))
+                     (all-files (append cpp-files exe-files spv-files meta-files)))
+                (dolist (f all-files)
+                  (when (and (stringp (pathname-name f))
+                             (uiop:string-prefix-p base-name (pathname-name f)))
+                        (delete-file f)))))))
 
     all-passed))
-
 
 (defun compile-crisp-file-to-ir-string (filepath)
   "Compiles a .crisp file and returns the LLVM IR as a string."
@@ -318,7 +332,6 @@
   (when (probe-file #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe")
         #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe"))
 
-
 (defun resolve-ze-loader ()
   "Finds ze_loader.dll in System32."
   (let ((path #P"C:/Windows/System32/ze_loader.dll"))
@@ -329,7 +342,6 @@
   (let ((candidates (list #P"C:/Users/cperk/Documents/level-zero/include"
                           (uiop:getenv "CRISP_L0_INCLUDE"))))
     (find-if (lambda (p) (and p (probe-file p))) candidates)))
-
 
 (defun validate-l0-host-run (crisp-file cpp-files)
   "Validates C++ files compile AND run. Links against system ze_loader.dll."
@@ -487,9 +499,10 @@
                             t))))
 
               ;; Cleanup generated artifacts
-              (when (probe-file out-path) (delete-file out-path))
-              (dolist (mp (if (listp meta-paths) meta-paths (list meta-paths)))
-                (when (probe-file mp) (delete-file mp)))
+              (unless *keep-work*
+                (when (probe-file out-path) (delete-file out-path))
+                (dolist (mp (if (listp meta-paths) meta-paths (list meta-paths)))
+                  (when (probe-file mp) (delete-file mp))))
 
               res)
             (progn (format *error-output* "FAIL (No SPV generated)~%") nil))))))
@@ -512,7 +525,7 @@
          nil)
        ((probe-file out-path)
          (format t "PASS (Generated .spv)~%")
-         (delete-file out-path)
+         (unless *keep-work* (delete-file out-path))
          t)
        (t
          (format *error-output* "FAIL (No SPV generated)~%~a~%" error-output)
@@ -556,7 +569,7 @@
             (progn
              (format t "PASS (Generated ~a)~%" (file-namestring out-path))
              ;; Optional: Cleanup generated file
-             (delete-file out-path)
+             (unless *keep-work* (delete-file out-path))
              t)
             (progn (format *error-output* "FAIL (No PTX generated)~%") nil)))
     (error (e)
@@ -581,7 +594,7 @@
          nil)
        ((probe-file out-path)
          (format t "PASS (Generated .ptx)~%")
-         (delete-file out-path)
+         (unless *keep-work* (delete-file out-path))
          t)
        (t
          (format *error-output* "FAIL (No PTX generated)~%~a~%" error-output)
@@ -632,7 +645,8 @@
                                       (progn (format *error-output* "Validator FAIL. ") nil))
                                   (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))
                            (progn (format t "PASS (Generated ~a)~%" (file-namestring out-path)) t))))
-              (when (probe-file out-path) (delete-file out-path))
+              (when (probe-file out-path)
+                    (unless *keep-work* (delete-file out-path)))
               res)
             (progn (format *error-output* "FAIL (No LLVM IR generated)~%") nil)))
     (error (e)
@@ -658,7 +672,7 @@
          nil)
        ((probe-file out-path)
          (format t "PASS (Generated .ll)~%")
-         (delete-file out-path)
+         (unless *keep-work* (delete-file out-path))
          t)
        (t
          (format *error-output* "FAIL (No LLVM IR generated)~%~a~%" error-output)
@@ -883,7 +897,6 @@
                 (push value expectations)))))
     (nreverse expectations)))
 
-
 (defun should-expect-failure-p (file)
   "Determine if test should be expected to fail."
   (let* ((directives (extract-test-directives file))
@@ -925,6 +938,7 @@
              ((string= arg "--use-binary") (setf *use-binary* t))
              ((string= arg "--debug") (setf *compile-debug* t))
              ((string= arg "--single-pass") (setf *compile-single-pass* t))
+             ((string= arg "--keep-work") (setf *keep-work* t))
              ((and (> (length arg) 9) (string= (subseq arg 0 9) "--filter="))
                (setf *test-filter* (subseq arg 9)))))
 
