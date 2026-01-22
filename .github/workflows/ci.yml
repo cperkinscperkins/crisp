@@ -49,13 +49,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sbcl llvm-21-dev llvm-21
 
-          # Try to install llvm-spirv-21 (may not be available)
-          sudo apt-get install -y llvm-spirv-21 || echo "⚠️ llvm-spirv-21 not available in apt"
+          # Try to install llvm-spirv-21 (may not be available), fallback to generic llvm-spirv
+          sudo apt-get install -y llvm-spirv-21 || sudo apt-get install -y llvm-spirv || echo "⚠️ llvm-spirv not available in apt"
 
           # Create symlinks
           sudo ln -s /usr/bin/llc-21 /usr/bin/llc
           sudo ln -s /usr/bin/llvm-as-21 /usr/bin/llvm-as
-          sudo ln -s /usr/bin/llvm-spirv-21 /usr/bin/llvm-spirv || echo "⚠️ llvm-spirv-21 not found, SPIRV tests will fail"
+          # Link whatever llvm-spirv we found (either -21 or generic)
+          if [ -f /usr/bin/llvm-spirv-21 ]; then
+            sudo ln -s /usr/bin/llvm-spirv-21 /usr/bin/llvm-spirv
+          elif [ ! -f /usr/bin/llvm-spirv ]; then
+             echo "⚠️ llvm-spirv not found, SPIRV tests will fail"
+          fi
 
       - name: 4. Install Quicklisp
         run: |

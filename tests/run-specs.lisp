@@ -415,8 +415,12 @@
         (docker-available (zerop (nth-value 2 (uiop:run-program '("docker" "--version") :ignore-error-status t :output nil)))))
     (format t "DEBUG: clang-exe=~s l0-include=~s docker-available=~s~%" clang-exe l0-include docker-available)
 
-    ;; 1. Try Native Compilation
-    (cond ((and clang-exe l0-include)
+    (if (null cpp-files)
+        (progn
+         (format t "FAIL: No C++ files to validate (Hoist failed?)~%")
+         nil)
+        ;; 1. Try Native Compilation
+        (cond ((and clang-exe l0-include)
             (format t "Validating with Native Clang: ~a~%" clang-exe)
             (dolist (cpp cpp-files)
               (multiple-value-bind (output error-output exit-code)
