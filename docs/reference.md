@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-19T18:12:05.572129Z
+Generated on 2026-01-22T22:44:49.545040Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -969,6 +969,101 @@ Generated on 2026-01-19T18:12:05.572129Z
 
 
 ---
+### DEFUN `GENERATE-CPP-PREAMBLE`
+- **Args**: `(STREAM METACRISP-PATH KERNEL-NAME OUTPUT-NAME)`
+
+  > Generate C++ file preamble comment
+
+
+---
+### DEFUN `GENERATE-CPP-INCLUDES`
+- **Args**: `(STREAM)`
+
+  > Generate C++ includes
+
+
+---
+### DEFUN `GENERATE-CPP-STRUCTS`
+- **Args**: `(STREAM STRUCTS)`
+
+  > Generate C++ struct definitions from metadata
+
+
+---
+### DEFUN `GENERATE-CPP-TYPEDEFS`
+- **Args**: `(STREAM ALIASES)`
+
+  > Generate C++ typedef declarations from type aliases
+
+
+---
+### DEFUN `GENERATE-CPP-HELPERS`
+- **Args**: `(STREAM)`
+
+  > Generate C++ helper functions
+
+
+---
+### DEFUN `GENERATE-CPP-MAIN`
+- **Args**: `(STREAM KERNEL-NAME SPV-PATH DECLARED-SIG ALIASES)`
+
+  > Generate C++ main function
+
+
+---
+### DEFUN `GENERATE-L0-INIT`
+- **Args**: `(STREAM)`
+
+  > Generate Level Zero initialization code
+
+
+---
+### DEFUN `GENERATE-MODULE-LOADING`
+- **Args**: `(STREAM SPV-PATH)`
+
+  > Generate SPIR-V module loading code
+
+
+---
+### DEFUN `GENERATE-KERNEL-LAUNCH`
+- **Args**: `(STREAM KERNEL-NAME DECLARED-SIG ALIASES)`
+
+  > Generate kernel creation and launch code. Returns list of USM allocations.
+
+
+---
+### DEFUN `GENERATE-KERNEL-ARGUMENTS`
+- **Args**: `(STREAM DECLARED-SIG)`
+
+  > Generate kernel argument setup code
+
+
+---
+### DEFUN `RESOLVE-TYPE-ALIAS`
+- **Args**: `(TYPE ALIASES)`
+
+---
+### DEFUN `CELL-TYPE-P`
+- **Args**: `(PARAM-TYPE)`
+
+  > Check if a parameter type is a cell type
+
+
+---
+### DEFUN `CELL-BASE-TYPE`
+- **Args**: `(PARAM-TYPE)`
+
+  > Extract the base type from a cell type like (cell int ...)
+
+
+---
+### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
+- **Args**: `(STREAM DECLARED-SIG ALIASES CONTEXT-VAR DEVICE-VAR)`
+
+  > Generate kernel argument setup code with USM allocation for cells
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\package.lisp`
 
 ## File: `C:\Users\cperk\Documents\crisp\src\hoist\codegen-base.lisp`
@@ -1353,14 +1448,29 @@ Generated on 2026-01-19T18:12:05.572129Z
 ### DEFUN `PARSE-CLI-ARGS`
 - **Args**: `(ARGS)`
 
-  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets).
+  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets).
+
+
+---
+### DEFUN `GET-HOISTER-BINARY-PATH`
+- **Args**: `(HOIST-ID)`
+
+  > Returns path to crisp-hoist-{id}.exe (or .bin on Unix)
+
+
+---
+### DEFUN `INVOKE-HOISTER`
+- **Args**: `(HOIST-ID METACRISP-FILE)`
+
+  > Invokes crisp-hoist-{id}.exe with the given .metacrisp file
 
 
 ---
 ### DEFUN `COMPILE-FILES`
-- **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P)`
+- **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P
+              HOIST-TARGETS)`
 
-  > Compiles the given files, iterating over requested targets.
+  > Compiles the given files, iterating over requested targets, then invokes hoisters.
 
 
 ---
