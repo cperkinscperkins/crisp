@@ -343,6 +343,7 @@ Kernels
 - [ ] get-global-id or whatever and friends. 
 - [ ] strategy
 - [ ] tensors and vectors and matrices
+- [ ] at some point, get opencl:cpu device on CI.
 
 
 QUESTIONS
