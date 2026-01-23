@@ -447,18 +447,21 @@
                      (docker-path (format nil "~a/~a" workspace-path (substitute #\/ #\\ (namestring relative-path)))))
                 (multiple-value-bind (output error-output exit-code)
                     (uiop:run-program
-                      (list "docker" "run" "--rm"
-                            "-v" (format nil "~a:~a" (substitute #\/ #\\ (namestring (uiop:getcwd))) workspace-path)
-                            "-v" "C:/Users/cperk/Documents/level-zero/include:/usr/local/include"
-                            "crisp-c-validator"
-                            "g++" "-fsyntax-only" "-I/usr/local/include" "-std=c++17" docker-path)
+                    (uiop:run-program
+                      (append 
+                        (list "docker" "run" "--rm"
+                              "-v" (format nil "~a:~a" (substitute #\/ #\\ (namestring (uiop:getcwd))) workspace-path))
+                        (when l0-include
+                           (list "-v" (format nil "~a:/usr/local/include" (substitute #\/ #\\ (namestring l0-include)))))
+                        (list "crisp-c-validator"
+                              "g++" "-fsyntax-only" "-I/usr/local/include" "-std=c++17" docker-path))
                       :output :string :error-output :string :ignore-error-status t)
                   (declare (ignore output))
                   (if (zerop exit-code)
                       (format t "PASS: ~a compiles (Docker)~%" (file-namestring cpp))
                       (progn
                        (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
-                       (return-from validate-l0-compile-only nil)))))))
+                       (return-from validate-l0-compile-only nil))))))))
 
           ;; 3. No tools available
           (T
