@@ -84,10 +84,17 @@
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
       (uiop:quit 1))
 
-    ;; Auto-set --ir-target=spv if --hoist is specified but no IR target given
-    (when (and hoist-targets (null targets))
-          (format *error-output* "; Auto-enabling --ir-target=spv (required for hoisting)~%")
-          (setf targets '(:spirv)))
+    ;; --- Hoisting Logic ---
+    (when (member :L0 hoist-targets)
+      (if (null targets)
+          ;; Case 1: Helpful Default (L0 -> SPV)
+          (progn
+           (format *error-output* "; Auto-enabling --ir-target=spv (required for --hoist=L0)~%")
+           (setf targets '(:spirv)))
+          ;; Case 2: Validation (L0 requires SPV)
+          (unless (member :spirv targets)
+            (format *error-output* "ERROR: --hoist=L0 requires --ir-target=spv. Found targets: ~a~%" targets)
+            (uiop:quit 1))))
 
     (values files nil debug-p single-pass-p targets metadata-p hoist-targets)))
 

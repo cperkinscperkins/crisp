@@ -14,9 +14,4 @@
            :entry-point "crisp.hoist.l0:main"
            :in-order-to ((test-op (test-op "crisp-hoist-l0/tests"))))
 
-;; Load overlay after main system
-(eval-when (:load-toplevel :execute)
-  (let ((overlay-path (merge-pathnames "overlays/hoist-l0/crisp-hoist-l0-overlay.lisp"
-                                       (asdf:system-source-directory "crisp-hoist-l0"))))
-    (when (probe-file overlay-path)
-          (load overlay-path))))
+
