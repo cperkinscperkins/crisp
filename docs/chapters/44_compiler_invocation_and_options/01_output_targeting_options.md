@@ -27,7 +27,7 @@ to an IR (Intermediate Representation) file. One file per occurrence of the `--i
 
 | ID       | Extension |  Description       |
 |----------|-----------|--------------------|
-| `ll`     | `llvm-ir` | human readable LLVM-iR |
+| `llvmir` | `ll`      | human readable LLVM-iR |
 | `ptx`    | `ptx`     | CUDA Parallel Thread Execution IR |
 | `spv`    | `spv`     | Khronos SPIR-V IR  |
 
@@ -57,7 +57,7 @@ This flag can be used repeatedly, each occurrence with a different ID. The compi
 The hoist options are paired against their matching IR and Binary targets automatically. You'll get a warning from the compiler if it detects
 incompatible pairings.  Note that if outputting BOTH binary and IR targets then the hoisting code will demonstrate both.
 
-The hoist file name will be `<output-base-name>_<orchestration>_hoist_<ID>.<extension>`
+The hoist file name will be `<output-base-name>_<orchestration>_<ID>.<extension>`
 
 `ID` can be one of
 

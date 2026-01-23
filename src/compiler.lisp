@@ -41,8 +41,8 @@
      (env-override env-override)
      ((and use-system (string-not-equal use-system "false"))
        (let ((versioned (unless (uiop:os-windows-p)
-                          (loop for ver in '("21" "20" "19" "18" "17" "16" "15" "14")
-                                for v-name = (format nil "~a-~a" tool-base ver)
+                          (loop for ver in '("-21" "-20" "-19" "-18" "-17" "-16" "-15" "-14" "")
+                                for v-name = (format nil "~a~a" tool-base ver)
                                   ;; Manual PATH check or similar? Let's use which but ONLY on Unix.
                                   when (zerop (nth-value 2 (uiop:run-program (list "which" v-name) :ignore-error-status t)))
                                   return v-name))))
@@ -310,8 +310,13 @@ This should be called by any entry point into the system (REPL, executable, CI).
 
   ;; Initialize the compiler's internal state.
   (initialize-crisp-types)
+  (initialize-crisp-types)
   (clrhash *function-table*) ;; Reset function table
   (clrhash *crisp-structs*) ;; Reset struct definitions
+  (clrhash *crisp-type-aliases*) ;; Reset type aliases
+  (clrhash *crisp-template-aliases*) ;; Reset template aliases
+  (clrhash *generic-functions*) ;; Reset generic functions
+  (clrhash *kernel-declared-signatures*) ;; Reset kernel signatures
   (when (boundp '*record-definitions*) (clrhash *record-definitions*)) ;; Reset records (if defined)
 
   (setf *compiled-kernels* nil) ;; Reset compiled kernels list

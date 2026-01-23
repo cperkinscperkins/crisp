@@ -545,18 +545,14 @@
      (is-ct
        (values nil runtime-index))
 
-     ;; Runtime member -> function accessor + setter
+     ;; Runtime member -> function accessor ONLY
+     ;; We rely on set! analyzing the accessor form to generate update logic.
+     ;; We DO NOT generate a def-setter because struct updates are functional
+     ;; and must be wrapped in a set! for the holding variable.
      (t
        (let ((idx runtime-index))
-         (values `(progn
-                   (def-function ,accessor-name ((obj ,name))
-                                 (return (%extract-struct-member obj ,idx)))
-
-                   ;; Generate Setter for Runtime Member
-                   (def-setter ,accessor-name ((obj ,name) (val ,(second member-spec)))
-                               ;; Execute insert but don't return the result; return void instead
-                               (%insert-struct-member obj ,idx val)
-                               (return nil)))
+         (values `(def-function ,accessor-name ((obj ,name))
+                                (return (%extract-struct-member obj ,idx)))
            (1+ runtime-index)))))))
 
 (defun %generate-raw-accessor (member-spec name pkg runtime-index)

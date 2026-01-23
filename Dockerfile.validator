@@ -1,0 +1,19 @@
+# Crisp C Validator - Minimal Alpine Linux with GCC/G++ and Level Zero headers
+FROM alpine:latest
+
+# Install GCC, G++, git, and build essentials
+RUN apk add --no-cache gcc g++ musl-dev git
+
+# Create include directory for Level Zero
+RUN mkdir -p /usr/local/include
+
+# Fetch and install Level Zero headers
+RUN git clone https://github.com/oneapi-src/level-zero.git /tmp/l0 && \
+    cp -r /tmp/l0/include/* /usr/local/include/ && \
+    rm -rf /tmp/l0
+
+# Set working directory
+WORKDIR /workspace
+
+# Default command (can be overridden)
+CMD ["gcc", "--version"]

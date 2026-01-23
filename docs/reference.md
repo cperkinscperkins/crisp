@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-18T23:06:26.409351Z
+Generated on 2026-01-23T05:22:48.689905Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -952,13 +952,167 @@ Generated on 2026-01-18T23:06:26.409351Z
 
 
 ---
-### DEFPARAMETER `*KERNEL-DECLARED-SIGNATURES*`
+## File: `C:\Users\cperk\Documents\crisp\src\errors.lisp`
 
-  > Maps kernel names to their declared signature types (raw pairs of parameters before explosion).
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\main.lisp`
+
+### DEFUN `MAIN`
+
+  > Entry point for crisp-hoist-l0.exe
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\errors.lisp`
+### DEFUN `GENERATE-L0-LAUNCHER`
+- **Args**: `(METACRISP-PATH)`
+
+  > Generate Level Zero C++ launcher code from metacrisp file.
+
+
+---
+### DEFUN `GENERATE-CPP-PREAMBLE`
+- **Args**: `(STREAM METACRISP-PATH KERNEL-NAME OUTPUT-NAME)`
+
+  > Generate C++ file preamble comment
+
+
+---
+### DEFUN `GENERATE-CPP-INCLUDES`
+- **Args**: `(STREAM)`
+
+  > Generate C++ includes
+
+
+---
+### DEFUN `GENERATE-CPP-STRUCTS`
+- **Args**: `(STREAM STRUCTS)`
+
+  > Generate C++ struct definitions from metadata
+
+
+---
+### DEFUN `GENERATE-CPP-TYPEDEFS`
+- **Args**: `(STREAM ALIASES)`
+
+  > Generate C++ typedef declarations from type aliases
+
+
+---
+### DEFUN `GENERATE-CPP-HELPERS`
+- **Args**: `(STREAM)`
+
+  > Generate C++ helper functions
+
+
+---
+### DEFUN `GENERATE-CPP-MAIN`
+- **Args**: `(STREAM KERNEL-NAME SPV-PATH DECLARED-SIG ALIASES)`
+
+  > Generate C++ main function
+
+
+---
+### DEFUN `GENERATE-L0-INIT`
+- **Args**: `(STREAM)`
+
+  > Generate Level Zero initialization code
+
+
+---
+### DEFUN `GENERATE-MODULE-LOADING`
+- **Args**: `(STREAM SPV-PATH)`
+
+  > Generate SPIR-V module loading code
+
+
+---
+### DEFUN `GENERATE-KERNEL-LAUNCH`
+- **Args**: `(STREAM KERNEL-NAME DECLARED-SIG ALIASES)`
+
+  > Generate kernel creation and launch code. Returns list of USM allocations.
+
+
+---
+### DEFUN `GENERATE-KERNEL-ARGUMENTS`
+- **Args**: `(STREAM DECLARED-SIG)`
+
+  > Generate kernel argument setup code
+
+
+---
+### DEFUN `RESOLVE-TYPE-ALIAS`
+- **Args**: `(TYPE ALIASES)`
+
+---
+### DEFUN `CELL-TYPE-P`
+- **Args**: `(PARAM-TYPE)`
+
+  > Check if a parameter type is a cell type
+
+
+---
+### DEFUN `CELL-BASE-TYPE`
+- **Args**: `(PARAM-TYPE)`
+
+  > Extract the base type from a cell type like (cell int ...)
+
+
+---
+### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
+- **Args**: `(STREAM DECLARED-SIG ALIASES CONTEXT-VAR DEVICE-VAR)`
+
+  > Generate kernel argument setup code with USM allocation for cells
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\package.lisp`
+
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\codegen-base.lisp`
+
+### DEFUN `CRISP-TYPE-TO-CPP-TYPE`
+- **Args**: `(CRISP-TYPE)`
+
+  > Convert a Crisp type to C++ type string.
+
+
+---
+### DEFUN `FORMAT-CPP-IDENTIFIER`
+- **Args**: `(LISP-SYMBOL)`
+
+  > Convert Lisp symbol to C++-safe identifier.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\common.lisp`
+
+### DEFUN `PARSE-METACRISP-FILE`
+- **Args**: `(FILEPATH)`
+
+  > Parse a .metacrisp file and return the data structure.
+
+
+---
+### DEFUN `METACRISP-KERNELS`
+- **Args**: `(METACRISP-DATA)`
+
+  > Extract kernels list from metacrisp data.
+
+
+---
+### DEFUN `METACRISP-ALIASES`
+- **Args**: `(METACRISP-DATA)`
+
+  > Extract type aliases from metacrisp data.
+
+
+---
+### DEFUN `METACRISP-STRUCTS`
+- **Args**: `(METACRISP-DATA)`
+
+  > Extract struct definitions from metacrisp data.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\package.lisp`
 
 ## File: `C:\Users\cperk\Documents\crisp\src\llvm-bindings.lisp`
 
@@ -1294,14 +1448,29 @@ Generated on 2026-01-18T23:06:26.409351Z
 ### DEFUN `PARSE-CLI-ARGS`
 - **Args**: `(ARGS)`
 
-  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets).
+  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets).
+
+
+---
+### DEFUN `GET-HOISTER-BINARY-PATH`
+- **Args**: `(HOIST-ID)`
+
+  > Returns path to crisp-hoist-{id}.exe (or .bin on Unix)
+
+
+---
+### DEFUN `INVOKE-HOISTER`
+- **Args**: `(HOIST-ID METACRISP-FILE)`
+
+  > Invokes crisp-hoist-{id}.exe with the given .metacrisp file
 
 
 ---
 ### DEFUN `COMPILE-FILES`
-- **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P)`
+- **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P
+              HOIST-TARGETS)`
 
-  > Compiles the given files, iterating over requested targets.
+  > Compiles the given files, iterating over requested targets, then invokes hoisters.
 
 
 ---
@@ -1518,6 +1687,20 @@ Generated on 2026-01-18T23:06:26.409351Z
 ---
 ### DEFUN `SORT-STRUCTS-BY-DEPENDENCY`
 - **Args**: `(STRUCT-NAMES)`
+
+---
+### DEFUN `STRIP-PACKAGE-QUALIFIERS`
+- **Args**: `(TYPE-SPEC)`
+
+  > Recursively strips package qualifiers from symbols in a type specification.  >    Returns the type spec with bare symbol names (no CRISP.COMPILER:: prefixes).  >      >    Examples:  >      CRISP.COMPILER:INT -> INT  >      (CRISP.COMPILER:CELL CRISP.COMPILER:FLOAT :GLOBAL :READ-WRITE)   >        -> (CELL FLOAT :GLOBAL :READ-WRITE)  >      (C-POINTER ADDRESS-SPACE GLOBAL) -> (C-POINTER ADDRESS-SPACE GLOBAL)
+
+
+---
+### DEFUN `PRINT-WITHOUT-PACKAGES`
+- **Args**: `(OBJ STREAM)`
+
+  > Prints an object to stream without any package qualifiers.  >    Uses *package* context to avoid printing qualifiers.
+
 
 ---
 ### DEFUN `SERIALIZE-ALIASES`

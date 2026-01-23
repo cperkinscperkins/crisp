@@ -22,8 +22,8 @@
 ;; Inline build/build.lisp logic without terminating process
 (require "asdf")
 (push *default-pathname-defaults* ql:*local-project-directories*)
-(asdf:clear-system "crisp")
-(asdf:load-system "crisp" :force t)
+;; Load the compiler system
+(asdf:load-system :crisp)
 (ql:quickload "crisp")
 
 ;; Load the LLVM foreign library (defined in src/llvm-bindings.lisp but not auto-loaded)
@@ -51,6 +51,7 @@
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
 (defvar *test-filter* nil)
+(defvar *keep-work* nil)
 ;; cl-user::*log-level* is defined at the top
 
 (defun get-binary-path ()
@@ -167,8 +168,38 @@
           (unless (run-single-spec-pass file flags validator)
             (setf all-passed nil)))))
 
-    all-passed))
+    ;; 3. Hoist Tests (TEST-HOIST[backend]: validator)
+    (let ((hoist-directives (parse-test-hoist directives)))
+      (dolist (directive hoist-directives)
+        (let ((backend (car directive))
+              (validator-name (cdr directive)))
+          (format t "~&Running Spec: ~a (Hoist[~a] -> ~a)... " (pathname-name file) backend validator-name)
+          (finish-output)
+          (let ((cpp-files (run-spec-with-hoist file backend)))
+            ;; Use find-symbol to look up the existing function symbol
+            (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
+              (if (fboundp validator-sym)
+                  (unless (funcall validator-sym file cpp-files)
+                    (setf all-passed nil))
+                  (progn
+                   (format t "FAIL (Validator ~a not found)~%" validator-name)
+                   (setf all-passed nil))))))
 
+        ;; Cleanup Hoist Files on Success
+        (when (and all-passed (not *keep-work*))
+              (let* ((base-name (pathname-name file))
+                     (dir (pathname-directory file))
+                     (cpp-files (directory (make-pathname :directory dir :name :wild :type "cpp" :defaults file)))
+                     (exe-files (directory (make-pathname :directory dir :name :wild :type "exe" :defaults file)))
+                     (spv-files (directory (make-pathname :directory dir :name :wild :type "spv" :defaults file)))
+                     (meta-files (directory (make-pathname :directory dir :name :wild :type "metacrisp" :defaults file)))
+                     (all-files (append cpp-files exe-files spv-files meta-files)))
+                (dolist (f all-files)
+                  (when (and (stringp (pathname-name f))
+                             (uiop:string-prefix-p base-name (pathname-name f)))
+                        (delete-file f)))))))
+
+    all-passed))
 
 (defun compile-crisp-file-to-ir-string (filepath)
   "Compiles a .crisp file and returns the LLVM IR as a string."
@@ -257,6 +288,189 @@
         (values out-path meta-paths)
         nil)))
 
+(defun run-spec-with-hoist (file backend)
+  "Compiles .crisp file with --hoist=backend flag and returns list of generated .cpp files."
+  (let* ((hoist-arg (format nil "--hoist=~a" backend))
+         (bin (get-binary-path))
+         (args (list hoist-arg
+                     (format nil "--log-level=~a" cl-user::*log-level*)
+                     (uiop:native-namestring file))))
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string :error-output :string :ignore-error-status t)
+      (if (zerop exit-code)
+          ;; Find generated .cpp files matching this test's base name
+          (let ((base-name (pathname-name file)))
+            (remove-if-not
+                (lambda (path) (alexandria:starts-with-subseq base-name (pathname-name path)))
+                (directory (make-pathname :name :wild
+                                          :type "cpp"
+                                          :defaults file))))
+          (progn
+           (format *error-output* "FAIL (Hoist Compilation failed with exit code ~a)~%~a~%" exit-code error-output)
+           nil)))))
+
+;;; L0 Validators for TEST-HOIST directives
+
+(defun validate-l0-empty-kernel (crisp-file cpp-files)
+  "Validates minimal C++ generation (Phase 1 check)."
+  (if (null cpp-files)
+      (progn
+       (format t "FAIL: No C++ files generated~%")
+       nil)
+      (progn
+       (format t "Generated ~a C++ file(s)~%" (length cpp-files))
+       (dolist (cpp cpp-files)
+         (format t "  - ~a~%" (file-namestring cpp)))
+       (format t "PASS~%")
+       t)))
+
+;; Updated Validator: Tries Native (MinGW) first, then Docker
+(defun resolve-clang-executable ()
+  "Finds clang++.exe in PATH or common locations."
+  (if (uiop:os-windows-p)
+      (if (probe-file #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe")
+          #P"C:/Users/cperk/Documents/llvm-mingw-20251216-ucrt-x86_64/bin/clang++.exe"
+          "clang++") ;; Fallback to path on windows if specific one missing
+      "clang++")) ;; On Linux/CI, just use clang++ from path
+
+(defun resolve-ze-loader ()
+  "Finds ze_loader.dll in System32."
+  (let ((path #P"C:/Windows/System32/ze_loader.dll"))
+    (when (probe-file path) path)))
+
+(defun resolve-l0-include-dir ()
+  "Finds Level Zero include directory."
+  (let ((candidates (list #P"C:/Users/cperk/Documents/level-zero/include"
+                          (uiop:getenv "CRISP_L0_INCLUDE"))))
+    (find-if (lambda (p) (and p (probe-file p))) candidates)))
+
+(defun validate-l0-host-run (crisp-file cpp-files)
+  "Validates C++ files compile AND run. Links against system ze_loader.dll."
+  (if (null cpp-files)
+      (progn (format t "FAIL: No C++ files to validate~%") nil)
+
+      (let ((clang-exe (resolve-clang-executable))
+            (l0-include (resolve-l0-include-dir))
+            (ze-loader (resolve-ze-loader)))
+
+        (format t "DEBUG: clang=~s inc=~s loader=~s~%" clang-exe l0-include ze-loader)
+
+        (unless (and clang-exe l0-include ze-loader)
+          (format t "FAIL: Missing native toolchain components. Falling back to validate-l0-compile-only (Docker)...~%")
+          (return-from validate-l0-host-run (validate-l0-compile-only crisp-file cpp-files)))
+
+        (dolist (cpp cpp-files)
+          (let ((exe-path (make-pathname :type "exe" :defaults cpp)))
+            ;; 1. Compile & Link
+            (multiple-value-bind (output error-output exit-code)
+                (uiop:run-program
+                  (list (uiop:native-namestring clang-exe)
+                        (uiop:native-namestring cpp)
+                        "-I" (namestring l0-include)
+                        (uiop:native-namestring ze-loader) ;; Link directly to DLL
+                        "-static"
+                        "-o" (uiop:native-namestring exe-path))
+                  :output :string :error-output :string :ignore-error-status t)
+              (declare (ignore output))
+
+              (if (not (zerop exit-code))
+                  (progn
+                   (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
+                   (return-from validate-l0-host-run nil))
+
+                  ;; 2. Run
+                  (progn
+                   (format t "Compiling ~a -> ~a... OK~%" (file-namestring cpp) (file-namestring exe-path))
+                   (multiple-value-bind (run-out run-err run-code)
+                       (uiop:run-program (uiop:native-namestring exe-path)
+                         :output :string :error-output :string :ignore-error-status t)
+                     (format t "Output:~%~a~%" run-out)
+                     (format t "Output:~%~a~%" run-out)
+                     (if (zerop run-code)
+                         ;; Check Expectations
+                         (let ((expectations (parse-hoist-expect (extract-test-directives crisp-file)))
+                               (passed t))
+                           (when expectations
+                                 (dolist (exp expectations)
+                                   (unless (search exp run-out)
+                                     (format t "FAIL: Expectation not found in output: '~a'~%" exp)
+                                     (setf passed nil))))
+
+                           (if passed
+                               (progn
+                                (format t "PASS: ~a ran successfully!~%" (file-namestring cpp))
+                                t)
+                               nil))
+                         (progn
+                          (format t "FAIL: ~a execution failed (Code ~a)~%Error: ~a~%"
+                            (file-namestring exe-path) run-code run-err)
+                          (return-from validate-l0-host-run nil)))))))))
+        t)))
+
+
+(defun validate-l0-compile-only (crisp-file cpp-files)
+  "Validates C++ files compile. Tries Native Clang first, then Docker."
+  (let ((clang-exe (resolve-clang-executable))
+        (l0-include (resolve-l0-include-dir))
+        (docker-available (zerop (nth-value 2 (uiop:run-program '("docker" "--version") :ignore-error-status t :output nil)))))
+    (format t "DEBUG: clang-exe=~s l0-include=~s docker-available=~s~%" clang-exe l0-include docker-available)
+
+    (cond
+      ;; Case 0: No files to validate
+      ((null cpp-files)
+       (format t "FAIL: No C++ files to validate (Hoist failed?)~%")
+       nil)
+
+      ;; Case 1: Native Tools Available
+      ((and clang-exe l0-include)
+       (format t "Validating with Native Clang: ~a~%" clang-exe)
+       (dolist (cpp cpp-files)
+         (multiple-value-bind (output error-output exit-code)
+             (uiop:run-program
+              (list clang-exe "-fsyntax-only"
+                    "-I" (namestring l0-include)
+                    "-std=c++17"
+                    (uiop:native-namestring cpp))
+              :output :string :error-output :string :ignore-error-status t)
+           (declare (ignore output))
+           (unless (zerop exit-code)
+             (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
+             (return-from validate-l0-compile-only nil))
+           (format t "PASS: ~a compiles (Native)~%" (file-namestring cpp))))
+       t)
+
+      ;; Case 2: Docker Available
+      (docker-available
+       (format t "Native tools not found. Validating with Docker...~%")
+       (dolist (cpp cpp-files)
+         (let* ((workspace-path "/workspace")
+                (relative-path (enough-namestring cpp (uiop:getcwd)))
+                (docker-path (format nil "~a/~a" workspace-path (substitute #\/ #\\ (namestring relative-path))))
+                (cmd (append 
+                      (list "docker" "run" "--rm"
+                            "-v" (format nil "~a:~a" (substitute #\/ #\\ (namestring (uiop:getcwd))) workspace-path))
+                      (when l0-include
+                        (list "-v" (format nil "~a:/usr/local/include" (substitute #\/ #\\ (namestring l0-include)))))
+                      (list "crisp-c-validator"
+                            "g++" "-fsyntax-only" "-I/usr/local/include" "-std=c++17" docker-path))))
+           (multiple-value-bind (output error-output exit-code)
+               (uiop:run-program cmd :output :string :error-output :string :ignore-error-status t)
+             (declare (ignore output))
+             (unless (zerop exit-code)
+               (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
+               (return-from validate-l0-compile-only nil))
+             (format t "PASS: ~a compiles (Docker)~%" (file-namestring cpp)))))
+       t)
+
+      ;; Case 3: No tools
+      (t
+       (format t "FAIL: Neither Native Clang (with L0 headers) nor Docker available.~%")
+       (format t "      Checked Clang: ~a~%" clang-exe)
+       (format t "      Checked L0 Inc: ~a~%" l0-include)
+       nil))))
+
+
 (defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
   (block :runner
     (handler-bind ((error (lambda (e)
@@ -295,9 +509,10 @@
                             t))))
 
               ;; Cleanup generated artifacts
-              (when (probe-file out-path) (delete-file out-path))
-              (dolist (mp (if (listp meta-paths) meta-paths (list meta-paths)))
-                (when (probe-file mp) (delete-file mp)))
+              (unless *keep-work*
+                (when (probe-file out-path) (delete-file out-path))
+                (dolist (mp (if (listp meta-paths) meta-paths (list meta-paths)))
+                  (when (probe-file mp) (delete-file mp))))
 
               res)
             (progn (format *error-output* "FAIL (No SPV generated)~%") nil))))))
@@ -320,7 +535,7 @@
          nil)
        ((probe-file out-path)
          (format t "PASS (Generated .spv)~%")
-         (delete-file out-path)
+         (unless *keep-work* (delete-file out-path))
          t)
        (t
          (format *error-output* "FAIL (No SPV generated)~%~a~%" error-output)
@@ -364,7 +579,7 @@
             (progn
              (format t "PASS (Generated ~a)~%" (file-namestring out-path))
              ;; Optional: Cleanup generated file
-             (delete-file out-path)
+             (unless *keep-work* (delete-file out-path))
              t)
             (progn (format *error-output* "FAIL (No PTX generated)~%") nil)))
     (error (e)
@@ -389,7 +604,7 @@
          nil)
        ((probe-file out-path)
          (format t "PASS (Generated .ptx)~%")
-         (delete-file out-path)
+         (unless *keep-work* (delete-file out-path))
          t)
        (t
          (format *error-output* "FAIL (No PTX generated)~%~a~%" error-output)
@@ -440,7 +655,8 @@
                                       (progn (format *error-output* "Validator FAIL. ") nil))
                                   (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))
                            (progn (format t "PASS (Generated ~a)~%" (file-namestring out-path)) t))))
-              (when (probe-file out-path) (delete-file out-path))
+              (when (probe-file out-path)
+                    (unless *keep-work* (delete-file out-path)))
               res)
             (progn (format *error-output* "FAIL (No LLVM IR generated)~%") nil)))
     (error (e)
@@ -466,12 +682,11 @@
          nil)
        ((probe-file out-path)
          (format t "PASS (Generated .ll)~%")
-         (delete-file out-path)
+         (unless *keep-work* (delete-file out-path))
          t)
        (t
          (format *error-output* "FAIL (No LLVM IR generated)~%~a~%" error-output)
          nil)))))
-
 
 (defun get-ci-stop-target ()
   "Reads tests/ci-stop.txt to determine the last directory to run."
@@ -656,7 +871,7 @@
                      (content (when end-bracket (subseq trimmed 10 end-bracket)))
                      (colon (position #\: trimmed :start (or end-bracket 0)))
                      (validator (when colon
-                                      (let ((v-str (string-trim '(#\Space #\Tab) (subseq trimmed (1+ colon)))))
+                                      (let ((v-str (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed (1+ colon)))))
                                         (if (starts-with v-str "#'")
                                             (subseq v-str 2) ;; Remove #' prefix if present
                                             v-str)))))
@@ -665,6 +880,32 @@
                       (let ((flags (uiop:split-string content :separator " ")))
                         (push (list flags (when validator (read-from-string validator))) runs)))))))
     (nreverse runs)))
+
+(defun parse-test-hoist (directive-lines)
+  "Parses TEST-HOIST[backend]: validator-name directives.
+   Returns a list of (backend . validator-name) pairs."
+  (let ((directives nil))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "TEST-HOIST[")
+              (let* ((end-bracket (position #\] trimmed))
+                     (backend-str (when end-bracket (subseq trimmed 11 end-bracket)))
+                     (colon (position #\: trimmed :start (or end-bracket 0)))
+                     (validator (when colon (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed (1+ colon))))))
+                (when (and backend-str validator)
+                      (push (cons (intern (string-upcase backend-str) :keyword) validator) directives))))))
+    (nreverse directives)))
+
+(defun parse-hoist-expect (directive-lines)
+  "Parse HOIST-EXPECT: <string> lines.
+   Returns list of expected strings."
+  (let ((expectations '()))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "HOIST-EXPECT:")
+              (let ((value (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 13))))
+                (push value expectations)))))
+    (nreverse expectations)))
 
 (defun should-expect-failure-p (file)
   "Determine if test should be expected to fail."
@@ -707,6 +948,7 @@
              ((string= arg "--use-binary") (setf *use-binary* t))
              ((string= arg "--debug") (setf *compile-debug* t))
              ((string= arg "--single-pass") (setf *compile-single-pass* t))
+             ((string= arg "--keep-work") (setf *keep-work* t))
              ((and (> (length arg) 9) (string= (subseq arg 0 9) "--filter="))
                (setf *test-filter* (subseq arg 9)))))
 

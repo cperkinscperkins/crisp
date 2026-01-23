@@ -128,7 +128,13 @@
           (t
            ;; Default to C calling convention (0) for generic/unknown
            (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
-           (llvm-set-function-call-conv func 0)))))
+           (llvm-set-function-call-conv func 0))))
+
+  (unless (semantic-function-is-entry-point semantic-function)
+    (case *target-backend*
+      (:spirv
+       ;; Use SPIR_FUNC (75) for non-kernel functions
+       (llvm-set-function-call-conv func 75)))))
 
 (defun %check-existing-function (existing fn-name di-builder di-compile-unit func crisp-return-type param-nodes location-map fn-loc module fn-type)
   "Helper: Handles redefinition or forward declaration of existing functions."
@@ -770,10 +776,8 @@
     (let* (;; The name of the function in LLVM IR is mangled with its types
            (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
                            (mapcar #'mangle-type-spec (mapcar #'parameter-def-type (function-signature-parameters sig)))))
-           (callee-name (substitute #\_ #\- (string-downcase mangled-name)))
+           (callee-name (substitute #\_ #\~ (substitute #\_ #\- (string-downcase mangled-name))))
            (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil)))
-
-      (log:info "llvm-get-named-function: ~a Module: ~a" callee-name module)
 
       ;; Build and return the call
       (%build-function-call builder module var-env di-builder di-scope location-map node sig

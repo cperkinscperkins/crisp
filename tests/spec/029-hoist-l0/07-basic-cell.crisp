@@ -1,0 +1,16 @@
+
+
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out-cell: 1
+
+;; This test can not just be tested for compile, but also actually does something.
+;; we can validate 
+;; - copyback
+;; - the value is incremented
+
+(def-type cell-int (cell int :address-space :global :access :read-write))
+
+(def-kernel basic_cell (in-cell &out out-cell)
+    ;(declare (type in-cell out-cell (cell int :address-space :global :access :read-write)))
+    (declare #'(cell-int &out cell-int => nil))
+    (set! (~ out-cell) (+ (~ in-cell) 1)))
