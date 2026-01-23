@@ -14,8 +14,11 @@ jobs:
         with:
           lfs: false # keep the CI budget low.  
 
-      - name: 1.5 Remove LFS pointers (confusing the compiler)
-        run: rm -f bin/llvm-spirv
+      - name: 1.5 Debug Tool Locations
+        run: |
+           echo "Checking for llvm-spirv..."
+           ls -l bin/llvm-spirv || echo "bin/llvm-spirv not found"
+           which llvm-spirv || echo "llvm-spirv not in PATH"
 
       # - name: 2. Make bundled LLVM tools executable
       #   run: |
