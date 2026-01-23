@@ -21,6 +21,14 @@
 (format t "; Loading crisp-hoist-l0 system...~%")
 (asdf:load-system "crisp-hoist-l0" :verbose nil)
 
+;; Load overlay
+(let ((overlay "overlays/hoist-l0/crisp-hoist-l0-overlay.lisp"))
+  (if (probe-file overlay)
+      (progn
+       (format t "; Loading overlay: ~a~%" overlay)
+       (load overlay))
+      (format t "; No overlay found at ~a~%" overlay)))
+
 (format t "; Building executable...~%")
 (asdf:make "crisp-hoist-l0")
 

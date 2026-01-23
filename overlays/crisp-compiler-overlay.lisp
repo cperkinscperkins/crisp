@@ -5,3 +5,7 @@
 
 (in-package :crisp.compiler)
 
+;; src/main.lisp - CLI Argument Parsing Update (Hoisting Defaults)
+(in-package :crisp.main) ;; Need to switch to MAIN package for this override!
+
+
