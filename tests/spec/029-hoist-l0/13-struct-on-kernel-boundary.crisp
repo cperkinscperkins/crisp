@@ -1,0 +1,18 @@
+
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: {x=1 y=0}
+
+
+;; This kernel is mildly interesting, because it modifies an incoming struct.
+;; We normally do "copyback" only for the &out params.  But they can't be read from
+;; in the Crisp kernel.    
+;; Do we leave a "note" in the .cpp about "hey, if you WANT to copyback, this is how its done"?
+
+(def-struct point (x int) (y int))
+
+
+
+(def-kernel struct_on_kernel_boundary (c)
+    (declare (type c (cell point :address-space :global :access :read-write)))
+  (let ((loc-x (x~ (~ c))))
+    (set! (x~ (~ c)) (+ loc-x 1))))

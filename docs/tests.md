@@ -29,6 +29,13 @@ sbcl --script tests/run-specs.lisp  --filter=01-return_7
 ```
 
 
+### Hoisting and Intermediate Files
+
+Now that we have hoisting support, some of the spect tests generate a lot of intermediate files. .metacrisp, .cpp, .spv, .ll, .ptx and even .exe files.  The spec runner will clean these up after any successful test.  Failed tests leave their intermediate files behind.
+
+If you WANT the intermediate files, use the `--keep-work` flag.
+
+
 ### IMPORTANT NOTE
  The spec runner is nice because it validates the LLVM-iR using llc.exe and it will also run a "validator" if a spec test requests one (see below).
  BUT it probably should not be the first line tool for you when debugging.  Better results are had just invoking the compiler directly on a file.  So after a change  - build the compiler, then invoke it on some spec test (or some temporary .crisp if that suits you), and there is even a --log-level flag that can be used for the compiler.   Once THAT is working , then use the spec runner.

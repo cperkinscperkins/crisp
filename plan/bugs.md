@@ -69,3 +69,8 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
           id using def-kernel-exact they have their own enqueue infra and wouldn't need ours.
           It's not trivial to fix, because of ... reasons.  Also def-kernel-exact wouldn't 
           even have a :declared-signature anyway. Decide later. 
+
+[ ] 020 - make-scratch-cell defaults to :address-space :global, but it should be :local.
+
+[ ] 021 - def-kernel supports arrow type declarations, but not (type a b int) style 
+          >>  I suspect valid-type-p returns nil for list-based types like (cell ...) when checked in this context, causing the parser to miss the type binding entirely.

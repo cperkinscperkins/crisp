@@ -1,0 +1,14 @@
+
+;; TEST-HOIST[L0]: validate-l0-compile-only
+
+(def-struct point (x int) (y int))
+
+(def-struct rect (ul-corner point) (lr-corner point))
+
+
+(def-kernel fun_kernel (c)
+    (declare (type c (cell rect :address-space :global :access :read-write)))
+  (let ((r (~ c))
+        (p (ul-corner~ r))
+        (loc-x (x~ p)))
+    (set! (x~ p) (+ loc-x 1))))

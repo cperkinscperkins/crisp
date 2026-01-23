@@ -1,0 +1,6 @@
+;; TEST-HOIST[L0]: validate-l0-compile-only
+
+(def-kernel mixed_scalar (i f d)
+    (declare #'(int float double => nil))
+    ;; nothing to do really. One way trip to nowhere.
+    (set! d (+ d 1)))

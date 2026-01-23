@@ -40,7 +40,7 @@
      )))
 
 (defun parse-cli-args (args)
-  "Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets)."
+  "Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets)."
   (let* ((flags (remove-if-not (lambda (arg) (char= (char arg 0) #\-)) args))
          (files (remove-if (lambda (arg) (char= (char arg 0) #\-)) args))
          (log-level-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--log-level=" f)) flags))
@@ -62,7 +62,19 @@
                                ((string= val "PTX") :ptx)
                                (t (intern val :keyword)))))
                       target-flags))
-         (metadata-p (member "--metadata" flags :test #'string=)))
+         ;; Hoist Parsing
+         (hoist-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--hoist=" f)) flags))
+         (hoist-targets (mapcar (lambda (f)
+                                  (let ((val (string-upcase (subseq f (length "--hoist=")))))
+                                    (cond
+                                     ((or (string= val "L0") (string= val "LEVELZERO")) :L0)
+                                     ((or (string= val "OPENCL") (string= val "CL")) :OPENCL)
+                                     ((string= val "CUDA") :CUDA)
+                                     (t (intern val :keyword)))))
+                            hoist-flags))
+         ;; Auto-enable metadata if --hoist is specified
+         (metadata-p (or (member "--metadata" flags :test #'string=)
+                         (and hoist-targets t))))
 
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
@@ -72,10 +84,51 @@
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
       (uiop:quit 1))
 
-    (values files nil debug-p single-pass-p targets metadata-p)))
+    ;; Auto-set --ir-target=spv if --hoist is specified but no IR target given
+    (when (and hoist-targets (null targets))
+          (format *error-output* "; Auto-enabling --ir-target=spv (required for hoisting)~%")
+          (setf targets '(:spirv)))
 
-(defun compile-files (files output-file debug-p single-pass-p targets metadata-p)
-  "Compiles the given files, iterating over requested targets."
+    (values files nil debug-p single-pass-p targets metadata-p hoist-targets)))
+
+(defun get-hoister-binary-path (hoist-id)
+  "Returns path to crisp-hoist-{id}.exe (or .bin on Unix)"
+  (let* ((bin-name (format nil "crisp-hoist-~(~a~)" hoist-id))
+         (exe-path (merge-pathnames (format nil "bin/~a.exe" bin-name) (uiop:getcwd)))
+         (unix-path (merge-pathnames (format nil "bin/~a" bin-name) (uiop:getcwd))))
+    (cond
+     ((probe-file exe-path) exe-path)
+     ((probe-file unix-path) unix-path)
+     (t (format *error-output* "~&ERROR: Hoister binary not found: ~a~%" bin-name)
+        nil))))
+
+(defun invoke-hoister (hoist-id metacrisp-file)
+  "Invokes crisp-hoist-{id}.exe with the given .metacrisp file"
+  (let ((hoister-bin (get-hoister-binary-path hoist-id)))
+    (if hoister-bin
+        (progn
+         (format *error-output* "; Invoking hoister: ~a ~a~%"
+           (file-namestring hoister-bin)
+           (file-namestring metacrisp-file))
+         ;; uiop:run-program with :ignore-error-status t returns exit code as first value
+         (let ((exit-code (uiop:wait-process
+                            (uiop:launch-program
+                              (list (uiop:native-namestring hoister-bin)
+                                    (uiop:native-namestring metacrisp-file))
+                              :output :interactive
+                              :error-output :interactive))))
+           (if (zerop exit-code)
+               (format *error-output* "; Hoister completed successfully.~%")
+               (progn
+                (format *error-output* "~&ERROR: Hoister exited with code ~a~%" exit-code)
+                (uiop:quit exit-code)))))
+        (progn
+         (format *error-output* "~&ERROR: Cannot invoke hoister '~a' - binary not found.~%" hoist-id)
+         (format *error-output* "~&       Please build the hoister: sbcl --load build/build-hoist-~(~a~).lisp~%" hoist-id)
+         (uiop:quit 1)))))
+
+(defun compile-files (files output-file debug-p single-pass-p targets metadata-p hoist-targets)
+  "Compiles the given files, iterating over requested targets, then invokes hoisters."
   (declare (ignore output-file)) ; Handled per-target
   (let* ((filename (first files))
          (filepath (uiop:truename* filename))
@@ -83,7 +136,8 @@
          (passes (if targets targets '(:generic))))
 
     (let ((generated-outputs nil)
-          (captured-forms nil))
+          (captured-forms nil)
+          (generated-metacrisp-files nil))
       (dolist (target-backend passes)
         (let ((crisp.compiler:*target-backend* target-backend)
               (crisp.compiler::*emit-metadata* metadata-p))
@@ -160,16 +214,29 @@
 
       ;; Metadata Generation (Once, after collecting all outputs)
       (when metadata-p
-            (let ((meta-path (make-pathname :type "metacrisp" :defaults filepath)))
-              (crisp.compiler::generate-metadata-for-file filepath meta-path
-                                                          :output-targets (reverse generated-outputs)
-                                                          :forms captured-forms)))
+            (let ((meta-paths
+                   (crisp.compiler::generate-metadata-for-file filepath
+                                                               (make-pathname :type "metacrisp" :defaults filepath)
+                                                               :output-targets (reverse generated-outputs)
+                                                               :forms captured-forms)))
+              ;; Track generated metacrisp files for hoisting
+              (setf generated-metacrisp-files
+                (if (listp meta-paths) meta-paths (list meta-paths)))))
 
-      (format *error-output* "; ...All compilation passes finished.~%"))))
+      (format *error-output* "; ...All compilation passes finished.~%")
+
+      ;; Invoke hoisters if specified
+      (when hoist-targets
+            (format *error-output* "~&; --- Starting Hoisting Phase ---~%")
+            (dolist (hoist-id hoist-targets)
+              (dolist (metacrisp-file generated-metacrisp-files)
+                (when (probe-file metacrisp-file)
+                      (invoke-hoister hoist-id metacrisp-file))))
+            (format *error-output* "; ...All hoisting finished.~%")))))
 
 (defun main ()
   "Main entry point for the crisp-compile executable."
   (let ((args (uiop:command-line-arguments)))
-    (multiple-value-bind (source-files output-file debug-p single-pass-p targets metadata-p)
+    (multiple-value-bind (source-files output-file debug-p single-pass-p targets metadata-p hoist-targets)
         (parse-cli-args args)
-      (compile-files source-files output-file debug-p single-pass-p targets metadata-p))))
+      (compile-files source-files output-file debug-p single-pass-p targets metadata-p hoist-targets))))

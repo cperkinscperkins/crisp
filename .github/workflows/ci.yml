@@ -14,6 +14,15 @@ jobs:
         with:
           lfs: false # keep the CI budget low.  
 
+      - name: 1.5 Remove LFS pointers (confusing the compiler)
+        run: rm -f bin/llvm-spirv
+
+      - name: 1.6 Debug Tool Locations
+        run: |
+           echo "Checking for llvm-spirv..."
+           ls -l bin/llvm-spirv || echo "bin/llvm-spirv not found"
+           which llvm-spirv || echo "llvm-spirv not in PATH"
+
       # - name: 2. Make bundled LLVM tools executable
       #   run: |
       #     chmod +x tools/llvm-as-linux tools/llvm-spirv-linux tools/llc-linux
@@ -49,13 +58,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sbcl llvm-21-dev llvm-21
 
-          # Try to install llvm-spirv-21 (may not be available)
-          sudo apt-get install -y llvm-spirv-21 || echo "⚠️ llvm-spirv-21 not available in apt"
+          # Extract llvm-spirv from OneAPI image (dynamically finding it)
+          docker run --rm -v ${{ github.workspace }}:/work intel/oneapi-basekit:latest bash -c "cp \$(find /opt/intel -name llvm-spirv -type f -executable | head -n 1) /work/llvm-spirv"
+          sudo chmod +x ./llvm-spirv
+          sudo mv ./llvm-spirv /usr/bin/llvm-spirv
 
           # Create symlinks
           sudo ln -s /usr/bin/llc-21 /usr/bin/llc
           sudo ln -s /usr/bin/llvm-as-21 /usr/bin/llvm-as
-          sudo ln -s /usr/bin/llvm-spirv-21 /usr/bin/llvm-spirv || echo "⚠️ llvm-spirv-21 not found, SPIRV tests will fail"
+          # We just installed llvm-spirv manually, check it
+          llvm-spirv --version || echo "⚠️ llvm-spirv extraction failed"
+
+      - name: 3.5 Build C Validator Image
+        run: docker build -t crisp-c-validator -f Dockerfile.validator .
 
       - name: 4. Install Quicklisp
         run: |
@@ -86,11 +101,12 @@ jobs:
         run: |
           # This runs your new build script
           sbcl --non-interactive --load build/build.lisp
+          sbcl --non-interactive --load build/build-hoist-l0.lisp
 
       - name: 7. Run End-to-End Specs (Internal & External)
         env:
           CRISP_USE_SYSTEM_TOOLS: true
-          SKIP_SPIRV_TESTS: true
+          SKIP_SPIRV_TESTS: false
         run: |
           # Exit immediately if a pipeline returns a non-zero status.
           set -o pipefail
