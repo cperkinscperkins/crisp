@@ -1023,4 +1023,10 @@
         (uiop:quit 0)
         (uiop:quit 1))))
 
+;; Load overlay if present (for safe patching)
+(let ((overlay (merge-pathnames "overlays/spec-runner-overlay.lisp" (uiop:getcwd))))
+  (when (probe-file overlay)
+    (format t "Loading overlay: ~a~%" overlay)
+    (load overlay)))
+
 (main)
