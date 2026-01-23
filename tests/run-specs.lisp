@@ -357,8 +357,8 @@
         (format t "DEBUG: clang=~s inc=~s loader=~s~%" clang-exe l0-include ze-loader)
 
         (unless (and clang-exe l0-include ze-loader)
-          (format t "FAIL: Missing native toolchain components.~%")
-          (return-from validate-l0-host-run nil))
+          (format t "FAIL: Missing native toolchain components. Falling back to validate-l0-compile-only (Docker)...~%")
+          (return-from validate-l0-host-run (validate-l0-compile-only crisp-file cpp-files)))
 
         (dolist (cpp cpp-files)
           (let ((exe-path (make-pathname :type "exe" :defaults cpp)))
