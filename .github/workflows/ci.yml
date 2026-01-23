@@ -14,6 +14,9 @@ jobs:
         with:
           lfs: false # keep the CI budget low.  
 
+      - name: 1.5 Remove LFS pointers (confusing the compiler)
+        run: rm -f bin/llvm-spirv
+
       # - name: 2. Make bundled LLVM tools executable
       #   run: |
       #     chmod +x tools/llvm-as-linux tools/llvm-spirv-linux tools/llc-linux
