@@ -408,6 +408,7 @@
                           (return-from validate-l0-host-run nil)))))))))
         t)))
 
+
 (defun validate-l0-compile-only (crisp-file cpp-files)
   "Validates C++ files compile. Tries Native Clang first, then Docker."
   (let ((clang-exe (resolve-clang-executable))
@@ -415,59 +416,60 @@
         (docker-available (zerop (nth-value 2 (uiop:run-program '("docker" "--version") :ignore-error-status t :output nil)))))
     (format t "DEBUG: clang-exe=~s l0-include=~s docker-available=~s~%" clang-exe l0-include docker-available)
 
-    (if (null cpp-files)
-        (progn
-         (format t "FAIL: No C++ files to validate (Hoist failed?)~%")
-         nil)
-        ;; 1. Try Native Compilation
-        (cond ((and clang-exe l0-include)
-            (format t "Validating with Native Clang: ~a~%" clang-exe)
-            (dolist (cpp cpp-files)
-              (multiple-value-bind (output error-output exit-code)
-                  (uiop:run-program
-                    (list clang-exe "-fsyntax-only"
-                          "-I" (namestring l0-include)
-                          "-std=c++17"
-                          (uiop:native-namestring cpp))
-                    :output :string :error-output :string :ignore-error-status t)
-                (declare (ignore output))
-                (if (zerop exit-code)
-                    (format t "PASS: ~a compiles (Native)~%" (file-namestring cpp))
-                    (progn
-                     (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
-                     (return-from validate-l0-compile-only nil)))))
-            t)
+    (cond
+      ;; Case 0: No files to validate
+      ((null cpp-files)
+       (format t "FAIL: No C++ files to validate (Hoist failed?)~%")
+       nil)
 
-          (docker-available
-            ;; 2. Fallback to Docker
-            (format t "Native tools not found. Validating with Docker...~%")
-            (dolist (cpp cpp-files)
-              (let* ((workspace-path "/workspace")
-                     (relative-path (enough-namestring cpp (uiop:getcwd)))
-                     (docker-path (format nil "~a/~a" workspace-path (substitute #\/ #\\ (namestring relative-path)))))
-                (multiple-value-bind (output error-output exit-code)
-                    (uiop:run-program
-                      (append 
-                        (list "docker" "run" "--rm"
-                              "-v" (format nil "~a:~a" (substitute #\/ #\\ (namestring (uiop:getcwd))) workspace-path))
-                        (when l0-include
-                           (list "-v" (format nil "~a:/usr/local/include" (substitute #\/ #\\ (namestring l0-include)))))
-                        (list "crisp-c-validator"
-                              "g++" "-fsyntax-only" "-I/usr/local/include" "-std=c++17" docker-path))
-                      :output :string :error-output :string :ignore-error-status t)
-                  (declare (ignore output))
-                  (if (zerop exit-code)
-                      (format t "PASS: ~a compiles (Docker)~%" (file-namestring cpp))
-                      (progn
-                       (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
-                       (return-from validate-l0-compile-only nil)))))))
+      ;; Case 1: Native Tools Available
+      ((and clang-exe l0-include)
+       (format t "Validating with Native Clang: ~a~%" clang-exe)
+       (dolist (cpp cpp-files)
+         (multiple-value-bind (output error-output exit-code)
+             (uiop:run-program
+              (list clang-exe "-fsyntax-only"
+                    "-I" (namestring l0-include)
+                    "-std=c++17"
+                    (uiop:native-namestring cpp))
+              :output :string :error-output :string :ignore-error-status t)
+           (declare (ignore output))
+           (unless (zerop exit-code)
+             (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
+             (return-from validate-l0-compile-only nil))
+           (format t "PASS: ~a compiles (Native)~%" (file-namestring cpp))))
+       t)
 
-          ;; 3. No tools available
-          (T
-            (format t "FAIL: Neither Native Clang (with L0 headers) nor Docker available.~%")
-            (format t "      Checked Clang: ~a~%" clang-exe)
-            (format t "      Checked L0 Inc: ~a~%" l0-include)
-            nil)))))
+      ;; Case 2: Docker Available
+      (docker-available
+       (format t "Native tools not found. Validating with Docker...~%")
+       (dolist (cpp cpp-files)
+         (let* ((workspace-path "/workspace")
+                (relative-path (enough-namestring cpp (uiop:getcwd)))
+                (docker-path (format nil "~a/~a" workspace-path (substitute #\/ #\\ (namestring relative-path))))
+                (cmd (append 
+                      (list "docker" "run" "--rm"
+                            "-v" (format nil "~a:~a" (substitute #\/ #\\ (namestring (uiop:getcwd))) workspace-path))
+                      (when l0-include
+                        (list "-v" (format nil "~a:/usr/local/include" (substitute #\/ #\\ (namestring l0-include)))))
+                      (list "crisp-c-validator"
+                            "g++" "-fsyntax-only" "-I/usr/local/include" "-std=c++17" docker-path))))
+           (multiple-value-bind (output error-output exit-code)
+               (uiop:run-program cmd :output :string :error-output :string :ignore-error-status t)
+             (declare (ignore output))
+             (unless (zerop exit-code)
+               (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
+               (return-from validate-l0-compile-only nil))
+             (format t "PASS: ~a compiles (Docker)~%" (file-namestring cpp)))))
+       t)
+
+      ;; Case 3: No tools
+      (t
+       (format t "FAIL: Neither Native Clang (with L0 headers) nor Docker available.~%")
+       (format t "      Checked Clang: ~a~%" clang-exe)
+       (format t "      Checked L0 Inc: ~a~%" l0-include)
+       nil))))
+
 
 (defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
   (block :runner
