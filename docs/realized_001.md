@@ -44,6 +44,14 @@ Will output a LLVM IR .ll file in the same location as the .crisp file.
 ### --metadata
 outputs a .metacrisp file. 
 
+### --hoist=L0
+The Crisp compiler is now joined by a second tool, the L0 Hoister. Pass --hoist=L0 to the compiler and a .metacrisp file is generated, which, in turn, is passed to the Hoister tool, and a .cpp file tailored to loading and enqueueing your kernel is generated.
+
+The Spec Runner (`run-specs.lisp`) not only has a new ;; TEST-HOIST[L0] directive, but it will
+run and validate the output of select tests.  
+
+In other words, the Crisp system now has full E2E automated testing. 
+
 Pipeline
 ========
 
@@ -300,3 +308,6 @@ Compiled and successfully ran the first kernel at 1AM Jan 3, 2026.
 
 
 ![SUCCESS](congrats.png)
+
+
+E2E Testing from .crisp test to .spv accompanied by a .cpp, compiled to an .exe, run and validated, achieved on Jan 22, 2026.
