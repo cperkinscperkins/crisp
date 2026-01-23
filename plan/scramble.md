@@ -323,7 +323,7 @@ Kernels
 - [x] metadata
 - [x] hoisting
 - [x] .cpp gen
-- [ ] add overlay to spec runner. 
+- [x] add overlay to spec runner. 
 - [x] how to run on CI
 - [x] .cpp gen using buffer 16 always. not sized correctly?
 - [ ] .cpp gen errrors: incompatible flags

@@ -200,6 +200,7 @@ Header comment directives for test expectations:
 ;; TEST-EXPECT: PASS
 ;; FAIL-WITH[--single-pass]: "Unsupported form"
 ;; TEST-WITH[--metadata]
+;; TEST-HOIST[L0]: validate-l0-compile-only
 
 ;; These are not implemented yet:
 ;; CHECK-WARN: "Type inferred"
