@@ -41,8 +41,8 @@
      (env-override env-override)
      ((and use-system (string-not-equal use-system "false"))
        (let ((versioned (unless (uiop:os-windows-p)
-                          (loop for ver in '("21" "20" "19" "18" "17" "16" "15" "14")
-                                for v-name = (format nil "~a-~a" tool-base ver)
+                          (loop for ver in '("-21" "-20" "-19" "-18" "-17" "-16" "-15" "-14" "")
+                                for v-name = (format nil "~a~a" tool-base ver)
                                   ;; Manual PATH check or similar? Let's use which but ONLY on Unix.
                                   when (zerop (nth-value 2 (uiop:run-program (list "which" v-name) :ignore-error-status t)))
                                   return v-name))))
