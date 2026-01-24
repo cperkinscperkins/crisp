@@ -10,9 +10,8 @@
                         (:windows "C:/Program Files/LLVM/bin/LLVM-C.dll")
 
                         ;; 1. Check for bundled SO in bin/ (Linux)
-                        (:unix "bin/libLLVM.so")
                         ;; 2. Fallback to System Install (Ubuntu/Debian)
-                        (:unix (:or "libLLVM-21.so" "libLLVM.so"))
+                        (:unix (:or "bin/libLLVM.so" "libLLVM-21.so" "libLLVM-21.so.1" "libLLVM.so"))
 
                         (:darwin "libLLVM.dylib")
                         (t (:default "libLLVM")))

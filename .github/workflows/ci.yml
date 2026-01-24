@@ -15,7 +15,12 @@ jobs:
           lfs: false # keep the CI budget low.  
 
       - name: 1.5 Remove LFS pointers (confusing the compiler)
-        run: rm -f bin/llvm-spirv
+        run: |
+          rm -f bin/llvm-spirv
+          rm -f tools/llvm-spirv-linux
+          rm -f tools/llvm-as-linux
+          rm -f tools/llc-linux
+          rm -f tools/LLVM-C-linux.so
 
       - name: 1.6 Debug Tool Locations
         run: |
