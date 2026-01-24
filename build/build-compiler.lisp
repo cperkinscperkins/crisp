@@ -44,11 +44,19 @@
            (dest (merge-pathnames (format nil "bin/~a" dest-name) *default-pathname-defaults*)))
 
       (if (probe-file src)
-          (progn
-           (format t ";   Copying ~a to bin/~%" tool-name)
-           (uiop:copy-file src dest)
-           (unless (uiop:os-windows-p)
-             (uiop:run-program (list "chmod" "+x" (namestring dest)))))
+          (with-open-file (stream src :element-type '(unsigned-byte 8))
+            (let ((size (file-length stream)))
+              (cond
+               ((< size 1000)
+                 (format t ";   WARNING: Skipping ~a (Size: ~d bytes). Likely Git LFS pointer.~%" tool-name size)
+                 ;; Ensure destination does not exist so fallback logic works
+                 (when (probe-file dest)
+                       (delete-file dest)))
+               (t
+                 (format t ";   Copying ~a to bin/~%" tool-name)
+                 (uiop:copy-file src dest)
+                 (unless (uiop:os-windows-p)
+                   (uiop:run-program (list "chmod" "+x" (namestring dest))))))))
           (format t ";   WARNING: Tool ~a not found in tools/ directory.~%" tool-name)))))
 
 ;; ql:quickload will find crisp.asd, see the dependencies,
