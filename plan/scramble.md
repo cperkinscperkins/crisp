@@ -315,7 +315,7 @@ Kernels
 - - [x] and I should probably just write the damn def-kernel transformation macro
 - [x] def-kernel
 - [x] --ir-target
-- - [ ] llvm-ir
+- - [x] llvm-ir
 - - [x] spirv
 - - [x] ptx?
 - [ ] --binary-gpu-target
