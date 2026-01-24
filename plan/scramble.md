@@ -338,6 +338,7 @@ Kernels
 - [ ] oneAPI docker image for oneapi-gdb to test our DWARF gen.
 - [x] double check debug symbols get passed throught to ptx
 - [ ] at some point, get opencl:cpu device on CI.
+- - [ ] this would mean an opencl hoister, no?
 - [ ] bugs 020 and 021 important
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
 - [ ] branded types. expand syntax to capture "always" vs. "when differentiating"

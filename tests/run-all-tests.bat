@@ -44,6 +44,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo.
+echo --- Running External Runner (Single Pass) ---
+sbcl --script tests/run-specs.lisp --use-binary --single-pass
+if errorlevel 1 (
+    echo [FAILED] External Runner ^(Single Pass^) failed.
+    exit /b 1
+)
+
 REM ---------------------------------------------------
 REM 3. Failure Tests (Expected to Fail)
 REM ---------------------------------------------------
