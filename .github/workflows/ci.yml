@@ -119,10 +119,8 @@ jobs:
           echo "--- Running Specs: External Binary (Debug) ---"
           sbcl --script tests/run-specs.lisp --use-binary --debug
 
-          # 001-def-function/04-multipass.crisp won't work with --single-pass.
-          #  need to screen it out somehow.  Best done in run-specs.lisp
-          # echo "--- Running Specs: External Binary (Single Pass) ---"
-          # sbcl --script tests/run-specs.lisp --use-binary --single-pass
+          echo "--- Running Specs: External Binary (Single Pass) ---"
+          sbcl --script tests/run-specs.lisp --use-binary --single-pass
 
 
 
