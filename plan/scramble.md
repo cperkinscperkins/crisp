@@ -341,6 +341,7 @@ Kernels
 - - [ ] this would mean an opencl hoister, no?
 - [ ] bugs 020 and 021 important
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
+- [ ] def-derived-type => expand specification for numerics ("contagion"). 
 - [ ] branded types. expand syntax to capture "always" vs. "when differentiating"
 - [ ] math intermediaries - this also strongly pushes to more explicit passes and testing. expand user macros / desugar Crisp macros / nodes / analyze / compile ?
 - [ ] --differentiate flag and testing. square cell could be simple test

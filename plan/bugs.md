@@ -71,6 +71,30 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
           even have a :declared-signature anyway. Decide later. 
 
 [ ] 020 - make-scratch-cell defaults to :address-space :global, but it should be :local.
+  - [x] need to test on CUDA BEFORE fixing. Have to be able to see before / after for both PTX and SPV
+  - [x] identify which tests should be manually tested
+     - 07-basic-cell.crisp
+     - 13-struct-on-kernel-boundary.crisp
+     - 19-implicit-scratch-cell-hoisted.crisp
+  - [ ] reenable 09-address-space.crisp, new validator
+     - 
 
 [ ] 021 - def-kernel supports arrow type declarations, but not (type a b int) style 
           >>  I suspect valid-type-p returns nil for list-based types like (cell ...) when checked in this context, causing the parser to miss the type binding entirely.
+
+[ ] 022 - (LOW)  seeing extra output from CL when running compiler.  
+
+        .\bin\crisp-compile.exe --log-level=off --ir-target=ptx --metadata .\tests\spec\029-hoist-l0\07-basic-cell.crisp
+        ; --- Starting Pass for Target: PTX ---
+        COMMON-LISP:WARNING:
+        redefining CRISP.COMPILER::MAKE-CELL_INT_GLOBAL_READ-WRITE in DEFMACRO
+        COMMON-LISP:WARNING:
+        redefining CRISP.COMPILER::MAKE-CELL_INT_GLOBAL_READ-WRITE in DEFMACRO
+        COMMON-LISP:WARNING:
+        redefining CRISP.COMPILER::MAKE-CELL_INT_GLOBAL_READ-WRITE in DEFMACRO
+        ; ...All compilation passes finished.
+
+[ ] 023 - is build.lisp returning non zero even when successful?
+
+[ ] 024 - ALL TESTS PASSED is always output from unit tests. Even when there are failures.
+

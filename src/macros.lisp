@@ -323,7 +323,11 @@
                          (push ptr-sym exploded-params)
                          (push size-sym exploded-params)
                          (push off-sym exploded-params)
-                         (push `(c-pointer :address-space ,as) exploded-types)
+                         ;; ABI FIX: For PTX/CUDA, pass pointers as ulong (i64) to avoid "invalid address space" on Generic->Global cast.
+                         ;; For SPIR-V/OpenCL, we MUST use standard pointers (ptr) as per OpenCL kernel spec.
+                         (if (and (boundp '*target-backend*) (member *target-backend* '(:ptx :cuda)))
+                             (push 'ulong exploded-types)
+                             (push `(c-pointer :address-space ,as) exploded-types))
                          (push 'ulong exploded-types)
                          (push 'ulong exploded-types)
                          (push `(,p (marshall-cell ,type ,size-sym ,ptr-sym ,off-sym)) reassembly-bindings)))

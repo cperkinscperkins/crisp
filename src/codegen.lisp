@@ -120,11 +120,10 @@
            ;; calling convention spir_kernel (76)
            (llvm-set-function-call-conv func 76))
           (:ptx
-           ;; Use C calling convention (0) to avoid llc crash on Windows.
-           ;; 'ptx_kernel' (71) seems to cause issues in this specific environment.
-           ;; We rely on llc to infer kernel status or manual metdata if needed later.
-           (log:warn "Forcing CC 0 for PTX kernel to avoid crash.")
-           (llvm-set-function-call-conv func 0))
+           ;; Use ptx_kernel calling convention (71) so llc emits .entry
+           ;; If this crashes on Windows, we will need to revisit nvvm attributes.
+           (log:info "Setting CC 71 (ptx_kernel) for function ~a" (semantic-function-name semantic-function))
+           (llvm-set-function-call-conv func 71))
           (t
            ;; Default to C calling convention (0) for generic/unknown
            (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
@@ -334,7 +333,13 @@
                                             1 "offset"))
            (cell-handle (llvm-build-alloca builder cell-struct-type "cell_lit_handle")))
       (llvm-build-store builder cell-1 cell-handle)
-      cell-handle)))
+      ;; RETURN THE VALUE (cell-1), NOT THE POINTER (cell-handle).
+      ;; The alloca above is still useful if this literal is being bound to a variable 
+      ;; (the caller's let-binding logic might expect an alloca to be available in var-env, 
+      ;; but generate-expression-ir returns the VALUE). 
+      ;; Wait, let-binding logic uses the returned value to store into ITS own alloca. 
+      ;; So returning the value is correct.
+      cell-1)))
 
 (defun %generate-enum-literal-ir (builder value llvm-type)
   "Helper: Generates IR for enum literals."
@@ -450,8 +455,9 @@
    (t nil)))
 
 
-(defun build-cast-if-needed (builder from-val from-type-name to-type-name)
-  "Builds LLVM cast instruction if types differ, with alias resolution."
+(defun build-cast-if-needed (builder module from-val from-type-name to-type-name)
+  "Builds LLVM cast instruction if types differ, with alias resolution.
+   MODULE is required to resolve types correctly."
   ;; Resolve aliases first
   (cl:let ((from-type-name (resolve-type-alias from-type-name))
            (to-type-name (resolve-type-alias to-type-name)))
@@ -461,7 +467,7 @@
          from-val)
         (let* ((from-type (if (symbolp from-type-name) (gethash from-type-name *crisp-types*) nil))
                (to-type (if (symbolp to-type-name) (gethash to-type-name *crisp-types*) nil))
-               (to-llvm-type (resolve-type-to-llvm to-type-name))
+               (to-llvm-type (crisp-type-to-llvm-type to-type-name module))
                (from-cat (get-type-cat-safe from-type-name from-type))
                (to-cat (get-type-cat-safe to-type-name to-type)))
           (log:debug "build-cast-if-needed: Casting from ~s to ~s" from-type-name to-type-name)
@@ -498,7 +504,17 @@
                  (llvm-build-fp-to-ui builder from-val to-llvm-type "fp2ui_cast")))
            ((and (member from-cat (quote (:signed-int :unsigned-int)))
                  (eq to-cat (quote :pointer)))
-             (llvm-build-int-to-ptr builder from-val to-llvm-type "int2ptr_cast"))
+             ;; INT -> PTR
+             ;; Check Address Space of target
+             (let ((as (llvm-get-pointer-address-space to-llvm-type)))
+               (if (= as 0)
+                   (llvm-build-int-to-ptr builder from-val to-llvm-type "int2ptr_cast")
+                   ;; If target is NOT Generic (0), we must cast Int -> GenericPtr -> TargetPtr
+                   ;; to ensure LLVM emits `cvta` (Convert Address) or valid bits.
+                   ;; Direct Int -> GlobalPtr just reinterprets bits, which fails if Generic != Global.
+                   (let* ((generic-ptr-type (crisp-type-to-llvm-type '(c-pointer) module))
+                          (tmp-ptr (llvm-build-int-to-ptr builder from-val generic-ptr-type "int2generic")))
+                     (llvm-build-addrspace-cast builder tmp-ptr to-llvm-type "generic2as_cast")))))
            ((and (eq from-cat (quote :pointer))
                  (member to-cat (quote (:signed-int :unsigned-int))))
              (llvm-build-ptr-to-int builder from-val to-llvm-type "ptr2int_cast"))
@@ -532,8 +548,8 @@
                   ;; Ensure MVR structs are unpacked
                   (lhs-raw (extract-primary-value builder lhs (semantic-node-type (,left-accessor node))))
                   (rhs-raw (extract-primary-value builder rhs (semantic-node-type (,right-accessor node))))
-                  (casted-lhs (build-cast-if-needed builder lhs-raw lhs-type-name result-type-name))
-                  (casted-rhs (build-cast-if-needed builder rhs-raw rhs-type-name result-type-name))
+                  (casted-lhs (build-cast-if-needed builder module lhs-raw lhs-type-name result-type-name))
+                  (casted-rhs (build-cast-if-needed builder module rhs-raw rhs-type-name result-type-name))
                   (crisp-type (gethash result-type-name *crisp-types*))
                   (inst (if (eq (crisp-type-category crisp-type) :float)
                             (,float-inst builder casted-lhs casted-rhs "fop_tmp")
@@ -660,7 +676,7 @@
            (arg-val (extract-primary-value builder arg-val arg-type))
            (from-type-name (get-single-value-type (semantic-value-cast-arg node)))
            (to-type-name (semantic-value-cast-type node))
-           (cast-val (build-cast-if-needed builder arg-val from-type-name to-type-name)))
+           (cast-val (build-cast-if-needed builder module arg-val from-type-name to-type-name)))
       ;; NOTE: This will need to be expanded to handle more `to-` conversions.
       ;; For now, it relies on the implicit promotion logic.
       (values cast-val nil))))
