@@ -326,24 +326,26 @@ Kernels
 - [x] add overlay to spec runner. 
 - [x] how to run on CI
 - [x] .cpp gen using buffer 16 always. not sized correctly?
-- [ ] .cpp gen errrors: incompatible flags
+- [x] .cpp gen errrors: incompatible flags
 - - [ ] flags will need to be recorded in metadata
 - [x] .cpp gen temp files ? (ie .metacrisp) Given In Memory Compilation API, I'd actually like to avoid temp files as much as possible.
 - [x] clean up files during hoist validation.
 - [x] shorten names?
-- [ ] use log4cl in spec runner.
-- [ ] bundle libLLVM.dll shared library
+- [x] use log4cl in spec runner.
+- [x] bundle libLLVM.dll shared library
+- [x] build_all.lisp
 - [x] try using llvm-mingw which is smaller than LLVM and works on windows
 - [ ] oneAPI docker image for oneapi-gdb to test our DWARF gen.
+- [ ] at some point, get opencl:cpu device on CI.
 - [ ] bugs 020 and 021 important
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
 - [ ] branded types. expand syntax to capture "always" vs. "when differentiating"
 - [ ] math intermediaries - this also strongly pushes to more explicit passes and testing. expand user macros / desugar Crisp macros / nodes / analyze / compile ?
-- [ ] --differentiate flag and testing
+- [ ] --differentiate flag and testing. square cell could be simple test
 - [ ] get-global-id or whatever and friends. 
 - [ ] strategy
 - [ ] tensors and vectors and matrices
-- [ ] at some point, get opencl:cpu device on CI.
+
 
 
 QUESTIONS
@@ -356,8 +358,8 @@ QUESTIONS
 
 LANGUAGE CHANGES
 - [x] lose declare local/global. Too complex
-- [ ] instead use (make-single-result T :global) . Might want to consider renaming 'single-result'
-- [ ] How to initialize the single-result? It has to be done by hoisting code for :global.
+- [x] instead use (make-single-result T :global) . Might want to consider renaming 'single-result'
+- [x] How to initialize the single-result? It has to be done by hoisting code for :global.
       And cannot be done for :local. So maybe the user just has to (set! ) or (atomic-xchg! ) it 
       themselves.
 - [x] Shore up set! and atomic-ops
@@ -470,6 +472,7 @@ PASS-WITH also triggers custom test passes for that test.
 [ ];; TEST-WITH[--math-precision=ieee]  : #'validate-ieee                 ← standard function provided by test runner.
 [ ];; CHECK-WARN: "warning text"                  ← Inline warning check
 [ ];; CHECK-FAIL: "failure message" 
+[x];; TEST-HOIST[L0]: validate-l0-compile-only
 
 Architecture
 ============

@@ -4,13 +4,19 @@
 
 ;; Find the LLVM C library
 (define-foreign-library libllvm
+                        ;; 1. Check for bundled DLL in bin/ (Windows)
+                        (:windows "bin/LLVM-C.dll")
+                        ;; 2. Fallback to System Install (Windows)
                         (:windows "C:/Program Files/LLVM/bin/LLVM-C.dll")
+
+                        ;; 1. Check for bundled SO in bin/ (Linux)
+                        (:unix "bin/libLLVM.so")
+                        ;; 2. Fallback to System Install (Ubuntu/Debian)
                         (:unix (:or "libLLVM-21.so" "libLLVM.so"))
+
                         (:darwin "libLLVM.dylib")
                         (t (:default "libLLVM")))
 
-;; We don't load this here, because otherwise the build will
-;; not succeed.  This library is loaded as part of main.
 ;; (use-foreign-library libllvm)
 
 

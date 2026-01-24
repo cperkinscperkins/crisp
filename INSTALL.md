@@ -13,7 +13,7 @@ Clone This
 🚀 Dependencies
 ----------------
 
-Crisp requires **SBCL** and the **LLVM development libraries** (version 15 or newer is recommended).
+Crisp requires **SBCL**
 
 ### 1 Install SBCL
 
@@ -23,60 +23,8 @@ Crisp requires **SBCL** and the **LLVM development libraries** (version 15 or ne
 
 (Note: The Windows/macOS installers bundle ASDF. The Linux apt package does not, but Step 3 will handle this.)
 
-### 2 Install LLVM Dev Libraries
 
-- C libraries (`.so`, `.dylib`, `.dll`)
-- C API header files (`llvm-c/*.h`)
-- `llvm-config` tool.
-
-#### On Linux (Ubuntu/Debian)
-
-Use `apt` to get the `llvm-dev` package.
-
-```
-sudo apt-get install llvm-21-dev
-```
-
-This package automatically installs the libraries, headers, and `llvm-config-21`.
-
-Or just get `llvm-dev` if version 21 isn't configured for your Linux.
-
-#### On macOS
-
-Use Homebrew. It installs everything, but you must manually update your `PATH`.
-
-```
-brew install llvm
-```
-
-Homebrew installs LLVM "keg-only," which means it's not on your default path (to avoid conflicts with Apple's built-in Clang). You must add it to your `.zshrc` or `.bash_profile`:
-
-```
-# Add this to your ~/.zshrc or ~/.bash_profile
-export PATH="/usr/local/opt/llvm/bin:$PATH"
-```
-
-After this, running `llvm-config --version` in a new terminal should show the version you just installed.
-
-#### On Windows
-
-This is the trickiest. The best method is to use the official pre-compiled binaries from the LLVM GitHub page.
-
-1.  Go to the [LLVM GitHub Releases](https://github.com/llvm/llvm-project/releases) page.
-2.  Find the version you want
-3.  Download the **"Windows (64-bit)"** installer (e.g., `LLVM-21.1.4-win64.exe`).
-4.  **Run the installer.** During setup, you **must** check the box that says:
-      * **"Add LLVM to the system PATH for all users"** (or "current user").
-
-Alternatively, you can use `winget`:
-
-```powershell
-winget install LLVM.LLVM
-```
-
------
-
-### 3 Install Lisp Dependencies (CFFI)
+### 2 Install Lisp Dependencies (CFFI)
 
 Your Lisp environment needs the **CFFI** library.
 
@@ -98,21 +46,11 @@ sudo apt-get install -y cl-asdf cl-cffi
 
 (Note: If you use this method, your "Build" Lisp commands must begin with `(require "asdf")`.)
 
-### Verify LLVM Installation 
-
-If you are on Linux or Mac, then after installing, open a new terminal and run:
-
-```bash
-llvm-config --version
-```
-
-If this prints a version number (e.g., `21.1.4`), you're all set.
-
-If you are on Windows, then rummage around where you installed it and make sure things are ok.
 
 
 Build Instantly
 ---------------
+The `build.lisp` script will build the compiler and hoist-l0.
 ```
 $ sbcl --non-interactive --load build/build.lisp
 ```
@@ -144,21 +82,28 @@ We will
 (exit)
 ```
 
-Back to shell.  Let's try out the compiler
+INVOKING THE COMPILER
+---------------------
+Let's try out the compiler
 ```
 $   ./bin/crisp-compile.exe ./tests/return_7.crisp
     -- come and see --
 
 ```
 
+The compiler supports a number of flags now:
+- `--ir-target=spv`
+- `--ir-target=ptx`
+- `--ir-target=llvmir`
+- `--hoist=L0`
+- `--metadata`
+- `--single-pass`
+- `-g`
+- `--debug`
+- `--log-level=off`  ;; also `error`, `warn`, `info`, `debug`, `trace`
+
 Run Tests
 ---------
-
-Some of the tests use `clang` to verify the generated LLVM-IR. 
-
-Make sure `clang` is on your `PATH`.
-
-### Cross Platform
 
 All the E2E and error tests are organized "in order". 
 
@@ -179,16 +124,16 @@ $ sbcl --script .\tests\run-error-specs.lisp
 ```
 
 ### Windows: 
-<!--
-```
-$env:PATH = "C:\Program Files\LLVM\bin;" + $env:PATH
-```
--->
+
 ```
 .\tests\run-all-tests.bat
 ```
 
 ### Linux:
+
+```
+# instructions coming soon
+```
 
 Test interactively from SBCL
 ---------------------------

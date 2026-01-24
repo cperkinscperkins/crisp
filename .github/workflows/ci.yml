@@ -99,9 +99,8 @@ jobs:
 
       - name: 6. Build Executable
         run: |
-          # This runs your new build script
+          # This runs the master build script
           sbcl --non-interactive --load build/build.lisp
-          sbcl --non-interactive --load build/build-hoist-l0.lisp
 
       - name: 7. Run End-to-End Specs (Internal & External)
         env:

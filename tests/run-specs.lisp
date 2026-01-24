@@ -11,13 +11,12 @@
                        sb-ext:*posix-argv*)))
           (if arg
               (intern (string-upcase (subseq arg (length "--log-level="))) :keyword)
-              :error)))
+              :info)))
 
 ;; Configure logging before loading if possible
 (ql:quickload "log4cl" :silent t)
-(if (eq *log-level* :off)
-    (log:config :off)
-    (log:config :sane :stream *error-output* *log-level*))
+(log:config :sane :stream *error-output* *log-level*)
+(log:info "Initializing Spec Runner with log level: ~a" *log-level*)
 
 ;; Inline build/build.lisp logic without terminating process
 (require "asdf")
@@ -58,8 +57,12 @@
   (let ((exe (merge-pathnames "bin/crisp-compile.exe" (uiop:getcwd)))
         (unix (merge-pathnames "bin/crisp-compile" (uiop:getcwd))))
     (cond
-     ((probe-file exe) exe)
-     ((probe-file unix) unix)
+     ((probe-file exe)
+       (log:debug "Found binary at: ~a" exe)
+       exe)
+     ((probe-file unix)
+       (log:debug "Found binary at: ~a" unix)
+       unix)
      (t (error "Could not locate crisp-compile binary at ~a or ~a" exe unix)))))
 
 (defun cleanup-ir-string (output)
@@ -95,7 +98,7 @@
           :error-output :string
           :ignore-error-status t)
       (when (search "multipass" (namestring file))
-            (format t "DEBUG BINARY: Cmd: ~a ~a~%Exit Code: ~a~%Error: ~a~%" bin args exit-code error-output))
+            (log:debug "DEBUG BINARY: Cmd: ~a ~a~%Exit Code: ~a~%Error: ~a~%" bin args exit-code error-output))
       (cond
        ((not (zerop exit-code))
          (format *error-output* "FAIL (Compiler Exit Code ~a)~%~a~%" exit-code error-output)
@@ -354,7 +357,7 @@
             (l0-include (resolve-l0-include-dir))
             (ze-loader (resolve-ze-loader)))
 
-        (format t "DEBUG: clang=~s inc=~s loader=~s~%" clang-exe l0-include ze-loader)
+        (log:debug "clang=~s inc=~s loader=~s" clang-exe l0-include ze-loader)
 
         (unless (and clang-exe l0-include ze-loader)
           (format t "FAIL: Missing native toolchain components. Falling back to validate-l0-compile-only (Docker)...~%")
@@ -414,25 +417,25 @@
   (let ((clang-exe (resolve-clang-executable))
         (l0-include (resolve-l0-include-dir))
         (docker-available (zerop (nth-value 2 (uiop:run-program '("docker" "--version") :ignore-error-status t :output nil)))))
-    (format t "DEBUG: clang-exe=~s l0-include=~s docker-available=~s~%" clang-exe l0-include docker-available)
+    (log:debug "clang-exe=~s l0-include=~s docker-available=~s" clang-exe l0-include docker-available)
 
     (cond
-      ;; Case 0: No files to validate
-      ((null cpp-files)
+     ;; Case 0: No files to validate
+     ((null cpp-files)
        (format t "FAIL: No C++ files to validate (Hoist failed?)~%")
        nil)
 
-      ;; Case 1: Native Tools Available
-      ((and clang-exe l0-include)
+     ;; Case 1: Native Tools Available
+     ((and clang-exe l0-include)
        (format t "Validating with Native Clang: ~a~%" clang-exe)
        (dolist (cpp cpp-files)
          (multiple-value-bind (output error-output exit-code)
              (uiop:run-program
-              (list clang-exe "-fsyntax-only"
-                    "-I" (namestring l0-include)
-                    "-std=c++17"
-                    (uiop:native-namestring cpp))
-              :output :string :error-output :string :ignore-error-status t)
+               (list clang-exe "-fsyntax-only"
+                     "-I" (namestring l0-include)
+                     "-std=c++17"
+                     (uiop:native-namestring cpp))
+               :output :string :error-output :string :ignore-error-status t)
            (declare (ignore output))
            (unless (zerop exit-code)
              (format t "FAIL: ~a compilation error~%~a~%" (file-namestring cpp) error-output)
@@ -440,20 +443,20 @@
            (format t "PASS: ~a compiles (Native)~%" (file-namestring cpp))))
        t)
 
-      ;; Case 2: Docker Available
-      (docker-available
+     ;; Case 2: Docker Available
+     (docker-available
        (format t "Native tools not found. Validating with Docker...~%")
        (dolist (cpp cpp-files)
          (let* ((workspace-path "/workspace")
                 (relative-path (enough-namestring cpp (uiop:getcwd)))
                 (docker-path (format nil "~a/~a" workspace-path (substitute #\/ #\\ (namestring relative-path))))
-                (cmd (append 
-                      (list "docker" "run" "--rm"
-                            "-v" (format nil "~a:~a" (substitute #\/ #\\ (namestring (uiop:getcwd))) workspace-path))
-                      (when l0-include
-                        (list "-v" (format nil "~a:/usr/local/include" (substitute #\/ #\\ (namestring l0-include)))))
-                      (list "crisp-c-validator"
-                            "g++" "-fsyntax-only" "-I/usr/local/include" "-std=c++17" docker-path))))
+                (cmd (append
+                       (list "docker" "run" "--rm"
+                             "-v" (format nil "~a:~a" (substitute #\/ #\\ (namestring (uiop:getcwd))) workspace-path))
+                       (when l0-include
+                             (list "-v" (format nil "~a:/usr/local/include" (substitute #\/ #\\ (namestring l0-include)))))
+                       (list "crisp-c-validator"
+                             "g++" "-fsyntax-only" "-I/usr/local/include" "-std=c++17" docker-path))))
            (multiple-value-bind (output error-output exit-code)
                (uiop:run-program cmd :output :string :error-output :string :ignore-error-status t)
              (declare (ignore output))
@@ -463,8 +466,8 @@
              (format t "PASS: ~a compiles (Docker)~%" (file-namestring cpp)))))
        t)
 
-      ;; Case 3: No tools
-      (t
+     ;; Case 3: No tools
+     (t
        (format t "FAIL: Neither Native Clang (with L0 headers) nor Docker available.~%")
        (format t "      Checked Clang: ~a~%" clang-exe)
        (format t "      Checked L0 Inc: ~a~%" l0-include)
@@ -481,7 +484,7 @@
         (if out-path
             (let ((res (if validator
                            (progn
-                            (format t "(Validator: ~a)... " validator)
+                            (log:info "Running Validator: ~a" validator)
                             ;; Determine validation target
                             (let ((val-arg (cond
                                             ((and (listp meta-paths) (= (length meta-paths) 1)) (first meta-paths))
@@ -1026,7 +1029,7 @@
 ;; Load overlay if present (for safe patching)
 (let ((overlay (merge-pathnames "overlays/spec-runner-overlay.lisp" (uiop:getcwd))))
   (when (probe-file overlay)
-    (format t "Loading overlay: ~a~%" overlay)
-    (load overlay)))
+        (format t "Loading overlay: ~a~%" overlay)
+        (load overlay)))
 
 (main)
