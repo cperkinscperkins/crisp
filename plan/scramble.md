@@ -336,6 +336,7 @@ Kernels
 - [x] build_all.lisp
 - [x] try using llvm-mingw which is smaller than LLVM and works on windows
 - [ ] oneAPI docker image for oneapi-gdb to test our DWARF gen.
+- [x] double check debug symbols get passed throught to ptx
 - [ ] at some point, get opencl:cpu device on CI.
 - [ ] bugs 020 and 021 important
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types

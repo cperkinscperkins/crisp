@@ -611,9 +611,11 @@
          (mds :pointer) ; Array of LLVMMetadataRef
          (count :unsigned-int))
 
+
 (defcfun ("LLVMValueAsMetadata" llvm-value-as-metadata) :pointer
          "Wraps a Value (like a ConstantInt) as Metadata."
          (val :pointer))
+
 
 ;; --- Function Calling Convention ---
 
@@ -647,3 +649,14 @@
          (context :pointer)
          (str :string)
          (slen :unsigned-int))
+
+(defcfun ("LLVMAddModuleFlag" llvm-add-module-flag) :void
+         (module :pointer)
+         (behavior :int) ;; LLVMModFlagBehavior (1=Error, 2=Warning, 3=Require, 4=Override, 5=Append, 6=AppendUnique)
+         (key :string)
+         (key-len :size)
+         (val :pointer))
+
+(defcfun ("LLVMMetadataAsValue" llvm-metadata-as-value) :pointer
+         (context :pointer)
+         (md :pointer))

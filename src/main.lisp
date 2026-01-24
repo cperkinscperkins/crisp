@@ -15,16 +15,31 @@
     (ignore-errors (crisp.compiler:error-source-location c))
     c))
 
-(defun initialize-debug-context (di-builder filepath)
+(defun initialize-debug-context (module di-builder filepath)
   "Creates and returns the top-level DICompileUnit for a file."
   (let* ((f (file-namestring filepath))
          (d (directory-namestring filepath))
          (flags "") ;; will eventually have to support some pass through flags.
          (di-file (crisp.llvm-bindings:llvm-di-builder-create-file di-builder f (length f) d (length d)))
          (producer "Crisp Compiler"))
+
+    ;; Set Module Flags for Debug Info Version (Required by LLVM/llc)
+    ;; Key: "Debug Info Version", Value: 3 (DEBUG_METADATA_VERSION)
+    ;; Behavior: 1 (Warning). (Note: C API Error=0, Warning=1, Require=2)
+    (let ((key "Debug Info Version")
+          (val (crisp.llvm-bindings::llvm-value-as-metadata
+                (crisp.llvm-bindings:llvm-const-int (crisp.llvm-bindings:llvm-int32-type) 3 nil))))
+      (crisp.llvm-bindings::llvm-add-module-flag module 1 key (length key) val))
+
+    ;; Set Module Flags for DWARF Version (Optional but good)
+    (let ((key "Dwarf Version")
+          (val (crisp.llvm-bindings::llvm-value-as-metadata
+                (crisp.llvm-bindings:llvm-const-int (crisp.llvm-bindings:llvm-int32-type) 4 nil))))
+      (crisp.llvm-bindings::llvm-add-module-flag module 1 key (length key) val))
+
     (crisp.llvm-bindings:llvm-di-builder-create-compile-unit
      di-builder
-     12 ; DW_LANG_C99 (Temporarily using C99 to debug CI failure. Was 32768/0x8000)
+     39 ; DW_LANG_OpenCL (was 12 C99)
      di-file
      producer (length producer)
      nil ; isOptimized
@@ -86,15 +101,15 @@
 
     ;; --- Hoisting Logic ---
     (when (member :L0 hoist-targets)
-      (if (null targets)
-          ;; Case 1: Helpful Default (L0 -> SPV)
-          (progn
-           (format *error-output* "; Auto-enabling --ir-target=spv (required for --hoist=L0)~%")
-           (setf targets '(:spirv)))
-          ;; Case 2: Validation (L0 requires SPV)
-          (unless (member :spirv targets)
-            (format *error-output* "ERROR: --hoist=L0 requires --ir-target=spv. Found targets: ~a~%" targets)
-            (uiop:quit 1))))
+          (if (null targets)
+              ;; Case 1: Helpful Default (L0 -> SPV)
+              (progn
+               (format *error-output* "; Auto-enabling --ir-target=spv (required for --hoist=L0)~%")
+               (setf targets '(:spirv)))
+              ;; Case 2: Validation (L0 requires SPV)
+              (unless (member :spirv targets)
+                (format *error-output* "ERROR: --hoist=L0 requires --ir-target=spv. Found targets: ~a~%" targets)
+                (uiop:quit 1))))
 
     (values files nil debug-p single-pass-p targets metadata-p hoist-targets)))
 
@@ -154,7 +169,7 @@
                  (builder (crisp.llvm-bindings:llvm-create-builder))
                  ;; Only create the DIBuilder if the debug flag is present.
                  (di-builder (when debug-p (crisp.llvm-bindings:llvm-create-di-builder module)))
-                 (di-compile-unit (when debug-p (initialize-debug-context di-builder filepath))))
+                 (di-compile-unit (when debug-p (initialize-debug-context module di-builder filepath))))
             (unwind-protect
                 (handler-case
                     (progn
@@ -180,11 +195,11 @@
                      (case target-backend
                        (:spirv
                         (let ((out-path (make-pathname :type "spv" :defaults filepath)))
-                          (crisp.compiler:compile-to-spirv module out-path)
+                          (crisp.compiler:compile-to-spirv module out-path :debug-p debug-p)
                           (push (list :spv out-path) generated-outputs)))
                        (:ptx
                         (let ((out-path (make-pathname :type "ptx" :defaults filepath)))
-                          (crisp.compiler:compile-to-ptx module out-path)
+                          (crisp.compiler:compile-to-ptx module out-path :debug-p debug-p)
                           (push (list :ptx out-path) generated-outputs)))
                        (:llvmir
                         (let ((out-path (make-pathname :type "ll" :defaults filepath)))

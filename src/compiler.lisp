@@ -228,7 +228,7 @@
 
           (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
 
-(defun compile-to-spirv (module output-path)
+(defun compile-to-spirv (module output-path &key debug-p)
   "Compiles an LLVM Module to SPIR-V using the external toolchain."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
          (name (pathname-name output-path))
@@ -252,18 +252,22 @@
        :log-prefix "[SPIR-V] "))
 
     ;; 3. llvm-spirv (BC -> SPV)
-    (let ((tool (resolve-tool-executable "llvm-spirv")))
+    (let ((tool (resolve-tool-executable "llvm-spirv"))
+          (flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil)))
       (run-tool-command
-       (list tool (namestring bc-file) "-o" (namestring spv-file))
+       (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
        :log-prefix "[SPIR-V] "))
 
-    ;; Cleanup temps
-    (when (probe-file ll-file) (delete-file ll-file))
-    (when (probe-file bc-file) (delete-file bc-file))
+    ;; Cleanup temps (only if NOT debugging, ideally, but let's keep it simple for now)
+    ;; Actually, if debug-p is true, maybe we should KEEP them?
+    ;; For verify step, keeping them is handy.
+    (unless debug-p
+      (when (probe-file ll-file) (delete-file ll-file))
+      (when (probe-file bc-file) (delete-file bc-file)))
 
     (log:info "Generated SPIR-V: ~a" spv-file)))
 
-(defun compile-to-ptx (module output-path &key (compute-capability "sm_50"))
+(defun compile-to-ptx (module output-path &key (compute-capability "sm_50") debug-p)
   "Compiles an LLVM Module to PTX using llc.
  COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)
                      sm_50 = Maxwell (good default for compatibility)"
