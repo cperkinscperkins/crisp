@@ -71,8 +71,8 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
           even have a :declared-signature anyway. Decide later. 
 
 [ ] 020 - make-scratch-cell defaults to :address-space :global, but it should be :local.
-  - [ ] need to test on CUDA BEFORE fixing. Have to be able to see before / after for both PTX and SPV
-  - [ ] identify which tests should be manually tested
+  - [x] need to test on CUDA BEFORE fixing. Have to be able to see before / after for both PTX and SPV
+  - [x] identify which tests should be manually tested
      - 07-basic-cell.crisp
      - 13-struct-on-kernel-boundary.crisp
      - 19-implicit-scratch-cell-hoisted.crisp

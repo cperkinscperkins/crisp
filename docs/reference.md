@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-24T03:28:36.573586Z
+Generated on 2026-01-24T20:31:34.712400Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -581,9 +581,9 @@ Generated on 2026-01-24T03:28:36.573586Z
 
 ---
 ### DEFUN `BUILD-CAST-IF-NEEDED`
-- **Args**: `(BUILDER FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)`
+- **Args**: `(BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)`
 
-  > Builds LLVM cast instruction if types differ, with alias resolution.
+  > Builds LLVM cast instruction if types differ, with alias resolution.  >    MODULE is required to resolve types correctly.
 
 
 ---
@@ -758,14 +758,14 @@ Generated on 2026-01-24T03:28:36.573586Z
 
 ---
 ### DEFUN `COMPILE-TO-SPIRV`
-- **Args**: `(MODULE OUTPUT-PATH)`
+- **Args**: `(MODULE OUTPUT-PATH &KEY DEBUG-P)`
 
   > Compiles an LLVM Module to SPIR-V using the external toolchain.
 
 
 ---
 ### DEFUN `COMPILE-TO-PTX`
-- **Args**: `(MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_50))`
+- **Args**: `(MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_50) DEBUG-P)`
 
   > Compiles an LLVM Module to PTX using llc.  >  COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)  >                      sm_50 = Maxwell (good default for compatibility)
 
@@ -906,7 +906,7 @@ Generated on 2026-01-24T03:28:36.573586Z
 ### DEFUN `SCAN-FOR-CARRIERS`
 - **Args**: `(NAME BODY)`
 
-  > Performs a single-pass look-ahead to detect if the function is a carrier.
+  > Performs a single-pass look-ahead to detect if the function is a carrier.  >    This logic is ONLY executed in single-pass mode (when *call-graph* is NIL).  >    In multi-pass mode, this analysis is handled by analyze-signatures-pass.
 
 
 ---
@@ -1439,7 +1439,7 @@ Generated on 2026-01-24T03:28:36.573586Z
 
 ---
 ### DEFUN `INITIALIZE-DEBUG-CONTEXT`
-- **Args**: `(DI-BUILDER FILEPATH)`
+- **Args**: `(MODULE DI-BUILDER FILEPATH)`
 
   > Creates and returns the top-level DICompileUnit for a file.
 
