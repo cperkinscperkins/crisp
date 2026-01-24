@@ -1,3 +1,5 @@
+;; FAIL-WITH[--single-pass]: "Unknown type 'SHEN'"
+
 ;; this test has both in-order and out-of-order def-type declarations. Passes.
 
 
