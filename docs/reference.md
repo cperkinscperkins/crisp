@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-23T05:22:48.689905Z
+Generated on 2026-01-24T03:28:36.573586Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -965,7 +965,7 @@ Generated on 2026-01-23T05:22:48.689905Z
 ### DEFUN `GENERATE-L0-LAUNCHER`
 - **Args**: `(METACRISP-PATH)`
 
-  > Generate Level Zero C++ launcher code from metacrisp file.
+  > Generate Level Zero C++ launcher code from metacrisp file
 
 
 ---
