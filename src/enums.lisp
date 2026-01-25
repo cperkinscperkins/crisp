@@ -28,18 +28,15 @@
       `(progn
         (eval-when (:compile-toplevel :load-toplevel :execute)
           (setf (gethash ',name *crisp-enums*)
-            (make-enumeration-def :name ',name :members ',members))
-          ;; Also register in *crisp-types* so it passes valid-type-p check? 
-          ;; (setf (gethash ',name *crisp-types*) :enumeration) 
-          ;; Actually *crisp-types* usually stores a struct, but :enumeration kw might suffice for simple checks.
-          ;; For now, let's just use *crisp-enums* for lookups.
-           )
+            (make-enumeration-def :name ',name :members ',members)))
 
         ;; Define the predicate function
         (defun ,pred-name (x)
           (or (assoc x ',members)
               (and (integerp x)
                    (find x ',members :key (lambda (entry) (cdr entry))))))
+
+        (deftype ,name () '(satisfies ,pred-name))
 
         ;; Helper to get integer value
         (defun ,(intern (concatenate 'string (symbol-name name) "-VALUE") :crisp.compiler) (k)
@@ -61,6 +58,7 @@
                                      (:constant . 2)
                                      (:local . 3)
                                      (:generic . 4)))))
+(deftype address-space () '(satisfies is-address-space?))
 
 (defun is-address-space? (x)
   (or (assoc x '((:private . 0) (:global . 1) (:constant . 2) (:local . 3) (:generic . 4)))

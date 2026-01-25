@@ -498,14 +498,15 @@
     (unless struct-def
       (error "Unknown struct type '~a' in with-struct-accessors." struct-type))
 
-    (let ((forms '()))
+    (let ((forms '())
+          (pkg (symbol-package struct-type)))
       (dolist (member (crisp-struct-definition-members struct-def))
         (let* ((member-name (first member))
                (aos-accessor-name
                 (ecase access
-                  (:public (intern (format nil "~a~~" member-name)))
-                  (:raw (intern (format nil "~~~a~~" member-name)))))
-               (soa-accessor-name (intern (format nil "~a~~" member-name))))
+                  (:public (intern (format nil "~a~~" member-name) pkg))
+                  (:raw (intern (format nil "~~~a~~" member-name) pkg))))
+               (soa-accessor-name (intern (format nil "~a~~" member-name) pkg)))
 
           (let ((expanded-body
                  (mapcar (lambda (form)
@@ -737,8 +738,18 @@
       (eval code))
 
     (let* ((as (if (consp canonical) (nth 2 canonical) :global))
+           ;; Instantiate STORAGE template for the specific address space
+           (storage-base 'storage)
+           (storage-params (list as))
+           (storage-mangled (mangle-template-struct-name storage-base storage-params))
+           (storage-constructor (intern (format nil "MAKE-~a" storage-mangled) (symbol-package base)))
+
+           ;; Ensure storage template is instantiated
+           (ignored (let ((code (instantiate-template storage-base storage-params)))
+                      (eval code)))
+
            (result `(,constructor-name
-                      :parent (make-storage :address (as (c-pointer :address-space ,as) ,ptr) :byte-size ,byte-size)
+                      :parent (,storage-constructor :address (as (c-pointer :address-space ,as) ,ptr) :byte-size ,byte-size)
                       :offset ,offset)))
       (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
       result)))

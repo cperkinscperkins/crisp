@@ -1,10 +1,8 @@
 
 
-;; Test is disabled. We need to add :local address space support to the compiler.
-;; TEST-EXPECT: FAIL
-
-;; xEST-HOIST[L0] : validate-l0-cell-address-space
-
+;; TEST-HOIST[L0] : validate-l0-cell-address-space
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER gc: 17
 
 ;; Expected in generated C++:
 ;; - 'g' and 'gc' → zeMemAllocDevice (global device memory)

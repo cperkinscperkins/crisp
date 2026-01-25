@@ -1,6 +1,6 @@
 
-;; missing keyword
-;; CHECK-FAIL: "Invalid incomplete type specifier: (CELL LONG GLOBAL)."
+;; missing keyword -> valid positional!
+;; CHECK-FAIL: "Invalid type option: :INVALID-KEY in spec"
 (def-function cell-missing-keyword (c)
-    (declare #'((cell long :global) => ulong)) ;; <-- (cell long :address-space :global) would be correct
+    (declare #'((cell long :global :invalid-key) => ulong)) ;; Invalid keyword should fail
     (byte-size~ (parent~ c)))

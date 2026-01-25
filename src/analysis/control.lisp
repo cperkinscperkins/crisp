@@ -440,7 +440,9 @@
   (def-expression-analyzer funcall analyze-funcall-expression)
 
   (def-expression-analyzer let analyze-let-expression)
+  (def-expression-analyzer common-lisp:let analyze-let-expression)
   (def-expression-analyzer let* analyze-let-expression)
+  (def-expression-analyzer common-lisp:let* analyze-let-expression)
   (def-expression-analyzer progn analyze-progn-expression)
   (def-expression-analyzer sizeof analyze-sizeof-expression)
   (def-expression-analyzer compiler-no-op analyze-compiler-no-op)
@@ -448,7 +450,9 @@
 
   (def-expression-analyzer if analyze-if-expression)
   (def-expression-analyzer when analyze-when-expression)
+  (def-expression-analyzer common-lisp:when analyze-when-expression)
   (def-expression-analyzer unless analyze-unless-expression)
+  (def-expression-analyzer common-lisp:unless analyze-unless-expression)
   (def-expression-analyzer return analyze-return-expression)
   (def-expression-analyzer explicit-return analyze-return-expression)
   (def-expression-analyzer semantic-return analyze-return-expression)

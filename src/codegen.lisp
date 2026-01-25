@@ -322,8 +322,14 @@
       (error "Missing implicit argument ~a for make-scratch-cell. Environment keys: ~s"
         storage-var-name (alexandria:hash-table-keys var-env)))
 
-    (let* ((storage-type (crisp-type-to-llvm-type 'storage module))
-           (storage-val (llvm-build-load2 builder storage-type storage-alloca "storage_val"))
+    (let* ((as (if (consp type-spec) (nth 2 type-spec) :global))
+           ;; Use the specific storage type (templated logic)
+           (storage-spec `(storage ,as))
+           (storage-type (crisp-type-to-llvm-type storage-spec module))
+           ;; Bitcast the alloca (which is a cell*) to a storage* to load the first member
+           (storage-ptr-type (llvm-pointer-type storage-type 0))
+           (casted-ptr (llvm-build-bit-cast builder storage-alloca storage-ptr-type "cast_sc_storage"))
+           (storage-val (llvm-build-load2 builder storage-type casted-ptr "storage_val"))
            (mangled-name (mangle-template-struct-name base-type (rest type-spec)))
            (cell-struct-type (ensure-struct-llvm-type mangled-name))
            (cell-undef (llvm-get-undef cell-struct-type))
@@ -1145,7 +1151,6 @@
              ;; We must EXTRACT members (Parent, Offset) from the aggregate value.
              ;; Do NOT use GEP on the cell value itself.
              (log:info "semantic-aref: Using ExtractValue to access Cell Record members.")
-
              ;; 1. Get PARENT (index 0) -> STORAGE Value
              (let* ((parent-val (llvm-build-extract-value builder cell-val 0 "parent_val")))
 

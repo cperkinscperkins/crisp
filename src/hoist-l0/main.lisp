@@ -36,7 +36,7 @@
 
     ;; [Fix] Warn if no kernels found
     (when (null kernels)
-      (format t "WARNING: No kernels found in ~a. Nothing to hoist.~%" metacrisp-path))
+          (format t "WARNING: No kernels found in ~a. Nothing to hoist.~%" metacrisp-path))
 
     ;; Generate one .cpp file per kernel
     (dolist (kernel kernels)
@@ -50,18 +50,18 @@
              (full-sig (sort (append declared-sig implicit-sig) #'<
                          :key comparable-range-start))
              (output-targets (getf kernel :output-targets)))
-             
+
         (let* (;; [Fix] Explicitly find SPIR-V target path
                (spv-path-entry (or (assoc :spirv output-targets)
                                    (assoc :spv output-targets)))
                (spv-path (when spv-path-entry (second spv-path-entry)))
-               
+
                ;; Deduplicate kernel name in filename if present
                (suffix (format nil "_~a" kernel-name))
                (name-part (if (uiop:string-suffix-p base-name suffix)
                               base-name
                               (format nil "~a~a" base-name suffix)))
-               
+
                (output-name (format nil "~a_L0.cpp" name-part))
                (output-path (make-pathname :name (pathname-name output-name)
                                            :type "cpp"
@@ -71,18 +71,18 @@
           (if (null spv-path)
               (format t "WARNING: No SPIR-V target found for kernel ~a. Skipping host generation.~%" kernel-name)
               (progn
-                (format t "  Generating: ~a~%" output-name)
+               (format t "  Generating: ~a~%" output-name)
 
-                ;; Generate Level Zero C++ launcher
-                (with-open-file (stream output-path :direction :output :if-exists :supersede)
-                  (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
-                  (generate-cpp-includes stream)
-                  (generate-cpp-typedefs stream aliases)
-                  (generate-cpp-structs stream (metacrisp-structs data))
-                  (generate-cpp-helpers stream)
-                  (generate-cpp-main stream kernel-name spv-path full-sig aliases))
+               ;; Generate Level Zero C++ launcher
+               (with-open-file (stream output-path :direction :output :if-exists :supersede)
+                 (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
+                 (generate-cpp-includes stream)
+                 (generate-cpp-typedefs stream aliases)
+                 (generate-cpp-structs stream (metacrisp-structs data))
+                 (generate-cpp-helpers stream)
+                 (generate-cpp-main stream kernel-name spv-path full-sig aliases))
 
-                (format t "  Done: ~a~%" (namestring output-path)))))))))
+               (format t "  Done: ~a~%" (namestring output-path)))))))))
 
 (defun generate-cpp-preamble (stream metacrisp-path kernel-name output-name)
   "Generate C++ file preamble comment"
@@ -399,7 +399,9 @@
       (let* ((param-name (getf param :name))
              (raw-type (getf param :type))
              (param-type (resolve-type-alias raw-type aliases))
-             (param-dir (getf param :direction)))
+             (param-dir (getf param :direction))
+             (param-as (getf param :address-space))
+             (is-local (member param-as '(:local "LOCAL" local) :test #'string-equal)))
 
         (cond
          ;; Handle cell parameters (pointers/buffers)
@@ -411,54 +413,75 @@
                   (size-var (format nil "~a_size" param-name-cpp))
                   (ptr-var (format nil "~a_ptr" param-name-cpp)))
 
-             ;; Allocate USM shared memory
-             (format stream "~%    // Allocate USM memory for ~a~%" param-name)
-             (format stream "    size_t ~a = 1;  // Cell is a single scalar~%" size-var)
-             (format stream "    ~a* ~a = nullptr;~%" base-type-str ptr-var)
-             (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
-               context-var)
-             (format stream "        ~a * sizeof(~a), 1, ~a, (void**)&~a);~%"
-               size-var base-type-str device-var ptr-var)
-             (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
-             (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
-               param-name)
-             (format stream "        return 1;~%")
-             (format stream "    }~%")
+             (if is-local
+                 ;; --- LOCAL MEMORY ---
+                 (progn
+                  (format stream "~%    // Configure LOCAL memory for ~a~%" param-name)
+                  (format stream "    size_t ~a = 1;  // Cell is a single scalar~%" size-var)
+                  (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
+                  (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
 
-             ;; Always zero-initialize first
-             (format stream "    // Initialize data~%")
-             (format stream "    memset(~a, 0, ~a * sizeof(~a));~%" ptr-var size-var base-type-str)
+                  ;; Arg 0: Local Pointer Placeholder (Size sets allocation, Value is nullptr)
+                  (format stream "    // Arg ~d: Local Pointer (Size=~a)~%" arg-index size-var)
+                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, ~a_bytes, nullptr);~%"
+                    arg-index size-var)
 
-             ;; If input or read-write, add some test data pattern (1, 2, 3...)
-             ;; This ensures we can distinguish "copied zeros" from "actual data"
-             (when (or (eq param-dir :in) (eq param-dir :read-write))
-                   (format stream "    for (size_t i = 0; i < ~a; i++) {~%" size-var)
-                   (format stream "        // Dangerous for structs if index exceeds member bounds, but fine for now~%")
-                   (format stream "        // Only doing this specifically for int/long buffers or safe structs would be better~%")
-                   (format stream "        // For now, let's just leave it zero for structs to avoid misalignment/padding issues~%")
-                   (format stream "        // memset is safest. The Spec 13 kernel adds 1 to 0, so 1 is expected.~%")
-                   (format stream "    }~%"))
+                  ;; Arg 1: Size (bytes)
+                  (format stream "    // Arg ~d: Size (bytes)~%" (+ arg-index 1))
+                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_bytes);~%"
+                    (+ arg-index 1) size-var)
 
-             ;; Set kernel argument (Fat Pointer: Ptr, Size, Offset)
-             (format stream "    // Arg ~d: Base Pointer~%" arg-index)
-             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
-               arg-index ptr-var)
+                  ;; Arg 2: Offset (bytes)
+                  (format stream "    // Arg ~d: Offset (bytes)~%" (+ arg-index 2))
+                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_offset);~%~%"
+                    (+ arg-index 2) param-name-cpp))
 
-             (format stream "    // Arg ~d: Size (bytes)~%" (+ arg-index 1))
-             (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
-             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_bytes);~%"
-               (+ arg-index 1) size-var)
+                 ;; --- GLOBAL MEMORY (USM) ---
+                 (progn
+                  (format stream "~%    // Allocate USM memory for ~a~%" param-name)
+                  (format stream "    size_t ~a = 1;  // Cell is a single scalar~%" size-var)
+                  (format stream "    ~a* ~a = nullptr;~%" base-type-str ptr-var)
+                  (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
+                    context-var)
+                  (format stream "        ~a * sizeof(~a), 1, ~a, (void**)&~a);~%"
+                    size-var base-type-str device-var ptr-var)
+                  (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+                  (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
+                    param-name)
+                  (format stream "        return 1;~%")
+                  (format stream "    }~%")
 
-             (format stream "    // Arg ~d: Offset (bytes)~%" (+ arg-index 2))
-             (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
-             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_offset);~%~%"
-               (+ arg-index 2) param-name-cpp)
+                  ;; Always zero-initialize first
+                  (format stream "    // Initialize data~%")
+                  (format stream "    memset(~a, 0, ~a * sizeof(~a));~%" ptr-var size-var base-type-str)
 
-             ;; Track allocation for cleanup
-             (push (list :name param-name :ptr ptr-var :size-var size-var :direction param-dir :type base-type) allocations)
+                  ;; If input or read-write, add some test data pattern (1, 2, 3...)
+                  (when (or (eq param-dir :in) (eq param-dir :read-write))
+                        (format stream "    for (size_t i = 0; i < ~a; i++) {~%" size-var)
+                        (format stream "        // Dangerous for structs if index exceeds member bounds, but fine for now~%")
+                        (format stream "    }~%"))
+
+                  ;; Set kernel argument (Fat Pointer: Ptr, Size, Offset)
+                  (format stream "    // Arg ~d: Base Pointer~%" arg-index)
+                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
+                    arg-index ptr-var)
+
+                  (format stream "    // Arg ~d: Size (bytes)~%" (+ arg-index 1))
+                  (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
+                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_bytes);~%"
+                    (+ arg-index 1) size-var)
+
+                  (format stream "    // Arg ~d: Offset (bytes)~%" (+ arg-index 2))
+                  (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_offset);~%~%"
+                    (+ arg-index 2) param-name-cpp)
+
+                  ;; Track allocation for cleanup
+                  (push (list :name param-name :ptr ptr-var :size-var size-var :direction param-dir :type base-type) allocations)))
+
              (incf arg-index 3)))
 
-         ;; Handle scalar parameters  
+         ;; Handle scalar parameters
          ((symbolp param-type)
            (format stream "    ~a ~a_arg = ~d;  // TODO: Set actual value~%"
              (string-downcase (symbol-name param-type))

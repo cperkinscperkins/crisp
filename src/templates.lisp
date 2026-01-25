@@ -384,20 +384,46 @@
                    (let ((templates (gethash name-or-tmpl *template-registry*)))
                      (unless templates (error "No template found for ~a" name-or-tmpl))
                      (find-if (lambda (t-data)
+                                ;; Arity check is fuzzy with defaults, so we pick the one with *enough* params?
+                                ;; For backwards compat, exact match on PARAMS length is safest for overloading by arity.
                                 (= (length (template-data-parameters t-data))
                                   (length concrete-types)))
-                         templates))))
+                         templates)
+                     ;; Fallback: If no exact arity match, pick the first one and let parameter parsing handle defaults/errors?
+                     (or (first templates)
+                         (error "No template registry entry for ~a" name-or-tmpl)))))
          (name (if tmpl (template-data-name tmpl) name-or-tmpl)))
 
     (unless tmpl
       (error "No template for ~a matches the provided type arguments: ~a" name concrete-types))
 
-    ;; Instantiate single template
+    ;; Instantiate with Parameters, Defaults, and Type Checking
     (let* ((raw-params (template-data-parameters tmpl))
-           (params (mapcar (lambda (p) (if (consp p) (first p) p)) raw-params))
-           (arity (length params))
-           (substitution-args (subseq concrete-types 0 (min (length concrete-types) arity)))
-           (substitutions (pairlis params substitution-args)))
+           (parsed-params (mapcar #'crisp.compiler::parse-template-parameter-spec raw-params))
+           (final-substitutions '()))
+
+      ;; Validate Argument Count (Too many?)
+      (when (> (length concrete-types) (length parsed-params))
+            (error "Too many type arguments for template ~a. Expected max ~a, got ~a: ~a"
+              name (length parsed-params) (length concrete-types) concrete-types))
+
+      ;; Process Parameters
+      (loop for (p-name p-type p-default) in parsed-params
+            for i from 0
+            for arg = (if (< i (length concrete-types))
+                          (nth i concrete-types)
+                          (if p-default
+                              p-default
+                              (error "Missing required type argument for template parameter ~a (index ~d)" p-name i)))
+            do
+              (format *terminal-io* "TEMPLATE CHECK: ~a arg=~a type=~a default=~a~%" p-name arg p-type p-default)
+              (unless (eq p-type 'T)
+                (format *terminal-io* "  Typep Result: ~a~%" (typep arg p-type)))
+
+              (crisp.compiler::validate-template-arg arg p-type p-name)
+              (push (cons p-name arg) final-substitutions))
+
+      (setf final-substitutions (nreverse final-substitutions))
 
       ;; Augment substitutions with template aliases
       ;; (Fixed: Do not aggressively substitute aliases here. Let canonicalize-type-specifier handle them.)
@@ -407,8 +433,8 @@
              (is-struct (and (listp body) (member (first body) '(def-struct def-record)))))
 
         (if is-struct
-            (%instantiate-structure-template name body substitutions concrete-types)
-            (%instantiate-callable-template name body substitutions override-name))))))
+            (%instantiate-structure-template name body final-substitutions concrete-types)
+            (%instantiate-callable-template name body final-substitutions override-name))))))
 
 (defun %instantiate-structure-template (name body substitutions concrete-types)
   (let* ((mangled-name (crisp.compiler::mangle-template-struct-name name concrete-types))

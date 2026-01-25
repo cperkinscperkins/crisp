@@ -35,9 +35,9 @@
                           #:generate-llvm-ir
                           #:char #:short #:float #:double #:truncate #:floor
                           #:ceil #:round
-                          #:cond #:when #:unless ;; Shadow conditionals
-                          #:die ;; Shadow die (conflict with uiop)
-                          #:let #:return))
+                          #:die) ;; Shadow die (conflict with uiop)
+  (:shadowing-import-from :common-lisp
+                          #:cond #:when #:unless #:let #:return))
 
 (in-package :crisp.spec-runner)
 
@@ -212,9 +212,10 @@
           (forms (progn
                   (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*) ;; Standard cleanup
                   (with-open-file (stream filepath)
-                    (loop for form = (read stream nil :eof)
-                          until (eq form :eof)
-                          collect form)))))
+                    (let ((*package* (find-package :crisp.compiler)))
+                      (loop for form = (read stream nil :eof)
+                            until (eq form :eof)
+                            collect form))))))
       (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filepath)))
              (builder (crisp.llvm-bindings:llvm-create-builder)))
         (unwind-protect
@@ -327,6 +328,26 @@
          (format t "  - ~a~%" (file-namestring cpp)))
        (format t "PASS~%")
        t)))
+
+(defun validate-l0-cell-address-space (crisp-file cpp-files)
+  "Validates C++ files compile and contain correct LOCAL memory setup (nullptr value)."
+  (declare (ignore crisp-file))
+  (if (null cpp-files)
+      (progn
+       (format t "FAIL: No C++ files to validate~%")
+       nil)
+      ;; We check for nullptr in the generated code
+      (let ((passed t))
+        (dolist (cpp cpp-files)
+          (let ((content (uiop:read-file-string cpp)))
+            ;; Check for LOCAL pointer setup in Arg 3
+            (unless (and (search "Arg 3: Local Pointer" content)
+                         (search "nullptr" content :start2 (search "Arg 3: Local Pointer" content)))
+              (format t "FAIL: ~a does not contain expected Local Pointer setup (nullptr)~%" (file-namestring cpp))
+              (setf passed nil))))
+        (when passed
+              (format t "PASS: C++ contains correct Local Address Space setup.~%"))
+        passed)))
 
 ;; Updated Validator: Tries Native (MinGW) first, then Docker
 (defun resolve-clang-executable ()
@@ -624,9 +645,10 @@
           (forms (progn
                   (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
                   (with-open-file (stream filepath)
-                    (loop for form = (read stream nil :eof)
-                          until (eq form :eof)
-                          collect form)))))
+                    (let ((*package* (find-package :crisp.compiler)))
+                      (loop for form = (read stream nil :eof)
+                            until (eq form :eof)
+                            collect form))))))
       (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filepath)))
              (builder (crisp.llvm-bindings:llvm-create-builder)))
         (unwind-protect

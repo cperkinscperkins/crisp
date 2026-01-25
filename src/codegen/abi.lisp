@@ -104,6 +104,9 @@
                                      (log:debug "  Mangled to: ~s (package: ~a)" mangled (package-name (symbol-package mangled)))
                                      mangled))
                                   type-spec))
+                 ;; Ensure type is instantiated/registered so we can check its category
+                 (ignored (ignore-errors (resolve-type-to-llvm lookup-spec)))
+
                  ;; Try lookup in current package first, then fallback to CRISP-LANGUAGE
                  (type-rec (or (gethash lookup-spec *crisp-types*)
                                (when (and is-storage-list (symbolp lookup-spec))
@@ -176,10 +179,16 @@
 (defun implode-value (builder components type-spec module)
   "Combines components into an aggregate value if necessary.
    Returns a single LLVM value."
-  (let ((type-rec (gethash type-spec *crisp-types*)))
+  ;; Mangle list-form storage handle types to their symbol form for lookup
+  (let* ((lookup-spec (if (and (consp type-spec)
+                               (symbolp (first type-spec))
+                               (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+                          (mangle-template-struct-name (first type-spec) (rest type-spec))
+                          type-spec))
+         (type-rec (gethash lookup-spec *crisp-types*)))
     (cond
      ((and type-rec (eq (crisp-type-category type-rec) :record))
-       (let* ((struct-def (gethash type-spec *crisp-structs*))
+       (let* ((struct-def (gethash lookup-spec *crisp-structs*))
               (members (crisp-struct-definition-members struct-def))
               (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
               (record-type (crisp-type-to-llvm-type type-spec module))
@@ -189,11 +198,8 @@
          (loop for m in runtime-members
                for i from 0
                do (let* ((member-type (second m))
-                         ;; Implode the member first (consumes N components)
                          (member-val (implode-value builder current-components member-type module))
-                         ;; Advance the component list by the number of components consumed
                          (consumed-count (length (get-expanded-types member-type module))))
-                    ;; Insert the imploded member into the record
                     (setf agg (llvm-build-insert-value builder agg member-val i (format nil "~a_ins" (first m))))
                     (setf current-components (subseq current-components consumed-count))))
          agg))

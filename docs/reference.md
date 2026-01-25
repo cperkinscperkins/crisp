@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-24T20:31:34.712400Z
+Generated on 2026-01-25T23:46:10.521393Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -2372,8 +2372,19 @@ Generated on 2026-01-24T20:31:34.712400Z
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Expands legacy/shorthand storage handle specs (cell, vector, etc) into their canonical struct form.  >    e.g. (cell int) -> (cell int :global :read-write)  >    e.g. (cell int :address-space :local) -> (cell int :local :read-write)
+  > Expands legacy/shorthand storage handle specs (cell, vector, etc) into their canonical struct form.  >    e.g. (cell int) -> (cell int :global :read-write)  >    e.g. (cell int :address-space :local) -> (cell int :local :read-write)  >      >    ROBUSTNESS FIX (Regression Analysis):  >    - Explicitly extracts known keys (:address-space, :access) and IGNORES others (like :direction).  >    - Normalizes address-space symbols (GLOBAL) to keywords (:GLOBAL) to prevent type errors.  >    - Ensures output is always a clean positional list for template instantiation.
 
+
+---
+### DEFUN `PARSE-TEMPLATE-PARAMETER-SPEC`
+- **Args**: `(PARAM)`
+
+  > Parses (Name [Type] [Default]) -> (list Name Type Default)
+
+
+---
+### DEFUN `VALIDATE-TEMPLATE-ARG`
+- **Args**: `(ARG TYPE NAME)`
 
 ---
 ### DEFUN `CANONICALIZE-TYPE-SPECIFIER`
@@ -2452,6 +2463,9 @@ Generated on 2026-01-24T20:31:34.712400Z
 
   > Maps a keyword address space to an integer, sensitive to *target-backend*.
 
+
+---
+### DEFPARAMETER `*RESOLVE-DEPTH*`
 
 ---
 ### DEFUN `RESOLVE-TYPE-TO-LLVM`

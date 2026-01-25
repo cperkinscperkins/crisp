@@ -1,4 +1,4 @@
 (def-function test-storage-basic (s)
-  (declare (type s storage) (return-type ulong))
+  (declare (type s (storage :global)) (return-type ulong))
   (let ((sz (byte-size~ s)))
      (return sz)))
