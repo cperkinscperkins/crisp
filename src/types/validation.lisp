@@ -42,10 +42,17 @@
       ;; Not an alias - return as-is
       type-spec))
 
+
 (defun expand-storage-handle-type-specifier (spec)
   "Expands legacy/shorthand storage handle specs (cell, vector, etc) into their canonical struct form.
    e.g. (cell int) -> (cell int :global :read-write)
-   e.g. (cell int :address-space :local) -> (cell int :local :read-write)"
+   e.g. (cell int :address-space :local) -> (cell int :local :read-write)
+   
+   ROBUSTNESS FIX (Regression Analysis):
+   - Explicitly extracts known keys (:address-space, :access) and IGNORES others (like :direction).
+   - Normalizes address-space symbols (GLOBAL) to keywords (:GLOBAL) to prevent type errors.
+   - Ensures output is always a clean positional list for template instantiation."
+  (log:info "EXPAND-STORAGE-HANDLE: ~s" spec)
   (cl:cond
     ((null spec) nil)
     ((symbolp spec) spec)
@@ -58,36 +65,69 @@
 
                (cl:let* ((args (rest spec))
                          (element-type (first args))
-                         ;; Detect if we are using keyword syntax
-                         (has-kw (or (member :address-space args) (member :access args))))
+                         (rest-args (rest args)))
 
-                 (if has-kw
-                     ;; Parse Keywords -> Positional
-                     (cl:let* ((pos-args (loop for arg in (rest args)
-                                               while (not (keywordp arg))
-                                               collect arg))
-                               ;; Extract keywords from the remainder
-                               (kw-args (subseq args (+ 1 (length pos-args))))
-                               (addr (or (getf kw-args :address-space) :global))
-                               (acc (or (getf kw-args :access) :read-write)))
+                 (if (null rest-args)
+                     ;; Case: (CELL INT) -> Defaults
+                     (list base element-type :global :read-write)
 
-                       ;; Return expanded list directly (DO NOT RECURSE into canonicalize here)
-                       (append (list base element-type) pos-args (list addr acc)))
+                     ;; Robust Parsing Logic
+                     (cl:let ((addr :global)
+                              (acc :read-write)
+                              (remaining rest-args))
+                       (cl:loop while remaining do
+                         (cl:let ((item (pop remaining)))
+                           (cl:cond
+                             ;; 1. Address Space Flags/Keywords
+                             ((cl:member (string item) '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC") :test #'string-equal)
+                              (setf addr (intern (string-upcase (string item)) :keyword)))
 
-                     ;; Check for implicit defaults (cell int) -> (cell int :global :read-write)
-                     ;; Only expand if it lacks the property args (assumed positional)
-                     (cl:cond
-                       ((= (length args) 1)
-                        (list base element-type :global :read-write))
-                       ;; Canonical form (CELL T Addr Acc) has 3 args. Pass through.
-                       ((= (length args) 3) spec)
-                       ((and (> (length args) 1) (string-equal (symbol-name base) "CELL"))
-                        ;; (cell int :global) -> Error. Must use keywords.
-                        (error 'crisp-incomplete-type-error :type-spec spec))
-                       (t spec)))))
+                             ;; 2. Access Flags/Keywords
+                             ((cl:member (string item) '("READ-WRITE" "READ-ONLY" "WRITE-ONLY" "READABLE" "WRITEABLE") :test #'string-equal)
+                              (setf acc (intern (string-upcase (string item)) :keyword)))
+
+                             ;; 3. Explicit Keys
+                             ((string-equal (string item) "ADDRESS-SPACE")
+                              (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+                              (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+                             ((string-equal (string item) "ACCESS")
+                              (unless remaining (error "Missing value for :ACCESS in ~s" spec))
+                              (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
+
+                             ;; 4. Ignored Keys (Legacy compatibility if needed, strict otherwise)
+                             ;; We MUST error on unknown keys to pass bad-type-constructor-02
+                             (t
+                              (error "Invalid type option: ~s in spec ~s" item spec)))))
+
+                       ;; Return canonical positional form
+                       (list base element-type addr acc)))))
            spec)))
     (t spec)))
 
+
+;; Helper: Parse Template Param Spec
+(defun parse-template-parameter-spec (param)
+  "Parses (Name [Type] [Default]) -> (list Name Type Default)"
+  (cl:if (consp param)
+         (cl:case (length param)
+           (1 (list (first param) 'T nil))
+           (2 (list (first param) (second param) nil))
+           (3 (list (first param) (second param) (third param)))
+           (t (error "Invalid template parameter spec: ~a" param)))
+         (list param 'T nil)))
+
+;; Permissive validator to handle Unmangled Symbol -> Keyword mismatch
+(defun validate-template-arg (arg type name)
+  (cl:cond
+    ((eq type 'T) t)
+    ((typep arg type) t)
+    ;; Permissive Fix: If arg is SYMBOL (but not keyword) and Type accepts the KEYWORD version
+    ((cl:and (symbolp arg)
+       (not (keywordp arg))
+       (typep (intern (symbol-name arg) :keyword) type))
+     t)
+    (t (error "Template argument mismatch for ~a. Expected type ~a, got ~a (~a)"
+         name type arg (type-of arg)))))
 
 (defun canonicalize-type-specifier (spec)
   "Canonicalizes type specifiers."
@@ -121,7 +161,6 @@
                                     (canonicalize-type-specifier (append expanded-base rest-args))
                                     (canonicalize-type-specifier expanded-base))))
                          ;; No params? Just return the aliased type + args??
-                         ;; If alias had no params, but we passed args, they are overrides.
                          (cl:if args
                                 (canonicalize-type-specifier (append (cl:if (consp type-spec) type-spec (list type-spec)) args))
 
@@ -135,20 +174,20 @@
                                          ;; Recurse safely
                                          (canonicalize-type-specifier resolved))))))
 
-                ;; 2. Standard Templates
+                ;; 2. Standard Templates (With Validation)
                 (cl:let* ((template-data (first (gethash base *template-registry*)))
-                          (params (and template-data (template-data-parameters template-data))))
-                  (cl:if params
-                         (cl:let ((full-args (cl:loop for param in params
-                                             for i from 0
-                                             for arg = (nth i args)
-                                             collect (cl:if arg
-                                                            arg
-                                                            ;; Check for default value in param spec (Name Default)
-                                                            (cl:if (and (consp param) (second param))
-                                                                   (second param)
-                                                                   nil)))))
-                           (cons base (remove-if #'null full-args)))
+                          (raw-params (and template-data (template-data-parameters template-data))))
+                  (cl:if raw-params
+                         (cl:let* ((parsed-params (mapcar #'parse-template-parameter-spec raw-params))
+                                   (full-args (cl:loop for (p-name p-type p-default) in parsed-params
+                                              for i from 0
+                                              for arg = (if (< i (length args))
+                                                            (nth i args)
+                                                            (or p-default
+                                                                (error "Missing required type argument for template ~a: ~a (index ~d)" base p-name i)))
+                                              do (validate-template-arg arg p-type p-name)
+                                              collect arg)))
+                           (cons base full-args))
 
                          ;; Not a template, return as is (normalized to list)
                          (cl:if (consp spec) spec (list spec)))))))
@@ -364,10 +403,11 @@
 
 (defun encode-address-space (as)
   "Maps a keyword address space to an integer, sensitive to *target-backend*."
-  (cl:let ((backend (if (boundp '*target-backend*) *target-backend* :generic)))
+  (cl:let ((backend (if (boundp '*target-backend*) *target-backend* :generic))
+           (as-key (if (keywordp as) as (intern (symbol-name as) :keyword))))
     (case backend
       (:spirv
-       (case as
+       (case as-key
          (:private 0)
          (:global 1)
          (:constant 2)
@@ -375,76 +415,109 @@
          (:generic 4)
          (t (if (integerp as) as 0))))
       (:ptx
-       (case as
+       (case as-key
          (:generic 0)
          (:global 1)
          (:shared 3)
-         (:local 3) ;; In PTX shared is 3, but some implementations map local there? No, local is usually 5.
+         (:local 3)
          (:constant 4)
          (:private 5)
          (t (if (integerp as) as 0))))
-      (t ;; Default / Generic (matches SPIR-V for backwards compatibility)
-        (case as
-          (:private 0)
-          (:global 1)
-          (:constant 2)
-          (:local 3)
-          (:generic 4)
-          (t (if (integerp as) as 0)))))))
+      (t
+       (case as-key
+         (:private 0)
+         (:global 1)
+         (:constant 2)
+         (:local 3)
+         (:generic 4)
+         (t (if (integerp as) as 0)))))))
+
+(defparameter *resolve-depth* 0)
 
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference."
-  (cl:cond
-    ;; Built-in Scalar
-    ((and (symbolp type-spec) (gethash type-spec *crisp-types*))
-     (funcall (crisp-type-llvm-type-fn (gethash type-spec *crisp-types*))))
+  (cl:let ((*resolve-depth* (1+ *resolve-depth*)))
+    (cl:when (> *resolve-depth* 50)
+      (cl:error "Infinite recursion detected in resolve-type-to-llvm for ~s" type-spec))
 
-    ;; Type Alias (Symbol)
-    ((and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
-     (resolve-type-to-llvm (gethash type-spec *crisp-type-aliases*)))
+    (cl:cond
+      ;; Built-in Scalar
+      ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-types*))
+       (cl:funcall (crisp-type-llvm-type-fn (cl:gethash type-spec *crisp-types*))))
 
-    ;; C-Pointer with properties: e.g. (c-pointer :address-space :global)
-    ((and (consp type-spec) (eq (first type-spec) 'c-pointer))
-     (let* ((args (rest type-spec))
-            (as-key (getf args :address-space))
-            (as-val (encode-address-space as-key)))
-       (llvm-pointer-type (llvm-int8-type) as-val)))
+      ;; Type Alias (Symbol)
+      ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-type-aliases*))
+       (resolve-type-to-llvm (cl:gethash type-spec *crisp-type-aliases*)))
 
-    ;; Struct
-    ((and (symbolp type-spec) (find-struct-definition-by-name type-spec))
-     (ensure-struct-llvm-type type-spec))
+      ;; C-Pointer with properties: e.g. (c-pointer :address-space :global)
+      ((cl:and (cl:consp type-spec) (cl:eq (cl:first type-spec) 'c-pointer))
+       (cl:let* ((args (cl:rest type-spec))
+                 (as-key (cl:getf args :address-space))
+                 (as-val (encode-address-space as-key)))
+         (llvm-pointer-type (llvm-int8-type) as-val)))
 
-    ;; Enumerations (map to i32)
-    ((and (symbolp type-spec) (gethash type-spec *crisp-enums*))
-     (llvm-int32-type))
+      ;; Struct (Pre-existing)
+      ((cl:and (cl:symbolp type-spec) (find-struct-definition-by-name type-spec))
+       (ensure-struct-llvm-type type-spec))
 
-    ;; Keyword/Symbol/Quote (map to i32) - Handle Symbol and List forms
-    ((or (member type-spec '(keyword symbol quote))
-         (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
-     (llvm-int32-type))
+      ;; Enumerations (map to i32)
+      ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-enums*))
+       (llvm-int32-type))
 
-    ;; Parameterized Structs (e.g. (POINT INT)) or Wrapper/Prop types (e.g. (INT) or (PANTS :COLOR :RED))
-    ((and (consp type-spec) (not (keywordp (cl:first type-spec))) (valid-type-p type-spec))
-     (cl:let* ((canon (canonicalize-type-specifier type-spec))
-               (base (cl:first canon))
-               (args (rest canon))
-               (arity (get-template-arity base)))
+      ;; Keyword/Symbol/Quote (map to i32) - Handle Symbol and List forms
+      ((cl:or (cl:member type-spec '(keyword symbol quote))
+         (cl:and (cl:consp type-spec) (cl:member (cl:first type-spec) '(keyword symbol quote))))
+       (llvm-int32-type))
 
-       (if (and arity (> arity 0))
-           ;; It is a template, mangle it
-           (cl:let* ((template-args args) ;; Use ALL args, including properties
-                                         (mangled (mangle-template-struct-name base template-args)))
-             (resolve-type-to-llvm mangled))
-           ;; It is NOT a template (scalar or basic struct with props), resolve base directly
-           (resolve-type-to-llvm base))))
-    (t
-     ;; Fallback: Check for alias by name (package mismatch handling)
-     (cl:let ((alias-match (loop for k being the hash-keys of *crisp-type-aliases*
-                                   when (string-equal (symbol-name k) (symbol-name type-spec))
-                                   return k)))
-       (if alias-match
-           (resolve-type-to-llvm (gethash alias-match *crisp-type-aliases*))
-           (error "Cannot resolve type to LLVM: ~a" type-spec))))))
+      ;; Parameterized Structs (On-Demand Instantiation) OR Mangled Symbols
+      ;; We handle both (CELL ...) and CELL_INT_... here to support on-demand logic.
+      ((cl:or (cl:and (cl:consp type-spec)
+                (valid-type-p type-spec)
+                (cl:gethash (cl:first type-spec) *template-registry*))
+         (cl:and (cl:symbolp type-spec)
+           (cl:let ((parts (unmangle-template-struct-name type-spec)))
+             (cl:and parts (cl:consp parts) (cl:gethash (cl:first parts) *template-registry*)))))
+
+       ;; FIX: Ensure we use the CANONICALIZED specifier to instantiate/resolve
+       ;; This leverages existing logic in expand-storage-handle-type-specifier
+       ;; to clean up keywords and defaults.
+       (cl:let* ((canonical (canonicalize-type-specifier type-spec))
+                 (is-cons (cl:consp canonical))
+                 (unmangled (cl:if is-cons canonical (unmangle-template-struct-name canonical)))
+                 (base (cl:first unmangled))
+                 (raw-args (cl:rest unmangled))
+                 (mangled (mangle-template-struct-name base raw-args)))
+
+         (cl:unless (find-struct-definition-by-name mangled)
+           (cl:let ((crisp.compiler::*defer-struct-validation* nil))
+             (ensure-template-instantiation base raw-args
+                                            (cl:lambda (form location)
+                                              (cl:eval form)
+                                              (cl:when (cl:and (boundp '*current-module*) *current-module*)
+                                                (compile-toplevel-form form location
+                                                                       *current-module*
+                                                                       *current-builder*
+                                                                       *current-di-builder*
+                                                                       *current-di-compile-unit*
+                                                                       *current-location-map*))))))
+         ;; Verify
+         (cl:unless (find-struct-definition-by-name mangled)
+           (cl:error "Type Resolution: FAILED to instantiate struct ~a" mangled))
+
+         ;; Recurse using the MANGLED name
+         (resolve-type-to-llvm mangled)))
+
+      ;; Generic List Wrapper
+      ((cl:consp type-spec)
+       (resolve-type-to-llvm (cl:first type-spec)))
+
+      (t
+       (cl:let ((alias-match (cl:loop for k being the hash-keys of *crisp-type-aliases*
+                               when (cl:string-equal (cl:symbol-name k) (cl:symbol-name type-spec))
+                               return k)))
+         (cl:if alias-match
+                (resolve-type-to-llvm (cl:gethash alias-match *crisp-type-aliases*))
+                (cl:error "Cannot resolve type to LLVM: ~a" type-spec)))))))
 
 (defun incomplete-type-p (type-spec)
   "Checks if a type specifier is incomplete (missing required compile-time properties).

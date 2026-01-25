@@ -70,13 +70,13 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
           It's not trivial to fix, because of ... reasons.  Also def-kernel-exact wouldn't 
           even have a :declared-signature anyway. Decide later. 
 
-[ ] 020 - make-scratch-cell defaults to :address-space :global, but it should be :local.
+[x] 020 - make-scratch-cell defaults to :address-space :global, but it should be :local.
   - [x] need to test on CUDA BEFORE fixing. Have to be able to see before / after for both PTX and SPV
   - [x] identify which tests should be manually tested
      - 07-basic-cell.crisp
      - 13-struct-on-kernel-boundary.crisp
      - 19-implicit-scratch-cell-hoisted.crisp
-  - [ ] reenable 09-address-space.crisp, new validator
+  - [x] reenable 09-address-space.crisp, new validator
      - 
 
 [ ] 021 - def-kernel supports arrow type declarations, but not (type a b int) style 

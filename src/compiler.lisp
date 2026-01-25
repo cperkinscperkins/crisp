@@ -355,29 +355,31 @@ This should be called by any entry point into the system (REPL, executable, CI).
   ;; Register built-in structs like 'storage'
   (log:info "Registering built-in structs...")
 
-  ;; Redefine STORAGE as a RECORD (Register-based, passed by value)
-  ;; This replaces the old "exploded" implicit argument handling.
-  (eval '(def-record storage
-                     (address (c-pointer :address-space :global))
-                     (byte-size ulong)
-                     (address-space address-space :c-t :global)
-                     (access access :c-t :read-write)))
+  ;; Redefine STORAGE as a TEMPLATED RECORD (Register-based, passed by value)
+  ;; This replaces the old global-only storage.
+  ;; Now parameterized by AddressSpace (Addr).
+  (eval '(with-template-type ((Addr address-space :global))
+                             (def-record storage
+                                         (address (c-pointer :address-space Addr))
+                                         (byte-size ulong)
+                                         (address-space address-space :c-t Addr)
+                                         (access access :c-t :read-write))))
 
   ;; Register CELL record template
   ;; CELL is an opaque handle to a storage slice.
   ;; It contains a pointer to the storage struct and an offset.
   ;; It now tracks element-type, address-space, and access as compile-time properties.
 
-  (eval '(with-template-type ((To T) (Addr :global) (Acc :read-write))
+  (eval '(with-template-type ((To T) (Addr address-space :global) (Acc access :read-write))
                              (def-record cell
-                                         (parent storage) ;; Pointer to STORAGE struct
+                                         (parent (storage Addr)) ;; Pointer to STORAGE struct (matching address space)
                                          (offset ulong)
                                          (element-type type-spec :c-t To)
                                          (address-space address-space :c-t Addr)
                                          (access access :c-t Acc))))
 
   ;; Register bytes~ helper (sizeof T)
-  (register-template 'bytes~ '(To (Addr :global) (Acc :read-write)) nil
+  (register-template 'bytes~ '(To (Addr address-space :global) (Acc access :read-write)) nil
                      '(def-function bytes~ (c)
                                     (declare (function ((cell To Addr Acc) => ulong)))
                                     (declare (crisp-system-generated))

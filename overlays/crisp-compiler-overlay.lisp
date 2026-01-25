@@ -4,8 +4,3 @@
 ;; All code has been promoted to src/ - this file is kept for the .asd hook
 
 (in-package :crisp.compiler)
-
-;; src/main.lisp - CLI Argument Parsing Update (Hoisting Defaults)
-(in-package :crisp.main) ;; Need to switch to MAIN package for this override!
-
-
