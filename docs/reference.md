@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-25T23:46:10.521393Z
+Generated on 2026-01-26T00:37:15.793861Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -2466,6 +2466,10 @@ Generated on 2026-01-25T23:46:10.521393Z
 
 ---
 ### DEFPARAMETER `*RESOLVE-DEPTH*`
+
+---
+### DEFUN `FIND-TEMPLATE-ROBUST`
+- **Args**: `(NAME)`
 
 ---
 ### DEFUN `RESOLVE-TYPE-TO-LLVM`
