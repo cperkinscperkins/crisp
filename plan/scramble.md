@@ -340,7 +340,8 @@ Kernels
 - [ ] at some point, get opencl:cpu device on CI.
 - - [ ] this would mean an opencl hoister, no?
 - [ ] consider having regression failures name the folder as well as the test.
-- [ ] bugs 020 and 021 important
+- [ ] map out global vars. 
+- [ ] bugs 021 important
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
 - [ ] def-derived-type => expand specification for numerics ("contagion"). 
 - [ ] branded types. expand syntax to capture "always" vs. "when differentiating"
