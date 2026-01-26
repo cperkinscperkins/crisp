@@ -116,7 +116,8 @@
            (t (error "Invalid template parameter spec: ~a" param)))
          (list param 'T nil)))
 
-;; Permissive validator to handle Unmangled Symbol -> Keyword mismatch
+
+;; 1. Permissive validate-template-arg
 (defun validate-template-arg (arg type name)
   (cl:cond
     ((eq type 'T) t)
@@ -434,6 +435,17 @@
 
 (defparameter *resolve-depth* 0)
 
+
+(defun find-template-robust (name)
+  (or (cl:gethash name *template-registry*)
+      (cl:let ((found nil))
+        (maphash (cl:lambda (k v)
+                   (cl:when (and (symbolp k)
+                                 (string-equal (symbol-name k) (symbol-name name)))
+                     (cl:setf found v)))
+                 *template-registry*)
+        found)))
+
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference."
   (cl:let ((*resolve-depth* (1+ *resolve-depth*)))
@@ -473,10 +485,10 @@
       ;; We handle both (CELL ...) and CELL_INT_... here to support on-demand logic.
       ((cl:or (cl:and (cl:consp type-spec)
                 (valid-type-p type-spec)
-                (cl:gethash (cl:first type-spec) *template-registry*))
+                (find-template-robust (cl:first type-spec)))
          (cl:and (cl:symbolp type-spec)
            (cl:let ((parts (unmangle-template-struct-name type-spec)))
-             (cl:and parts (cl:consp parts) (cl:gethash (cl:first parts) *template-registry*)))))
+             (cl:and parts (cl:consp parts) (find-template-robust (cl:first parts))))))
 
        ;; FIX: Ensure we use the CANONICALIZED specifier to instantiate/resolve
        ;; This leverages existing logic in expand-storage-handle-type-specifier

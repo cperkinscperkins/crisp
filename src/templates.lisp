@@ -416,9 +416,9 @@
                               p-default
                               (error "Missing required type argument for template parameter ~a (index ~d)" p-name i)))
             do
-              (format *terminal-io* "TEMPLATE CHECK: ~a arg=~a type=~a default=~a~%" p-name arg p-type p-default)
+              (log:debug "TEMPLATE CHECK: ~a arg=~a type=~a default=~a" p-name arg p-type p-default)
               (unless (eq p-type 'T)
-                (format *terminal-io* "  Typep Result: ~a~%" (typep arg p-type)))
+                (log:debug "  Typep Result: ~a" (typep arg p-type)))
 
               (crisp.compiler::validate-template-arg arg p-type p-name)
               (push (cons p-name arg) final-substitutions))
