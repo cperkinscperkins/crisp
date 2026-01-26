@@ -232,7 +232,7 @@
         (format t "~&[DEBUG] WARNING: Missing definition for ~a~%" target)))
 
   ;; 1. Full Matrix (R & W)
-  (with-open-file (out "globals_matrix.csv" :direction :output :if-exists :supersede)
+  (with-open-file (out "docs/globals_matrix.csv" :direction :output :if-exists :supersede)
     (format out "~&Global Variable")
     (let ((active-functions
            (loop for fn in *all-functions*
@@ -253,7 +253,7 @@
     (format t "~&Generated globals_matrix.csv~%"))
 
   ;; 2. Writes Only Matrix (W & RW)
-  (with-open-file (out "globals_matrix_writes.csv" :direction :output :if-exists :supersede)
+  (with-open-file (out "docs/globals_matrix_writes.csv" :direction :output :if-exists :supersede)
     (format out "~&Global Variable")
     (let ((writing-functions
            (loop for fn in *all-functions*

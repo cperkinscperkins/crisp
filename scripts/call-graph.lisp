@@ -182,7 +182,7 @@
                      (t (string< a b))))))))
 
 (defun generate-report ()
-  (with-open-file (out "call_graph.md" :direction :output :if-exists :supersede)
+  (with-open-file (out "docs/call_graph.md" :direction :output :if-exists :supersede)
     (format out "# Application Call Graph~%~%")
     (format out "This graph shows the hierarchy of internal function calls.~%")
     (format out "Nodes marked `[RECURSION]` indicate a cycle.~%")

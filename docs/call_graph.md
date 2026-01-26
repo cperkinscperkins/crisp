@@ -1,0 +1,640 @@
+# Application Call Graph
+
+This graph shows the hierarchy of internal function calls.
+Nodes marked `[RECURSION]` indicate a cycle.
+Nodes marked `[See above]` have been expanded previously in the document.
+
+## Roots (Entry Points & Unused Functions)
+- MAIN
+  - PARSE-CLI-ARGS
+    - INITIALIZE-COMPILER
+      - INITIALIZE-CRISP-TYPES
+      - INITIALIZE-EXPRESSION-ANALYZERS
+        - REGISTER-OPS-ANALYZERS
+          - DEF-EXPRESSION-ANALYZER
+        - REGISTER-CONTROL-ANALYZERS
+          - DEF-EXPRESSION-ANALYZER [See above]
+        - REGISTER-STRUCT-ANALYZERS
+          - DEF-EXPRESSION-ANALYZER [See above]
+      - INITIALIZE-ADVISEMENTS
+        - ADVISE-FUNCTION
+      - REGISTER-BUILTINS
+        - REGISTER-TEMPLATE
+  - COMPILE-FILES
+    - INITIALIZE-DEBUG-CONTEXT
+    - COMPILE-TOPLEVEL-FORM
+      - VISIT-TOPLEVEL-FORM
+        - VISIT-TOPLEVEL-FORM [RECURSION]
+      - COMPILE-DEF-FUNCTION
+        - REGISTER-FUNCTION-SIGNATURE
+          - PARSE-FUNCTION-DECLARATIONS
+            - ANALYZE-RETURN-TYPE-FROM-SPEC
+              - PARSE-TYPE-SPECIFIER
+                - RESOLVE-TYPE-ALIAS
+                - VALID-TYPE-P
+                  - VALID-BASIC-TYPE-P
+                  - VALID-FUNCTION-TYPE-P
+                  - VALID-PARAMETERIZED-TYPE-P
+                    - CANONICALIZE-TYPE-SPECIFIER
+                      - EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER
+                      - CANONICALIZE-TYPE-SPECIFIER [RECURSION]
+                      - RESOLVE-TYPE-ALIAS [See above]
+                      - VALIDATE-TEMPLATE-ARG
+                    - EXCLUDED-TEMPLATE-BASE-TYPE-P
+                    - %VALIDATE-TEMPLATE-INSTANTIATION
+                      - MANGLE-TEMPLATE-STRUCT-NAME
+                        - MANGLE-TEMPLATE-STRUCT-NAME [RECURSION]
+                      - %INSTANTIATE-TEMPLATE-IF-NEEDED
+                        - COMPILE-TOPLEVEL-FORM [RECURSION]
+                - PARSE-TYPE-SPECIFIER [RECURSION]
+                - EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER [See above]
+                - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                - VALID-FUNCTION-TYPE-P [See above]
+                - GET-TEMPLATE-ARITY
+            - ANALYZE-RETURN-TYPE-FROM-LIST
+              - VALID-TYPE-P [See above]
+            - ANALYZE-ENVIRONMENT-FROM-SPEC
+              - PARSE-TYPE-SPECIFIER [See above]
+            - VALID-TYPE-P [See above]
+            - PARSE-TYPE-SPECIFIER [See above]
+            - ANALYZE-ENVIRONMENT-FROM-LIST
+              - VALID-TYPE-P [See above]
+              - PARSE-TYPE-SPECIFIER [See above]
+          - %REGISTER-GENERIC-FUNCTION
+          - %REGISTER-STANDARD-FUNCTION
+            - %FIND-ENTRY-POINT-DECLARATION
+            - %VALIDATE-KERNEL-RETURN-TYPE
+        - PARSE-FUNCTION-DECLARATIONS [See above]
+        - %COMPILE-STANDARD-FUNCTION
+          - GENERATE-LLVM-IR
+            - GENERATE-FUNCTION-PROTOTYPE
+              - CREATE-LLVM-FUNCTION-TYPE
+                - GET-LLVM-RETURN-TYPE
+                  - CRISP-TYPE-TO-LLVM-TYPE
+                    - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                    - RESOLVE-TYPE-TO-LLVM
+                      - RESOLVE-TYPE-TO-LLVM [RECURSION]
+                      - ENCODE-ADDRESS-SPACE
+                      - FIND-STRUCT-DEFINITION-BY-NAME
+                      - ENSURE-STRUCT-LLVM-TYPE
+                        - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                        - FIND-STRUCT-DEFINITION-BY-NAME [See above]
+                        - RESOLVE-TYPE-TO-LLVM [RECURSION]
+                      - VALID-TYPE-P [See above]
+                      - FIND-TEMPLATE-ROBUST
+                      - UNMANGLE-TEMPLATE-STRUCT-NAME
+                        - SPLIT-STRING
+                        - RECONSTRUCT-TEMPLATE-ARGS
+                          - RECONSTRUCT-N-ARGS
+                            - RECONSTRUCT-ONE-ARG
+                              - RECONSTRUCT-N-ARGS [RECURSION]
+                            - RECONSTRUCT-N-ARGS [RECURSION]
+                          - RECONSTRUCT-TEMPLATE-ARGS [RECURSION]
+                      - CANONICALIZE-TYPE-SPECIFIER [See above]
+                      - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                      - ENSURE-TEMPLATE-INSTANTIATION
+                        - %RESOLVE-TEMPLATE-NAME
+                        - TRY-INFER-TEMPLATE-TYPES
+                          - %INFER-FROM-SINGLE-TEMPLATE
+                            - %UNWRAP-FUNCTION-SIGNATURE
+                            - MATCH-TEMPLATE-ARG
+                              - NORMALIZE-TEMPLATE-SIG-TYPE
+                              - MATCH-FUNCTION-SIGNATURE
+                                - MATCH-TEMPLATE-ARG [RECURSION]
+                              - MATCH-LIST-STRUCTURE
+                                - MATCH-TEMPLATE-ARG [RECURSION]
+                              - UNMANGLE-TEMPLATE-STRUCT-NAME [See above]
+                              - MATCH-TEMPLATE-ARG [RECURSION]
+                              - CANONICALIZE-TYPE-SPECIFIER [See above]
+                        - %SHOULD-INSTANTIATE-TEMPLATE
+                        - INSTANTIATE-TEMPLATE
+                          - VALIDATE-TEMPLATE-ARG [See above]
+                          - %INSTANTIATE-STRUCTURE-TEMPLATE
+                            - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                          - %INSTANTIATE-CALLABLE-TEMPLATE
+                      - COMPILE-TOPLEVEL-FORM [RECURSION]
+                - GET-EXPANDED-TYPES
+                  - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                  - RESOLVE-TYPE-TO-LLVM [See above]
+                  - GET-EXPANDED-TYPES [RECURSION]
+                  - CRISP-TYPE-TO-LLVM-TYPE [See above]
+                  - IS-GLOBAL-STORAGE-HANDLE-P
+                    - CANONICALIZE-TYPE-SPECIFIER [See above]
+                  - LLVM-TYPE-KIND-IS-POINTER?
+                  - ENCODE-ADDRESS-SPACE [See above]
+              - %CHECK-EXISTING-FUNCTION
+                - GENERATE-DEBUG-INFO
+                  - GET-OR-CREATE-DI-TYPE
+              - %CREATE-NEW-FUNCTION
+                - GENERATE-DEBUG-INFO [See above]
+            - ENSURE-OPENCL-KERNEL-METADATA
+            - GENERATE-FUNCTION-BODY
+              - INITIALIZE-FUNCTION-PARAMETERS
+                - GET-EXPANDED-TYPES [See above]
+                - IMPLODE-VALUE
+                  - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                  - CRISP-TYPE-TO-LLVM-TYPE [See above]
+                  - IMPLODE-VALUE [RECURSION]
+                  - GET-EXPANDED-TYPES [See above]
+                - CRISP-TYPE-TO-LLVM-TYPE [See above]
+              - GENERATE-EXPRESSION-IR
+                - GENERATE-NODE-IR
+                  - GENERATE-NODE-IR [RECURSION]
+                  - GET-LLVM-RETURN-TYPE [See above]
+                  - CRISP-TYPE-TO-LLVM-TYPE [See above]
+                  - %GENERATE-KEYWORD-LITERAL-IR
+                    - RESOLVE-KEYWORD-CONSTANT
+                  - %GENERATE-CELL-LITERAL-IR
+                    - CRISP-TYPE-TO-LLVM-TYPE [See above]
+                    - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                    - ENSURE-STRUCT-LLVM-TYPE [See above]
+                  - %GENERATE-ENUM-LITERAL-IR
+                    - RESOLVE-KEYWORD-CONSTANT [See above]
+                  - %GENERATE-SCALAR-LITERAL-IR
+                  - SEMANTIC-NODE-SOURCE-LOCATION
+                  - SEMANTIC-NODE-TYPE
+                  - EXTRACT-PRIMARY-VALUE
+                    - VALID-TYPE-P [See above]
+                  - GET-SINGLE-VALUE-TYPE
+                    - VALID-TYPE-P [See above]
+                    - GET-TEMPLATE-ARITY [See above]
+                    - SEMANTIC-NODE-TYPE [See above]
+                  - BUILD-CAST-IF-NEEDED
+                    - RESOLVE-TYPE-ALIAS [See above]
+                    - CRISP-TYPE-TO-LLVM-TYPE [See above]
+                    - GET-TYPE-CAT-SAFE
+                  - %HANDLE-DIE-INTRINSIC
+                  - GET-EXPANDED-TYPES [See above]
+                  - %BUILD-FUNCTION-CALL
+                    - PREPARE-CALL-ARGUMENTS
+                      - GENERATE-NODE-IR [RECURSION]
+                      - SEMANTIC-NODE-TYPE [See above]
+                      - EXTRACT-PRIMARY-VALUE [See above]
+                      - EXPLODE-VALUE
+                        - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                        - EXPLODE-VALUE [RECURSION]
+                    - SEMANTIC-NODE-SOURCE-LOCATION [See above]
+                  - %GENERATE-LET-BINDING
+                    - GET-SINGLE-VALUE-TYPE [See above]
+                    - GENERATE-EXPRESSION-IR [RECURSION]
+                    - CRISP-TYPE-TO-LLVM-TYPE [See above]
+                  - GENERATE-EXPRESSION-IR [RECURSION]
+                  - PREPARE-CALL-ARGUMENTS [See above]
+                  - TERMINATOR-P
+                  - ENSURE-STRUCT-LLVM-TYPE [See above]
+                  - RESOLVE-TYPE-TO-LLVM [See above]
+                  - LLVM-TYPE-KIND-IS-POINTER? [See above]
+                  - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+                  - RESOLVE-TYPE-ALIAS [See above]
+                  - CANONICALIZE-TYPE-SPECIFIER [See above]
+                  - UNMANGLE-TEMPLATE-STRUCT-NAME [See above]
+              - CRISP-TYPE-TO-LLVM-TYPE [See above]
+              - LLVM-TYPE-KIND-IS-POINTER? [See above]
+    - GENERATE-LOCATION-MAP
+      - WALK-AND-MAP-LOCATIONS
+        - WALK-AND-MAP-LOCATIONS [RECURSION]
+    - COMPILE-MODULE
+      - ANALYZE-SIGNATURES-PASS
+        - WALK-CODE-FORMS
+          - VISIT-TOPLEVEL-FORM [See above]
+        - REGISTER-FUNCTION-SIGNATURE [See above]
+        - SHALLOW-ANALYZE-BODY
+          - SCAN-FORM
+            - SCAN-OPERATOR
+              - SCAN-FORM [RECURSION]
+              - SCAN-OPERATOR [RECURSION]
+              - EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER [See above]
+            - SCAN-FORM [RECURSION]
+      - FINALIZE-STRUCT-DEFINITIONS
+        - REGISTER-STRUCT-DEFINITION
+          - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+          - COMPUTE-RECORD-LAYOUT
+            - GET-STD140-SIZE
+              - RESOLVE-TYPE-ALIAS [See above]
+              - VALID-TYPE-P [See above]
+              - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+          - COMPUTE-STD140-LAYOUT
+            - GET-STD140-BASE-ALIGNMENT
+              - RESOLVE-TYPE-ALIAS [See above]
+              - VALID-TYPE-P [See above]
+              - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+            - GET-STD140-SIZE [See above]
+            - CALCULATE-STD140-PADDING
+          - ENSURE-STRUCT-LLVM-TYPE [See above]
+      - PROPAGATE-IMPLICIT-ARGUMENTS
+      - COMPILE-FORMS-PASS
+        - COMPILE-TOPLEVEL-FORM [See above]
+        - WALK-CODE-FORMS [See above]
+      - CHECK-FOR-RECURSION-CYCLES
+        - DETECT-CYCLE-FROM-NODE
+          - DETECT-CYCLE-FROM-NODE [RECURSION]
+    - COMPILE-TO-SPIRV
+      - INJECT-SPIR-KERNEL-METADATA
+        - FIND-SPIR-KERNELS
+        - EXTRACT-KERNEL-PARAMS
+          - SPLIT-STRING [See above]
+        - GENERATE-KERNEL-METADATA
+          - IR-TYPE-TO-OPENCL-METADATA
+      - RESOLVE-TOOL-EXECUTABLE
+      - RUN-TOOL-COMMAND
+    - COMPILE-TO-PTX
+      - RESOLVE-TOOL-EXECUTABLE [See above]
+      - RUN-TOOL-COMMAND [See above]
+    - PRINT-COMPILER-ERROR
+    - GENERATE-METADATA-FOR-FILE
+      - EXTRACT-DEFINED-KERNELS
+      - COLLECT-KERNEL-DEPENDENCIES
+        - CANONICALIZE-TYPE-SPECIFIER [See above]
+        - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+      - SERIALIZE-ALIASES
+        - STRIP-PACKAGE-QUALIFIERS
+      - SERIALIZE-STRUCTS
+        - SORT-STRUCTS-BY-DEPENDENCY
+          - RESOLVE-TYPE-ALIAS [See above]
+        - STRIP-PACKAGE-QUALIFIERS [See above]
+      - SERIALIZE-KERNELS
+        - GENERATE-PHYSICAL-SIGNATURE
+          - STRIP-PACKAGE-QUALIFIERS [See above]
+          - %STORAGE-HANDLE-TYPE-P
+            - CANONICALIZE-TYPE-SPECIFIER [See above]
+          - CANONICALIZE-TYPE-SPECIFIER [See above]
+        - GENERATE-DECLARED-SIGNATURE
+          - GET-PHYSICAL-WIDTH
+            - %STORAGE-HANDLE-TYPE-P [See above]
+            - CANONICALIZE-TYPE-SPECIFIER [See above]
+          - STRIP-PACKAGE-QUALIFIERS [See above]
+          - %STORAGE-HANDLE-TYPE-P [See above]
+          - CANONICALIZE-TYPE-SPECIFIER [See above]
+        - GENERATE-IMPLICIT-SIGNATURE
+          - GET-PHYSICAL-WIDTH [See above]
+          - STRIP-PACKAGE-QUALIFIERS [See above]
+        - PRINT-WITHOUT-PACKAGES
+    - INVOKE-HOISTER
+      - GET-HOISTER-BINARY-PATH
+
+- %GENERATE-RAW-ACCESSOR
+  - DEF-FUNCTION
+    - REGISTER-FUNCTION-SIGNATURE [See above]
+    - DEF-FUNCTION [RECURSION]
+    - INTERNAL-DEF-FUNCTION
+      - PARSE-FUNCTION-DECLARATIONS [See above]
+      - INTERNAL-COMPILE-FUNCTION
+        - DETECT-AND-REGISTER-IMPLICIT-TEMPLATE
+          - INCOMPLETE-TYPE-P
+            - GET-TEMPLATE-ARITY [See above]
+            - FIND-STRUCT-DEFINITION-BY-NAME [See above]
+            - CANONICALIZE-TYPE-SPECIFIER [See above]
+          - DEF-FUNCTION [RECURSION]
+          - REGISTER-TEMPLATE [See above]
+        - SCAN-FOR-CARRIERS
+          - SHALLOW-ANALYZE-BODY [See above]
+        - INJECT-IMPLICIT-ARGUMENTS
+        - VALIDATE-RETURN-TYPES
+          - ANALYZE-BODY-EXPRESSIONS
+            - ANALYZE-EXPRESSION
+              - FIND-VARIABLE-IN-ENV
+              - ANALYZE-INCOMPLETE-TYPE-ACCESSOR
+                - ANALYZE-EXPRESSION [RECURSION]
+                - SEMANTIC-NODE-TYPE [See above]
+                - VALID-TYPE-P [See above]
+                - CANONICALIZE-TYPE-SPECIFIER [See above]
+              - ANALYZE-EXPRESSION [RECURSION]
+              - ANALYZE-FUNCTION-CALL
+                - ANALYZE-EXPRESSION [RECURSION]
+                - RESOLVE-BEST-SIGNATURE
+                  - TYPES-LIST-COMPATIBLE-P
+                  - INSTANTIATE-GENERIC-FUNCTION
+                    - RESOLVE-ARGUMENT-BINDINGS
+                      - BIND-KEYWORD-ARGS
+                      - TYPES-LIST-COMPATIBLE-P [See above]
+                      - INJECT-DEFAULTS
+                    - MANGLE-FUNCTION-VARIANT-NAME
+                    - INTERNAL-COMPILE-FUNCTION [RECURSION]
+                  - COMPILE-TOPLEVEL-FORM [See above]
+                - FIND-VARIABLE-IN-ENV [See above]
+          - SEMANTIC-NODE-TYPE [See above]
+          - VALID-TYPE-P [See above]
+          - TYPE-LISTS-EQUIVALENT-P
+          - SEMANTIC-NODE-SOURCE-LOCATION [See above]
+        - SEMANTIC-NODE-TYPE [See above]
+        - VALID-TYPE-P [See above]
+        - SEMANTIC-NODE-SOURCE-LOCATION [See above]
+
+- %GENERATE-STRUCT-ACCESSOR
+  - DEF-FUNCTION [See above]
+
+- ADDRESS-SPACE-VALUE
+  - ENCODE-ADDRESS-SPACE [See above]
+
+- ANALYZE-AREF-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - GET-ARRAY-ELEMENT-TYPE
+    - RESOLVE-TYPE-ALIAS [See above]
+    - UNMANGLE-TEMPLATE-STRUCT-NAME [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+  - FIND-VARIABLE-IN-ENV [See above]
+  - ANALYZE-FUNCTION-CALL [See above]
+
+- ANALYZE-ATOMIC-ADD!-EXPRESSION
+
+- ANALYZE-BITCAST-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+
+- ANALYZE-CAST-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - GET-SINGLE-VALUE-TYPE [See above]
+
+- ANALYZE-COMPILER-NO-OP
+
+- ANALYZE-DEC!-EXPRESSION
+
+- ANALYZE-EVAL-WHEN
+
+- ANALYZE-EXTRACT-STRUCT-MEMBER-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+
+- ANALYZE-FUNCALL-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+
+- ANALYZE-FUNCTION-LITERAL
+
+- ANALYZE-GENERIC-AS-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - VALID-TYPE-P [See above]
+
+- ANALYZE-INC!-EXPRESSION
+
+- ANALYZE-INSERT-STRUCT-MEMBER-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+  - TYPES-COMPATIBLE-P
+    - TYPES-EQUIVALENT-P
+      - RESOLVE-TYPE-ALIAS [See above]
+      - CANONICALIZE-TYPE-SPECIFIER [See above]
+      - EXCLUDED-TEMPLATE-BASE-TYPE-P [See above]
+      - COMPILE-TOPLEVEL-FORM [See above]
+      - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+      - TYPES-EQUIVALENT-P [RECURSION]
+      - VALID-TYPE-P [See above]
+    - VALID-TYPE-P [See above]
+    - UNMANGLE-TEMPLATE-STRUCT-NAME [See above]
+
+- ANALYZE-IS-SET-EXPRESSION
+  - FIND-VARIABLE-IN-ENV [See above]
+
+- ANALYZE-LET-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+  - GET-SINGLE-VALUE-TYPE [See above]
+  - SEMANTIC-NODE-SOURCE-LOCATION [See above]
+  - ANALYZE-BODY-EXPRESSIONS [See above]
+
+- ANALYZE-NESTED-DEF-FUNCTION
+  - COMPILE-TOPLEVEL-FORM [See above]
+
+- ANALYZE-PROGN-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+
+- ANALYZE-QUOTE
+
+- ANALYZE-RETURN-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+  - VALID-TYPE-P [See above]
+  - SEMANTIC-NODE-SOURCE-LOCATION [See above]
+
+- ANALYZE-SCRATCH-EXPRESSION
+  - EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER [See above]
+  - VALID-PARAMETERIZED-TYPE-P [See above]
+
+- ANALYZE-SET!-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - FIND-VARIABLE-IN-ENV [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+  - TYPES-COMPATIBLE-P [See above]
+  - TYPES-LIST-COMPATIBLE-P [See above]
+  - ENSURE-TEMPLATE-INSTANTIATION [See above]
+  - GET-STRUCT-MEMBER-INDEX
+    - VALID-TYPE-P [See above]
+    - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+    - FIND-STRUCT-DEFINITION-BY-NAME [See above]
+
+- ANALYZE-SIZEOF-EXPRESSION
+  - PARSE-TYPE-SPECIFIER [See above]
+  - VALID-TYPE-P [See above]
+
+- ANALYZE-STATIC-UNLESS-EXPRESSION
+  - ANALYZE-STATIC-IF-EXPRESSION
+    - ANALYZE-IF-EXPRESSION-IMPL
+      - ANALYZE-EXPRESSION [See above]
+      - TRY-CONSTANT-FOLD
+        - TRY-CONSTANT-FOLD [RECURSION]
+      - ENSURE-BRANCH-COMPATIBILITY
+        - SEMANTIC-NODE-TYPE [See above]
+        - GET-SINGLE-VALUE-TYPE [See above]
+        - GET-PROMOTED-TYPE
+          - RESOLVE-TYPE-ALIAS [See above]
+        - CREATE-IMPLICIT-CAST
+
+- ANALYZE-STATIC-WHEN-EXPRESSION
+  - ANALYZE-STATIC-IF-EXPRESSION [See above]
+
+- ANALYZE-STRUCT-CONSTRUCTION
+  - ANALYZE-EXPRESSION [See above]
+  - TYPE-EQUAL-P
+    - TYPES-EQUIVALENT-P [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+
+- ANALYZE-TEMPLATE-INSTANTIATION
+  - ANALYZE-EXPRESSION [See above]
+
+- ANALYZE-TRUNCATE-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+  - GET-SINGLE-VALUE-TYPE [See above]
+
+- ANALYZE-UNLESS-EXPRESSION
+  - ANALYZE-IF-EXPRESSION
+    - ANALYZE-IF-EXPRESSION-IMPL [See above]
+
+- ANALYZE-VALUE-CAST-EXPRESSION
+  - ANALYZE-EXPRESSION [See above]
+
+- ANALYZE-WHEN-EXPRESSION
+  - ANALYZE-IF-EXPRESSION [See above]
+
+- C-T-ASSERT
+
+- C-T-OUTPUT
+  - COMPILER-NO-OP
+
+- COMPILE-CRISP-FORM-TO-IR-STRING
+  - GENERATE-LOCATION-MAP [See above]
+  - GENERATE-LLVM-IR [See above]
+
+- DEF-BINARY-OP-ANALYZER
+  - ANALYZE-EXPRESSION [See above]
+  - GET-SINGLE-VALUE-TYPE [See above]
+  - GET-PROMOTED-TYPE [See above]
+
+- DEF-BINARY-OP-CODEGEN
+  - GENERATE-NODE-IR [See above]
+  - GET-SINGLE-VALUE-TYPE [See above]
+  - EXTRACT-PRIMARY-VALUE [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+  - BUILD-CAST-IF-NEEDED [See above]
+  - SEMANTIC-NODE-SOURCE-LOCATION [See above]
+
+- DEF-COMPARISON-ANALYZER
+  - ANALYZE-EXPRESSION [See above]
+
+- DEF-COMPARISON-CODEGEN
+  - GENERATE-NODE-IR [See above]
+  - GET-SINGLE-VALUE-TYPE [See above]
+  - EXTRACT-PRIMARY-VALUE [See above]
+  - SEMANTIC-NODE-TYPE [See above]
+
+- DEF-ENUMERATION
+
+- DEF-KERNEL
+  - PARSE-KERNEL-SIGNATURE
+    - %PARSE-KERNEL-TYPE-DECLARATIONS
+      - STRICT-VALID-TYPE-P
+        - VALID-TYPE-P [See above]
+      - VALID-TYPE-P [See above]
+    - %VALIDATE-KERNEL-PARAMETERS
+      - %INCOMPLETE-STORAGE-HANDLE-P
+        - %RESOLVE-ALIAS-STRICT
+          - %RESOLVE-ALIAS-STRICT-CHECKED
+            - %RESOLVE-ALIAS-STRICT-CHECKED [RECURSION]
+        - %STORAGE-HANDLE-TYPE-P [See above]
+      - INCOMPLETE-TYPE-P [See above]
+      - CANONICALIZE-TYPE-SPECIFIER [See above]
+    - %EXPLODE-KERNEL-ARGS
+      - %STORAGE-HANDLE-TYPE-P [See above]
+      - CANONICALIZE-TYPE-SPECIFIER [See above]
+      - MARSHALL-CELL
+        - CANONICALIZE-TYPE-SPECIFIER [See above]
+        - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+        - INSTANTIATE-TEMPLATE [See above]
+  - DEF-KERNEL-EXACT
+    - STRICT-VALID-TYPE-P [See above]
+    - VALID-TYPE-P [See above]
+    - %STORAGE-HANDLE-TYPE-P [See above]
+    - DEF-FUNCTION [See above]
+
+- DEF-RECORD
+  - REGISTER-STRUCT-DEFINITION [See above]
+  - VALIDATE-AND-REORDER-STRUCT-ARGS
+
+- DEF-SETTER
+  - DEF-FUNCTION [See above]
+
+- DEF-STRUCT
+  - REGISTER-STRUCT-DEFINITION [See above]
+  - VALIDATE-AND-REORDER-STRUCT-ARGS [See above]
+
+- DEF-TYPE
+  - VALID-TYPE-P [See above]
+
+- DUMP-ENV
+
+- GENERATE-COMPARISON-IR
+  - GENERATE-NODE-IR [See above]
+  - GET-SINGLE-VALUE-TYPE [See above]
+
+- GET-TEMPLATE-SIGNATURE
+
+- IF+
+
+- INITIALIZE-TEMPLATES
+
+- IS-ADDRESS-SPACE?
+
+- MAKE-STRUCTURE-TEMPLATE-INSTANCE
+  - MANGLE-TEMPLATE-STRUCT-NAME [See above]
+  - ENSURE-TEMPLATE-INSTANTIATION [See above]
+  - COMPILE-TOPLEVEL-FORM [See above]
+
+- MANGLE-PARAM-TYPE-NAME
+
+- MANGLE-TYPE-SPEC
+
+- PARSE-STRUCT-MEMBER-SPEC
+
+- PARSE-TEMPLATE-PARAMETER-SPEC
+
+- PRINT-OBJECT
+
+- R-T-ASSERT-0
+  - R-T-ASSERT
+
+- REGISTER-OVERLOAD
+
+- REORDER-TEMPLATE-ARGS-FROM-KEYWORDS
+
+- TEMPLATE-INSTANTIATION
+
+- VALIDATE-01-ALIASES
+  - VALIDATE-METADATA-DEF-TYPE
+
+- VALIDATE-04-BASIC-STRUCT
+  - VALIDATE-STRUCT-PRESENCE
+
+- VALIDATE-06-NESTED-STRUCTS
+  - VALIDATE-STRUCT-PRESENCE [See above]
+
+- VALIDATE-10-BASICS-META
+  - VALIDATE-KERNEL-METADATA
+
+- VALIDATE-10-BASICS-MULTI
+  - VALIDATE-KERNEL-METADATA [See above]
+
+- VALIDATE-10-BASICS-SPV
+  - VALIDATE-KERNEL-METADATA [See above]
+
+- VALIDATE-12-MULTIPLE-KERNELS
+  - VALIDATE-KERNEL-METADATA [See above]
+
+- VALIDATE-14-PHYSICAL-SIGNATURE
+
+- VALIDATE-18-IMPLICIT-SIGNATURE
+
+- VALIDATE-C-STYLE-NAME-IR
+  - VALIDATE-KERNEL-NAME-EXACT-IR
+
+- VALIDATE-CALL-FUNCTION-F-IR
+  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
+
+- VALIDATE-CALL-FUNCTION-IR
+  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
+
+- VALIDATE-CELL-ADD-F-IR
+  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
+
+- VALIDATE-CELL-ADD-I-IR
+  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
+
+- VALIDATE-DEF-RECORD-EXPLODE-IR
+
+- VALIDATE-DEF-RECORD-EXPLOSION
+
+- VALIDATE-DEF-RECORD-EXPLOSION-IR
+
+- VALIDATE-MY-KERNEL-SCRATCH-IR
+
+- VALIDATE-RETURN-7-IR
+  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
+
+- VALIDATE-SCRATCH-CELL-EXPLOSION
+
+- VALIDATE-SCRATCH-CELL-EXPLOSION-IR
+
+- VALIDATE-TOP-KERNEL-4-ARGS-IR
+
+- WITH-STRUCT-ACCESSORS
+
+- WITH-TEMPLATE-TYPE
+
