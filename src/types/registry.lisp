@@ -50,11 +50,16 @@ This supports overloading templates by arity or other factors.")
         "If true, runtime assertions (r-t-assert) are compiled.")
 
 (defvar *current-compiling-function* nil)
-(defvar *current-module* nil)
-(defvar *current-builder* nil)
-(defvar *current-di-builder* nil)
-(defvar *current-di-compile-unit* nil)
-(defvar *current-location-map* nil)
+;; (defvar *current-module* nil) -> Moved to session
+(define-symbol-macro *current-module* (compiler-session-module *compiler-session*))
+;; (defvar *current-builder* nil) -> Moved to session
+(define-symbol-macro *current-builder* (compiler-session-builder *compiler-session*))
+;; (defvar *current-di-builder* nil) -> Moved to session
+(define-symbol-macro *current-di-builder* (compiler-session-di-builder *compiler-session*))
+;; (defvar *current-di-compile-unit* nil) -> Moved to session
+(define-symbol-macro *current-di-compile-unit* (compiler-session-di-compile-unit *compiler-session*))
+;; (defvar *current-location-map* nil) -> Moved to session
+(define-symbol-macro *current-location-map* (compiler-session-location-map *compiler-session*))
 (defvar *allow-nested-def-function* nil)
 (defvar *current-function-declarations* nil "Function declarations for current function being compiled.")
 

@@ -36,6 +36,9 @@
 
 (defparameter *all-functions* '()) ; List of strings
 (defparameter *defined-functions-set* (make-hash-table :test #'equal)) ; Set for fast lookup
+(defparameter *function-signatures* (make-hash-table :test #'equal)) ; Key: Name, Value: Lambda List
+(defparameter *function-files* (make-hash-table :test #'equal)) ; Key: Name, Value: Relative Path String
+(defparameter *function-packages* (make-hash-table :test #'equal)) ; Key: Name, Value: Package Name String
 
 ;;; ---------------------------------------------------------------------------
 ;;; Filtering
@@ -97,7 +100,7 @@
 ;;; Scanning
 ;;; ---------------------------------------------------------------------------
 
-(defun scan-definitions (form)
+(defun scan-definitions (form path)
   (when (and (consp form) (symbolp (car form)))
         (let ((op (symbol-name (car form))))
           (cond
@@ -107,9 +110,30 @@
                      (let ((s-name (symbol-name name)))
                        (unless (member s-name *ignored-functions* :test #'string=)
                          (pushnew s-name *all-functions* :test #'string=)
-                         (setf (gethash s-name *defined-functions-set*) t))))))))))
+                         (setf (gethash s-name *defined-functions-set*) t)
 
-(defun scan-calls (form)
+                         ;; Capture relative file path
+                         (let* ((full-path (namestring path))
+                                (src-pos (search "src" full-path :test #'string-equal)))
+                           (when src-pos
+                                 ;; +4 to skip "src/" or "src\"
+                                 (let ((rel-path (subseq full-path (+ src-pos 4))))
+                                   (setf (gethash s-name *function-files*) rel-path))))
+
+                         ;; Capture Package Name
+                         (let ((pkg (symbol-package name)))
+                           (when pkg
+                                 (setf (gethash s-name *function-packages*) (package-name pkg))))
+
+                         ;; Capture arguments (usually 3rd element, but check for DEFMETHOD qualifiers)
+                         (let ((args (if (string= op "DEFMETHOD")
+                                         (find-if #'listp (cddr form))
+                                         (third form))))
+                           (when (listp args)
+                                 (setf (gethash s-name *function-signatures*) args))))))))))))
+
+(defun scan-calls (form path)
+  (declare (ignore path))
   (when (and (consp form) (symbolp (car form)))
         (let ((op (symbol-name (car form))))
           (cond
@@ -124,12 +148,21 @@
 (defun process-file (path pass-fn)
   (with-open-file (in path :direction :input :if-does-not-exist nil)
     (when in
-          (loop
-           (let ((form (handler-case (read in nil :eof) (error (e) :error))))
-             (cond
-              ((eq form :eof) (return))
-              ((eq form :error) nil)
-              (t (funcall pass-fn form))))))))
+          (let ((*package* (find-package :crisp.compiler))) ;; Default start package (good guess)
+            (loop
+             (let ((form (handler-case (read in nil :eof) (error (e) :error))))
+               (cond
+                ((eq form :eof) (return))
+                ((eq form :error) nil)
+                ((and (consp form) (eq (car form) 'in-package))
+                  ;; Handle in-package form to switch reader context
+                  (let ((pkg-name (second form)))
+                    (when (or (stringp pkg-name) (symbolp pkg-name))
+                          (let ((pkg (find-package pkg-name)))
+                            (if pkg
+                                (setf *package* pkg)
+                                (format *error-output* "Warning: Package ~a not found.~%" pkg-name))))))
+                (t (funcall pass-fn form path)))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Output
@@ -139,8 +172,20 @@
 
 (defun print-tree (node depth visited stream)
   ;; Simple indentation loop
-  (dotimes (i depth) (format stream " "))
-  (format stream "- ~a" node)
+  (dotimes (i depth) (format stream "- "))
+
+  (let ((sig (gethash node *function-signatures*))
+        (file (gethash node *function-files*))
+        (pkg (gethash node *function-packages*)))
+    (if sig
+        (format stream "- (~a~{ ~a~})" node sig)
+        (format stream "- (~a)" node))
+
+    (when (and pkg (string/= pkg "CRISP.COMPILER"))
+          (format stream " :~a" pkg))
+
+    (when file
+          (format stream "  ~a" file)))
 
   (cond
    ;; 1. Recursion Check (Cycle in current stack)
@@ -158,7 +203,7 @@
            (new-visited (cons node visited)))
        (format stream "~%")
        (dolist (child callees)
-         (print-tree child (+ depth 2) new-visited stream))))))
+         (print-tree child (+ depth 1) new-visited stream))))))
 
 (defun find-roots ()
   ;; Roots are defined functions that are NOT called by any other defined function
@@ -185,6 +230,7 @@
   (with-open-file (out "docs/call_graph.md" :direction :output :if-exists :supersede)
     (format out "# Application Call Graph~%~%")
     (format out "This graph shows the hierarchy of internal function calls.~%")
+    (format out "Entries without a package name are in :CRISP.COMPILER.~%")
     (format out "Nodes marked `[RECURSION]` indicate a cycle.~%")
     (format out "Nodes marked `[See above]` have been expanded previously in the document.~%~%")
 

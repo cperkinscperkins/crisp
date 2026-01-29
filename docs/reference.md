@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-26T00:37:15.793861Z
+Generated on 2026-01-29T06:00:09.364511Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -1928,6 +1928,20 @@ Generated on 2026-01-26T00:37:15.793861Z
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp\src\session.lisp`
+
+### DEFSTRUCT `COMPILER-SESSION`
+
+  > Holds the state for a single compilation session or pass.
+
+
+---
+### DEFVAR `*COMPILER-SESSION*`
+
+  > The active compiler session state. Bound dynamically during compilation passes.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp\src\structs.lisp`
 
 ### DEFUN `GET-STD140-BASE-ALIGNMENT`
@@ -2251,21 +2265,6 @@ Generated on 2026-01-26T00:37:15.793861Z
 
 ---
 ### DEFVAR `*CURRENT-COMPILING-FUNCTION*`
-
----
-### DEFVAR `*CURRENT-MODULE*`
-
----
-### DEFVAR `*CURRENT-BUILDER*`
-
----
-### DEFVAR `*CURRENT-DI-BUILDER*`
-
----
-### DEFVAR `*CURRENT-DI-COMPILE-UNIT*`
-
----
-### DEFVAR `*CURRENT-LOCATION-MAP*`
 
 ---
 ### DEFVAR `*ALLOW-NESTED-DEF-FUNCTION*`
