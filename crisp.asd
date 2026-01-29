@@ -17,6 +17,7 @@
            :components ((:file "src/package") ; 1. Defines all packages
                                              (:file "src/llvm-bindings") ; 2. Uses one package, defines FFI
                                              (:file "src/utils")
+                                             (:file "src/session") ;; NEW - Compiler Session
                                              (:file "src/mangling") ;; NEW
                                              (:file "src/semantic")
                                              (:file "src/errors") ; 3. Conditions

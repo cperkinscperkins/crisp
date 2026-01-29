@@ -1,640 +1,650 @@
 # Application Call Graph
 
 This graph shows the hierarchy of internal function calls.
+Entries without a package name are in :CRISP.COMPILER.
 Nodes marked `[RECURSION]` indicate a cycle.
 Nodes marked `[See above]` have been expanded previously in the document.
 
 ## Roots (Entry Points & Unused Functions)
-- MAIN
-  - PARSE-CLI-ARGS
-    - INITIALIZE-COMPILER
-      - INITIALIZE-CRISP-TYPES
-      - INITIALIZE-EXPRESSION-ANALYZERS
-        - REGISTER-OPS-ANALYZERS
-          - DEF-EXPRESSION-ANALYZER
-        - REGISTER-CONTROL-ANALYZERS
-          - DEF-EXPRESSION-ANALYZER [See above]
-        - REGISTER-STRUCT-ANALYZERS
-          - DEF-EXPRESSION-ANALYZER [See above]
-      - INITIALIZE-ADVISEMENTS
-        - ADVISE-FUNCTION
-      - REGISTER-BUILTINS
-        - REGISTER-TEMPLATE
-  - COMPILE-FILES
-    - INITIALIZE-DEBUG-CONTEXT
-    - COMPILE-TOPLEVEL-FORM
-      - VISIT-TOPLEVEL-FORM
-        - VISIT-TOPLEVEL-FORM [RECURSION]
-      - COMPILE-DEF-FUNCTION
-        - REGISTER-FUNCTION-SIGNATURE
-          - PARSE-FUNCTION-DECLARATIONS
-            - ANALYZE-RETURN-TYPE-FROM-SPEC
-              - PARSE-TYPE-SPECIFIER
-                - RESOLVE-TYPE-ALIAS
-                - VALID-TYPE-P
-                  - VALID-BASIC-TYPE-P
-                  - VALID-FUNCTION-TYPE-P
-                  - VALID-PARAMETERIZED-TYPE-P
-                    - CANONICALIZE-TYPE-SPECIFIER
-                      - EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER
-                      - CANONICALIZE-TYPE-SPECIFIER [RECURSION]
-                      - RESOLVE-TYPE-ALIAS [See above]
-                      - VALIDATE-TEMPLATE-ARG
-                    - EXCLUDED-TEMPLATE-BASE-TYPE-P
-                    - %VALIDATE-TEMPLATE-INSTANTIATION
-                      - MANGLE-TEMPLATE-STRUCT-NAME
-                        - MANGLE-TEMPLATE-STRUCT-NAME [RECURSION]
-                      - %INSTANTIATE-TEMPLATE-IF-NEEDED
-                        - COMPILE-TOPLEVEL-FORM [RECURSION]
-                - PARSE-TYPE-SPECIFIER [RECURSION]
-                - EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER [See above]
-                - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                - VALID-FUNCTION-TYPE-P [See above]
-                - GET-TEMPLATE-ARITY
-            - ANALYZE-RETURN-TYPE-FROM-LIST
-              - VALID-TYPE-P [See above]
-            - ANALYZE-ENVIRONMENT-FROM-SPEC
-              - PARSE-TYPE-SPECIFIER [See above]
-            - VALID-TYPE-P [See above]
-            - PARSE-TYPE-SPECIFIER [See above]
-            - ANALYZE-ENVIRONMENT-FROM-LIST
-              - VALID-TYPE-P [See above]
-              - PARSE-TYPE-SPECIFIER [See above]
-          - %REGISTER-GENERIC-FUNCTION
-          - %REGISTER-STANDARD-FUNCTION
-            - %FIND-ENTRY-POINT-DECLARATION
-            - %VALIDATE-KERNEL-RETURN-TYPE
-        - PARSE-FUNCTION-DECLARATIONS [See above]
-        - %COMPILE-STANDARD-FUNCTION
-          - GENERATE-LLVM-IR
-            - GENERATE-FUNCTION-PROTOTYPE
-              - CREATE-LLVM-FUNCTION-TYPE
-                - GET-LLVM-RETURN-TYPE
-                  - CRISP-TYPE-TO-LLVM-TYPE
-                    - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                    - RESOLVE-TYPE-TO-LLVM
-                      - RESOLVE-TYPE-TO-LLVM [RECURSION]
-                      - ENCODE-ADDRESS-SPACE
-                      - FIND-STRUCT-DEFINITION-BY-NAME
-                      - ENSURE-STRUCT-LLVM-TYPE
-                        - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                        - FIND-STRUCT-DEFINITION-BY-NAME [See above]
-                        - RESOLVE-TYPE-TO-LLVM [RECURSION]
-                      - VALID-TYPE-P [See above]
-                      - FIND-TEMPLATE-ROBUST
-                      - UNMANGLE-TEMPLATE-STRUCT-NAME
-                        - SPLIT-STRING
-                        - RECONSTRUCT-TEMPLATE-ARGS
-                          - RECONSTRUCT-N-ARGS
-                            - RECONSTRUCT-ONE-ARG
-                              - RECONSTRUCT-N-ARGS [RECURSION]
-                            - RECONSTRUCT-N-ARGS [RECURSION]
-                          - RECONSTRUCT-TEMPLATE-ARGS [RECURSION]
-                      - CANONICALIZE-TYPE-SPECIFIER [See above]
-                      - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                      - ENSURE-TEMPLATE-INSTANTIATION
-                        - %RESOLVE-TEMPLATE-NAME
-                        - TRY-INFER-TEMPLATE-TYPES
-                          - %INFER-FROM-SINGLE-TEMPLATE
-                            - %UNWRAP-FUNCTION-SIGNATURE
-                            - MATCH-TEMPLATE-ARG
-                              - NORMALIZE-TEMPLATE-SIG-TYPE
-                              - MATCH-FUNCTION-SIGNATURE
-                                - MATCH-TEMPLATE-ARG [RECURSION]
-                              - MATCH-LIST-STRUCTURE
-                                - MATCH-TEMPLATE-ARG [RECURSION]
-                              - UNMANGLE-TEMPLATE-STRUCT-NAME [See above]
-                              - MATCH-TEMPLATE-ARG [RECURSION]
-                              - CANONICALIZE-TYPE-SPECIFIER [See above]
-                        - %SHOULD-INSTANTIATE-TEMPLATE
-                        - INSTANTIATE-TEMPLATE
-                          - VALIDATE-TEMPLATE-ARG [See above]
-                          - %INSTANTIATE-STRUCTURE-TEMPLATE
-                            - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                          - %INSTANTIATE-CALLABLE-TEMPLATE
-                      - COMPILE-TOPLEVEL-FORM [RECURSION]
-                - GET-EXPANDED-TYPES
-                  - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                  - RESOLVE-TYPE-TO-LLVM [See above]
-                  - GET-EXPANDED-TYPES [RECURSION]
-                  - CRISP-TYPE-TO-LLVM-TYPE [See above]
-                  - IS-GLOBAL-STORAGE-HANDLE-P
-                    - CANONICALIZE-TYPE-SPECIFIER [See above]
-                  - LLVM-TYPE-KIND-IS-POINTER?
-                  - ENCODE-ADDRESS-SPACE [See above]
-              - %CHECK-EXISTING-FUNCTION
-                - GENERATE-DEBUG-INFO
-                  - GET-OR-CREATE-DI-TYPE
-              - %CREATE-NEW-FUNCTION
-                - GENERATE-DEBUG-INFO [See above]
-            - ENSURE-OPENCL-KERNEL-METADATA
-            - GENERATE-FUNCTION-BODY
-              - INITIALIZE-FUNCTION-PARAMETERS
-                - GET-EXPANDED-TYPES [See above]
-                - IMPLODE-VALUE
-                  - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                  - CRISP-TYPE-TO-LLVM-TYPE [See above]
-                  - IMPLODE-VALUE [RECURSION]
-                  - GET-EXPANDED-TYPES [See above]
-                - CRISP-TYPE-TO-LLVM-TYPE [See above]
-              - GENERATE-EXPRESSION-IR
-                - GENERATE-NODE-IR
-                  - GENERATE-NODE-IR [RECURSION]
-                  - GET-LLVM-RETURN-TYPE [See above]
-                  - CRISP-TYPE-TO-LLVM-TYPE [See above]
-                  - %GENERATE-KEYWORD-LITERAL-IR
-                    - RESOLVE-KEYWORD-CONSTANT
-                  - %GENERATE-CELL-LITERAL-IR
-                    - CRISP-TYPE-TO-LLVM-TYPE [See above]
-                    - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                    - ENSURE-STRUCT-LLVM-TYPE [See above]
-                  - %GENERATE-ENUM-LITERAL-IR
-                    - RESOLVE-KEYWORD-CONSTANT [See above]
-                  - %GENERATE-SCALAR-LITERAL-IR
-                  - SEMANTIC-NODE-SOURCE-LOCATION
-                  - SEMANTIC-NODE-TYPE
-                  - EXTRACT-PRIMARY-VALUE
-                    - VALID-TYPE-P [See above]
-                  - GET-SINGLE-VALUE-TYPE
-                    - VALID-TYPE-P [See above]
-                    - GET-TEMPLATE-ARITY [See above]
-                    - SEMANTIC-NODE-TYPE [See above]
-                  - BUILD-CAST-IF-NEEDED
-                    - RESOLVE-TYPE-ALIAS [See above]
-                    - CRISP-TYPE-TO-LLVM-TYPE [See above]
-                    - GET-TYPE-CAT-SAFE
-                  - %HANDLE-DIE-INTRINSIC
-                  - GET-EXPANDED-TYPES [See above]
-                  - %BUILD-FUNCTION-CALL
-                    - PREPARE-CALL-ARGUMENTS
-                      - GENERATE-NODE-IR [RECURSION]
-                      - SEMANTIC-NODE-TYPE [See above]
-                      - EXTRACT-PRIMARY-VALUE [See above]
-                      - EXPLODE-VALUE
-                        - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                        - EXPLODE-VALUE [RECURSION]
-                    - SEMANTIC-NODE-SOURCE-LOCATION [See above]
-                  - %GENERATE-LET-BINDING
-                    - GET-SINGLE-VALUE-TYPE [See above]
-                    - GENERATE-EXPRESSION-IR [RECURSION]
-                    - CRISP-TYPE-TO-LLVM-TYPE [See above]
-                  - GENERATE-EXPRESSION-IR [RECURSION]
-                  - PREPARE-CALL-ARGUMENTS [See above]
-                  - TERMINATOR-P
-                  - ENSURE-STRUCT-LLVM-TYPE [See above]
-                  - RESOLVE-TYPE-TO-LLVM [See above]
-                  - LLVM-TYPE-KIND-IS-POINTER? [See above]
-                  - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-                  - RESOLVE-TYPE-ALIAS [See above]
-                  - CANONICALIZE-TYPE-SPECIFIER [See above]
-                  - UNMANGLE-TEMPLATE-STRUCT-NAME [See above]
-              - CRISP-TYPE-TO-LLVM-TYPE [See above]
-              - LLVM-TYPE-KIND-IS-POINTER? [See above]
-    - GENERATE-LOCATION-MAP
-      - WALK-AND-MAP-LOCATIONS
-        - WALK-AND-MAP-LOCATIONS [RECURSION]
-    - COMPILE-MODULE
-      - ANALYZE-SIGNATURES-PASS
-        - WALK-CODE-FORMS
-          - VISIT-TOPLEVEL-FORM [See above]
-        - REGISTER-FUNCTION-SIGNATURE [See above]
-        - SHALLOW-ANALYZE-BODY
-          - SCAN-FORM
-            - SCAN-OPERATOR
-              - SCAN-FORM [RECURSION]
-              - SCAN-OPERATOR [RECURSION]
-              - EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER [See above]
-            - SCAN-FORM [RECURSION]
-      - FINALIZE-STRUCT-DEFINITIONS
-        - REGISTER-STRUCT-DEFINITION
-          - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-          - COMPUTE-RECORD-LAYOUT
-            - GET-STD140-SIZE
-              - RESOLVE-TYPE-ALIAS [See above]
-              - VALID-TYPE-P [See above]
-              - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-          - COMPUTE-STD140-LAYOUT
-            - GET-STD140-BASE-ALIGNMENT
-              - RESOLVE-TYPE-ALIAS [See above]
-              - VALID-TYPE-P [See above]
-              - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-            - GET-STD140-SIZE [See above]
-            - CALCULATE-STD140-PADDING
-          - ENSURE-STRUCT-LLVM-TYPE [See above]
-      - PROPAGATE-IMPLICIT-ARGUMENTS
-      - COMPILE-FORMS-PASS
-        - COMPILE-TOPLEVEL-FORM [See above]
-        - WALK-CODE-FORMS [See above]
-      - CHECK-FOR-RECURSION-CYCLES
-        - DETECT-CYCLE-FROM-NODE
-          - DETECT-CYCLE-FROM-NODE [RECURSION]
-    - COMPILE-TO-SPIRV
-      - INJECT-SPIR-KERNEL-METADATA
-        - FIND-SPIR-KERNELS
-        - EXTRACT-KERNEL-PARAMS
-          - SPLIT-STRING [See above]
-        - GENERATE-KERNEL-METADATA
-          - IR-TYPE-TO-OPENCL-METADATA
-      - RESOLVE-TOOL-EXECUTABLE
-      - RUN-TOOL-COMMAND
-    - COMPILE-TO-PTX
-      - RESOLVE-TOOL-EXECUTABLE [See above]
-      - RUN-TOOL-COMMAND [See above]
-    - PRINT-COMPILER-ERROR
-    - GENERATE-METADATA-FOR-FILE
-      - EXTRACT-DEFINED-KERNELS
-      - COLLECT-KERNEL-DEPENDENCIES
-        - CANONICALIZE-TYPE-SPECIFIER [See above]
-        - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-      - SERIALIZE-ALIASES
-        - STRIP-PACKAGE-QUALIFIERS
-      - SERIALIZE-STRUCTS
-        - SORT-STRUCTS-BY-DEPENDENCY
-          - RESOLVE-TYPE-ALIAS [See above]
-        - STRIP-PACKAGE-QUALIFIERS [See above]
-      - SERIALIZE-KERNELS
-        - GENERATE-PHYSICAL-SIGNATURE
-          - STRIP-PACKAGE-QUALIFIERS [See above]
-          - %STORAGE-HANDLE-TYPE-P
-            - CANONICALIZE-TYPE-SPECIFIER [See above]
-          - CANONICALIZE-TYPE-SPECIFIER [See above]
-        - GENERATE-DECLARED-SIGNATURE
-          - GET-PHYSICAL-WIDTH
-            - %STORAGE-HANDLE-TYPE-P [See above]
-            - CANONICALIZE-TYPE-SPECIFIER [See above]
-          - STRIP-PACKAGE-QUALIFIERS [See above]
-          - %STORAGE-HANDLE-TYPE-P [See above]
-          - CANONICALIZE-TYPE-SPECIFIER [See above]
-        - GENERATE-IMPLICIT-SIGNATURE
-          - GET-PHYSICAL-WIDTH [See above]
-          - STRIP-PACKAGE-QUALIFIERS [See above]
-        - PRINT-WITHOUT-PACKAGES
-    - INVOKE-HOISTER
-      - GET-HOISTER-BINARY-PATH
-
-- %GENERATE-RAW-ACCESSOR
-  - DEF-FUNCTION
-    - REGISTER-FUNCTION-SIGNATURE [See above]
-    - DEF-FUNCTION [RECURSION]
-    - INTERNAL-DEF-FUNCTION
-      - PARSE-FUNCTION-DECLARATIONS [See above]
-      - INTERNAL-COMPILE-FUNCTION
-        - DETECT-AND-REGISTER-IMPLICIT-TEMPLATE
-          - INCOMPLETE-TYPE-P
-            - GET-TEMPLATE-ARITY [See above]
-            - FIND-STRUCT-DEFINITION-BY-NAME [See above]
-            - CANONICALIZE-TYPE-SPECIFIER [See above]
-          - DEF-FUNCTION [RECURSION]
-          - REGISTER-TEMPLATE [See above]
-        - SCAN-FOR-CARRIERS
-          - SHALLOW-ANALYZE-BODY [See above]
-        - INJECT-IMPLICIT-ARGUMENTS
-        - VALIDATE-RETURN-TYPES
-          - ANALYZE-BODY-EXPRESSIONS
-            - ANALYZE-EXPRESSION
-              - FIND-VARIABLE-IN-ENV
-              - ANALYZE-INCOMPLETE-TYPE-ACCESSOR
-                - ANALYZE-EXPRESSION [RECURSION]
-                - SEMANTIC-NODE-TYPE [See above]
-                - VALID-TYPE-P [See above]
-                - CANONICALIZE-TYPE-SPECIFIER [See above]
-              - ANALYZE-EXPRESSION [RECURSION]
-              - ANALYZE-FUNCTION-CALL
-                - ANALYZE-EXPRESSION [RECURSION]
-                - RESOLVE-BEST-SIGNATURE
-                  - TYPES-LIST-COMPATIBLE-P
-                  - INSTANTIATE-GENERIC-FUNCTION
-                    - RESOLVE-ARGUMENT-BINDINGS
-                      - BIND-KEYWORD-ARGS
-                      - TYPES-LIST-COMPATIBLE-P [See above]
-                      - INJECT-DEFAULTS
-                    - MANGLE-FUNCTION-VARIANT-NAME
-                    - INTERNAL-COMPILE-FUNCTION [RECURSION]
-                  - COMPILE-TOPLEVEL-FORM [See above]
-                - FIND-VARIABLE-IN-ENV [See above]
-          - SEMANTIC-NODE-TYPE [See above]
-          - VALID-TYPE-P [See above]
-          - TYPE-LISTS-EQUIVALENT-P
-          - SEMANTIC-NODE-SOURCE-LOCATION [See above]
-        - SEMANTIC-NODE-TYPE [See above]
-        - VALID-TYPE-P [See above]
-        - SEMANTIC-NODE-SOURCE-LOCATION [See above]
-
-- %GENERATE-STRUCT-ACCESSOR
-  - DEF-FUNCTION [See above]
-
-- ADDRESS-SPACE-VALUE
-  - ENCODE-ADDRESS-SPACE [See above]
-
-- ANALYZE-AREF-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - GET-ARRAY-ELEMENT-TYPE
-    - RESOLVE-TYPE-ALIAS [See above]
-    - UNMANGLE-TEMPLATE-STRUCT-NAME [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-  - FIND-VARIABLE-IN-ENV [See above]
-  - ANALYZE-FUNCTION-CALL [See above]
-
-- ANALYZE-ATOMIC-ADD!-EXPRESSION
-
-- ANALYZE-BITCAST-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-
-- ANALYZE-CAST-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - GET-SINGLE-VALUE-TYPE [See above]
-
-- ANALYZE-COMPILER-NO-OP
-
-- ANALYZE-DEC!-EXPRESSION
-
-- ANALYZE-EVAL-WHEN
-
-- ANALYZE-EXTRACT-STRUCT-MEMBER-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-
-- ANALYZE-FUNCALL-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-
-- ANALYZE-FUNCTION-LITERAL
-
-- ANALYZE-GENERIC-AS-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - VALID-TYPE-P [See above]
-
-- ANALYZE-INC!-EXPRESSION
-
-- ANALYZE-INSERT-STRUCT-MEMBER-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-  - TYPES-COMPATIBLE-P
-    - TYPES-EQUIVALENT-P
-      - RESOLVE-TYPE-ALIAS [See above]
-      - CANONICALIZE-TYPE-SPECIFIER [See above]
-      - EXCLUDED-TEMPLATE-BASE-TYPE-P [See above]
-      - COMPILE-TOPLEVEL-FORM [See above]
-      - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-      - TYPES-EQUIVALENT-P [RECURSION]
-      - VALID-TYPE-P [See above]
-    - VALID-TYPE-P [See above]
-    - UNMANGLE-TEMPLATE-STRUCT-NAME [See above]
-
-- ANALYZE-IS-SET-EXPRESSION
-  - FIND-VARIABLE-IN-ENV [See above]
-
-- ANALYZE-LET-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-  - GET-SINGLE-VALUE-TYPE [See above]
-  - SEMANTIC-NODE-SOURCE-LOCATION [See above]
-  - ANALYZE-BODY-EXPRESSIONS [See above]
-
-- ANALYZE-NESTED-DEF-FUNCTION
-  - COMPILE-TOPLEVEL-FORM [See above]
-
-- ANALYZE-PROGN-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-
-- ANALYZE-QUOTE
-
-- ANALYZE-RETURN-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-  - VALID-TYPE-P [See above]
-  - SEMANTIC-NODE-SOURCE-LOCATION [See above]
-
-- ANALYZE-SCRATCH-EXPRESSION
-  - EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER [See above]
-  - VALID-PARAMETERIZED-TYPE-P [See above]
-
-- ANALYZE-SET!-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - FIND-VARIABLE-IN-ENV [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-  - TYPES-COMPATIBLE-P [See above]
-  - TYPES-LIST-COMPATIBLE-P [See above]
-  - ENSURE-TEMPLATE-INSTANTIATION [See above]
-  - GET-STRUCT-MEMBER-INDEX
-    - VALID-TYPE-P [See above]
-    - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-    - FIND-STRUCT-DEFINITION-BY-NAME [See above]
-
-- ANALYZE-SIZEOF-EXPRESSION
-  - PARSE-TYPE-SPECIFIER [See above]
-  - VALID-TYPE-P [See above]
-
-- ANALYZE-STATIC-UNLESS-EXPRESSION
-  - ANALYZE-STATIC-IF-EXPRESSION
-    - ANALYZE-IF-EXPRESSION-IMPL
-      - ANALYZE-EXPRESSION [See above]
-      - TRY-CONSTANT-FOLD
-        - TRY-CONSTANT-FOLD [RECURSION]
-      - ENSURE-BRANCH-COMPATIBILITY
-        - SEMANTIC-NODE-TYPE [See above]
-        - GET-SINGLE-VALUE-TYPE [See above]
-        - GET-PROMOTED-TYPE
-          - RESOLVE-TYPE-ALIAS [See above]
-        - CREATE-IMPLICIT-CAST
-
-- ANALYZE-STATIC-WHEN-EXPRESSION
-  - ANALYZE-STATIC-IF-EXPRESSION [See above]
-
-- ANALYZE-STRUCT-CONSTRUCTION
-  - ANALYZE-EXPRESSION [See above]
-  - TYPE-EQUAL-P
-    - TYPES-EQUIVALENT-P [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-
-- ANALYZE-TEMPLATE-INSTANTIATION
-  - ANALYZE-EXPRESSION [See above]
-
-- ANALYZE-TRUNCATE-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-  - GET-SINGLE-VALUE-TYPE [See above]
-
-- ANALYZE-UNLESS-EXPRESSION
-  - ANALYZE-IF-EXPRESSION
-    - ANALYZE-IF-EXPRESSION-IMPL [See above]
-
-- ANALYZE-VALUE-CAST-EXPRESSION
-  - ANALYZE-EXPRESSION [See above]
-
-- ANALYZE-WHEN-EXPRESSION
-  - ANALYZE-IF-EXPRESSION [See above]
-
-- C-T-ASSERT
-
-- C-T-OUTPUT
-  - COMPILER-NO-OP
-
-- COMPILE-CRISP-FORM-TO-IR-STRING
-  - GENERATE-LOCATION-MAP [See above]
-  - GENERATE-LLVM-IR [See above]
-
-- DEF-BINARY-OP-ANALYZER
-  - ANALYZE-EXPRESSION [See above]
-  - GET-SINGLE-VALUE-TYPE [See above]
-  - GET-PROMOTED-TYPE [See above]
-
-- DEF-BINARY-OP-CODEGEN
-  - GENERATE-NODE-IR [See above]
-  - GET-SINGLE-VALUE-TYPE [See above]
-  - EXTRACT-PRIMARY-VALUE [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-  - BUILD-CAST-IF-NEEDED [See above]
-  - SEMANTIC-NODE-SOURCE-LOCATION [See above]
-
-- DEF-COMPARISON-ANALYZER
-  - ANALYZE-EXPRESSION [See above]
-
-- DEF-COMPARISON-CODEGEN
-  - GENERATE-NODE-IR [See above]
-  - GET-SINGLE-VALUE-TYPE [See above]
-  - EXTRACT-PRIMARY-VALUE [See above]
-  - SEMANTIC-NODE-TYPE [See above]
-
-- DEF-ENUMERATION
-
-- DEF-KERNEL
-  - PARSE-KERNEL-SIGNATURE
-    - %PARSE-KERNEL-TYPE-DECLARATIONS
-      - STRICT-VALID-TYPE-P
-        - VALID-TYPE-P [See above]
-      - VALID-TYPE-P [See above]
-    - %VALIDATE-KERNEL-PARAMETERS
-      - %INCOMPLETE-STORAGE-HANDLE-P
-        - %RESOLVE-ALIAS-STRICT
-          - %RESOLVE-ALIAS-STRICT-CHECKED
-            - %RESOLVE-ALIAS-STRICT-CHECKED [RECURSION]
-        - %STORAGE-HANDLE-TYPE-P [See above]
-      - INCOMPLETE-TYPE-P [See above]
-      - CANONICALIZE-TYPE-SPECIFIER [See above]
-    - %EXPLODE-KERNEL-ARGS
-      - %STORAGE-HANDLE-TYPE-P [See above]
-      - CANONICALIZE-TYPE-SPECIFIER [See above]
-      - MARSHALL-CELL
-        - CANONICALIZE-TYPE-SPECIFIER [See above]
-        - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-        - INSTANTIATE-TEMPLATE [See above]
-  - DEF-KERNEL-EXACT
-    - STRICT-VALID-TYPE-P [See above]
-    - VALID-TYPE-P [See above]
-    - %STORAGE-HANDLE-TYPE-P [See above]
-    - DEF-FUNCTION [See above]
-
-- DEF-RECORD
-  - REGISTER-STRUCT-DEFINITION [See above]
-  - VALIDATE-AND-REORDER-STRUCT-ARGS
-
-- DEF-SETTER
-  - DEF-FUNCTION [See above]
-
-- DEF-STRUCT
-  - REGISTER-STRUCT-DEFINITION [See above]
-  - VALIDATE-AND-REORDER-STRUCT-ARGS [See above]
-
-- DEF-TYPE
-  - VALID-TYPE-P [See above]
-
-- DUMP-ENV
-
-- GENERATE-COMPARISON-IR
-  - GENERATE-NODE-IR [See above]
-  - GET-SINGLE-VALUE-TYPE [See above]
-
-- GET-TEMPLATE-SIGNATURE
-
-- IF+
-
-- INITIALIZE-TEMPLATES
-
-- IS-ADDRESS-SPACE?
-
-- MAKE-STRUCTURE-TEMPLATE-INSTANCE
-  - MANGLE-TEMPLATE-STRUCT-NAME [See above]
-  - ENSURE-TEMPLATE-INSTANTIATION [See above]
-  - COMPILE-TOPLEVEL-FORM [See above]
-
-- MANGLE-PARAM-TYPE-NAME
-
-- MANGLE-TYPE-SPEC
-
-- PARSE-STRUCT-MEMBER-SPEC
-
-- PARSE-TEMPLATE-PARAMETER-SPEC
-
-- PRINT-OBJECT
-
-- R-T-ASSERT-0
-  - R-T-ASSERT
-
-- REGISTER-OVERLOAD
-
-- REORDER-TEMPLATE-ARGS-FROM-KEYWORDS
-
-- TEMPLATE-INSTANTIATION
-
-- VALIDATE-01-ALIASES
-  - VALIDATE-METADATA-DEF-TYPE
-
-- VALIDATE-04-BASIC-STRUCT
-  - VALIDATE-STRUCT-PRESENCE
-
-- VALIDATE-06-NESTED-STRUCTS
-  - VALIDATE-STRUCT-PRESENCE [See above]
-
-- VALIDATE-10-BASICS-META
-  - VALIDATE-KERNEL-METADATA
-
-- VALIDATE-10-BASICS-MULTI
-  - VALIDATE-KERNEL-METADATA [See above]
-
-- VALIDATE-10-BASICS-SPV
-  - VALIDATE-KERNEL-METADATA [See above]
-
-- VALIDATE-12-MULTIPLE-KERNELS
-  - VALIDATE-KERNEL-METADATA [See above]
-
-- VALIDATE-14-PHYSICAL-SIGNATURE
-
-- VALIDATE-18-IMPLICIT-SIGNATURE
-
-- VALIDATE-C-STYLE-NAME-IR
-  - VALIDATE-KERNEL-NAME-EXACT-IR
-
-- VALIDATE-CALL-FUNCTION-F-IR
-  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
-
-- VALIDATE-CALL-FUNCTION-IR
-  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
-
-- VALIDATE-CELL-ADD-F-IR
-  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
-
-- VALIDATE-CELL-ADD-I-IR
-  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
-
-- VALIDATE-DEF-RECORD-EXPLODE-IR
-
-- VALIDATE-DEF-RECORD-EXPLOSION
-
-- VALIDATE-DEF-RECORD-EXPLOSION-IR
-
-- VALIDATE-MY-KERNEL-SCRATCH-IR
-
-- VALIDATE-RETURN-7-IR
-  - VALIDATE-KERNEL-NAME-EXACT-IR [See above]
-
-- VALIDATE-SCRATCH-CELL-EXPLOSION
-
-- VALIDATE-SCRATCH-CELL-EXPLOSION-IR
-
-- VALIDATE-TOP-KERNEL-4-ARGS-IR
-
-- WITH-STRUCT-ACCESSORS
-
-- WITH-TEMPLATE-TYPE
+- (MAIN) :CRISP.MAIN  main.lisp
+- - (PARSE-CLI-ARGS ARGS) :CRISP.MAIN  main.lisp
+- - - (INITIALIZE-COMPILER &KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL))  compiler.lisp
+- - - - (INITIALIZE-CRISP-TYPES)  types/registry.lisp
+- - - - (INITIALIZE-EXPRESSION-ANALYZERS)  analysis/core.lisp
+- - - - - (REGISTER-OPS-ANALYZERS)  analysis/ops.lisp
+- - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp
+- - - - - (REGISTER-CONTROL-ANALYZERS)  analysis/control.lisp
+- - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
+- - - - - (REGISTER-STRUCT-ANALYZERS)  analysis/structs.lisp
+- - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
+- - - - (INITIALIZE-ADVISEMENTS) :CRISP.UTILS  utils.lisp
+- - - - - (ADVISE-FUNCTION FN-SYMBOL) :CRISP.UTILS  utils.lisp
+- - - - (REGISTER-BUILTINS)  compiler.lisp
+- - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp
+- - (COMPILE-FILES FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P HOIST-TARGETS) :CRISP.MAIN  main.lisp
+- - - (INITIALIZE-DEBUG-CONTEXT MODULE DI-BUILDER FILEPATH) :CRISP.MAIN  main.lisp
+- - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp
+- - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [RECURSION]
+- - - - (COMPILE-DEF-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp
+- - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp
+- - - - - - - (ANALYZE-RETURN-TYPE-FROM-SPEC FN-SPEC)  environment.lisp
+- - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp
+- - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - (VALID-BASIC-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - (VALID-FUNCTION-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - (VALID-PARAMETERIZED-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp
+- - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp
+- - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - (VALIDATE-TEMPLATE-ARG ARG TYPE NAME)  types/validation.lisp
+- - - - - - - - - - - (EXCLUDED-TEMPLATE-BASE-TYPE-P BASE-TYPE)  types/validation.lisp
+- - - - - - - - - - - (%VALIDATE-TEMPLATE-INSTANTIATION BASE-TYPE TEMPLATE-ARGS)  types/validation.lisp
+- - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp
+- - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [RECURSION]
+- - - - - - - - - - - - (%INSTANTIATE-TEMPLATE-IF-NEEDED BASE-TYPE TEMPLATE-ARGS MANGLED-NAME)  types/validation.lisp
+- - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
+- - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [RECURSION]
+- - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - (VALID-FUNCTION-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp
+- - - - - - - (ANALYZE-RETURN-TYPE-FROM-LIST DECLARATIONS)  environment.lisp
+- - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - (ANALYZE-ENVIRONMENT-FROM-SPEC PARAMS FN-SPEC)  environment.lisp
+- - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
+- - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
+- - - - - - - (ANALYZE-ENVIRONMENT-FROM-LIST PARAMS DECLARATIONS)  environment.lisp
+- - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
+- - - - - - (%REGISTER-GENERIC-FUNCTION NAME PARAMS ENV RETURN-TYPES DECLARE-FORMS EXTRACTED-DEFAULTS KEY-IDX BODY LOCATION)  environment.lisp
+- - - - - - (%REGISTER-STANDARD-FUNCTION NAME ENV RETURN-TYPES DECLARE-FORMS LOCATION)  environment.lisp
+- - - - - - - (%FIND-ENTRY-POINT-DECLARATION DECLARE-FORMS)  environment.lisp
+- - - - - - - (%VALIDATE-KERNEL-RETURN-TYPE RETURN-TYPES)  environment.lisp
+- - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - (%COMPILE-STANDARD-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - - - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp
+- - - - - - - (GENERATE-FUNCTION-PROTOTYPE SEMANTIC-FUNCTION MODULE DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp
+- - - - - - - - (CREATE-LLVM-FUNCTION-TYPE MODULE RETURN-TYPES PARAM-NODES)  codegen/abi.lisp
+- - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp
+- - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp
+- - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp
+- - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp
+- - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp
+- - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - (FIND-TEMPLATE-ROBUST NAME)  types/validation.lisp
+- - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp
+- - - - - - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp
+- - - - - - - - - - - - - (RECONSTRUCT-TEMPLATE-ARGS TOKENS PACKAGE)  mangling.lisp
+- - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp
+- - - - - - - - - - - - - - - (RECONSTRUCT-ONE-ARG TOKENS PACKAGE)  mangling.lisp
+- - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp [RECURSION]
+- - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp [RECURSION]
+- - - - - - - - - - - - - - (RECONSTRUCT-TEMPLATE-ARGS TOKENS PACKAGE)  mangling.lisp [RECURSION]
+- - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp
+- - - - - - - - - - - - - (%RESOLVE-TEMPLATE-NAME NAME)  templates.lisp
+- - - - - - - - - - - - - (TRY-INFER-TEMPLATE-TYPES NAME ARGUMENT-TYPES)  templates.lisp
+- - - - - - - - - - - - - - (%INFER-FROM-SINGLE-TEMPLATE TMPL ARGUMENT-TYPES)  templates.lisp
+- - - - - - - - - - - - - - - (%UNWRAP-FUNCTION-SIGNATURE RAW-SIG)  templates.lisp
+- - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp
+- - - - - - - - - - - - - - - - (NORMALIZE-TEMPLATE-SIG-TYPE TYPE)  templates.lisp
+- - - - - - - - - - - - - - - - (MATCH-FUNCTION-SIGNATURE PATTERN-SIG CONCRETE-SIG INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp
+- - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp [RECURSION]
+- - - - - - - - - - - - - - - - (MATCH-LIST-STRUCTURE SIG-LIST ARG-LIST INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp
+- - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp [RECURSION]
+- - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp [RECURSION]
+- - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - (%SHOULD-INSTANTIATE-TEMPLATE KEY STATUS IS-COMPILING)  templates.lisp
+- - - - - - - - - - - - - (INSTANTIATE-TEMPLATE NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)  templates.lisp
+- - - - - - - - - - - - - - (VALIDATE-TEMPLATE-ARG ARG TYPE NAME)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - (%INSTANTIATE-STRUCTURE-TEMPLATE NAME BODY SUBSTITUTIONS CONCRETE-TYPES)  templates.lisp
+- - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - (%INSTANTIATE-CALLABLE-TEMPLATE NAME BODY SUBSTITUTIONS OVERRIDE-NAME)  templates.lisp
+- - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
+- - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp
+- - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [RECURSION]
+- - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - (IS-GLOBAL-STORAGE-HANDLE-P TYPE-SPEC)  codegen/abi.lisp
+- - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
+- - - - - - - - - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp [See above]
+- - - - - - - - (%CHECK-EXISTING-FUNCTION EXISTING FN-NAME DI-BUILDER DI-COMPILE-UNIT FUNC CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC MODULE FN-TYPE)  codegen.lisp
+- - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - (GET-OR-CREATE-DI-TYPE CRISP-TYPE DI-BUILDER DI-TYPE-CACHE)  codegen.lisp
+- - - - - - - - (%CREATE-NEW-FUNCTION FN-NAME FN-TYPE MODULE DI-BUILDER DI-COMPILE-UNIT CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC)  codegen.lisp
+- - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp [See above]
+- - - - - - - (ENSURE-OPENCL-KERNEL-METADATA FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
+- - - - - - - (GENERATE-FUNCTION-BODY SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER LOCATION-MAP)  codegen.lisp
+- - - - - - - - (INITIALIZE-FUNCTION-PARAMETERS BUILDER FUNC PARAM-NODES MODULE VAR-ENV)  codegen.lisp
+- - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - (IMPLODE-VALUE BUILDER COMPONENTS TYPE-SPEC MODULE)  codegen/abi.lisp
+- - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - (IMPLODE-VALUE BUILDER COMPONENTS TYPE-SPEC MODULE)  codegen/abi.lisp [RECURSION]
+- - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp
+- - - - - - - - - (GENERATE-NODE-IR (NODE NULL) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - (GENERATE-NODE-IR (NODE NULL) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
+- - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - (%GENERATE-KEYWORD-LITERAL-IR VALUE)  codegen.lisp
+- - - - - - - - - - - (RESOLVE-KEYWORD-CONSTANT KW)  codegen.lisp
+- - - - - - - - - - (%GENERATE-CELL-LITERAL-IR BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)  codegen.lisp
+- - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - (%GENERATE-ENUM-LITERAL-IR BUILDER VALUE LLVM-TYPE)  codegen.lisp
+- - - - - - - - - - - (RESOLVE-KEYWORD-CONSTANT KW)  codegen.lisp [See above]
+- - - - - - - - - - (%GENERATE-SCALAR-LITERAL-IR BUILDER VALUE LLVM-TYPE CRISP-TYPE)  codegen.lisp
+- - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp
+- - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp
+- - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp
+- - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp
+- - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
+- - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - (BUILD-CAST-IF-NEEDED BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)  codegen.lisp
+- - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - (GET-TYPE-CAT-SAFE TYPE-NAME TYPE-OBJ)  codegen.lisp
+- - - - - - - - - - (%HANDLE-DIE-INTRINSIC BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - (%BUILD-FUNCTION-CALL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE SIG CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT RETURN-TYPE-NAMES)  codegen.lisp
+- - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp
+- - - - - - - - - - - - (GENERATE-NODE-IR (NODE NULL) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp
+- - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp [RECURSION]
+- - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - (%GENERATE-LET-BINDING BINDING BUILDER MODULE LET-ENV DI-BUILDER DI-SCOPE LOCATION-MAP MEMOIZED-AGGREGATES)  codegen.lisp
+- - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
+- - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
+- - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - (TERMINATOR-P BLOCK)  codegen.lisp
+- - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - (GENERATE-LOCATION-MAP FORMS)  analysis/core.lisp
+- - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp
+- - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp [RECURSION]
+- - - (COMPILE-MODULE FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - (ANALYZE-SIGNATURES-PASS FORMS)  analysis/core.lisp
+- - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp
+- - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [See above]
+- - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
+- - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp
+- - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp
+- - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-CELL)) ARGS)  analysis/core.lisp
+- - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-CELL)) ARGS)  analysis/core.lisp [RECURSION]
+- - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - (FINALIZE-STRUCT-DEFINITIONS)  structs.lisp
+- - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp
+- - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - (COMPUTE-RECORD-LAYOUT MEMBERS)  structs.lisp
+- - - - - - - (GET-STD140-SIZE TYPE-SPEC)  structs.lisp
+- - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - (COMPUTE-STD140-LAYOUT MEMBERS)  structs.lisp
+- - - - - - - (GET-STD140-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp
+- - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - (GET-STD140-SIZE TYPE-SPEC)  structs.lisp [See above]
+- - - - - - - (CALCULATE-STD140-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp
+- - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - (PROPAGATE-IMPLICIT-ARGUMENTS)  analysis/core.lisp
+- - - - (COMPILE-FORMS-PASS FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
+- - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp [See above]
+- - - - (CHECK-FOR-RECURSION-CYCLES)  analysis/core.lisp
+- - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp
+- - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp [RECURSION]
+- - - (COMPILE-TO-SPIRV MODULE OUTPUT-PATH &KEY DEBUG-P)  compiler.lisp
+- - - - (INJECT-SPIR-KERNEL-METADATA IR-TEXT)  compiler.lisp
+- - - - - (FIND-SPIR-KERNELS IR-TEXT)  compiler.lisp
+- - - - - (EXTRACT-KERNEL-PARAMS IR-TEXT FUNC-START FUNC-END)  compiler.lisp
+- - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
+- - - - - (GENERATE-KERNEL-METADATA PARAMS METADATA-ID-BASE)  compiler.lisp
+- - - - - - (IR-TYPE-TO-OPENCL-METADATA IR-TYPE)  compiler.lisp
+- - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp
+- - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp
+- - - (COMPILE-TO-PTX MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_50) DEBUG-P)  compiler.lisp
+- - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]
+- - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp [See above]
+- - - (PRINT-COMPILER-ERROR C FILENAME) :CRISP.MAIN  main.lisp
+- - - (GENERATE-METADATA-FOR-FILE INPUT-PATH OUTPUT-PATH &KEY (OUTPUT-TARGETS
+                                                               NIL) (SOURCE-FILE
+                                                                     NIL) (FORMS
+                                                                           NIL))  metadata.lisp
+- - - - (EXTRACT-DEFINED-KERNELS FORMS)  metadata.lisp
+- - - - (COLLECT-KERNEL-DEPENDENCIES KERNEL-NAMES)  metadata.lisp
+- - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - (SERIALIZE-ALIASES STREAM ALIASES-HASH)  metadata.lisp
+- - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
+- - - - (SERIALIZE-STRUCTS STREAM STRUCTS-HASH)  metadata.lisp
+- - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp
+- - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - (SERIALIZE-KERNELS OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)  metadata.lisp
+- - - - - (GENERATE-PHYSICAL-SIGNATURE SIG-OR-PARAMS)  metadata.lisp
+- - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp
+- - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - (GENERATE-DECLARED-SIGNATURE SIG &OPTIONAL DECLARED-PARAMS)  metadata.lisp
+- - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp
+- - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp
+- - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp [See above]
+- - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp
+- - - (INVOKE-HOISTER HOIST-ID METACRISP-FILE) :CRISP.MAIN  main.lisp
+- - - - (GET-HOISTER-BINARY-PATH HOIST-ID) :CRISP.MAIN  main.lisp
+
+- (%GENERATE-RAW-ACCESSOR MEMBER-SPEC NAME PKG RUNTIME-INDEX)  macros.lisp
+- - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp
+- - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
+- - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
+- - - (INTERNAL-DEF-FUNCTION NAME PARAMS DECLARATIONS BODY LOCATION)  analysis/core.lisp
+- - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION)  analysis/core.lisp
+- - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
+- - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
+- - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
+- - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp [See above]
+- - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp
+- - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp [See above]
+- - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
+- - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
+- - - - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV LOCATION)  analysis/core.lisp
+- - - - - - - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp
+- - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp
+- - - - - - - - (ANALYZE-INCOMPLETE-TYPE-ACCESSOR OP EXPR ENV LOCATION)  analysis/structs.lisp
+- - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - (ANALYZE-FUNCTION-CALL OP EXPR ENV LOCATION)  analysis/core.lisp
+- - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - (RESOLVE-BEST-SIGNATURE OP EXPLICIT-ARG-TYPES)  type-checker.lisp
+- - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp
+- - - - - - - - - - (INSTANTIATE-GENERIC-FUNCTION GENERIC-DEF EXPLICIT-ARG-TYPES LOCATION)  environment.lisp
+- - - - - - - - - - - (RESOLVE-ARGUMENT-BINDINGS GENERIC-DEF EXPLICIT-ARG-TYPES)  environment.lisp
+- - - - - - - - - - - - (BIND-KEYWORD-ARGS FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)  environment.lisp
+- - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
+- - - - - - - - - - - - (INJECT-DEFAULTS REMAINDER-ENV DEFAULTS)  environment.lisp
+- - - - - - - - - - - (MANGLE-FUNCTION-VARIANT-NAME BASE-NAME PARAM-TYPES)  mangling.lisp
+- - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
+- - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - (TYPE-LISTS-EQUIVALENT-P L1 L2)  types/validation.lisp
+- - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+
+- (%GENERATE-STRUCT-ACCESSOR MEMBER-SPEC NAME PKG RUNTIME-INDEX)  macros.lisp
+- - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
+
+- (ADDRESS-SPACE-VALUE K)  enums.lisp
+- - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp [See above]
+
+- (ANALYZE-AREF-EXPRESSION EXPR ENV LOCATION)  analysis/structs.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (GET-ARRAY-ELEMENT-TYPE TYPE)  analysis/structs.lisp
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - (ANALYZE-FUNCTION-CALL OP EXPR ENV LOCATION)  analysis/core.lisp [See above]
+
+- (ANALYZE-ATOMIC-ADD!-EXPRESSION EXPR ENV LOCATION)  analysis/ops.lisp
+
+- (ANALYZE-BITCAST-EXPRESSION EXPR ENV LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+
+- (ANALYZE-CAST-EXPRESSION EXPR ENV LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-COMPILER-NO-OP EXPR ENV LOCATION)  analysis/control.lisp
+
+- (ANALYZE-DEC!-EXPRESSION EXPR ENV LOCATION)  analysis/ops.lisp
+
+- (ANALYZE-EVAL-WHEN EXPR ENV LOCATION)  analysis/control.lisp
+
+- (ANALYZE-EXTRACT-STRUCT-MEMBER-EXPRESSION EXPR ENV LOCATION)  analysis/structs.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-FUNCALL-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-FUNCTION-LITERAL EXPR ENV LOCATION)  analysis/control.lisp
+
+- (ANALYZE-GENERIC-AS-EXPRESSION EXPR ENV LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+
+- (ANALYZE-INC!-EXPRESSION EXPR ENV LOCATION)  analysis/ops.lisp
+
+- (ANALYZE-INSERT-STRUCT-MEMBER-EXPRESSION EXPR ENV LOCATION)  analysis/structs.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp
+- - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp
+- - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - (EXCLUDED-TEMPLATE-BASE-TYPE-P BASE-TYPE)  types/validation.lisp [See above]
+- - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
+- - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [RECURSION]
+- - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+
+- (ANALYZE-IS-SET-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+
+- (ANALYZE-LET-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV LOCATION)  analysis/core.lisp [See above]
+
+- (ANALYZE-NESTED-DEF-FUNCTION EXPR ENV LOCATION)  analysis/control.lisp
+- - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
+
+- (ANALYZE-PROGN-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-QUOTE EXPR ENV LOCATION)  analysis/control.lisp
+
+- (ANALYZE-RETURN-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-SCRATCH-EXPRESSION EXPR ENV LOCATION)  analysis/structs.lisp
+- - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - (VALID-PARAMETERIZED-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+
+- (ANALYZE-SET!-EXPRESSION EXPR ENV LOCATION)  analysis/structs.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp [See above]
+- - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
+- - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp [See above]
+- - (GET-STRUCT-MEMBER-INDEX STRUCT-TYPE-NAME MEMBER-NAME)  analysis/structs.lisp
+- - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+
+- (ANALYZE-SIZEOF-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
+- - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+
+- (ANALYZE-STATIC-UNLESS-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (ANALYZE-STATIC-IF-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - - (ANALYZE-IF-EXPRESSION-IMPL EXPR ENV LOCATION &KEY ENFORCE-CONSTANT)  analysis/control.lisp
+- - - - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - - - (TRY-CONSTANT-FOLD NODE)  analysis/ops.lisp
+- - - - - (TRY-CONSTANT-FOLD NODE)  analysis/ops.lisp [RECURSION]
+- - - - (ENSURE-BRANCH-COMPATIBILITY THEN-NODE ELSE-NODE LOCATION)  analysis/control.lisp
+- - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - (GET-PROMOTED-TYPE TYPE-A-NAME TYPE-B-NAME)  type-checker.lisp
+- - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - (CREATE-IMPLICIT-CAST NODE TARGET-TYPE LOCATION)  analysis/ops.lisp
+
+- (ANALYZE-STATIC-WHEN-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (ANALYZE-STATIC-IF-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp [See above]
+
+- (ANALYZE-STRUCT-CONSTRUCTION EXPR ENV LOCATION)  analysis/structs.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (TYPE-EQUAL-P T1 T2)  types/validation.lisp
+- - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-TEMPLATE-INSTANTIATION EXPR ENV LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+
+- (ANALYZE-TRUNCATE-EXPRESSION EXPR ENV LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-UNLESS-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (ANALYZE-IF-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - - (ANALYZE-IF-EXPRESSION-IMPL EXPR ENV LOCATION &KEY ENFORCE-CONSTANT)  analysis/control.lisp [See above]
+
+- (ANALYZE-VALUE-CAST-EXPRESSION EXPR ENV LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+
+- (ANALYZE-WHEN-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp
+- - (ANALYZE-IF-EXPRESSION EXPR ENV LOCATION)  analysis/control.lisp [See above]
+
+- (C-T-ASSERT CONDITION MESSAGE)  macros.lisp
+
+- (C-T-OUTPUT &REST ARGS)  macros.lisp
+- - (COMPILER-NO-OP)  macros.lisp
+
+- (COMPILE-CRISP-FORM-TO-IR-STRING CRISP-FORM &KEY (DEBUG-P NIL))  analysis/core.lisp
+- - (GENERATE-LOCATION-MAP FORMS)  analysis/core.lisp [See above]
+- - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp [See above]
+
+- (DEF-BINARY-OP-ANALYZER NAME NODE-CONSTRUCTOR OP-STRING)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (GET-PROMOTED-TYPE TYPE-A-NAME TYPE-B-NAME)  type-checker.lisp [See above]
+
+- (DEF-BINARY-OP-CODEGEN NODE-TYPE INT-INST FLOAT-INST ACCESSOR-PREFIX)  codegen.lisp
+- - (GENERATE-NODE-IR (NODE NULL) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (BUILD-CAST-IF-NEEDED BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)  codegen.lisp [See above]
+- - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+
+- (DEF-COMPARISON-ANALYZER NAME NODE-CONSTRUCTOR OP-STRING)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV LOCATION)  analysis/core.lisp [See above]
+
+- (DEF-COMPARISON-CODEGEN TYPE-NAME INT-PRED FLOAT-PRED ACCESSOR-PREFIX)  codegen.lisp
+- - (GENERATE-NODE-IR (NODE NULL) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (DEF-ENUMERATION NAME &REST SPECS)  enums.lisp
+
+- (DEF-KERNEL NAME PARAMS &REST BODY)  macros.lisp
+- - (PARSE-KERNEL-SIGNATURE NAME PARAMS BODY)  macros.lisp
+- - - (%PARSE-KERNEL-TYPE-DECLARATIONS PARAMS DECLARATIONS)  macros.lisp
+- - - - (STRICT-VALID-TYPE-P SPEC)  macros.lisp
+- - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - (%VALIDATE-KERNEL-PARAMETERS PARAMS TYPE-MAP NAME)  macros.lisp
+- - - - (%INCOMPLETE-STORAGE-HANDLE-P TYPE-SPEC)  macros.lisp
+- - - - - (%RESOLVE-ALIAS-STRICT SPEC)  macros.lisp
+- - - - - - (%RESOLVE-ALIAS-STRICT-CHECKED SPEC SEEN)  macros.lisp
+- - - - - - - (%RESOLVE-ALIAS-STRICT-CHECKED SPEC SEEN)  macros.lisp [RECURSION]
+- - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%EXPLODE-KERNEL-ARGS PARAMS SIGNATURE)  macros.lisp
+- - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - (MARSHALL-CELL TYPE-ALIAS BYTE-SIZE PTR OFFSET)  macros.lisp
+- - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - (INSTANTIATE-TEMPLATE NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)  templates.lisp [See above]
+- - (DEF-KERNEL-EXACT NAME PARAMS &REST BODY)  macros.lisp
+- - - (STRICT-VALID-TYPE-P SPEC)  macros.lisp [See above]
+- - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
+
+- (DEF-RECORD NAME &REST MEMBERS)  macros.lisp
+- - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
+- - (VALIDATE-AND-REORDER-STRUCT-ARGS STRUCT-NAME DEFINED-MEMBERS ARGS)  structs.lisp
+
+- (DEF-SETTER NAME ARGS &BODY BODY)  macros.lisp
+- - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
+
+- (DEF-STRUCT NAME &REST MEMBERS)  macros.lisp
+- - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
+- - (VALIDATE-AND-REORDER-STRUCT-ARGS STRUCT-NAME DEFINED-MEMBERS ARGS)  structs.lisp [See above]
+
+- (DEF-TYPE NAME TYPE-SPEC)  macros.lisp
+- - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+
+- (DUMP-ENV ENV &KEY (TITLE Environment Dump)) :CRISP.UTILS  utils.lisp
+
+- (GENERATE-COMPARISON-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE OP-NODE-INT OP-NODE-FLOAT)  codegen.lisp
+- - (GENERATE-NODE-IR (NODE NULL) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (GET-TEMPLATE-SIGNATURE NAME CONCRETE-TYPES)  templates.lisp
+
+- (IF+ TEST THEN &OPTIONAL ELSE)  macros.lisp
+
+- (INITIALIZE-TEMPLATES)  templates.lisp
+
+- (IS-ADDRESS-SPACE? X)  enums.lisp
+
+- (MAKE-STRUCTURE-TEMPLATE-INSTANCE TEMPLATE-NAME CONCRETE-TYPES &REST CTOR-ARGS)  templates.lisp
+- - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp [See above]
+- - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
+
+- (MANGLE-PARAM-TYPE-NAME TYPE)  mangling.lisp
+
+- (MANGLE-TYPE-SPEC TYPE-SPEC)  mangling.lisp
+
+- (PARSE-STRUCT-MEMBER-SPEC SPEC)  structs.lisp
+
+- (PARSE-TEMPLATE-PARAMETER-SPEC PARAM)  types/validation.lisp
+
+- (PRINT-OBJECT (OBJ PARAMETER-DEF) STREAM) :COMMON-LISP  parameters.lisp
+
+- (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp
+- - (R-T-ASSERT TEST &REST ARGS)  macros.lisp
+
+- (REGISTER-OVERLOAD ALIAS REAL-NAME)  environment.lisp
+
+- (REORDER-TEMPLATE-ARGS-FROM-KEYWORDS ARGS PARAM-NAMES)  templates.lisp
+
+- (TEMPLATE-INSTANTIATION FORM)  templates.lisp
+
+- (VALIDATE-01-ALIASES METADATA-PATH)  metadata.lisp
+- - (VALIDATE-METADATA-DEF-TYPE METADATA-PATH TYPE-NAME TARGET-TYPE)  metadata.lisp
+
+- (VALIDATE-04-BASIC-STRUCT METADATA-PATH)  metadata.lisp
+- - (VALIDATE-STRUCT-PRESENCE METADATA-PATH EXPECTED-STRUCTS &KEY (UNEXPECTED-STRUCTS
+                                                                   NIL))  metadata.lisp
+
+- (VALIDATE-06-NESTED-STRUCTS METADATA-PATH)  metadata.lisp
+- - (VALIDATE-STRUCT-PRESENCE METADATA-PATH EXPECTED-STRUCTS &KEY (UNEXPECTED-STRUCTS
+                                                                   NIL))  metadata.lisp [See above]
+
+- (VALIDATE-10-BASICS-META PATH)  metadata-val.lisp
+- - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL
+                                                              TARGETS-P))  metadata-val.lisp
+
+- (VALIDATE-10-BASICS-MULTI PATH)  metadata-val.lisp
+- - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL
+                                                              TARGETS-P))  metadata-val.lisp [See above]
+
+- (VALIDATE-10-BASICS-SPV PATH)  metadata-val.lisp
+- - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL
+                                                              TARGETS-P))  metadata-val.lisp [See above]
+
+- (VALIDATE-12-MULTIPLE-KERNELS PATHS)  metadata-val.lisp
+- - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL
+                                                              TARGETS-P))  metadata-val.lisp [See above]
+
+- (VALIDATE-14-PHYSICAL-SIGNATURE PATHS)  metadata.lisp
+
+- (VALIDATE-18-IMPLICIT-SIGNATURE &OPTIONAL (PATHS NIL))  metadata.lisp
+
+- (VALIDATE-C-STYLE-NAME-IR IR-PATH)  metadata-val.lisp
+- - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp
+
+- (VALIDATE-CALL-FUNCTION-F-IR IR-PATH)  metadata-val.lisp
+- - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-CALL-FUNCTION-IR IR-PATH)  metadata-val.lisp
+- - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-CELL-ADD-F-IR IR-PATH)  metadata-val.lisp
+- - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-CELL-ADD-I-IR IR-PATH)  metadata-val.lisp
+- - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-DEF-RECORD-EXPLODE-IR IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-DEF-RECORD-EXPLOSION METADATA-PATH)  metadata-val.lisp
+
+- (VALIDATE-DEF-RECORD-EXPLOSION-IR IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-MY-KERNEL-SCRATCH-IR IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-RETURN-7-IR IR-PATH)  metadata-val.lisp
+- - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-SCRATCH-CELL-EXPLOSION METADATA-PATH)  metadata-val.lisp
+
+- (VALIDATE-SCRATCH-CELL-EXPLOSION-IR IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-TOP-KERNEL-4-ARGS-IR IR-PATH)  metadata-val.lisp
+
+- (WITH-STRUCT-ACCESSORS STRUCT-TYPE BINDINGS &BODY BODY)  macros.lisp
+
+- (WITH-TEMPLATE-TYPE PARAMS &BODY BODY)  templates.lisp
 

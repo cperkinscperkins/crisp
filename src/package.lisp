@@ -32,6 +32,7 @@
    #:llvm-int32-type #:llvm-int8-type #:llvm-int8-type-in-context #:llvm-int16-type #:llvm-int64-type #:llvm-int16-type
    #:llvm-type-kind-is-pointer?
    #:llvm-get-type-kind
+   #:llvm-get-type-by-name
    #:llvm-print-type-to-string
    #:llvm-pointer-type
    #:llvm-get-pointer-address-space
@@ -213,6 +214,7 @@
    #:*functions*
    #:*structs*
    #:*enums*
+   #:*compiler-session* ;; <--- NEW
    #:*current-module*
    #:*current-builder*
    #:*compile-single-pass*

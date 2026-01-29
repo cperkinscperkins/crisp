@@ -266,11 +266,11 @@
 
 (defun compile-forms-pass (forms module builder di-builder di-compile-unit location-map)
   "Pass 2: Iterates through forms to perform full analysis and codegen."
-  (let ((*current-module* module)
-        (*current-builder* builder)
-        (*current-di-builder* di-builder)
-        (*current-di-compile-unit* di-compile-unit)
-        (*current-location-map* location-map))
+  (let ((*compiler-session* (make-compiler-session :module module
+                                                   :builder builder
+                                                   :di-builder di-builder
+                                                   :di-compile-unit di-compile-unit
+                                                   :location-map location-map))) ; <--- Session
 
     ;; Pre-Pass: Ensure all templates instantiated during Pass 1 (signatures only) 
     ;; are now fully compiled to IR/Structs in this module.
@@ -292,11 +292,7 @@
   "Analyzes and compiles a single top-level form (used in Pass 2)."
   (log:debug "Compiling top-level form at ~a: ~s" location form)
 
-  (let ((*current-module* module)
-        (*current-builder* builder)
-        (*current-di-builder* di-builder)
-        (*current-di-compile-unit* di-compile-unit)
-        (*current-location-map* location-map))
+  (let ((*compiler-session* (make-compiler-session :module module :builder builder :di-builder di-builder :di-compile-unit di-compile-unit :location-map location-map)))
     (visit-toplevel-form form location
                          (lambda (form location)
                            (compile-def-function form location module builder di-builder di-compile-unit location-map)))))
@@ -783,7 +779,7 @@
                                   (llvm-di-builder-create-compile-unit di-builder 32768 di-file "Crisp" 5 nil "" 0 0 "" 0 1 0 nil nil "" 0 "" 0)))))
     (unwind-protect
         (progn
-         (let* ((*current-module* module)
+         (let* ((*compiler-session* (make-compiler-session :module module :builder builder :di-builder di-builder :di-compile-unit di-compile-unit :location-map location-map))
                 (form-with-location (append crisp-form (list :source-location ''(0))))
                 (expanded-form (macroexpand-1 form-with-location))
                 (semantic-fn (eval expanded-form)))
