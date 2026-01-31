@@ -50,6 +50,8 @@
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
 (defvar *test-filter* nil)
+(defvar *only-unit-tests* nil)
+(defvar *skip-unit-tests* nil)
 (defvar *keep-work* nil)
 ;; cl-user::*log-level* is defined at the top
 
@@ -973,6 +975,8 @@
              ((string= arg "--use-binary") (setf *use-binary* t))
              ((string= arg "--debug") (setf *compile-debug* t))
              ((string= arg "--single-pass") (setf *compile-single-pass* t))
+             ((string= arg "--only-unit-tests") (setf *only-unit-tests* t))
+             ((string= arg "--skip-unit-tests") (setf *skip-unit-tests* t))
              ((string= arg "--keep-work") (setf *keep-work* t))
              ((and (> (length arg) 9) (string= (subseq arg 0 9) "--filter="))
                (setf *test-filter* (subseq arg 9)))))
@@ -987,8 +991,15 @@
       (eq '*compile-single-pass* (find-symbol "*COMPILE-SINGLE-PASS*" :crisp.compiler)))
 
     ;; Discover and run unit tests first
-    (let ((unit-files (discover-unit-tests spec-dir stop-target)))
-      (run-unit-tests unit-files))
+    (unless *skip-unit-tests*
+      (let ((unit-files (discover-unit-tests spec-dir stop-target)))
+        (unless (run-unit-tests unit-files)
+          (format t "~&Unit Tests Failed.~%")
+          (uiop:quit 1))))
+
+    (when *only-unit-tests*
+          (format t "~&Only run unit tests requested. Exiting.~%")
+          (uiop:quit 0))
 
     (format t "~&~%=== Running E2E Spec Tests ===~%")
     (format t "~&Locating specs in ~a~%" spec-dir)
@@ -1033,13 +1044,15 @@
                        ;; Test passed but we expected failure
                        ((and test-passed expect-failure)
                          (format *error-output* " ERROR: Test passed but was expected to fail!~%")
-                         (push (pathname-name file) failed-files))
+                         (push (format nil "~a/~a" dir-name (pathname-name file)) failed-files))
 
                        ;; Test failed but we expected pass
                        (t
-                         (push (pathname-name file) failed-files)))))))
+                         (push (format nil "~a/~a" dir-name (pathname-name file)) failed-files)))))))
 
     (format t "~&---------------------------~%")
+    (format t "Run Configuration: Binary=~a, Debug=~a, SinglePass=~a~@[, Filter=~a~]~%"
+      *use-binary* *compile-debug* *compile-single-pass* *test-filter*)
     (format t "Spec Summary: ~a/~a Passed.~%" passed total)
     (when failed-files
           (format t "Failed Specs:~%~{  - ~a~%~}" (nreverse failed-files)))

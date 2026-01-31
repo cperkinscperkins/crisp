@@ -279,11 +279,10 @@
                :size (* total-size 8)
                :category category))))
       (error (c)
-        (if *defer-struct-validation*
-            (progn
-             (log:info "Deferring struct registration for ~a. dependency missing/error: ~a" name c)
-             (push (list name members category) *pending-struct-definitions*))
-            (error c))))))
+        (cond (*defer-struct-validation*
+                (log:info "Deferring struct registration for ~a. dependency missing/error: ~a" name c)
+                (push (list name members category) *pending-struct-definitions*))
+              (t (error c)))))))
 
 (defun finalize-struct-definitions ()
   "Iteratively attempts to register pending structs. Errors if a cycle or unknown type persists."

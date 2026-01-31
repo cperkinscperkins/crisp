@@ -17,6 +17,8 @@
 ;; download dependencies, and then load crisp.
 (ql:quickload '("crisp" "parachute"))
 (format t "~&; --- System loaded successfully.~%")
+;; FORCE LOAD CORE.LISP due to ASDF/Cache issues
+;; (load "src/analysis/core.lisp")
 
 ;; Switch into the compiler package
 (in-package :crisp.compiler)

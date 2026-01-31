@@ -180,6 +180,7 @@
    #:initialize-compiler
    #:initialize-expression-analyzers
    #:initialize-templates
+   #:compile-crisp-form-to-ir-string
    #:compile-to-spirv
    #:compile-to-ptx
    #:validate-18-implicit-signature

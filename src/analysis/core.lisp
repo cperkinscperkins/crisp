@@ -151,11 +151,11 @@
                (raw-spec (list 'cell inner-type))
                (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
           ;; Store in *implicit-arg-map* for this function
-          ;; Use generated name __sc for now
+          ;; Use generated name __STORAGE for now (Matched to CI/Legacy expectation)
           (log:debug "Pass 1: Detected make-scratch-cell with type ~a in ~a"
-                     canonical-spec *scanning-function-name*)
-          (setf (gethash *scanning-function-name* *implicit-arg-map*)
-            (list (cons '__sc canonical-spec)))))
+                     canonical-spec (compiler-context-scanning-function-name *compiler-context*))
+          (setf (gethash (compiler-context-scanning-function-name *compiler-context*) *implicit-arg-map*)
+            (list (cons '__STORAGE canonical-spec)))))
 
   ;; Continue scanning arguments
   (dolist (arg args) (scan-form arg)))
@@ -199,8 +199,9 @@
 (defun %compile-standard-function (form location module builder di-builder di-compile-unit location-map)
   "Helper: Compiles a standard (non-generic) function definition."
   (let* ((name (second form))
-         (*current-compiling-function* name))
-    (push *current-compiling-function* *single-pass-call-stack*)
+         (context *compiler-context*))
+    (setf (compiler-context-current-compiling-function context) name)
+    (push name (compiler-context-single-pass-call-stack context))
     (unwind-protect
         (let* ((form-with-location (append form (list :source-location `',location)))
                (expanded-form (macroexpand-1 form-with-location))
@@ -209,7 +210,7 @@
           (when semantic-node
                 (log:info "Generating IR for function ~a in module ~a" name module)
                 (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))
-      (pop *single-pass-call-stack*))))
+      (pop (compiler-context-single-pass-call-stack context)))))
 
 (defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
   "Compiles a single def-function form. Handles optional parameters by generating overloaded variants."
@@ -256,8 +257,9 @@
                        ;; 1. Register the explicit signature.
                        (register-function-signature form location)
                        ;; 2. Perform shallow analysis for call graph and originators.
-                       ;; FIXED: Bind the function name so scan-operator can access it
-                       (let ((*scanning-function-name* name))
+                       ;; FIXED: Set the function name in context so scan-operator can access it
+                       (let ((*compiler-context* (make-compiler-context)))
+                         (setf (compiler-context-scanning-function-name *compiler-context*) name)
                          (multiple-value-bind (is-originator callees)
                              (shallow-analyze-body body)
                            (when is-originator
@@ -270,7 +272,8 @@
                                                    :builder builder
                                                    :di-builder di-builder
                                                    :di-compile-unit di-compile-unit
-                                                   :location-map location-map))) ; <--- Session
+                                                   :location-map location-map))
+        (*compiler-context* (make-compiler-context))) ; <--- Context
 
     ;; Pre-Pass: Ensure all templates instantiated during Pass 1 (signatures only) 
     ;; are now fully compiled to IR/Structs in this module.
@@ -292,7 +295,8 @@
   "Analyzes and compiles a single top-level form (used in Pass 2)."
   (log:debug "Compiling top-level form at ~a: ~s" location form)
 
-  (let ((*compiler-session* (make-compiler-session :module module :builder builder :di-builder di-builder :di-compile-unit di-compile-unit :location-map location-map)))
+  (let ((*compiler-session* (make-compiler-session :module module :builder builder :di-builder di-builder :di-compile-unit di-compile-unit :location-map location-map))
+        (*compiler-context* (make-compiler-context)))
     (visit-toplevel-form form location
                          (lambda (form location)
                            (compile-def-function form location module builder di-builder di-compile-unit location-map)))))
@@ -336,14 +340,14 @@
   "Finds a variable definition in the environment."
   (find name env :key #'parameter-def-name))
 
-(defun validate-return-types (name body env declared-return-types location)
+(defun validate-return-types (name body env context declared-return-types location)
   "Analyzes the function body and validates return types."
   (declare (ignore name))
   ;; Handle the case where a function promises a return value but has no body.
   (when (and (not (equal declared-return-types '(nil))) (null body))
         (error 'crisp-type-error :expected declared-return-types :inferred '(nil) :source-location location))
 
-  (let* ((body-nodes (analyze-body-expressions body env location))
+  (let* ((body-nodes (analyze-body-expressions body env context location))
          (return-node (first (last body-nodes)))
          (inferred-types (if return-node
                              (let ((node-type (semantic-node-type return-node)))
@@ -380,7 +384,7 @@
     (values body-nodes inferred-types)))
 
 
-(defun internal-compile-function (name explicit-env return-type params body declarations location)
+(defun internal-compile-function (name explicit-env return-type params body declarations location context)
   "Core compilation logic for a function, accepting a pre-parsed environment."
 
   ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
@@ -401,106 +405,112 @@
   (scan-for-carriers name body)
 
   ;; 2. Implicit Argument Handling
-  (let ((env (inject-implicit-arguments name explicit-env))
-        (*current-function-declarations* declarations))
+  (let ((env (inject-implicit-arguments name explicit-env)))
+    ;; Save old declarations to restore after (for nested definitions support)
+    (let ((old-declarations (compiler-context-declarations context)))
+      (setf (compiler-context-declarations context) declarations)
+      (let ((compilation-result
+             (unwind-protect
+                 ;; 3. Analyze Body and Validate Return Types
+               (multiple-value-bind (body-nodes inferred-return-types)
+                   (validate-return-types name body env context return-type location)
 
-    ;; 3. Analyze Body and Validate Return Types
-    (multiple-value-bind (body-nodes inferred-return-types)
-        (validate-return-types name body env return-type location)
+                 ;; Update the function registry if we inferred a return type and none was declared.
+                 (when (and (or (null return-type) (equal return-type '(nil)))
+                            (not (equal inferred-return-types '(nil))))
+                       (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
+                       (let* ((param-types (mapcar #'parameter-def-type explicit-env))
+                              (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
+                                       (gethash name *function-table*))))
+                         (when sig
+                               (setf (function-signature-return-types sig) inferred-return-types))))
 
-      ;; Update the function registry if we inferred a return type and none was declared.
-      (when (and (or (null return-type) (equal return-type '(nil)))
-                 (not (equal inferred-return-types '(nil))))
-            (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
-            (let* ((param-types (mapcar #'parameter-def-type explicit-env))
-                   (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
-                            (gethash name *function-table*))))
-              (when sig
-                    (setf (function-signature-return-types sig) inferred-return-types))))
+                 ;; Update implicit parameters in recursive registry
+                 (let* ((num-explicit (length explicit-env))
+                        (num-total (length env)))
+                   (when (> num-total num-explicit)
+                         (let* ((implicit-count (- num-total num-explicit))
+                                (implicit-params (subseq env 0 implicit-count))
+                                ;; Find the signature again (or reuse if I refactor, but robust to find it)
+                                (param-types (mapcar #'parameter-def-type explicit-env))
+                                (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
+                                         (gethash name *function-table*))))
+                           (when sig
+                                 (log:info "Persisting implicit parameters for ~a: ~s" name implicit-params)
+                                 (setf (function-signature-implicit-parameters sig) implicit-params)))))
 
-      ;; Update implicit parameters in recursive registry
-      ;; Implicit args are those in ENV that are NOT in EXPLICIT-ENV.
-      ;; Typically injected at the front.
-      (let* ((num-explicit (length explicit-env))
-             (num-total (length env)))
-        (when (> num-total num-explicit)
-              (let* ((implicit-count (- num-total num-explicit))
-                     (implicit-params (subseq env 0 implicit-count))
-                     ;; Find the signature again (or reuse if I refactor, but robust to find it)
-                     (param-types (mapcar #'parameter-def-type explicit-env))
-                     (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
-                              (gethash name *function-table*))))
-                (when sig
-                      (log:info "Persisting implicit parameters for ~a: ~s" name implicit-params)
-                      (setf (function-signature-implicit-parameters sig) implicit-params)))))
+                 ;; 4. Build and return the "blueprint"
+                 (let ((return-node (first (last body-nodes))))
+                   (make-semantic-function
+                    :name name
+                    :param-list (loop for param in env
+                                      collect (make-semantic-param :name (parameter-def-name param)
+                                                                   :type (parameter-def-type param)
+                                                                   :source-location location))
+                    :return-type (cond
+                                  ((or (null return-type) (equal return-type '(nil)))
+                                    inferred-return-types)
+                                  (t
+                                    return-type))
+                    :body (cond
+                           ((null return-node)
+                             (list (make-semantic-return :return-type '(nil) :value-node nil)))
+                           ((typep return-node 'semantic-explicit-return)
+                             body-nodes)
+                           (t
+                             (append (butlast body-nodes)
+                               (list (make-semantic-return
+                                      :return-type (let ((nt (semantic-node-type return-node)))
+                                                     (if (and (listp nt) (not (valid-type-p nt)))
+                                                         nt
+                                                         (list nt)))
+                                      ;; TRUNCATION LOGIC FOR IMPLICIT RETURN
+                                      :value-node (let* ((nt (semantic-node-type return-node))
+                                                         (val-types (if (and (listp nt) (not (valid-type-p nt))) nt (list nt)))
+                                                         (target-types (cond ((or (null return-type) (equal return-type '(nil))) inferred-return-types)
+                                                                             (t return-type)))
+                                                         (target-list (if (and (listp target-types) (not (valid-type-p target-types))) target-types (list target-types))))
 
-      ;; 4. Build and return the "blueprint"
-      (let ((return-node (first (last body-nodes))))
-        (make-semantic-function
-         :name name
-         :param-list (loop for param in env
-                           collect (make-semantic-param :name (parameter-def-name param)
-                                                        :type (parameter-def-type param)
-                                                        :source-location location))
-         :return-type (cond
-                       ((or (null return-type) (equal return-type '(nil)))
-                         inferred-return-types)
-                       (t
-                         return-type))
-         :body (cond
-                ((null return-node)
-                  (list (make-semantic-return :return-type '(nil) :value-node nil)))
-                ((typep return-node 'semantic-explicit-return)
-                  body-nodes)
-                (t
-                  (append (butlast body-nodes)
-                    (list (make-semantic-return
-                           :return-type (let ((nt (semantic-node-type return-node)))
-                                          (if (and (listp nt) (not (valid-type-p nt)))
-                                              nt
-                                              (list nt)))
-                           ;; TRUNCATION LOGIC FOR IMPLICIT RETURN
-                           :value-node (let* ((nt (semantic-node-type return-node))
-                                              (val-types (if (and (listp nt) (not (valid-type-p nt))) nt (list nt)))
-                                              (target-types (cond ((or (null return-type) (equal return-type '(nil))) inferred-return-types)
-                                                                  (t return-type)))
-                                              (target-list (if (and (listp target-types) (not (valid-type-p target-types))) target-types (list target-types))))
+                                                    (cond
+                                                     ;; Case: 1 value needed, >1 provided. Extract index 0.
+                                                     ((and (= (length target-list) 1) (> (length val-types) 1))
+                                                       (log:info "Implicit Return Truncation: ~a -> ~a" val-types target-list)
+                                                       (make-semantic-extract-value
+                                                        :type (first target-list)
+                                                        :aggregate-node return-node
+                                                        :index 0
+                                                        :source-location (if return-node (semantic-node-source-location return-node) location)))
 
-                                         (cond
-                                          ;; Case: 1 value needed, >1 provided. Extract index 0.
-                                          ((and (= (length target-list) 1) (> (length val-types) 1))
-                                            (log:info "Implicit Return Truncation: ~a -> ~a" val-types target-list)
-                                            (make-semantic-extract-value
-                                             :type (first target-list)
-                                             :aggregate-node return-node
-                                             :index 0
-                                             :source-location (if return-node (semantic-node-source-location return-node) location)))
+                                                     ;; TODO: Handle N -> M (where M > 1 and N > M) case if needed.
+                                                     ;; For now return original node.
+                                                     (t return-node)))
 
-                                          ;; TODO: Handle N -> M (where M > 1 and N > M) case if needed.
-                                          ;; For now return original node.
-                                          (t return-node)))
-
-                           :source-location (if return-node (semantic-node-source-location return-node) location))))))
-         :is-entry-point (loop for decl in declarations
-                                 thereis (and (listp decl) (eq (first decl) 'entry-point)))
-         :source-location location)))))
+                                      :source-location (if return-node (semantic-node-source-location return-node) location))))))
+                    :is-entry-point (loop for decl in declarations
+                                            thereis (and (listp decl) (eq (first decl) 'entry-point)))
+                    :source-location location)))
+               ;; Cleanup
+               (setf (compiler-context-declarations context) old-declarations))))
+        (log:info "INTERNAL-COMPILE-FUNCTION RESULT ~s" (type-of compilation-result))
+        compilation-result))))
 
 (defun internal-def-function (name params declarations body location)
   "This is a wrapper around internal-compile-function that parses declarations."
   (log:info "Analyzing function ~s" name)
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
-    (internal-compile-function name explicit-env return-type params body declarations location)))
+    (let ((*compiler-context* (or *compiler-context* (make-compiler-context))))
+      (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
 
 
-(defun analyze-body-expressions (body-list env location)
+(defun analyze-body-expressions (body-list env context location)
   "Recursively analyzes a list of expressions."
   (loop for expr in body-list
         for i from 0
           unless (null expr)
-        collect (analyze-expression expr env (append location (list i)))))
+        collect (analyze-expression expr env context (append location (list i)))))
 
-(defun analyze-expression (expr env location)
+(defun analyze-expression (expr env context location)
   "Recursively analyzes a *single* expression."
   (log:debug "analyze-expression expr: ~s location: ~s" expr location)
   ;; Handle empty body case, which `read` can return as NIL
@@ -544,25 +554,25 @@
                           (log:debug "analyze-expression list op: ~a~%  *expression-analyzers*: ~a~% *function-table*: ~a~%" op *expression-analyzers* *function-table*)
 
                           ;; HOISTED CHECK: Try incomplete accessor first
-                          (let ((hook-res (analyze-incomplete-type-accessor op expr env location)))
+                          (let ((hook-res (analyze-incomplete-type-accessor op expr env context location)))
                             (if hook-res
                                 hook-res
                                 ;; Otherwise continue with standard checks
                                 (cond ;; Case 3a: Is there a specific handler for this operator (e.g., '+', 'to-char')?
                                      ((gethash op *expression-analyzers*)
-                                       (funcall (gethash op *expression-analyzers*) expr env location))
+                                       (funcall (gethash op *expression-analyzers*) expr env context location))
                                      ;; Case 3b: Is it a macro?
                                      ((macro-function op)
                                        (let ((expanded (macroexpand-1 expr)))
                                          (log:warn "ANALYZE-EXPR MACRO: ~s -> ~s" expr expanded)
-                                         (analyze-expression expanded env location)))
+                                         (analyze-expression expanded env context location)))
                                      ;; Case 3c: Is it a call to a known user-defined function?
                                      ;; Also check implicit *template-registry* for overloading
                                      ;; AND *generic-functions* for lazy instantiation
                                      ((or (gethash op *function-table*)
                                           (gethash op *template-registry*)
                                           (gethash op *generic-functions*))
-                                       (analyze-function-call op expr env location))
+                                       (analyze-function-call op expr env context location))
                                      ;; Case 3e: Otherwise, we don't know what this is.
                                      (t
                                        (let ((pkg (symbol-package op)))
@@ -579,25 +589,25 @@
     res))
 
 
-(defun analyze-function-call (op expr env location)
+(defun analyze-function-call (op expr env context location)
   "Analyzes a call to a user-defined function."
-  (log:debug "Analyzing function call to ~s. Current function: ~s" op *current-compiling-function*)
+  (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
   (if *call-graph*
-      (when *current-compiling-function*
-            (pushnew op (gethash *current-compiling-function* *call-graph*)))
-      (when (member op *single-pass-call-stack*)
+      (when (compiler-context-current-compiling-function context)
+            (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
+      (when (member op (compiler-context-single-pass-call-stack context))
             (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
 
   (let ((implicit-args-required (gethash op *implicit-arg-map*)))
     (when (and (null *call-graph*) implicit-args-required)
-          (setf (gethash *current-compiling-function* *implicit-arg-map*) implicit-args-required))
+          (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
 
     (let* ((arg-forms (rest expr))
            (explicit-arg-nodes (loop for arg-form in arg-forms
                                      for i from 1
-                                     collect (analyze-expression arg-form env (append location (list i)))))
+                                     collect (analyze-expression arg-form env context (append location (list i)))))
            (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
-           (signature (resolve-best-signature op explicit-arg-types)))
+           (signature (resolve-best-signature op explicit-arg-types context)))
 
       (let ((final-arg-nodes
              (if implicit-args-required
@@ -609,7 +619,7 @@
                                         (if found
                                             (make-semantic-var-read :name param-name :type (parameter-def-type found) :source-location location)
                                             (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
-                                              *current-compiling-function* param-name))))))
+                                              (compiler-context-current-compiling-function context) param-name))))))
                    (append implicit-arg-nodes explicit-arg-nodes))
                  explicit-arg-nodes)))
 
@@ -779,10 +789,15 @@
                                   (llvm-di-builder-create-compile-unit di-builder 32768 di-file "Crisp" 5 nil "" 0 0 "" 0 1 0 nil nil "" 0 "" 0)))))
     (unwind-protect
         (progn
-         (let* ((*compiler-session* (make-compiler-session :module module :builder builder :di-builder di-builder :di-compile-unit di-compile-unit :location-map location-map))
+         (let* ((*compiler-context* (make-compiler-context))
+                (*compiler-session* (make-compiler-session :module module :builder builder :di-builder di-builder :di-compile-unit di-compile-unit :location-map location-map))
                 (form-with-location (append crisp-form (list :source-location ''(0))))
                 (expanded-form (macroexpand-1 form-with-location))
-                (semantic-fn (eval expanded-form)))
+                (_ (format *error-output* "~&DEBUG CONTEXT is: ~s type: ~s~%" *compiler-context* (type-of *compiler-context*)))
+                (_ (format *error-output* "~&DEBUG EXPANSION: ~s~%" expanded-form))
+                (semantic-fn (let ((val (eval expanded-form)))
+                               (format *error-output* "~&DEBUG EVAL RESULT: ~s~%" val)
+                               val)))
            (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))
          (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
       ;; Cleanup.

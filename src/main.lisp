@@ -180,8 +180,7 @@
                                  (*package* (find-package :crisp-language)))
                              (loop for form = (read stream nil :eof)
                                    until (eq form :eof)
-                                   do (let ((location (list toplevel-index))
-                                            (crisp.compiler::*single-pass-call-stack* nil))
+                                   do (let ((location (list toplevel-index)))
                                         (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
                                         (incf toplevel-index))))
                            ;; --- MULTI-PASS MODE (DEFAULT) ---

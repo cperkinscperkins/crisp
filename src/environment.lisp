@@ -153,7 +153,7 @@
     (let ((injected-bindings (inject-defaults remainder-env defaults)))
       (values active-env injected-bindings nil))))
 
-(defun instantiate-generic-function (generic-def explicit-arg-types location)
+(defun instantiate-generic-function (generic-def explicit-arg-types context location)
   "Instantiates a lazy generic function variant for the given argument types."
   (multiple-value-bind (active-env injected-bindings error-message)
       (resolve-argument-bindings generic-def explicit-arg-types)
@@ -186,7 +186,8 @@
                                                    active-param-names
                                                    body
                                                    declarations
-                                                   (or (generic-function-def-source-location generic-def) location))))
+                                                   (or (generic-function-def-source-location generic-def) location)
+                                                   context)))
 
           ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
           ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
@@ -319,7 +320,8 @@
    This logic is ONLY executed in single-pass mode (when *call-graph* is NIL).
    In multi-pass mode, this analysis is handled by analyze-signatures-pass."
   (when (null *call-graph*)
-        (let ((*scanning-function-name* name)) ;; Bind for scan-operator (make-scratch-cell)
+        (let ((*scanning-function-name* name)) ;; Bind legacy var just in case
+          (setf (compiler-context-scanning-function-name *compiler-context*) name) ;; Set context for scan-operator
           (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
             (when (or is-originator (some (lambda (callee)
                                             (or (gethash callee *implicit-arg-map*)
