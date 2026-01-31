@@ -94,7 +94,15 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
         redefining CRISP.COMPILER::MAKE-CELL_INT_GLOBAL_READ-WRITE in DEFMACRO
         ; ...All compilation passes finished.
 
-[ ] 023 - is build.lisp returning non zero even when successful?
+[/] 023 - is build.lisp returning non zero even when successful?
 
 [ ] 024 - ALL TESTS PASSED is always output from unit tests. Even when there are failures.
+
+[ ] 025 - spec unit tests/validators were broken during last feature, and 028-metadata\18-implicit-scratch-cell-signature.crisp regressed but was not caught. 
+The .metacrisp names the implicit scratch cell "__storage" which is likely wrong.
+What if there are TWO?  They should really be bound by their var name. THOUGH, in fairness,
+two different scopes for two different vars coulud have same name.  
+
+Damnit.  We are CONSTANTLY breaking this stuff around the implicit args. and I thought the
+validators would help prevent regressions. 
 

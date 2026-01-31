@@ -39,7 +39,30 @@
   (:shadowing-import-from :common-lisp
                           #:cond #:when #:unless #:let #:return))
 
+(defpackage :crisp.tests
+  (:use :cl :crisp.compiler :crisp.llvm-bindings :parachute)
+  ;; We are using both :cl and :crisp.compiler, both of which define
+  ;; symbols like 'char', 'float', 'truncate', etc. We must tell the
+  ;; test package which ones to use. Since we are testing the compiler,
+  ;; we want to use the compiler's versions.
+  (:shadowing-import-from :crisp.compiler
+                          #:internal-def-function
+                          #:generate-llvm-ir
+                          #:generate-location-map
+                          #:visit-toplevel-form
+                          #:char #:short #:float #:double #:truncate #:floor
+                          #:ceil #:round
+                          #:ceil #:round
+                          #:let #:return)
+  (:shadowing-import-from :common-lisp #:cond #:when #:unless))
+
+;; Register the keyword-named suite that spec-local unit tests expect.
+;; We define it in CRISP.COMPILER since most unit tests live there or expect it visible.
+(in-package :crisp.compiler)
+(parachute:define-test :crisp.tests)
+
 (in-package :crisp.spec-runner)
+
 
 ;; Initialize the compiler to ensure types and built-ins are loaded
 (initialize-compiler :log-level cl-user::*log-level*)
