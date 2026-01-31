@@ -17,9 +17,6 @@
         "A hash table mapping function names (symbols) to a list of
   FUNCTION-SIGNATURE structs. This supports overloading.")
 
-(defvar *single-pass-call-stack* nil
-        "A list of function names currently in the compilation stack, used to
-  detect recursion in single-pass mode.")
 
 (defvar *call-graph* nil
         "A hash table representing the call graph of functions.
@@ -49,7 +46,7 @@ This supports overloading templates by arity or other factors.")
 (defvar *runtime-checks-enabled* nil
         "If true, runtime assertions (r-t-assert) are compiled.")
 
-(defvar *current-compiling-function* nil)
+
 ;; (defvar *current-module* nil) -> Moved to session
 (define-symbol-macro *current-module* (compiler-session-module *compiler-session*))
 ;; (defvar *current-builder* nil) -> Moved to session
@@ -60,8 +57,7 @@ This supports overloading templates by arity or other factors.")
 (define-symbol-macro *current-di-compile-unit* (compiler-session-di-compile-unit *compiler-session*))
 ;; (defvar *current-location-map* nil) -> Moved to session
 (define-symbol-macro *current-location-map* (compiler-session-location-map *compiler-session*))
-(defvar *allow-nested-def-function* nil)
-(defvar *current-function-declarations* nil "Function declarations for current function being compiled.")
+
 
 (defvar *compiled-kernels* nil "List of kernel names (symbols) compiled in the current session.")
 (defvar *emit-metadata* nil "If T, generate .metacrisp file.")

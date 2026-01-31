@@ -339,8 +339,8 @@ Kernels
 - [x] double check debug symbols get passed throught to ptx
 - [ ] at some point, get opencl:cpu device on CI.
 - - [ ] this would mean an opencl hoister, no?
-- [ ] consider having regression failures name the folder as well as the test.
-- [ ] map out global vars. 
+- [x] consider having regression failures name the folder as well as the test.
+- [x] map out global vars. 
 - [ ] bugs 021 important
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
 - [ ] def-derived-type => expand specification for numerics ("contagion"). 

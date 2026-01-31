@@ -41,7 +41,7 @@
           (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
         index))))
 
-(defun analyze-struct-construction (expr env location)
+(defun analyze-struct-construction (expr env context location)
   "Analyzes a (%construct-struct type-name arg1 arg2 ...) form."
   (let* ((type-name (second expr))
          (args (cddr expr))
@@ -61,7 +61,7 @@
              (loop for arg in args
                    for member in members
                    for i from 0
-                   collect (let ((node (analyze-expression arg env (append location (list (+ 2 i)))))
+                   collect (let ((node (analyze-expression arg env context (append location (list (+ 2 i)))))
                                  (expected-type (second member)))
                              ;; Type check
                              (unless (type-equal-p (semantic-node-type node) expected-type)
@@ -78,10 +78,10 @@
          :args arg-nodes
          :source-location location)))))
 
-(defun analyze-extract-struct-member-expression (expr env location)
+(defun analyze-extract-struct-member-expression (expr env context location)
   "Analyzes a `%extract-struct-member` expression.
    Form: (%extract-struct-member object-node index-literal)"
-  (let* ((obj-node (analyze-expression (second expr) env (append location '(1))))
+  (let* ((obj-node (analyze-expression (second expr) env context (append location '(1))))
          (index (third expr)) ;; Expecting a raw integer literal from the macro expansion
          (obj-type (semantic-node-type obj-node)))
 
@@ -121,12 +121,12 @@
          :source-location location)))))
 
 
-(defun analyze-insert-struct-member-expression (expr env location)
+(defun analyze-insert-struct-member-expression (expr env context location)
   "Analyzes a `%insert-struct-member` expression.
    Form: (%insert-struct-member object-node index-literal value-node)"
-  (let* ((obj-node (analyze-expression (second expr) env (append location '(1))))
+  (let* ((obj-node (analyze-expression (second expr) env context (append location '(1))))
          (index (third expr)) ;; Expecting a raw integer literal from the macro expansion
-         (value-node (analyze-expression (fourth expr) env (append location '(3))))
+         (value-node (analyze-expression (fourth expr) env context (append location '(3))))
          (obj-type (semantic-node-type obj-node)))
 
     (unless (symbolp obj-type)
@@ -169,13 +169,13 @@
          :source-location location)))))
 
 
-(defun analyze-aref-expression (expr env location)
+(defun analyze-aref-expression (expr env context location)
   (let* ((op (first expr))
          (target-sym (if (symbolp (second expr)) (second expr) nil))
-         (array-node (analyze-expression (second expr) env (append location '(1))))
+         (array-node (analyze-expression (second expr) env context (append location '(1))))
          (index-expr (third expr))
          (index-node (if index-expr
-                         (analyze-expression index-expr env (append location '(2)))
+                         (analyze-expression index-expr env context (append location '(2)))
                          ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
                          (make-semantic-literal :value-type 'int :value 0 :source-location location)))
          (elem-type (get-array-element-type (semantic-node-type array-node))))
@@ -208,15 +208,15 @@
         ;; Fallback: If not an array/pointer, and op is ~, try to treat as overloadable function call
         (let ((op-name (symbol-name op)))
           (if (or (string= op-name "~") (string= op-name "~REF~"))
-              (analyze-function-call op expr env location)
+              (analyze-function-call op expr env context location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
 
 
-(defun analyze-set!-expression (expr env location)
+(defun analyze-set!-expression (expr env context location)
   "Analyzes a (set! target value) expression."
   (let* ((target-form (second expr))
          (value-form (third expr))
-         (value-node (analyze-expression value-form env (append location '(2)))))
+         (value-node (analyze-expression value-form env context (append location '(2)))))
 
     (cond
      ;; Case 1: Simple variable assignment (set! x v)
@@ -243,7 +243,7 @@
               ;; Analyze the arguments to `(op args...)`
               (arg-nodes (loop for arg in op-args
                                for i from 1
-                               collect (analyze-expression arg env (append location (list 1 i)))))
+                               collect (analyze-expression arg env context (append location (list 1 i)))))
               (all-arg-nodes (append arg-nodes (list value-node)))
               (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
               ;; Check for a matching setter function signature: (op arg1 ... argN value)
@@ -276,7 +276,7 @@
           ((gethash op *expression-analyzers*)
             (let ((target-node
                    (let ((*analysis-access-mode* :write))
-                     (analyze-expression target-form env (append location '(1))))))
+                     (analyze-expression target-form env context (append location '(1))))))
               (make-semantic-set!
                :target-node target-node
                :value-node value-node
@@ -322,7 +322,7 @@
 
      (t (error "Invalid set! target structure: ~a" target-form)))))
 
-(defun analyze-incomplete-type-accessor (op expr env location)
+(defun analyze-incomplete-type-accessor (op expr env context location)
   "Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).
    Returns a semantic-node (literal) if resolved, or NIL if not applicable."
   (let ((op-name (symbol-name op)))
@@ -334,7 +334,7 @@
             (when obj-expr
                   ;; To avoid double analysis if not resolved, we might need to be careful.
                   ;; But analyze-expression is side-effect free mostly.
-                  (let* ((obj-node (analyze-expression obj-expr env (append location '(1))))
+                  (let* ((obj-node (analyze-expression obj-expr env context (append location '(1))))
                          (obj-type (semantic-node-type obj-node)))
 
                     ;; Check if obj-type carries the value
@@ -358,7 +358,7 @@
                                              (t (make-semantic-literal :value-type 'quote :value val :source-location location)))))))))))))))
 
 
-(defun analyze-scratch-expression (expr env location)
+(defun analyze-scratch-expression (expr env context location)
   "Analyzes a (make-scratch-cell ...) expression.
  This marks the current function as an originator in BOTH analysis modes."
   (declare (ignore env)) ; We don't use env yet.
@@ -367,14 +367,14 @@
 
   ;; --- Originator Detection (both single-pass and two-pass) ---
   ;; Store the actual cell type and name in *implicit-arg-map*
-  (log:debug "Originator: Found make-scratch-cell in ~s" *current-compiling-function*)
+  (log:debug "Originator: Found make-scratch-cell in ~s" (compiler-context-current-compiling-function context))
   (let* ((inner-type (cadr expr))
          (raw-spec (list 'cell inner-type))
          (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
-    ;; Store: (name . type) - for now use generated name __sc
+    ;; Store: (name . type) - for now use generated name __STORAGE
     ;; Later: extract :name from make-scratch-cell keywords
-    (setf (gethash *current-compiling-function* *implicit-arg-map*)
-      (list (cons '__sc canonical-spec))))
+    (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*)
+      (list (cons '__STORAGE canonical-spec))))
 
   (let ((inner-type (cadr expr)))
     ;; Ensure the inner type is valid

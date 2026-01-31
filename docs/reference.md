@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-29T06:00:09.364511Z
+Generated on 2026-01-31T06:20:55.856849Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -12,106 +12,106 @@ Generated on 2026-01-29T06:00:09.364511Z
 
 ---
 ### DEFUN `ANALYZE-IF-EXPRESSION-IMPL`
-- **Args**: `(EXPR ENV LOCATION &KEY ENFORCE-CONSTANT)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION &KEY ENFORCE-CONSTANT)`
 
 ---
 ### DEFUN `ANALYZE-IF-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-STATIC-IF-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-WHEN-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-STATIC-WHEN-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-UNLESS-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-STATIC-UNLESS-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-LET-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a `(let ...)` expression.
 
 
 ---
 ### DEFUN `ANALYZE-PROGN-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a `(progn ...)` expression.
 
 
 ---
 ### DEFUN `ANALYZE-RETURN-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a `(return ...)` expression.
 
 
 ---
 ### DEFUN `ANALYZE-FUNCTION-LITERAL`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes (function x) or #'(...)
 
 
 ---
 ### DEFUN `ANALYZE-FUNCALL-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a (funcall f args...) form.
 
 
 ---
 ### DEFUN `ANALYZE-QUOTE`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-SIZEOF-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-COMPILER-NO-OP`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a (compiler-no-op) form, which results in a void literal.  >    Used by compile-time macros (c-t-assert, c-t-output) to emit no code.
 
 
 ---
 ### DEFUN `ANALYZE-NESTED-DEF-FUNCTION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a nested `(def-function ...)` expression (e.g. from a template).
 
 
 ---
 ### DEFUN `ANALYZE-TEMPLATE-INSTANTIATION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a `(template-instantiation ...)` form, allowing nested def-functions.
 
 
 ---
 ### DEFUN `ANALYZE-EVAL-WHEN`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes (eval-when ...) forms by ignoring them in the runtime IR.  >    Side effects (like struct registration) should have already occurred during macro expansion.
 
 
 ---
 ### DEFUN `ANALYZE-IS-SET-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes (is-set? var). Returns 1 (true) if var is bound in env, 0 (false) otherwise.
 
@@ -244,14 +244,15 @@ Generated on 2026-01-29T06:00:09.364511Z
 
 ---
 ### DEFUN `VALIDATE-RETURN-TYPES`
-- **Args**: `(NAME BODY ENV DECLARED-RETURN-TYPES LOCATION)`
+- **Args**: `(NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)`
 
   > Analyzes the function body and validates return types.
 
 
 ---
 ### DEFUN `INTERNAL-COMPILE-FUNCTION`
-- **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION)`
+- **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION
+              CONTEXT)`
 
   > Core compilation logic for a function, accepting a pre-parsed environment.
 
@@ -265,21 +266,21 @@ Generated on 2026-01-29T06:00:09.364511Z
 
 ---
 ### DEFUN `ANALYZE-BODY-EXPRESSIONS`
-- **Args**: `(BODY-LIST ENV LOCATION)`
+- **Args**: `(BODY-LIST ENV CONTEXT LOCATION)`
 
   > Recursively analyzes a list of expressions.
 
 
 ---
 ### DEFUN `ANALYZE-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Recursively analyzes a *single* expression.
 
 
 ---
 ### DEFUN `ANALYZE-FUNCTION-CALL`
-- **Args**: `(OP EXPR ENV LOCATION)`
+- **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a call to a user-defined function.
 
@@ -339,40 +340,40 @@ Generated on 2026-01-29T06:00:09.364511Z
 
 ---
 ### DEFUN `ANALYZE-INC!-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-DEC!-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-ATOMIC-ADD!-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-CAST-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a to-XXXX or as-XXXX cast expression.
 
 
 ---
 ### DEFUN `ANALYZE-TRUNCATE-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes (truncate val) -> (values int rem).
 
 
 ---
 ### DEFUN `ANALYZE-VALUE-CAST-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes the generic (to type value) form.
 
 
 ---
 ### DEFUN `ANALYZE-GENERIC-AS-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes the generic (as type value) form.
 
@@ -386,7 +387,7 @@ Generated on 2026-01-29T06:00:09.364511Z
 
 ---
 ### DEFUN `ANALYZE-BITCAST-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Handler for explicit (as-bits type val) or aliased calls.
 
@@ -412,46 +413,46 @@ Generated on 2026-01-29T06:00:09.364511Z
 
 ---
 ### DEFUN `ANALYZE-STRUCT-CONSTRUCTION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
 
 
 ---
 ### DEFUN `ANALYZE-EXTRACT-STRUCT-MEMBER-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a `%extract-struct-member` expression.  >    Form: (%extract-struct-member object-node index-literal)
 
 
 ---
 ### DEFUN `ANALYZE-INSERT-STRUCT-MEMBER-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a `%insert-struct-member` expression.  >    Form: (%insert-struct-member object-node index-literal value-node)
 
 
 ---
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-SET!-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a (set! target value) expression.
 
 
 ---
 ### DEFUN `ANALYZE-INCOMPLETE-TYPE-ACCESSOR`
-- **Args**: `(OP EXPR ENV LOCATION)`
+- **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
 
   > Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).  >    Returns a semantic-node (literal) if resolved, or NIL if not applicable.
 
 
 ---
 ### DEFUN `ANALYZE-SCRATCH-EXPRESSION`
-- **Args**: `(EXPR ENV LOCATION)`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a (make-scratch-cell ...) expression.  >  This marks the current function as an originator in BOTH analysis modes.
 
@@ -835,7 +836,7 @@ Generated on 2026-01-29T06:00:09.364511Z
 
 ---
 ### DEFUN `INSTANTIATE-GENERIC-FUNCTION`
-- **Args**: `(GENERIC-DEF EXPLICIT-ARG-TYPES LOCATION)`
+- **Args**: `(GENERIC-DEF EXPLICIT-ARG-TYPES CONTEXT LOCATION)`
 
   > Instantiates a lazy generic function variant for the given argument types.
 
@@ -1936,9 +1937,21 @@ Generated on 2026-01-29T06:00:09.364511Z
 
 
 ---
+### DEFSTRUCT `COMPILER-CONTEXT`
+
+  > Holds the mutable state for the current analysis pass, replacing global variables.
+
+
+---
 ### DEFVAR `*COMPILER-SESSION*`
 
   > The active compiler session state. Bound dynamically during compilation passes.
+
+
+---
+### DEFVAR `*COMPILER-CONTEXT*`
+
+  > The active analysis context context. Bound dynamically during compilation passes.
 
 
 ---
@@ -2185,7 +2198,7 @@ Generated on 2026-01-29T06:00:09.364511Z
 
 ---
 ### DEFUN `RESOLVE-BEST-SIGNATURE`
-- **Args**: `(OP EXPLICIT-ARG-TYPES)`
+- **Args**: `(OP EXPLICIT-ARG-TYPES CONTEXT)`
 
   > Finds the best matching function signature for the given operator and argument types.  >    Attempts template instantiation if no immediate match is found.
 
@@ -2207,12 +2220,6 @@ Generated on 2026-01-29T06:00:09.364511Z
 ### DEFVAR `*FUNCTION-TABLE*`
 
   > A hash table mapping function names (symbols) to a list of  >   FUNCTION-SIGNATURE structs. This supports overloading.
-
-
----
-### DEFVAR `*SINGLE-PASS-CALL-STACK*`
-
-  > A list of function names currently in the compilation stack, used to  >   detect recursion in single-pass mode.
 
 
 ---
@@ -2261,18 +2268,6 @@ Generated on 2026-01-29T06:00:09.364511Z
 ### DEFVAR `*RUNTIME-CHECKS-ENABLED*`
 
   > If true, runtime assertions (r-t-assert) are compiled.
-
-
----
-### DEFVAR `*CURRENT-COMPILING-FUNCTION*`
-
----
-### DEFVAR `*ALLOW-NESTED-DEF-FUNCTION*`
-
----
-### DEFVAR `*CURRENT-FUNCTION-DECLARATIONS*`
-
-  > Function declarations for current function being compiled.
 
 
 ---

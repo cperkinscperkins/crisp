@@ -88,10 +88,10 @@
 
                              ;; 3. Explicit Keys
                              ((string-equal (string item) "ADDRESS-SPACE")
-                              (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+                              (cl:unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
                               (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
                              ((string-equal (string item) "ACCESS")
-                              (unless remaining (error "Missing value for :ACCESS in ~s" spec))
+                              (cl:unless remaining (error "Missing value for :ACCESS in ~s" spec))
                               (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
 
                              ;; 4. Ignored Keys (Legacy compatibility if needed, strict otherwise)

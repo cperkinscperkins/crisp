@@ -107,32 +107,54 @@ jobs:
           # This runs the master build script
           sbcl --non-interactive --load build/build.lisp
 
-      - name: 7. Run End-to-End Specs (Internal & External)
+      - name: 7. Run Spec Unit Tests
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+        run: |
+           set -o pipefail
+           echo "--- Running Spec Unit Tests ---"
+           sbcl --script tests/run-specs.lisp --only-unit-tests
+
+      - name: 8. Run Specs (External Binary)
         env:
           CRISP_USE_SYSTEM_TOOLS: true
           SKIP_SPIRV_TESTS: false
         run: |
-          # Exit immediately if a pipeline returns a non-zero status.
           set -o pipefail
-
-          # echo "--- Running Specs: Internal (Checking Isolation) ---"
-          # sbcl --script tests/run-specs.lisp
-
           echo "--- Running Specs: External Binary ---"
-          sbcl --script tests/run-specs.lisp --use-binary
+          sbcl --script tests/run-specs.lisp --use-binary --skip-unit-tests
 
+      - name: 9. Run Specs (External Binary, Debug)
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+          SKIP_SPIRV_TESTS: false
+        run: |
+          set -o pipefail
           echo "--- Running Specs: External Binary (Debug) ---"
-          sbcl --script tests/run-specs.lisp --use-binary --debug
+          sbcl --script tests/run-specs.lisp --use-binary --debug --skip-unit-tests
 
+      - name: 10. Run Specs (External Binary, Single Pass)
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+          SKIP_SPIRV_TESTS: false
+        run: |
+          set -o pipefail
           echo "--- Running Specs: External Binary (Single Pass) ---"
-          sbcl --script tests/run-specs.lisp --use-binary --single-pass
+          sbcl --script tests/run-specs.lisp --use-binary --single-pass --skip-unit-tests
 
-
-
-
+      - name: 11. Run Logic Regression (Single Pass)
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+        run: |
+          set -o pipefail
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"
-          
+
+      - name: 12. Run Negative Specs
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+        run: |
+          set -o pipefail
           echo "--- Running Negative Specs (Unified Runner) ---"
           sbcl --script tests/run-error-specs.lisp
 
