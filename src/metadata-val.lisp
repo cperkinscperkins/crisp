@@ -133,26 +133,26 @@
           (return-from validate-scratch-cell-explosion nil))
 
         (let ((entry (first implicit-sig)))
-          ;; Check name is "__sc" - now it's under :name key
-          (unless (string-equal (getf entry :name) "__sc")
-            (log:error "Expected implicit param name '__sc', got '~a'" (getf entry :name))
-            (return-from validate-scratch-cell-explosion nil))
-
-          ;; Check type is (CELL INT) not just STORAGE
-          (let ((param-type (getf entry :type)))
-            (unless (and (listp param-type)
-                         (string-equal (symbol-name (first param-type)) "CELL"))
-              (log:error "Expected type (CELL ...), got ~a" param-type)
-              (return-from validate-scratch-cell-explosion nil)))
-
-          ;; Check range is (0 2) for 3 slots
-          (let ((range (getf entry :range)))
-            (unless (and (listp range) (= (length range) 2)
-                         (= (first range) 0) (= (second range) 2))
-              (log:error "Expected range (0 2) for 3 slots, got ~a" range)
+          (let ((name (getf entry :name)))
+            (unless (string-equal name "davie")
+              (log:error "Expected implicit param name 'davie', got '~a'" name)
               (return-from validate-scratch-cell-explosion nil))
 
-            t))))))
+            ;; Check type is (CELL INT) not just STORAGE
+            (let ((param-type (getf entry :type)))
+              (unless (and (listp param-type)
+                           (string-equal (symbol-name (first param-type)) "CELL"))
+                (log:error "Expected type (CELL ...), got ~a" param-type)
+                (return-from validate-scratch-cell-explosion nil)))
+
+            ;; Check range is (0 2) for 3 slots
+            (let ((range (getf entry :range)))
+              (unless (and (listp range) (= (length range) 2)
+                           (= (first range) 0) (= (second range) 2))
+                (log:error "Expected range (0 2) for 3 slots, got ~a" range)
+                (return-from validate-scratch-cell-explosion nil))
+
+              t)))))))
 ;; src/metadata-val.lisp
 ;; IR-based validator for Bug 015 (def-record explosion)
 (defun validate-def-record-explosion-ir (ir-path)

@@ -106,3 +106,4 @@ two different scopes for two different vars coulud have same name.
 Damnit.  We are CONSTANTLY breaking this stuff around the implicit args. and I thought the
 validators would help prevent regressions. 
 
+I have made new spec tests @19-multiple-scratch-cells.crisp and @24-multiple-scratch-cells-hoisted.crisp 

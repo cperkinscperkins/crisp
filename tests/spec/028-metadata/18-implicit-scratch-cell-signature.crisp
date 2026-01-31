@@ -41,7 +41,7 @@ Below that, the cell can be passed explicitly and does not need "Side Channel" m
         ;; user defined 'implicit' params.  
         ;; the debug logging one is important to distinguish. 
         (:implicit-params
-            (sc :type (cell int ) 
+            (davie :type (cell int ) 
                 :debug-logging  nil    
                 :address-space  :local 
                 :access :read-write 
@@ -62,8 +62,8 @@ Below that, the cell can be passed explicitly and does not need "Side Channel" m
 
 (def-function fun-B (i)
     (declare #'(int => int))
-  (let ((sc (make-scratch-cell int)))
-    (+ i (fun-C sc))))
+  (let ((davie (make-scratch-cell int)))
+    (+ i (fun-C davie))))
 
 (def-function fun-A (i)
     (declare #'(int => int))
