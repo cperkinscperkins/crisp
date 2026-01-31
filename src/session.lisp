@@ -18,6 +18,7 @@
   (current-compiling-function nil :type symbol)
   (declarations nil :type list)
   (scanning-function-name nil :type symbol)
+  (current-binding-name nil :type symbol)
   (allow-nested-def-function nil :type boolean))
 
 (defvar *compiler-session* nil

@@ -120,10 +120,18 @@
 (defmethod scan-operator ((op (eql 'let)) args)
   (let ((bindings (first args))
         (body (rest args)))
-    (dolist (b bindings)
-      ;; Bindings can be (var val) or var
-      (when (consp b) (scan-form (second b))))
-    (dolist (f body) (scan-form f))))
+    (let ((old-binding (compiler-context-current-binding-name *compiler-context*)))
+      (dolist (b bindings)
+        ;; Bindings can be (var val) or var
+        (when (consp b)
+              ;; Set the current binding name for deep scanning
+              (let ((var-name (first b)))
+                (log:warn "Pass 1: Scanning let binding for ~a" var-name)
+                (setf (compiler-context-current-binding-name *compiler-context*) var-name)
+                (scan-form (second b))
+                ;; Restore after scanning the value form
+                (setf (compiler-context-current-binding-name *compiler-context*) old-binding))))
+      (dolist (f body) (scan-form f)))))
 
 (defmethod scan-operator ((op (eql 'let*)) args)
   (scan-operator 'let args))
@@ -139,7 +147,6 @@
 (defmethod scan-operator ((op (eql 'progn)) args)
   (dolist (arg args) (scan-form arg)))
 
-
 ;; This specialized scan-operator method handles make-scratch-cell specifically
 (defmethod scan-operator ((op (eql 'make-scratch-cell)) args)
   "Scans make-scratch-cell and extracts the type for *implicit-arg-map*."
@@ -151,15 +158,17 @@
                (raw-spec (list 'cell inner-type))
                (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
           ;; Store in *implicit-arg-map* for this function
-          ;; Use generated name __STORAGE for now (Matched to CI/Legacy expectation)
-          (log:debug "Pass 1: Detected make-scratch-cell with type ~a in ~a"
-                     canonical-spec (compiler-context-scanning-function-name *compiler-context*))
-          (setf (gethash (compiler-context-scanning-function-name *compiler-context*) *implicit-arg-map*)
-            (list (cons '__STORAGE canonical-spec)))))
+          ;; Use generated name (current binding) or fallback to __storage
+          (let ((implicit-name (or (compiler-context-current-binding-name *compiler-context*) '__storage)))
+            (log:warn "Pass 1: Detected make-scratch-cell with type ~a in ~a (Implicit Name: ~a)"
+                      canonical-spec (compiler-context-scanning-function-name *compiler-context*) implicit-name)
+            (let ((entry (cons implicit-name canonical-spec))
+                  (existing (gethash (compiler-context-scanning-function-name *compiler-context*) *implicit-arg-map*)))
+              (setf (gethash (compiler-context-scanning-function-name *compiler-context*) *implicit-arg-map*)
+                (append existing (list entry)))))))
 
   ;; Continue scanning arguments
   (dolist (arg args) (scan-form arg)))
-
 
 (defun shallow-analyze-body (forms)
   "Performs a shallow, recursive walk of a function's body.
@@ -194,7 +203,6 @@
    ;; Case 4: Other -> Eval (for side effects like defmacro, register-template)
    (t
      (eval form))))
-
 
 (defun %compile-standard-function (form location module builder di-builder di-compile-unit location-map)
   "Helper: Compiles a standard (non-generic) function definition."
@@ -240,7 +248,6 @@
        ;; --- STANDARD Compilation (No Optionals) ---
        (t
          (%compile-standard-function form location module builder di-builder di-compile-unit location-map))))))
-
 
 (defun walk-code-forms (forms visitor-fn)
   "Walks top-level forms, handling macros and progn, and calling visitor-fn on def-function."
@@ -383,7 +390,6 @@
                                location))))
     (values body-nodes inferred-types)))
 
-
 (defun internal-compile-function (name explicit-env return-type params body declarations location context)
   "Core compilation logic for a function, accepting a pre-parsed environment."
 
@@ -502,7 +508,6 @@
     (let ((*compiler-context* (or *compiler-context* (make-compiler-context))))
       (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
 
-
 (defun analyze-body-expressions (body-list env context location)
   "Recursively analyzes a list of expressions."
   (loop for expr in body-list
@@ -588,7 +593,6 @@
                :source-location location)))))
     res))
 
-
 (defun analyze-function-call (op expr env context location)
   "Analyzes a call to a user-defined function."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
@@ -647,7 +651,6 @@
                               :args final-arg-nodes
                               :signature augmented-signature
                               :source-location location))))))
-
 
 ;; --- Helper to get the type from any node ---
 (defun semantic-node-type (node)

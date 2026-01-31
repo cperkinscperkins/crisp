@@ -371,10 +371,17 @@
   (let* ((inner-type (cadr expr))
          (raw-spec (list 'cell inner-type))
          (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
-    ;; Store: (name . type) - for now use generated name __STORAGE
-    ;; Later: extract :name from make-scratch-cell keywords
-    (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*)
-      (list (cons '__STORAGE canonical-spec))))
+    ;; Store: (name . type) - use current binding name if available
+    (let ((implicit-name (or (compiler-context-current-binding-name context) '__storage))
+          (existing (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*)))
+      (if existing
+          (log:warn "Structs: Implicit implicit-args already exist for ~a: ~a. Keeping existing."
+                    (compiler-context-current-compiling-function context) existing)
+          (progn
+           (log:warn "Structs: Detected make-scratch-cell in ~a (Implicit Name: ~a)"
+                     (compiler-context-current-compiling-function context) implicit-name)
+           (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*)
+             (list (cons implicit-name canonical-spec)))))))
 
   (let ((inner-type (cadr expr)))
     ;; Ensure the inner type is valid

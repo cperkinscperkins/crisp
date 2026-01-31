@@ -314,8 +314,22 @@
 (defun %generate-cell-literal-ir (builder module var-env type-spec value)
   "Helper: Generates IR for cell literals (scratch cells)."
   (declare (ignore value))
+  ;; Need to find the implicit argument corresponding to this cell literal.
+  ;; We check the current function's signature for registered implicit parameters.
+  ;; For now (single-cell scope), we take the first implicit parameter if available.
   (let* ((base-type (first type-spec))
-         (storage-var-name (or (when (gethash '__sc var-env) '__sc) '__storage))
+         (context crisp.compiler::*compiler-context*) ;; Access global context for function name
+         (fn-name (and context (crisp.compiler::compiler-context-current-compiling-function context)))
+         (sig (and fn-name (first (gethash fn-name crisp.compiler::*function-table*))))
+         (implicit-params (and sig (crisp.compiler::function-signature-implicit-parameters sig)))
+         ;; Use the registered implicit name (e.g., 'davie') if available, else fallback
+         (storage-var-name (or (and implicit-params
+                                    (let ((p (first implicit-params)))
+                                      (if (typep p 'crisp.compiler::parameter-def)
+                                          (crisp.compiler::parameter-def-name p)
+                                          (car p))))
+                               (when (gethash '__sc var-env) '__sc)
+                               '__storage))
          (storage-alloca (gethash storage-var-name var-env)))
 
     (unless storage-alloca
