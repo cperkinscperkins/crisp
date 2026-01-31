@@ -82,7 +82,7 @@
   (and (= (length arg-types) (length param-types))
        (every #'types-compatible-p arg-types param-types)))
 
-(defun resolve-best-signature (op explicit-arg-types)
+(defun resolve-best-signature (op explicit-arg-types context)
   "Finds the best matching function signature for the given operator and argument types.
    Attempts template instantiation if no immediate match is found."
   (let ((signatures (gethash op *function-table*))
@@ -104,7 +104,7 @@
       (let ((generic-def (gethash op *generic-functions*)))
         (when generic-def
               (log:info "Found generic function ~a, attempting lazy instantiation..." op)
-              (let ((new-sig (instantiate-generic-function generic-def explicit-arg-types nil ; location unavailable here
+              (let ((new-sig (instantiate-generic-function generic-def explicit-arg-types context nil ; location unavailable here
                                                           )))
                 (when new-sig
                       (setf signature new-sig)))))

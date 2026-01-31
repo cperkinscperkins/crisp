@@ -41,8 +41,8 @@
              (t
                (error "Branch type mismatch in IF expression. Then: ~a, Else: ~a" t-type e-type))))))))
 
-(defun analyze-if-expression-impl (expr env location &key enforce-constant)
-  (let* ((raw-cond-node (analyze-expression (second expr) env (append location '(1))))
+(defun analyze-if-expression-impl (expr env context location &key enforce-constant)
+  (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
          (cond-node (try-constant-fold raw-cond-node)))
 
     ;; DCE Optimization: If condition is a constant int/bool literal, analyze ONLY the live branch.
@@ -52,17 +52,17 @@
             (if (or (null val) (and (integerp val) (= val 0)))
                 ;; Constant False -> Analyze Else only, skip Then.
                 (if (fourth expr)
-                    (return-from analyze-if-expression-impl (analyze-expression (fourth expr) env (append location '(3))))
+                    (return-from analyze-if-expression-impl (analyze-expression (fourth expr) env context (append location '(3))))
                     (return-from analyze-if-expression-impl (make-semantic-literal :value-type 'int :value 0 :source-location location))) ; Empty else -> Constant False
                 ;; Constant True -> Analyze Then only, skip Else.
-                (return-from analyze-if-expression-impl (analyze-expression (third expr) env (append location '(2)))))))
+                (return-from analyze-if-expression-impl (analyze-expression (third expr) env context (append location '(2)))))))
 
     ;; If we are here, the condition is NOT a constant.
     (when enforce-constant
           (error "IF+ condition failed to evaluate at compile time: ~a" expr))
 
-    (let* ((then-node (analyze-expression (third expr) env (append location '(2))))
-           (else-node (if (fourth expr) (analyze-expression (fourth expr) env (append location '(3))) nil)))
+    (let* ((then-node (analyze-expression (third expr) env context (append location '(2))))
+           (else-node (if (fourth expr) (analyze-expression (fourth expr) env context (append location '(3))) nil)))
 
       (multiple-value-bind (unified-type final-then final-else)
           (ensure-branch-compatibility then-node else-node location)
@@ -73,37 +73,37 @@
                           :else-node final-else
                           :source-location location)))))
 
-(defun analyze-if-expression (expr env location)
-  (analyze-if-expression-impl expr env location :enforce-constant nil))
+(defun analyze-if-expression (expr env context location)
+  (analyze-if-expression-impl expr env context location :enforce-constant nil))
 
-(defun analyze-static-if-expression (expr env location)
-  (analyze-if-expression-impl expr env location :enforce-constant t))
+(defun analyze-static-if-expression (expr env context location)
+  (analyze-if-expression-impl expr env context location :enforce-constant t))
 
-(defun analyze-when-expression (expr env location)
+(defun analyze-when-expression (expr env context location)
   ;; Delegate to analyze-if-expression to leverage DCE.
   ;; (when cond body...) -> (if cond (progn body...) nil)
   (let ((cond (second expr))
         (body (cons 'progn (cddr expr))))
-    (analyze-if-expression `(if ,cond ,body) env location)))
+    (analyze-if-expression `(if ,cond ,body) env context location)))
 
-(defun analyze-static-when-expression (expr env location)
+(defun analyze-static-when-expression (expr env context location)
   (let ((cond (second expr))
         (body (cons 'progn (cddr expr))))
-    (analyze-static-if-expression `(if ,cond ,body) env location)))
+    (analyze-static-if-expression `(if ,cond ,body) env context location)))
 
-(defun analyze-unless-expression (expr env location)
+(defun analyze-unless-expression (expr env context location)
   ;; Delegate to analyze-if-expression to leverage DCE.
   ;; (unless cond body...) -> (if cond nil (progn body...))
   (let ((cond (second expr))
         (body (cons 'progn (cddr expr))))
-    (analyze-if-expression `(if ,cond nil ,body) env location)))
+    (analyze-if-expression `(if ,cond nil ,body) env context location)))
 
-(defun analyze-static-unless-expression (expr env location)
+(defun analyze-static-unless-expression (expr env context location)
   (let ((cond (second expr))
         (body (cons 'progn (cddr expr))))
-    (analyze-static-if-expression `(if ,cond nil ,body) env location)))
+    (analyze-static-if-expression `(if ,cond nil ,body) env context location)))
 
-(defun analyze-let-expression (expr env location)
+(defun analyze-let-expression (expr env context location)
   "Analyzes a `(let ...)` expression."
   (unless (and (>= (length expr) 2) (listp (cadr expr)))
     (error "Malformed let form: ~a" expr))
@@ -130,7 +130,7 @@
                                                  (list (first binding)))))
                            (init-form (first (last binding)))
                            ;; Analyze the value form
-                           (init-node (analyze-expression init-form current-env
+                           (init-node (analyze-expression init-form current-env context
                                                           (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1)))))
                            (init-node-types (semantic-node-type init-node)))
 
@@ -168,7 +168,7 @@
           ;; The loop builds the bindings list in reverse, so we reverse it back.
           (values current-env (reverse bindings-list)))
 
-      (let* ((analyzed-body (analyze-body-expressions body-forms final-env (append location '(2))))
+      (let* ((analyzed-body (analyze-body-expressions body-forms final-env context (append location '(2))))
              (last-body-node (first (last analyzed-body)))
              (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
         (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
@@ -178,12 +178,12 @@
                            :body analyzed-body
                            :source-location location)))))
 
-(defun analyze-progn-expression (expr env location)
+(defun analyze-progn-expression (expr env context location)
   "Analyzes a `(progn ...)` expression."
   (let ((body (cdr expr))
         (nodes '()))
     (dolist (form body)
-      (push (analyze-expression form env location) nodes))
+      (push (analyze-expression form env context location) nodes))
     (setf nodes (nreverse nodes))
     ;; Determine type from the last node
     (let ((last-node (first (last nodes))))
@@ -192,12 +192,12 @@
        :body nodes
        :source-location location))))
 
-(defun analyze-return-expression (expr env location)
+(defun analyze-return-expression (expr env context location)
   "Analyzes a `(return ...)` expression."
   (let* ((value-forms (rest expr))
          (value-nodes (loop for form in value-forms
                             for i from 1
-                            collect (analyze-expression form env (append location (list i)))))
+                            collect (analyze-expression form env context (append location (list i)))))
 
          ;; Flatten types to check against signature
          (all-inferred-types (if value-nodes
@@ -209,13 +209,13 @@
                                  '(nil)))
 
          ;; Context
-         (current-func *current-compiling-function*)
+         (current-func (compiler-context-current-compiling-function context))
          (sig (if current-func (first (gethash current-func *function-table*)) nil))
          (declared-ret (if sig (function-signature-return-types sig) nil))
 
          ;; Check for invalid return (Deferred Error 04)
          ;; If declared return is NIL (void), we cannot return values.
-         (is-kernel (member '(entry-point) *current-function-declarations* :test #'equal))
+         (is-kernel (member '(entry-point) (compiler-context-declarations context) :test #'equal))
          (invalid-return-p (and declared-ret
                                 (or (null declared-ret) (equal declared-ret '(nil)))
                                 value-nodes
@@ -273,7 +273,7 @@
                                      :value-nodes value-nodes
                                      :source-location location))))
 
-(defun analyze-function-literal (expr env location)
+(defun analyze-function-literal (expr env context location)
   "Analyzes (function x) or #'(...)"
   (declare (ignore env))
   (let ((fn-name (second expr)))
@@ -286,11 +286,11 @@
      :value fn-name
      :source-location location)))
 
-(defun analyze-funcall-expression (expr env location)
+(defun analyze-funcall-expression (expr env context location)
   "Analyzes a (funcall f args...) form."
   (let* ((func-expr (second expr))
          (args-exprs (cddr expr))
-         (func-node (analyze-expression func-expr env location))
+         (func-node (analyze-expression func-expr env context location))
          (func-type (semantic-node-type func-node)))
 
     ;; Check if the function expression resolved to a function type or literal.
@@ -312,10 +312,10 @@
                  ;; Re-dispatch as if it were a direct call: (+ a b)
                  (let ((new-expr (cons name args-exprs)))
                    (return-from analyze-funcall-expression
-                                (funcall (gethash name *expression-analyzers*) new-expr env location))))
+                                (funcall (gethash name *expression-analyzers*) new-expr env context location))))
 
            ;; Sub-case 2b: It is a user function. Lower to direct semantic-call.
-           (let* ((arg-nodes (loop for arg in args-exprs collect (analyze-expression arg env location)))
+           (let* ((arg-nodes (loop for arg in args-exprs collect (analyze-expression arg env context location)))
                   (arg-types (mapcar #'semantic-node-type arg-nodes))
                   (signatures (gethash name *function-table*))
                   (match (find-if (lambda (sig)
@@ -345,7 +345,7 @@
              (loop for arg-expr in args-exprs
                    for expected-type in signature-params
                    for i from 0
-                   collect (let ((node (analyze-expression arg-expr env location)))
+                   collect (let ((node (analyze-expression arg-expr env context location)))
                              ;; Type check
                              (unless (equal (semantic-node-type node) expected-type)
                                (error 'crisp-type-error :expected expected-type :inferred (semantic-node-type node) :source-location location))
@@ -356,7 +356,7 @@
          :args arg-nodes
          :source-location location)))))
 
-(defun analyze-quote (expr env location)
+(defun analyze-quote (expr env context location)
   (declare (ignore env))
   (let ((val (second expr)))
     (cond
@@ -364,8 +364,8 @@
      ((symbolp val) (make-semantic-literal :value-type 'symbol :value val :source-location location))
      (t (make-semantic-literal :value-type 'quote :value val :source-location location)))))
 
-(defun analyze-sizeof-expression (expr env location)
-  (declare (ignore env))
+(defun analyze-sizeof-expression (expr env context location)
+  (declare (ignore env context))
   (unless (= (length expr) 2)
     (error "sizeof expects exactly 1 argument: (sizeof type)"))
   (let* ((raw-type (second expr))
@@ -376,16 +376,16 @@
                           :target-type type-spec
                           :source-location location)))
 
-(defun analyze-compiler-no-op (expr env location)
+(defun analyze-compiler-no-op (expr env context location)
   "Analyzes a (compiler-no-op) form, which results in a void literal.
    Used by compile-time macros (c-t-assert, c-t-output) to emit no code."
-  (declare (ignore expr env))
+  (declare (ignore expr env context))
   (make-semantic-literal :value-type 'void :value nil :source-location location))
 
-(defun analyze-nested-def-function (expr env location)
+(defun analyze-nested-def-function (expr env context location)
   "Analyzes a nested `(def-function ...)` expression (e.g. from a template)."
   (declare (ignore env))
-  (unless *allow-nested-def-function*
+  (unless (compiler-context-allow-nested-def-function context)
     (error "Unsupported form 'DEF-FUNCTION' found in function body."))
 
   (unless (and *current-module* *current-builder*)
@@ -397,33 +397,38 @@
   ;; Return a void literal so it doesn't affect the expression value
   (make-semantic-literal :value-type 'void :value nil :source-location location))
 
-(defun analyze-template-instantiation (expr env location)
+(defun analyze-template-instantiation (expr env context location)
   "Analyzes a `(template-instantiation ...)` form, allowing nested def-functions."
-  (let ((*allow-nested-def-function* t)
+  (let ((old-allow (compiler-context-allow-nested-def-function context))
         (body (second expr)))
-    (log:info "ANALYZE-TEMPLATE-INSTANTIATION: Body=~a" body)
-    ;; Eval the body to ensure macros (defmacro) and struct definitions (eval-when)
-    ;; are registered in the current environment BEFORE analysis proceeds.
-    ;; This allows subsequent forms in the function to usage the newly defined macros.
-    ;; This allows subsequent forms in the function to usage the newly defined macros.
-    (eval body)
+    (setf (compiler-context-allow-nested-def-function context) t)
+    (unwind-protect
+        (progn
+         (log:info "ANALYZE-TEMPLATE-INSTANTIATION: Body=~a" body)
+         ;; Eval the body to ensure macros (defmacro) and struct definitions (eval-when)
+         ;; are registered in the current environment BEFORE analysis proceeds.
+         ;; This allows subsequent forms in the function to usage the newly defined macros.
+         ;; This allows subsequent forms in the function to usage the newly defined macros.
+         (eval body)
 
-    (let ((sym (find-symbol "MAKE-POINT_FLOAT" "CRISP-LANGUAGE")))
-      (if sym
-          (log:info "Check: MAKE-POINT_FLOAT in CRISP-LANGUAGE. Macro? ~a" (macro-function sym))
-          (log:info "Check: MAKE-POINT_FLOAT NOT FOUND in CRISP-LANGUAGE")))
+         (let ((sym (find-symbol "MAKE-POINT_FLOAT" "CRISP-LANGUAGE")))
+           (if sym
+               (log:info "Check: MAKE-POINT_FLOAT in CRISP-LANGUAGE. Macro? ~a" (macro-function sym))
+               (log:info "Check: MAKE-POINT_FLOAT NOT FOUND in CRISP-LANGUAGE")))
 
-    ;; The body is typically a PROGN or a single form.
-    ;; We analyze it recursively to generate IR for functions.
-    (analyze-expression body env location)))
+         ;; The body is typically a PROGN or a single form.
+         ;; We analyze it recursively to generate IR for functions.
+         (analyze-expression body env context location))
+      ;; Cleanup
+      (setf (compiler-context-allow-nested-def-function context) old-allow))))
 
-(defun analyze-eval-when (expr env location)
+(defun analyze-eval-when (expr env context location)
   "Analyzes (eval-when ...) forms by ignoring them in the runtime IR.
    Side effects (like struct registration) should have already occurred during macro expansion."
-  (declare (ignore expr env))
+  (declare (ignore expr env context))
   (make-semantic-literal :value-type 'void :value nil :source-location location))
 
-(defun analyze-is-set-expression (expr env location)
+(defun analyze-is-set-expression (expr env context location)
   "Analyzes (is-set? var). Returns 1 (true) if var is bound in env, 0 (false) otherwise."
   (let ((var (second expr)))
     (unless (symbolp var)

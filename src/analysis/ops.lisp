@@ -4,10 +4,10 @@
 ;; --- #'(...) Syntax Parsers ---
 
 (defmacro def-binary-op-analyzer (name node-constructor op-string)
-  `(defun ,name (expr env location)
+  `(defun ,name (expr env context location)
      ,(format nil "Analyzes a `(~a ...)` expression." op-string)
-     (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-            (right-node (analyze-expression (third expr) env (append location '(2))))
+     (let* ((left-node (analyze-expression (second expr) env context (append location '(1))))
+            (right-node (analyze-expression (third expr) env context (append location '(2))))
             (left-type (get-single-value-type left-node))
             (right-type (get-single-value-type right-node))
             (promoted-type (get-promoted-type left-type right-type)))
@@ -31,10 +31,10 @@
 (def-binary-op-analyzer analyze-div-expression make-semantic-div "/")
 
 (defmacro def-comparison-analyzer (name node-constructor op-string)
-  `(defun ,name (expr env location)
+  `(defun ,name (expr env context location)
      ,(format nil "Analyzes a `(~a ...)` expression." op-string)
-     (let* ((left-node (analyze-expression (second expr) env (append location '(1))))
-            (right-node (analyze-expression (third expr) env (append location '(2)))))
+     (let* ((left-node (analyze-expression (second expr) env context (append location '(1))))
+            (right-node (analyze-expression (third expr) env context (append location '(2)))))
        ;; We intentionally do not enforce strict numeric types here yet,
        ;; allowing for potential future pointer comparisons etc.
        ;; Result is always INT (boolean 0/1).
@@ -100,17 +100,17 @@
 (def-comparison-analyzer analyze-eq-expression make-semantic-eq "=")
 (def-comparison-analyzer analyze-neq-expression make-semantic-neq "!=")
 
-(defun analyze-inc!-expression (expr env location)
-  (declare (ignore expr env location))
+(defun analyze-inc!-expression (expr env context location)
+  (declare (ignore expr env context location))
   (error "inc! not implemented"))
-(defun analyze-dec!-expression (expr env location)
-  (declare (ignore expr env location))
+(defun analyze-dec!-expression (expr env context location)
+  (declare (ignore expr env context location))
   (error "dec! not implemented"))
-(defun analyze-atomic-add!-expression (expr env location)
-  (declare (ignore expr env location))
+(defun analyze-atomic-add!-expression (expr env context location)
+  (declare (ignore expr env context location))
   (error "atomic-add! not implemented"))
 
-(defun analyze-cast-expression (expr env location)
+(defun analyze-cast-expression (expr env context location)
   "Analyzes a to-XXXX or as-XXXX cast expression."
   (let* ((op (first expr))
          (op-name (symbol-name op))
@@ -123,7 +123,7 @@
            ((member op '(floor ceil round)) 'int)
            (t (error "Internal compiler error: analyze-cast-expression called with invalid operator ~a" op))))
          (target-crisp-type (gethash target-type-name *crisp-types*))
-         (arg-node (analyze-expression arg-form env (append location '(1)))))
+         (arg-node (analyze-expression arg-form env context (append location '(1)))))
 
     (unless target-crisp-type
       (error 'crisp-unknown-type-error :type-name target-type-name :source-location location))
@@ -153,16 +153,16 @@
          (t ; Default for "AS-" and other currently unhandled float-to-int ops
            (make-semantic-bitcast :type target-type-name :arg arg-node :source-location location)))))))
 
-(defun analyze-truncate-expression (expr env location)
+(defun analyze-truncate-expression (expr env context location)
   "Analyzes (truncate val) -> (values int rem)."
   (let* ((arg-form (second expr))
-         (arg-node (analyze-expression arg-form env (append location '(1))))
+         (arg-node (analyze-expression arg-form env context (append location '(1))))
          (arg-type (get-single-value-type arg-node))) ;; e.g. 'float
     (make-semantic-truncate :type (list 'int arg-type) ;; Returns (int float)
                             :arg arg-node
                             :source-location location)))
 
-(defun analyze-value-cast-expression (expr env location)
+(defun analyze-value-cast-expression (expr env context location)
   "Analyzes the generic (to type value) form."
   (let* ((type-form (second expr))
          (value-form (third expr))
@@ -176,10 +176,10 @@
     (unless target-type
       (error 'crisp-unknown-type-error :type-name type-name :source-location location))
 
-    (let ((arg-node (analyze-expression value-form env (append location '(2)))))
+    (let ((arg-node (analyze-expression value-form env context (append location '(2)))))
       (make-semantic-value-cast :type type-name :arg arg-node :source-location location))))
 
-(defun analyze-generic-as-expression (expr env location)
+(defun analyze-generic-as-expression (expr env context location)
   "Analyzes the generic (as type value) form."
   (let* ((type-form (second expr))
          (value-form (third expr))
@@ -191,7 +191,7 @@
                           while (and (symbolp name) (gethash name *crisp-type-aliases*))
                           finally (cl:return name)))
          (target-type (if (symbolp type-name) (gethash type-name *crisp-types*) nil))
-         (arg-node (analyze-expression value-form env (append location '(2)))))
+         (arg-node (analyze-expression value-form env context (append location '(2)))))
 
     (unless (or target-type (valid-type-p type-name))
       (error 'crisp-unknown-type-error :type-name type-name :source-location location))
@@ -211,7 +211,7 @@
                             :arg node
                             :source-location location))
 
-(defun analyze-bitcast-expression (expr env location)
+(defun analyze-bitcast-expression (expr env context location)
   "Handler for explicit (as-bits type val) or aliased calls."
   ;; Re-use logic or define simple wrapper.
   ;; The original file had a def-expression-analyzer for this but no distinct function body
@@ -222,7 +222,7 @@
   (let* ((type-form (second expr))
          (val-form (third expr))
          (target-type (if (symbolp type-form) type-form (error "Invalid type")))
-         (arg-node (analyze-expression val-form env (append location '(2)))))
+         (arg-node (analyze-expression val-form env context (append location '(2)))))
     (make-semantic-bitcast :type target-type :arg arg-node :source-location location)))
 
 (defun register-ops-analyzers ()

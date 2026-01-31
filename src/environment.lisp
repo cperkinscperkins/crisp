@@ -153,7 +153,7 @@
     (let ((injected-bindings (inject-defaults remainder-env defaults)))
       (values active-env injected-bindings nil))))
 
-(defun instantiate-generic-function (generic-def explicit-arg-types location)
+(defun instantiate-generic-function (generic-def explicit-arg-types context location)
   "Instantiates a lazy generic function variant for the given argument types."
   (multiple-value-bind (active-env injected-bindings error-message)
       (resolve-argument-bindings generic-def explicit-arg-types)
@@ -186,7 +186,8 @@
                                                    active-param-names
                                                    body
                                                    declarations
-                                                   (or (generic-function-def-source-location generic-def) location))))
+                                                   (or (generic-function-def-source-location generic-def) location)
+                                                   context)))
 
           ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
           ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.

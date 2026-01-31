@@ -282,6 +282,7 @@
         (if *defer-struct-validation*
             (progn
              (log:info "Deferring struct registration for ~a. dependency missing/error: ~a" name c)
+             (ignore-errors NIL)
              (push (list name members category) *pending-struct-definitions*))
             (error c))))))
 
