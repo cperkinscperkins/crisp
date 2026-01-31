@@ -132,6 +132,9 @@
           (log:error "Expected 1 implicit param, got ~a" (length implicit-sig))
           (return-from validate-scratch-cell-explosion nil))
 
+        (log:warn "DEBUG: Validating metadata file: ~a" metadata-path)
+        (log:warn "DEBUG: Full implicit signature: ~a" implicit-sig)
+
         (let ((entry (first implicit-sig)))
           (let ((name (getf entry :name)))
             (unless (string-equal name "davie")

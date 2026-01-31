@@ -126,14 +126,21 @@
         (when (consp b)
               ;; Set the current binding name for deep scanning
               (let ((var-name (first b)))
-                (log:warn "Pass 1: Scanning let binding for ~a" var-name)
+                (log:debug "Pass 1: Scanning let binding for ~a" var-name)
                 (setf (compiler-context-current-binding-name *compiler-context*) var-name)
                 (scan-form (second b))
                 ;; Restore after scanning the value form
                 (setf (compiler-context-current-binding-name *compiler-context*) old-binding))))
       (dolist (f body) (scan-form f)))))
 
+
 (defmethod scan-operator ((op (eql 'let*)) args)
+  (scan-operator 'let args))
+
+(defmethod scan-operator ((op (eql 'cl:let)) args)
+  (scan-operator 'let args))
+
+(defmethod scan-operator ((op (eql 'cl:let*)) args)
   (scan-operator 'let args))
 
 (defmethod scan-operator ((op (eql 'if)) args)
@@ -153,19 +160,42 @@
   (setf *scan-is-originator* t)
 
   ;; Extract the type argument: (make-scratch-cell TYPE)
-  (when (and args (symbolp (first args)))
-        (let* ((inner-type (first args))
-               (raw-spec (list 'cell inner-type))
+  (when args
+        (let* ((arg1 (first args))
+               (raw-spec (if (and (consp arg1) (eq (first arg1) 'cell))
+                             arg1
+                             (list 'cell arg1)))
                (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
           ;; Store in *implicit-arg-map* for this function
           ;; Use generated name (current binding) or fallback to __storage
           (let ((implicit-name (or (compiler-context-current-binding-name *compiler-context*) '__storage)))
-            (log:warn "Pass 1: Detected make-scratch-cell with type ~a in ~a (Implicit Name: ~a)"
-                      canonical-spec (compiler-context-scanning-function-name *compiler-context*) implicit-name)
-            (let ((entry (cons implicit-name canonical-spec))
-                  (existing (gethash (compiler-context-scanning-function-name *compiler-context*) *implicit-arg-map*)))
-              (setf (gethash (compiler-context-scanning-function-name *compiler-context*) *implicit-arg-map*)
-                (append existing (list entry)))))))
+            (log:debug "Pass 1: Detected make-scratch-cell with type ~a in ~a (Implicit Name: ~a)"
+                       canonical-spec (compiler-context-scanning-function-name *compiler-context*) implicit-name)
+            (let* ((fn-name (compiler-context-scanning-function-name *compiler-context*))
+                   (existing (gethash fn-name *implicit-arg-map*))
+                   (match (find canonical-spec existing :key #'cdr :test #'equal)))
+              (cond
+               ;; Case 1: Entry exists for this type
+               (match
+                 (cond
+                  ;; If we are trying to add __storage, but an entry exists (named or not), ignore the fallback.
+                  ((eq implicit-name '__storage)
+                    (log:debug "Pass 1: Ignoring implicit fallback __storage for ~a because entry exists: ~a"
+                               canonical-spec match))
+                  ;; If we have a real name, and the existing entry is __storage, UPGRADE it.
+                  ((eq (car match) '__storage)
+                    (log:debug "Pass 1: Upgrading implicit entry from __storage to ~a" implicit-name)
+                    (setf (car match) implicit-name))
+                  ;; If we have a real name and existing is also named... ignore duplicate or keep both?
+                  ;; For now ignore duplicate to avoid explosion.
+                  (t
+                    (log:debug "Pass 1: Ignoring duplicate implicit entry for ~a: ~a (New: ~a)"
+                               canonical-spec match implicit-name))))
+
+               ;; Case 2: No entry exists, add it.
+               (t
+                 (setf (gethash fn-name *implicit-arg-map*)
+                   (append existing (list (cons implicit-name canonical-spec))))))))))
 
   ;; Continue scanning arguments
   (dolist (arg args) (scan-form arg)))
