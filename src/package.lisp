@@ -183,7 +183,7 @@
    #:compile-crisp-form-to-ir-string
    #:compile-to-spirv
    #:compile-to-ptx
-   #:validate-18-implicit-signature
+   #:compile-to-ptx
    #:validate-def-record-explosion
    #:validate-def-record-explosion-ir
    #:validate-scratch-cell-explosion
