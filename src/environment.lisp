@@ -320,7 +320,8 @@
    This logic is ONLY executed in single-pass mode (when *call-graph* is NIL).
    In multi-pass mode, this analysis is handled by analyze-signatures-pass."
   (when (null *call-graph*)
-        (let ((*scanning-function-name* name)) ;; Bind for scan-operator (make-scratch-cell)
+        (let ((*scanning-function-name* name)) ;; Bind legacy var just in case
+          (setf (compiler-context-scanning-function-name *compiler-context*) name) ;; Set context for scan-operator
           (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
             (when (or is-originator (some (lambda (callee)
                                             (or (gethash callee *implicit-arg-map*)

@@ -371,10 +371,10 @@
   (let* ((inner-type (cadr expr))
          (raw-spec (list 'cell inner-type))
          (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
-    ;; Store: (name . type) - for now use generated name __sc
+    ;; Store: (name . type) - for now use generated name __STORAGE
     ;; Later: extract :name from make-scratch-cell keywords
     (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*)
-      (list (cons '__sc canonical-spec))))
+      (list (cons '__STORAGE canonical-spec))))
 
   (let ((inner-type (cadr expr)))
     ;; Ensure the inner type is valid

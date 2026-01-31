@@ -151,11 +151,11 @@
                (raw-spec (list 'cell inner-type))
                (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
           ;; Store in *implicit-arg-map* for this function
-          ;; Use generated name __sc for now
+          ;; Use generated name __STORAGE for now (Matched to CI/Legacy expectation)
           (log:debug "Pass 1: Detected make-scratch-cell with type ~a in ~a"
                      canonical-spec (compiler-context-scanning-function-name *compiler-context*))
           (setf (gethash (compiler-context-scanning-function-name *compiler-context*) *implicit-arg-map*)
-            (list (cons '__sc canonical-spec)))))
+            (list (cons '__STORAGE canonical-spec)))))
 
   ;; Continue scanning arguments
   (dolist (arg args) (scan-form arg)))
