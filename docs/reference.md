@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-01-31T06:20:55.856849Z
+Generated on 2026-02-01T00:43:11.850628Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -131,6 +131,18 @@ Generated on 2026-01-31T06:20:55.856849Z
 
 
 ---
+### DEFVAR `*IMPLICIT-ARG-MAP*`
+
+  > Map of function-name -> list of implicit argument requirements.
+
+
+---
+### DEFVAR `*SCRATCH-CELL-COUNTER*`
+
+  > Monotonic counter for disambiguating scratch cells.
+
+
+---
 ### DEFUN `COMPILE-MODULE`
 - **Args**: `(FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)`
 
@@ -147,6 +159,12 @@ Generated on 2026-01-31T06:20:55.856849Z
 ### DEFVAR `*SCANNING-FUNCTION-NAME*`
 
   > The name of the function currently being scanned in Pass 1.
+
+
+---
+### DEFVAR `*SCRATCH-CELL-COUNTER*`
+
+  > Monotonic counter for disambiguating scratch cells.
 
 
 ---
@@ -1588,6 +1606,13 @@ Generated on 2026-01-31T06:20:55.856849Z
 
 
 ---
+### DEFUN `VALIDATE-MULTIPLE-SCRATCH-CELLS`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates that metadata contains 2 distinct implicit scratch cell parameters.
+
+
+---
 ### DEFUN `VALIDATE-DEF-RECORD-EXPLOSION-IR`
 - **Args**: `(IR-PATH)`
 
@@ -1743,10 +1768,6 @@ Generated on 2026-01-31T06:20:55.856849Z
 ---
 ### DEFUN `SERIALIZE-KERNELS`
 - **Args**: `(OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)`
-
----
-### DEFUN `VALIDATE-18-IMPLICIT-SIGNATURE`
-- **Args**: `(&OPTIONAL (PATHS NIL))`
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`

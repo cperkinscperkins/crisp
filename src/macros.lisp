@@ -118,6 +118,7 @@
 (defmacro def-function (name params &rest body-and-location)
   "Defines a new, thread-level Crisp function."
   (when (string-equal (symbol-name name) "~REF~")
+        (log:error "Illegal Overload Detected: Name=~s Pkg=~s Body=~s" name (symbol-package name) body-and-location)
         (error 'crisp-illegal-overload-error :name name))
   ;; Find the position of our injected :source-location keyword.
   (let* ((loc-pos (position :source-location body-and-location))
@@ -136,6 +137,7 @@
                      (and (> (length name-str) 2)
                           (cl:char= (cl:char name-str 0) #\~)
                           (cl:char= (cl:char name-str (1- (length name-str))) #\~))))
+            (log:error "Illegal Overload Detected (Pattern): Name=~s Str=~s Pkg=~s IsSystem=~a" name name-str (symbol-package name) is-system)
             (error 'crisp-illegal-overload-error :name name)))
 
     (log:debug "which package?: ~a ~%" *package*)

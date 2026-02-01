@@ -129,9 +129,18 @@
                                                  (first binding)
                                                  (list (first binding)))))
                            (init-form (first (last binding)))
+                           ;; Track binding name for make-scratch-cell unique ID generation
+                           (current-binding-name (if (= (length binding-vars) 1) (first binding-vars) nil))
                            ;; Analyze the value form
-                           (init-node (analyze-expression init-form current-env context
-                                                          (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1)))))
+                           (init-node
+                            (let ((old-name (compiler-context-current-binding-name context)))
+                              (when current-binding-name
+                                    (setf (compiler-context-current-binding-name context) current-binding-name))
+                              (unwind-protect
+                                  (analyze-expression init-form current-env context
+                                                      (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1))))
+                                (when current-binding-name
+                                      (setf (compiler-context-current-binding-name context) old-name)))))
                            (init-node-types (semantic-node-type init-node)))
 
                       (cond

@@ -20,13 +20,20 @@
 ;; Multi-Pass Orchestration
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defvar *implicit-arg-map* (make-hash-table)
+        "Map of function-name -> list of implicit argument requirements.")
+
+(defvar *scratch-cell-counter* 0
+        "Monotonic counter for disambiguating scratch cells.")
+
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms."
   (log:debug "*crisp-types*: ~s~%*expression-analyzers*: ~s" (alexandria:hash-table-keys *crisp-types*) (alexandria:hash-table-keys *expression-analyzers*))
   ;; Pass 1: Gather all function signatures and build the call graph.
   (let ((*call-graph* (make-hash-table))
         (*originator-functions* (make-hash-table))
-        (*implicit-arg-map* (make-hash-table))) ; Rebind for a clean state per module.
+        (*implicit-arg-map* (make-hash-table)) ; Rebind for a clean state per module.
+        (*scratch-cell-counter* 0)) ; Reset counter for deterministic naming
     (let ((*defer-struct-validation* t)
           (*pending-struct-definitions* nil))
       (analyze-signatures-pass forms)
@@ -38,6 +45,9 @@
     (propagate-implicit-arguments)
 
     ;; Pass 2: Now that all signatures are known, compile the function bodies.
+    ;; Reset counter so codegen (Pass 2) generates the same unique IDs as Pass 1
+    (setf *scratch-cell-counter* 0)
+    (log:info "Reset *scratch-cell-counter* to 0 for Pass 2 Codegen")
     (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
     (check-for-recursion-cycles)))
 
@@ -67,20 +77,22 @@
                (log:debug "OVERLAY: Processing callee ~a with implicit ~a, callers: ~a"
                           callee callee-implicit callers)
                (dolist (caller callers)
-                 ;; If this caller isn't already marked as a carrier, copy from callee and add to worklist.
-                 (unless (gethash caller *implicit-arg-map*)
-                   ;; BEFORE: (setf (gethash caller *implicit-arg-map*) '(:storage))
-                   ;; AFTER: Copy from callee
-                   (when callee-implicit
-                         (log:info "OVERLAY: Marking ~a as carrier (copied from ~a): ~a"
-                                   caller callee callee-implicit)
-                         (setf (gethash caller *implicit-arg-map*) callee-implicit)
-                         (push caller worklist))))))))
+                 (let* ((existing (gethash caller *implicit-arg-map*))
+                        ;; Use UNION to merge requirements. TEST=EQUAL ensures (name . type) pairs are unique keys.
+                        (merged (union existing callee-implicit :test #'equal)))
+                   (when (> (length merged) (length existing))
+                         (log:info "OVERLAY: Propagating implicit args to ~a (Merged ~d -> ~d)"
+                                   caller (length existing) (length merged))
+                         (setf (gethash caller *implicit-arg-map*) merged)
+                         (pushnew caller worklist))))))))
 
 ;; --- Generic Dependency Scanner ---
 
 (defvar *scanning-function-name* nil
         "The name of the function currently being scanned in Pass 1.")
+
+(defvar *scratch-cell-counter* 0
+        "Monotonic counter for disambiguating scratch cells.")
 
 (defvar *scan-callees* nil)
 (defvar *scan-is-originator* nil)
@@ -167,35 +179,21 @@
                              (list 'cell arg1)))
                (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
           ;; Store in *implicit-arg-map* for this function
-          ;; Use generated name (current binding) or fallback to __storage
-          (let ((implicit-name (or (compiler-context-current-binding-name *compiler-context*) '__storage)))
-            (log:debug "Pass 1: Detected make-scratch-cell with type ~a in ~a (Implicit Name: ~a)"
-                       canonical-spec (compiler-context-scanning-function-name *compiler-context*) implicit-name)
-            (let* ((fn-name (compiler-context-scanning-function-name *compiler-context*))
-                   (existing (gethash fn-name *implicit-arg-map*))
+          ;; Unique Naming: varName_from_FnName_N
+          (let* ((binding-name (or (compiler-context-current-binding-name *compiler-context*) '__storage))
+                 (fn-name (compiler-context-scanning-function-name *compiler-context*))
+                 (counter (incf *scratch-cell-counter*))
+                 (unique-name-str (format nil "~a_FROM_~a_~d" binding-name fn-name counter))
+                 (unique-name (intern unique-name-str (symbol-package binding-name))))
+
+            (log:info "Pass 1: make-scratch-cell ~a -> implicit: ~a" binding-name unique-name)
+
+            (let* ((existing (gethash fn-name *implicit-arg-map*))
                    (match (find canonical-spec existing :key #'cdr :test #'equal)))
               (cond
-               ;; Case 1: Entry exists for this type
-               (match
-                 (cond
-                  ;; If we are trying to add __storage, but an entry exists (named or not), ignore the fallback.
-                  ((eq implicit-name '__storage)
-                    (log:debug "Pass 1: Ignoring implicit fallback __storage for ~a because entry exists: ~a"
-                               canonical-spec match))
-                  ;; If we have a real name, and the existing entry is __storage, UPGRADE it.
-                  ((eq (car match) '__storage)
-                    (log:debug "Pass 1: Upgrading implicit entry from __storage to ~a" implicit-name)
-                    (setf (car match) implicit-name))
-                  ;; If we have a real name and existing is also named... ignore duplicate or keep both?
-                  ;; For now ignore duplicate to avoid explosion.
-                  (t
-                    (log:debug "Pass 1: Ignoring duplicate implicit entry for ~a: ~a (New: ~a)"
-                               canonical-spec match implicit-name))))
-
-               ;; Case 2: No entry exists, add it.
                (t
-                 (setf (gethash fn-name *implicit-arg-map*)
-                   (append existing (list (cons implicit-name canonical-spec))))))))))
+                 (let ((new-entry (cons unique-name canonical-spec)))
+                   (push new-entry (gethash fn-name *implicit-arg-map*)))))))))
 
   ;; Continue scanning arguments
   (dolist (arg args) (scan-form arg)))

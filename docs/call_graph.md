@@ -610,8 +610,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-14-PHYSICAL-SIGNATURE PATHS)  metadata.lisp
 
-- (VALIDATE-18-IMPLICIT-SIGNATURE &OPTIONAL (PATHS NIL))  metadata.lisp
-
 - (VALIDATE-C-STYLE-NAME-IR IR-PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp
 
@@ -632,6 +630,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-DEF-RECORD-EXPLOSION METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-DEF-RECORD-EXPLOSION-IR IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-MULTIPLE-SCRATCH-CELLS METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-MY-KERNEL-SCRATCH-IR IR-PATH)  metadata-val.lisp
 
