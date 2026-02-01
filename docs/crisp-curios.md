@@ -14,3 +14,75 @@ Curious Things To Know About Crisp
 - Crisp also uses Common Lisp macros to expand some of its own forms (def-function and others) into semantic nodes.
 - the Spir-V metatadata is injected manually, rather than using LLVM Dev bindings.
 - By default, the LLVM-IR is output to *standard-output*, and Log4CL messages are sent to *error-output*.    
+
+
+
+# def-struct vs def-record
+
+## Summary
+
+`def-struct` and `def-record` are correctly defined and behave differently at function boundaries, but share similar codegen paths within function bodies. This document clarifies what works, what's suboptimal, and what might need future attention.
+
+---
+
+## Design Intent
+
+From the design documents:
+
+**`def-struct`:**
+- Maps to **contiguous memory** (std140 aligned)
+- Passed as a single aggregate parameter
+- Members accessed via GEP operations
+- Used for actual memory-backed structures
+
+**`def-record`:**
+- Maps to **individual registers** (no contiguous memory)
+- Undergoes **Scalar Replacement of Aggregates (SROA)**
+- Parameters are **exploded** at function boundaries
+- Zero-cost abstraction for views (cell, vector, matrix, tensor)
+- Enables efficient mutation through register shadowing/rebinding
+
+---
+
+## Storage Handles: cell
+
+`cell` is defined as a `def-record`. It has two members: `storage` and `offset`.  `storage`, is, in turn
+another `def-record` that tracks a pointer and a byte size.
+
+When a record is passed as an argument to the kernel or function, it is exploded into its component registers.  And when a nested record is passed, it is "flattened" and exploded. So a `cell` should
+appear as THREE arguments (storage-ptr, storage-bytesize, cell-offset).  This has been a source of bugs in the past.
+
+## Scratch Cells
+Kernels cannot allocate memory, but Crisp let's users make a "scratch" cell (and other Storage Handles, once we support them). scratch cells are then implicitly added to the parameter list of the kernel, as well as ALL the functions in the call tree between the 'make-scratch-cell' call and the kernel.  Below that
+they would be passed explicitly by the user, as normal.  
+
+Scratch Cells are our first "Side Channel" Storage Handle.
+
+Look at this calling tree
+
+Kernel_A()
+ => B()
+   => C()
+     c = make-scratch-cell
+     => D(c)
+      => E(c)
+
+The scratch cell is instantiated in C(). But kernels cannot allocate memory. So the scratch
+cell needs to implicitly added as a "Side Channel" to call chain from the kernel to C().
+Below that, the cell can be passed explicitly and does not need "Side Channel" modification.
+
+
+## Global vs. Local address space
+
+"scratch" cells are default to :local address space. ( of course, the user can specify :global if they want to.).
+
+Local address space is handled slightly differntly CUDA vs L0/OpenCL. This might affect both the
+codegen and the hoisting.  We 100% need to test some of these kernels on both before advancing.
+
+
+## Related Files
+
+- Type definitions: `src/compiler.lisp` (lines 116, 128)
+- Test case: `tests/spec/010-def-record/17-record-compare-struct.crisp`
+- Smoke test: `tests/spec/023-spirv/01-smoke.crisp`
+- Design docs: `docs/chapters/08_crisp_types/12_def_record.md`
