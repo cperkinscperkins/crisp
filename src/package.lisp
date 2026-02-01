@@ -183,10 +183,10 @@
    #:compile-crisp-form-to-ir-string
    #:compile-to-spirv
    #:compile-to-ptx
-   #:compile-to-ptx
    #:validate-def-record-explosion
    #:validate-def-record-explosion-ir
    #:validate-scratch-cell-explosion
+   #:validate-multiple-scratch-cells
 
    ;; laungage symbols
    #:def-function

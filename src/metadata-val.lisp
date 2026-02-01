@@ -137,8 +137,10 @@
 
         (let ((entry (first implicit-sig)))
           (let ((name (getf entry :name)))
-            (unless (string-equal name "davie")
-              (log:error "Expected implicit param name 'davie', got '~a'" name)
+            ;; Updated for Bug 026: Names are now scoped like DAVIE_FROM_FUN_B_1
+            ;; Using regex to match DAVIE_FROM_.*
+            (unless (cl-ppcre:scan "(?i)davie_from_.*" name)
+              (log:error "Expected implicit param name matching 'davie_from_.*', got '~a'" name)
               (return-from validate-scratch-cell-explosion nil))
 
             ;; Check type is (CELL INT) not just STORAGE
@@ -153,9 +155,36 @@
               (unless (and (listp range) (= (length range) 2)
                            (= (first range) 0) (= (second range) 2))
                 (log:error "Expected range (0 2) for 3 slots, got ~a" range)
-                (return-from validate-scratch-cell-explosion nil))
+                (return-from validate-scratch-cell-explosion nil)))
+            t))))))
 
-              t)))))))
+;; Validator for multiple scratch cells (Bug 026)
+(defun validate-multiple-scratch-cells (metadata-path)
+  "Validates that metadata contains 2 distinct implicit scratch cell parameters."
+  (unless (probe-file metadata-path)
+    (log:error "Metadata file not found: ~a" metadata-path)
+    (return-from validate-multiple-scratch-cells nil))
+
+  (let ((content (uiop:read-file-forms metadata-path)))
+    (let* ((kernels (find :kernels content :key #'car))
+           (k-def (find "top_kernel" (cdr kernels) :key #'car :test #'string-equal :from-end t)))
+      ;; Note: find :from-end t in case there are multiple entries (shouldn't be) or just first.
+      ;; Actually find returns the item. top_kernel is the name.
+      (let ((real-k-def (block find-k
+                          (dolist (k (cdr kernels))
+                            (when (string-equal (getf k :name) "top_kernel")
+                                  (return-from find-k k))))))
+        (unless real-k-def
+          (log:error "Kernel top_kernel not found")
+          (return-from validate-multiple-scratch-cells nil))
+
+        (let ((implicit-sig (getf real-k-def :implicit-params)))
+          (unless (= (length implicit-sig) 2)
+            (log:error "Expected 2 implicit params, got ~a: ~a" (length implicit-sig) implicit-sig)
+            (return-from validate-multiple-scratch-cells nil))
+
+          (log:info "Validated 2 implicit params found: ~a" (mapcar (lambda (x) (getf x :name)) implicit-sig))
+          t)))))
 ;; src/metadata-val.lisp
 ;; IR-based validator for Bug 015 (def-record explosion)
 (defun validate-def-record-explosion-ir (ir-path)
@@ -226,7 +255,6 @@
        (log:error "Scratch cell signature found but NOT correctly exploded")
        (log:error "Expected pattern: ptr addrspace(N) %%X, i64 %%Y, i64 %%Z")
        nil))))
-
 
 ;; Validator for top_kernel with 4 args (3 from cell + 1 explicit)
 (defun validate-top-kernel-4-args-ir (ir-path)

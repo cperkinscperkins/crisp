@@ -5,6 +5,7 @@
 
 
 ;; src/codegen.lisp
+;; Forced update to clear stale FASL
 (in-package :crisp.compiler)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -315,26 +316,25 @@
   "Helper: Generates IR for cell literals (scratch cells)."
   (declare (ignore value))
   ;; Need to find the implicit argument corresponding to this cell literal.
-  ;; We check the current function's signature for registered implicit parameters.
-  ;; For now (single-cell scope), we take the first implicit parameter if available.
+  ;; We rely on the unique-name generated in Pass 1 (which used a deterministic counter).
+  ;; So long as we traverse in the exact same order (which we do), we can reconstruct the ID.
   (let* ((base-type (first type-spec))
          (context crisp.compiler::*compiler-context*) ;; Access global context for function name
-         (fn-name (and context (crisp.compiler::compiler-context-current-compiling-function context)))
-         (sig (and fn-name (first (gethash fn-name crisp.compiler::*function-table*))))
-         (implicit-params (and sig (crisp.compiler::function-signature-implicit-parameters sig)))
-         ;; Use the registered implicit name (e.g., 'davie') if available, else fallback
-         (storage-var-name (or (and implicit-params
-                                    (let ((p (first implicit-params)))
-                                      (if (typep p 'crisp.compiler::parameter-def)
-                                          (crisp.compiler::parameter-def-name p)
-                                          (car p))))
-                               (when (gethash '__sc var-env) '__sc)
-                               '__storage))
-         (storage-alloca (gethash storage-var-name var-env)))
+         (binding-name (or (crisp.compiler::compiler-context-current-binding-name context) '__storage))
+         (fn-name (and context (crisp.compiler::compiler-context-current-compiling-function context))) ;; Use compiling-function, not scanning
+         (counter (incf crisp.compiler::*scratch-cell-counter*))
+         ;; Reconstruct the Unique Name
+         (unique-name-str (format nil "~a_FROM_~a_~d" binding-name fn-name counter))
+         (unique-name (intern unique-name-str (symbol-package binding-name)))
+
+         ;; Lookup directly in environment (injected by internal-compile-function)
+         (storage-alloca (gethash unique-name var-env)))
+
+    (log:info "Pass 2: make-scratch-cell ~a -> looking for implicit: ~a (Found? ~a)" binding-name unique-name (not (null storage-alloca)))
 
     (unless storage-alloca
       (error "Missing implicit argument ~a for make-scratch-cell. Environment keys: ~s"
-        storage-var-name (alexandria:hash-table-keys var-env)))
+        unique-name (alexandria:hash-table-keys var-env)))
 
     (let* ((as (if (consp type-spec) (nth 2 type-spec) :global))
            ;; Use the specific storage type (templated logic)
@@ -856,8 +856,14 @@
                                      new-agg-val)))
                       (index (semantic-extract-value-index val-node)))
                  (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index)))
-               ;; Otherwise, it's a simple binding, generate as before.
-               (generate-expression-ir builder module let-env di-builder di-scope location-map val-node))))
+               ;; Otherwise, it's a simple binding.
+               ;; SENSITIVE CONTEXT UPDATE: We must set *compiler-context* binding name
+               ;; so that make-scratch-cell can reconstruct the unique ID (sc_from_Fn_N).
+               (let ((old-binding (crisp.compiler::compiler-context-current-binding-name crisp.compiler::*compiler-context*)))
+                 (setf (crisp.compiler::compiler-context-current-binding-name crisp.compiler::*compiler-context*) var-name)
+                 (unwind-protect
+                     (generate-expression-ir builder module let-env di-builder di-scope location-map val-node)
+                   (setf (crisp.compiler::compiler-context-current-binding-name crisp.compiler::*compiler-context*) old-binding))))))
 
       ;; Allocate and store
       (let ((alloca (llvm-build-alloca builder (crisp-type-to-llvm-type llvm-type-name module) (string-downcase var-name))))

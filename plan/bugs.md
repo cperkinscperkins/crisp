@@ -106,5 +106,27 @@ two different scopes for two different vars coulud have same name.
 Damnit.  We are CONSTANTLY breaking this stuff around the implicit args. and I thought the
 validators would help prevent regressions. 
 
-[ ] 026 - multiple scratch cells not working.  
+[x] 026 - multiple scratch cells not working.  
 I have made new spec tests @19-multiple-scratch-cells.crisp and @24-multiple-scratch-cells-hoisted.crisp 
+These tests are currently failing to even compile.
+
+        .\bin\crisp-compile.exe .\tests\spec\028-metadata\19-multiple-scratch-cells.crisp --log-level=off
+        ; --- Starting Pass for Target: GENERIC ---
+
+        Crisp compilation failed in .\tests\spec\028-metadata\19-multiple-scratch-cells.crisp:
+        Compiler bug: Carrier function CRISP-LANGUAGE::FUN-A is missing implicit argument CRISP-LANGUAGE::JEREMY.
+
+
+        .\bin\crisp-compile.exe .\tests\spec\029-hoist-l0\24-multiple-scratch-cells-hoisted.crisp --log-level=off
+        ; --- Starting Pass for Target: GENERIC ---
+
+        Crisp compilation failed in .\tests\spec\029-hoist-l0\24-multiple-scratch-cells-hoisted.crisp:
+        Compiler bug: Carrier function CRISP-LANGUAGE::FUN-A is missing implicit argument CRISP-LANGUAGE::ABERFORTH.
+
+
+ However, even after they are fixed they STILL need proper validators. THe validators should check:
+  - the LLVM-IR has the right number of arguments for the kernel (seven, 3 for each scratch, plus 1 actual)
+  - the .metacrisp file has the correct :physical-signature and :implicit-params. 
+  - the .metacrips indicates they are :local storage.
+  - the hoist version should ensure that it compiles. 
+
