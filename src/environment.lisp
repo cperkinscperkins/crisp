@@ -331,14 +331,23 @@
                    (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
                    ;; BEFORE: (setf (gethash name *implicit-arg-map*) '(:storage))
                    ;; AFTER: Copy from first callee that has implicit params
-                   (let ((callee-with-implicits
-                          (find-if (lambda (c) (gethash c *implicit-arg-map*)) callees)))
-                     (if callee-with-implicits
-                         ;; Copy from callee
-                         (setf (gethash name *implicit-arg-map*)
-                           (gethash callee-with-implicits *implicit-arg-map*))
-                         ;; Originator case - will be set later by analyze-scratch-expression
-                         nil))))))))
+                   ;; OLD: Copy from first callee that has implicit params (BUG: ignores others)
+                   ;; (let ((callee-with-implicits
+                   ;;        (find-if (lambda (c) (gethash c *implicit-arg-map*)) callees)))
+                   ;;   (if callee-with-implicits
+                   ;;       (setf (gethash name *implicit-arg-map*)
+                   ;;         (gethash callee-with-implicits *implicit-arg-map*))
+                   ;;       nil))
+
+                   ;; NEW: Union all implicit args from ALL callees
+                   (let ((all-implicits nil))
+                     (dolist (callee callees)
+                       (let ((callee-imps (gethash callee *implicit-arg-map*)))
+                         (when callee-imps
+                               (setf all-implicits (union all-implicits callee-imps :test #'equal)))))
+
+                     (when all-implicits
+                           (setf (gethash name *implicit-arg-map*) all-implicits)))))))))
 
 (defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
   "Detects if a function is an implicit template (e.g. has function-type args),
