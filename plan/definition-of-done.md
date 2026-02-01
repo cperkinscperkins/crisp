@@ -20,3 +20,5 @@ For any new feature, or refactoring, be sure to go through this checklist.
 - [ ] Documentation changes to crisp/docs/ideal_001.md ?
 - [ ] Regenerate "chapters" with scripts/split-docs.lisp
 - [ ] Regenerate reference.md with scripts/generate-reference.lisp
+- [ ] Regenerate call tree scripts/call-graph.lisp
+- [ ] Regenerate table of globals.  scripts/map-globals.lisp
