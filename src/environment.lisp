@@ -320,24 +320,25 @@
    This logic is ONLY executed in single-pass mode (when *call-graph* is NIL).
    In multi-pass mode, this analysis is handled by analyze-signatures-pass."
   (when (null *call-graph*)
-        (let ((*scanning-function-name* name)) ;; Bind legacy var just in case
-          (setf (compiler-context-scanning-function-name *compiler-context*) name) ;; Set context for scan-operator
-          (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
-            (when (or is-originator (some (lambda (callee)
-                                            (or (gethash callee *implicit-arg-map*)
-                                                (member callee *side-channel-originators*)))
-                                        callees))
-                  (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
-                  ;; BEFORE: (setf (gethash name *implicit-arg-map*) '(:storage))
-                  ;; AFTER: Copy from first callee that has implicit params
-                  (let ((callee-with-implicits
-                         (find-if (lambda (c) (gethash c *implicit-arg-map*)) callees)))
-                    (if callee-with-implicits
-                        ;; Copy from callee
-                        (setf (gethash name *implicit-arg-map*)
-                          (gethash callee-with-implicits *implicit-arg-map*))
-                        ;; Originator case - will be set later by analyze-scratch-expression
-                        nil)))))))
+        (with-peek-scratch-counter
+         (let ((*scanning-function-name* name)) ;; Bind legacy var just in case
+           (setf (compiler-context-scanning-function-name *compiler-context*) name) ;; Set context for scan-operator
+           (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
+             (when (or is-originator (some (lambda (callee)
+                                             (or (gethash callee *implicit-arg-map*)
+                                                 (member callee *side-channel-originators*)))
+                                         callees))
+                   (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
+                   ;; BEFORE: (setf (gethash name *implicit-arg-map*) '(:storage))
+                   ;; AFTER: Copy from first callee that has implicit params
+                   (let ((callee-with-implicits
+                          (find-if (lambda (c) (gethash c *implicit-arg-map*)) callees)))
+                     (if callee-with-implicits
+                         ;; Copy from callee
+                         (setf (gethash name *implicit-arg-map*)
+                           (gethash callee-with-implicits *implicit-arg-map*))
+                         ;; Originator case - will be set later by analyze-scratch-expression
+                         nil))))))))
 
 (defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
   "Detects if a function is an implicit template (e.g. has function-type args),

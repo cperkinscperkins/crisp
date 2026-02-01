@@ -14,6 +14,16 @@ sbcl --script tests/run-specs.lisp --log-level=off
 sbcl --script tests/run-specs.lisp  --filter=<spec-name>
 ```
 
+#### Flags for run-specs.lisp
+
+- `--filter=<spec-name>`
+- `--keep-work`
+- `--log-level=off`
+- `--single-pass`
+- `--debug`
+
+The file `tests/ci-stop.txt` controls "how far" the spec runner goes. It lists the last directory (inclusive) to test.  Everything "after" is assumed to be future TDD planning.
+
 ### Infrastructure Unit Tests Only
 ```bash
 # Traditional unit tests in tests/*.lisp
@@ -27,6 +37,12 @@ sbcl --script tests/run-ci.lisp --log-level=off
 # or
 sbcl --script tests/run-specs.lisp  --filter=01-return_7
 ```
+
+Running the compiler alone is very useful for debugging. But the spec runner can perform
+additional validation like 
+- verifying the LLVM-IR using llc.exe
+- running a "validator" if a spec test requests one
+- following test directives (like `;; TEST-WITH[--metadata]` or `;; TEST-HOIST[L0]`)
 
 
 ### Hoisting and Intermediate Files
