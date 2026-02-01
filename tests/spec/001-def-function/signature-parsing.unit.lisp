@@ -37,7 +37,7 @@
                  (crisp.compiler::parse-function-declarations '(a b)
                                                               '((crisp.compiler::function (int crisp.compiler::int))))
                (is = 2 (length env))
-               (is eql nil return-types)))
+               (is equal '(nil) return-types)))
 
 (define-test (signature-parsing parse-with-optional)
              "Test &optional parameters"

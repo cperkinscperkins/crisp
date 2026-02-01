@@ -441,7 +441,7 @@
      (let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
        `(:function-type ,(analyze-return-type-from-spec sig)
                         :params ,(mapcar #'parse-type-specifier
-                                   (subseq sig 0 (position '=> sig))))))
+                                   (subseq sig 0 (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "=>"))) sig))))))
 
    ;; Storage Handle Constructor Rules
    ((and (listp spec) (member (symbol-name (first spec)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
@@ -477,7 +477,7 @@
 
 (defun analyze-return-type-from-spec (fn-spec)
   "Parses '(int int => int int)' and returns a list of types."
-  (let ((arrow-pos (position '=> fn-spec)))
+  (let ((arrow-pos (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "=>"))) fn-spec)))
     (if arrow-pos
         (let ((return-types-list (nthcdr (1+ arrow-pos) fn-spec)))
           (if (null return-types-list)
@@ -490,7 +490,7 @@
 
 (defun analyze-environment-from-spec (params fn-spec)
   "Builds the environment from the signature. Returns (values env optional-start-index defaults-alist)."
-  (let ((arrow-pos (position '=> fn-spec)))
+  (let ((arrow-pos (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "=>"))) fn-spec)))
     (let ((param-type-specs (subseq fn-spec 0 (or arrow-pos (length fn-spec))))
           (env '())
           (defaults '())
@@ -510,13 +510,13 @@
                  (cond
                   ;; Handle &optional in params
                   ((and (symbolp p) (string-equal (symbol-name p) "&OPTIONAL"))
-                    (unless (and (symbolp ts) (string-equal (symbol-name ts) "&OPTIONAL"))
-                      (error "Signature Mismatch: &optional present in parameter list but found ~s in type declaration." ts))
+                    ;; If type spec also has &optional, skip it.
+                    (when (and (symbolp ts) (string-equal (symbol-name ts) "&OPTIONAL"))
+                          (pop param-type-specs))
                     (when optional-start (error "Multiple &optional keywords found."))
                     (when key-start (error "&optional cannot appear after &key."))
                     (setf optional-start idx)
-                    (pop params)
-                    (pop param-type-specs))
+                    (pop params))
 
                   ;; Handle &key in params
                   ((and (symbolp p) (string-equal (symbol-name p) "&KEY"))

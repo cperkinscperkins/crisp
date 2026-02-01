@@ -8,14 +8,15 @@
 (define-test scratch-propagation
              (let ((file "tests/spec/022-def-kernel/13-scratch-cells-and-kernel-boundary.crisp"))
                ;; Ensure clean state
-               (setf crisp.compiler::*functions* (make-hash-table :test 'equal))
+               (setf crisp.compiler::*function-table* (make-hash-table))
 
                ;; Compile the file (Generic Target)
                ;; This triggers semantic analysis which populates implicit-args
                (crisp.spec-runner::compile-crisp-file-to-ir-string file)
 
                ;; Retrieve the kernel function object
-               (let* ((kernel-func (gethash "my_kernel" crisp.compiler::*functions*))
+               (let* ((sigs (gethash (intern "MY_KERNEL" :crisp.compiler) crisp.compiler::*function-table*))
+                      (kernel-func (first sigs))
                       ;; (implicit-args (when kernel-func (crisp.compiler:function-implicit-args kernel-func)))
                       (user-args (when kernel-func (crisp.compiler:function-signature-parameters kernel-func))))
 

@@ -762,19 +762,6 @@
     ;; Fallback to last directory if no numbered dir found
     (car (last dirs))))
 
-(defun discover-unit-tests (spec-dir stop-target)
-  "Find all *.unit.lisp files in spec tree up to stop-target"
-  (let ((unit-files (directory (merge-pathnames "**/*.unit.lisp" spec-dir)))
-        (filtered-files nil))
-
-    ;; Filter by stop-target
-    (dolist (file unit-files)
-      (let ((dir-name (get-parent-directory-name file)))
-        (when (or (not stop-target)
-                  (string<= dir-name stop-target))
-              (push file filtered-files))))
-
-    (sort (nreverse filtered-files) #'string< :key #'namestring)))
 
 ;; UNIT TESTS IN SPEC DIRECTORIES    
 
@@ -785,17 +772,37 @@
           until (eq form :eof)
           collect form)))
 
+;; Helper to parse Parachute output
+(defun check-parachute-failure (output)
+  "Returns T if Parachute output indicates failure."
+  (let ((pos (search "Failed:" output)))
+    (when pos
+          (let* ((rest (subseq output (+ pos 7)))
+                 (num-str (string-trim '(#\Space #\Tab) rest))
+                 (num (parse-integer num-str :junk-allowed t)))
+            (and num (> num 0))))))
+
 ;; Used for .unit.lisp files - just load and let Parachute run
 (defun run-unit-test-loader (file)
-  (handler-case
-      (progn
-       (let ((*standard-output* (make-broadcast-stream)))
-         (load file))
-       (format t "PASS~%")
-       t)
-    (error (e)
-      (format t "FAIL~%  Error: ~a~%" e)
-      nil)))
+  (let ((output-shuttle (make-string-output-stream)))
+    (handler-case
+        (progn
+         (let ((*standard-output* output-shuttle)
+               (*error-output* output-shuttle)
+               (*debug-io* output-shuttle))
+           (load file))
+
+         (let ((output (get-output-stream-string output-shuttle)))
+           (if (check-parachute-failure output)
+               (progn
+                (format *error-output* "~&FAIL (Tests Failed)~%~a~%" output)
+                nil)
+               (progn
+                (format t "PASS~%")
+                t))))
+      (error (e)
+        (format *error-output* "FAIL~%  Error: ~a~%" e)
+        nil))))
 
 ;; Used for .crisp specs - generic backend (IR validation)
 (defun run-spec-lisp-loader (file)
@@ -813,11 +820,13 @@
   (let ((unit-files (directory (merge-pathnames "**/*.unit.lisp" spec-dir)))
         (filtered-files nil))
 
-    ;; Filter by stop-target
+    ;; Filter by stop-target and global test filter
     (dolist (file unit-files)
       (let ((dir-name (get-parent-directory-name file)))
-        (when (or (not stop-target)
-                  (string<= dir-name stop-target))
+        (when (and (or (not stop-target)
+                       (string<= dir-name stop-target))
+                   (or (not *test-filter*)
+                       (search *test-filter* (namestring file))))
               (push file filtered-files))))
 
     (sort (nreverse filtered-files) #'string< :key #'namestring)))
