@@ -112,6 +112,16 @@
     `(compiler-no-op)))
 
 
+(defmacro with-peek-scratch-counter (&body body)
+  "Executes body while insulating the global *scratch-cell-counter* from changes.
+   Used for look-ahead scans that shouldn't affect the main codegen counter state.
+   This is critical for single-pass compilation where we scan AND then codegen immediately."
+  (let ((save-var (gensym "SAVE")))
+    `(let ((,save-var *scratch-cell-counter*))
+       (unwind-protect
+           (progn ,@body)
+         (setf *scratch-cell-counter* ,save-var)))))
+
 ;; Core Language Macros
 ;; ====================
 

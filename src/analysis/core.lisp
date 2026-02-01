@@ -24,7 +24,11 @@
         "Map of function-name -> list of implicit argument requirements.")
 
 (defvar *scratch-cell-counter* 0
-        "Monotonic counter for disambiguating scratch cells.")
+        "Monotonic counter for disambiguating scratch cells.
+         Used TWICE per module:
+         1. During Analysis Scan (Pass 1) to generate Implicit Arguments.
+         2. During Codegen (Pass 2) to generate LLVM IR.
+         MUST BE RESET TO 0 BETWEEN PASSES.")
 
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms."
