@@ -92,6 +92,21 @@
 
 ;; --- Generic Dependency Scanner ---
 
+
+(defun multi-pass-mode-p ()
+  "Returns T if in multi-pass compilation mode, NIL if in single-pass mode.
+
+   Multi-pass mode builds a call graph, propagates implicit arguments, and
+   allows forward references. Single-pass requires dependency-ordered code."
+  (not (null *call-graph*)))
+
+(defun single-pass-mode-p ()
+  "Returns T if in single-pass compilation mode, NIL if in multi-pass mode.
+
+   Single-pass mode compiles each form immediately as read, requiring functions
+   to be defined before use (no forward references). Used for fast JIT compilation."
+  (null *call-graph*))
+
 (defvar *scanning-function-name* nil
         "The name of the function currently being scanned in Pass 1.")
 
@@ -236,12 +251,13 @@
    (t
      (eval form))))
 
+
 (defun %compile-standard-function (form location module builder di-builder di-compile-unit location-map)
   "Helper: Compiles a standard (non-generic) function definition."
   (let* ((name (second form))
          (context *compiler-context*))
     (setf (compiler-context-current-compiling-function context) name)
-    (push name (compiler-context-single-pass-call-stack context))
+    ;; PATCHED: Removed push/pop of single-pass-call-stack
     (unwind-protect
         (let* ((form-with-location (append form (list :source-location `',location)))
                (expanded-form (macroexpand-1 form-with-location))
@@ -250,7 +266,8 @@
           (when semantic-node
                 (log:info "Generating IR for function ~a in module ~a" name module)
                 (generate-llvm-ir semantic-node module builder di-builder di-compile-unit location-map)))
-      (pop (compiler-context-single-pass-call-stack context)))))
+      ;; Cleanup: clear current function (replaces pop of stack)
+      (setf (compiler-context-current-compiling-function context) nil))))
 
 (defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
   "Compiles a single def-function form. Handles optional parameters by generating overloaded variants."
@@ -625,17 +642,22 @@
                :source-location location)))))
     res))
 
+
+
 (defun analyze-function-call (op expr env context location)
   "Analyzes a call to a user-defined function."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
-  (if *call-graph*
+
+  ;; PATCHED: Use mode predicates and simplified recursion check
+  (if (multi-pass-mode-p)
       (when (compiler-context-current-compiling-function context)
             (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
-      (when (member op (compiler-context-single-pass-call-stack context))
+      (when (eq op (compiler-context-current-compiling-function context))
             (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
 
+  ;; PATCHED: Use single-pass-mode-p predicate
   (let ((implicit-args-required (gethash op *implicit-arg-map*)))
-    (when (and (null *call-graph*) implicit-args-required)
+    (when (and (single-pass-mode-p) implicit-args-required)
           (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
 
     (let* ((arg-forms (rest expr))
@@ -648,8 +670,6 @@
       (let ((final-arg-nodes
              (if implicit-args-required
                  (let ((implicit-arg-nodes
-                        ;; BEFORE: Loop through keywords :storage
-                        ;; AFTER: Loop through cons cells (name . type)
                         (loop for (param-name . param-type) in implicit-args-required
                               collect (let ((found (find-variable-in-env param-name env)))
                                         (if found
