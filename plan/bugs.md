@@ -79,7 +79,7 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
   - [x] reenable 09-address-space.crisp, new validator
      - 
 
-[ ] 021 - def-kernel supports arrow type declarations, but not (type a b int) style 
+[x] 021 - def-kernel supports arrow type declarations, but not (type a b int) style 
           >>  I suspect valid-type-p returns nil for list-based types like (cell ...) when checked in this context, causing the parser to miss the type binding entirely.
 
 [ ] 022 - (LOW)  seeing extra output from CL when running compiler.  
