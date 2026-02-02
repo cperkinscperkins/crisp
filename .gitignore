@@ -17,6 +17,7 @@ bin/
 # Any local executable
 *.exe
 !tools/*.exe
+tools/
 
 # ASDF system index
 system-index.txt
