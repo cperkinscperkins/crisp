@@ -341,9 +341,9 @@ Kernels
 - - [ ] this would mean an opencl hoister, no?
 - [x] consider having regression failures name the folder as well as the test.
 - [x] map out global vars. 
-- [ ] bugs 021 important
+- [x] bugs 021 important
 - [ ] move tools somewhere and make them part of "release". Will need to scrub LFS entries.
-- [ ] refactor single pass vs. multi.  We are getting too much duplication
+- [x] refactor single pass vs. multi.  We are getting too much duplication
       constant source of bugs. At minimum, do an evaluation. 
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
 - [ ] def-derived-type => expand specification for numerics ("contagion"). 
