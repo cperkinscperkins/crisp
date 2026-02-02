@@ -17,7 +17,8 @@ between two types.
 (def-derived-type <new-name> <type-expr> &key (subst :no))
 ```
 The `type-expr` is any type that supports a `make-` function (`vector`, `soa-vector`,  `tensor` and things created from `def-struct` and `def-record` )  
-<!-- what about numeric types? bool, or nil ?  Definitely NOT functions or kernels, right?-->
+Additionally, `def-derived-type` can be used with scalars (like `int` and `float`).  See [below](#derived-types-and-arithmetic-operations)
+
 
 
 The `subst` key should be from the `derived-subst` enumeration
@@ -90,8 +91,8 @@ time. It does not support runtime dynamic dispatch of any sort.
 
 ### make-XXXX
 
-The `make-<derived-type-name>` is automatically generated  and accepts the same arguments
-as the original type. 
+The make-<derived-type-name> function is automatically generated for structural types (structs, vectors, records). It is NOT generated for scalar derived types (like those derived from `int` or `float`); use `as-<derived>` for those instead. 
+`make-<derived-type-name>` accepts the same arguments as the original type ( `make-<original-type>` ).
 
 ### as-XXXX
 
@@ -157,7 +158,7 @@ Example:
     (base (vector int))
     (new-prop int))
 
-(set-derived vector MY-VIEW-type :subst :pass-orig)
+(set-derived vector MY-VEC :subst :pass-orig)
 ```
 
 #### std140
@@ -167,5 +168,68 @@ Keep this in mind when using `set-derived` and type casting, as things
 might not work like you'd expect in a language like C. 
 
 
+### derived types and arithmetic operations
+
+`def-derived-type` can be used with numeric types. There are several use cases for this (like a custom float that is "meters" and is not interchangeable with other floats or perhaps not with "yards").  
+
+The substition rules (`:no`, `:equal`, `:pass-orig`, `:pass-derived` ) then determine the return type to expect when mixing "original" and "derived" types in arithmetic operations.
+
+`:pass-derived` is "Contagious", meaning an arithmetic operation that mixes 
+both the original type and the derived type returns the derived type.
+
+`:pass-orig` "Decays", meaning an arithmetic operation that mixes
+both original and derived types returns the original type. 
+
+`:equal` also "Decays", though because the types are interchangeable, this 
+doesn't mean much. 
+
+`:no` disallows mixing, so there is no valid return type
+
+
+
+```
+(def-derived-type contagious-float float :subst :pass-derived)
+(def-derived-type decaying-float float :subst :pass-orig)
+
+(def-function derived-type-demonstration (f c d)
+  (declare #'(float contagious-float decaying-float => contagious-float float))
+  ;; these two addition operations mix the original type (float)
+  ;; with a derived type.
+  ;; the first additon returns a 'contagious-float' because that derived type used :pass-derived
+  ;; the second addition returns a simple 'float' because :pass-orig was used.
+  (return (+ f c)       
+          (+ f d)))
+```
+
+But pay attention to how derived types behave when mixed with each other:
+
+Different `:pass-derived` types cannot be mixed with each other, even if they share a common
+base type.
+
+```
+(def-derived-type meters float :subst :pass-derived)
+(def-derived-type seconds float :subst :pass-derived)
+
+(+ meters seconds) ;; COMPILATION ERROR
+```
+
+Meanwhile, `:pass-orig` types will decay to the base type and CAN be mixed:
+
+```
+(def-derived-type weak-a float :subst :pass-orig)
+(def-derived-type weak-b float :subst :pass-orig)
+
+(+ weak-a weak-b) ;; evaluates to a float.
+```
+
+When  mixing "Contagious" `:pass-derived` and "Decaying" `:pass-orig` that share a common 
+base type, the "Contagious" type wins out.
+
+```
+(def-derived-type contagious-float float :subst :pass-derived)
+(def-derived-type decaying-float float :subst :pass-orig)
+
+(+ contagious-float decaying-float) ;; evaluates to a contagious-float
+```
 
 

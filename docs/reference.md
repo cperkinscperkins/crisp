@@ -1,8 +1,8 @@
 # Crisp Codebase Reference
 
-Generated on 2026-02-01T00:43:11.850628Z
+Generated on 2026-02-02T05:29:26.885738Z
 
-## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
 ### DEFUN `ENSURE-BRANCH-COMPATIBILITY`
 - **Args**: `(THEN-NODE ELSE-NODE LOCATION)`
@@ -120,7 +120,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\analysis\core.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\core.lisp`
 
 ### DEFVAR `*ANALYSIS-ACCESS-MODE*`
 
@@ -139,7 +139,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 ---
 ### DEFVAR `*SCRATCH-CELL-COUNTER*`
 
-  > Monotonic counter for disambiguating scratch cells.
+  > Monotonic counter for disambiguating scratch cells.  >          Used TWICE per module:  >          1. During Analysis Scan (Pass 1) to generate Implicit Arguments.  >          2. During Codegen (Pass 2) to generate LLVM IR.  >          MUST BE RESET TO 0 BETWEEN PASSES.
 
 
 ---
@@ -153,6 +153,18 @@ Generated on 2026-02-01T00:43:11.850628Z
 ### DEFUN `PROPAGATE-IMPLICIT-ARGUMENTS`
 
   > Phase 4: Traverses the call graph backwards from originators to find all carriers.
+
+
+---
+### DEFUN `MULTI-PASS-MODE-P`
+
+  > Returns T if in multi-pass compilation mode, NIL if in single-pass mode.  >   >    Multi-pass mode builds a call graph, propagates implicit arguments, and  >    allows forward references. Single-pass requires dependency-ordered code.
+
+
+---
+### DEFUN `SINGLE-PASS-MODE-P`
+
+  > Returns T if in single-pass compilation mode, NIL if in multi-pass mode.  >   >    Single-pass mode compiles each form immediately as read, requiring functions  >    to be defined before use (no forward references). Used for fast JIT compilation.
 
 
 ---
@@ -340,7 +352,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\analysis\ops.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\ops.lisp`
 
 ### DEFMACRO `DEF-BINARY-OP-ANALYZER`
 - **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
@@ -414,7 +426,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 ### DEFUN `REGISTER-OPS-ANALYZERS`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\analysis\structs.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\structs.lisp`
 
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
 - **Args**: `(TYPE)`
@@ -479,7 +491,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 ### DEFUN `REGISTER-STRUCT-ANALYZERS`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\codegen.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
 
 ### DEFUN `GET-OR-CREATE-DI-TYPE`
 - **Args**: `(CRISP-TYPE DI-BUILDER DI-TYPE-CACHE)`
@@ -661,7 +673,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\codegen\abi.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
 
@@ -725,7 +737,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\compiler.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\compiler.lisp`
 
 ### DEFUN `RUN-TOOL-COMMAND`
 - **Args**: `(ARGS &KEY (LOG-PREFIX ))`
@@ -803,7 +815,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\enums.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\enums.lisp`
 
 ### DEFMACRO `DEF-ENUMERATION`
 - **Args**: `(NAME &REST SPECS)`
@@ -823,7 +835,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\environment.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\environment.lisp`
 
 ### DEFUN `PARSE-FUNCTION-DECLARATIONS`
 - **Args**: `(PARAMS DECLARATIONS)`
@@ -925,7 +937,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 ### DEFUN `SCAN-FOR-CARRIERS`
 - **Args**: `(NAME BODY)`
 
-  > Performs a single-pass look-ahead to detect if the function is a carrier.  >    This logic is ONLY executed in single-pass mode (when *call-graph* is NIL).  >    In multi-pass mode, this analysis is handled by analyze-signatures-pass.
+  > Performs a single-pass look-ahead to detect if the function is a carrier.  >   >    This logic is ONLY executed in single-pass mode. It serves two purposes:  >    1. Early originator detection - finds make-scratch-cell BEFORE env is built  >    2. Upward carrier propagation - copies implicit args from callees to callers  >   >    In multi-pass mode, this analysis is handled by analyze-signatures-pass.
 
 
 ---
@@ -971,9 +983,9 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\errors.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\errors.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\main.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\main.lisp`
 
 ### DEFUN `MAIN`
 
@@ -1083,9 +1095,9 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp\src\hoist\codegen-base.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\codegen-base.lisp`
 
 ### DEFUN `CRISP-TYPE-TO-CPP-TYPE`
 - **Args**: `(CRISP-TYPE)`
@@ -1101,7 +1113,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\hoist\common.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\common.lisp`
 
 ### DEFUN `PARSE-METACRISP-FILE`
 - **Args**: `(FILEPATH)`
@@ -1131,9 +1143,9 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\hoist\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp\src\llvm-bindings.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\llvm-bindings.lisp`
 
 ### DEFCONSTANT `+LLVM-VOID-TYPE-KIND+`
 
@@ -1241,7 +1253,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 ### DEFCONSTANT `+LLVM-REAL-UNE+`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\macros.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\macros.lisp`
 
 ### DEFMACRO `LET`
 - **Args**: `(BINDINGS &BODY BODY)`
@@ -1286,6 +1298,13 @@ Generated on 2026-02-01T00:43:11.850628Z
 - **Args**: `(&REST ARGS)`
 
   > Compile-Time Output. Evaluates arguments at macro-expansion time and prints them.
+
+
+---
+### DEFMACRO `WITH-PEEK-SCRATCH-COUNTER`
+- **Args**: `(&BODY BODY)`
+
+  > Executes body while insulating the global *scratch-cell-counter* from changes.  >    Used for look-ahead scans that shouldn't affect the main codegen counter state.  >    This is critical for single-pass compilation where we scan AND then codegen immediately.
 
 
 ---
@@ -1448,7 +1467,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\main.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\main.lisp`
 
 ### DEFUN `PRINT-COMPILER-ERROR`
 - **Args**: `(C FILENAME)`
@@ -1499,7 +1518,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\mangling.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\mangling.lisp`
 
 ### DEFVAR `*TEMPLATE-ARITY-LOOKUP-FN*`
 
@@ -1567,7 +1586,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\metadata-val.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\metadata-val.lisp`
 
 ### DEFUN `VALIDATE-KERNEL-METADATA`
 - **Args**: `(METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL TARGETS-P))`
@@ -1679,7 +1698,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 - **Args**: `(IR-PATH)`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\metadata.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
 
 ### DEFVAR `*EMIT-METADATA*`
 
@@ -1770,9 +1789,9 @@ Generated on 2026-02-01T00:43:11.850628Z
 - **Args**: `(OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp\src\parameters.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\parameters.lisp`
 
 ### DEFSTRUCT `PARAMETER-DEF`
 
@@ -1780,7 +1799,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\semantic.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\semantic.lisp`
 
 ### DEFSTRUCT `CRISP-TYPE`
 
@@ -1950,7 +1969,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\session.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\session.lisp`
 
 ### DEFSTRUCT `COMPILER-SESSION`
 
@@ -1976,7 +1995,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\structs.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\structs.lisp`
 
 ### DEFUN `GET-STD140-BASE-ALIGNMENT`
 - **Args**: `(TYPE-SPEC)`
@@ -2060,7 +2079,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\templates.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\templates.lisp`
 
 ### DEFSTRUCT `TEMPLATE-DATA`
 
@@ -2195,7 +2214,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\type-checker.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\type-checker.lisp`
 
 ### DEFUN `GET-PROMOTED-TYPE`
 - **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
@@ -2225,12 +2244,12 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\types\definitions.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\types\definitions.lisp`
 
 ### DEFSTRUCT `ENUMERATION-DEF`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\types\registry.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\types\registry.lisp`
 
 ### DEFVAR `*GENERIC-FUNCTIONS*`
 
@@ -2368,7 +2387,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\types\validation.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\types\validation.lisp`
 
 ### DEFUN `EXCLUDED-TEMPLATE-BASE-TYPE-P`
 - **Args**: `(BASE-TYPE)`
@@ -2501,7 +2520,7 @@ Generated on 2026-02-01T00:43:11.850628Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp\src\utils.lisp`
+## File: `C:\Users\cperk\Documents\crisp-man\src\utils.lisp`
 
 ### DEFMACRO `LET-D`
 - **Args**: `(BINDINGS &BODY BODY)`
