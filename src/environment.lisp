@@ -314,32 +314,28 @@
                                             :type param-type
                                             :kind :in)))))
     (append implicit-env explicit-env)))
+                          
 
 (defun scan-for-carriers (name body)
   "Performs a single-pass look-ahead to detect if the function is a carrier.
-   This logic is ONLY executed in single-pass mode (when *call-graph* is NIL).
+
+   This logic is ONLY executed in single-pass mode. It serves two purposes:
+   1. Early originator detection - finds make-scratch-cell BEFORE env is built
+   2. Upward carrier propagation - copies implicit args from callees to callers
+
    In multi-pass mode, this analysis is handled by analyze-signatures-pass."
-  (when (null *call-graph*)
+  (when (single-pass-mode-p)
         (with-peek-scratch-counter
-         (let ((*scanning-function-name* name)) ;; Bind legacy var just in case
-           (setf (compiler-context-scanning-function-name *compiler-context*) name) ;; Set context for scan-operator
+         (let ((*scanning-function-name* name))
+           (setf (compiler-context-scanning-function-name *compiler-context*) name)
            (multiple-value-bind (is-originator callees) (shallow-analyze-body body)
              (when (or is-originator (some (lambda (callee)
                                              (or (gethash callee *implicit-arg-map*)
                                                  (member callee *side-channel-originators*)))
-                                         callees))
+                                       callees))
                    (log:debug "Single-pass: Pre-scan of ~s found call to a carrier/originator. Marking as carrier." name)
-                   ;; BEFORE: (setf (gethash name *implicit-arg-map*) '(:storage))
-                   ;; AFTER: Copy from first callee that has implicit params
-                   ;; OLD: Copy from first callee that has implicit params (BUG: ignores others)
-                   ;; (let ((callee-with-implicits
-                   ;;        (find-if (lambda (c) (gethash c *implicit-arg-map*)) callees)))
-                   ;;   (if callee-with-implicits
-                   ;;       (setf (gethash name *implicit-arg-map*)
-                   ;;         (gethash callee-with-implicits *implicit-arg-map*))
-                   ;;       nil))
 
-                   ;; NEW: Union all implicit args from ALL callees
+                   ;; Union all implicit args from ALL callees
                    (let ((all-implicits nil))
                      (dolist (callee callees)
                        (let ((callee-imps (gethash callee *implicit-arg-map*)))
