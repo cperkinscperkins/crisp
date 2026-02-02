@@ -291,6 +291,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
 - - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp [See above]
 - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp
+- - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp
+- - - - - - (WITH-PEEK-SCRATCH-COUNTER &BODY BODY)  macros.lisp
 - - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp [See above]
 - - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
 - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
@@ -304,6 +306,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
 - - - - - - - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - (MULTI-PASS-MODE-P)  analysis/core.lisp
+- - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
 - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
 - - - - - - - - - (RESOLVE-BEST-SIGNATURE OP EXPLICIT-ARG-TYPES CONTEXT)  type-checker.lisp
 - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp

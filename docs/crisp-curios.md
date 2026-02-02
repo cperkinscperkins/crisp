@@ -14,6 +14,17 @@ Curious Things To Know About Crisp
 - Crisp also uses Common Lisp macros to expand some of its own forms (def-function and others) into semantic nodes.
 - the Spir-V metatadata is injected manually, rather than using LLVM Dev bindings.
 - By default, the LLVM-IR is output to *standard-output*, and Log4CL messages are sent to *error-output*.    
+- Crisp does NOT use Common Lisp style type declarations.  It uses
+  a 'declare' form that either has individual `type` and `return-type` declarations, or it uses a single arrow syntax.  
+  Example:
+  ```
+    (declare (type x y int) (return-type float))
+    (declare #'(int int => float))
+    ;;multiple value return is supported as well:
+    (declare (type x int) (type y int) (return-type int int))
+    (declare #'(int int => int int))
+  ```
+- Crisp defaults to "multipass" compilation. But it does support a --single-pass mode as well. When performing --single-pass the .crisp file MUST provide all functions and structs etc in reverse dependency order. Failure to do so is a compilation error.  There is a --single-pass mode for the tests as well.
 
 
 
