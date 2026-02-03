@@ -8,6 +8,13 @@ Clone This
 ----------
 `git clone https://github.com/cperkinscperkins/crisp.git`
 
+Supporting Tools
+----------------
+Crisp uses some supporting tools from LLVM (LLVM-C.dll/.so, llc.exe and llvm-spirv.exe)
+These are release as a tools download. After cloning Crisp, `cd` to its directory and run
+`python init_tools.py`  to fetch the supporting tools and their license files.
+
+Or, simply download https://github.com/cperkinscperkins/crisp/releases/tag/tools-v1 and unzip the .zip to a directory named `tools`.  (ie  `crisp/tools/`)
 
 
 🚀 Dependencies

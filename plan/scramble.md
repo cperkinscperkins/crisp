@@ -342,7 +342,7 @@ Kernels
 - [x] consider having regression failures name the folder as well as the test.
 - [x] map out global vars. 
 - [x] bugs 021 important
-- [ ] move tools somewhere and make them part of "release". Will need to scrub LFS entries.
+- [x] move tools somewhere and make them part of "release". Will need to scrub LFS entries.
 - [x] refactor single pass vs. multi.  We are getting too much duplication
       constant source of bugs. At minimum, do an evaluation. 
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
