@@ -23,6 +23,7 @@
 (def-function alloy-mix (s r)
     (declare #'(steel root => iron)) 
     (+ s r))
+    
 
 
 ;; Steel + Iron
@@ -31,3 +32,4 @@
 (def-function simple-decay (s i)
     (declare #'(steel iron => iron))
     (+ s i))
+    

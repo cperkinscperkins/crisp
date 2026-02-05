@@ -156,6 +156,59 @@
         ;; Not a derived type, return as-is
         type-name)))
 
+(defun get-reachable-types (type-name)
+  "Returns a list of all types that TYPE-NAME can substitute for (including itself).
+   Uses BFS to walk up the ancestor graph, plus handles :equal relationships.
+   Returns types in order from closest to farthest (BFS order)."
+  (cl:let ((reachable '())
+           (visited (make-hash-table))
+           (queue (list type-name)))
+    (loop while queue
+          do (cl:let ((current (pop queue)))
+               (unless (gethash current visited)
+                 (setf (gethash current visited) t)
+                 (push current reachable)
+                 ;; Get node with package-agnostic lookup
+                 (cl:let* ((node-direct (gethash current *type-derivation-graph*))
+                           (node-alt (when (and (not node-direct) (symbolp current))
+                                       (gethash (intern (symbol-name current)
+                                                        (find-package :crisp-language))
+                                                *type-derivation-graph*)))
+                           (node (or node-direct node-alt)))
+                   (when node
+                     ;; Add ancestors to queue
+                     (dolist (ancestor (type-node-ancestors node))
+                       (push ancestor queue))
+                     ;; For :equal relationships, also add descendants
+                     ;; (since equal types can substitute for each other)
+                     (when (eq (type-node-subst-mode node) :equal)
+                       (dolist (desc (type-node-descendants node))
+                         (push desc queue))))))))
+    (nreverse reachable)))
+
+(defun find-common-promoted-type (type-a type-b)
+  "Finds the best common type for promotion in binary operations.
+   Returns the closest common type that both can substitute for.
+
+   Algorithm:
+   1. Calculate all types type-a can reach (substitute for)
+   2. Calculate all types type-b can reach
+   3. Find intersection
+   4. Return the first common type in type-a's reachable list (closest to type-a)
+
+   Returns NIL if no common type exists."
+  (cl:let* ((reachable-a (get-reachable-types type-a))
+            (reachable-b (get-reachable-types type-b))
+            ;; Find common types
+            (common (intersection reachable-a reachable-b :test #'eq)))
+    (cl:cond
+      ((null common) nil)  ; No common type - incompatible
+      ;; Return the first common type in reachable-a's order
+      ;; (this is the closest to type-a in the hierarchy)
+      (t (dolist (type reachable-a nil)
+           (when (member type common :test #'eq)
+             (cl:return type)))))))
+
 (defun resolve-dominance (type-a type-b)
   "Determines which type dominates in arithmetic operations.
    Returns the dominant type, or NIL if they cannot mix.
@@ -174,26 +227,14 @@
     ((is-substitutable-for? type-a type-b) type-b)  ; B is more general
     ((is-substitutable-for? type-b type-a) type-a)  ; A is more general
 
-    ;; Phase 5: Common base dominance rules
-    ;; If both types are derived from the same base type, use the base type
-    ;; Example: (weak, eq-weak) => float, (meters, weak) => float
+    ;; Phase 5: Common promoted type using reachability intersection
+    ;; Find the closest common type that both can substitute for
+    ;; Example: (steel, root) => iron, (weak, eq-weak) => float
     (t
-     (cl:let* ((base-a (get-type-base type-a))
-               (base-b (get-type-base type-b)))
-       (log:debug "resolve-dominance fallback: type-a=~a base-a=~a type-b=~a base-b=~a eq?=~a"
-                  type-a base-a type-b base-b (and base-a base-b (eq base-a base-b)))
-       ;; If they share a common base (and neither is substitutable for the other),
-       ;; return the common base
-       (if (and base-a base-b (eq base-a base-b)
-                ;; Make sure at least one is actually derived (not the base itself)
-                (or (not (eq type-a base-a)) (not (eq type-b base-b))))
-           (progn
-             (log:debug "Returning common base: ~a" base-a)
-             base-a)
-           ;; Different bases or one is the base itself - return NIL to fall back
-           (progn
-             (log:debug "No common base, returning NIL")
-             nil))))))
+     (cl:let ((common-type (find-common-promoted-type type-a type-b)))
+       (log:debug "resolve-dominance: common promoted type for ~a + ~a = ~a"
+                  type-a type-b common-type)
+       common-type))))
 
 ;;; Derived Type Registration
 ;;; =========================
@@ -230,6 +271,12 @@
 
   (log:debug "Registering derived type ~a from ~a with subst-mode ~a"
              new-type-name original-type-name subst-mode)
+
+  ;; Resolve type aliases first - if original-type is an alias, resolve it
+  (cl:let ((resolved-original (resolve-type-alias original-type-name)))
+    (when (not (eq resolved-original original-type-name))
+      (log:debug "Resolved alias ~a to ~a" original-type-name resolved-original)
+      (setf original-type-name resolved-original)))
 
   ;; Validate original type exists (in derivation graph, types, structs, or aliases)
   (unless (or (gethash original-type-name *type-derivation-graph*)
