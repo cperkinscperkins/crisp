@@ -176,6 +176,7 @@
    #:is-substitutable-for?
    #:resolve-dominance
    #:get-type-base
+   #:register-derived-type
    #:analyze-return-type-from-spec
    #:analyze-environment-from-spec
    #:parse-function-declarations
@@ -228,6 +229,7 @@
 
    #:def-struct
    #:def-record
+   #:def-derived-type
    #:with-struct-accessors
    #:def-setter
    #:*crisp-structs*
@@ -334,7 +336,7 @@
                 #:marshall-cell
                 #:when #:unless #:if+ #:when+ #:unless+
                 #:def-struct
-
+                #:def-derived-type
                 #:def-record
                 #:with-struct-accessors
                 #:def-setter
@@ -449,7 +451,7 @@
    #:def-type ;; <--- NEW
    #:with-template-type ;; <--- NEW
 
-   #:def-type-alias #:def-struct #:def-record #:with-struct-accessors #:def-setter
+   #:def-type-alias #:def-struct #:def-derived-type #:def-record #:with-struct-accessors #:def-setter
    #:declare
 
    #:return-type #:type

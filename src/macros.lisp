@@ -678,6 +678,71 @@
                                    (declare (crisp-system-generated))
                                    (return (%extract-struct-member obj ,idx)))))))))
 
+(defmacro def-derived-type (new-name original-type &key (subst :no))
+  "Defines a new derived type from an existing type.
+
+   Parameters:
+   - new-name: Symbol for the new type
+   - original-type: Type to derive from (must exist)
+   - :subst: Substitution mode - :no, :equal, :descendant, :ancestor
+
+   Automatically generates:
+   - make-<new-name> constructor (for structural types)
+   - as-<new-name> and as-<original> casting functions
+   - is-<new-name>? type predicate
+
+   Example:
+     (def-derived-type meters float :subst :ancestor)"
+
+  ;; Validate at macro-expansion time
+  (unless (member subst '(:no :equal :descendant :ancestor))
+    (error "def-derived-type: :subst must be :no, :equal, :descendant, or :ancestor, got ~a" subst))
+
+  ;; Register at macro-expansion time (for visibility to subsequent code)
+  (register-derived-type new-name original-type subst)
+
+  (cl:let ((pkg (symbol-package new-name))
+           (make-name (intern (format nil "MAKE-~a" new-name) (symbol-package new-name)))
+           (as-new-name (intern (format nil "AS-~a" new-name) (symbol-package new-name)))
+           (as-orig-name (intern (format nil "AS-~a" original-type) (symbol-package new-name)))
+           (is-new-name (intern (format nil "IS-~a?" new-name) (symbol-package new-name))))
+
+    `(progn
+       ;; Register at load time too
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (register-derived-type ',new-name ',original-type ',subst))
+
+       ;; Generate make-XXXX constructor (only for structural types)
+       ;; For scalars, skip this - users will use as-XXXX instead
+       ,@(when (or (gethash original-type *crisp-structs*)
+                   ;; Check if base type is a struct
+                   (cl:let ((node (gethash original-type *type-derivation-graph*)))
+                     (when node
+                       (gethash (type-node-base-type node) *crisp-structs*))))
+           (cl:let ((orig-make-name (intern (format nil "MAKE-~a" original-type)
+                                            (symbol-package original-type))))
+             `((defmacro ,make-name (&rest args)
+                 "Constructor for derived type - delegates to base type constructor."
+                 `(,',as-new-name (,',orig-make-name ,@args))))))
+
+       ;; Generate as-<new-name> casting function
+       ;; For now, this is just an identity function since derived types
+       ;; have the same memory layout as their base type
+       (defmacro ,as-new-name (val)
+         ,(format nil "Casts a value to type ~a" new-name)
+         val)
+
+       ;; Generate as-<original> casting function
+       (defmacro ,as-orig-name (val)
+         ,(format nil "Casts a value to type ~a (reverse cast from ~a)" original-type new-name)
+         val)
+
+       ;; Generate is-<new-name>? predicate
+       (defun ,is-new-name (type-spec)
+         ,(format nil "Returns T if TYPE-SPEC is exactly type ~a (does not accept substitutions)" new-name)
+         (or (eq type-spec ',new-name)
+             (and (consp type-spec) (eq (first type-spec) ',new-name)))))))
+
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
    The return type is determined by the body."
