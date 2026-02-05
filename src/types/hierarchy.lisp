@@ -206,6 +206,18 @@
   (cl:let ((base-type (compute-base-type original-type-name)))
     (log:debug "Computed base type for ~a: ~a" new-type-name base-type)
 
+    ;; Ensure original type has a node in the graph (for establishing relationships)
+    ;; If it's not already there, create a basic "real type" node for it
+    (unless (gethash original-type-name *type-derivation-graph*)
+      (setf (gethash original-type-name *type-derivation-graph*)
+            (make-type-node :type-name original-type-name
+                            :original-type nil  ; It's a real type
+                            :base-type original-type-name  ; Base is itself
+                            :subst-mode nil
+                            :ancestors nil
+                            :descendants nil))
+      (log:debug "Created implicit node for original type ~a" original-type-name))
+
     ;; Create new type node
     (cl:let ((new-node (make-type-node :type-name new-type-name
                                        :original-type original-type-name
@@ -221,8 +233,7 @@
         (setf (type-node-ancestors new-node) (list original-type-name))
         ;; Update original's descendants
         (cl:let ((orig-node (gethash original-type-name *type-derivation-graph*)))
-          (when orig-node
-            (push new-type-name (type-node-descendants orig-node))))
+          (push new-type-name (type-node-descendants orig-node)))
         (log:debug "~a is descendant of ~a (can substitute for original)"
                    new-type-name original-type-name))
 
@@ -232,8 +243,7 @@
         (setf (type-node-ancestors new-node) nil)
         ;; Update original's ancestors
         (cl:let ((orig-node (gethash original-type-name *type-derivation-graph*)))
-          (when orig-node
-            (push new-type-name (type-node-ancestors orig-node))))
+          (push new-type-name (type-node-ancestors orig-node)))
         (log:debug "~a is ancestor of ~a (original can substitute for new)"
                    new-type-name original-type-name))
 
@@ -241,11 +251,10 @@
        ((eq subst-mode :equal)
         (setf (type-node-ancestors new-node) (list original-type-name))
         (setf (type-node-descendants new-node) (list original-type-name))
-        ;; Update original's ancestors AND descendants
+        ;; Update original's ancestors AND descendants (bidirectional)
         (cl:let ((orig-node (gethash original-type-name *type-derivation-graph*)))
-          (when orig-node
-            (push new-type-name (type-node-ancestors orig-node))
-            (push new-type-name (type-node-descendants orig-node))))
+          (push new-type-name (type-node-ancestors orig-node))
+          (push new-type-name (type-node-descendants orig-node)))
         (log:debug "~a is equal to ~a (bidirectional substitution)"
                    new-type-name original-type-name))
 
