@@ -16,9 +16,16 @@
 
 (defun get-struct-member-index (struct-type-name member-name)
   "Helper to find the physical index of a struct member, accounting for padding."
-  (let ((search-key (if (and (consp struct-type-name) (valid-type-p struct-type-name))
-                        (mangle-template-struct-name (first struct-type-name) (rest struct-type-name))
-                        struct-type-name)))
+  ;; Resolve derived types to their base type first
+  (let ((original-type struct-type-name)
+        (struct-type-name (if (symbolp struct-type-name)
+                              (get-type-base struct-type-name)
+                              struct-type-name)))
+    (when (and (symbolp original-type) (not (eq original-type struct-type-name)))
+      (log:debug "Resolved derived type ~a to base type ~a" original-type struct-type-name))
+    (let ((search-key (if (and (consp struct-type-name) (valid-type-p struct-type-name))
+                          (mangle-template-struct-name (first struct-type-name) (rest struct-type-name))
+                          struct-type-name)))
     (log:info "Looking up struct member ~a in type ~a (key: ~a params?: ~a)" member-name struct-type-name search-key (valid-type-p struct-type-name))
     (let ((struct-def (or (find-struct-definition-by-name search-key)
                           ;; Fallback: If mangled name not found, try base type (for incomplete types with props)
@@ -39,13 +46,13 @@
 
         (unless index
           (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
-        index))))
+        index)))))
 
 (defun analyze-struct-construction (expr env context location)
   "Analyzes a (%construct-struct type-name arg1 arg2 ...) form."
   (let* ((type-name (second expr))
          (args (cddr expr))
-         (struct-def (gethash type-name *crisp-structs*)))
+         (struct-def (lookup-struct-definition type-name)))
     (unless struct-def
       (error 'crisp-unknown-type-error :type-name type-name :source-location location))
 
@@ -88,11 +95,10 @@
     (unless (symbolp obj-type)
       (error "Cannot extract member from non-struct type ~a" obj-type))
 
-    ;; Resolve derived types to base type for struct lookup
-    (let* ((base-type (get-type-base obj-type))
-           (struct-def (gethash base-type *crisp-structs*)))
+    ;; Lookup struct definition (handles derived types and package issues)
+    (let* ((struct-def (lookup-struct-definition obj-type)))
       (unless struct-def
-        (error "Unknown struct type ~a (base: ~a) in extraction." obj-type base-type))
+        (error "Unknown struct type ~a in extraction." obj-type))
 
       (let* ((padded-members (crisp-struct-definition-padded-members struct-def))
              ;; We need to map the "logical" index i to the "physical" index in the padded struct.
@@ -134,7 +140,7 @@
     (unless (symbolp obj-type)
       (error "Cannot insert member into non-struct type ~a" obj-type))
 
-    (let ((struct-def (gethash obj-type *crisp-structs*)))
+    (let ((struct-def (lookup-struct-definition obj-type)))
       (unless struct-def
         (error "Unknown struct type ~a in insertion." obj-type))
 

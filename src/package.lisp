@@ -204,6 +204,7 @@
 
    ;; Structs
    #:register-struct-definition
+   #:lookup-struct-definition
    #:parse-struct-member-spec
    #:make-crisp-struct-definition
    #:crisp-struct-definition-members

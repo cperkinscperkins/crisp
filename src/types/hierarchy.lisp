@@ -95,9 +95,21 @@
    Algorithm:
    - If types are equal, return T
    - Walk UP from source through ancestors to find target
+   - Special case: check if source has target in descendants (:equal relationship)
    - Handles cycles (from :equal relationships) via visited tracking"
   (cl:cond
     ((eq source-type target-type) t)
+    ;; Check if there's an :equal relationship (source.descendants contains target)
+    ((cl:let* ((node-direct (gethash source-type *type-derivation-graph*))
+               (node-alt (when (and (not node-direct) (symbolp source-type))
+                           (gethash (intern (symbol-name source-type)
+                                            (find-package :crisp-language))
+                                    *type-derivation-graph*)))
+               (node (or node-direct node-alt)))
+       (and node
+            (type-node-descendants node)
+            (member target-type (type-node-descendants node) :test #'eq)))
+     t)
     (t (has-ancestor-path? source-type target-type (make-hash-table)))))
 
 (defun has-ancestor-path? (from-type to-type visited)
@@ -110,7 +122,13 @@
 
   (setf (gethash from-type visited) t)
 
-  (cl:let ((node (gethash from-type *type-derivation-graph*)))
+  ;; Package-agnostic lookup
+  (cl:let* ((node-direct (gethash from-type *type-derivation-graph*))
+            (node-alt (when (and (not node-direct) (symbolp from-type))
+                        (gethash (cl:intern (cl:symbol-name from-type)
+                                            (cl:find-package :crisp-language))
+                                 *type-derivation-graph*)))
+            (node (or node-direct node-alt)))
     (unless node
       (log:debug "Type ~a not found in derivation graph" from-type)
       (return-from has-ancestor-path? nil))
@@ -126,7 +144,13 @@
 (defun get-type-base (type-name)
   "Returns the base 'real' type for a given type (derived or real).
    If the type is not in the derivation graph, returns the type itself."
-  (cl:let ((node (gethash type-name *type-derivation-graph*)))
+  ;; Handle package mismatches - try both current package and CRISP-LANGUAGE
+  (cl:let* ((node-direct (gethash type-name *type-derivation-graph*))
+            (node-alt (when (and (not node-direct) (symbolp type-name))
+                        (gethash (cl:intern (cl:symbol-name type-name)
+                                            (cl:find-package :crisp-language))
+                                 *type-derivation-graph*)))
+            (node (or node-direct node-alt)))
     (if node
         (type-node-base-type node)
         ;; Not a derived type, return as-is
@@ -150,9 +174,26 @@
     ((is-substitutable-for? type-a type-b) type-b)  ; B is more general
     ((is-substitutable-for? type-b type-a) type-a)  ; A is more general
 
-    ;; TODO: Phase 5 - Common base dominance rules
-    ;; For now, return NIL to fall back to existing logic
-    (t nil)))
+    ;; Phase 5: Common base dominance rules
+    ;; If both types are derived from the same base type, use the base type
+    ;; Example: (weak, eq-weak) => float, (meters, weak) => float
+    (t
+     (cl:let* ((base-a (get-type-base type-a))
+               (base-b (get-type-base type-b)))
+       (log:debug "resolve-dominance fallback: type-a=~a base-a=~a type-b=~a base-b=~a eq?=~a"
+                  type-a base-a type-b base-b (and base-a base-b (eq base-a base-b)))
+       ;; If they share a common base (and neither is substitutable for the other),
+       ;; return the common base
+       (if (and base-a base-b (eq base-a base-b)
+                ;; Make sure at least one is actually derived (not the base itself)
+                (or (not (eq type-a base-a)) (not (eq type-b base-b))))
+           (progn
+             (log:debug "Returning common base: ~a" base-a)
+             base-a)
+           ;; Different bases or one is the base itself - return NIL to fall back
+           (progn
+             (log:debug "No common base, returning NIL")
+             nil))))))
 
 ;;; Derived Type Registration
 ;;; =========================
@@ -190,10 +231,12 @@
   (log:debug "Registering derived type ~a from ~a with subst-mode ~a"
              new-type-name original-type-name subst-mode)
 
-  ;; Validate original type exists
+  ;; Validate original type exists (in derivation graph, types, structs, or aliases)
   (unless (or (gethash original-type-name *type-derivation-graph*)
               (gethash original-type-name *crisp-types*)
-              (gethash original-type-name *crisp-structs*))
+              (gethash original-type-name *crisp-structs*)
+              (and (boundp '*crisp-type-aliases*)
+                   (gethash original-type-name *crisp-type-aliases*)))
     (error "Cannot derive type ~a from ~a: original type does not exist (single-pass semantics violation)"
            new-type-name original-type-name))
 
@@ -248,12 +291,14 @@
                    new-type-name original-type-name))
 
        ;; Case 3: :equal - bidirectional substitution
+       ;; For :equal, we create bidirectional substitution but prevent transitivity
+       ;; by only adding to descendants, not ancestors (except for the new node)
        ((eq subst-mode :equal)
         (setf (type-node-ancestors new-node) (list original-type-name))
         (setf (type-node-descendants new-node) (list original-type-name))
-        ;; Update original's ancestors AND descendants (bidirectional)
+        ;; Update original's descendants only (NOT ancestors)
+        ;; This prevents chains like WEAK->FLOAT->EQ-WEAK from working
         (cl:let ((orig-node (gethash original-type-name *type-derivation-graph*)))
-          (push new-type-name (type-node-ancestors orig-node))
           (push new-type-name (type-node-descendants orig-node)))
         (log:debug "~a is equal to ~a (bidirectional substitution)"
                    new-type-name original-type-name))

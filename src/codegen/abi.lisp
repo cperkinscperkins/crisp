@@ -113,9 +113,7 @@
                                      (let ((alt-symbol (intern (symbol-name lookup-spec) (find-package :crisp-language))))
                                        (log:debug "  Trying alternate package lookup: ~s" alt-symbol)
                                        (gethash alt-symbol *crisp-types*)))))
-                 (struct-def (or (gethash lookup-spec *crisp-structs*)
-                                 (when (and is-storage-list (symbolp lookup-spec))
-                                       (gethash (intern (symbol-name lookup-spec) (find-package :crisp-language)) *crisp-structs*))))
+                 (struct-def (lookup-struct-definition lookup-spec))
                  ;; Use the actual key that was found
                  (actual-key (cond
                               ((gethash lookup-spec *crisp-types*) lookup-spec)
@@ -162,7 +160,7 @@
          (type-rec (gethash lookup-spec *crisp-types*)))
     (cond
      ((and type-rec (eq (crisp-type-category type-rec) :record))
-       (let* ((struct-def (gethash lookup-spec *crisp-structs*))
+       (let* ((struct-def (lookup-struct-definition lookup-spec))
               (members (crisp-struct-definition-members struct-def))
               (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
               (values '()))
@@ -188,7 +186,7 @@
          (type-rec (gethash lookup-spec *crisp-types*)))
     (cond
      ((and type-rec (eq (crisp-type-category type-rec) :record))
-       (let* ((struct-def (gethash lookup-spec *crisp-structs*))
+       (let* ((struct-def (lookup-struct-definition lookup-spec))
               (members (crisp-struct-definition-members struct-def))
               (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
               (record-type (crisp-type-to-llvm-type type-spec module))

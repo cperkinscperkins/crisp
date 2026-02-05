@@ -14,6 +14,7 @@
         type-a-name
         ;; Try DAG-based dominance resolution first
         (cl:let ((dominant-type (resolve-dominance type-a-name type-b-name)))
+          (log:debug "get-promoted-type: ~a + ~a => dominant=~a" type-a-name type-b-name dominant-type)
           (if dominant-type
               dominant-type
               ;; Fall back to category + size promotion for types not in hierarchy

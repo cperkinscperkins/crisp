@@ -707,9 +707,22 @@
             (as-new-name (intern (format nil "AS-~a" new-name) (symbol-package new-name)))
             (as-orig-name (intern (format nil "AS-~a" original-type) (symbol-package new-name)))
             (is-new-name (intern (format nil "IS-~a?" new-name) (symbol-package new-name)))
-            ;; Determine base type for struct lookup
+            ;; Determine base type for struct lookup - try both original-type and computed base
             (base-type (compute-base-type original-type))
-            (struct-def (gethash base-type *crisp-structs*)))
+            ;; Package-agnostic struct lookup (records and structs both in *crisp-structs*)
+            ;; Try: 1) base-type directly, 2) original-type directly,
+            ;;      3) base-type in :crisp-language, 4) original-type in :crisp-language
+            (struct-def (or (gethash base-type *crisp-structs*)
+                            (gethash original-type *crisp-structs*)
+                            (when (symbolp base-type)
+                              (gethash (intern (symbol-name base-type)
+                                               (find-package :crisp-language))
+                                       *crisp-structs*))
+                            (when (and (symbolp original-type)
+                                       (not (eq original-type base-type)))
+                              (gethash (intern (symbol-name original-type)
+                                               (find-package :crisp-language))
+                                       *crisp-structs*)))))
 
     `(progn
        ;; Register at load time too

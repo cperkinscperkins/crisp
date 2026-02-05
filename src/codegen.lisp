@@ -1033,7 +1033,7 @@
 
 (defmethod generate-node-ir ((node semantic-struct-construction) builder module var-env di-builder di-scope location-map)
   (let* ((type-name (semantic-struct-construction-type node))
-         (struct-def (gethash type-name *crisp-structs*))
+         (struct-def (lookup-struct-definition type-name))
          (llvm-type (ensure-struct-llvm-type type-name))
          (agg-val (llvm-get-undef llvm-type))
          (args (semantic-struct-construction-args node))
