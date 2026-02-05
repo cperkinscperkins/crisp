@@ -24,6 +24,7 @@
                                              (:file "src/types/definitions")
                                              (:file "src/types/registry")
                                              (:file "src/types/validation")
+                                             (:file "src/types/hierarchy")
                                              (:file "src/parameters")
                                              (:file "src/structs") ; 5. Struct Layout
 

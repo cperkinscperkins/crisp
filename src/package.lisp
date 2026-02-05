@@ -172,6 +172,10 @@
    #:compile-module
    #:generate-location-map
    #:initialize-crisp-types
+   #:initialize-type-hierarchy
+   #:is-substitutable-for?
+   #:resolve-dominance
+   #:get-type-base
    #:analyze-return-type-from-spec
    #:analyze-environment-from-spec
    #:parse-function-declarations

@@ -315,6 +315,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
   ;; Initialize the compiler's internal state.
   (initialize-crisp-types)
   (initialize-crisp-types)
+  (initialize-type-hierarchy) ;; Initialize type derivation graph (DAG)
   (clrhash *function-table*) ;; Reset function table
   (clrhash *crisp-structs*) ;; Reset struct definitions
   (clrhash *crisp-type-aliases*) ;; Reset type aliases
