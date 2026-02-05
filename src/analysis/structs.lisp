@@ -88,9 +88,11 @@
     (unless (symbolp obj-type)
       (error "Cannot extract member from non-struct type ~a" obj-type))
 
-    (let ((struct-def (gethash obj-type *crisp-structs*)))
+    ;; Resolve derived types to base type for struct lookup
+    (let* ((base-type (get-type-base obj-type))
+           (struct-def (gethash base-type *crisp-structs*)))
       (unless struct-def
-        (error "Unknown struct type ~a in extraction." obj-type))
+        (error "Unknown struct type ~a (base: ~a) in extraction." obj-type base-type))
 
       (let* ((padded-members (crisp-struct-definition-padded-members struct-def))
              ;; We need to map the "logical" index i to the "physical" index in the padded struct.

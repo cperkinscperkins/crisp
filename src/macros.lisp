@@ -690,6 +690,7 @@
    - make-<new-name> constructor (for structural types)
    - as-<new-name> and as-<original> casting functions
    - is-<new-name>? type predicate
+   - Property accessors (for struct types) - delegates to base type accessors
 
    Example:
      (def-derived-type meters float :subst :ancestor)"
@@ -701,11 +702,14 @@
   ;; Register at macro-expansion time (for visibility to subsequent code)
   (register-derived-type new-name original-type subst)
 
-  (cl:let ((pkg (symbol-package new-name))
-           (make-name (intern (format nil "MAKE-~a" new-name) (symbol-package new-name)))
-           (as-new-name (intern (format nil "AS-~a" new-name) (symbol-package new-name)))
-           (as-orig-name (intern (format nil "AS-~a" original-type) (symbol-package new-name)))
-           (is-new-name (intern (format nil "IS-~a?" new-name) (symbol-package new-name))))
+  (cl:let* ((pkg (symbol-package new-name))
+            (make-name (intern (format nil "MAKE-~a" new-name) (symbol-package new-name)))
+            (as-new-name (intern (format nil "AS-~a" new-name) (symbol-package new-name)))
+            (as-orig-name (intern (format nil "AS-~a" original-type) (symbol-package new-name)))
+            (is-new-name (intern (format nil "IS-~a?" new-name) (symbol-package new-name)))
+            ;; Determine base type for struct lookup
+            (base-type (compute-base-type original-type))
+            (struct-def (gethash base-type *crisp-structs*)))
 
     `(progn
        ;; Register at load time too
@@ -714,16 +718,48 @@
 
        ;; Generate make-XXXX constructor (only for structural types)
        ;; For scalars, skip this - users will use as-XXXX instead
-       ,@(when (or (gethash original-type *crisp-structs*)
-                   ;; Check if base type is a struct
-                   (cl:let ((node (gethash original-type *type-derivation-graph*)))
-                     (when node
-                       (gethash (type-node-base-type node) *crisp-structs*))))
+       ,@(when struct-def
            (cl:let ((orig-make-name (intern (format nil "MAKE-~a" original-type)
                                             (symbol-package original-type))))
              `((defmacro ,make-name (&rest args)
                  "Constructor for derived type - delegates to base type constructor."
                  `(,',as-new-name (,',orig-make-name ,@args))))))
+
+       ;; Generate property accessors for struct types
+       ;; Each accessor accepts the derived type and extracts the member directly
+       ,@(when struct-def
+           (cl:let ((runtime-index 0)
+                    (members (crisp-struct-definition-members struct-def))
+                    (forms '()))
+             (dolist (member-spec members)
+               (cl:let* ((member-name (first member-spec))
+                         (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
+                         (value (when is-ct (fourth member-spec)))
+                         (accessor-name (intern (format nil "~a~~" member-name) pkg))
+                         (raw-accessor-name (intern (format nil "~~~a~~" member-name) pkg)))
+                 (cl:cond
+                   ;; Compile-time member with value -> constant accessor macro
+                   ((and is-ct value)
+                    (push `(defmacro ,accessor-name (obj)
+                             (declare (ignore obj))
+                             '',value)
+                          forms))
+
+                   ;; Compile-time member without value -> skip
+                   (is-ct nil)
+
+                   ;; Runtime member -> generate accessor function
+                   (t
+                    (cl:let ((idx runtime-index))
+                      (push `(def-function ,accessor-name ((obj ,new-name))
+                               (return (%extract-struct-member obj ,idx)))
+                            forms)
+                      (push `(def-function ,raw-accessor-name ((obj ,new-name))
+                               (declare (crisp-system-generated))
+                               (return (%extract-struct-member obj ,idx)))
+                            forms)
+                      (incf runtime-index))))))
+             (nreverse forms)))
 
        ;; Generate as-<new-name> casting function
        ;; For now, this is just an identity function since derived types

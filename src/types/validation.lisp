@@ -286,6 +286,8 @@
       ((gethash type-spec *crisp-structs*) t)
       ((gethash type-spec *crisp-enums*) t)
       ((gethash type-spec *function-table*) t)
+      ;; Check derived types
+      ((gethash type-spec *type-derivation-graph*) t)
       ;; Check aliases (Fix for regression)
       ((gethash type-spec *crisp-type-aliases*) t)
       ;; Should we check pending definitions? Yes.
@@ -456,6 +458,11 @@
       ;; Built-in Scalar
       ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-types*))
        (cl:funcall (crisp-type-llvm-type-fn (cl:gethash type-spec *crisp-types*))))
+
+      ;; Derived Type - resolve to base type
+      ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *type-derivation-graph*))
+       (cl:let ((base-type (get-type-base type-spec)))
+         (resolve-type-to-llvm base-type)))
 
       ;; Type Alias (Symbol)
       ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-type-aliases*))
