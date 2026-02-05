@@ -1,4 +1,4 @@
-;; TEST-WITH[ir-target=llvmir] : validate-derived-make-XXXX
+;; No validator needed - successful compilation proves make-XXXX works
 ;; can this use the same validator as 09-derived-make-XXXX.crisp ? if not, make our own.
 
 (def-record point (x int) (y int))

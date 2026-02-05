@@ -230,7 +230,7 @@ SHORT TERM PLAN
    - compile-def-function in analysis/core.lisp. triple nested let?
 
 - [x] WTF: mark-carriers-pass in core.lisp has *reverse-call-graph* which does not exist.
-- [ ] unit tests aren't picking up overlay?  Fix that. (I think this is not true)
+- [/] unit tests aren't picking up overlay?  Fix that. (I think this is not true)
 - [ ] make-implicit-XXXX with :msg and :name
 - [ ] make-scratch-cell should use make-implicit-cell  => tests for :name / :msg in the metadata
 - [ ] move validators all to one file (or some files). And change compilation
@@ -347,11 +347,42 @@ Kernels
       constant source of bugs. At minimum, do an evaluation. 
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
 - [x] def-derived-type => expand specification for numerics ("contagion"). 
-- [ ] def-record : probably should decide and document that these CANNOT appear on the 
+- [/] def-record : probably should decide and document that these CANNOT appear on the 
       kernel boundary. Obviously, we do for Storage Handles. But no general case marshalling.
       If a user WANTS to pass them individually and use marshall-XXXX they are welcome to do so.
-- [ ] set-derived: probably should take TWO structs as args. Disallow "derived" structs.
+- [x] set-derived: probably should take TWO structs as args. Disallow "derived" structs.
       Should it support def-record? Probably not. 
+
+Assault On Pytorch
+==================
+- [x] def-derived-type 
+- - [ ] validators in 031-def-derived-test not written yet.
+- - [ ] clean up of .ll files 
+- - [ ] run-specs.lisp - custom build is broken.  Using --use-binary now?
+        can this be fixed? Or should we abandon the custom build?
+- - [ ] 031-def-derived-test/errors/05-equal-does-not-mena-yes is PASSING, but it should be failing.
+        See comment in test. May not be easy to implement.
+- - [ ] most error tests in 031-def-derived-test/errors do not have "<meaningful error messages>" yet.
+        possibly because we aren't generating such.
+- - [ ] def-derived-type should probably NOT support enums.  add test
+- - [ ] def-derived-type design doc says no templating. Test? Might have to change that limitation though.
+- - [ ] bool?  
+- [ ] set-derived  
+- [ ] def-record SHOULD be supportable at kernel boundary. We already do it for cell, might 
+      as well general case that.
+- - [ ] metadata decision & test
+- - [ ] hoisting decision & test
+- [ ] for errors involving the return type, make sure the error message
+      very clearly states what return type the compiler thinks it is (if any).
+- [ ] brand & dbrand -- 
+- - [ ] requires documentation and decisions before work can begin.
+- [ ] --differentiate
+- - [ ] ANF transform.
+- - [ ] kernel and function transforms
+- - [ ] A/D
+
+
+
 - [ ] branded types. expand syntax to capture "always" vs. "when differentiating"
 - [ ] math intermediaries - this also strongly pushes to more explicit passes and testing. expand user macros / desugar Crisp macros / nodes / analyze / compile ?
 - [ ] --differentiate flag and testing. square cell could be simple test

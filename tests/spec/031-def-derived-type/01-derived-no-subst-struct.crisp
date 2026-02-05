@@ -1,5 +1,5 @@
 
-;; TEST-WITH[ir-target=llvmir] : validate-no-subst-overloads
+;; TEST-WITH[--ir-target=llvmir] : validate-no-subst-overloads
 
 (def-struct point (x int) (y int))
 

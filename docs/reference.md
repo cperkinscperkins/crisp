@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-02-05T05:14:02.238561Z
+Generated on 2026-02-05T22:34:10.615202Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1425,6 +1425,13 @@ Generated on 2026-02-05T05:14:02.238561Z
 
 
 ---
+### DEFMACRO `DEF-DERIVED-TYPE`
+- **Args**: `(NEW-NAME ORIGINAL-TYPE &KEY (SUBST NO))`
+
+  > Defines a new derived type from an existing type.  >   >    Parameters:  >    - new-name: Symbol for the new type  >    - original-type: Type to derive from (must exist)  >    - :subst: Substitution mode - :no, :equal, :descendant, :ancestor  >   >    Automatically generates:  >    - make-<new-name> constructor (for structural types)  >    - as-<new-name> and as-<original> casting functions  >    - is-<new-name>? type predicate  >    - Property accessors (for struct types) - delegates to base type accessors  >   >    Example:  >      (def-derived-type meters float :subst :ancestor)
+
+
+---
 ### DEFMACRO `DEF-SETTER`
 - **Args**: `(NAME ARGS &BODY BODY)`
 
@@ -2052,6 +2059,13 @@ Generated on 2026-02-05T05:14:02.238561Z
 
 
 ---
+### DEFUN `LOOKUP-STRUCT-DEFINITION`
+- **Args**: `(TYPE-NAME)`
+
+  > Looks up a struct definition, handling derived types and package issues.  >    Returns the struct definition or NIL if not found.  >   >    This function:  >    1. Resolves derived types to their base type using get-type-base  >    2. Tries package-agnostic lookup (current package, then :crisp-language)  >    3. Works for both structs and records (both stored in *crisp-structs*)
+
+
+---
 ### DEFUN `REGISTER-STRUCT-DEFINITION`
 - **Args**: `(NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))`
 
@@ -2219,7 +2233,7 @@ Generated on 2026-02-05T05:14:02.238561Z
 ### DEFUN `GET-PROMOTED-TYPE`
 - **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
 
-  > Determines result type of binary operation with alias resolution.
+  > Determines result type of binary operation with alias resolution.  >    Now uses type derivation hierarchy (DAG) for promotion rules.
 
 
 ---
@@ -2247,6 +2261,96 @@ Generated on 2026-02-05T05:14:02.238561Z
 ## File: `C:\Users\cperk\Documents\crisp-man\src\types\definitions.lisp`
 
 ### DEFSTRUCT `ENUMERATION-DEF`
+
+---
+## File: `C:\Users\cperk\Documents\crisp-man\src\types\hierarchy.lisp`
+
+### DEFSTRUCT `TYPE-NODE`
+
+  > Represents a type in the derivation hierarchy (DAG).  >    Used for both 'real' types (scalars, structs) and derived types.
+
+
+---
+### DEFVAR `*TYPE-DERIVATION-GRAPH*`
+
+  > Maps type-name (symbol) -> type-node for all types (real and derived).
+
+
+---
+### DEFUN `INITIALIZE-TYPE-HIERARCHY`
+
+  > Initializes the type derivation graph (starts empty).  >    User-defined derived types will be added via def-derived-type.  >    Built-in numeric types use the existing size-based promotion system.
+
+
+---
+### DEFUN `CREATE-ROOT-TYPE-NODE`
+- **Args**: `(TYPE-NAME)`
+
+  > Creates a root type node for a built-in 'real' type with no derivation relationships.
+
+
+---
+### DEFUN `CREATE-NUMERIC-HIERARCHY`
+- **Args**: `(TYPE-NAMES)`
+
+  > Creates a linked hierarchy of numeric types.  >    type-names should be ordered from most specific to most general.  >    Example: '(char short int long) creates char -> short -> int -> long.
+
+
+---
+### DEFUN `IS-SUBSTITUTABLE-FOR?`
+- **Args**: `(SOURCE-TYPE TARGET-TYPE)`
+
+  > Returns T if SOURCE-TYPE can be used where TARGET-TYPE is expected.  >    This is the fundamental 'Can I put peg A in hole B?' check.  >   >    Algorithm:  >    - If types are equal, return T  >    - Walk UP from source through ancestors to find target  >    - Special case: check if source has target in descendants (:equal relationship)  >    - Handles cycles (from :equal relationships) via visited tracking
+
+
+---
+### DEFUN `HAS-ANCESTOR-PATH?`
+- **Args**: `(FROM-TYPE TO-TYPE VISITED)`
+
+  > Walk UP through ancestors from FROM-TYPE to find TO-TYPE.  >    Returns T if path exists, NIL otherwise.  >    VISITED hash table prevents infinite loops (from :equal cycles).
+
+
+---
+### DEFUN `GET-TYPE-BASE`
+- **Args**: `(TYPE-NAME)`
+
+  > Returns the base 'real' type for a given type (derived or real).  >    If the type is not in the derivation graph, returns the type itself.
+
+
+---
+### DEFUN `GET-REACHABLE-TYPES`
+- **Args**: `(TYPE-NAME)`
+
+  > Returns a list of all types that TYPE-NAME can substitute for (including itself).  >    Uses BFS to walk up the ancestor graph, plus handles :equal relationships.  >    Returns types in order from closest to farthest (BFS order).
+
+
+---
+### DEFUN `FIND-COMMON-PROMOTED-TYPE`
+- **Args**: `(TYPE-A TYPE-B)`
+
+  > Finds the best common type for promotion in binary operations.  >    Returns the closest common type that both can substitute for.  >   >    Algorithm:  >    1. Calculate all types type-a can reach (substitute for)  >    2. Calculate all types type-b can reach  >    3. Find intersection  >    4. Return the first common type in type-a's reachable list (closest to type-a)  >   >    Returns NIL if no common type exists.
+
+
+---
+### DEFUN `RESOLVE-DOMINANCE`
+- **Args**: `(TYPE-A TYPE-B)`
+
+  > Determines which type dominates in arithmetic operations.  >    Returns the dominant type, or NIL if they cannot mix.  >   >    Used by get-promoted-type for binary operations like +, -, *, /.  >   >    Rules:  >    - If same type, return it  >    - If one can substitute for other, return the more general (target)  >    - If both derived from common base, apply dominance rules  >    - Otherwise, return NIL (caller should use category + size fallback)
+
+
+---
+### DEFUN `COMPUTE-BASE-TYPE`
+- **Args**: `(ORIGINAL-TYPE-NAME)`
+
+  > Walks the original-type chain to find the root 'real' type.  >    Returns the base type name, or NIL if not found.
+
+
+---
+### DEFUN `REGISTER-DERIVED-TYPE`
+- **Args**: `(NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)`
+
+  > Registers a new derived type in the type derivation graph.  >   >    Parameters:  >    - new-type-name: Symbol for the new derived type  >    - original-type-name: Symbol for the type being derived from  >    - subst-mode: One of :no, :equal, :descendant, :ancestor  >   >    Validates:  >    - Original type must exist (in *type-derivation-graph*, *crisp-types*, or *crisp-structs*)  >    - Subst-mode must be valid  >   >    Updates:  >    - Creates new type-node with computed base-type  >    - Updates ancestor/descendant relationships based on subst-mode
+
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\types\registry.lisp`
