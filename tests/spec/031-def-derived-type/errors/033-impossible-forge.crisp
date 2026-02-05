@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL : "reasonable error message"
+;; CHECK-FAIL: "reasonable error message"
 
 ;; Level 0
 (def-type root float) ;; just for clarity

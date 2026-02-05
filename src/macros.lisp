@@ -761,17 +761,18 @@
                       (incf runtime-index))))))
              (nreverse forms)))
 
-       ;; Generate as-<new-name> casting function
-       ;; For now, this is just an identity function since derived types
-       ;; have the same memory layout as their base type
-       (defmacro ,as-new-name (val)
-         ,(format nil "Casts a value to type ~a" new-name)
-         val)
+       ;; Register as-<new-name> expression analyzer for casting
+       ;; This allows (as-coordinate ...) to work like (as-int ...)
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (setf (gethash ',as-new-name *expression-analyzers*)
+               #'analyze-cast-expression)
+         (log:debug "Registered expression analyzer for ~a" ',as-new-name))
 
-       ;; Generate as-<original> casting function
-       (defmacro ,as-orig-name (val)
-         ,(format nil "Casts a value to type ~a (reverse cast from ~a)" original-type new-name)
-         val)
+       ;; Also register as-<original> for reverse casting
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (setf (gethash ',as-orig-name *expression-analyzers*)
+               #'analyze-cast-expression)
+         (log:debug "Registered expression analyzer for ~a" ',as-orig-name))
 
        ;; Generate is-<new-name>? predicate
        (defun ,is-new-name (type-spec)

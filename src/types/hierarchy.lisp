@@ -269,6 +269,39 @@
 
       ;; Register the new node
       (setf (gethash new-type-name *type-derivation-graph*) new-node)
+
+      ;; Also register in *crisp-types* so type checking and casting work correctly
+      ;; Derived types have identical memory layout to their base type
+      (cl:let ((base-crisp-type (or (gethash base-type *crisp-types*)
+                                     (gethash base-type *crisp-structs*))))
+        (cl:cond
+          ;; Base is a built-in type (int, float, etc.)
+          ((crisp-type-p base-crisp-type)
+           (setf (gethash new-type-name *crisp-types*)
+                 (make-crisp-type :name new-type-name
+                                  :llvm-type-fn (crisp-type-llvm-type-fn base-crisp-type)
+                                  :size (crisp-type-size base-crisp-type)
+                                  :category (crisp-type-category base-crisp-type)))
+           (log:debug "Registered ~a in *crisp-types* (base type category: ~a)"
+                      new-type-name (crisp-type-category base-crisp-type)))
+
+          ;; Base is a struct
+          ((crisp-struct-definition-p base-crisp-type)
+           ;; For structs, we need to create a crisp-type entry
+           ;; The LLVM type function should return the struct's LLVM type
+           (setf (gethash new-type-name *crisp-types*)
+                 (make-crisp-type :name new-type-name
+                                  :llvm-type-fn (lambda (module)
+                                                  (crisp-type-to-llvm-type base-type module))
+                                  :size 0  ; Structs don't have a fixed bit size
+                                  :category :struct))
+           (log:debug "Registered ~a in *crisp-types* (struct derived from ~a)"
+                      new-type-name base-type))
+
+          (t
+           (log:warn "Could not register ~a in *crisp-types*: base type ~a not found"
+                     new-type-name base-type))))
+
       (log:info "Registered derived type ~a (base: ~a, subst: ~a)"
                 new-type-name base-type subst-mode)
 

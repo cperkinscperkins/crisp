@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL : "stern, but reasonable, error message"
+;; CHECK-FAIL: "stern, but reasonable, error message"
 
 
 ;; original type MUST exist BEFORE derived type declaration

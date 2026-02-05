@@ -1,4 +1,4 @@
-;; CHECK-FAIL : "message"
+;; CHECK-FAIL: "message"
 
 (def-function add-two (a b)
   (declare #'(float float => float))

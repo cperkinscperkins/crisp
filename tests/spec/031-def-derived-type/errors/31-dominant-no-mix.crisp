@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL : "some pleasant error message"
+;; CHECK-FAIL: "some pleasant error message"
 
 (def-derived-type meters float :ancestor)
 

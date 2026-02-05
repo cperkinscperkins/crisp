@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL : "reasonable error message"
+;; CHECK-FAIL: "reasonable error message"
 
 (def-derived-type base float :subst :ancestor)
 (def-derived-type left base :subst :ancestor)

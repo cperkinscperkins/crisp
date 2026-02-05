@@ -1,5 +1,10 @@
 ;;
-;; CHECK-FAIL: "<meaningful error message here>"
+;; CHECK-FAIL: "Unsupported value cast from POINT to COORDINATE"
+;;
+;; NOTE: Ideally this should fail with an ambiguity error during function resolution,
+;; since both (point point) and (coordinate coordinate) overloads are equally valid.
+;; However, current implementation picks first match and fails during codegen.
+;; TODO: Implement proper ambiguity detection in resolve-best-signature.
 ;;
 
 (def-struct point (x int) (y int))

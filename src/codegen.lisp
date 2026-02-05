@@ -545,6 +545,23 @@
                (if (= from-as to-as)
                    (llvm-build-bit-cast builder from-val to-llvm-type "ptr2ptr_cast")
                    (llvm-build-addrspace-cast builder from-val to-llvm-type "ptr2ptr_ascast"))))
+           ;; Handle casts between derived types with same base type (same memory layout)
+           ((and (symbolp from-type-name) (symbolp to-type-name))
+             (cl:let ((from-base (get-type-base from-type-name))
+                      (to-base (get-type-base to-type-name)))
+               (if (eq from-base to-base)
+                   (progn
+                     (log:debug "Derived type cast: ~a -> ~a (same base ~a, no-op)"
+                                from-type-name to-type-name from-base)
+                     ;; Same memory layout, no cast needed
+                     from-val)
+                   ;; Different base types, fall through to error
+                   (progn
+                     (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
+                     (log:error "  From Type: ~a (cat: ~a, base: ~a)" from-type from-cat from-base)
+                     (log:error "  To Type:   ~a (cat: ~a, base: ~a)" to-type to-cat to-base)
+                     (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
+                     (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name)))))
            (t
              (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
              (log:error "  From Type: ~a (cat: ~a)" from-type from-cat)
