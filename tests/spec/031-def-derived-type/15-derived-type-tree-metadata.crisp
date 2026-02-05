@@ -1,0 +1,20 @@
+;;
+;; TEST-WITH[--metadata] : validate-point-in-metadata
+;;
+
+;; ROOT STRUCT type (point) should be in metadata.
+;; validator should probably make sure dot, coordinate and conclusion are NOT in the metadata.
+
+
+(def-struct point (x int) (y int))
+
+(def-derived-type coordinate point :subst :ancestor)
+
+(def-derived-type dot coordinate :subst :descendant)
+
+(def-derived-type conclusion dot :subst :no)
+
+(def-kernel predetermined_conclusion (&out result)
+    (declare #'(&out (cell conclusion :address-space :global :access :read-write)))
+    (set! (x~ (~ result)) 40)
+    (set! (y~ (~ result)) 50))

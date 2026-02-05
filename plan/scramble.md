@@ -346,7 +346,12 @@ Kernels
 - [x] refactor single pass vs. multi.  We are getting too much duplication
       constant source of bugs. At minimum, do an evaluation. 
 - [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
-- [ ] def-derived-type => expand specification for numerics ("contagion"). 
+- [x] def-derived-type => expand specification for numerics ("contagion"). 
+- [ ] def-record : probably should decide and document that these CANNOT appear on the 
+      kernel boundary. Obviously, we do for Storage Handles. But no general case marshalling.
+      If a user WANTS to pass them individually and use marshall-XXXX they are welcome to do so.
+- [ ] set-derived: probably should take TWO structs as args. Disallow "derived" structs.
+      Should it support def-record? Probably not. 
 - [ ] branded types. expand syntax to capture "always" vs. "when differentiating"
 - [ ] math intermediaries - this also strongly pushes to more explicit passes and testing. expand user macros / desugar Crisp macros / nodes / analyze / compile ?
 - [ ] --differentiate flag and testing. square cell could be simple test
@@ -357,7 +362,7 @@ Kernels
 
 
 QUESTIONS
-- [ ] should log4CL be used ONLY for logging? Or should it be used for general compiler output 
+- [x] should log4CL be used ONLY for logging? Or should it be used for general compiler output 
       like error messages and warnings and the like?
 - [ ] why are the log:debug and the like not showing up in Alive REPL even if the log level is set?
 

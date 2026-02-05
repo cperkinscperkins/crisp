@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL : "stern, but reasonable, error message"
+
+
+;; original type MUST exist BEFORE derived type declaration
+
+(def-derived-type coordinate point :subst :equal)
+
+(def-struct point (x int) (y int))

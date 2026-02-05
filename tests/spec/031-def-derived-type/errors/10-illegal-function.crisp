@@ -1,0 +1,7 @@
+;; CHECK-FAIL : "message"
+
+(def-function add-two (a b)
+  (declare #'(float float => float))
+  (+ a b))
+
+(def-derived-type add-floats #'add-two) ;; error. 

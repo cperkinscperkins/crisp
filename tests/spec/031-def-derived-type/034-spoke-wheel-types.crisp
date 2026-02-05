@@ -1,0 +1,9 @@
+
+
+(def-derived-type left-spoke float :subst :descendant)
+(def-derived-type right-spoke float :subst :descendant)
+
+;; This works because both decay to Float
+(def-function wheel-hub-mix (l r)
+    (declare #'(left-spoke right-spoke => float))
+    (+ l r))

@@ -1,0 +1,33 @@
+;; Level 0
+(def-type root float) ;; just for clarity
+
+;; Level 1: Iron DOMINATES Root
+(def-derived-type iron root :subst :ancestor)
+
+;; Level 2: Steel is a RECESSIVE form of Iron
+;; (It has extra properties, but yields to Iron in math)
+(def-derived-type steel iron :subst :descendant)
+
+;; Level 3: Valyrian DOMINATES Steel
+(def-derived-type valyrian steel :subst :ancestor)
+
+;; I -> R 
+;; I -> S 
+;; V -> S
+
+;; --- Tests ---
+
+;; Steel + Root
+;; Steel decays to Iron. Iron dominates Root.
+;; Result: Iron.
+(def-function alloy-mix (s r)
+    (declare #'(steel root => iron)) 
+    (+ s r))
+
+
+;; Steel + Iron
+;; Steel decays to Iron.
+;; Result: Iron
+(def-function simple-decay (s i)
+    (declare #'(steel iron => iron))
+    (+ s i))

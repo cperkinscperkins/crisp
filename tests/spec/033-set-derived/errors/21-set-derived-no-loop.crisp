@@ -1,0 +1,9 @@
+;; CHECK-FAIL : "hostile, vaguely threatening error message"
+
+(def-struct point (x int) (y int))
+
+(def-struct coordinate (x int) (y int))
+
+(set-derived point coordinate)
+
+(set-derived coordinate point)

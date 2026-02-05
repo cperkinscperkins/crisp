@@ -1,0 +1,48 @@
+;; 
+;;
+;;
+
+
+(def-derived-type meters float :subst :ancestor)
+
+(def-function dominant-gene (m f)
+    (declare #'(meters float => meters))
+    (+ m f))
+
+
+(def-derived-type weak float :subst :descendant)
+
+(def-function recessive-gene (w f)
+    (declare #'(weak float => float))
+    (+ w f))
+
+
+(def-derived-type eq-weak float :subst :equal)
+
+(def-function also-recessive (e f)
+    (declare #'(eq-weak float => float))
+    (+ e f))
+
+
+;; no test for :subst :no
+
+
+;; Now what?
+
+(def-function still-got-it (m w)
+    (declare #'(meters weak => meters))
+    (+ m w))
+
+(def-function total-domination (e m)
+    (declare #'(eq-weak meters => meters))
+    (+ e m))
+
+(def-function timid (e w)
+    (declare #'(eq-weak weak => float))
+    (+ e w))
+
+(def-derived-type soft float :subst :descendant)
+
+(def-function meek (w s)
+    (declare #'(weak soft => float))
+    (+ w s))

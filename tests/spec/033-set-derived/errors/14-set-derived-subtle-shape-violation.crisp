@@ -1,0 +1,8 @@
+
+;; CHECK-FAIL : "message"
+
+(def-struct point (x int) (y int))
+
+(def-struct vertex (x int) (y float)) ;; float is same size as int. But still disallowed.
+
+(set-derived point vertex)

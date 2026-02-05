@@ -1,0 +1,26 @@
+
+;; TEST-WITH[ir-target=llvmir] : validate-no-subst-overloads
+;; can this use the same validator as 01-derived-no-subst-struct.crisp? If not, we'll make a new one.
+
+
+(def-record point (x int) (y int))
+
+(def-derived-type coordinate point :subst :no)
+
+(def-function distance (p1 p2)
+    (declare #'(point point => int))
+    ;; we don't have most math ops yet.
+    (+ (x~ p1) (x~ p2)))
+
+(def-function distance (c1 c2)
+    (declare #'(coordinate coordinate => int))
+    (+ 100 (+ (y~ c1) (y~ c2))))
+
+(def-type out-c (cell int :address-space :global :access :write-only))
+
+(def-kernel measure_distance (ax ay bx by &out res-p res-c)
+    (declare #'(int int int int &out out-c out-c))
+    (let ((pa (make-point :x ax :y ay))
+          (cb  (make-coordinate :x bx :y by)))
+      (set! (~ res-p) (distance pa (as-point cb)))
+      (set! (~ res-c) (distance (as-coordinate pa) cb))))

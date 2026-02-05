@@ -1,0 +1,13 @@
+
+;; CHECK-FAIL : "reasonable error message"
+
+(def-derived-type base float :subst :ancestor)
+(def-derived-type left base :subst :ancestor)
+(def-derived-type right base :subst :ancestor)
+
+;; Even though they share a common Dominant ancestor (Base),
+;; Left and Right are distinct dominant branches.
+;; They should NOT mix.
+(def-function sibling-rivalry (l r)
+    (declare #'(left right => base))
+    (+ l r)) ;; COMPILATION ERROR

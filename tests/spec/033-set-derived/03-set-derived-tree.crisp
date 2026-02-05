@@ -1,0 +1,26 @@
+;; TEST-WITH[ir-target=llvmir] : validate-correct-overload-set-derived-tree
+
+(def-struct point (x int) (y int))
+
+(def-struct vertex (x int) (y int) (z int))
+
+(def-struct 4d-vertex (x int) (y int) (z int) (t float))
+
+(def-function sum-point (pt)
+    (declare #'(point => int))
+    (+ (x~ pt) (y~ pt)))
+
+;; overload
+(def-function sum-point (v)
+    (declare #'(vertex => int))
+    (+ (x~ v) (y~ v) (z~ v)))
+
+(set-derived point vertex)
+(set-derived vertex 4d-vertex)
+
+(def-function sums (pt v v4)
+    (declare #'(point vertex 4d-vertex => int))
+  (let ((sum-p (sum-point pt))
+        (sum-v (sum-point v))
+        (sum-v4 (sum-point v4)))
+     (+ sum-p (+ sum-v sum-v4))))

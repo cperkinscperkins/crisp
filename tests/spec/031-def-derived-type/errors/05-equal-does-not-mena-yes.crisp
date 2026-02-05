@@ -1,0 +1,28 @@
+;;
+;; CHECK-FAIL: "<meaningful error message here>"
+;;
+
+(def-struct point (x int) (y int))
+
+(def-derived-type coordinate point :subst :equal)
+
+;; we have two distance functions.  They ARE substitutable.
+;; but no way to determine WHICH. 
+(def-function distance (p1 p2)
+    (declare #'(point point => int))
+    ;; we don't have most math ops yet.
+    (+ (x~ p1) (x~ p2)))
+
+(def-function distance (c1 c2)
+    (declare #'(coordinate coordinate => int))
+    (+ (y~ c1) (y~ c2)))
+
+(def-type out-c (cell int :address-space :global :access :write-only))
+
+(def-kernel measure_distance (ax ay bx by &out res-p)
+    (declare #'(int int int int &out out-c))
+    (let ((p1 (make-point :x ax :y ay))
+          (c2  (make-coordinate :x bx :y by)))
+      ;; even though these are :subst :equal, the compiler
+      ;; should not be able to figure out WHICH distance it should use.
+      (set! (~ res-p) (distance p1 c2))))

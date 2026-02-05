@@ -1,0 +1,27 @@
+
+;; does this need a validator?
+
+(def-struct point (x int) (y int))
+
+(def-derived-type coordinate point :subst :equal)
+
+(def-function distance (p1 p2)
+    (declare #'(point point => int))
+    ;; we don't have most math ops yet.
+    (+ (x~ p1) (x~ p2)))
+
+(def-function haversine (c1 c2)
+    (declare #'(coordinate coordinate => int))
+    ;; we don't have most math ops yet.
+    (+ 100 (+ (y~ c1) (y~ c2))))
+
+(def-type out-c (cell int :address-space :global :access :write-only))
+
+(def-kernel measure_distance (ax ay bx by &out res-p res-c)
+    (declare #'(int int int int &out out-c out-c))
+    (let ((pa (make-point :x ax :y ay))
+          (cb  (make-coordinate :x bx :y by))
+          (crossed-d1 (distance cb cb))
+          (crossed-d2 (haversine pa pa)))
+      (set! (~ res-p) (distance pa cb))
+      (set! (~ res-c) (haversine cb pa))))

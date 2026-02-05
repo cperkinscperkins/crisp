@@ -1,0 +1,29 @@
+;;
+;; CHECK-FAIL: "<meaningful error message here>"
+;;
+
+
+(def-struct point (x int) (y int))
+
+(def-derived-type coordinate point :subst :descendant)
+
+(def-function distance (p1 p2)
+    (declare #'(point point => int))
+    ;; we don't have most math ops yet.
+    (+ (x~ p1) (x~ p2)))
+
+(def-function haversine (c1 c2)
+    (declare #'(coordinate coordinate => int))
+    ;; we don't have most math ops yet.
+    (+ (y~ c1) (y~ c2)))
+
+(def-type out-c (cell int :address-space :global :access :write-only))
+
+(def-kernel measure_distance (ax ay bx by &out res-p res-c)
+    (declare #'(int int int int &out out-c out-c))
+    (let ((p1 (make-point :x ax :y ay))
+          (c2  (make-coordinate :x bx :y by)))
+       ;; this substitution is fine.
+      (set! (~ res-p) (distance p1 c2))
+      ;; but this one should be a compile error. 
+      (set! (~ res-c) (haversine c1 p2))))

@@ -1,0 +1,5 @@
+;; CHECK-FAIL : "hostile, vaguely threatening error message"
+
+(def-struct point (x int) (y int))
+
+(set-derived point point) ;; cute!  but no. 

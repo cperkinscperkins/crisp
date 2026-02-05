@@ -1,0 +1,17 @@
+
+
+(def-derived-type E float :subst :ancestor)
+(def-derived-type D E :subst :ancestor)
+
+(def-derived-type G float :subst :descendant)
+(def-derived-type H G :subst :descendant)
+
+(def-function add-generations (e1 h1)
+    (declare #'(E H => E))
+    (+ e1 h1))
+
+(def-function add-family (d1 g1)
+    (declare #'(D G => D))
+    (+ d1 g1))
+
+

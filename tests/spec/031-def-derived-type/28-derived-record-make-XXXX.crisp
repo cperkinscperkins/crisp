@@ -1,0 +1,28 @@
+;; TEST-WITH[ir-target=llvmir] : validate-derived-make-XXXX
+;; can this use the same validator as 09-derived-make-XXXX.crisp ? if not, make our own.
+
+(def-record point (x int) (y int))
+
+(def-derived-type dot point :subst :no)
+
+(def-derived-type conclusion point :subst :equal)
+
+(def-derived-type pair point :subst :ancestor)
+
+(def-derived-type coordinate point :subst :descendant)
+
+(def-type out-c (cell int :address-space :global :access :write-only))
+
+(def-kernel make_a_point (&out result)
+    (declare #'(&out out-c => nil))
+    (let ((p (make-point :x 1 :y 2))
+          (d  (make-dot :x 10 :y 20))
+          (cn (make-conclusion :x 11 :y 22))
+          (pr (make-pair :x 100 :y 200))
+          (c   (make-coordinate :x 1000 :y 2000))
+          (sum (+ (x~ p) (x~ d))))
+      ;; do we have inc! yet? 
+        (set! sum (+ sum (x~ cn)))
+        (set! sum (+ sum (x~ pr)))
+        (set! sum (+ sum (x~ c)))
+        (set! (~ result) sum)))

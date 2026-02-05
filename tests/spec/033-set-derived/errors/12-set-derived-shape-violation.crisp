@@ -1,0 +1,7 @@
+;; CHECK-FAIL : "message"
+
+(def-struct point (x int) (y int))
+
+(def-struct vertex (x int) (y long) (z int))
+
+(set-derived point vertex)

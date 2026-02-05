@@ -21,6 +21,9 @@ Though there is no equivalent of `soa-vector` for records.
     ...))
 ```
 
+Importantly, types defined by `def-record` cannot be wrapped in Storage Handles, nor can they appear on 
+the parameter boundary of kernels. (The Storage Handles are an exception to this last restriction. Obviously, they DO appear on the kernel boundary).
+
 <!-- IMPLEMENTATION NOTE
   So make-XXXX for records is capturing register identities, not values.
   This should work fine for 

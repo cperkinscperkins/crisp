@@ -1,0 +1,26 @@
+
+;; CHECK-FAIL : "reasonable error message"
+
+;; Level 0
+(def-type root float) ;; just for clarity
+
+;; Level 1: Iron DOMINATES Root
+(def-derived-type iron root :subst :ancestor)
+
+;; Level 2: Steel is a RECESSIVE form of Iron
+;; (It has extra properties, but yields to Iron in math)
+(def-derived-type steel iron :subst :descendant)
+
+;; Level 3: Valyrian DOMINATES Steel
+(def-derived-type valyrian steel :subst :ancestor)
+
+;; I -> R 
+;; I -> S 
+;; V -> S
+
+
+;; This is a COMPILATION ERROR unless explicit casts are used.
+(def-function impossible-forge (v i)
+    (declare #'(valyrian iron => valyrian)) ;; or iron. or anything. 
+    (+ v i)) ;; ERROR: Cannot align types.
+    

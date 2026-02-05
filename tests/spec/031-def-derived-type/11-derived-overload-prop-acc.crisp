@@ -1,0 +1,56 @@
+;; we'll need a validator for the llvm-ir. 
+;; TEST-WITH[--ir-target=llvmir] : validate-derived-accessors
+
+(def-struct point (x int) (y int))
+
+(def-function x~ (p)
+    (declare #'(point => int))
+    (+ 1 (~x~ p)))
+
+(def-derived-type dot point :subst :no)
+
+(def-function x~ (p)
+    (declare #'(dot => int))
+    (+ 10 (~x~ p)))
+
+(def-derived-type conclusion point :subst :equal)
+
+(def-function x~ (p)
+    (declare #'(conclusion => int))
+    (+ 100 (~x~ p)))
+
+(def-derived-type pair point :subst :ancestor)
+
+(def-function x~ (p)
+    (declare #'(pair => int))
+    (+ 1000 (~x~ p)))
+
+(def-derived-type coordinate point :subst :descendant)
+
+(def-function x~ (p)
+    (declare #'(coordinate => int))
+    (+ 10000 (~x~ p)))
+
+(def-type out-c (cell int :address-space :global :access :write-only))
+
+(def-kernel make_a_point (&out result)
+    (declare #'(&out out-c => nil))
+    (let ((p (make-point :x 1 :y 2))
+          (d  (make-dot :x 10 :y 20))
+          (cn (make-conclusion :x 100 :y 200))
+          (pr (make-pair :x 1000 :y 2000))
+          (c   (make-coordinate :x 10000 :y 20000)))
+    #|
+       ;; I think we need a test for r-t-assert first. 
+      (r-t-assert (= (x~ p) (y~ p)))
+      (r-t-assert (= (x~ d) (y~ d)))
+      (r-t-assert (= (x~ cn) (y~ cn)))
+      (r-t-assert (= (x~ pr) (y~ pr)))
+      (r-t-assert (= (x~ c) (y~ c)))
+    |#
+
+      (let ((sum1 (+ (x~ p) (x~ d)))
+            (sum2 (+ (x~ cn) (x~ pr)))
+            (sum3 (+ sum1 sum2)))
+        (set! (~ result) (+ sum3 (x~ c))))))
+          

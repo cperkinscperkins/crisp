@@ -1,0 +1,31 @@
+
+;; TEST-WITH[ir-target=llvmir] : validate-descendant-distance
+;; can this use the same validator as 05-derived-descendant-struct.crisp  ? If not, we'll makea new one.
+
+(def-record point (x int) (y int))
+
+(def-derived-type coordinate point :subst :descendant)
+
+(def-function distance (p1 p2)
+    (declare #'(point point => int))
+    ;; we don't have most math ops yet.
+    (+ (x~ p1) (x~ p2)))
+
+(def-function distance (c1 c2)
+    (declare #'(coordinate coordinate => int))
+    ;; we don't have most math ops yet.
+    (+ 100 (+ (y~ c1) (y~ c2))))
+
+(def-type out-c (cell int :address-space :global :access :write-only))
+
+(def-kernel measure_distance (ax ay bx by &out res-p res-p2 res-c)
+    (declare #'(int int int int &out out-c out-c out-c))
+    (let ((pa (make-point :x ax :y ay))
+          (pb (make-point :x bx :y by))
+          (ca (make-coordinate :x ax :y ay))
+          (cb  (make-coordinate :x bx :y by)))
+       ;; these call the point overload
+      (set! (~ res-p) (distance pa cb))
+      (set! (~ res-p2) (distance ca pb))
+      ;; call teh coordinate overload
+      (set! (~ res-c) (distance ca cb))))

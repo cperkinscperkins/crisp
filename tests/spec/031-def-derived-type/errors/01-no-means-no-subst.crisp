@@ -1,0 +1,23 @@
+;;
+;; CHECK-FAIL: "<meaningful error message here>"
+;;
+
+(def-struct point (x int) (y int))
+
+(def-derived-type coordinate point :subst :no)
+
+;; there is only one distance function defined.  
+;; but coordinate is not substitutable for point.
+(def-function distance (p1 p2)
+    (declare #'(point point => int))
+    ;; we don't have most math ops yet.
+    (+ (x~ p1) (x~ p2)))
+
+
+(def-type out-c (cell int :address-space :global :access :write-only))
+
+(def-kernel measure_distance (ax ay bx by &out res-p)
+    (declare #'(int int int int &out out-c))
+    (let ((p1 (make-point :x ax :y ay))
+          (c2  (make-coordinate :x bx :y by)))
+      (set! (~ res-p) (distance p1 c2))))

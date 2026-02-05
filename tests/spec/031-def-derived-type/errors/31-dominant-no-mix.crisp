@@ -1,0 +1,11 @@
+;;
+;; CHECK-FAIL : "some pleasant error message"
+
+(def-derived-type meters float :ancestor)
+
+(def-derived-type yards float :ancestor)
+
+(def-function miscegeny (m y)
+    (declare #'(meters yards => float))
+    ;; nope. that won't work. compile error.
+    (+ m y))

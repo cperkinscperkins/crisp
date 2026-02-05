@@ -1,0 +1,18 @@
+
+(def-struct point (x int) (y int))
+
+(def-struct vertex-1 (a int) (b int) (c int))
+
+(def-struct vertex-2 (p point) (z int))
+
+(set-derived point vertex-1)
+
+(set-derived point vertex-2)
+
+(def-function sum-point (pt)
+    (declare #'(point => int))
+    (+ (x~ pt) (y~ pt)))
+
+(def-function math-vertices (v1 v2)
+    (declare #'(vertex-1 vertex-2 => int))
+  (+ (sum-point v1) (sum-point v2)))

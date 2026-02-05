@@ -1,0 +1,6 @@
+;; CHECK-FAIL : "message"
+
+
+(def-struct coordinate (x int) (y int))
+
+(set-derived #'+ coordinate) 

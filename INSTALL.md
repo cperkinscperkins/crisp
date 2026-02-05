@@ -20,7 +20,7 @@ Or, simply download https://github.com/cperkinscperkins/crisp/releases/tag/tools
 🚀 Dependencies
 ----------------
 
-Crisp requires **SBCL**
+Building Crisp from source requires **SBCL**
 
 ### 1 Install SBCL
 

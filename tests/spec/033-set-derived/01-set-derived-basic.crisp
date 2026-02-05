@@ -1,0 +1,17 @@
+
+
+(def-struct point (x int) (y int))
+
+(def-struct coordinate (x int) (y int))
+
+(set-derived point coordinate)
+
+(def-function sum-point (pt)
+    (declare #'(point => int))
+    (+ (x~ pt) (y~ pt)))
+
+;; coordinate is now a descendant of point and can be
+;; passed to sum-point
+(def-function calc-something (c)
+    (declare #'(coordinate => int))
+  (sum-point c))

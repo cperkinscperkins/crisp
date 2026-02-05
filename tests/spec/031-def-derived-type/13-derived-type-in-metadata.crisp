@@ -1,0 +1,22 @@
+;;
+;; TEST-WITH[--metadata] : validate-point-in-metdata
+;;
+
+
+;; if a derived type (derived from a struct) is on the kernel boundary
+;; then the struct it derived from needs to be in the metadata, regardless of :subst 
+
+ 
+(def-struct point (x int) (y int))
+
+(def-derived-type coordinate point :subst :ancestor)
+
+(def-type in-c (cell coordinate :address-space :global :access :read-only))
+
+(def-type out-c (cell int :address-space :global :access :write-only))
+
+(def-kernel measure_coordinates (c1 c2 &out result)
+    (declare #'(in-c in-c &out out-c))
+    (let ((x1 (x~ (~ c1)))
+          (y2 (y~ (~ c2))))
+      (set! (~ result) (+ x1 y2))))

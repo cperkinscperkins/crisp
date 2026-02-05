@@ -1,0 +1,8 @@
+
+;; CHECK-FAIL : "message"
+
+(def-record point (x int) (y int))
+
+(def-struct coordinate (x int) (y int))
+
+(set-derived point coordinate) ;; error. can't have record either arg
