@@ -27,30 +27,12 @@
 ;;; ==============
 
 (defun initialize-type-hierarchy ()
-  "Initializes the type derivation graph with built-in numeric hierarchies.
-   Must be called after initialize-crisp-types."
+  "Initializes the type derivation graph (starts empty).
+   User-defined derived types will be added via def-derived-type.
+   Built-in numeric types use the existing size-based promotion system."
   (log:info "Initializing type derivation hierarchy")
   (clrhash *type-derivation-graph*)
-
-  ;; Create nodes for all built-in types first
-  ;; Signed integers: char -> short -> int -> long
-  (create-numeric-hierarchy '(char short int long))
-
-  ;; Unsigned integers: uchar -> ushort -> uint -> ulong
-  (create-numeric-hierarchy '(uchar ushort uint ulong))
-
-  ;; Floating point: half -> float -> double (and bfloat16 parallel to half)
-  (create-numeric-hierarchy '(half float double))
-  (create-root-type-node 'bfloat16)  ; Parallel to half, not in main hierarchy
-
-  ;; Other built-in types (no hierarchy relationships)
-  (create-root-type-node 'void)
-  (create-root-type-node 'voidp)
-  (create-root-type-node 'c-pointer)
-  (create-root-type-node 'type-spec)
-
-  (log:info "Type derivation graph initialized with ~a nodes"
-            (hash-table-count *type-derivation-graph*)))
+  (log:info "Type derivation graph initialized (empty - will be populated by def-derived-type)"))
 
 (defun create-root-type-node (type-name)
   "Creates a root type node for a built-in 'real' type with no derivation relationships."
