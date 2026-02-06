@@ -356,8 +356,8 @@ Kernels
 Assault On Pytorch
 ==================
 - [x] def-derived-type 
-- - [ ] validators in 031-def-derived-test not written yet.
-- - [ ] clean up of .ll files 
+- - [x] validators in 031-def-derived-test not written yet.
+- - [x] clean up of .ll and .metacrisp files 
 - - [ ] run-specs.lisp - custom build is broken.  Using --use-binary now?
         can this be fixed? Or should we abandon the custom build?
 - - [ ] 031-def-derived-test/errors/05-equal-does-not-mena-yes is PASSING, but it should be failing.
@@ -365,6 +365,7 @@ Assault On Pytorch
 - - [ ] most error tests in 031-def-derived-test/errors do not have "<meaningful error messages>" yet.
         possibly because we aren't generating such.
 - - [ ] def-derived-type should probably NOT support enums.  add test
+- - [ ] error on existing types. error on existing derived types.
 - - [ ] def-derived-type design doc says no templating. Test? Might have to change that limitation though.
 - - [ ] bool?  
 - [ ] set-derived  
@@ -372,6 +373,7 @@ Assault On Pytorch
       as well general case that.
 - - [ ] metadata decision & test
 - - [ ] hoisting decision & test
+- - [ ] but structs no?  decision and test.
 - [ ] for errors involving the return type, make sure the error message
       very clearly states what return type the compiler thinks it is (if any).
 - [ ] brand & dbrand -- 
