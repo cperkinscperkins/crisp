@@ -1,0 +1,4 @@
+
+;; CHECK-FAIL: "message"
+
+(def-derived-type new float)  ;; no :subst key.  This should be a compilation error. 

@@ -3290,6 +3290,7 @@ Crisp employs "multiple dispatch" for overloaded functions, determined at compil
 ### Limitation: single pass semantics required
 
 - The "original" type that the new type is deriving from MUST exist already. This is a requirement even when compiling multipass.  This prevents "type loops" or "type recursion", which are disallowed.
+- enumerations can not be used as an "original" type.
 
 
 ### make-XXXX

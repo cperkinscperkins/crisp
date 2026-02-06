@@ -26,4 +26,4 @@
        ;; this substitution is fine.
       (set! (~ res-p) (distance p1 c2))
       ;; but this one should be a compile error. 
-      (set! (~ res-c) (haversine c1 p2))))
+      (set! (~ res-c) (haversine p1 c2))))

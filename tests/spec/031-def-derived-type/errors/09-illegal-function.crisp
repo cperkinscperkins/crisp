@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "Cannot derive type ADD-FLOATS from ADD-TWO: original type does not exist"
 
 (def-function add-two (a b)
   (declare #'(float float => float))

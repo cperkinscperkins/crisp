@@ -1,0 +1,6 @@
+
+;; CHECK-FAIL: "message"
+
+(def-derived-type coordinate float :subst :equal)
+
+(def-derived-type coordinate float :subst :equal)

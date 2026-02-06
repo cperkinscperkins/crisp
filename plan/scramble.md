@@ -358,8 +358,22 @@ Assault On Pytorch
 - [x] def-derived-type 
 - - [x] validators in 031-def-derived-test not written yet.
 - - [x] clean up of .ll and .metacrisp files 
+- - [ ] tests\spec\031-def-derived-type\errors\13-illegal-enum-collision.crisp
+        is PASSING, but probably should not. 
+- - [ ] tests\spec\031-def-derived-type\errors\07-ancestor-not-subst-for-descendant.crisp
+        is PASSING, but definitely should not.
+- - [ ] errors\09- and 10- are FAIL (which they should) but arguably
+        the message could be better, especially for 10-
+- - [ ] what does (def-derived-type A B) with NO :subst key become?
+        It should BE a Compile Error!  
+        Decide Document TEST and Implement  test is 15-
+- - [ ] test 19-duplicate-type.crisp is PASSing but should FAIL.
+
+- - [ ] changed it so that validators can run with --use-binary.  
+        but the exact mechanism is unclear.
 - - [ ] run-specs.lisp - custom build is broken.  Using --use-binary now?
         can this be fixed? Or should we abandon the custom build?
+
 - - [ ] 031-def-derived-test/errors/05-equal-does-not-mena-yes is PASSING, but it should be failing.
         See comment in test. May not be easy to implement.
 - - [ ] most error tests in 031-def-derived-test/errors do not have "<meaningful error messages>" yet.

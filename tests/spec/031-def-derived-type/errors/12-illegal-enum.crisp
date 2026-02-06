@@ -1,0 +1,7 @@
+
+;; CHECK-FAIL: "Cannot derive type SMASH from COLORS: original type does not exist"
+
+(def-enumeration colors :red :blue :brown)
+
+(def-derived-type smash colors)
+

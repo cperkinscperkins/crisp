@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "reasonable error message"
+;; CHECK-FAIL: "Type mismatch for operator '+'. Cannot operate on VALYRIAN and IRON"
 
 ;; Level 0
 (def-type root float) ;; just for clarity

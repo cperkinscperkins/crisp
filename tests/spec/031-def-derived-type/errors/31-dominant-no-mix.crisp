@@ -1,9 +1,9 @@
 ;;
-;; CHECK-FAIL: "some pleasant error message"
+;; CHECK-FAIL: "Type mismatch for operator '+'. Cannot operate on METERS and YARDS"
 
-(def-derived-type meters float :ancestor)
+(def-derived-type meters float :subst :ancestor)
 
-(def-derived-type yards float :ancestor)
+(def-derived-type yards float :subst :ancestor)
 
 (def-function miscegeny (m y)
     (declare #'(meters yards => float))

@@ -1,0 +1,16 @@
+;; CHECK-FAIL: "message"
+
+(def-enumeration colors :red :blue :brown)
+
+(def-derived-type colors float :subst :descendant)
+
+#|
+(def-function what-is-arg (c)
+    (declare #'(colors => colors))
+    (as-float 1.0))
+
+|#
+
+(def-function what-is-arg (c)
+    (declare #'(colors => colors))
+    c)
