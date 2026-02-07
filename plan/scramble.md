@@ -369,7 +369,7 @@ Assault On Pytorch
         Decide Document TEST and Implement  test is 15-
 - - [ ] test 19-duplicate-type.crisp is PASSing but should FAIL.
 
-- - [ ] changed it so that validators can run with --use-binary.  
+- - [x] changed it so that validators can run with --use-binary.  
         but the exact mechanism is unclear.
 - - [ ] run-specs.lisp - custom build is broken.  Using --use-binary now?
         can this be fixed? Or should we abandon the custom build?
@@ -378,10 +378,11 @@ Assault On Pytorch
         See comment in test. May not be easy to implement.
 - - [ ] most error tests in 031-def-derived-test/errors do not have "<meaningful error messages>" yet.
         possibly because we aren't generating such.
-- - [ ] def-derived-type should probably NOT support enums.  add test
-- - [ ] error on existing types. error on existing derived types.
+- - [x] def-derived-type should probably NOT support enums.  add test
+- - [x] error on existing types. error on existing derived types.
 - - [ ] def-derived-type design doc says no templating. Test? Might have to change that limitation though.
 - - [ ] bool?  
+- - [ ] OVERLAY for spec-runner.  HANDLE!!!
 - [ ] set-derived  
 - [ ] def-record SHOULD be supportable at kernel boundary. We already do it for cell, might 
       as well general case that.

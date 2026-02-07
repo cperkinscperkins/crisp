@@ -115,8 +115,52 @@
          nil)))))
 
 
-;; tests/run-specs.lisp - run-single-spec-pass
-;; Pass validator to binary mode functions
+
+
+;; tests/run-specs.lisp - compile-crisp-file-to-spirv
+;; FIX: Set *package* to :crisp-language when reading forms, matching the binary compiler
+;; This ensures kernel names are interned in the same package as when they're registered
+(defun compile-crisp-file-to-spirv (filepath &key (emit-metadata nil))
+  "Compiles a .crisp file to .spv and returns the output path and metadata paths if successful."
+  (let ((out-path (make-pathname :type "spv" :defaults filepath))
+        (meta-base-path (make-pathname :type "metacrisp" :defaults filepath))
+        (meta-paths nil)
+        (*standard-output* (make-broadcast-stream)))
+    (when (probe-file out-path) (delete-file out-path))
+
+    (let (;; Use a FRESH environment for each spec to ensure isolation
+          (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
+          (forms (progn
+                  ;; Initialize for SPIR-V
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
+                  ;; FIX: Set *package* to :crisp-language to match binary compiler behavior
+                  (let ((*package* (find-package :crisp-language)))
+                    (with-open-file (stream filepath)
+                      (loop for form = (read stream nil :eof)
+                            until (eq form :eof)
+                            collect form))))))
+      (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filepath)))
+             (builder (crisp.llvm-bindings:llvm-create-builder)))
+        (unwind-protect
+            (progn
+             (let ((crisp.compiler:*target-backend* :spirv)
+                   (crisp.compiler::*emit-metadata* emit-metadata))
+               (crisp.compiler:compile-module forms module builder nil nil nil)
+               (crisp.compiler:compile-to-spirv module out-path)
+
+               (when emit-metadata
+                     (setf meta-paths
+                       (crisp.compiler::generate-metadata-for-file filepath meta-base-path
+                                                                   :output-targets (list (list :spv out-path))
+                                                                   :forms forms))))
+             (crisp.llvm-bindings:llvm-dispose-builder builder)
+             (crisp.llvm-bindings:llvm-dispose-module module)))))
+
+    (if (probe-file out-path)
+        (values out-path meta-paths)
+        nil)))
+
+
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active."
   (let ((*use-binary* (or *use-binary* (member "--use-binary" flags :test #'string=)))
