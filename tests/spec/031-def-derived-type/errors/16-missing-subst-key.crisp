@@ -1,4 +1,4 @@
 
-;; CHECK-FAIL: "odd number of elements in keyword/value list:age"
+;; CHECK-FAIL: "odd number of elements in keyword/value list"
 
 (def-derived-type new float :subst)  ;; no :subst val.  This should be a compilation error. 
