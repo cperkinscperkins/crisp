@@ -380,7 +380,7 @@ Assault On Pytorch
         possibly because we aren't generating such.
 - - [x] def-derived-type should probably NOT support enums.  add test
 - - [x] error on existing types. error on existing derived types.
-- - [ ] def-derived-type design doc says no templating. Test? Might have to change that limitation though.
+- - [ ] def-derived-type design doc says no templating. Test? Might have to change that limitation though.  ( branded types CAN be templated )
 - - [ ] bool?  
 - - [ ] OVERLAY for spec-runner.  HANDLE!!!
 - [ ] set-derived  
