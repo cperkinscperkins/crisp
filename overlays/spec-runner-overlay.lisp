@@ -4,6 +4,5 @@
 ;; without modifying the main script structure, to avoid syntax errors from
 ;; partial file refactoring.
 
-(in-package :cl-user)
-;; Note: most string runner code is in :cl-user or :crisp.spec-runner (if defined)
-;; Check run-specs.lisp for the active package, but usually scripts start in cl-user.
+(in-package :crisp.spec-runner)
+;; Note: The spec runner functions are defined in :crisp.spec-runner package

@@ -430,7 +430,10 @@
                                 (subseq inferred-types 0 num-declared)
                                 inferred-types)))
       (unless (and (>= num-inferred num-declared)
-                   (type-lists-equivalent-p inferred-subset declared-return-types))
+                   ;; Fix for Regression in 30-derived-numeric-types:
+                   ;; Instead of strict equivalence, we check if the inferred type is assignable
+                   ;; to the declared type (e.g. EQ-WEAK is assignable to FLOAT).
+                   (every #'types-assignable-p inferred-subset declared-return-types))
         (error 'crisp-type-error
           :expected declared-return-types
           :inferred inferred-types
@@ -641,7 +644,6 @@
                :form expr
                :source-location location)))))
     res))
-
 
 
 (defun analyze-function-call (op expr env context location)

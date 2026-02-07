@@ -93,13 +93,29 @@
                 (when (and (symbolp type-spec) (string-equal (symbol-name type-spec) "&OUT")))
                 (cond
                  ((symbolp type-spec)
+                   ;; Handle type aliases (def-type)
                    (let ((target (gethash type-spec *crisp-type-aliases*)))
                      (when target
                            (setf (gethash type-spec used-aliases) t)
                            (push target work-list)))
-                   (let ((def (gethash type-spec *crisp-structs*)))
+
+                   ;; Resolve derived types to their base type for struct lookup
+                   ;; This ensures the base struct is included in metadata, not the derived type
+                   (let* ((base-type (get-type-base type-spec))
+                          ;; Package-agnostic struct lookup
+                          (def-direct (gethash base-type *crisp-structs*))
+                          (def-alt (when (and (not def-direct) (symbolp base-type))
+                                     (gethash (intern (symbol-name base-type)
+                                                      (find-package :crisp-language))
+                                              *crisp-structs*)))
+                          (def (or def-direct def-alt))
+                          ;; Use the actual key that was found
+                          (struct-key (if def-direct base-type
+                                        (intern (symbol-name base-type)
+                                                (find-package :crisp-language)))))
                      (when def
-                           (setf (gethash type-spec used-structs) t)
+                           ;; Register the BASE struct, not the derived type
+                           (setf (gethash struct-key used-structs) t)
                            (loop for (name m-type) in (crisp-struct-definition-members def)
                                  do (push m-type work-list)))))
                  ((consp type-spec)

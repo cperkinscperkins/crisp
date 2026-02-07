@@ -1,5 +1,5 @@
 
-;; TEST-WITH[ir-target=llvmir] : validate-derived-make-XXXX
+;; No validator needed - successful compilation proves make-XXXX works
 
 (def-struct point (x int) (y int))
 

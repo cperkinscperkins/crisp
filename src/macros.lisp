@@ -678,6 +678,128 @@
                                    (declare (crisp-system-generated))
                                    (return (%extract-struct-member obj ,idx)))))))))
 
+(defmacro def-derived-type (new-name original-type &key (subst nil subst-p))
+  "Defines a new derived type from an existing type.
+
+   Parameters:
+   - new-name: Symbol for the new type
+   - original-type: Type to derive from (must exist)
+   - :subst: Substitution mode - :no, :equal, :descendant, :ancestor
+
+   Automatically generates:
+   - make-<new-name> constructor (for structural types)
+   - as-<new-name> and as-<original> casting functions
+   - is-<new-name>? type predicate
+   - Property accessors (for struct types) - delegates to base type accessors
+
+   Example:
+     (def-derived-type meters float :subst :ancestor)"
+
+  ;; Validate mandatory subst key
+  (unless subst-p
+    (error "def-derived-type: :subst parameter is mandatory. Please specify :subst (:no, :equal, :descendant, or :ancestor)."))
+
+  ;; Validate at macro-expansion time
+  (unless (member subst '(:no :equal :descendant :ancestor))
+    (error "def-derived-type: :subst must be :no, :equal, :descendant, or :ancestor, got ~a" subst))
+
+  ;; Note: We do NOT register at macro-expansion time explicitly anymore, because
+  ;; doing so + the eval-when below causes double-registration which triggers
+  ;; the "type already exists" error for valid code. The eval-when :compile-toplevel
+  ;; handles registration during compilation.
+  ;; (register-derived-type new-name original-type subst)
+
+  (cl:let* ((pkg (symbol-package new-name))
+            (make-name (intern (format nil "MAKE-~a" new-name) (symbol-package new-name)))
+            (as-new-name (intern (format nil "AS-~a" new-name) (symbol-package new-name)))
+            (as-orig-name (intern (format nil "AS-~a" original-type) (symbol-package new-name)))
+            (is-new-name (intern (format nil "IS-~a?" new-name) (symbol-package new-name)))
+            ;; Determine base type for struct lookup - try both original-type and computed base
+            (base-type (compute-base-type original-type))
+            ;; Package-agnostic struct lookup (records and structs both in *crisp-structs*)
+            ;; Try: 1) base-type directly, 2) original-type directly,
+            ;;      3) base-type in :crisp-language, 4) original-type in :crisp-language
+            (struct-def (or (gethash base-type *crisp-structs*)
+                            (gethash original-type *crisp-structs*)
+                            (when (symbolp base-type)
+                                  (gethash (intern (symbol-name base-type)
+                                                   (find-package :crisp-language))
+                                           *crisp-structs*))
+                            (when (and (symbolp original-type)
+                                       (not (eq original-type base-type)))
+                                  (gethash (intern (symbol-name original-type)
+                                                   (find-package :crisp-language))
+                                           *crisp-structs*)))))
+
+    `(progn
+      ;; Register at load time too
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (register-derived-type ',new-name ',original-type ',subst))
+
+      ;; Generate make-XXXX constructor (only for structural types)
+      ;; For scalars, skip this - users will use as-XXXX instead
+      ,@(when struct-def
+              (cl:let ((orig-make-name (intern (format nil "MAKE-~a" original-type)
+                                               (symbol-package original-type))))
+                `((defmacro ,make-name (&rest args)
+                    "Constructor for derived type - delegates to base type constructor."
+                    `(,',as-new-name (,',orig-make-name ,@args))))))
+
+      ;; Generate property accessors for struct types
+      ;; Each accessor accepts the derived type and extracts the member directly
+      ,@(when struct-def
+              (cl:let ((runtime-index 0)
+                       (members (crisp-struct-definition-members struct-def))
+                       (forms '()))
+                (dolist (member-spec members)
+                  (cl:let* ((member-name (first member-spec))
+                            (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
+                            (value (when is-ct (fourth member-spec)))
+                            (accessor-name (intern (format nil "~a~~" member-name) pkg))
+                            (raw-accessor-name (intern (format nil "~~~a~~" member-name) pkg)))
+                    (cl:cond
+                      ;; Compile-time member with value -> constant accessor macro
+                      ((and is-ct value)
+                       (push `(defmacro ,accessor-name (obj)
+                                (declare (ignore obj))
+                                '',value)
+                             forms))
+
+                      ;; Compile-time member without value -> skip
+                      (is-ct nil)
+
+                      ;; Runtime member -> generate accessor function
+                      (t
+                       (cl:let ((idx runtime-index))
+                         (push `(def-function ,accessor-name ((obj ,new-name))
+                                              (return (%extract-struct-member obj ,idx)))
+                               forms)
+                         (push `(def-function ,raw-accessor-name ((obj ,new-name))
+                                              (declare (crisp-system-generated))
+                                              (return (%extract-struct-member obj ,idx)))
+                               forms)
+                         (incf runtime-index))))))
+                (nreverse forms)))
+
+      ;; Register as-<new-name> expression analyzer for casting
+      ;; This allows (as-coordinate ...) to work like (as-int ...)
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (setf (gethash ',as-new-name *expression-analyzers*)
+          #'analyze-cast-expression)
+        (log:debug "Registered expression analyzer for ~a" ',as-new-name))
+
+      ;; Also register as-<original> for reverse casting
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (setf (gethash ',as-orig-name *expression-analyzers*)
+          #'analyze-cast-expression)
+        (log:debug "Registered expression analyzer for ~a" ',as-orig-name))
+
+      ;; Generate is-<new-name>? predicate
+      (defun ,is-new-name (type-spec)
+        ,(format nil "Returns T if TYPE-SPEC is exactly type ~a (does not accept substitutions)" new-name)
+        (or (eq type-spec ',new-name)
+            (and (consp type-spec) (eq (first type-spec) ',new-name)))))))
+
 (defmacro def-setter (name args &body body)
   "Defines a setter function (which is just a def-function but semantically intended for use with set!).
    The return type is determined by the body."

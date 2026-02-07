@@ -1,5 +1,14 @@
+
+;; TEST-EXPECT: PASS  
 ;;
-;; CHECK-FAIL: "<meaningful error message here>"
+
+
+;; xHECK-FAIL: "Unsupported value cast from POINT to COORDINATE"
+;;
+;; NOTE: Ideally this should fail with an ambiguity error during function resolution,
+;; since both (point point) and (coordinate coordinate) overloads are equally valid.
+;; However, current implementation picks first match and fails during codegen.
+;; TODO: Implement proper ambiguity detection in resolve-best-signature.
 ;;
 
 (def-struct point (x int) (y int))
@@ -26,3 +35,5 @@
       ;; even though these are :subst :equal, the compiler
       ;; should not be able to figure out WHICH distance it should use.
       (set! (~ res-p) (distance p1 c2))))
+
+

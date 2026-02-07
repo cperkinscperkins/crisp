@@ -1,0 +1,6 @@
+
+;; CHECK-FAIL: "type already exists with DIFFERENT definition"
+
+(def-derived-type coordinate float :subst :equal)
+
+(def-derived-type coordinate int :subst :equal)

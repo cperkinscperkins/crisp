@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL : "stern, but reasonable, error message"
+;; CHECK-FAIL: "Cannot derive type COORDINATE from POINT: original type does not exist (single-pass semantics violation)"
 
 
 ;; original type MUST exist BEFORE derived type declaration

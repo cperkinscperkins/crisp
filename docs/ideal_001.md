@@ -3221,7 +3221,7 @@ Derived Types
 ```lisp
 (def-enumeration derived-subst :no :equal :descendant :ancestor)
 
-(def-derived-type <new-name> <type-expr> &key (subst :no))
+(def-derived-type <new-name> <type-expr> &key subst)
 
 ```
 
@@ -3290,6 +3290,7 @@ Crisp employs "multiple dispatch" for overloaded functions, determined at compil
 ### Limitation: single pass semantics required
 
 - The "original" type that the new type is deriving from MUST exist already. This is a requirement even when compiling multipass.  This prevents "type loops" or "type recursion", which are disallowed.
+- enumerations can not be used as an "original" type.
 
 
 ### make-XXXX
@@ -3425,6 +3426,69 @@ As mentioned, the two structs must have compatible shape WHEN FLATTENED. This is
 (set-derived point vertex-nest) ;; alternately, we could have done (set-derived vertex-flat vertex-nest)
 ```
  
+
+
+### Branded Types
+
+Using `def-derived-type` and `:ancestor` it is possible to create two types (for example `meters` and `yards`) that are both essentially `float` and can interoperate with `float`s but cannot interoperate with one another. You can't accidentally add or multiply `meters` and `yards` 
+because the type system disallows it. 
+
+"Branded" types let us apply that same safety concept but to individual instances of structs or records. Let us imagine some sort of array struct type was defined. It could elect to have a branded index type, and then "index of A-arr" would be different than "index of B-arr" even though A-arr and B-arr were both the same type of array struct. 
+
+Branded types support the `:subst` key just like `def-derived-type`.  This mean that how, exactly, these types can and cannot interoperate with each other and with other types is yours to decide.
+
+#### brand
+```
+(brand <new-name> <type-expr> &key subst (enforce :diff))
+```
+
+`brand` is nearly identical to `def-derived-type`. 
+
+- `brand` is only usable inside the scope of a `def-struct` or `def-record`. It cannot be used elsewhere.
+- `:subst` is a required key and cannot be omitted.
+- like `def-derived-type` the `<new-name>` cannot collide with any existing type
+  or derived type names (or type functions). BUT it CAN collide with other branded derived type names. This allows `index-t` to act as a generic type constructor. A function can accept `(index-t x)` and work on ANY struct that defines an `index-t` brand.
+- `:enforce` is optional. It can be set to `:always` or `:diff`.  It defaults to `:diff` (see below)
+- enumeration types cannot be branded
+- `:c-t` (compile time) properties cannot use branded types
+
+The new type that `brand` creates is a type function that accepts an argument of the type of the parent struct/record, and that returns the qualified "branded" type.
+
+`:enforce :always` means the branded type is always generated and enforced.
+`:enforce :diff` (the default) means the branded type is only generated when generating kernel derivatives (ie when using the `--differentiate` flag). Other times, it just falls back to the original type.  
+
+
+```
+(def-struct someStruct
+  (brand index-t ulong :subst :equal :enforce :always)
+  (length index-t)
+  (cur-idx index-t)
+  ...)
+
+(def-function find-location (S match)
+  (declare #'(someStruct something => (index-t S)))
+  (let ((len (length~ S)))
+  ...)
+```
+
+In the example above, we see that `index-t` is declared as a derived type inside `someStruct`. 
+`someStruct` then proceeds to use that type for the declaration of two of its properties (`length` and `cur-idx`).  `find-location` declares its return type to be an "index-t of S" with the `(index- S)` form.  It binds `len` to `(length~ S)` which means `len` is also of type "index-t of S".
+
+
+### What's with all this derived and branded types? Who is this for?
+
+If you come to Crisp from a CUDA, C++, or OpenCL background then much of this derived type stuff 
+probably seems foreign and unusual to you. Crisp types are organized in a DAG, not a tree. The 
+`meters` not adding with `yards` is cool, but maybe you've never needed it in the past.
+And branded types aren't on the menu at any of your regular feeding establishments. 
+
+It's a lot of rigaamarole and you probably don't ever intend to use it. Why did anyone even 
+trouble to do this?
+
+The short answer is AI workloads. AI workloads need differentiable kernels to fit and adjust training data. Crisp provides auto differentiation with the `--differentiate` flag, and to support
+that Crisp needs branded types, which need derived types. And in the Lisp philosophy, 
+if something is useful to the compiler, then it is likely useful to the language users. And thus
+it has been exposed to all Crisp users. The author hope it serves at least one of you well.
 
 <!--
 
@@ -11044,6 +11108,19 @@ in-file precision election. See the section on [Math Precision](#precision) abov
 
 Also, there is a `--force-math-precision` flag that can override, but its use is discouraged.
 It is intended for testing and validation and shouldn't be used generally.
+
+### Math Flags: `--denormal-handling`
+Subnormal numbers (floats very very close to 0) sometimes have a 10x or 100x speed penalty for proper handling with floats when abiding by the IEEE standard.
+
+If you need IEEE precision but don't want the trouble of subnormals, use the `--denormal-handling` flag.  This flag effects any block of Crisp code that is being compiled with IEEE precision. It has no effect on blocks of code marked as `fast`, regardless of its value. 
+
+If unset, the default is `ieee`. 
+
+When set to `flush` then subnormals are "flushed to 0"
+
+`--denormal-handling [ieee | flush]`
+Default: Linked to the precision mode (i.e., precision: `fast` implies `flush`, precision: `ieee` implies `ieee`).
+Override: A user can run `--math-precision ieee --denormal-handling flush`.
 
 
 Fast Compilation

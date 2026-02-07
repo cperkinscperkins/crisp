@@ -6,33 +6,47 @@
 ;;; =========================================================
 
 (defun get-promoted-type (type-a-name type-b-name)
-  "Determines result type of binary operation with alias resolution."
+  "Determines result type of binary operation with alias resolution.
+   Now uses type derivation hierarchy (DAG) for promotion rules."
   (cl:let ((type-a-name (resolve-type-alias type-a-name))
            (type-b-name (resolve-type-alias type-b-name)))
     (if (eq type-a-name type-b-name)
         type-a-name
-        (let ((type-a (gethash type-a-name *crisp-types*))
-              (type-b (gethash type-b-name *crisp-types*)))
-          (cond
-           ((or (null type-a) (null type-b)) nil)
-           ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
-                 (> (crisp-type-size type-b) (crisp-type-size type-a)))
-             type-b-name)
-           ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
-                 (> (crisp-type-size type-a) (crisp-type-size type-b)))
-             type-a-name)
-           ((and (member (crisp-type-category type-a) '(:signed-int :unsigned-int))
-                 (eq (crisp-type-category type-b) :float))
-             type-b-name)
-           ((and (member (crisp-type-category type-b) '(:signed-int :unsigned-int))
-                 (eq (crisp-type-category type-a) :float))
-             type-a-name)
-           (t nil))))))
+        ;; Try DAG-based dominance resolution first
+        (cl:let ((dominant-type (resolve-dominance type-a-name type-b-name)))
+          (log:debug "get-promoted-type: ~a + ~a => dominant=~a" type-a-name type-b-name dominant-type)
+          (if dominant-type
+              dominant-type
+              ;; Fall back to category + size promotion for types not in hierarchy
+              (let ((type-a (gethash type-a-name *crisp-types*))
+                    (type-b (gethash type-b-name *crisp-types*)))
+                (cond
+                 ((or (null type-a) (null type-b)) nil)
+                 ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
+                       (> (crisp-type-size type-b) (crisp-type-size type-a)))
+                   type-b-name)
+                 ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
+                       (> (crisp-type-size type-a) (crisp-type-size type-b)))
+                   type-a-name)
+                 ((and (member (crisp-type-category type-a) '(:signed-int :unsigned-int))
+                       (eq (crisp-type-category type-b) :float))
+                   type-b-name)
+                 ((and (member (crisp-type-category type-b) '(:signed-int :unsigned-int))
+                       (eq (crisp-type-category type-a) :float))
+                   type-a-name)
+                 (t nil))))))))
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."
   (log:debug "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
   (or (types-equivalent-p arg-type param-type)
+
+      ;; Derived type substitutability check
+      ;; If arg-type can substitute for param-type in the derivation hierarchy
+      (and (symbolp arg-type)
+           (symbolp param-type)
+           (is-substitutable-for? arg-type param-type))
+
       ;; Keyword Literal -> Keyword Symbol
       ;; Value: (keyword :foo) or (:keyword :foo), Param: keyword
       (and (consp arg-type)
@@ -92,10 +106,21 @@
       (log:debug "DUMP KEYS: ~s" (loop for k being the hash-keys of *function-table*
                                          when (string-equal (symbol-name k) (symbol-name op))
                                        collect (format nil "~s (~a)" k (package-name (symbol-package k))))))
+
+    ;; Prefer exact match over substitutable match
+    ;; First, try to find exact match (all types equivalent)
     (setf signature (find-if (lambda (sig)
-                               (let ((match (types-list-compatible-p explicit-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig)))))
-                                 match))
+                               (let ((param-types (mapcar #'parameter-def-type (function-signature-parameters sig))))
+                                 (and (= (length explicit-arg-types) (length param-types))
+                                      (every #'types-equivalent-p explicit-arg-types param-types))))
                         signatures))
+
+    ;; If no exact match, find compatible match (including substitutability)
+    (unless signature
+      (setf signature (find-if (lambda (sig)
+                                 (types-list-compatible-p explicit-arg-types
+                                                         (mapcar #'parameter-def-type (function-signature-parameters sig))))
+                          signatures)))
 
     (unless signature
       (log:debug "NO SIGNATURE FOUND IMMEDIATELY. TRYING INSTANTIATION.")

@@ -1,5 +1,5 @@
 
-;; TEST-WITH[ir-target=llvmir] : validate-descendant-distance
+;; TEST-WITH[--ir-target=llvmir] : validate-descendant-distance
 
 (def-struct point (x int) (y int))
 

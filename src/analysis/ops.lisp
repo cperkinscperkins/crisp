@@ -117,8 +117,8 @@
          (arg-form (second expr))
          (target-type-name
           (cond
-           ((alexandria:starts-with-subseq "TO-" op-name) (intern (subseq op-name 3)))
-           ((alexandria:starts-with-subseq "AS-" op-name) (intern (subseq op-name 3)))
+           ((alexandria:starts-with-subseq "TO-" op-name) (intern (subseq op-name 3) (symbol-package op)))
+           ((alexandria:starts-with-subseq "AS-" op-name) (intern (subseq op-name 3) (symbol-package op)))
            ;; For floor, ceil, etc., the target is always 'int' for now.
            ((member op '(floor ceil round)) 'int)
            (t (error "Internal compiler error: analyze-cast-expression called with invalid operator ~a" op))))

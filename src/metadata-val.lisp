@@ -325,3 +325,129 @@
 (defun validate-return-7-ir (ir-path) (validate-kernel-name-exact-ir ir-path "return_7"))
 (defun validate-cell-add-i-ir (ir-path) (validate-kernel-name-exact-ir ir-path "cell_add_i"))
 (defun validate-cell-add-f-ir (ir-path) (validate-kernel-name-exact-ir ir-path "cell_add_f"))
+
+;;; ============================================================================
+;;; Derived Type Validators (031-def-derived-type tests)
+;;; ============================================================================
+
+(defun validate-no-subst-overloads (ir-path)
+  "Validates that both distance_point_point and distance_coordinate_coordinate
+   are defined and called in the IR. Used for :subst :no tests where explicit
+   as-point/as-coordinate casts are required."
+  (cl:unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-no-subst-overloads nil))
+  (let ((ir-content (uiop:read-file-string ir-path)))
+    ;; Check both overloads are defined
+    (cl:unless (search "define i32 @distance_point_point(" ir-content)
+      (log:error "distance_point_point function not defined")
+      (return-from validate-no-subst-overloads nil))
+    (cl:unless (search "define i32 @distance_coordinate_coordinate(" ir-content)
+      (log:error "distance_coordinate_coordinate function not defined")
+      (return-from validate-no-subst-overloads nil))
+    ;; Check both overloads are called
+    (cl:unless (search "call i32 @distance_point_point(" ir-content)
+      (log:error "distance_point_point not called")
+      (return-from validate-no-subst-overloads nil))
+    (cl:unless (search "call i32 @distance_coordinate_coordinate(" ir-content)
+      (log:error "distance_coordinate_coordinate not called")
+      (return-from validate-no-subst-overloads nil))
+    (log:info "Both distance overloads defined and called correctly")
+    t))
+
+(defun count-substring (needle haystack)
+  "Count occurrences of NEEDLE in HAYSTACK. Returns integer count."
+  (declare (type string needle haystack))
+  (the integer
+       (loop with pos of-type (or null fixnum) = 0
+             with count of-type fixnum = 0
+             while (setf pos (search needle haystack :start2 (the fixnum pos)))
+             do (incf count) (incf pos)
+             finally (cl:return count))))
+
+(defun validate-descendant-distance (ir-path)
+  "Validates descendant substitution: coordinate can substitute for point.
+   Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x."
+  (cl:unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-descendant-distance nil))
+  (let* ((ir-content (uiop:read-file-string ir-path))
+         (point-calls (count-substring "call i32 @distance_point_point(" ir-content))
+         (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" ir-content)))
+    (cl:unless (= point-calls 2)
+      (log:error "Expected 2 calls to distance_point_point, got ~a" point-calls)
+      (return-from validate-descendant-distance nil))
+    (cl:unless (= coord-calls 1)
+      (log:error "Expected 1 call to distance_coordinate_coordinate, got ~a" coord-calls)
+      (return-from validate-descendant-distance nil))
+    (log:info "Descendant substitution validated: point overload called 2x, coordinate 1x")
+    t))
+
+(defun validate-ancestor-distance (ir-path)
+  "Validates ancestor substitution: point can substitute for coordinate.
+   Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x."
+  (cl:unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-ancestor-distance nil))
+  (let* ((ir-content (uiop:read-file-string ir-path))
+         (point-calls (count-substring "call i32 @distance_point_point(" ir-content))
+         (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" ir-content)))
+    (cl:unless (= coord-calls 2)
+      (log:error "Expected 2 calls to distance_coordinate_coordinate, got ~a" coord-calls)
+      (return-from validate-ancestor-distance nil))
+    (cl:unless (= point-calls 1)
+      (log:error "Expected 1 call to distance_point_point, got ~a" point-calls)
+      (return-from validate-ancestor-distance nil))
+    (log:info "Ancestor substitution validated: coordinate overload called 2x, point 1x")
+    t))
+
+(defun validate-derived-accessors (ir-path)
+  "Validates that all five x~ accessor overloads are defined and called:
+   x__point, x__dot, x__conclusion, x__pair, x__coordinate."
+  (cl:unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-derived-accessors nil))
+  (let ((ir-content (uiop:read-file-string ir-path))
+        (accessors '("x__point" "x__dot" "x__conclusion" "x__pair" "x__coordinate")))
+    ;; Check each accessor is defined and called
+    (dolist (acc accessors)
+      (let ((define-pattern (format nil "define i32 @~a(" acc))
+            (call-pattern (format nil "call i32 @~a(" acc)))
+        (cl:unless (search define-pattern ir-content)
+          (log:error "Accessor ~a not defined" acc)
+          (return-from validate-derived-accessors nil))
+        (cl:unless (search call-pattern ir-content)
+          (log:error "Accessor ~a not called" acc)
+          (return-from validate-derived-accessors nil))))
+    (log:info "All 5 derived type accessors defined and called correctly")
+    t))
+
+;;; ============================================================================
+;;; Derived Type Metadata Validators
+;;; ============================================================================
+
+(defun validate-point-in-metadata (metadata-path)
+  "Validates that the base struct 'point' appears in metadata when a derived
+   type is used on a kernel boundary. Also verifies derived type names like
+   'coordinate', 'dot', 'conclusion' are NOT listed as separate structs."
+  (cl:unless (probe-file metadata-path)
+    (log:error "Metadata file not found: ~a" metadata-path)
+    (return-from validate-point-in-metadata nil))
+  (let ((content (uiop:read-file-string metadata-path)))
+    ;; Check that POINT struct is defined in metadata
+    (cl:unless (cl-ppcre:scan "(?i)\\(def-struct\\s+point\\s" content)
+      (log:error "Base struct POINT not found in metadata")
+      (return-from validate-point-in-metadata nil))
+    ;; Verify derived types are NOT listed as separate structs
+    ;; (They share the same underlying structure as their base)
+    (cl:when (cl-ppcre:scan "(?i)\\(def-struct\\s+coordinate\\s" content)
+      (log:error "Derived type COORDINATE should not appear as separate struct in metadata")
+      (return-from validate-point-in-metadata nil))
+    (cl:when (cl-ppcre:scan "(?i)\\(def-struct\\s+dot\\s" content)
+      (log:error "Derived type DOT should not appear as separate struct in metadata")
+      (return-from validate-point-in-metadata nil))
+    (cl:when (cl-ppcre:scan "(?i)\\(def-struct\\s+conclusion\\s" content)
+      (log:error "Derived type CONCLUSION should not appear as separate struct in metadata")
+      (return-from validate-point-in-metadata nil))
+    (log:info "Metadata correctly contains base struct POINT without derived types")
+    t))

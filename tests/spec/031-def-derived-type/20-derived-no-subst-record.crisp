@@ -1,5 +1,5 @@
 
-;; TEST-WITH[ir-target=llvmir] : validate-no-subst-overloads
+;; TEST-WITH[--ir-target=llvmir] : validate-no-subst-overloads
 ;; can this use the same validator as 01-derived-no-subst-struct.crisp? If not, we'll make a new one.
 
 

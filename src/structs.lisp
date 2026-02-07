@@ -249,6 +249,24 @@
 
     (values (nreverse expanded-members) current-offset)))
 
+(defun lookup-struct-definition (type-name)
+  "Looks up a struct definition, handling derived types and package issues.
+   Returns the struct definition or NIL if not found.
+
+   This function:
+   1. Resolves derived types to their base type using get-type-base
+   2. Tries package-agnostic lookup (current package, then :crisp-language)
+   3. Works for both structs and records (both stored in *crisp-structs*)"
+  (let* ((base-type (get-type-base type-name))
+         ;; Try direct lookup with base type
+         (def-direct (gethash base-type *crisp-structs*))
+         ;; Try package-agnostic lookup if needed
+         (def-alt (when (and (not def-direct) (symbolp base-type))
+                    (gethash (intern (symbol-name base-type)
+                                     (find-package :crisp-language))
+                             *crisp-structs*))))
+    (or def-direct def-alt)))
+
 (defun register-struct-definition (name members &optional (category :struct))
   "Registers a struct or record definition in the global registry."
   (cl:let ((name (if (consp name)

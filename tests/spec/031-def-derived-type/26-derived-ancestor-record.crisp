@@ -1,5 +1,5 @@
 
-;; TEST-WITH[ir-target=llvmir] : validate-ancestor-distance
+;; TEST-WITH[--ir-target=llvmir] : validate-ancestor-distance
 ;; can this use the same validator as 07-derived-ancestor-struct.crisp ? if not, we'll make our ouwn.
 
 (def-record point (x int) (y int))

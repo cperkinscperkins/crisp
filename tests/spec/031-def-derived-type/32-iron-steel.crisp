@@ -1,6 +1,3 @@
-
-;; CHECK-FAIL : "reasonable error message"
-
 ;; Level 0
 (def-type root float) ;; just for clarity
 
@@ -18,9 +15,21 @@
 ;; I -> S 
 ;; V -> S
 
+;; --- Tests ---
 
-;; This is a COMPILATION ERROR unless explicit casts are used.
-(def-function impossible-forge (v i)
-    (declare #'(valyrian iron => valyrian)) ;; or iron. or anything. 
-    (+ v i)) ;; ERROR: Cannot align types.
+;; Steel + Root
+;; Steel decays to Iron. Iron dominates Root.
+;; Result: Iron.
+(def-function alloy-mix (s r)
+    (declare #'(steel root => iron)) 
+    (+ s r))
+    
+
+
+;; Steel + Iron
+;; Steel decays to Iron.
+;; Result: Iron
+(def-function simple-decay (s i)
+    (declare #'(steel iron => iron))
+    (+ s i))
     

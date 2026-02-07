@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL: "<meaningful error message here>"
+;; CHECK-FAIL: "No matching function overload found for 'DISTANCE'"
 ;;
 
 (def-struct point (x int) (y int))

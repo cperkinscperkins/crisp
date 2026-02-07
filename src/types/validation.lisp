@@ -286,6 +286,8 @@
       ((gethash type-spec *crisp-structs*) t)
       ((gethash type-spec *crisp-enums*) t)
       ((gethash type-spec *function-table*) t)
+      ;; Check derived types
+      ((gethash type-spec *type-derivation-graph*) t)
       ;; Check aliases (Fix for regression)
       ((gethash type-spec *crisp-type-aliases*) t)
       ;; Should we check pending definitions? Yes.
@@ -453,6 +455,28 @@
       (cl:error "Infinite recursion detected in resolve-type-to-llvm for ~s" type-spec))
 
     (cl:cond
+      ;; Derived Type - resolve to base type (MUST come before *crisp-types* check)
+      ;; Only match if it's ACTUALLY a derived type (has an original-type), not a base type node
+      ;; Handle package mismatches by trying both current package and CRISP-LANGUAGE
+      ((cl:and (cl:symbolp type-spec)
+               (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
+                         (node-alt (when (not node-direct)
+                                     (cl:gethash (cl:intern (cl:symbol-name type-spec)
+                                                            (cl:find-package :crisp-language))
+                                                 *type-derivation-graph*)))
+                         (node (or node-direct node-alt)))
+                 (and node (type-node-original-type node))))
+       (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
+                 (node-alt (when (not node-direct)
+                             (cl:gethash (cl:intern (cl:symbol-name type-spec)
+                                                    (cl:find-package :crisp-language))
+                                         *type-derivation-graph*)))
+                 (actual-type (if node-direct type-spec
+                                (cl:intern (cl:symbol-name type-spec)
+                                           (cl:find-package :crisp-language))))
+                 (base-type (get-type-base actual-type)))
+         (resolve-type-to-llvm base-type)))
+
       ;; Built-in Scalar
       ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-types*))
        (cl:funcall (crisp-type-llvm-type-fn (cl:gethash type-spec *crisp-types*))))
