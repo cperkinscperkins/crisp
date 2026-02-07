@@ -100,6 +100,16 @@
     ((eq source-type target-type) t)
     (t (has-ancestor-path? source-type target-type (make-hash-table)))))
 
+(defun types-assignable-p (source-type target-type)
+  "Checks if source-type can be assigned to target-type.
+   This is true if:
+   1. The types feature exact equivalence (types-equivalent-p)
+   2. The source type represents a derived type that is substitutable for the target (is-substitutable-for?)"
+  (or (types-equivalent-p source-type target-type)
+      (and (symbolp source-type)
+           (symbolp target-type)
+           (is-substitutable-for? source-type target-type))))
+
 (defun has-ancestor-path? (from-type to-type visited)
   "Walk UP through ancestors from FROM-TYPE to find TO-TYPE.
    Returns T if path exists, NIL otherwise.

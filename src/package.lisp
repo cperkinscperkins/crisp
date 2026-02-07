@@ -177,6 +177,7 @@
    #:resolve-dominance
    #:get-type-base
    #:register-derived-type
+   #:types-assignable-p ;; <--- NEW
    #:analyze-return-type-from-spec
    #:analyze-environment-from-spec
    #:parse-function-declarations
