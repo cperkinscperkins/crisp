@@ -382,7 +382,7 @@ Assault On Pytorch
 - - [x] error on existing types. error on existing derived types.
 - - [ ] def-derived-type design doc says no templating. Test? Might have to change that limitation though.  ( branded types CAN be templated )
 - - [ ] bool?  
-- - [ ] OVERLAY for spec-runner.  HANDLE!!!
+- - [x] OVERLAY for spec-runner.  HANDLE!!!
 - [ ] set-derived  
 - [ ] def-record SHOULD be supportable at kernel boundary. We already do it for cell, might 
       as well general case that.
@@ -391,8 +391,8 @@ Assault On Pytorch
 - - [ ] but structs no?  decision and test.
 - [ ] for errors involving the return type, make sure the error message
       very clearly states what return type the compiler thinks it is (if any).
-- [ ] brand & dbrand -- 
-- - [ ] requires documentation and decisions before work can begin.
+- [ ] brand -- 
+- - [x] requires documentation and decisions before work can begin.
 - [ ] --differentiate
 - - [ ] ANF transform.
 - - [ ] kernel and function transforms
