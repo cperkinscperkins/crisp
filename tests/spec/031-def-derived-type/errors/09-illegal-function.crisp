@@ -5,4 +5,4 @@
   (declare #'(float float => float))
   (+ a b))
 
-(def-derived-type add-floats add-two) ;; error. 
+(def-derived-type add-floats add-two :subst :equal) ;; error. 

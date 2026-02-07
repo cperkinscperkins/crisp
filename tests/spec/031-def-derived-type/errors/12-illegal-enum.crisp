@@ -3,5 +3,5 @@
 
 (def-enumeration colors :red :blue :brown)
 
-(def-derived-type smash colors)
+(def-derived-type smash colors :subst :equal)
 

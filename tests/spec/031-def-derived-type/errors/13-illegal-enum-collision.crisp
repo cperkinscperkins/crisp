@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "Cannot define derived type COLORS: name collides with existing type/struct/enum."
 
 (def-enumeration colors :red :blue :brown)
 

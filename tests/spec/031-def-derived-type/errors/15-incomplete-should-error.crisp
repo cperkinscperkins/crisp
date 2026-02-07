@@ -1,4 +1,4 @@
 
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "def-derived-type: :subst parameter is mandatory."
 
 (def-derived-type new float)  ;; no :subst key.  This should be a compilation error. 
