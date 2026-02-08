@@ -26,6 +26,12 @@ Curious Things To Know About Crisp
   ```
 - Crisp defaults to "multipass" compilation. But it does support a --single-pass mode as well. When performing --single-pass the .crisp file MUST provide all functions and structs etc in reverse dependency order. Failure to do so is a compilation error.  There is a --single-pass mode for the tests as well.
 
+- Crisp has a user-adjustable type hierarchy for both numeric types and structs and records. 
+  The hierarchy isn't a traditional tree, it's a DAG, where a single type
+  can have both multiple descendants and multiple ancestors.  The "derived type" system is very powerul, allowing users
+  to use the type system to make a type for "meters" and for "yards" (for example) that cannot be in mixed math operations.
+- with `set-derived` the type system can also be used to do  C++ style subclassing between structs.
+
 
 
 # def-struct vs def-record

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-02-05T22:34:10.615202Z
+Generated on 2026-02-08T03:44:58.507482Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1426,7 +1426,7 @@ Generated on 2026-02-05T22:34:10.615202Z
 
 ---
 ### DEFMACRO `DEF-DERIVED-TYPE`
-- **Args**: `(NEW-NAME ORIGINAL-TYPE &KEY (SUBST NO))`
+- **Args**: `(NEW-NAME ORIGINAL-TYPE &KEY (SUBST NIL SUBST-P))`
 
   > Defines a new derived type from an existing type.  >   >    Parameters:  >    - new-name: Symbol for the new type  >    - original-type: Type to derive from (must exist)  >    - :subst: Substitution mode - :no, :equal, :descendant, :ancestor  >   >    Automatically generates:  >    - make-<new-name> constructor (for structural types)  >    - as-<new-name> and as-<original> casting functions  >    - is-<new-name>? type predicate  >    - Property accessors (for struct types) - delegates to base type accessors  >   >    Example:  >      (def-derived-type meters float :subst :ancestor)
 
@@ -1471,6 +1471,13 @@ Generated on 2026-02-05T22:34:10.615202Z
 - **Args**: `(TYPE-ALIAS BYTE-SIZE PTR OFFSET)`
 
   > Marshals raw kernel arguments into a Cell struct.  >    Usage: (marshall-cell out-c byte-size ptr offset)
+
+
+---
+### DEFMACRO `SET-DERIVED`
+- **Args**: `(ANCESTOR-TYPE DESCENDANT-TYPE)`
+
+  > Links two existing struct types in a type hierarchy.  >    The descendant can implicitly pass where the ancestor is expected.  >    Generates as-<ancestor> and as-<descendant> casting functions.  >   >    Syntax: (set-derived ancestor-type descendant-type)  >   >    Requirements:  >    - Both types must be structs (or derived from structs)  >    - Ancestor size <= Descendant size  >    - Shape compatible (flattened data members match in type and byte offset)  >    - No cycles in the type DAG
 
 
 ---
@@ -1703,6 +1710,48 @@ Generated on 2026-02-05T22:34:10.615202Z
 ---
 ### DEFUN `VALIDATE-CELL-ADD-F-IR`
 - **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-NO-SUBST-OVERLOADS`
+- **Args**: `(IR-PATH)`
+
+  > Validates that both distance_point_point and distance_coordinate_coordinate  >    are defined and called in the IR. Used for :subst :no tests where explicit  >    as-point/as-coordinate casts are required.
+
+
+---
+### DEFUN `COUNT-SUBSTRING`
+- **Args**: `(NEEDLE HAYSTACK)`
+
+  > Count occurrences of NEEDLE in HAYSTACK. Returns integer count.
+
+
+---
+### DEFUN `VALIDATE-DESCENDANT-DISTANCE`
+- **Args**: `(IR-PATH)`
+
+  > Validates descendant substitution: coordinate can substitute for point.  >    Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x.
+
+
+---
+### DEFUN `VALIDATE-ANCESTOR-DISTANCE`
+- **Args**: `(IR-PATH)`
+
+  > Validates ancestor substitution: point can substitute for coordinate.  >    Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x.
+
+
+---
+### DEFUN `VALIDATE-DERIVED-ACCESSORS`
+- **Args**: `(IR-PATH)`
+
+  > Validates that all five x~ accessor overloads are defined and called:  >    x__point, x__dot, x__conclusion, x__pair, x__coordinate.
+
+
+---
+### DEFUN `VALIDATE-POINT-IN-METADATA`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates that the base struct 'point' appears in metadata when a derived  >    type is used on a kernel boundary. Also verifies derived type names like  >    'coordinate', 'dot', 'conclusion' are NOT listed as separate structs.
+
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
@@ -2300,7 +2349,14 @@ Generated on 2026-02-05T22:34:10.615202Z
 ### DEFUN `IS-SUBSTITUTABLE-FOR?`
 - **Args**: `(SOURCE-TYPE TARGET-TYPE)`
 
-  > Returns T if SOURCE-TYPE can be used where TARGET-TYPE is expected.  >    This is the fundamental 'Can I put peg A in hole B?' check.  >   >    Algorithm:  >    - If types are equal, return T  >    - Walk UP from source through ancestors to find target  >    - Special case: check if source has target in descendants (:equal relationship)  >    - Handles cycles (from :equal relationships) via visited tracking
+  > Returns T if SOURCE-TYPE can be used where TARGET-TYPE is expected.  >    This is the fundamental 'Can I put peg A in hole B?' check.  >   >    Algorithm:  >    - If types are equal, return T  >    - Walk UP from source through ancestors to find target  >    - Handles cycles (from :equal relationships) via visited tracking
+
+
+---
+### DEFUN `TYPES-ASSIGNABLE-P`
+- **Args**: `(SOURCE-TYPE TARGET-TYPE)`
+
+  > Checks if source-type can be assigned to target-type.  >    This is true if:  >    1. The types feature exact equivalence (types-equivalent-p)  >    2. The source type represents a derived type that is substitutable for the target (is-substitutable-for?)
 
 
 ---
@@ -2350,6 +2406,27 @@ Generated on 2026-02-05T22:34:10.615202Z
 - **Args**: `(NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)`
 
   > Registers a new derived type in the type derivation graph.  >   >    Parameters:  >    - new-type-name: Symbol for the new derived type  >    - original-type-name: Symbol for the type being derived from  >    - subst-mode: One of :no, :equal, :descendant, :ancestor  >   >    Validates:  >    - Original type must exist (in *type-derivation-graph*, *crisp-types*, or *crisp-structs*)  >    - Subst-mode must be valid  >   >    Updates:  >    - Creates new type-node with computed base-type  >    - Updates ancestor/descendant relationships based on subst-mode
+
+
+---
+### DEFUN `REGISTER-SET-DERIVED`
+- **Args**: `(ANCESTOR-TYPE-NAME DESCENDANT-TYPE-NAME)`
+
+  > Registers a set-derived relationship between two existing struct types.  >    The descendant can implicitly substitute for the ancestor (like :descendant subst-mode).  >   >    Parameters:  >    - ancestor-type-name: The 'smaller' or contained type  >    - descendant-type-name: The 'larger' or extension type  >   >    Validates:  >    - Both types must exist  >    - Both must be structs (or derived from structs) -- not records, scalars, functions, or enums  >    - Ancestor size <= Descendant size  >    - Shape compatibility (flattened data members with matching types and byte offsets)  >    - No cycles in the type hierarchy DAG
+
+
+---
+### DEFUN `FLATTEN-STRUCT-DATA-MEMBERS`
+- **Args**: `(STRUCT-DEF)`
+
+  > Recursively flattens a struct definition to its scalar data members.  >    Returns a list of (type byte-offset) pairs, skipping padding fields.  >    Nested structs are expanded recursively.
+
+
+---
+### DEFUN `VALIDATE-SET-DERIVED-SHAPE`
+- **Args**: `(ANCESTOR-STRUCT DESCENDANT-STRUCT ANCESTOR-NAME DESCENDANT-NAME)`
+
+  > Validates shape compatibility for set-derived.  >    Flattens both structs and checks that each ancestor data member has a  >    matching data member in the descendant with the same type and byte offset.
 
 
 ---

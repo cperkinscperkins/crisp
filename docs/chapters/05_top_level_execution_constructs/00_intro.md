@@ -7,5 +7,5 @@ is then inside one of these definitions and cannot appear, unchaperoned, at the 
 Of these "`def-`" expressions, there are three primary ones that serve as execution constructs:
  `def-kernel`, `def-function` and `def-grid-function`.
 
- (* Exceptions: `declaim`, `with-template-type` )
+ (* Exceptions: `declaim`, `with-template-type`, `set-derived` )
 

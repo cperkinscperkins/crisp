@@ -1,4 +1,4 @@
-;; CHECK-FAIL : "message"
+;; CHECK-FAIL: "set-derived: descendant type #'+ does not exist"
 
 
 (def-struct coordinate (x int) (y int))

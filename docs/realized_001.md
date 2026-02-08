@@ -247,7 +247,11 @@ with marshalling.
 
 ### def-kernel and cell.
 
-
+### def-derived-type and set-derived
+This is super exciting. This catapults Crisp into the pantheon of best-GPU-kernel-programming-languages . I mean, sure you can't make any worthwhile kernel
+that can do actual work, but have you ever tried CUTLASS? With Crisp you can have 
+the exact same experience of not having anything working, but the experience is 
+much more pleasant. 
 
 
 Errors

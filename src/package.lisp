@@ -232,6 +232,7 @@
    #:def-struct
    #:def-record
    #:def-derived-type
+   #:set-derived
    #:with-struct-accessors
    #:def-setter
    #:*crisp-structs*
@@ -339,6 +340,7 @@
                 #:when #:unless #:if+ #:when+ #:unless+
                 #:def-struct
                 #:def-derived-type
+                #:set-derived
                 #:def-record
                 #:with-struct-accessors
                 #:def-setter

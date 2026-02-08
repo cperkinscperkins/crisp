@@ -331,7 +331,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - (TYPE-LISTS-EQUIVALENT-P L1 L2)  types/validation.lisp
 - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
 - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
@@ -528,13 +527,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 
-- (DEF-DERIVED-TYPE NEW-NAME ORIGINAL-TYPE &KEY (SUBST NO))  macros.lisp
+- (DEF-DERIVED-TYPE NEW-NAME ORIGINAL-TYPE &KEY (SUBST NIL SUBST-P))  macros.lisp
+- - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
+- - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
 - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
 - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
-- - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
+- - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
 
 - (DEF-ENUMERATION NAME &REST SPECS)  enums.lisp
 
@@ -615,7 +614,24 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (REORDER-TEMPLATE-ARGS-FROM-KEYWORDS ARGS PARAM-NAMES)  templates.lisp
 
+- (SET-DERIVED ANCESTOR-TYPE DESCENDANT-TYPE)  macros.lisp
+- - (REGISTER-SET-DERIVED ANCESTOR-TYPE-NAME DESCENDANT-TYPE-NAME)  types/hierarchy.lisp
+- - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - (VALIDATE-SET-DERIVED-SHAPE ANCESTOR-STRUCT DESCENDANT-STRUCT ANCESTOR-NAME DESCENDANT-NAME)  types/hierarchy.lisp
+- - - - (FLATTEN-STRUCT-DATA-MEMBERS STRUCT-DEF)  types/hierarchy.lisp
+- - - - - (GET-STD140-SIZE TYPE-SPEC)  structs.lisp [See above]
+- - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - (FLATTEN-STRUCT-DATA-MEMBERS STRUCT-DEF)  types/hierarchy.lisp [RECURSION]
+- - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp [See above]
+
 - (TEMPLATE-INSTANTIATION FORM)  templates.lisp
+
+- (TYPE-LISTS-EQUIVALENT-P L1 L2)  types/validation.lisp
+
+- (TYPES-ASSIGNABLE-P SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
+- - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [See above]
+- - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp [See above]
 
 - (VALIDATE-01-ALIASES METADATA-PATH)  metadata.lisp
 - - (VALIDATE-METADATA-DEF-TYPE METADATA-PATH TYPE-NAME TARGET-TYPE)  metadata.lisp
@@ -646,6 +662,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-14-PHYSICAL-SIGNATURE PATHS)  metadata.lisp
 
+- (VALIDATE-ANCESTOR-DISTANCE IR-PATH)  metadata-val.lisp
+- - (COUNT-SUBSTRING NEEDLE HAYSTACK)  metadata-val.lisp
+
 - (VALIDATE-C-STYLE-NAME-IR IR-PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp
 
@@ -667,9 +686,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-DEF-RECORD-EXPLOSION-IR IR-PATH)  metadata-val.lisp
 
+- (VALIDATE-DERIVED-ACCESSORS IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-DESCENDANT-DISTANCE IR-PATH)  metadata-val.lisp
+- - (COUNT-SUBSTRING NEEDLE HAYSTACK)  metadata-val.lisp [See above]
+
 - (VALIDATE-MULTIPLE-SCRATCH-CELLS METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-MY-KERNEL-SCRATCH-IR IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-NO-SUBST-OVERLOADS IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-POINT-IN-METADATA METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-RETURN-7-IR IR-PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp [See above]

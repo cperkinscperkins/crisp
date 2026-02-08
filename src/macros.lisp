@@ -887,3 +887,36 @@
                       :offset ,offset)))
       (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
       result)))
+
+
+
+(defmacro set-derived (ancestor-type descendant-type)
+  "Links two existing struct types in a type hierarchy.
+   The descendant can implicitly pass where the ancestor is expected.
+   Generates as-<ancestor> and as-<descendant> casting functions.
+
+   Syntax: (set-derived ancestor-type descendant-type)
+
+   Requirements:
+   - Both types must be structs (or derived from structs)
+   - Ancestor size <= Descendant size
+   - Shape compatible (flattened data members match in type and byte offset)
+   - No cycles in the type DAG"
+
+  (cl:let* ((pkg (cl:symbol-package ancestor-type))
+            (as-ancestor-name (cl:intern (format nil "AS-~a" ancestor-type) pkg))
+            (as-descendant-name (cl:intern (format nil "AS-~a" descendant-type) pkg)))
+    `(progn
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (register-set-derived ',ancestor-type ',descendant-type))
+
+       ;; Register expression analyzers for casting (if not already present)
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (cl:unless (gethash ',as-ancestor-name *expression-analyzers*)
+           (setf (gethash ',as-ancestor-name *expression-analyzers*)
+             #'analyze-cast-expression)
+           (log:debug "set-derived: registered expression analyzer for ~a" ',as-ancestor-name))
+         (cl:unless (gethash ',as-descendant-name *expression-analyzers*)
+           (setf (gethash ',as-descendant-name *expression-analyzers*)
+             #'analyze-cast-expression)
+           (log:debug "set-derived: registered expression analyzer for ~a" ',as-descendant-name))))))

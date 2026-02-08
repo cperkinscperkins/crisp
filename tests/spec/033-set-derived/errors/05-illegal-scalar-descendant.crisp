@@ -1,4 +1,4 @@
-;; CHECK-FAIL : "message"
+;; CHECK-FAIL: "set-derived: descendant type INT is not a struct. Only structs (or types derived from structs) are permitted"
 
 
 (def-struct coordinate (x int))

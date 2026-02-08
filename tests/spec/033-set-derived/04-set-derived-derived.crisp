@@ -1,10 +1,10 @@
 ;; TEST-WITH[ir-target=llvmir] : validate-correct-overload-set-derived-derived
 
-(def-struct point (x 0) (y 0))
+(def-struct point (x int) (y int))
 
 (def-derived-type coordinate point :subst :descendant)
 
-(def-struct vertex (a 0) (b 0) (c 0))
+(def-struct vertex (a int) (b int) (c int))
 
 (set-derived coordinate vertex)
 
@@ -17,5 +17,6 @@
     (+ (x~ c) (y~ c)))
 
 (def-function do-math (c v)
-    (declare #'(coordinate vertex))
+    (declare #'(coordinate vertex => int))
     (+ (sum-point c) (sum-point v)))
+    
