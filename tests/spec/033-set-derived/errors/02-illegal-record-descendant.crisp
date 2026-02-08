@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL : "message"
+;; CHECK-FAIL: "set-derived: descendant type POINT is a record. set-derived only works with structs"
 
 (def-record point (x int) (y int))
 

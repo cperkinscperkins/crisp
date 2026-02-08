@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "set-derived: layout mismatch at member index 2. Ancestor VERTEX-1 has offset 4 but descendant VERTEX-2 has offset 16 (std140 alignment difference)"
 
 (def-struct point (x short) (y short))
 

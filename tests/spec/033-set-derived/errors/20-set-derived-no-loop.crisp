@@ -1,4 +1,4 @@
-;; CHECK-FAIL : "hostile, vaguely threatening error message"
+;; CHECK-FAIL : "set-derived: adding VERTEX -> POINT would create a cycle in the type hierarchy. The compiler disapproves of your circular reasoning"
 
 (def-struct point (x int) (y int))
 

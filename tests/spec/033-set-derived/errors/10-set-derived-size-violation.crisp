@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL : "message"
+;; CHECK-FAIL: "set-derived: ancestor VERTEX has 3 data members but descendant POINT has only 2. The descendant must have at least as many"
 
 (def-struct point (x int) (y int))
 

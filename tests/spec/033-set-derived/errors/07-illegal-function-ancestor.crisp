@@ -1,4 +1,4 @@
-;; CHECK-FAIL : "message"
+;; CHECK-FAIL: "when binding SYMBOL"
 
 
 (def-struct coordinate (x int) (y int))

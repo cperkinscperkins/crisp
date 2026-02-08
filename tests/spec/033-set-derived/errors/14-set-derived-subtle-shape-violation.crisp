@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL : "message"
+;; CHECK-FAIL: "set-derived: shape mismatch at member index 1. Ancestor POINT has type INT but descendant VERTEX has type FLOAT. Types must match exactly"
 
 (def-struct point (x int) (y int))
 

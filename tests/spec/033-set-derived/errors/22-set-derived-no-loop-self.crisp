@@ -1,4 +1,4 @@
-;; CHECK-FAIL : "hostile, vaguely threatening error message"
+;; CHECK-FAIL: "set-derived: a type cannot derive from itself. POINT is not amused by your attempt at recursive self-improvement"
 
 (def-struct point (x int) (y int))
 
