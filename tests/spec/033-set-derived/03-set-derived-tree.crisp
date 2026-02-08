@@ -20,7 +20,7 @@
 
 (def-function sums (pt v v4)
     (declare #'(point vertex 4d-vertex => int))
-  (let ((sum-p (sum-point pt))
-        (sum-v (sum-point v))
-        (sum-v4 (sum-point v4)))
+  (let ((sum-p (sum-point pt))    ;; call point overload
+        (sum-v (sum-point v))     ;; call vertex overload
+        (sum-v4 (sum-point v4)))  ;; call vertext overload
      (+ sum-p (+ sum-v sum-v4))))

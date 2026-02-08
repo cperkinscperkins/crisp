@@ -1,0 +1,16 @@
+;; CHECK-FAIL: "message"
+
+(def-struct point (x short) (y short))
+
+(def-struct vertex-1 (a short) (b short) (c short))
+
+(def-struct vertex-2 (p point) (z short))
+
+(set-derived point vertex-1)
+
+;; note that (set-derived point vertex-2) WOULD be ok.
+;; but (set-derived vertex-1 vertex-2) below is NOT because
+;; they don't agree due to the std140 alignment
+
+(set-derived vertex-1 vertex-2)
+
