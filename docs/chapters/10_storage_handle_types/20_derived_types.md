@@ -204,7 +204,7 @@ These member appearing in both Ancestor and Descendant don't have to have the sa
 MUST have the strict same type. ( ie no swapping floats for ints or unsigned for signed)
 
 
-As mentioned, the two structs must have compatible shape WHEN FLATTENED. This is most easily demonstrated with an example.  Below `set-derived` is used twice and both uses are perfectly valid.
+As mentioned, the two structs must have compatible shape WHEN FLATTENED (and accounting for `std140` alignment). This is most easily demonstrated with an example.  Below `set-derived` is used twice and both uses are perfectly valid.
 
 ```
 (def-struct point (x int) (y int))
@@ -214,7 +214,8 @@ As mentioned, the two structs must have compatible shape WHEN FLATTENED. This is
 (set-derived point vertex-flat)
 (set-derived point vertex-nest) ;; alternately, we could have done (set-derived vertex-flat vertex-nest)
 ```
- 
+
+Shape compatibility is evaluated on the flattened struct layouts: nested structs are recursively expanded to their scalar members. For each data member in the ancestor, the corresponding member in the descendant must have both the same type and the same byte offset (as determined by std140 alignment). Struct-level trailing padding is not part of the comparison.
 
 
 ### Branded Types
