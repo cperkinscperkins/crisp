@@ -233,6 +233,7 @@
    #:def-record
    #:def-derived-type
    #:set-derived
+   #:brand
    #:with-struct-accessors
    #:def-setter
    #:*crisp-structs*
@@ -341,6 +342,7 @@
                 #:def-struct
                 #:def-derived-type
                 #:set-derived
+                #:brand
                 #:def-record
                 #:with-struct-accessors
                 #:def-setter
@@ -456,6 +458,7 @@
    #:with-template-type ;; <--- NEW
 
    #:def-type-alias #:def-struct #:def-derived-type #:def-record #:with-struct-accessors #:def-setter
+   #:brand
    #:declare
 
    #:return-type #:type
