@@ -1,0 +1,20 @@
+
+;; TEST-WITH[--differentiate]
+
+;; just checking that it compiles when :enforce not provided.
+;; A unit test might be good to verify that this defaults to :enforce :differ.
+
+(def-struct server
+  ;; custom types
+  (brand token-t ulong :subst :no)
+  
+  ;; members
+  (active-token token-t)
+  (id int))
+
+(def-record virtual-server
+  ;; custom types
+  (brand id-t ulong :subst :no)
+  
+  ;; members
+  (id id-t))

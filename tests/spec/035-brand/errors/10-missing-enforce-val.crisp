@@ -1,0 +1,11 @@
+
+;; CHECK-FAIL: "message"
+;; if :enforce key appears, it must have the value (:always or :differ)
+
+(def-struct server
+  ;; custom types
+  (brand token-t ulong :subst :no :enforce)
+  
+  ;; members
+  (active-token token-t)
+  (id int))

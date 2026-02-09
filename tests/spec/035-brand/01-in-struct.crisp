@@ -1,0 +1,19 @@
+
+;; TEST-WITH[--differentiate]
+
+;; this test should also be tested without the --differentiate flag. 
+;; I believe that is the default. If not, use TEST-EXPECT: PASS
+
+;; basic struct with branded type. 
+(def-struct server
+  ;; custom types
+  (brand token-t ulong :subst :no)
+  
+  ;; members
+  (active-token token-t)
+  (id int))
+
+(def-function instantiate-server ()
+    (declare (return-type int))
+  (let ((s (make-server :active-token 12345 :id 1)))
+    (id~ s)))

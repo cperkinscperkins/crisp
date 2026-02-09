@@ -1,0 +1,18 @@
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: {x=1 y=0}
+
+;; reusing existing validator
+
+
+(def-struct point 
+  ;; custom type
+  (brand x-t int :subst :equal :enforce :always)
+   (x x-t) 
+   (y int))
+
+
+
+(def-kernel struct_on_kernel_boundary (c)
+    (declare (type c (cell point :address-space :global :access :read-write)))
+  (let ((loc-x (x~ (~ c))))
+    (set! (x~ (~ c)) (+ loc-x 1))))

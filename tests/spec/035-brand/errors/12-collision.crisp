@@ -1,0 +1,12 @@
+
+;; CHECK-FAIL: "message"
+
+(def-struct point (x int) (y int))
+
+(def-struct server
+  ;; collision
+  (brand point int :subst :no)
+  
+  ;; members
+  (active-point point)
+  (id int))

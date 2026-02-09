@@ -1,0 +1,8 @@
+
+;; CHECK-FAIL: "message"
+
+;; brand is not usable outside def-struct or def-record
+
+(def-derived-type meters float :subst :ancestor)
+
+(brand yards float :subst :ancestor)

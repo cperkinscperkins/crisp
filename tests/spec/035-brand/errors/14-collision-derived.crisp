@@ -1,0 +1,11 @@
+;; CHECK-FAIL: "message"
+
+(def-derived-type meters float :subst :ancestor)
+
+(def-struct server
+  ;; collision - meters already defined (would be ok if defined by another 'brand' though)
+  (brand meters float :subst :ancestor :enforce :always)
+  
+  ;; members
+  (active-meters meters)
+  (id int))

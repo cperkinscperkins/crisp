@@ -1,0 +1,9 @@
+
+;; CHECK-FAIL: "message"
+
+(def-function add-ints (a b)
+    (declare #'(int int => int))
+    ;; even though it is not used or referenced
+    ;; brand CANNOT exist outside the scope of a def-struct or def-record
+    (brand tricky int :subst :equal)
+    (+ a b))

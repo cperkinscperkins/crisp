@@ -10,7 +10,7 @@
 ;; 1. Template Instantiation
 (def-function test-gen ()
     (declare #'( => (point float)))
-    ;;(gen-point float)
+    (gen-point float)
     (make-point :x 1.0 :y 2.0))
 
 (def-function test-type-infer ()

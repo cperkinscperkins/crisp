@@ -238,9 +238,11 @@ Branded types support the `:subst` key just like `def-derived-type`.  This mean 
 - `:subst` is a required key and cannot be omitted.
 - like `def-derived-type` the `<new-name>` cannot collide with any existing type
   or derived type names (or type functions). BUT it CAN collide with other branded derived type names. This allows `index-t` to act as a generic type constructor. A function can accept `(index-t x)` and work on ANY struct that defines an `index-t` brand.
+  The requirement here is that the same original type is used for each.
 - `:enforce` is optional. It can be set to `:always` or `:diff`.  It defaults to `:diff` (see below)
 - enumeration types cannot be branded
 - `:c-t` (compile time) properties cannot use branded types
+- unlike `def-derived-type`, no `make-XXXX` is defined for the new branded type when the original is a struct or record.
 
 The new type that `brand` creates is a type function that accepts an argument of the type of the parent struct/record, and that returns the qualified "branded" type.
 

@@ -1,0 +1,43 @@
+
+;; TEST-WITH[--differentiate]
+
+;; basic record with branded type. 
+(def-record server
+  ;; custom types
+  (brand token-t ulong :subst :no)
+  
+  ;; members
+  (active-token token-t)
+  (id int))
+
+
+;; function with dependent signature
+(def-function authenticate (s tok)
+  ;; CRITICAL: The type of the 2nd argument depends on the 1st argument.
+  ;; It requires 'tok' to be a token specifically belonging to 's'.
+  (declare #'(server (token-t s) => int))
+  
+  ;; implementation is irrelevant for the type check
+  1)
+
+;; function with dependent return-type signature
+(def-function retrieve-token (s)
+    (declare #'(server => (token-t s)))
+    (active-token~ s))
+
+;; if the function instantiates the struct, 
+;; then there is no way to declare the return-type of the function 
+;; in terms of the struct. Have to use ulong.
+(def-function lost-type ()
+    (declare (return-type ulong))
+  (let ((s (make-server :active-token 12345 :id 1)))
+    (as ulong (active-token~ s))))
+
+#|
+
+(def-function impossible ()
+    (declare (return-type _____)) ;; <--
+  (let ((s (make-server :active-token 12345 :id 1)))
+    (active-token~ s)))
+
+|#

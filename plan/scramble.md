@@ -383,14 +383,25 @@ Assault On Pytorch
 - - [ ] def-derived-type design doc says no templating. Test? Might have to change that limitation though.  ( branded types CAN be templated )
 - - [ ] bool?  
 - - [x] OVERLAY for spec-runner.  HANDLE!!!
-- [ ] set-derived  
+- [x] set-derived  
 - [ ] def-record SHOULD be supportable at kernel boundary. We already do it for cell, might 
       as well general case that.
 - - [ ] metadata decision & test
 - - [ ] hoisting decision & test
 - - [ ] but structs no?  decision and test.
+- [ ] def-struct can ALSO be at the kernel boundary. (If it's less than 4K?)
+- -   the struct is READ-ONLY <-- another damn thing.
+- -   the READ-ONLY thing means we need to walk struct params "up" the call
+      stack to see if they originate at the kernel param boundary or not. 
+      We need to be able to do this for other vars as well, to determine if they 
+      are uniform or not.  So maybe for any function param (originates-at-kernel-boundary? v)
+      is needed?
+- [ ] scratch cells as OPTIONAL/KEY args.  TEST 
+- [ ] r-t-assert and --runtime-checks NEED TESTING     
 - [ ] for errors involving the return type, make sure the error message
       very clearly states what return type the compiler thinks it is (if any).
+- [ ] audit errors: some are NOT showing the location.
+- [ ] Visual Code to use "lisp" syntax highlighting with .crisp files?
 - [ ] brand -- 
 - - [x] requires documentation and decisions before work can begin.
 - [ ] --differentiate

@@ -1,0 +1,28 @@
+
+;; TEST-WITH[--differentiate]
+
+(with-template-type (T)
+  (def-struct server
+    ;; custom types
+    (brand token-t T :subst :ancestor)
+    
+    ;; members
+    (active-token token-t)
+    (id int))
+
+(def-function authenticate (s tok)
+    (declare #'(server (token-t s) => int))
+    1))
+
+(def-kernel happy_path_gen ()
+    (declare (return-type nil))
+    (gen-server float)
+  (let ((s1 (make-server :active-token (as-float 12345.0) :id 1))
+        (my-token (active-token~ s1)))
+      (authenticate s1 my-token)))
+
+(def-kernel happy_path_infer ()
+    (declare (return-type nil))
+  (let ((s1 (make-server :active-token (as-float 12345.0) :id 1))
+        (my-token (active-token~ s1)))
+      (authenticate s1 my-token)))
