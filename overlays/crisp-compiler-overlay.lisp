@@ -181,7 +181,101 @@ This should be called by any entry point into the system (REPL, executable, CI).
   (cl:let ((brand-def (is-brand-type-p member-type)))
     (and brand-def (brand-active-p brand-def))))
 
+;;; =========================================================
+;;; Branded Types - Std140 Layout support for derived types
+;;; =========================================================
+;;; Derived types (including active branded types) have identical
+;;; physical layout to their base type. These functions need to
+;;; resolve through the DAG as well as through type aliases.
+
+;; src/structs.lisp
+(defun get-std140-base-alignment (type-spec)
+  "Returns the base alignment (N) for a given type according to std140 rules.
+   For scalars, N is the size of the scalar.
+   For vectors, it is 2N or 4N.
+   For arrays/structs, it is rounded up to vec4 alignment (16).
+   Resolves both type aliases and derived types to their physical base."
+  ;; Resolve type aliases first, then derived types via DAG
+  (cl:let* ((alias-resolved (resolve-type-alias type-spec))
+            (resolved-type (get-type-base alias-resolved)))
+    (cl:cond
+      ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
+      ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
+      ((or (eq resolved-type 'char) (eq resolved-type 'uchar)) 1)
+      ((or (eq resolved-type 'short) (eq resolved-type 'ushort) (eq resolved-type 'half) (eq resolved-type 'bfloat16)) 2)
+      ;; TODO: Handle vectors here (will need vector support first)
+      ((or (eq resolved-type 'bool)) 4) ;; booleans are 4 bytes in std140
+      ((eq type-spec 'c-pointer) 8) ;; c-pointer is 8 bytes
+      ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
+      ;; Cells are pointers (8 bytes) - Check mangled name
+      ((and (symbolp type-spec)
+            (> (length (symbol-name type-spec)) 5)
+            (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
+       8)
+      ;; Structs align to 16 bytes (vec4)
+      ((gethash type-spec *crisp-structs*) 16)
+      ;; Parameterized Structs (e.g. (POINT INT))
+      ((and (consp type-spec) (valid-type-p type-spec))
+       (cl:let ((base (first type-spec)))
+         (cl:cond
+           ;; Cells are pointers (8 bytes aligned to 8)
+           ((string-equal (symbol-name base) "CELL") 8)
+           (t
+            (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+              (if (gethash mangled *crisp-structs*)
+                  16
+                  (error "Valid type ~a but struct def not found after check alignment." type-spec)))))))
+      (t
+       (error "Unknown type for alignment: ~a" type-spec)))))
+
+;; src/structs.lisp
+(defun get-std140-size (type-spec)
+  "Returns the size (in bytes) of a type. Does not include padding for alignment context.
+   Resolves both type aliases and derived types to their physical base."
+  ;; Resolve type aliases first, then derived types via DAG
+  (cl:let* ((alias-resolved (resolve-type-alias type-spec))
+            (resolved-type (get-type-base alias-resolved)))
+    (cl:cond
+      ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
+      ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
+      ((or (eq resolved-type 'char) (eq resolved-type 'uchar)) 1)
+      ((or (eq resolved-type 'short) (eq resolved-type 'ushort) (eq resolved-type 'half) (eq resolved-type 'bfloat16)) 2)
+      ((eq resolved-type 'bool) 4)
+      ((eq resolved-type 'c-pointer) 8) ;; c-pointer is 8 bytes
+      ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
+      ;; Cells are pointers (8 bytes) - Check mangled name
+      ((and (symbolp type-spec)
+            (> (length (symbol-name type-spec)) 5)
+            (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
+       8)
+      ;; Structs
+      ((gethash type-spec *crisp-structs*)
+       (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
+      ;; Parameterized Structs
+      ((and (consp type-spec) (valid-type-p type-spec))
+       (cl:let ((base (first type-spec)))
+         (cl:cond
+           ((string-equal (symbol-name base) "CELL") 8)
+           (t
+            (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+              (cl:let ((struct-info (gethash mangled *crisp-structs*)))
+                (if struct-info
+                    (crisp-struct-definition-total-size struct-info)
+                    (error "Valid type ~a but struct def not found after check size." type-spec))))))))
+      (t
+       (error "Unknown type for size: ~a" type-spec)))))
+
 ;; src/analysis/structs.lisp
+(defun numeric-type-category (type-name)
+  "Returns the category (:signed-int, :unsigned-int, :float) if TYPE-NAME is a numeric
+   scalar in *crisp-types*, or NIL otherwise. Resolves aliases and derived types first."
+  (cl:let* ((resolved (resolve-type-alias type-name))
+            (base (get-type-base resolved))
+            (crisp-type (cl:when (symbolp base) (gethash base *crisp-types*))))
+    (cl:when (and crisp-type
+                  (member (crisp-type-category crisp-type) '(:signed-int :unsigned-int :float)))
+      (crisp-type-category crisp-type))))
+
 (defun analyze-struct-construction (expr env context location)
   "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
    Supports implicit promotion of base-type values to branded member types
@@ -208,16 +302,27 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                  (expected-type (second member)))
                              ;; Type check with branded type promotion
                              (unless (type-equal-p (semantic-node-type node) expected-type)
-                               ;; Check if this is a branded member that allows constructor promotion
                                (cl:let ((brand-def (is-brand-type-p expected-type)))
-                                 (if (and brand-def
-                                          (brand-active-p brand-def)
-                                          (types-assignable-p (semantic-node-type node)
-                                                              (brand-definition-base-type brand-def)))
-                                     ;; Constructor promotion: accept base type for branded member
-                                     (log:debug "Constructor promotion: ~a -> ~a for member ~a"
-                                                (semantic-node-type node) expected-type (first member))
-                                     ;; Not a brand or types don't match base -> real error
+                                 (if brand-def
+                                     ;; Branded member: check numeric compatibility with base type
+                                     (cl:let* ((base-type (brand-definition-base-type brand-def))
+                                               (arg-cat (numeric-type-category (semantic-node-type node)))
+                                               (base-cat (numeric-type-category base-type)))
+                                       (if (and arg-cat base-cat)
+                                           ;; Compatible numeric types - wrap in a value cast to the base type
+                                           (progn
+                                             (log:debug "Constructor promotion: ~a -> ~a (base ~a) for member ~a"
+                                                        (semantic-node-type node) expected-type base-type (first member))
+                                             (setf node (make-semantic-value-cast
+                                                         :type base-type
+                                                         :arg node
+                                                         :source-location (append location (list (+ 2 i))))))
+                                           ;; Not numeric-compatible
+                                           (error 'crisp-type-error
+                                             :expected expected-type
+                                             :inferred (semantic-node-type node)
+                                             :source-location location)))
+                                     ;; Not a branded member -> real type error
                                      (error 'crisp-type-error
                                        :expected expected-type
                                        :inferred (semantic-node-type node)
