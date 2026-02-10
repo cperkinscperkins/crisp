@@ -639,14 +639,25 @@
 
 
 (defmacro def-record (name &rest members)
-  "Defines a new Crisp record type (virtual struct)."
-  (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
+  "Defines a new Crisp record type (virtual struct). Supports brand declarations."
+  (let* (;; Separate brand declarations from regular members
+         (brand-decls (remove-if-not (lambda (m) (and (consp m) (eq (car m) 'brand))) members))
+         (regular-members (remove-if (lambda (m) (and (consp m) (eq (car m) 'brand))) members))
+         (parsed-members (mapcar #'parse-struct-member-spec regular-members))
          (constructor-name (intern (format nil "MAKE-~a" name) (symbol-package name))))
+    ;; Register brands at macro-expansion time
+    (dolist (brand brand-decls)
+      (register-brand-definition name brand))
     ;; Register at macro-expansion time
     (register-struct-definition name parsed-members :record)
     ;; Emit code
     `(progn
       (eval-when (:compile-toplevel :load-toplevel :execute)
+        ;; Register brands
+        ,@(mapcar (lambda (brand)
+                    `(register-brand-definition ',name ',brand))
+                  brand-decls)
+        ;; Register record
         (register-struct-definition ',name ',parsed-members :record))
 
       (defmacro ,constructor-name (&rest args)
