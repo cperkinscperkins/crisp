@@ -402,6 +402,9 @@ Assault On Pytorch
       very clearly states what return type the compiler thinks it is (if any).
 - [ ] audit errors: some are NOT showing the location.
 - [ ] Visual Code to use "lisp" syntax highlighting with .crisp files?
+- [ ] LLVM-IR can only bitcast same size. So (as-ulong 12345) is a problem. (to-ulong 12345) works.
+      Should revisit docs and decide how to handle this.
+
 - [ ] brand -- 
 - - [x] requires documentation and decisions before work can begin.
 - [ ] --differentiate

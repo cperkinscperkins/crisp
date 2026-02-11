@@ -382,6 +382,10 @@
                 #:to-long #:as-long
                 #:to-float #:as-float
                 #:to-double #:as-double
+                #:to-uchar #:as-uchar
+                #:to-ushort #:as-ushort
+                #:to-uint #:as-uint
+                #:to-ulong #:as-ulong
                 #:truncate #:floor #:ceil #:round
 
                 ;; NEW: Unified Let from Compiler

@@ -29,4 +29,4 @@
     ;; function expects: (token-t s1)
     ;; we are passing:   ulong
     ;; another compilation ERROR,  WHEN USING --diferentiate
-    (authenticate s1 12345)))
+    (authenticate s1 (to-ulong 12345))))
