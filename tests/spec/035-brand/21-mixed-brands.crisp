@@ -3,8 +3,8 @@
 
 (def-record server
   ;; custom types
-  (brand token-t ulong :subst :equal)
-  (brand id-t ulong :subst :equal)
+  (brand token-t ulong :subst :ancestor)
+  (brand id-t ulong :subst :ancestor)
   
   ;; members
   (active-token token-t)
@@ -12,6 +12,6 @@
 
 
 (def-function super-authenticate (s tok id)
-  (declare #'(server (token-t s) (id-t s) => int))
+  (declare #'(server (token-t s) (id-t s) => ulong))
   
   (+ tok id)) ;; passes normally, errors when brands are enforced.
