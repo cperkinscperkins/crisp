@@ -24,7 +24,7 @@
   1)
 
 (def-function compilation-error ()
-  (declare (return-type nil))
+  (declare (return-type int))
   (let ((s1 (make-server :active-token 11111 :id 1))
         (s2 (make-server :active-token 22222 :id 2)))
     

@@ -505,3 +505,163 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                location))))
     (values body-nodes inferred-types)))
 
+;;; =========================================================
+;;; Branded Types - Instance Differentiation (Test 17)
+;;; =========================================================
+
+;; Brand Instance Cache: maps (brand-name . var-name) -> gensym'd type name.
+;; Cleared per function compilation so that brand instance types are function-scoped.
+(defvar *brand-instance-cache* (make-hash-table :test 'equal)
+  "Per-function cache mapping (brand-name . variable-identity) to a gensym'd
+   instance-specific type name. Cleared at the start of each function compilation.")
+
+(defun resolve-brand-type (brand-name var-ref)
+  "Resolves a branded type for a specific variable instance.
+   Returns a gensym'd type name unique to (brand-name, var-ref).
+   On first call for a given pair, creates a new type node in the DAG
+   as a :descendant of brand-name, caches it, and returns it.
+   On subsequent calls, returns the cached gensym.
+
+   The :descendant relationship means:
+   - The gensym CAN substitute for brand-name (signature matching works)
+   - Two different gensyms CANNOT substitute for each other (instance safety)
+   - The gensym inherits brand-name's isolation from its base type"
+  (cl:let* ((cache-key (cons brand-name var-ref))
+            (cached (gethash cache-key *brand-instance-cache*)))
+    (or cached
+        (cl:let ((gensym-name (gensym (format nil "~a-" brand-name))))
+          ;; Register as a derived type: descendant of the brand type.
+          ;; This establishes the ancestor link gensym -> brand-name in the DAG.
+          (register-derived-type gensym-name brand-name :descendant)
+          ;; Cache for this function's lifetime
+          (setf (gethash cache-key *brand-instance-cache*) gensym-name)
+          (log:info "Created brand instance type ~a for (~a ~a)"
+                    gensym-name brand-name var-ref)
+          gensym-name))))
+
+;; Track which function the brand cache was last cleared for.
+;; When analyze-function-call detects a new function, it clears the cache.
+(defvar *brand-cache-last-function* nil
+  "The name of the function for which the brand instance cache was last cleared.")
+
+(defun %find-brand-owner-var (brand-def sig-params arg-nodes)
+  "Given a brand-definition, finds the actual argument variable for the parameter
+   whose type matches the brand's owning struct. Returns the variable name symbol
+   if found (and the arg is a simple variable read), or NIL otherwise."
+  (cl:let ((owner-struct (brand-definition-owner-struct brand-def)))
+    (loop for sp in sig-params
+          for an in arg-nodes
+          when (eq (parameter-def-type sp) owner-struct)
+          do (cl:return (cl:when (typep an 'semantic-var-read)
+                       (semantic-var-read-name an))))))
+
+;; src/analysis/core.lisp
+(defun analyze-function-call (op expr env context location)
+  "Analyzes a call to a user-defined function.
+   When --differentiate is active, performs brand instance type checking:
+   1. Refines return types that are brand types to instance-specific gensyms
+   2. Validates that branded parameter arguments match the expected instance"
+  (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
+
+  ;; Clear brand instance cache when we start compiling a new function
+  (cl:let ((current-fn (compiler-context-current-compiling-function context)))
+    (when (and current-fn (not (eq current-fn *brand-cache-last-function*)))
+      (clrhash *brand-instance-cache*)
+      (setf *brand-cache-last-function* current-fn)))
+
+  ;; Recursion / call-graph tracking
+  (if (multi-pass-mode-p)
+      (when (compiler-context-current-compiling-function context)
+            (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
+      (when (eq op (compiler-context-current-compiling-function context))
+            (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
+
+  ;; Implicit args
+  (let ((implicit-args-required (gethash op *implicit-arg-map*)))
+    (when (and (single-pass-mode-p) implicit-args-required)
+          (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
+
+    (let* ((arg-forms (rest expr))
+           (explicit-arg-nodes (loop for arg-form in arg-forms
+                                     for i from 1
+                                     collect (analyze-expression arg-form env context (append location (list i)))))
+           (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
+           (signature (resolve-best-signature op explicit-arg-types context)))
+
+      (let ((final-arg-nodes
+             (if implicit-args-required
+                 (let ((implicit-arg-nodes
+                        (loop for (param-name . param-type) in implicit-args-required
+                              collect (let ((found (find-variable-in-env param-name env)))
+                                        (if found
+                                            (make-semantic-var-read :name param-name :type (parameter-def-type found) :source-location location)
+                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
+                                              (compiler-context-current-compiling-function context) param-name))))))
+                   (append implicit-arg-nodes explicit-arg-nodes))
+                 explicit-arg-nodes)))
+
+        (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
+          (error 'crisp-signature-arity-error
+            :expected (length (function-signature-parameters signature))
+            :inferred (length explicit-arg-types)
+            :source-location location))
+
+        (let ((augmented-signature
+               (if implicit-args-required
+                   (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
+                                                collect (make-parameter-def :name param-name :type param-type :kind :in))))
+                     (make-function-signature
+                      :name (function-signature-name signature)
+                      :parameters (append implicit-params (function-signature-parameters signature))
+                      :return-types (function-signature-return-types signature)
+                      :source-location (function-signature-source-location signature)
+                      :is-template-p (function-signature-is-template-p signature)
+                      :template-params (function-signature-template-params signature)))
+                   signature)))
+
+          ;; === Brand Instance Type Checking (when --differentiate is active) ===
+          (let ((refined-return-types (function-signature-return-types augmented-signature)))
+            (when *differentiate-p*
+              (let ((sig-params (function-signature-parameters augmented-signature)))
+
+                ;; 1. Brand parameter type checking
+                ;; For each param whose declared type is a brand, find the struct owner
+                ;; param, resolve the expected instance type, and compare with actual.
+                (loop for param in sig-params
+                      for arg-node in final-arg-nodes
+                      for param-type = (parameter-def-type param)
+                      do (cl:let ((brand-def (is-brand-type-p param-type)))
+                           (when (and brand-def (brand-active-p brand-def))
+                             (cl:let ((owner-var (%find-brand-owner-var brand-def sig-params final-arg-nodes)))
+                               (when owner-var
+                                 (cl:let* ((expected-type (resolve-brand-type param-type owner-var))
+                                           (actual-type (get-single-value-type arg-node)))
+                                   (unless (or (eq actual-type expected-type)
+                                               ;; Also accept if actual IS the expected (through aliasing)
+                                               (is-substitutable-for? actual-type expected-type))
+                                     (log:info "Brand mismatch: expected ~a (instance of ~a for ~a) but got ~a"
+                                               expected-type param-type owner-var actual-type)
+                                     (error 'crisp-type-error
+                                       :expected (list expected-type)
+                                       :inferred (list actual-type)
+                                       :source-location location))))))))
+
+                ;; 2. Brand return type refinement
+                ;; If any return type is a brand type, refine it to the instance-specific
+                ;; gensym based on the struct owner argument.
+                (setf refined-return-types
+                      (loop for ret-type in (function-signature-return-types augmented-signature)
+                            collect (cl:let ((brand-def (is-brand-type-p ret-type)))
+                                      (if (and brand-def (brand-active-p brand-def))
+                                          (cl:let ((owner-var (%find-brand-owner-var brand-def sig-params final-arg-nodes)))
+                                            (if owner-var
+                                                (resolve-brand-type ret-type owner-var)
+                                                ret-type))
+                                          ret-type))))))
+
+            (make-semantic-call :name (function-signature-name augmented-signature)
+                                :type refined-return-types
+                                :args final-arg-nodes
+                                :signature augmented-signature
+                                :source-location location)))))))
+
