@@ -92,7 +92,7 @@
                            (register-template ',name ',params ',constraints ',form ',signature))
 
                         `(eval-when (:compile-toplevel :load-toplevel :execute)
-                           (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
+                           (defmacro ,(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (&rest args)
                              (let* ((arity ,(length params))
                                     (provided (length args)))
                                (if (= provided arity)
@@ -100,11 +100,11 @@
                                    (error "Template instantiation for ~a expects ~a type arguments, got ~a." ',name arity provided)))))
 
                         ;; Define the type helper macro: (NAME-type ...)
-                        `(defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
+                        `(defmacro ,(intern (format nil "~a-TYPE" name) (or (symbol-package name) *package*)) (&rest concrete-types)
                            `(get-template-signature ',',name ',concrete-types))
 
                         `(eval-when (:compile-toplevel :load-toplevel :execute)
-                           (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name)))))))
+                           (export ',(intern (format nil "~a-TYPE" name) (or (symbol-package name) *package*)) (symbol-package ',name)))))))
 
                  ;; Case 2: def-kernel
                  ((and (listp form) (member (first form) '(def-kernel def-kernel-exact)))
@@ -114,7 +114,7 @@
                          (register-template ',name ',params ',constraints ',form nil))
 
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
-                         (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
+                         (defmacro ,(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (&rest args)
                            (let* ((arity ,(length params))
                                   (provided (length args)))
                              (cond
@@ -128,7 +128,7 @@
                                 (error "Template instantiation for ~a expects ~a type arguments (plus optional name), got ~a." ',name arity provided))))))
 
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
-                         (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name))))))
+                         (export ',(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (symbol-package ',name))))))
 
                  ;; Case 3: def-struct
                  ((and (listp form) (member (first form) '(def-struct def-record)))
@@ -145,7 +145,7 @@
                          (register-template ',name ',params ',constraints ',form ',signature))
 
                       ;; 1. Generate normal generic constructor GEN-POINT(T U)(x y) wrapper -> make-point_float_float
-                      `(defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
+                      `(defmacro ,(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (&rest args)
                          (let* ((arity ,(length params))
                                 (concrete-types (subseq args 0 arity))
                                 (ctor-args (subseq args arity))
@@ -156,25 +156,25 @@
                              ordered-ctor-args)))
 
                       ;; 2. Generate Type Helper GEN-POINT-TYPE(T U) => POINT_FLOAT_FLOAT
-                      `(defmacro ,(intern (format nil "GEN-~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
+                      `(defmacro ,(intern (format nil "GEN-~a-TYPE" name) (or (symbol-package name) *package*)) (&rest concrete-types)
                          `(template-instantiation ,(instantiate-template ',name concrete-types)))
 
                       ;; 3. Generate generic constructor alias MAKE-POINT -> MAKE-POINT%DISPATCH
-                      `(defmacro ,(intern (format nil "MAKE-~a" name) (symbol-package name)) (&rest args)
+                      `(defmacro ,(intern (format nil "MAKE-~a" name) (or (symbol-package name) *package*)) (&rest args)
                          (let ((ordered (crisp.compiler::reorder-template-args-from-keywords args ',param-names)))
-                           (cons ',(intern (format nil "MAKE-~a%DISPATCH" name) (symbol-package name)) ordered)))
+                           (cons ',(intern (format nil "MAKE-~a%DISPATCH" name) (or (symbol-package name) *package*)) ordered)))
 
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
-                         (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name)))
+                         (export ',(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (symbol-package ',name)))
 
                       ;; Define the type helper macro: (NAME-type ...)
                       ;; For structs, this returns the Mangled Name.
-                      `(defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
-                         (let ((mangled (intern (format nil "~a_~{~a~^_~}" ',name concrete-types) (symbol-package ',name))))
+                      `(defmacro ,(intern (format nil "~a-TYPE" name) (or (symbol-package name) *package*)) (&rest concrete-types)
+                         (let ((mangled (intern (format nil "~a_~{~a~^_~}" ',name concrete-types) (or (symbol-package ',name) *package*))))
                            `',mangled))
 
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
-                         (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name))))))
+                         (export ',(intern (format nil "~a-TYPE" name) (or (symbol-package name) *package*)) (symbol-package ',name))))))
 
                  ;; Case 4: def-type
                  ((and (listp form) (eq (first form) 'def-type))
@@ -575,7 +575,7 @@
       (loop for tmpl in templates
             for params = (template-data-parameters tmpl)
               ;; Relaxed check: Allow arguments >= parameters if the extras are properties (managed by mangle)
-            do (when (>= (length explicit-arg-types) (length params))
+            do (when (= (length explicit-arg-types) (length params))
                      ;; Direct match/superset by arity (explicit args are the concrete types)
                      ;; This assumes explicit-arg-types are the TYPES, not values.
                      (push (list tmpl explicit-arg-types) match-sets))))

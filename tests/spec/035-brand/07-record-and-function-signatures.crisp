@@ -4,10 +4,10 @@
 ;; basic record with branded type. 
 (def-record server
   ;; custom types
-  (brand token-t ulong :subst :no)
+  (brand token-t-07 ulong :subst :no)
   
   ;; members
-  (active-token token-t)
+  (active-token token-t-07)
   (id int))
 
 
@@ -15,14 +15,14 @@
 (def-function authenticate (s tok)
   ;; CRITICAL: The type of the 2nd argument depends on the 1st argument.
   ;; It requires 'tok' to be a token specifically belonging to 's'.
-  (declare #'(server (token-t s) => int))
+  (declare #'(server (token-t-07 s) => int))
   
   ;; implementation is irrelevant for the type check
   1)
 
 ;; function with dependent return-type signature
 (def-function retrieve-token (s)
-    (declare #'(server => (token-t s)))
+    (declare #'(server => (token-t-07 s)))
     (active-token~ s))
 
 ;; if the function instantiates the struct, 

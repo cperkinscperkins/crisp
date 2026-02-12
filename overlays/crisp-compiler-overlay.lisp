@@ -160,6 +160,13 @@ This should be called by any entry point into the system (REPL, executable, CI).
                (not (is-brand-type-p brand-name)))
           (error "Brand name collision: ~a is already defined as a non-brand type." brand-name))
 
+    ;; 4. Brands: Check for redefinition with DIFFERENT base type.
+    (let ((existing (is-brand-type-p brand-name)))
+      (when existing
+            (unless (eq (brand-definition-base-type existing) base-type)
+              (error "Cannot define derived type ~a: type already exists with DIFFERENT definition (Original: ~a, New: ~a)."
+                brand-name (brand-definition-base-type existing) base-type))))
+
     ;; Store the owner struct
     (setf (brand-definition-owner-struct brand-def) struct-name)
 

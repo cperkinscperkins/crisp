@@ -4,14 +4,14 @@
 (with-template-type (T)
   (def-struct server
     ;; custom types
-    (brand token-t T :subst :ancestor)
+    (brand token-t-31 T :subst :ancestor)
     
     ;; members
-    (active-token token-t)
+    (active-token token-t-31)
     (id int))
 
 (def-function authenticate (s tok)
-    (declare #'((server T) (token-t s) => int))
+    (declare #'((server T) (token-t-31 s) => int))
     1))
 
 (def-kernel happy_path_gen ()

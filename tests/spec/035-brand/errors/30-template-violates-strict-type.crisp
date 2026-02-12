@@ -1,8 +1,6 @@
 
-;; CHECK-FAIL: "message"
-;; FAIL-WITH[--differentiate]: "message"
-
-;; right now error is "Too many type arguments for template SERVER." which is not ideal.
+;; CHECK-FAIL: "Cannot define derived type TOKEN-T: type already exists with DIFFERENT definition (Original: FLOAT, New: ULONG)."
+;; FAIL-WITH[--differentiate]: "Cannot define derived type TOKEN-T: type already exists with DIFFERENT definition (Original: FLOAT, New: ULONG)."
 
 ;; this test causes a violation of the One Brand Name = One Underlying Type rule.
 ;; and should probably  fail even when we aren't ENFORCING branding. 
@@ -32,6 +30,7 @@
 
 (def-kernel causes_strife ()
     (declare (return-type nil))
+  (gen-server ulong)
   (let ((s1 (make-server :active-token (as-ulong 12345) :id 1))
         (my-token (active-token~ s1)))
       (authenticate s1 my-token)))
