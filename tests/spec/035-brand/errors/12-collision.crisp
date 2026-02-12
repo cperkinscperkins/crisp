@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "Brand name collision: POINT is already defined as a struct"
 
 (def-struct point (x int) (y int))
 

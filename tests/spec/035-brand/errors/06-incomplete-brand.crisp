@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "Brand TOKEN-T: :subst is required"
 
 (def-struct server
   ;; missing required :subst key/val

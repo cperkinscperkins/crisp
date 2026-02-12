@@ -6,12 +6,30 @@
 (in-package :crisp.compiler)
 
 ;;; =========================================================
+;;; Branded Types - Infrastructure (Test 01)
+;;; =========================================================
+
+;; src/types/registry.lisp
+(defvar *brand-definitions* (make-hash-table :test 'equal)
+        "Maps (brand-name . struct-type) to brand-definition records.
+   Populated when def-struct / def-record with brand declarations are processed.")
+
+;; NEW struct to hold brand metadata (this is a CL struct, not a Crisp def-struct)
+(cl:defstruct brand-definition
+  "Stores the definition of a branded type declared inside a struct/record."
+  (brand-name nil :type symbol) ; e.g., TOKEN-T
+  (base-type nil :type symbol) ; e.g., ULONG
+  (subst-mode nil :type symbol) ; :no, :equal, :descendant, :ancestor
+  (enforce-mode :diff :type symbol) ; :always or :diff
+  (owner-struct nil :type symbol)) ; e.g., SERVER
+
+;;; =========================================================
 ;;; --differentiate flag support (branded types prerequisite)
 ;;; =========================================================
 
 ;; src/types/registry.lisp
 (defvar *differentiate-p* nil
-  "If T, enable differentiation mode. Activates branded type enforcement
+        "If T, enable differentiation mode. Activates branded type enforcement
    for brands declared with :enforce :diff (the default).")
 
 ;; src/compiler.lisp
@@ -71,23 +89,6 @@ This should be called by any entry point into the system (REPL, executable, CI).
   ;; Initialize built-in structs (storage)
   (register-builtins))
 
-;;; =========================================================
-;;; Branded Types - Infrastructure (Test 01)
-;;; =========================================================
-
-;; src/types/registry.lisp
-(defvar *brand-definitions* (make-hash-table :test 'equal)
-  "Maps (brand-name . struct-type) to brand-definition records.
-   Populated when def-struct / def-record with brand declarations are processed.")
-
-;; NEW struct to hold brand metadata (this is a CL struct, not a Crisp def-struct)
-(cl:defstruct brand-definition
-  "Stores the definition of a branded type declared inside a struct/record."
-  (brand-name nil :type symbol)       ; e.g., TOKEN-T
-  (base-type nil :type symbol)        ; e.g., ULONG
-  (subst-mode nil :type symbol)       ; :no, :equal, :descendant, :ancestor
-  (enforce-mode :diff :type symbol)   ; :always or :diff
-  (owner-struct nil :type symbol))    ; e.g., SERVER
 
 (defun parse-brand-declaration (brand-form)
   "Parses a brand declaration form: (brand name base-type :subst mode &optional :enforce mode).
@@ -143,6 +144,21 @@ This should be called by any entry point into the system (REPL, executable, CI).
             (brand-name (brand-definition-brand-name brand-def))
             (base-type (brand-definition-base-type brand-def))
             (subst-mode (brand-definition-subst-mode brand-def)))
+
+    ;; Check for name collisions
+    ;; 1. Structs: Brand name cannot be a struct name (ambiguous constructor)
+    (when (gethash brand-name *crisp-structs*)
+          (error "Brand name collision: ~a is already defined as a struct." brand-name))
+
+    ;; 2. Functions: Brand name cannot be a function name (ambiguous constructor)
+    (when (gethash brand-name *function-table*)
+          (error "Brand name collision: ~a is already defined as a function." brand-name))
+
+    ;; 3. Types: Brand name cannot be an existing NON-BRAND type.
+    ;;    (Redefinition of brands or shared brands is allowed)
+    (when (and (gethash brand-name *crisp-types*)
+               (not (is-brand-type-p brand-name)))
+          (error "Brand name collision: ~a is already defined as a non-brand type." brand-name))
 
     ;; Store the owner struct
     (setf (brand-definition-owner-struct brand-def) struct-name)
@@ -311,12 +327,12 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                        (if (and arg-cat base-cat)
                                            ;; Compatible numeric types - wrap in a value cast to the base type
                                            (progn
-                                             (log:debug "Constructor promotion: ~a -> ~a (base ~a) for member ~a"
-                                                        (semantic-node-type node) expected-type base-type (first member))
-                                             (setf node (make-semantic-value-cast
-                                                         :type base-type
-                                                         :arg node
-                                                         :source-location (append location (list (+ 2 i))))))
+                                            (log:debug "Constructor promotion: ~a -> ~a (base ~a) for member ~a"
+                                                       (semantic-node-type node) expected-type base-type (first member))
+                                            (setf node (make-semantic-value-cast
+                                                        :type base-type
+                                                        :arg node
+                                                        :source-location (append location (list (+ 2 i))))))
                                            ;; Not numeric-compatible
                                            (error 'crisp-type-error
                                              :expected expected-type
@@ -512,7 +528,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;; Brand Instance Cache: maps (brand-name . var-name) -> gensym'd type name.
 ;; Cleared per function compilation so that brand instance types are function-scoped.
 (defvar *brand-instance-cache* (make-hash-table :test 'equal)
-  "Per-function cache mapping (brand-name . variable-identity) to a gensym'd
+        "Per-function cache mapping (brand-name . variable-identity) to a gensym'd
    instance-specific type name. Cleared at the start of each function compilation.")
 
 (defun resolve-brand-type (brand-name var-ref)
@@ -542,7 +558,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;; Track which function the brand cache was last cleared for.
 ;; When analyze-function-call detects a new function, it clears the cache.
 (defvar *brand-cache-last-function* nil
-  "The name of the function for which the brand instance cache was last cleared.")
+        "The name of the function for which the brand instance cache was last cleared.")
 
 (defun %find-brand-owner-var (brand-def sig-params arg-nodes)
   "Given a brand-definition, finds the actual argument variable for the parameter
@@ -551,9 +567,9 @@ This should be called by any entry point into the system (REPL, executable, CI).
   (cl:let ((owner-struct (brand-definition-owner-struct brand-def)))
     (loop for sp in sig-params
           for an in arg-nodes
-          when (eq (parameter-def-type sp) owner-struct)
+            when (eq (parameter-def-type sp) owner-struct)
           do (cl:return (cl:when (typep an 'semantic-var-read)
-                       (semantic-var-read-name an))))))
+                          (semantic-var-read-name an))))))
 
 ;; src/analysis/core.lisp
 (defun analyze-function-call (op expr env context location)
@@ -566,8 +582,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
   ;; Clear brand instance cache when we start compiling a new function
   (cl:let ((current-fn (compiler-context-current-compiling-function context)))
     (when (and current-fn (not (eq current-fn *brand-cache-last-function*)))
-      (clrhash *brand-instance-cache*)
-      (setf *brand-cache-last-function* current-fn)))
+          (clrhash *brand-instance-cache*)
+          (setf *brand-cache-last-function* current-fn)))
 
   ;; Recursion / call-graph tracking
   (if (multi-pass-mode-p)
@@ -622,34 +638,34 @@ This should be called by any entry point into the system (REPL, executable, CI).
           ;; === Brand Instance Type Checking (when --differentiate is active) ===
           (let ((refined-return-types (function-signature-return-types augmented-signature)))
             (when *differentiate-p*
-              (let ((sig-params (function-signature-parameters augmented-signature)))
+                  (let ((sig-params (function-signature-parameters augmented-signature)))
 
-                ;; 1. Brand parameter type checking
-                ;; For each param whose declared type is a brand, find the struct owner
-                ;; param, resolve the expected instance type, and compare with actual.
-                (loop for param in sig-params
-                      for arg-node in final-arg-nodes
-                      for param-type = (parameter-def-type param)
-                      do (cl:let ((brand-def (is-brand-type-p param-type)))
-                           (when (and brand-def (brand-active-p brand-def))
-                             (cl:let ((owner-var (%find-brand-owner-var brand-def sig-params final-arg-nodes)))
-                               (when owner-var
-                                 (cl:let* ((expected-type (resolve-brand-type param-type owner-var))
-                                           (actual-type (get-single-value-type arg-node)))
-                                   (unless (or (eq actual-type expected-type)
-                                               ;; Also accept if actual IS the expected (through aliasing)
-                                               (is-substitutable-for? actual-type expected-type))
-                                     (log:info "Brand mismatch: expected ~a (instance of ~a for ~a) but got ~a"
-                                               expected-type param-type owner-var actual-type)
-                                     (error 'crisp-type-error
-                                       :expected (list expected-type)
-                                       :inferred (list actual-type)
-                                       :source-location location))))))))
+                    ;; 1. Brand parameter type checking
+                    ;; For each param whose declared type is a brand, find the struct owner
+                    ;; param, resolve the expected instance type, and compare with actual.
+                    (loop for param in sig-params
+                          for arg-node in final-arg-nodes
+                          for param-type = (parameter-def-type param)
+                          do (cl:let ((brand-def (is-brand-type-p param-type)))
+                               (when (and brand-def (brand-active-p brand-def))
+                                     (cl:let ((owner-var (%find-brand-owner-var brand-def sig-params final-arg-nodes)))
+                                       (when owner-var
+                                             (cl:let* ((expected-type (resolve-brand-type param-type owner-var))
+                                                       (actual-type (get-single-value-type arg-node)))
+                                               (unless (or (eq actual-type expected-type)
+                                                           ;; Also accept if actual IS the expected (through aliasing)
+                                                           (is-substitutable-for? actual-type expected-type))
+                                                 (log:info "Brand mismatch: expected ~a (instance of ~a for ~a) but got ~a"
+                                                           expected-type param-type owner-var actual-type)
+                                                 (error 'crisp-type-error
+                                                   :expected (list expected-type)
+                                                   :inferred (list actual-type)
+                                                   :source-location location))))))))
 
-                ;; 2. Brand return type refinement
-                ;; If any return type is a brand type, refine it to the instance-specific
-                ;; gensym based on the struct owner argument.
-                (setf refined-return-types
+                    ;; 2. Brand return type refinement
+                    ;; If any return type is a brand type, refine it to the instance-specific
+                    ;; gensym based on the struct owner argument.
+                    (setf refined-return-types
                       (loop for ret-type in (function-signature-return-types augmented-signature)
                             collect (cl:let ((brand-def (is-brand-type-p ret-type)))
                                       (if (and brand-def (brand-active-p brand-def))
@@ -665,3 +681,69 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                 :signature augmented-signature
                                 :source-location location)))))))
 
+
+;;; =========================================================
+;;; Branded Types - Metadata Generation / Hoisting Fix (Test 43)
+;;; =========================================================
+
+(in-package :crisp.compiler)
+
+(defun serialize-structs (stream structs-hash)
+  (format stream "(:structs~%")
+  (let ((struct-names (alexandria:hash-table-keys structs-hash)))
+    (let ((sorted-names (sort-structs-by-dependency struct-names)))
+      (dolist (name sorted-names)
+        (let ((def (gethash name *crisp-structs*)))
+          (when def
+                (format stream "  (def-struct ~a" (strip-package-qualifiers name))
+                (dolist (m (crisp-struct-definition-members def))
+                  (let* ((member-name (first m))
+                         (member-type (second m))
+                         ;; Resolve brand type to base type for metadata
+                         (brand-def (is-brand-type-p member-type))
+                         ;; Always resolve to base type for C++ metadata, regardless of active state.
+                         ;; C++ does not know about brands, only the underlying physical type.
+                         (final-type (if brand-def
+                                         (brand-definition-base-type brand-def)
+                                         member-type)))
+                    (format stream " (~a ~a)"
+                      (strip-package-qualifiers member-name)
+                      (strip-package-qualifiers final-type))))
+                (format stream ")~%"))))))
+  (format stream "  )~%~%"))
+
+;; REDEFINITION: generate-metadata-for-file to ensure it uses the NEW serialize-structs
+(defun generate-metadata-for-file (input-path output-path &key (output-targets nil) (source-file nil) (forms nil))
+  (let ((kernel-names (if forms
+                          (extract-defined-kernels forms)
+                          (alexandria:hash-table-keys *function-table*)))
+        (generated-files nil))
+
+    (let ((src-path (or source-file
+                        (namestring input-path))))
+
+      (when (null kernel-names)
+            (multiple-value-bind (aliases structs)
+                (collect-kernel-dependencies nil)
+              (with-open-file (stream output-path :direction :output :if-exists :supersede)
+                (format stream ";; generated by crisp-compile~%~%")))
+            (push output-path generated-files))
+
+      (dolist (k kernel-names)
+        (let* ((suffix (format nil "_~a.metacrisp" (string-downcase (symbol-name k))))
+               (final-path (make-pathname :name (format nil "~a_~a" (pathname-name output-path) (string-downcase (symbol-name k)))
+                                          :type "metacrisp"
+                                          :defaults output-path)))
+
+          (multiple-value-bind (aliases structs)
+              (collect-kernel-dependencies (list k))
+
+            (with-open-file (stream final-path :direction :output :if-exists :supersede)
+              (format stream ";; generated by crisp-compile~%~%")
+              (serialize-aliases stream aliases)
+              (serialize-structs stream structs)
+              (serialize-kernels stream (list k) :source src-path :output-targets output-targets)))
+
+          (push final-path generated-files)))
+
+      (nreverse generated-files))))

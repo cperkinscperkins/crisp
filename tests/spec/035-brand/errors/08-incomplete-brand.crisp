@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "Brand TOKEN-T: :subst is required"
 
 (def-record server
   ;; missing required :subst val

@@ -1,6 +1,8 @@
 
 ;; CHECK-FAIL: "message"
 
+;; compilation error is "Unsupported form 'BRAND' found in function body." but, again, not ideal.
+
 (def-function add-ints (a b)
     (declare #'(int int => int))
     ;; even though it is not used or referenced

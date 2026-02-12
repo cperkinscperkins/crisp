@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "Brand TOKEN-T: invalid :enforce mode NIL. Must be :always or :diff"
 ;; if :enforce key appears, it must have the value (:always or :differ)
 
 (def-struct server

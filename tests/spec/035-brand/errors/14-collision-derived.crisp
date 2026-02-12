@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "Brand name collision: METERS is already defined as a non-brand type"
 
 (def-derived-type meters float :subst :ancestor)
 

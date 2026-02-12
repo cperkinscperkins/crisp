@@ -11,7 +11,7 @@
     (id int))
 
 (def-function authenticate (s tok)
-    (declare #'(server (token-t s) => int))
+    (declare #'((server T) (token-t s) => int))
     1))
 
 (def-kernel happy_path_gen ()

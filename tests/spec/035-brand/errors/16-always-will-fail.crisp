@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "Type mismatch! Expected (NIL) but inferred (INT)"
 
 ;; this is the same test as 17-canonical-type-auth-01.crisp which only fails with --differentiate.
 ;; but this one uses :enforce :always

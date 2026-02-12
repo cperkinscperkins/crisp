@@ -1,6 +1,8 @@
 
 ;; CHECK-FAIL: "message"
 
+;; compilation error is "The variable CRISP-LANGUAGE::YARDS is unbound."  but that seems not ideal.
+
 ;; brand is not usable outside def-struct or def-record
 
 (def-derived-type meters float :subst :ancestor)
