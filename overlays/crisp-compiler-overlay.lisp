@@ -1315,3 +1315,11 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                 :args final-arg-nodes
                                 :signature augmented-signature
                                 :source-location location)))))))
+;;; =========================================================
+;;; Brand Misuse Error
+;;; =========================================================
+
+(defmacro brand (&rest args)
+  "Catches invalid usage of BRAND outside of DEF-STRUCT or DEF-RECORD."
+  (declare (ignore args))
+  (error "BRAND can only be used within DEF-STRUCT or DEF-RECORD."))

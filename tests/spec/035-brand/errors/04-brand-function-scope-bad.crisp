@@ -1,7 +1,6 @@
 
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "BRAND can only be used within DEF-STRUCT or DEF-RECORD."
 
-;; compilation error is "Unsupported form 'BRAND' found in function body." but, again, not ideal.
 
 (def-function add-ints (a b)
     (declare #'(int int => int))
