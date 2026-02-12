@@ -2,6 +2,8 @@
 ;; CHECK-FAIL: "message"
 ;; FAIL-WITH[--differentiate]: "message"
 
+;; right now error is "Too many type arguments for template SERVER." which is not ideal.
+
 ;; this test causes a violation of the One Brand Name = One Underlying Type rule.
 ;; and should probably  fail even when we aren't ENFORCING branding. 
 
@@ -15,7 +17,7 @@
     (id int))
 
 (def-function authenticate (s tok)
-    (declare #'(server (token-t s) => int))
+    (declare #'((server T) (token-t s) => int))
     1))
 
 
@@ -27,11 +29,9 @@
         (my-token (active-token~ s1)))
       (authenticate s1 my-token)))
 
-#|
+
 (def-kernel causes_strife ()
     (declare (return-type nil))
   (let ((s1 (make-server :active-token (as-ulong 12345) :id 1))
         (my-token (active-token~ s1)))
       (authenticate s1 my-token)))
-
-      |#

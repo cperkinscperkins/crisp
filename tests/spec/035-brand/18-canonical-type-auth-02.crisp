@@ -1,6 +1,6 @@
 
 ;; TEST-EXPECT: PASS 
-;; FAIL-WITH[--differentiate]: "message"
+;; FAIL-WITH[--differentiate]: "No matching function overload found for 'AUTHENTICATE'"
 
 
 ;; basic struct with branded type. 

@@ -1,6 +1,6 @@
 
 ;; TEST-EXPECT: PASS 
-;; FAIL-WITH[--differentiate]: "message"
+;; FAIL-WITH[--differentiate]: "Type mismatch!"
 
 
 
