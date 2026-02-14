@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-02-08T03:44:58.507482Z
+Generated on 2026-02-14T05:21:24.063803Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -276,7 +276,7 @@ Generated on 2026-02-08T03:44:58.507482Z
 ### DEFUN `VALIDATE-RETURN-TYPES`
 - **Args**: `(NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)`
 
-  > Analyzes the function body and validates return types.
+  > Analyzes the function body and validates return types.  >    Fixes: A 1-element list whose sole element is a symbol (e.g. (TOKEN-T)) is always  >    treated as a return-types list, never as a parameterized type. This prevents  >    double-wrapping when the type name is a type alias.
 
 
 ---
@@ -311,9 +311,6 @@ Generated on 2026-02-08T03:44:58.507482Z
 ---
 ### DEFUN `ANALYZE-FUNCTION-CALL`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
-
-  > Analyzes a call to a user-defined function.
-
 
 ---
 ### DEFUN `SEMANTIC-NODE-TYPE`
@@ -442,10 +439,17 @@ Generated on 2026-02-08T03:44:58.507482Z
 
 
 ---
+### DEFUN `NUMERIC-TYPE-CATEGORY`
+- **Args**: `(TYPE-NAME)`
+
+  > Returns the category (:signed-int, :unsigned-int, :float) if TYPE-NAME is a numeric  >    scalar in *crisp-types*, or NIL otherwise. Resolves aliases and derived types first.
+
+
+---
 ### DEFUN `ANALYZE-STRUCT-CONSTRUCTION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
+  > Analyzes a (%construct-struct type-name arg1 arg2 ...) form.  >    Supports implicit promotion of base-type values to branded member types  >    in struct constructors (the birthplace of branded values).
 
 
 ---
@@ -803,7 +807,7 @@ Generated on 2026-02-08T03:44:58.507482Z
 
 ---
 ### DEFUN `INITIALIZE-COMPILER`
-- **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL))`
+- **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
 
   > A master initialization function for the Crisp compiler.  > This should be called by any entry point into the system (REPL, executable, CI).
 
@@ -904,9 +908,6 @@ Generated on 2026-02-08T03:44:58.507482Z
 ### DEFUN `REGISTER-FUNCTION-SIGNATURE`
 - **Args**: `(FORM LOCATION)`
 
-  > Extracts and registers a function's signature without analyzing its body.  >    Handles optional parameters by generating overloaded signatures.
-
-
 ---
 ### DEFVAR `*TEMPLATE-REGISTRY*`
 
@@ -951,7 +952,7 @@ Generated on 2026-02-08T03:44:58.507482Z
 ### DEFUN `PARSE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Parses a single type specifier, handling basic types, parameterized types,  >    and function types like #'(int => int).
+  > Parses a single type specifier, handling basic types, parameterized types,  >    function types like #'(int => int), and brand type applications like (token-t s).
 
 
 ---
@@ -1414,14 +1415,14 @@ Generated on 2026-02-08T03:44:58.507482Z
 ### DEFMACRO `DEF-STRUCT`
 - **Args**: `(NAME &REST MEMBERS)`
 
-  > Defines a new Crisp struct type.
+  > Defines a new Crisp struct type. Supports brand declarations.
 
 
 ---
 ### DEFMACRO `DEF-RECORD`
 - **Args**: `(NAME &REST MEMBERS)`
 
-  > Defines a new Crisp record type (virtual struct).
+  > Defines a new Crisp record type (virtual struct). Supports brand declarations.
 
 
 ---
@@ -1478,6 +1479,13 @@ Generated on 2026-02-08T03:44:58.507482Z
 - **Args**: `(ANCESTOR-TYPE DESCENDANT-TYPE)`
 
   > Links two existing struct types in a type hierarchy.  >    The descendant can implicitly pass where the ancestor is expected.  >    Generates as-<ancestor> and as-<descendant> casting functions.  >   >    Syntax: (set-derived ancestor-type descendant-type)  >   >    Requirements:  >    - Both types must be structs (or derived from structs)  >    - Ancestor size <= Descendant size  >    - Shape compatible (flattened data members match in type and byte offset)  >    - No cycles in the type DAG
+
+
+---
+### DEFMACRO `BRAND`
+- **Args**: `(&REST ARGS)`
+
+  > Catches invalid usage of BRAND outside of DEF-STRUCT or DEF-RECORD.
 
 
 ---
@@ -2056,14 +2064,14 @@ Generated on 2026-02-08T03:44:58.507482Z
 ### DEFUN `GET-STD140-BASE-ALIGNMENT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns the base alignment (N) for a given type according to std140 rules.  >    For scalars, N is the size of the scalar.  >    For vectors, it is 2N or 4N.  >    For arrays/structs, it is rounded up to vec4 alignment (16).
+  > Returns the base alignment (N) for a given type according to std140 rules.  >    For scalars, N is the size of the scalar.  >    For vectors, it is 2N or 4N.  >    For arrays/structs, it is rounded up to vec4 alignment (16).  >    Resolves both type aliases and derived types to their physical base.
 
 
 ---
 ### DEFUN `GET-STD140-SIZE`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns the size (in bytes) of a type. Does not include padding for alignment context.
+  > Returns the size (in bytes) of a type. Does not include padding for alignment context.  >    Resolves both type aliases and derived types to their physical base.
 
 
 ---
@@ -2307,6 +2315,76 @@ Generated on 2026-02-08T03:44:58.507482Z
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp-man\src\types\brand.lisp`
+
+### DEFVAR `*BRAND-INSTANCE-CACHE*`
+
+  > Per-function cache mapping (brand-name . variable-identity) to a gensym'd  >    instance-specific type name. Cleared at the start of each function compilation.
+
+
+---
+### DEFVAR `*BRAND-CACHE-LAST-FUNCTION*`
+
+  > The name of the function for which the brand instance cache was last cleared.
+
+
+---
+### DEFUN `BRAND-ACTIVE-P`
+- **Args**: `(BRAND-DEF)`
+
+  > Returns T if the given brand should be actively enforced in the current compilation.  >    A brand is active when :enforce is :always, or when :enforce is :diff  >    and *differentiate-p* is set.
+
+
+---
+### DEFUN `IS-BRAND-TYPE-P`
+- **Args**: `(TYPE-NAME)`
+
+  > Returns the brand-definition if TYPE-NAME is a registered brand, NIL otherwise.
+
+
+---
+### DEFUN `BRAND-MEMBER-P`
+- **Args**: `(MEMBER-TYPE)`
+
+  > Returns T if MEMBER-TYPE is a branded type whose brand is currently active.
+
+
+---
+### DEFUN `PARSE-BRAND-DECLARATION`
+- **Args**: `(BRAND-FORM)`
+
+  > Parses a brand declaration form: (brand name base-type :subst mode &optional :enforce mode).  >    Returns a brand-definition struct.
+
+
+---
+### DEFUN `REGISTER-BRAND-DEFINITION`
+- **Args**: `(STRUCT-NAME BRAND-FORM)`
+
+  > Registers a brand declaration from within a struct definition.  >    When the brand is active: registers as a derived type in the DAG.  >    When inactive: registers as a type alias (transparent erasure).
+
+
+---
+### DEFUN `RESOLVE-BRAND-TYPE`
+- **Args**: `(BRAND-NAME VAR-REF)`
+
+  > Resolves a branded type for a specific variable instance.  >    Returns a gensym'd type name unique to (brand-name, var-ref).  >    On first call for a given pair, creates a new type node in the DAG  >    as a :descendant of brand-name, caches it, and returns it.  >    On subsequent calls, returns the cached gensym.  >   >    The :descendant relationship means:  >    - The gensym CAN substitute for brand-name (signature matching works)  >    - Two different gensyms CANNOT substitute for each other (instance safety)  >    - The gensym inherits brand-name's isolation from its base type
+
+
+---
+### DEFUN `VALIDATE-DEPENDENT-BRAND-TYPES`
+- **Args**: `(DECLARE-FORMS ENV)`
+
+  > Verifies that any parameters typed as (brand var) refer to a valid owner parameter.  >    Scans the raw declarations to find dependencies that parse-type-specifier might have flattened.  >    Supports shared brands (same brand name defined on multiple structs).
+
+
+---
+### DEFUN `%FIND-BRAND-OWNER-VAR`
+- **Args**: `(BRAND-NAME SIG-PARAMS ARG-NODES)`
+
+  > Finds the actual argument variable for the parameter that owns the brand instance.  >    Handles shared brands by checking if any parameter's type is a registered owner  >    for the given BRAND-NAME.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\types\definitions.lisp`
 
 ### DEFSTRUCT `ENUMERATION-DEF`
@@ -2489,6 +2567,24 @@ Generated on 2026-02-08T03:44:58.507482Z
 ### DEFVAR `*RUNTIME-CHECKS-ENABLED*`
 
   > If true, runtime assertions (r-t-assert) are compiled.
+
+
+---
+### DEFVAR `*BRAND-DEFINITIONS*`
+
+  > Maps (brand-name . struct-type) to brand-definition records.  >    Populated when def-struct / def-record with brand declarations are processed.
+
+
+---
+### DEFSTRUCT `BRAND-DEFINITION`
+
+  > Stores the definition of a branded type declared inside a struct/record.
+
+
+---
+### DEFVAR `*DIFFERENTIATE-P*`
+
+  > If T, enable differentiation mode. Activates branded type enforcement  >    for brands declared with :enforce :diff (the default).
 
 
 ---

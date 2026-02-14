@@ -8,7 +8,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 ## Roots (Entry Points & Unused Functions)
 - (MAIN) :CRISP.MAIN  main.lisp
 - - (PARSE-CLI-ARGS ARGS) :CRISP.MAIN  main.lisp
-- - - (INITIALIZE-COMPILER &KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL))  compiler.lisp
+- - - (INITIALIZE-COMPILER &KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL) (DIFFERENTIATE
+                                                                       NIL))  compiler.lisp
 - - - - (INITIALIZE-CRISP-TYPES)  types/registry.lisp
 - - - - (INITIALIZE-TYPE-HIERARCHY)  types/hierarchy.lisp
 - - - - (INITIALIZE-EXPRESSION-ANALYZERS)  analysis/core.lisp
@@ -49,6 +50,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - (%INSTANTIATE-TEMPLATE-IF-NEEDED BASE-TYPE TEMPLATE-ARGS MANGLED-NAME)  types/validation.lisp
 - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
 - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [RECURSION]
+- - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp
+- - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [RECURSION]
+- - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp
 - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - (VALID-FUNCTION-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
@@ -62,6 +66,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - (ANALYZE-ENVIRONMENT-FROM-LIST PARAMS DECLARATIONS)  environment.lisp
 - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
+- - - - - - (VALIDATE-DEPENDENT-BRAND-TYPES DECLARE-FORMS ENV)  types/brand.lisp
+- - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
 - - - - - - (%REGISTER-GENERIC-FUNCTION NAME PARAMS ENV RETURN-TYPES DECLARE-FORMS EXTRACTED-DEFAULTS KEY-IDX BODY LOCATION)  environment.lisp
 - - - - - - (%REGISTER-STANDARD-FUNCTION NAME ENV RETURN-TYPES DECLARE-FORMS LOCATION)  environment.lisp
 - - - - - - - (%FIND-ENTRY-POINT-DECLARATION DECLARE-FORMS)  environment.lisp
@@ -220,11 +226,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (COMPUTE-RECORD-LAYOUT MEMBERS)  structs.lisp
 - - - - - - - (GET-STD140-SIZE TYPE-SPEC)  structs.lisp
 - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - (COMPUTE-STD140-LAYOUT MEMBERS)  structs.lisp
 - - - - - - - (GET-STD140-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp
 - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - (GET-STD140-SIZE TYPE-SPEC)  structs.lisp [See above]
@@ -265,6 +273,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp
 - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
 - - - - (SERIALIZE-KERNELS OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)  metadata.lisp
 - - - - - (GENERATE-PHYSICAL-SIGNATURE SIG-OR-PARAMS)  metadata.lisp
 - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
@@ -329,6 +338,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp [RECURSION]
 - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
 - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
+- - - - - - - - - (%FIND-BRAND-OWNER-VAR BRAND-NAME SIG-PARAMS ARG-NODES)  types/brand.lisp
+- - - - - - - - - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF)  types/brand.lisp
+- - - - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
+- - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
+- - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
+- - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
+- - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp
+- - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp [RECURSION]
 - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
@@ -396,9 +418,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [RECURSION]
 - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
-- - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp
-- - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp [RECURSION]
+- - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp [See above]
 - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
 
@@ -474,6 +494,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (TYPE-EQUAL-P T1 T2)  types/validation.lisp
 - - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - (NUMERIC-TYPE-CATEGORY TYPE-NAME)  analysis/structs.lisp
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 
 - (ANALYZE-TEMPLATE-INSTANTIATION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -491,6 +515,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-WHEN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-IF-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
+
+- (BRAND-MEMBER-P MEMBER-TYPE)  types/brand.lisp
+- - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
 
 - (C-T-ASSERT CONDITION MESSAGE)  macros.lisp
 
@@ -528,12 +556,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (DEF-DERIVED-TYPE NEW-NAME ORIGINAL-TYPE &KEY (SUBST NIL SUBST-P))  macros.lisp
-- - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
-- - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
-- - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
-- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp [See above]
 
 - (DEF-ENUMERATION NAME &REST SPECS)  enums.lisp
 
@@ -565,6 +589,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (DEF-RECORD NAME &REST MEMBERS)  macros.lisp
+- - (BRAND &REST ARGS)  macros.lisp
+- - (REGISTER-BRAND-DEFINITION STRUCT-NAME BRAND-FORM)  types/brand.lisp
+- - - (PARSE-BRAND-DECLARATION BRAND-FORM)  types/brand.lisp
+- - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
+- - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp [See above]
 - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
 - - (VALIDATE-AND-REORDER-STRUCT-ARGS STRUCT-NAME DEFINED-MEMBERS ARGS)  structs.lisp
 
@@ -572,6 +602,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (DEF-STRUCT NAME &REST MEMBERS)  macros.lisp
+- - (BRAND &REST ARGS)  macros.lisp [See above]
+- - (REGISTER-BRAND-DEFINITION STRUCT-NAME BRAND-FORM)  types/brand.lisp [See above]
 - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
 - - (VALIDATE-AND-REORDER-STRUCT-ARGS STRUCT-NAME DEFINED-MEMBERS ARGS)  structs.lisp [See above]
 

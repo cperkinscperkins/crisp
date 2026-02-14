@@ -406,7 +406,7 @@ Assault On Pytorch
 - [ ] LLVM-IR can only bitcast same size. So (as-ulong 12345) is a problem. (to-ulong 12345) works.
       Should revisit docs and decide how to handle this.
 
-- [ ] brand -- 
+- [x] brand -- 
 - - [x] requires documentation and decisions before work can begin.
 - [ ] --differentiate
 - - [ ] ANF transform.

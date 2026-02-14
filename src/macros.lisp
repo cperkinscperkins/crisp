@@ -943,3 +943,8 @@
            (setf (gethash ',as-descendant-name *expression-analyzers*)
              #'analyze-cast-expression)
            (log:debug "set-derived: registered expression analyzer for ~a" ',as-descendant-name))))))
+
+(defmacro brand (&rest args)
+  "Catches invalid usage of BRAND outside of DEF-STRUCT or DEF-RECORD."
+  (declare (ignore args))
+  (error "BRAND can only be used within DEF-STRUCT or DEF-RECORD."))
