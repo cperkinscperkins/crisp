@@ -52,6 +52,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo.
+echo --- Running External Runner (Differentiate) ---
+sbcl --script tests/run-specs.lisp --use-binary --differentiate
+if errorlevel 1 (
+    echo [FAILED] External Runner ^(Differentiate^) failed.
+    exit /b 1
+)
+
 REM ---------------------------------------------------
 REM 3. Failure Tests (Expected to Fail)
 REM ---------------------------------------------------

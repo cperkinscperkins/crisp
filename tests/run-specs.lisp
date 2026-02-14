@@ -1066,6 +1066,7 @@
              ((string= arg "--use-binary") (setf *use-binary* t))
              ((string= arg "--debug") (setf *compile-debug* t))
              ((string= arg "--single-pass") (setf *compile-single-pass* t))
+             ((string= arg "--differentiate") (setf *compile-differentiate* t))
              ((string= arg "--only-unit-tests") (setf *only-unit-tests* t))
              ((string= arg "--skip-unit-tests") (setf *skip-unit-tests* t))
              ((string= arg "--keep-work") (setf *keep-work* t))
@@ -1073,11 +1074,12 @@
                (setf *test-filter* (subseq arg 9)))))
 
     ;; Re-initialize with user-requested log level
-    (initialize-compiler :log-level cl-user::*log-level*)
+    (initialize-compiler :log-level cl-user::*log-level*
+                         :differentiate *compile-differentiate*)
 
     (format t "~&Locating specs in ~a~%" spec-dir)
-    (format t "Configuration: Binary: ~a, Debug: ~a, Single-Pass: ~a~%"
-      *use-binary* *compile-debug* *compile-single-pass*)
+    (format t "Configuration: Binary: ~a, Debug: ~a, Single-Pass: ~a, Differentiate: ~a~%"
+      *use-binary* *compile-debug* *compile-single-pass* *compile-differentiate*)
     (format t "DEBUG: Symbols EQ? single-pass: ~a~%"
       (eq '*compile-single-pass* (find-symbol "*COMPILE-SINGLE-PASS*" :crisp.compiler)))
 
@@ -1142,8 +1144,8 @@
                          (push (format nil "~a/~a" dir-name (pathname-name file)) failed-files)))))))
 
     (format t "~&---------------------------~%")
-    (format t "Run Configuration: Binary=~a, Debug=~a, SinglePass=~a~@[, Filter=~a~]~%"
-      *use-binary* *compile-debug* *compile-single-pass* *test-filter*)
+    (format t "Run Configuration: Binary=~a, Debug=~a, SinglePass=~a, Differentiate=~a~@[, Filter=~a~]~%"
+      *use-binary* *compile-debug* *compile-single-pass* *compile-differentiate* *test-filter*)
     (format t "Spec Summary: ~a/~a Passed.~%" passed total)
     (when failed-files
           (format t "Failed Specs:~%~{  - ~a~%~}" (nreverse failed-files)))
