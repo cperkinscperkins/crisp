@@ -215,6 +215,7 @@
           (strip-package-qualifiers target)))))
   (format stream "  )~%~%"))
 
+#|
 (defun serialize-structs (stream structs-hash)
   (format stream "(:structs~%")
   (let ((struct-names (alexandria:hash-table-keys structs-hash)))
@@ -229,6 +230,32 @@
                     (strip-package-qualifiers (second m))))
                 (format stream ")~%"))))))
   (format stream "  )~%~%"))
+  |#
+
+(defun serialize-structs (stream structs-hash)
+  (format stream "(:structs~%")
+  (let ((struct-names (alexandria:hash-table-keys structs-hash)))
+    (let ((sorted-names (sort-structs-by-dependency struct-names)))
+      (dolist (name sorted-names)
+        (let ((def (gethash name *crisp-structs*)))
+          (when def
+                (format stream "  (def-struct ~a" (strip-package-qualifiers name))
+                (dolist (m (crisp-struct-definition-members def))
+                  (let* ((member-name (first m))
+                         (member-type (second m))
+                         ;; Resolve brand type to base type for metadata
+                         (brand-def (is-brand-type-p member-type))
+                         ;; Always resolve to base type for C++ metadata, regardless of active state.
+                         ;; C++ does not know about brands, only the underlying physical type.
+                         (final-type (if brand-def
+                                         (brand-definition-base-type brand-def)
+                                         member-type)))
+                    (format stream " (~a ~a)"
+                      (strip-package-qualifiers member-name)
+                      (strip-package-qualifiers final-type))))
+                (format stream ")~%"))))))
+  (format stream "  )~%~%"))
+
 
 (defun extract-defined-kernels (forms)
   (let ((names nil))

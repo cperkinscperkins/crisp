@@ -396,6 +396,7 @@
   "Finds a variable definition in the environment."
   (find name env :key #'parameter-def-name))
 
+#|
 (defun validate-return-types (name body env context declared-return-types location)
   "Analyzes the function body and validates return types."
   (declare (ignore name))
@@ -412,6 +413,62 @@
                                ;; parameterized type like '(cell int).
                                (if (and (listp node-type) (not (valid-type-p node-type)))
                                    node-type ; It's a list of multiple return values, use as-is.
+                                   (list node-type))) ; It's a single value, wrap it in a list.
+                             '(nil))))
+
+    (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types declared-return-types)
+
+    (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
+               inferred-types (listp inferred-types)
+               declared-return-types (listp declared-return-types))
+
+    ;; Check Types. This allows for a function returning multiple values
+    ;; to be used in a context that expects fewer values (the extras are dropped).
+    (let* ((num-declared (length declared-return-types))
+           (num-inferred (length inferred-types))
+           ;; Take the first N inferred types, where N is the number of declared types.
+           (inferred-subset (if (>= num-inferred num-declared)
+                                (subseq inferred-types 0 num-declared)
+                                inferred-types)))
+      (unless (and (>= num-inferred num-declared)
+                   ;; Fix for Regression in 30-derived-numeric-types:
+                   ;; Instead of strict equivalence, we check if the inferred type is assignable
+                   ;; to the declared type (e.g. EQ-WEAK is assignable to FLOAT).
+                   (every #'types-assignable-p inferred-subset declared-return-types))
+        (error 'crisp-type-error
+          :expected declared-return-types
+          :inferred inferred-types
+          :source-location (if return-node
+                               (semantic-node-source-location return-node)
+                               location))))
+    (values body-nodes inferred-types)))
+    |#
+
+
+(defun validate-return-types (name body env context declared-return-types location)
+  "Analyzes the function body and validates return types.
+   Fixes: A 1-element list whose sole element is a symbol (e.g. (TOKEN-T)) is always
+   treated as a return-types list, never as a parameterized type. This prevents
+   double-wrapping when the type name is a type alias."
+  (declare (ignore name))
+  ;; Handle the case where a function promises a return value but has no body.
+  (when (and (not (equal declared-return-types '(nil))) (null body))
+        (error 'crisp-type-error :expected declared-return-types :inferred '(nil) :source-location location))
+
+  (let* ((body-nodes (analyze-body-expressions body env context location))
+         (return-node (first (last body-nodes)))
+         (inferred-types (if return-node
+                             (let ((node-type (semantic-node-type return-node)))
+                               ;; If the node-type is a list, we need to distinguish between
+                               ;; a multi-value return type like '(int int) and a single
+                               ;; parameterized type like '(cell int).
+                               ;; A 1-element list of a symbol (e.g. (TOKEN-T)) is always a
+                               ;; return-types list - no parameterized type has 0 args.
+                               (if (and (listp node-type)
+                                        (or (not (valid-type-p node-type))
+                                            (and (= (length node-type) 1)
+                                                 (symbolp (first node-type)))))
+                                   node-type ; It's a list of return values, use as-is.
                                    (list node-type))) ; It's a single value, wrap it in a list.
                              '(nil))))
 

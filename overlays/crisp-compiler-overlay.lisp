@@ -4,7 +4,7 @@
 ;;;; Applied via late binding - last definition wins
 
 (in-package :crisp.compiler)
-
+#|
 ;;; =========================================================
 ;;; Branded Types - Infrastructure (Test 01)
 ;;; =========================================================
@@ -27,12 +27,16 @@
 ;;; --differentiate flag support (branded types prerequisite)
 ;;; =========================================================
 
+|#
 ;; src/types/registry.lisp
+#|
 (defvar *differentiate-p* nil
         "If T, enable differentiation mode. Activates branded type enforcement
    for brands declared with :enforce :diff (the default).")
+   |#
 
 ;; src/compiler.lisp
+#|
 (defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
@@ -88,6 +92,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 
   ;; Initialize built-in structs (storage)
   (register-builtins))
+  |#
 
 
 (defun parse-brand-declaration (brand-form)
@@ -219,6 +224,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; resolve through the DAG as well as through type aliases.
 
 ;; src/structs.lisp
+#|
 (defun get-std140-base-alignment (type-spec)
   "Returns the base alignment (N) for a given type according to std140 rules.
    For scalars, N is the size of the scalar.
@@ -295,7 +301,10 @@ This should be called by any entry point into the system (REPL, executable, CI).
       (t
        (error "Unknown type for size: ~a" type-spec)))))
 
+       |#
+
 ;; src/analysis/structs.lisp
+#|
 (defun numeric-type-category (type-name)
   "Returns the category (:signed-int, :unsigned-int, :float) if TYPE-NAME is a numeric
    scalar in *crisp-types*, or NIL otherwise. Resolves aliases and derived types first."
@@ -305,7 +314,9 @@ This should be called by any entry point into the system (REPL, executable, CI).
     (cl:when (and crisp-type
                   (member (crisp-type-category crisp-type) '(:signed-int :unsigned-int :float)))
       (crisp-type-category crisp-type))))
+      |#
 
+#|
 (defun analyze-struct-construction (expr env context location)
   "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
    Supports implicit promotion of base-type values to branded member types
@@ -363,12 +374,14 @@ This should be called by any entry point into the system (REPL, executable, CI).
          :type type-name
          :args arg-nodes
          :source-location location)))))
+         |#
 
 ;;; =========================================================
 ;;; Branded Types - Dependent Type Signatures (Test 03)
 ;;; =========================================================
 
 ;; src/environment.lisp
+#|
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
    function types like #'(int => int), and brand type applications like (token-t s)."
@@ -479,8 +492,10 @@ This should be called by any entry point into the system (REPL, executable, CI).
    (t
      (log:error "PARSE: Unknown type spec: ~s" spec)
      (error 'crisp-unknown-type-error :type-name spec))))
+     |#
 
 ;; src/analysis/core.lisp
+#|
 (defun validate-return-types (name body env context declared-return-types location)
   "Analyzes the function body and validates return types.
    Fixes: A 1-element list whose sole element is a symbol (e.g. (TOKEN-T)) is always
@@ -534,6 +549,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                (semantic-node-source-location return-node)
                                location))))
     (values body-nodes inferred-types)))
+    |#
 
 ;;; =========================================================
 ;;; Branded Types - Instance Differentiation (Test 17)
@@ -705,7 +721,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; =========================================================
 
 (in-package :crisp.compiler)
-
+#|
 (defun serialize-structs (stream structs-hash)
   (format stream "(:structs~%")
   (let ((struct-names (alexandria:hash-table-keys structs-hash)))
@@ -729,6 +745,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                       (strip-package-qualifiers final-type))))
                 (format stream ")~%"))))))
   (format stream "  )~%~%"))
+  |#
 
 #|
 ;; REDEFINITION: generate-metadata-for-file to ensure it uses the NEW serialize-structs

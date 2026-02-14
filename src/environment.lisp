@@ -420,7 +420,7 @@
             t))))
 
 ;; --- #'(...) Syntax Parsers ---
-
+#|
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
    and function types like #'(int => int)."
@@ -467,6 +467,119 @@
    ((and (symbolp spec) (valid-type-p spec)) spec)
 
    ;; Storage Handle Symbols (e.g. CELL, VECTOR...) 
+   ((and (symbolp spec) (member (symbol-name spec) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+     (log:info "PARSE: Promoting symbol ~a to list (~a)" spec spec)
+     (parse-type-specifier (list spec)))
+
+   ;; Function Type: #'(int => int)
+   ((and (listp spec) (member (first spec) '(function common-lisp:function)))
+     (let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
+       `(:function-type ,(analyze-return-type-from-spec sig)
+                        :params ,(mapcar #'parse-type-specifier
+                                   (subseq sig 0 (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "=>"))) sig))))))
+
+   ;; Storage Handle Constructor Rules
+   ((and (listp spec) (member (symbol-name (first spec)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+     (log:info "PARSE: Calling expand for ~s" spec)
+     (let ((canonical (expand-storage-handle-type-specifier spec)))
+       (if (valid-type-p canonical)
+           (let ((base (first canonical))
+                 (params (rest canonical)))
+             (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+               (mangle-template-struct-name base resolved-params)))
+           (error 'crisp-unknown-type-error :type-name spec))))
+
+   ;; Function Type/Literal
+   ((and (listp spec) (valid-function-type-p spec)) spec)
+
+   ;; Generic Parameterized Type: e.g. '(point float)
+   ((and (listp spec) (valid-type-p spec))
+     (log:info "PARSE: Generic path for ~s" spec)
+     (let* ((base (first spec))
+            (params (rest spec))
+            (arity (get-template-arity base)))
+       (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+         (if (and arity (> arity 0))
+             (mangle-template-struct-name base resolved-params)
+             (if resolved-params
+                 (cons base resolved-params)
+                 base)))))
+
+   ;; Unknown?
+   (t
+     (log:error "PARSE: Unknown type spec: ~s" spec)
+     (error 'crisp-unknown-type-error :type-name spec))))
+     |#
+
+
+(defun parse-type-specifier (spec)
+  "Parses a single type specifier, handling basic types, parameterized types,
+   function types like #'(int => int), and brand type applications like (token-t s)."
+  (cond
+   ;; 0. Type Aliases -- FIX: Use resolve-type-alias for cycle detection
+   ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
+     ;; Validate cycle but return alias to preserve it for metadata
+     (let ((resolved (resolve-type-alias spec)))
+       (valid-type-p resolved) ;; Force instantiation of underlying template
+       spec)) ;; Return alias, NOT resolved
+
+   ;; 0.1 Template Aliases (e.g. (in-cell int))
+   ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
+     (let* ((alias-name (first spec))
+            (args (rest spec))
+            (alias-def (gethash alias-name *crisp-template-aliases*))
+            (params (car alias-def))
+            (body-spec (cdr alias-def))
+            (arity (length params))
+            (required-args (subseq args 0 (min (length args) arity)))
+            (rest-args (subseq args (length required-args)))
+            (substitutions (pairlis params required-args)))
+       (let ((expanded (sublis substitutions body-spec)))
+         (let ((final-spec (if (and rest-args (consp expanded))
+                               (append expanded rest-args)
+                               (if rest-args ;; Fix if expanded is atom but more args exist
+                                   (cons expanded rest-args)
+                                   expanded))))
+           (parse-type-specifier final-spec)))))
+
+   ;; 0.15 Brand Type Application: (brand-name var-ref)
+   ;; e.g. (token-t s) where token-t is a brand declared in a struct.
+   ;; Must come BEFORE the alias-as-list-head branch because inactive brands
+   ;; are registered as type aliases and would be incorrectly expanded.
+   ((and (listp spec)
+         (= (length spec) 2)
+         (symbolp (first spec))
+         (symbolp (second spec))
+         (is-brand-type-p (first spec)))
+     (cl:let* ((brand-name (first spec))
+               (var-ref (second spec))
+               (brand-def (is-brand-type-p brand-name)))
+       ;; Always resolve to the brand type name.
+       ;; When active: brand-name is a proper derived type in the DAG.
+       ;; When inactive: brand-name is a type alias (transparent erasure).
+       ;; Either way, returning the symbol is correct and consistent with
+       ;; how parse-type-specifier handles aliases (branch 0 returns alias, not resolved).
+       (log:info "PARSE: Brand type application (~a ~a) -> ~a [~a]"
+                 brand-name var-ref brand-name
+                 (if (brand-active-p brand-def) "active" "inactive"))
+       brand-name))
+
+   ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
+   ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
+     (let* ((alias-name (first spec))
+            (args (rest spec))
+            (expanded-base (gethash alias-name *crisp-type-aliases*)))
+       ;; If alias expands to a list, append args. If symbol, make a new list.
+       (let ((final-spec (if (listp expanded-base)
+                             (append expanded-base args)
+                             (cons expanded-base args))))
+         (log:info "EXPAND-ALIAS-HEAD: ~a -> ~a" spec final-spec)
+         (parse-type-specifier final-spec))))
+
+   ;; Standard symbol: e.g. 'int'
+   ((and (symbolp spec) (valid-type-p spec)) spec)
+
+   ;; Storage Handle Symbols (e.g. CELL, VECTOR...)
    ((and (symbolp spec) (member (symbol-name spec) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
      (log:info "PARSE: Promoting symbol ~a to list (~a)" spec spec)
      (parse-type-specifier (list spec)))
