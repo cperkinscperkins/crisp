@@ -645,7 +645,7 @@
                :source-location location)))))
     res))
 
-
+#|
 (defun analyze-function-call (op expr env context location)
   "Analyzes a call to a user-defined function."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
@@ -705,6 +705,103 @@
                               :args final-arg-nodes
                               :signature augmented-signature
                               :source-location location))))))
+|#
+
+;;; Redefine analyze-function-call to use the new finding logic
+(defun analyze-function-call (op expr env context location)
+  (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
+
+  ;; Recursion / call-graph tracking
+  (if (multi-pass-mode-p)
+      (when (compiler-context-current-compiling-function context)
+            (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
+      (when (eq op (compiler-context-current-compiling-function context))
+            (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
+
+  ;; Implicit args
+  (let ((implicit-args-required (gethash op *implicit-arg-map*)))
+    (when (and (single-pass-mode-p) implicit-args-required)
+          (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
+
+    (let* ((arg-forms (rest expr))
+           (explicit-arg-nodes (loop for arg-form in arg-forms
+                                     for i from 1
+                                     collect (analyze-expression arg-form env context (append location (list i)))))
+           (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
+           (signature (resolve-best-signature op explicit-arg-types context)))
+
+      (let ((final-arg-nodes
+             (if implicit-args-required
+                 (let ((implicit-arg-nodes
+                        (loop for (param-name . param-type) in implicit-args-required
+                              collect (let ((found (find-variable-in-env param-name env)))
+                                        (if found
+                                            (make-semantic-var-read :name param-name :type (parameter-def-type found) :source-location location)
+                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
+                                              (compiler-context-current-compiling-function context) param-name))))))
+                   (append implicit-arg-nodes explicit-arg-nodes))
+                 explicit-arg-nodes)))
+
+        (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
+          (error 'crisp-signature-arity-error
+            :expected (length (function-signature-parameters signature))
+            :inferred (length explicit-arg-types)
+            :source-location location))
+
+        (let ((augmented-signature
+               (if implicit-args-required
+                   (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
+                                                collect (make-parameter-def :name param-name :type param-type :kind :in))))
+                     (make-function-signature
+                      :name (function-signature-name signature)
+                      :parameters (append implicit-params (function-signature-parameters signature))
+                      :return-types (function-signature-return-types signature)
+                      :source-location (function-signature-source-location signature)
+                      :is-template-p (function-signature-is-template-p signature)
+                      :template-params (function-signature-template-params signature)))
+                   signature)))
+
+          ;; === Brand Instance Type Checking (when --differentiate is active) ===
+          (let ((refined-return-types (function-signature-return-types augmented-signature)))
+            (when *differentiate-p*
+                  (let ((sig-params (function-signature-parameters augmented-signature)))
+
+                    ;; 1. Brand parameter type checking
+                    (loop for param in sig-params
+                          for arg-node in final-arg-nodes
+                          for param-type = (parameter-def-type param)
+                          do (cl:let ((brand-def (is-brand-type-p param-type)))
+                               (when (and brand-def (brand-active-p brand-def))
+                                     ;; FIX: Use brand-name to find owner, supporting shared brands
+                                     (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                sig-params final-arg-nodes)))
+                                       (when owner-var
+                                             (cl:let* ((expected-type (resolve-brand-type param-type owner-var))
+                                                       (actual-type (get-single-value-type arg-node)))
+                                               (unless (or (eq actual-type expected-type)
+                                                           (is-substitutable-for? actual-type expected-type))
+                                                 (error 'crisp-type-error
+                                                   :expected (list expected-type)
+                                                   :inferred (list actual-type)
+                                                   :source-location location))))))))
+
+                    ;; 2. Brand return type refinement
+                    (setf refined-return-types
+                      (loop for ret-type in (function-signature-return-types augmented-signature)
+                            collect (cl:let ((brand-def (is-brand-type-p ret-type)))
+                                      (if (and brand-def (brand-active-p brand-def))
+                                          (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                     sig-params final-arg-nodes)))
+                                            (if owner-var
+                                                (resolve-brand-type ret-type owner-var)
+                                                ret-type))
+                                          ret-type))))))
+
+            (make-semantic-call :name (function-signature-name augmented-signature)
+                                :type refined-return-types
+                                :args final-arg-nodes
+                                :signature augmented-signature
+                                :source-location location)))))))
 
 ;; --- Helper to get the type from any node ---
 (defun semantic-node-type (node)

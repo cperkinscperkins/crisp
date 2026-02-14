@@ -260,6 +260,7 @@
       (setf (gethash name *function-table*)
         (append (gethash name *function-table*) (list sig))))))
 
+#|
 (defun register-function-signature (form location)
   "Extracts and registers a function's signature without analyzing its body.
    Handles optional parameters by generating overloaded signatures."
@@ -286,6 +287,34 @@
                                      extracted-defaults key-idx body location))
 
        ;; Standard function (eager registration)
+       (t
+         (%register-standard-function name env return-types declare-forms location))))))
+|#
+
+;;; Redefine register-function-signature to inject validation
+(defun register-function-signature (form location)
+  (let* ((name (second form))
+         (params (third form))
+         (body (cdddr form))
+         (declare-forms (loop for f in body
+                              while (and (listp f) (eq (car f) 'declare))
+                              collect f)))
+
+    (finish-output *error-output*)
+    ;; Debug logging
+    ;; (log:info "REGISTER-FUNC (Overlay): ~s" name)
+
+    (multiple-value-bind (env return-types optional-idx extracted-defaults key-idx)
+        (parse-function-declarations params (loop for f in declare-forms append (rest f)))
+
+      ;; --- NEW VALIDATION ---
+      (validate-dependent-brand-types declare-forms env)
+      ;; ----------------------
+
+      (cond
+       ((or optional-idx key-idx)
+         (%register-generic-function name params env return-types declare-forms
+                                     extracted-defaults key-idx body location))
        (t
          (%register-standard-function name env return-types declare-forms location))))))
 

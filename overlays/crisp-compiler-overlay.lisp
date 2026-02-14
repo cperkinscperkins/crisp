@@ -574,6 +574,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 (defvar *brand-cache-last-function* nil
         "The name of the function for which the brand instance cache was last cleared.")
 
+#|
 (defun %find-brand-owner-var (brand-def sig-params arg-nodes)
   "Given a brand-definition, finds the actual argument variable for the parameter
    whose type matches the brand's owning struct. Returns the variable name symbol
@@ -585,6 +586,9 @@ This should be called by any entry point into the system (REPL, executable, CI).
           do (cl:return (cl:when (typep an 'semantic-var-read)
                           (semantic-var-read-name an))))))
 
+                          |#
+
+#|
 ;; src/analysis/core.lisp
 (defun analyze-function-call (op expr env context location)
   "Analyzes a call to a user-defined function.
@@ -694,6 +698,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                 :args final-arg-nodes
                                 :signature augmented-signature
                                 :source-location location)))))))
+|#                              
 
 ;;; =========================================================
 ;;; Branded Types - Metadata Generation / Hoisting Fix (Test 43)
@@ -725,6 +730,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                 (format stream ")~%"))))))
   (format stream "  )~%~%"))
 
+#|
 ;; REDEFINITION: generate-metadata-for-file to ensure it uses the NEW serialize-structs
 (defun generate-metadata-for-file (input-path output-path &key (output-targets nil) (source-file nil) (forms nil))
   (let ((kernel-names (if forms
@@ -760,6 +766,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
           (push final-path generated-files)))
 
       (nreverse generated-files))))
+|#
 ;;; =========================================================
 ;;; Dependent Type Validation (Test 20 & 13)
 ;;; =========================================================
@@ -799,7 +806,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                             (scan (car form))
                             (scan (cdr form))))))
             (scan decl))))
-
+#|
 ;;; Redefine register-function-signature to inject validation
 (defun register-function-signature (form location)
   (let* ((name (second form))
@@ -826,6 +833,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                      extracted-defaults key-idx body location))
        (t
          (%register-standard-function name env return-types declare-forms location))))))
+|#
+#|
 (defun analyze-function-call (op expr env context location)
   "Analyzes a call to a user-defined function."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
@@ -885,10 +894,11 @@ This should be called by any entry point into the system (REPL, executable, CI).
                               :args final-arg-nodes
                               :signature augmented-signature
                               :source-location location))))))
+|#
 ;;; =========================================================
 ;;; Runtime Check Fix for Shared Brands
 ;;; =========================================================
-
+#|
 (defun %find-brand-owner-var (brand-name sig-params arg-nodes)
   "Finds the actual argument variable for the parameter that owns the brand instance.
    Handles shared brands by checking if any parameter's type is a registered owner 
@@ -901,7 +911,9 @@ This should be called by any entry point into the system (REPL, executable, CI).
         do (return (if (typep an 'semantic-var-read)
                        (semantic-var-read-name an)
                        nil))))
+                       |#
 
+#|
 ;;; Redefine analyze-function-call to use the new finding logic
 (defun analyze-function-call (op expr env context location)
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
@@ -1001,10 +1013,11 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                 :args final-arg-nodes
                                 :signature augmented-signature
                                 :source-location location)))))))
+|#                                
 ;;; =========================================================
 ;;; Runtime Check Fix for Shared Brands
 ;;; =========================================================
-
+#|
 (defun %find-brand-owner-var (brand-name sig-params arg-nodes)
   "Finds the actual argument variable for the parameter that owns the brand instance.
    Handles shared brands by checking if any parameter's type is a registered owner 
@@ -1017,7 +1030,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
         do (return (if (typep an 'semantic-var-read)
                        (semantic-var-read-name an)
                        nil))))
-
+                       |#
+#|
 ;;; Redefine analyze-function-call to use the new finding logic
 (defun analyze-function-call (op expr env context location)
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
@@ -1105,10 +1119,11 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                 :args final-arg-nodes
                                 :signature augmented-signature
                                 :source-location location)))))))
+|#
 ;;; =========================================================
 ;;; Runtime Check Fix for Shared Brands
 ;;; =========================================================
-
+#|
 (defun %find-brand-owner-var (brand-name sig-params arg-nodes)
   "Finds the actual argument variable for the parameter that owns the brand instance.
    Handles shared brands by checking if any parameter's type is a registered owner 
@@ -1121,7 +1136,9 @@ This should be called by any entry point into the system (REPL, executable, CI).
         do (return (if (typep an 'semantic-var-read)
                        (semantic-var-read-name an)
                        nil))))
+|#
 
+#|
 ;;; Redefine analyze-function-call to use the new finding logic
 (defun analyze-function-call (op expr env context location)
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
@@ -1210,6 +1227,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                 :args final-arg-nodes
                                 :signature augmented-signature
                                 :source-location location)))))))
+|#
 ;;; =========================================================
 ;;; Runtime Check Fix for Shared Brands
 ;;; =========================================================
@@ -1227,6 +1245,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                           (semantic-var-read-name an)
                           nil))))
 
+#|
 ;;; Redefine analyze-function-call to use the new finding logic
 (defun analyze-function-call (op expr env context location)
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
@@ -1322,6 +1341,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                 :args final-arg-nodes
                                 :signature augmented-signature
                                 :source-location location)))))))
+                                |#
 ;;; =========================================================
 ;;; Brand Misuse Error
 ;;; =========================================================
