@@ -396,53 +396,7 @@
   "Finds a variable definition in the environment."
   (find name env :key #'parameter-def-name))
 
-#|
-(defun validate-return-types (name body env context declared-return-types location)
-  "Analyzes the function body and validates return types."
-  (declare (ignore name))
-  ;; Handle the case where a function promises a return value but has no body.
-  (when (and (not (equal declared-return-types '(nil))) (null body))
-        (error 'crisp-type-error :expected declared-return-types :inferred '(nil) :source-location location))
 
-  (let* ((body-nodes (analyze-body-expressions body env context location))
-         (return-node (first (last body-nodes)))
-         (inferred-types (if return-node
-                             (let ((node-type (semantic-node-type return-node)))
-                               ;; If the node-type is a list, we need to distinguish between
-                               ;; a multi-value return type like '(int int) and a single
-                               ;; parameterized type like '(cell int).
-                               (if (and (listp node-type) (not (valid-type-p node-type)))
-                                   node-type ; It's a list of multiple return values, use as-is.
-                                   (list node-type))) ; It's a single value, wrap it in a list.
-                             '(nil))))
-
-    (log:debug "Analyzed body nodes: ~s~% Return node: ~s~% Inferred types: ~s~% Declared return types: ~s" body-nodes return-node inferred-types declared-return-types)
-
-    (log:debug "Type Check. Inferred: ~s (is list: ~s)~% Declared: ~s (is list: ~s)"
-               inferred-types (listp inferred-types)
-               declared-return-types (listp declared-return-types))
-
-    ;; Check Types. This allows for a function returning multiple values
-    ;; to be used in a context that expects fewer values (the extras are dropped).
-    (let* ((num-declared (length declared-return-types))
-           (num-inferred (length inferred-types))
-           ;; Take the first N inferred types, where N is the number of declared types.
-           (inferred-subset (if (>= num-inferred num-declared)
-                                (subseq inferred-types 0 num-declared)
-                                inferred-types)))
-      (unless (and (>= num-inferred num-declared)
-                   ;; Fix for Regression in 30-derived-numeric-types:
-                   ;; Instead of strict equivalence, we check if the inferred type is assignable
-                   ;; to the declared type (e.g. EQ-WEAK is assignable to FLOAT).
-                   (every #'types-assignable-p inferred-subset declared-return-types))
-        (error 'crisp-type-error
-          :expected declared-return-types
-          :inferred inferred-types
-          :source-location (if return-node
-                               (semantic-node-source-location return-node)
-                               location))))
-    (values body-nodes inferred-types)))
-    |#
 
 
 (defun validate-return-types (name body env context declared-return-types location)
@@ -702,69 +656,9 @@
                :source-location location)))))
     res))
 
-#|
-(defun analyze-function-call (op expr env context location)
-  "Analyzes a call to a user-defined function."
-  (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
 
-  ;; PATCHED: Use mode predicates and simplified recursion check
-  (if (multi-pass-mode-p)
-      (when (compiler-context-current-compiling-function context)
-            (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
-      (when (eq op (compiler-context-current-compiling-function context))
-            (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
 
-  ;; PATCHED: Use single-pass-mode-p predicate
-  (let ((implicit-args-required (gethash op *implicit-arg-map*)))
-    (when (and (single-pass-mode-p) implicit-args-required)
-          (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
-
-    (let* ((arg-forms (rest expr))
-           (explicit-arg-nodes (loop for arg-form in arg-forms
-                                     for i from 1
-                                     collect (analyze-expression arg-form env context (append location (list i)))))
-           (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
-           (signature (resolve-best-signature op explicit-arg-types context)))
-
-      (let ((final-arg-nodes
-             (if implicit-args-required
-                 (let ((implicit-arg-nodes
-                        (loop for (param-name . param-type) in implicit-args-required
-                              collect (let ((found (find-variable-in-env param-name env)))
-                                        (if found
-                                            (make-semantic-var-read :name param-name :type (parameter-def-type found) :source-location location)
-                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
-                                              (compiler-context-current-compiling-function context) param-name))))))
-                   (append implicit-arg-nodes explicit-arg-nodes))
-                 explicit-arg-nodes)))
-
-        (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
-          (error 'crisp-signature-arity-error
-            :expected (length (function-signature-parameters signature))
-            :inferred (length explicit-arg-types)
-            :source-location location))
-
-        (let ((augmented-signature
-               (if implicit-args-required
-                   (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
-                                                collect (make-parameter-def :name param-name :type param-type :kind :in))))
-                     (make-function-signature
-                      :name (function-signature-name signature)
-                      :parameters (append implicit-params (function-signature-parameters signature))
-                      :return-types (function-signature-return-types signature)
-                      :source-location (function-signature-source-location signature)
-                      :is-template-p (function-signature-is-template-p signature)
-                      :template-params (function-signature-template-params signature)))
-                   signature)))
-
-          (make-semantic-call :name (function-signature-name augmented-signature)
-                              :type (function-signature-return-types augmented-signature)
-                              :args final-arg-nodes
-                              :signature augmented-signature
-                              :source-location location))))))
-|#
-
-;;; Redefine analyze-function-call to use the new finding logic
+;;; analyze-function-call to use the new finding logic
 (defun analyze-function-call (op expr env context location)
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
 
