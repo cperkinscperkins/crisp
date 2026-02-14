@@ -115,6 +115,7 @@
     ;; But let's be safe: exe [flags] [file]
     (setf args (append (when *compile-debug* '("--debug"))
                  (when *compile-single-pass* '("--single-pass"))
+                 (when *compile-differentiate* '("--differentiate"))
                  (list (format nil "--log-level=~a" cl-user::*log-level*))
                  (list (uiop:native-namestring file))))
 
