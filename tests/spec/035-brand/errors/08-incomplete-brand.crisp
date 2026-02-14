@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "Brand TOKEN-T: :subst is required"
+
+(def-record server
+  ;; missing required :subst val
+  (brand token-t ulong :subst)
+  
+  ;; members
+  (active-token token-t)
+  (id int))

@@ -26,6 +26,7 @@
                                              (:file "src/types/validation")
                                              (:file "src/types/hierarchy")
                                              (:file "src/parameters")
+                                             (:file "src/types/brand")
                                              (:file "src/structs") ; 5. Struct Layout
 
                                              (:file "src/macros")

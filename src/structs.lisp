@@ -12,9 +12,11 @@
   "Returns the base alignment (N) for a given type according to std140 rules.
    For scalars, N is the size of the scalar.
    For vectors, it is 2N or 4N.
-   For arrays/structs, it is rounded up to vec4 alignment (16)."
-  ;; Resolve type aliases first with cycle detection
-  (cl:let ((resolved-type (resolve-type-alias type-spec)))
+   For arrays/structs, it is rounded up to vec4 alignment (16).
+   Resolves both type aliases and derived types to their physical base."
+  ;; Resolve type aliases first, then derived types via DAG
+  (cl:let* ((alias-resolved (resolve-type-alias type-spec))
+            (resolved-type (get-type-base alias-resolved)))
     (cl:cond
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
@@ -45,12 +47,13 @@
       (t
        (error "Unknown type for alignment: ~a" type-spec)))))
 
-
-;; FROM: src/structs.lisp
+;; src/structs.lisp
 (defun get-std140-size (type-spec)
-  "Returns the size (in bytes) of a type. Does not include padding for alignment context."
-  ;; Resolve type aliases first with cycle detection
-  (cl:let ((resolved-type (resolve-type-alias type-spec)))
+  "Returns the size (in bytes) of a type. Does not include padding for alignment context.
+   Resolves both type aliases and derived types to their physical base."
+  ;; Resolve type aliases first, then derived types via DAG
+  (cl:let* ((alias-resolved (resolve-type-alias type-spec))
+            (resolved-type (get-type-base alias-resolved)))
     (cl:cond
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
@@ -66,7 +69,7 @@
        8)
       ;; Structs
       ((gethash type-spec *crisp-structs*)
-       (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*))) ;; CORRECTED: Use struct accessor!
+       (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
       ;; Parameterized Structs
       ((and (consp type-spec) (valid-type-p type-spec))
        (cl:let ((base (first type-spec)))
@@ -76,7 +79,7 @@
             (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
               (cl:let ((struct-info (gethash mangled *crisp-structs*)))
                 (if struct-info
-                    (crisp-struct-definition-total-size struct-info) ;; CORRECTED: Use struct accessor!
+                    (crisp-struct-definition-total-size struct-info)
                     (error "Valid type ~a but struct def not found after check size." type-spec))))))))
       (t
        (error "Unknown type for size: ~a" type-spec)))))

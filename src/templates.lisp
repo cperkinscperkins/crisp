@@ -92,7 +92,7 @@
                            (register-template ',name ',params ',constraints ',form ',signature))
 
                         `(eval-when (:compile-toplevel :load-toplevel :execute)
-                           (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
+                           (defmacro ,(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (&rest args)
                              (let* ((arity ,(length params))
                                     (provided (length args)))
                                (if (= provided arity)
@@ -100,11 +100,11 @@
                                    (error "Template instantiation for ~a expects ~a type arguments, got ~a." ',name arity provided)))))
 
                         ;; Define the type helper macro: (NAME-type ...)
-                        `(defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
+                        `(defmacro ,(intern (format nil "~a-TYPE" name) (or (symbol-package name) *package*)) (&rest concrete-types)
                            `(get-template-signature ',',name ',concrete-types))
 
                         `(eval-when (:compile-toplevel :load-toplevel :execute)
-                           (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name)))))))
+                           (export ',(intern (format nil "~a-TYPE" name) (or (symbol-package name) *package*)) (symbol-package ',name)))))))
 
                  ;; Case 2: def-kernel
                  ((and (listp form) (member (first form) '(def-kernel def-kernel-exact)))
@@ -114,7 +114,7 @@
                          (register-template ',name ',params ',constraints ',form nil))
 
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
-                         (defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
+                         (defmacro ,(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (&rest args)
                            (let* ((arity ,(length params))
                                   (provided (length args)))
                              (cond
@@ -128,22 +128,24 @@
                                 (error "Template instantiation for ~a expects ~a type arguments (plus optional name), got ~a." ',name arity provided))))))
 
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
-                         (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name))))))
+                         (export ',(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (symbol-package ',name))))))
 
                  ;; Case 3: def-struct
                  ((and (listp form) (member (first form) '(def-struct def-record)))
                    (let* ((name (second form))
                           (members (cddr form))
                           ;; Parse (x type) (y type) -> (type type => name)
-                          (member-types (mapcar #'second members))
-                          (param-names (mapcar #'first members))
+                          ;; Filter out (brand ...) forms
+                          (data-members (remove-if (lambda (m) (and (consp m) (string-equal (symbol-name (car m)) "BRAND"))) members))
+                          (member-types (mapcar #'second data-members))
+                          (param-names (mapcar #'first data-members))
                           (signature `(function (,@member-types => ,name))))
                      (list
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
                          (register-template ',name ',params ',constraints ',form ',signature))
 
                       ;; 1. Generate normal generic constructor GEN-POINT(T U)(x y) wrapper -> make-point_float_float
-                      `(defmacro ,(intern (format nil "GEN-~a" name) (symbol-package name)) (&rest args)
+                      `(defmacro ,(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (&rest args)
                          (let* ((arity ,(length params))
                                 (concrete-types (subseq args 0 arity))
                                 (ctor-args (subseq args arity))
@@ -154,25 +156,25 @@
                              ordered-ctor-args)))
 
                       ;; 2. Generate Type Helper GEN-POINT-TYPE(T U) => POINT_FLOAT_FLOAT
-                      `(defmacro ,(intern (format nil "GEN-~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
+                      `(defmacro ,(intern (format nil "GEN-~a-TYPE" name) (or (symbol-package name) *package*)) (&rest concrete-types)
                          `(template-instantiation ,(instantiate-template ',name concrete-types)))
 
                       ;; 3. Generate generic constructor alias MAKE-POINT -> MAKE-POINT%DISPATCH
-                      `(defmacro ,(intern (format nil "MAKE-~a" name) (symbol-package name)) (&rest args)
+                      `(defmacro ,(intern (format nil "MAKE-~a" name) (or (symbol-package name) *package*)) (&rest args)
                          (let ((ordered (crisp.compiler::reorder-template-args-from-keywords args ',param-names)))
-                           (cons ',(intern (format nil "MAKE-~a%DISPATCH" name) (symbol-package name)) ordered)))
+                           (cons ',(intern (format nil "MAKE-~a%DISPATCH" name) (or (symbol-package name) *package*)) ordered)))
 
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
-                         (export ',(intern (format nil "GEN-~a" name) (symbol-package name)) (symbol-package ',name)))
+                         (export ',(intern (format nil "GEN-~a" name) (or (symbol-package name) *package*)) (symbol-package ',name)))
 
                       ;; Define the type helper macro: (NAME-type ...)
                       ;; For structs, this returns the Mangled Name.
-                      `(defmacro ,(intern (format nil "~a-TYPE" name) (symbol-package name)) (&rest concrete-types)
-                         (let ((mangled (intern (format nil "~a_~{~a~^_~}" ',name concrete-types) (symbol-package ',name))))
+                      `(defmacro ,(intern (format nil "~a-TYPE" name) (or (symbol-package name) *package*)) (&rest concrete-types)
+                         (let ((mangled (intern (format nil "~a_~{~a~^_~}" ',name concrete-types) (or (symbol-package ',name) *package*))))
                            `',mangled))
 
                       `(eval-when (:compile-toplevel :load-toplevel :execute)
-                         (export ',(intern (format nil "~a-TYPE" name) (symbol-package name)) (symbol-package ',name))))))
+                         (export ',(intern (format nil "~a-TYPE" name) (or (symbol-package name) *package*)) (symbol-package ',name))))))
 
                  ;; Case 4: def-type
                  ((and (listp form) (eq (first form) 'def-type))
@@ -242,34 +244,43 @@
                  return t)))
 
      ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
-
-     ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
      ((listp sig-type)
-       (or (match-list-structure sig-type arg-type inference-map template-params)
-           ;; Unmangle struct names to lists for matching (e.g. CELL_FLOAT -> (CELL FLOAT ...))
-           (and (symbolp arg-type)
-                (let ((unmangled (crisp.compiler::unmangle-template-struct-name arg-type)))
-                  (when unmangled
-                        (match-list-structure sig-type unmangled inference-map template-params))))
-           ;; Check for Template Aliases (e.g. (out-c T) -> (cell T ...))
-           (let ((alias-def (and (symbolp (first sig-type))
-                                 (gethash (first sig-type) crisp.compiler::*crisp-template-aliases*))))
-             (when alias-def
-                   (let* ((alias-params (car alias-def))
-                          (alias-body (cdr alias-def))
-                          (args (rest sig-type))
-                          (arity (length alias-params))
-                          (required-args (subseq args 0 (min (length args) arity)))
-                          (rest-args (subseq args (length required-args)))
-                          (substitutions (pairlis alias-params required-args))
-                          (expanded-base (sublis substitutions alias-body))
-                          ;; If base expanded to a list, we append the rest args
-                          (expanded-sig (if (and rest-args (consp expanded-base))
-                                            (append expanded-base rest-args)
-                                            expanded-base)))
-                     (match-template-arg (crisp.compiler::canonicalize-type-specifier expanded-sig) arg-type inference-map template-params))))))
+       (or
+        ;; A. Dependent Type Match: (token-t s) matches token-t OR token-t-123 (gensym)
+        (and (symbolp (first sig-type)) (symbolp arg-type)
+             (let ((sig-name (symbol-name (first sig-type)))
+                   (arg-name (symbol-name arg-type)))
+               (or (string-equal sig-name arg-name)
+                   (and (> (length arg-name) (length sig-name))
+                        (string-equal sig-name (subseq arg-name 0 (length sig-name)))
+                        (cl:char= (cl:char arg-name (length sig-name)) #\-)))))
 
-     ;; NEW: Check for Symbol Alias (e.g. out-c)
+        ;; B. Standard recursive list match
+        (match-list-structure sig-type arg-type inference-map template-params)
+        ;; Unmangle struct names to lists for matching (e.g. CELL_FLOAT -> (CELL FLOAT ...))
+        (and (symbolp arg-type)
+             (let ((unmangled (crisp.compiler::unmangle-template-struct-name arg-type)))
+               (when unmangled
+                     (match-list-structure sig-type unmangled inference-map template-params))))
+        ;; Check for Template Aliases (e.g. (out-c T) -> (cell T ...))
+        (let ((alias-def (and (symbolp (first sig-type))
+                              (gethash (first sig-type) crisp.compiler::*crisp-template-aliases*))))
+          (when alias-def
+                (let* ((alias-params (car alias-def))
+                       (alias-body (cdr alias-def))
+                       (args (rest sig-type))
+                       (arity (length alias-params))
+                       (required-args (subseq args 0 (min (length args) arity)))
+                       (rest-args (subseq args (length required-args)))
+                       (substitutions (pairlis alias-params required-args))
+                       (expanded-base (sublis substitutions alias-body))
+                       ;; If base expanded to a list, we append the rest args
+                       (expanded-sig (if (and rest-args (consp expanded-base))
+                                         (append expanded-base rest-args)
+                                         expanded-base)))
+                  (match-template-arg (crisp.compiler::canonicalize-type-specifier expanded-sig) arg-type inference-map template-params))))))
+
+     ;; Check for Symbol Alias (e.g. out-c)
      ((and (symbolp sig-type)
            (gethash sig-type crisp.compiler::*crisp-template-aliases*))
        (let* ((alias-def (gethash sig-type crisp.compiler::*crisp-template-aliases*))
@@ -279,7 +290,17 @@
      ;; 4. Concrete Type (int)
      (t (or (equal sig-type arg-type)
             (and (symbolp sig-type) (symbolp arg-type)
-                 (string-equal (symbol-name sig-type) (symbol-name arg-type))))))))
+                 (string-equal (symbol-name sig-type) (symbol-name arg-type)))
+
+            ;; Implicit Template Expansion: SERVER -> (SERVER T)
+            ;; Only if direct match fails.
+            (and (symbolp sig-type)
+                 (gethash sig-type crisp.compiler::*template-registry*)
+                 (let* ((tmpl (first (gethash sig-type crisp.compiler::*template-registry*)))
+                        (params (mapcar (lambda (p) (if (consp p) (first p) p)) (crisp.compiler::template-data-parameters tmpl))))
+                   (when params
+                         (match-template-arg (cons sig-type params) arg-type inference-map template-params)))))))))
+
 
 (defun match-list-structure (sig-list arg-list inference-map template-params)
   (and (listp arg-list)
@@ -441,9 +462,11 @@
          (substituted-body (sublis substitutions (subst mangled-name name body)))
          ;; Extract members from SUBSTITUTED body: (def-struct MANGLED-NAME (mem concrete-type)...)
          (members (cddr substituted-body))
-         (all-parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec members))
+         ;; Filter out (brand ...) forms
+         (data-members (remove-if (lambda (m) (and (consp m) (string-equal (symbol-name (car m)) "BRAND"))) members))
+         (all-parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec data-members))
          ;; Filter out compile-time members for the generated wrapper signature
-         (parsed-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) all-parsed-members))
+         (parsed-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t) (not (fourth m)))) all-parsed-members))
          (param-names (mapcar #'first parsed-members))
          ;; Use a UNIQUE wrapper name to avoid LLVM collisions if multiple overloads are generated
          (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package name)))
@@ -479,7 +502,6 @@
               ;; Fallback if body structure is unexpected
               `(progn ,substituted-body)))
         `(progn ,substituted-body))))
-
 
 (defun %unwrap-function-signature (raw-sig)
   "Helper: Unwraps (FUNCTION ...) wrapper if present."
@@ -519,7 +541,6 @@
     (loop for tmpl in templates
             append (or (%infer-from-single-template tmpl argument-types) '()))))
 
-
 (defun %resolve-template-name (name)
   "Helper: Resolves constructor names (MAKE-POINT, MAKE-POINT%DISPATCH) to base struct names."
   (when (and (null (gethash name *template-registry*)) (symbolp name))
@@ -554,7 +575,7 @@
       (loop for tmpl in templates
             for params = (template-data-parameters tmpl)
               ;; Relaxed check: Allow arguments >= parameters if the extras are properties (managed by mangle)
-            do (when (>= (length explicit-arg-types) (length params))
+            do (when (= (length explicit-arg-types) (length params))
                      ;; Direct match/superset by arity (explicit args are the concrete types)
                      ;; This assumes explicit-arg-types are the TYPES, not values.
                      (push (list tmpl explicit-arg-types) match-sets))))

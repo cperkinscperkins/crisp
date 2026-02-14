@@ -46,6 +46,32 @@ This supports overloading templates by arity or other factors.")
 (defvar *runtime-checks-enabled* nil
         "If true, runtime assertions (r-t-assert) are compiled.")
 
+;;; =========================================================
+;;; Branded Types - Infrastructure
+;;; =========================================================
+
+
+(defvar *brand-definitions* (make-hash-table :test 'equal)
+        "Maps (brand-name . struct-type) to brand-definition records.
+   Populated when def-struct / def-record with brand declarations are processed.")
+
+;; NEW struct to hold brand metadata (this is a CL struct, not a Crisp def-struct)
+(cl:defstruct brand-definition
+  "Stores the definition of a branded type declared inside a struct/record."
+  (brand-name nil :type symbol) ; e.g., TOKEN-T
+  (base-type nil :type symbol) ; e.g., ULONG
+  (subst-mode nil :type symbol) ; :no, :equal, :descendant, :ancestor
+  (enforce-mode :diff :type symbol) ; :always or :diff
+  (owner-struct nil :type symbol)) ; e.g., SERVER
+
+;;; =========================================================
+;;; --differentiate flag support (branded types prerequisite)
+;;; =========================================================
+
+(defvar *differentiate-p* nil
+        "If T, enable differentiation mode. Activates branded type enforcement
+   for brands declared with :enforce :diff (the default).")
+
 
 ;; (defvar *current-module* nil) -> Moved to session
 (define-symbol-macro *current-module* (compiler-session-module *compiler-session*))

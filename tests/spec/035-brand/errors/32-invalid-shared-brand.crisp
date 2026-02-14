@@ -1,0 +1,39 @@
+
+;; CHECK-FAIL: "Cannot define derived type TOKEN-T: type already exists with DIFFERENT definition (Original: ULONG, New: FLOAT)"
+
+;; token-t branded type declared in two different scopes
+;; BUT the underlying types are different, so this is an error.
+
+(def-struct server
+  ;; custom types
+  (brand token-t ulong :subst :no :enforce :always)
+  
+  ;; members
+  (active-token token-t)
+  (id int))
+
+(def-struct virtual-server
+  ;; custom types
+  (brand token-t float :subst :no :enforce :always)
+  
+  ;; members
+  (active-token token-t)
+  (id int))
+
+
+
+
+;; function overloading
+(def-function authenticate (some-server tok)
+  
+  (declare #'(server (token-t some-server) => int))
+  
+  ;; implementation is irrelevant for the type check
+  1)
+
+(def-function authenticate (some-server tok)
+  
+  (declare #'(virtual-server (token-t some-server)  => int))
+  
+  ;; implementation is irrelevant for the type check
+  2)

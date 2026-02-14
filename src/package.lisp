@@ -233,6 +233,7 @@
    #:def-record
    #:def-derived-type
    #:set-derived
+   #:brand
    #:with-struct-accessors
    #:def-setter
    #:*crisp-structs*
@@ -341,6 +342,7 @@
                 #:def-struct
                 #:def-derived-type
                 #:set-derived
+                #:brand
                 #:def-record
                 #:with-struct-accessors
                 #:def-setter
@@ -380,6 +382,10 @@
                 #:to-long #:as-long
                 #:to-float #:as-float
                 #:to-double #:as-double
+                #:to-uchar #:as-uchar
+                #:to-ushort #:as-ushort
+                #:to-uint #:as-uint
+                #:to-ulong #:as-ulong
                 #:truncate #:floor #:ceil #:round
 
                 ;; NEW: Unified Let from Compiler
@@ -456,6 +462,7 @@
    #:with-template-type ;; <--- NEW
 
    #:def-type-alias #:def-struct #:def-derived-type #:def-record #:with-struct-accessors #:def-setter
+   #:brand
    #:declare
 
    #:return-type #:type

@@ -1,0 +1,9 @@
+
+;; CHECK-FAIL: "BRAND can only be used within DEF-STRUCT or DEF-RECORD."
+
+
+;; brand is not usable outside def-struct or def-record
+
+(def-derived-type meters float :subst :ancestor)
+
+(brand yards float :subst :ancestor)

@@ -260,9 +260,10 @@
       (setf (gethash name *function-table*)
         (append (gethash name *function-table*) (list sig))))))
 
+
+
+;;; Redefine register-function-signature to inject validation
 (defun register-function-signature (form location)
-  "Extracts and registers a function's signature without analyzing its body.
-   Handles optional parameters by generating overloaded signatures."
   (let* ((name (second form))
          (params (third form))
          (body (cdddr form))
@@ -271,21 +272,20 @@
                               collect f)))
 
     (finish-output *error-output*)
-    (log:debug "REGISTER-FUNC: Name ~s Pkg ~s. Declares: ~s"
-               name
-               (package-name (symbol-package name))
-               declare-forms)
+    ;; Debug logging
+    ;; (log:info "REGISTER-FUNC (Overlay): ~s" name)
 
     (multiple-value-bind (env return-types optional-idx extracted-defaults key-idx)
         (parse-function-declarations params (loop for f in declare-forms append (rest f)))
 
+      ;; --- NEW VALIDATION ---
+      (validate-dependent-brand-types declare-forms env)
+      ;; ----------------------
+
       (cond
-       ;; Generic function (has &optional or &key)
        ((or optional-idx key-idx)
          (%register-generic-function name params env return-types declare-forms
                                      extracted-defaults key-idx body location))
-
-       ;; Standard function (eager registration)
        (t
          (%register-standard-function name env return-types declare-forms location))))))
 
@@ -394,7 +394,7 @@
 
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
-   and function types like #'(int => int)."
+   function types like #'(int => int), and brand type applications like (token-t s)."
   (cond
    ;; 0. Type Aliases -- FIX: Use resolve-type-alias for cycle detection
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
@@ -422,6 +422,28 @@
                                    expanded))))
            (parse-type-specifier final-spec)))))
 
+   ;; 0.15 Brand Type Application: (brand-name var-ref)
+   ;; e.g. (token-t s) where token-t is a brand declared in a struct.
+   ;; Must come BEFORE the alias-as-list-head branch because inactive brands
+   ;; are registered as type aliases and would be incorrectly expanded.
+   ((and (listp spec)
+         (= (length spec) 2)
+         (symbolp (first spec))
+         (symbolp (second spec))
+         (is-brand-type-p (first spec)))
+     (cl:let* ((brand-name (first spec))
+               (var-ref (second spec))
+               (brand-def (is-brand-type-p brand-name)))
+       ;; Always resolve to the brand type name.
+       ;; When active: brand-name is a proper derived type in the DAG.
+       ;; When inactive: brand-name is a type alias (transparent erasure).
+       ;; Either way, returning the symbol is correct and consistent with
+       ;; how parse-type-specifier handles aliases (branch 0 returns alias, not resolved).
+       (log:info "PARSE: Brand type application (~a ~a) -> ~a [~a]"
+                 brand-name var-ref brand-name
+                 (if (brand-active-p brand-def) "active" "inactive"))
+       brand-name))
+
    ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
      (let* ((alias-name (first spec))
@@ -437,7 +459,7 @@
    ;; Standard symbol: e.g. 'int'
    ((and (symbolp spec) (valid-type-p spec)) spec)
 
-   ;; Storage Handle Symbols (e.g. CELL, VECTOR...) 
+   ;; Storage Handle Symbols (e.g. CELL, VECTOR...)
    ((and (symbolp spec) (member (symbol-name spec) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
      (log:info "PARSE: Promoting symbol ~a to list (~a)" spec spec)
      (parse-type-specifier (list spec)))

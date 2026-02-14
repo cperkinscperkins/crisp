@@ -1,0 +1,10 @@
+
+;; CHECK-FAIL: "Brand TOKEN-T: :subst is required"
+
+(def-struct server
+  ;; missing required :subst key/val
+  (brand token-t ulong)
+  
+  ;; members
+  (active-token token-t)
+  (id int))

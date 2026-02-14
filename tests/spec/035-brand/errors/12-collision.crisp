@@ -1,0 +1,12 @@
+
+;; CHECK-FAIL: "Brand name collision: POINT is already defined as a struct"
+
+(def-struct point (x int) (y int))
+
+(def-struct server
+  ;; collision
+  (brand point int :subst :no)
+  
+  ;; members
+  (active-point point)
+  (id int))

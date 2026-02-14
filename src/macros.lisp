@@ -586,15 +586,27 @@
                                  (return (%extract-struct-member obj ,idx)))
             (1+ runtime-index))))))
 
+            
 (defmacro def-struct (name &rest members)
-  "Defines a new Crisp struct type."
-  (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
+  "Defines a new Crisp struct type. Supports brand declarations."
+  (let* (;; Separate brand declarations from regular members
+         (brand-decls (remove-if-not (lambda (m) (and (consp m) (eq (car m) 'brand))) members))
+         (regular-members (remove-if (lambda (m) (and (consp m) (eq (car m) 'brand))) members))
+         (parsed-members (mapcar #'parse-struct-member-spec regular-members))
          (constructor-name (intern (format nil "MAKE-~a" name) (symbol-package name))))
-    ;; Register at macro-expansion time (for visibility to subsequent code)
+    ;; Register brands at macro-expansion time
+    (dolist (brand brand-decls)
+      (register-brand-definition name brand))
+    ;; Register struct at macro-expansion time (for visibility to subsequent code)
     (register-struct-definition name parsed-members)
     ;; Emit code to register using eval-when, AND the constructor MACRO
     `(progn
       (eval-when (:compile-toplevel :load-toplevel :execute)
+        ;; Register brands
+        ,@(mapcar (lambda (brand)
+                    `(register-brand-definition ',name ',brand))
+                  brand-decls)
+        ;; Register struct
         (register-struct-definition ',name ',parsed-members))
 
       (defmacro ,constructor-name (&rest args)
@@ -627,14 +639,25 @@
 
 
 (defmacro def-record (name &rest members)
-  "Defines a new Crisp record type (virtual struct)."
-  (let* ((parsed-members (mapcar #'parse-struct-member-spec members))
+  "Defines a new Crisp record type (virtual struct). Supports brand declarations."
+  (let* (;; Separate brand declarations from regular members
+         (brand-decls (remove-if-not (lambda (m) (and (consp m) (eq (car m) 'brand))) members))
+         (regular-members (remove-if (lambda (m) (and (consp m) (eq (car m) 'brand))) members))
+         (parsed-members (mapcar #'parse-struct-member-spec regular-members))
          (constructor-name (intern (format nil "MAKE-~a" name) (symbol-package name))))
+    ;; Register brands at macro-expansion time
+    (dolist (brand brand-decls)
+      (register-brand-definition name brand))
     ;; Register at macro-expansion time
     (register-struct-definition name parsed-members :record)
     ;; Emit code
     `(progn
       (eval-when (:compile-toplevel :load-toplevel :execute)
+        ;; Register brands
+        ,@(mapcar (lambda (brand)
+                    `(register-brand-definition ',name ',brand))
+                  brand-decls)
+        ;; Register record
         (register-struct-definition ',name ',parsed-members :record))
 
       (defmacro ,constructor-name (&rest args)
@@ -920,3 +943,8 @@
            (setf (gethash ',as-descendant-name *expression-analyzers*)
              #'analyze-cast-expression)
            (log:debug "set-derived: registered expression analyzer for ~a" ',as-descendant-name))))))
+
+(defmacro brand (&rest args)
+  "Catches invalid usage of BRAND outside of DEF-STRUCT or DEF-RECORD."
+  (declare (ignore args))
+  (error "BRAND can only be used within DEF-STRUCT or DEF-RECORD."))

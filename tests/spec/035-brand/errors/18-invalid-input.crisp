@@ -1,0 +1,22 @@
+
+;; CHECK-FAIL: "Unknown type '(TOKEN-T 42)'"
+
+
+
+;; basic struct with branded type. 
+(def-struct server
+  ;; custom types
+  (brand token-t ulong :subst :no :enforce :always)
+  
+  ;; members
+  (active-token token-t)
+  (id int))
+
+
+;; function with dependent signature
+(def-function authenticate (s tok)
+ 
+  (declare #'(server (token-t 42) => int)) ;; this should fail because the token is not server
+  
+  ;; implementation is irrelevant for the type check
+  1)

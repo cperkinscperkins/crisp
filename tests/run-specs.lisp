@@ -72,6 +72,7 @@
 (defvar *use-binary* nil)
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
+(defvar *compile-differentiate* nil)
 (defvar *test-filter* nil)
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
@@ -114,6 +115,7 @@
     ;; But let's be safe: exe [flags] [file]
     (setf args (append (when *compile-debug* '("--debug"))
                  (when *compile-single-pass* '("--single-pass"))
+                 (when *compile-differentiate* '("--differentiate"))
                  (list (format nil "--log-level=~a" cl-user::*log-level*))
                  (list (uiop:native-namestring file))))
 
@@ -197,9 +199,10 @@
 
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active."
-  (let ((*use-binary* (or *use-binary* (member "--use-binary" flags :test #'string=)))
+   (let ((*use-binary* (or *use-binary* (member "--use-binary" flags :test #'string=)))
         (*compile-single-pass* (or *compile-single-pass* (member "--single-pass" flags :test #'string=)))
         (*compile-debug* (or *compile-debug* (member "--debug" flags :test #'string=)))
+        (*compile-differentiate* (or *compile-differentiate* (member "--differentiate" flags :test #'string=)))
         (emit-metadata (member "--metadata" flags :test #'string=))
 
         ;; Determine IR Target from flags (default to nil/generic)
@@ -236,7 +239,8 @@
     (let (;; Use a FRESH environment for each spec to ensure isolation
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
-                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*) ;; Standard cleanup
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
+                                                      :differentiate *compile-differentiate*) ;; Standard cleanup
                   (with-open-file (stream filepath)
                     (let ((*package* (find-package :crisp.compiler)))
                       (loop for form = (read stream nil :eof)
@@ -969,6 +973,7 @@
                                    ((string= flag-str "--single-pass") *compile-single-pass*)
                                    ((string= flag-str "--debug") *compile-debug*)
                                    ((string= flag-str "--use-binary") *use-binary*)
+                                   ((string= flag-str "--differentiate") *compile-differentiate*)
                                    (t nil)))) ;; Ignore unknown flags for now
                       (when active
                             (return-from parse-fail-with t))))))))
@@ -1062,6 +1067,7 @@
              ((string= arg "--use-binary") (setf *use-binary* t))
              ((string= arg "--debug") (setf *compile-debug* t))
              ((string= arg "--single-pass") (setf *compile-single-pass* t))
+             ((string= arg "--differentiate") (setf *compile-differentiate* t))
              ((string= arg "--only-unit-tests") (setf *only-unit-tests* t))
              ((string= arg "--skip-unit-tests") (setf *skip-unit-tests* t))
              ((string= arg "--keep-work") (setf *keep-work* t))
@@ -1069,11 +1075,12 @@
                (setf *test-filter* (subseq arg 9)))))
 
     ;; Re-initialize with user-requested log level
-    (initialize-compiler :log-level cl-user::*log-level*)
+    (initialize-compiler :log-level cl-user::*log-level*
+                         :differentiate *compile-differentiate*)
 
     (format t "~&Locating specs in ~a~%" spec-dir)
-    (format t "Configuration: Binary: ~a, Debug: ~a, Single-Pass: ~a~%"
-      *use-binary* *compile-debug* *compile-single-pass*)
+    (format t "Configuration: Binary: ~a, Debug: ~a, Single-Pass: ~a, Differentiate: ~a~%"
+      *use-binary* *compile-debug* *compile-single-pass* *compile-differentiate*)
     (format t "DEBUG: Symbols EQ? single-pass: ~a~%"
       (eq '*compile-single-pass* (find-symbol "*COMPILE-SINGLE-PASS*" :crisp.compiler)))
 
@@ -1138,8 +1145,8 @@
                          (push (format nil "~a/~a" dir-name (pathname-name file)) failed-files)))))))
 
     (format t "~&---------------------------~%")
-    (format t "Run Configuration: Binary=~a, Debug=~a, SinglePass=~a~@[, Filter=~a~]~%"
-      *use-binary* *compile-debug* *compile-single-pass* *test-filter*)
+    (format t "Run Configuration: Binary=~a, Debug=~a, SinglePass=~a, Differentiate=~a~@[, Filter=~a~]~%"
+      *use-binary* *compile-debug* *compile-single-pass* *compile-differentiate* *test-filter*)
     (format t "Spec Summary: ~a/~a Passed.~%" passed total)
     (when failed-files
           (format t "Failed Specs:~%~{  - ~a~%~}" (nreverse failed-files)))

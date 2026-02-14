@@ -299,11 +299,14 @@
 
     (log:info "Generated PTX: ~a" ptx-file)))
 
-(defun initialize-compiler (&key (log-level :info) (runtime-checks nil))
+
+
+(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
 
   (setf *runtime-checks-enabled* runtime-checks)
+  (setf *differentiate-p* differentiate)
   ;; Load the LLVM shared library.
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
@@ -347,6 +350,9 @@ This should be called by any entry point into the system (REPL, executable, CI).
   (if (fboundp 'initialize-templates)
       (funcall 'initialize-templates)
       (log:warn "Template system not loaded/initialized."))
+
+  ;; Reset brand definitions
+  (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
 
   ;; Initialize built-in structs (storage)
   (register-builtins))

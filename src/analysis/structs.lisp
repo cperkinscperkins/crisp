@@ -48,8 +48,24 @@
           (error "Struct '~a' has no member named '~a'." struct-type-name member-name))
         index)))))
 
+
+
+(defun numeric-type-category (type-name)
+  "Returns the category (:signed-int, :unsigned-int, :float) if TYPE-NAME is a numeric
+   scalar in *crisp-types*, or NIL otherwise. Resolves aliases and derived types first."
+  (cl:let* ((resolved (resolve-type-alias type-name))
+            (base (get-type-base resolved))
+            (crisp-type (cl:when (symbolp base) (gethash base *crisp-types*))))
+    (cl:when (and crisp-type
+                  (member (crisp-type-category crisp-type) '(:signed-int :unsigned-int :float)))
+      (crisp-type-category crisp-type))))
+
+
+
 (defun analyze-struct-construction (expr env context location)
-  "Analyzes a (%construct-struct type-name arg1 arg2 ...) form."
+  "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
+   Supports implicit promotion of base-type values to branded member types
+   in struct constructors (the birthplace of branded values)."
   (let* ((type-name (second expr))
          (args (cddr expr))
          (struct-def (lookup-struct-definition type-name)))
@@ -70,14 +86,33 @@
                    for i from 0
                    collect (let ((node (analyze-expression arg env context (append location (list (+ 2 i)))))
                                  (expected-type (second member)))
-                             ;; Type check
+                             ;; Type check with branded type promotion
                              (unless (type-equal-p (semantic-node-type node) expected-type)
-                               ;; Relaxed check for literals behaving as types?
-                               ;; For now strict equality (but robust to template mangling).
-                               (error 'crisp-type-error
-                                 :expected expected-type
-                                 :inferred (semantic-node-type node)
-                                 :source-location location))
+                               (cl:let ((brand-def (is-brand-type-p expected-type)))
+                                 (if brand-def
+                                     ;; Branded member: check numeric compatibility with base type
+                                     (cl:let* ((base-type (brand-definition-base-type brand-def))
+                                               (arg-cat (numeric-type-category (semantic-node-type node)))
+                                               (base-cat (numeric-type-category base-type)))
+                                       (if (and arg-cat base-cat)
+                                           ;; Compatible numeric types - wrap in a value cast to the base type
+                                           (progn
+                                            (log:debug "Constructor promotion: ~a -> ~a (base ~a) for member ~a"
+                                                       (semantic-node-type node) expected-type base-type (first member))
+                                            (setf node (make-semantic-value-cast
+                                                        :type base-type
+                                                        :arg node
+                                                        :source-location (append location (list (+ 2 i))))))
+                                           ;; Not numeric-compatible
+                                           (error 'crisp-type-error
+                                             :expected expected-type
+                                             :inferred (semantic-node-type node)
+                                             :source-location location)))
+                                     ;; Not a branded member -> real type error
+                                     (error 'crisp-type-error
+                                       :expected expected-type
+                                       :inferred (semantic-node-type node)
+                                       :source-location location))))
                              node))))
 
         (make-semantic-struct-construction

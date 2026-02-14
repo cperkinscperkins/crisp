@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS 
+;; FAIL-WITH[--differentiate]: "Type mismatch for operator '+'"
+
+(def-record server
+  ;; custom types
+  (brand token-t ulong :subst :ancestor)
+  (brand id-t ulong :subst :ancestor)
+  
+  ;; members
+  (active-token token-t)
+  (id id-t))
+
+
+(def-function super-authenticate (s tok id)
+  (declare #'(server (token-t s) (id-t s) => ulong))
+  
+  (+ tok id)) ;; passes normally, errors when brands are enforced.

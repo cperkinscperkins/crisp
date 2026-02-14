@@ -1,0 +1,22 @@
+;; CHECK-FAIL: "Brand dependency mismatch: TOKEN-T is defined for owner SERVER, but P is of type POINT (and no shared definition found)"
+
+(def-struct point (x int) (y int))
+
+
+;; basic struct with branded type. 
+(def-struct server
+  ;; custom types
+  (brand token-t ulong :subst :no :enforce :always)
+  
+  ;; members
+  (active-token token-t)
+  (id int))
+
+
+;; function with dependent signature
+(def-function authenticate (s p tok)
+ 
+  (declare #'(server point (token-t p) => int)) ;; this should fail because token-t is not server
+  
+  ;; implementation is irrelevant for the type check
+  1)

@@ -142,7 +142,16 @@ jobs:
           echo "--- Running Specs: External Binary (Single Pass) ---"
           sbcl --script tests/run-specs.lisp --use-binary --single-pass --skip-unit-tests
 
-      - name: 11. Run Logic Regression (Single Pass)
+      - name: 11. Run Specs (External Binary, Differentiate)
+        env:
+          CRISP_USE_SYSTEM_TOOLS: true
+          SKIP_SPIRV_TESTS: false
+        run: |
+          set -o pipefail
+          echo "--- Running Specs: External Binary (Differentiate) ---"
+          sbcl --script tests/run-specs.lisp --use-binary --differentiate --skip-unit-tests
+
+      - name: 12. Run Logic Regression (Single Pass)
         env:
           CRISP_USE_SYSTEM_TOOLS: true
         run: |
@@ -150,7 +159,7 @@ jobs:
           echo "--- Running E2E: failure test to exercise --single-pass flag ---"
           ! ./bin/crisp-compile tests/multipass.crisp --single-pass 2>&1 | grep -F "Unsupported form"
 
-      - name: 12. Run Negative Specs
+      - name: 13. Run Negative Specs
         env:
           CRISP_USE_SYSTEM_TOOLS: true
         run: |

@@ -1,0 +1,38 @@
+
+;; TEST-WITH[--differentiate]
+
+;; token-t branded type declared in two different scopes
+
+(def-struct server
+  ;; custom types
+  (brand token-t ulong :subst :no)
+  
+  ;; members
+  (active-token token-t)
+  (id int))
+
+(def-struct virtual-server
+  ;; custom types
+  (brand token-t ulong :subst :no)
+  
+  ;; members
+  (active-token token-t)
+  (id int))
+
+
+
+
+;; function overloading
+(def-function authenticate (some-server tok)
+  
+  (declare #'(server (token-t some-server) => int))
+  
+  ;; implementation is irrelevant for the type check
+  1)
+
+(def-function authenticate (some-server tok)
+  
+  (declare #'(virtual-server (token-t some-server)  => int))
+  
+  ;; implementation is irrelevant for the type check
+  2)

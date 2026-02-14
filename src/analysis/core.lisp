@@ -396,8 +396,14 @@
   "Finds a variable definition in the environment."
   (find name env :key #'parameter-def-name))
 
+
+
+
 (defun validate-return-types (name body env context declared-return-types location)
-  "Analyzes the function body and validates return types."
+  "Analyzes the function body and validates return types.
+   Fixes: A 1-element list whose sole element is a symbol (e.g. (TOKEN-T)) is always
+   treated as a return-types list, never as a parameterized type. This prevents
+   double-wrapping when the type name is a type alias."
   (declare (ignore name))
   ;; Handle the case where a function promises a return value but has no body.
   (when (and (not (equal declared-return-types '(nil))) (null body))
@@ -410,8 +416,13 @@
                                ;; If the node-type is a list, we need to distinguish between
                                ;; a multi-value return type like '(int int) and a single
                                ;; parameterized type like '(cell int).
-                               (if (and (listp node-type) (not (valid-type-p node-type)))
-                                   node-type ; It's a list of multiple return values, use as-is.
+                               ;; A 1-element list of a symbol (e.g. (TOKEN-T)) is always a
+                               ;; return-types list - no parameterized type has 0 args.
+                               (if (and (listp node-type)
+                                        (or (not (valid-type-p node-type))
+                                            (and (= (length node-type) 1)
+                                                 (symbolp (first node-type)))))
+                                   node-type ; It's a list of return values, use as-is.
                                    (list node-type))) ; It's a single value, wrap it in a list.
                              '(nil))))
 
@@ -646,18 +657,19 @@
     res))
 
 
+
+;;; analyze-function-call to use the new finding logic
 (defun analyze-function-call (op expr env context location)
-  "Analyzes a call to a user-defined function."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
 
-  ;; PATCHED: Use mode predicates and simplified recursion check
+  ;; Recursion / call-graph tracking
   (if (multi-pass-mode-p)
       (when (compiler-context-current-compiling-function context)
             (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
       (when (eq op (compiler-context-current-compiling-function context))
             (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
 
-  ;; PATCHED: Use single-pass-mode-p predicate
+  ;; Implicit args
   (let ((implicit-args-required (gethash op *implicit-arg-map*)))
     (when (and (single-pass-mode-p) implicit-args-required)
           (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
@@ -700,11 +712,47 @@
                       :template-params (function-signature-template-params signature)))
                    signature)))
 
-          (make-semantic-call :name (function-signature-name augmented-signature)
-                              :type (function-signature-return-types augmented-signature)
-                              :args final-arg-nodes
-                              :signature augmented-signature
-                              :source-location location))))))
+          ;; === Brand Instance Type Checking (when --differentiate is active) ===
+          (let ((refined-return-types (function-signature-return-types augmented-signature)))
+            (when *differentiate-p*
+                  (let ((sig-params (function-signature-parameters augmented-signature)))
+
+                    ;; 1. Brand parameter type checking
+                    (loop for param in sig-params
+                          for arg-node in final-arg-nodes
+                          for param-type = (parameter-def-type param)
+                          do (cl:let ((brand-def (is-brand-type-p param-type)))
+                               (when (and brand-def (brand-active-p brand-def))
+                                     ;; FIX: Use brand-name to find owner, supporting shared brands
+                                     (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                sig-params final-arg-nodes)))
+                                       (when owner-var
+                                             (cl:let* ((expected-type (resolve-brand-type param-type owner-var))
+                                                       (actual-type (get-single-value-type arg-node)))
+                                               (unless (or (eq actual-type expected-type)
+                                                           (is-substitutable-for? actual-type expected-type))
+                                                 (error 'crisp-type-error
+                                                   :expected (list expected-type)
+                                                   :inferred (list actual-type)
+                                                   :source-location location))))))))
+
+                    ;; 2. Brand return type refinement
+                    (setf refined-return-types
+                      (loop for ret-type in (function-signature-return-types augmented-signature)
+                            collect (cl:let ((brand-def (is-brand-type-p ret-type)))
+                                      (if (and brand-def (brand-active-p brand-def))
+                                          (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                     sig-params final-arg-nodes)))
+                                            (if owner-var
+                                                (resolve-brand-type ret-type owner-var)
+                                                ret-type))
+                                          ret-type))))))
+
+            (make-semantic-call :name (function-signature-name augmented-signature)
+                                :type refined-return-types
+                                :args final-arg-nodes
+                                :signature augmented-signature
+                                :source-location location)))))))
 
 ;; --- Helper to get the type from any node ---
 (defun semantic-node-type (node)
