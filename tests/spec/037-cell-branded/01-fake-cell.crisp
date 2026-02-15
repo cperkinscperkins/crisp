@@ -1,0 +1,41 @@
+
+;; This test makes a new def-record type called fake-cell that employs
+;; branding for offset and value.  This allows us to test this works
+;; before updating the "real" cell with branding.
+
+(with-template-type (T addr acc)
+    (def-record fake-cell
+        ;; branded types
+        (brand index-t ulong :subst :equal :enforce :diff)
+        (brand value-t T :subst :equal :enforce :diff) ;; oh no, this brand, as declared, will break the "one brand == one underlying type rule" after template specializations
+        ;; members
+        (parent (storage addr))
+        (offset index-t)
+        ;(element-type type-spec :c-T T)
+        (address-space address-space :c-t addr)
+        (access access :c-t acc))
+
+    (def-function ~ (c)
+        (declare #'((fake-cell T :address-space addr :access acc) => (value-t c)))
+        ;; do something with storage.
+        (as T 1))
+
+    (def-function set-~ (c v)
+    ;; the setter function does not need to enforce brand / track provenance. That makes using the cell too difficult
+    ;; and does not contribute to the A|D pass. 
+        (declare #'((fake-cell T :address-space addr :access acc) T => nil))
+        ;; do something with storage
+        (return)))
+
+(def-type in-ish (cell int :address-space :global :access :read-write))
+(def-type out-ish (cell int :address-space :global :access :read-write))
+
+(def-kernel test_fake_cell (c-in someV &out c-out)
+    (declare #'(in-ish int &out out-ish))
+    (gen-fake-cell int :global :read-write)
+    ;(gen-set-~ int :global :read-write)
+    (let ((fc (make-fake-cell :parent (parent~ c-in) :offset (to-ulong 0)  :address-space :global :access :read-write)))
+        (set-~ fc someV)                   
+        (set! (~ c-out) (~ fc))))
+    
+
