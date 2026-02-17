@@ -253,10 +253,19 @@
      (cl:let* ((brand-name (first spec))
                (var-ref (second spec))
                (brand-def (is-brand-type-p brand-name)))
-       (log:info "PARSE: Brand type application (~a ~a) -> ~a [~a]"
-                 brand-name var-ref brand-name
-                 (if (brand-active-p brand-def) "active" "inactive"))
-       brand-name))
+       (if (gethash brand-name *parameterized-brand-names*)
+           ;; Parameterized brand: keep as (brand-name var-ref) for lazy resolution
+           ;; in parse-function-declarations where we have the environment.
+           (progn
+             (log:info "PARSE: Parameterized brand application (~a ~a) - deferring resolution"
+                       brand-name var-ref)
+             spec)
+           ;; Non-parameterized brand: resolve to brand name (original behavior)
+           (progn
+             (log:info "PARSE: Brand type application (~a ~a) -> ~a [~a]"
+                       brand-name var-ref brand-name
+                       (if (brand-active-p brand-def) "active" "inactive"))
+             brand-name))))
 
    ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
@@ -320,3 +329,537 @@
    (t
      (log:error "PARSE: Unknown type spec: ~s" spec)
      (error 'crisp-unknown-type-error :type-name spec))))
+
+;;; =========================================================
+;;; Parameterized Brand Support
+;;; =========================================================
+;;;
+;;; When a brand's base type is a template parameter (e.g., (brand value-t T ...)),
+;;; different template specializations register the same brand name with different
+;;; base types. This makes global type registration impossible.
+;;;
+;;; Solution: detect the conflict reactively in register-brand-definition,
+;;; skip global registration, and resolve (brand-name var) lazily in
+;;; parse-function-declarations where we have the environment context.
+
+(defvar *parameterized-brand-names* (make-hash-table :test 'eq)
+  "Set of brand names whose base type varies across template specializations.
+   These brands skip global type registration and are resolved lazily per-owner.")
+
+;; src/types/brand.lisp
+(defun resolve-owner-type-to-mangled (type-spec)
+  "Resolves a type specifier (which may be an alias like FC-INT) to its
+   canonical mangled form (like FAKE-CELL_INT_GLOBAL_READ-WRITE).
+   Used for looking up per-owner brand definitions."
+  (cl:let ((canonical (canonicalize-type-specifier type-spec)))
+    (cl:cond
+      ((and (listp canonical) (> (length canonical) 1))
+       (mangle-template-struct-name (first canonical) (rest canonical)))
+      ((and (listp canonical) (= (length canonical) 1))
+       (first canonical))
+      (t canonical))))
+
+;; src/types/brand.lisp
+(defun find-brand-for-owner (brand-name owner-type)
+  "Looks up a brand definition for the given brand name and owner type.
+   Resolves type aliases (e.g., FC-INT -> FAKE-CELL_INT_GLOBAL_READ-WRITE)
+   before lookup."
+  (or (gethash (cons brand-name owner-type) *brand-definitions*)
+      ;; Try resolving the owner type alias
+      (cl:let ((resolved (resolve-owner-type-to-mangled owner-type)))
+        (cl:when (and resolved (not (eq resolved owner-type)))
+          (log:debug "Brand lookup: resolved owner ~a -> ~a" owner-type resolved)
+          (gethash (cons brand-name resolved) *brand-definitions*)))))
+
+;; src/types/brand.lisp
+(defun resolve-parameterized-brand-in-env (brand-spec env)
+  "Resolves a parameterized brand application (brand-name var-ref) using
+   the function environment. Returns the concrete base type for the brand
+   based on the variable's owner type.
+   For inactive brands, returns the base type directly (transparent).
+   For active brands, returns the base type (instance differentiation
+   happens later in analyze-function-call)."
+  (cl:let* ((brand-name (first brand-spec))
+            (var-ref (second brand-spec)))
+    ;; Find the variable in the environment
+    (cl:let ((param (find var-ref env :key #'parameter-def-name)))
+      (if param
+          (cl:let* ((owner-type (parameter-def-type param))
+                    (brand-def (find-brand-for-owner brand-name owner-type)))
+            (if brand-def
+                (cl:let ((base-type (brand-definition-base-type brand-def)))
+                  (log:info "Resolved parameterized brand (~a ~a): owner ~a -> base type ~a"
+                            brand-name var-ref owner-type base-type)
+                  base-type)
+                (progn
+                  (log:warn "No brand definition found for (~a . ~a), returning brand-name as fallback"
+                            brand-name owner-type)
+                  brand-name)))
+          (progn
+            (log:warn "Variable ~a not found in env for parameterized brand ~a, returning spec as-is"
+                      var-ref brand-name)
+            brand-spec)))))
+
+;; src/types/brand.lisp
+(defun register-brand-definition (struct-name brand-form)
+  "Registers a brand declaration from within a struct definition.
+   When the brand is active: registers as a derived type in the DAG.
+   When inactive: registers as a type alias (transparent erasure).
+   Parameterized brands (base type varies across template specializations)
+   skip global registration and are resolved lazily per-owner."
+  (cl:let* ((brand-def (if (brand-definition-p brand-form)
+                           brand-form
+                           (parse-brand-declaration brand-form)))
+            (brand-name (brand-definition-brand-name brand-def))
+            (base-type (brand-definition-base-type brand-def))
+            (subst-mode (brand-definition-subst-mode brand-def))
+            (is-parameterized (gethash brand-name *parameterized-brand-names*)))
+
+    ;; Check for name collisions
+    (cl:when (gethash brand-name *crisp-structs*)
+          (error "Brand name collision: ~a is already defined as a struct." brand-name))
+    (cl:when (gethash brand-name *function-table*)
+          (error "Brand name collision: ~a is already defined as a function." brand-name))
+    (cl:when (and (gethash brand-name *crisp-types*)
+               (not (is-brand-type-p brand-name)))
+          (error "Brand name collision: ~a is already defined as a non-brand type." brand-name))
+
+    ;; Detect parameterized brands reactively: same brand name, different base type, different owner
+    (cl:unless is-parameterized
+      (cl:let ((existing (is-brand-type-p brand-name)))
+        (cl:when (and existing
+                      (not (eq (brand-definition-base-type existing) base-type)))
+          ;; Different base type from a different owner struct = parameterized brand
+          (log:info "Brand ~a detected as PARAMETERIZED: base ~a (from ~a) vs ~a (from ~a)"
+                    brand-name
+                    (brand-definition-base-type existing) (brand-definition-owner-struct existing)
+                    base-type struct-name)
+          (setf is-parameterized t)
+          (setf (gethash brand-name *parameterized-brand-names*) t)
+          ;; Remove previous global registration (alias table for inactive brands)
+          (remhash brand-name *crisp-type-aliases*))))
+
+    ;; Store the owner struct
+    (setf (brand-definition-owner-struct brand-def) struct-name)
+
+    ;; Store in *brand-definitions* keyed by (brand-name . struct-type)
+    (setf (gethash (cons brand-name struct-name) *brand-definitions*) brand-def)
+    (log:info "Registered brand definition: ~a for struct ~a (base: ~a, subst: ~a, enforce: ~a~a)"
+              brand-name struct-name base-type subst-mode
+              (brand-definition-enforce-mode brand-def)
+              (if is-parameterized ", PARAMETERIZED" ""))
+
+    ;; Register the type based on active/inactive status
+    ;; SKIP global registration for parameterized brands
+    (if is-parameterized
+        (log:info "Brand ~a is PARAMETERIZED - skipping global type registration (resolved lazily per owner)"
+                  brand-name)
+        (if (brand-active-p brand-def)
+            (progn
+             (log:info "Brand ~a is ACTIVE - registering as derived type of ~a with :subst ~a"
+                       brand-name base-type subst-mode)
+             (register-derived-type brand-name base-type subst-mode))
+            (progn
+             (log:info "Brand ~a is INACTIVE - registering as type alias for ~a"
+                       brand-name base-type)
+             (setf (gethash brand-name *crisp-type-aliases*) base-type))))))
+
+;; src/environment.lisp
+(defun parse-function-declarations (params declarations)
+  "Parses a function's declarations and returns its environment and return type.
+   Supports interleaved type syntax: ((p type)).
+   Post-processes return types to resolve parameterized brand applications."
+  (log:debug "PARSE PARAMS: ~s Type: ~a Length: ~a" params (type-of params) (length params))
+
+  ;; Defensive patch: unwrap double nested params (bug in def-record)
+  (when (and (= (length params) 1) (listp (first params)) (listp (first (first params))) (symbolp (first (first (first params)))))
+        (log:warn "Deeply nested params detected! Unwrapping.")
+        (setf params (first params)))
+
+  (let* ((fn-decl (find "FUNCTION" declarations :key (lambda (x) (symbol-name (car x))) :test #'string-equal))
+
+         (return-types (if fn-decl
+                           (analyze-return-type-from-spec (second fn-decl))
+                           (analyze-return-type-from-list declarations)))
+
+         (env nil)
+         (optional-idx nil)
+         (defaults nil)
+         (key-idx nil))
+
+    ;; Analyze Environment (and Optional Index)
+    (cond
+     ;; Case 1: #'(...) signature
+     (fn-decl
+       (log:debug "PARSE CASE 1: Function decl found: ~s" fn-decl)
+       (multiple-value-setq (env optional-idx defaults key-idx)
+                            (analyze-environment-from-spec params (second fn-decl))))
+
+     ;; Case 2: Interleaved syntax ((a int) (b float))
+     ((some #'listp params)
+       (log:debug "PARSE CASE 2: Interleaved syntax detected. Params: ~s" params)
+       (setf env (loop for p in params
+                       collect (if (listp p)
+                                   (progn
+                                    (unless (>= (length p) 2)
+                                      (error "Invalid parameter spec: ~a" p))
+                                    (let ((name (first p)) (type (second p)))
+                                      (unless (valid-type-p type)
+                                        (error 'crisp-unknown-type-error :type-name type))
+                                      (let ((parsed (parse-type-specifier type)))
+                                        (make-parameter-def :name name :type parsed :kind :in))))
+                                   (error "Mixed bare and typed parameters not allowed.")))))
+
+     ;; Case 3: Standard declarations
+     (t
+       (log:debug "PARSE CASE 3: Standard declarations. Params: ~s" params)
+       (setf env (analyze-environment-from-list params declarations))))
+
+    ;; Post-process: resolve parameterized brand applications in return types.
+    ;; A parameterized brand application looks like (BRAND-NAME VAR-REF) where
+    ;; BRAND-NAME is in *parameterized-brand-names*. We resolve it using the
+    ;; environment to find the variable's owner type and the per-owner base type.
+    (when env
+      (setf return-types
+            (mapcar (lambda (rt)
+                      (if (and (listp rt) (= (length rt) 2)
+                               (symbolp (first rt)) (symbolp (second rt))
+                               (gethash (first rt) *parameterized-brand-names*))
+                          (resolve-parameterized-brand-in-env rt env)
+                          rt))
+                    return-types)))
+
+    (values env return-types optional-idx defaults key-idx)))
+
+;; src/types/brand.lisp
+(defun validate-dependent-brand-types (declare-forms env)
+  "Verifies that any parameters typed as (brand var) refer to a valid owner parameter.
+   Scans the raw declarations to find dependencies that parse-type-specifier might have flattened.
+   Supports shared brands (same brand name defined on multiple structs).
+   Uses find-brand-for-owner for alias resolution (e.g., FC-INT -> FAKE-CELL_INT_GLOBAL_READ-WRITE)."
+  (loop for decl in declare-forms do
+          (labels ((scan (form)
+                         (cl:cond
+                          ((and (listp form)
+                                (symbolp (car form))
+                                (is-brand-type-p (car form))
+                                (= (length form) 2)
+                                (symbolp (second form)))
+                            ;; Found (BRAND VAR) candidate
+                            (cl:let ((brand-name (car form))
+                                  (var-ref (second form)))
+                              ;; Check var exists in env
+                              (cl:let ((param (find var-ref env :key #'parameter-def-name)))
+                                (cl:unless param
+                                  (error "Brand dependency ~a refers to unknown parameter ~a." form var-ref))
+
+                                (cl:let ((owner-type (parameter-def-type param)))
+                                  ;; Check if this specific (Brand . OwnerType) pair is defined
+                                  ;; Uses find-brand-for-owner which resolves aliases
+                                  (cl:unless (find-brand-for-owner brand-name owner-type)
+                                    ;; Not defined for this specific owner.
+                                    ;; Retrieve *any* definition to give a helpful error message.
+                                    (cl:let ((any-def (is-brand-type-p brand-name)))
+                                      (error "Brand dependency mismatch: ~a is defined for owner ~a, but ~a is of type ~a (and no shared definition found)."
+                                        brand-name
+                                        (if any-def (brand-definition-owner-struct any-def) "UNKNOWN")
+                                        var-ref owner-type)))))))
+                          ((consp form)
+                            (scan (car form))
+                            (scan (cdr form))))))
+            (scan decl))))
+
+;; src/types/brand.lisp
+(defun %find-brand-owner-var (brand-name sig-params arg-nodes)
+  "Finds the actual argument variable for the parameter that owns the brand instance.
+   Handles shared brands by checking if any parameter's type is a registered owner
+   for the given BRAND-NAME. Uses find-brand-for-owner for alias resolution."
+  (loop for sp in sig-params
+        for an in arg-nodes
+        for param-type = (parameter-def-type sp)
+          ;; Check if this parameter's type is a registered owner for the brand
+          when (find-brand-for-owner brand-name param-type)
+        do (cl:return (if (typep an 'semantic-var-read)
+                          (semantic-var-read-name an)
+                          nil))))
+
+;; src/types/validation.lisp
+(defun types-equivalent-p (t1 t2)
+  "Checks if two types are equivalent, with alias resolution and template handling.
+   FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels
+   before mangling comparison. This supports def-type aliases for any template type."
+  ;; Resolve aliases FIRST, then run all other checks on resolved types
+  (cl:let ((t1 (resolve-type-alias t1))
+           (t2 (resolve-type-alias t2)))
+    (cl:cond
+      ((or (equal t1 t2)
+           (and (symbolp t1) (symbolp t2) (string-equal (symbol-name t1) (symbol-name t2))))
+       t)
+      ;; Treat VOID and NIL as equivalent return types
+      ((or (and (symbolp t1) (string-equal t1 "VOID") (null t2))
+           (and (null t1) (symbolp t2) (string-equal t2 "VOID")))
+       t)
+      ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT
+      ;; FIX: Always canonicalize, not just for CELL - handles keyword label stripping
+      ((and (consp t1) (symbolp t2))
+       (let* ((expanded (canonicalize-type-specifier t1))
+              (base-type (cl:first expanded))
+              (params (rest expanded)))
+         (if (and (symbolp base-type)
+                  (not (excluded-template-base-type-p base-type)))
+             (progn
+              (cl:when (gethash base-type *template-registry*)
+                (cl:let ((instantiated-form
+                          (funcall *template-instantiator-fn* base-type params
+                            (lambda (form location)
+                              (if (boundp '*current-module*)
+                                  (compile-toplevel-form form location
+                                                         *current-module*
+                                                         *current-builder*
+                                                         *current-di-builder*
+                                                         *current-di-compile-unit*
+                                                         *current-location-map*)
+                                  (eval form))))))
+                  instantiated-form
+                  t))
+              (cl:let ((mangled (mangle-template-struct-name base-type params)))
+                (cl:cond
+                  ((eq mangled t2) t)
+                  ((string-equal (symbol-name mangled) (symbol-name t2)) t)
+                  (t nil))))
+             nil)))
+      ((and (symbolp t1) (consp t2))
+       (types-equivalent-p t2 t1))
+      ;; Parameterized struct vs parameterized struct
+      ;; FIX: Always canonicalize both sides
+      ((and (cl:consp t1) (cl:consp t2))
+       (cl:let ((e1 (canonicalize-type-specifier t1))
+                (e2 (canonicalize-type-specifier t2)))
+         (cl:equal e1 e2)))
+      ;; Keyword vs Enum
+      ((and (or (member t1 '(keyword :keyword symbol common-lisp:symbol))
+                (and (symbolp t1) (member (symbol-name t1) '("KEYWORD" "SYMBOL") :test #'string-equal)))
+            (gethash t2 *crisp-enums*)) t)
+      ((and (or (member t2 '(keyword :keyword symbol common-lisp:symbol))
+                (and (symbolp t2) (member (symbol-name t2) '("KEYWORD" "SYMBOL") :test #'string-equal)))
+            (gethash t1 *crisp-enums*)) t)
+      ;; Handle mismatched wrapping (e.g. (INT) vs INT)
+      ((and (consp t1) (= (length t1) 1) (valid-type-p (cl:first t1)) (types-equivalent-p (cl:first t1) t2)) t)
+      ((and (consp t2) (= (length t2) 1) (valid-type-p (cl:first t2)) (types-equivalent-p t1 (cl:first t2))) t)
+      (t nil))))
+
+;; src/analysis/structs.lisp
+(defun get-array-element-type (type)
+  "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.
+   FIX: Only return element type for known array-like types (cell, vector, matrix, tensor, ptr, array),
+   not for arbitrary parameterized struct types like (fake-cell int ...)."
+  (let ((type (resolve-type-alias type)))
+    (cond
+     ((listp type)
+       ;; Only treat as array-like if the base is a known array/cell type
+       (let ((base (first type)))
+         (if (and (symbolp base)
+                  (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR" "PTR" "ARRAY" "POINTER") :test #'string-equal))
+             (second type)
+             nil)))
+     ((symbolp type)
+       ;; Check if it is a Mangled Cell
+       (let ((unmangled (unmangle-template-struct-name type)))
+         (if (and (consp unmangled) (eq (first unmangled) 'cell))
+             (second unmangled)
+             nil)))
+     (t nil))))
+
+;; src/analysis/control.lisp
+(defun analyze-return-expression (expr env context location)
+  "Analyzes a `(return ...)` expression.
+   FIX: A 1-element list whose sole element is a symbol (e.g. (INDEX-T)) is always
+   treated as a return-types list, not a parameterized type. This mirrors the fix
+   in validate-return-types."
+  (let* ((value-forms (rest expr))
+         (value-nodes (loop for form in value-forms
+                            for i from 1
+                            collect (analyze-expression form env context (append location (list i)))))
+
+         ;; Flatten types to check against signature
+         ;; FIX: Also treat 1-element symbol lists as return-type lists, not parameterized types
+         (all-inferred-types (if value-nodes
+                                 (loop for node in value-nodes
+                                         append (let ((t-spec (semantic-node-type node)))
+                                                  (if (and (listp t-spec)
+                                                           (or (not (valid-type-p t-spec))
+                                                               (and (= (length t-spec) 1)
+                                                                    (symbolp (first t-spec)))))
+                                                      t-spec
+                                                      (list t-spec))))
+                                 '(nil)))
+
+         ;; Context
+         (current-func (compiler-context-current-compiling-function context))
+         (sig (if current-func (first (gethash current-func *function-table*)) nil))
+         (declared-ret (if sig (function-signature-return-types sig) nil))
+
+         ;; Check for invalid return (Deferred Error 04)
+         (is-kernel (member '(entry-point) (compiler-context-declarations context) :test #'equal))
+         (invalid-return-p (and declared-ret
+                                (or (null declared-ret) (equal declared-ret '(nil)))
+                                value-nodes
+                                is-kernel
+                                (not (every (lambda (n)
+                                              (let ((t-spec (semantic-node-type n)))
+                                                (or (eq t-spec :void)
+                                                    (eq t-spec 'void)
+                                                    (equal t-spec '(void))
+                                                    (equal t-spec '(nil))
+                                                    (null t-spec))))
+                                         value-nodes)))))
+
+    (when invalid-return-p
+          (let* ((node (first value-nodes))
+                 (is-explicit-nil (and (= (length value-nodes) 1)
+                                       (or (and (typep node 'semantic-literal)
+                                                (null (semantic-literal-value node)))
+                                           (and (typep node 'semantic-progn)
+                                                (equal (semantic-node-type node) '(nil))
+                                                (null (semantic-progn-body node)))))))
+            (unless is-explicit-nil
+              (error 'crisp-compiler-error :message (format nil "Invalid Return: Function declared to return VOID/NIL but returned a value. Declared: ~a" declared-ret) :source-location location))))
+
+    (let ((return-types all-inferred-types))
+
+      ;; Truncation Logic
+      (when (and declared-ret (not (equal declared-ret '(nil))))
+            (let ((num-declared (length declared-ret))
+                  (num-inferred (length all-inferred-types)))
+
+              (when (> num-inferred num-declared)
+                    (log:info "Truncating return values for ~a. declared: ~a inferred: ~a" current-func declared-ret all-inferred-types)
+                    (let ((new-nodes '())
+                          (captured 0))
+                      (loop for node in value-nodes
+                            while (< captured num-declared)
+                            do (let* ((type (semantic-node-type node))
+                                      (is-mv (and (listp type) (not (valid-type-p type))))
+                                      (count (if is-mv (length type) 1)))
+                                 (cond
+                                  (is-mv
+                                    (loop for i from 0 below count
+                                          while (< captured num-declared)
+                                          do (push (make-semantic-extract-value :type (nth i type) :aggregate-node node :index i :source-location (semantic-node-source-location node)) new-nodes)
+                                            (incf captured)))
+                                  (t
+                                    (push node new-nodes)
+                                    (incf captured)))))
+                      (setf value-nodes (nreverse new-nodes))
+                      (setf return-types declared-ret)))))
+
+      (make-semantic-explicit-return :type return-types
+                                     :value-nodes value-nodes
+                                     :source-location location))))
+
+;; src/templates.lisp
+(defun match-template-arg (raw-sig-type arg-type inference-map template-params)
+  "Recursively matches sig-type against arg-type, updating inference-map.
+   FIX: Resolves type aliases (e.g., FC-INT -> (FAKE-CELL INT ...)) before matching
+   list structures, so def-type aliases work with template inference."
+  (let ((sig-type (normalize-template-sig-type raw-sig-type)))
+    (cond
+     ;; 1. Template Parameter (e.g. T)
+     ((member sig-type template-params)
+       (let ((existing (gethash sig-type inference-map)))
+         (if existing
+             (equal existing arg-type)
+             (progn (setf (gethash sig-type inference-map) arg-type) t))))
+
+     ;; 2. Match Function Literal against a Function Type Pattern
+     ((and (listp sig-type) (eq (first sig-type) :function-type)
+           (listp arg-type) (eq (first arg-type) :function-literal))
+       (let* ((name (second arg-type))
+              (signatures (gethash name *function-table*)))
+         (loop for sig in signatures
+                 when (match-function-signature sig-type sig inference-map template-params)
+                 return t)))
+
+     ;; 3. Generic List Pattern
+     ((listp sig-type)
+       (or
+        ;; A. Dependent Type Match
+        (and (symbolp (first sig-type)) (symbolp arg-type)
+             (let ((sig-name (symbol-name (first sig-type)))
+                   (arg-name (symbol-name arg-type)))
+               (or (string-equal sig-name arg-name)
+                   (and (> (length arg-name) (length sig-name))
+                        (string-equal sig-name (subseq arg-name 0 (length sig-name)))
+                        (cl:char= (cl:char arg-name (length sig-name)) #\-)))))
+
+        ;; B. Standard recursive list match
+        (match-list-structure sig-type arg-type inference-map template-params)
+        ;; C. Unmangle struct names to lists for matching (e.g. CELL_FLOAT -> (CELL FLOAT ...))
+        ;;    Strip keyword labels from sig-type since mangled names are purely positional.
+        ;;    e.g. sig (fake-cell T :address-space addr :access acc) stripped to (fake-cell T addr acc)
+        ;;         matches unmangled (FAKE-CELL INT GLOBAL READ-WRITE)
+        (and (symbolp arg-type)
+             (let ((unmangled (unmangle-template-struct-name arg-type)))
+               (when unmangled
+                     (let ((stripped (strip-keyword-labels sig-type template-params)))
+                       (log:debug "match-template-arg unmangle path: sig=~s stripped=~s unmangled=~s"
+                                  sig-type stripped unmangled)
+                       (when (match-list-structure stripped unmangled inference-map template-params)
+                         ;; Post-process: mangling loses keyword-ness (format "~a" :GLOBAL => "GLOBAL").
+                         ;; For template params that were preceded by keyword labels in the original
+                         ;; sig-type, convert the inferred plain symbol back to a keyword.
+                         (loop for (elem . rest) on sig-type
+                               when (and (keywordp elem) rest (member (car rest) template-params))
+                               do (let* ((param (car rest))
+                                         (val (gethash param inference-map)))
+                                    (when (and val (symbolp val) (not (keywordp val)))
+                                      (log:debug "keywordify inferred param ~s: ~s => :~a" param val (symbol-name val))
+                                      (setf (gethash param inference-map)
+                                            (intern (symbol-name val) :keyword)))))
+                         t)))))
+
+        ;; D. Resolve type aliases and try matching (use raw resolved form, not canonical,
+        ;; to preserve keyword labels for element-by-element matching with sig-type)
+        ;; e.g., FC-INT -> (FAKE-CELL INT :ADDRESS-SPACE :GLOBAL :ACCESS :READ-WRITE)
+        (and (symbolp arg-type)
+             (let ((resolved (resolve-type-alias arg-type)))
+               (when (and resolved (not (eq resolved arg-type)) (listp resolved))
+                     (log:debug "Template match: resolved alias ~a -> ~a" arg-type resolved)
+                     (match-list-structure sig-type resolved inference-map template-params))))
+
+        ;; E. Check for Template Aliases (e.g. (out-c T) -> (cell T ...))
+        (let ((alias-def (and (symbolp (first sig-type))
+                              (gethash (first sig-type) *crisp-template-aliases*))))
+          (when alias-def
+                (let* ((alias-params (car alias-def))
+                       (alias-body (cdr alias-def))
+                       (args (rest sig-type))
+                       (arity (length alias-params))
+                       (required-args (subseq args 0 (min (length args) arity)))
+                       (rest-args (subseq args (length required-args)))
+                       (substitutions (pairlis alias-params required-args))
+                       (expanded-base (sublis substitutions alias-body))
+                       (expanded-sig (if (and rest-args (consp expanded-base))
+                                         (append expanded-base rest-args)
+                                         expanded-base)))
+                  (match-template-arg (canonicalize-type-specifier expanded-sig) arg-type inference-map template-params))))))
+
+     ;; 4. Check for Symbol Alias (e.g. out-c)
+     ((and (symbolp sig-type)
+           (gethash sig-type *crisp-template-aliases*))
+       (let* ((alias-def (gethash sig-type *crisp-template-aliases*))
+              (alias-body (cdr alias-def)))
+         (match-template-arg (canonicalize-type-specifier alias-body) arg-type inference-map template-params)))
+
+     ;; 5. Concrete Type (int)
+     (t (or (equal sig-type arg-type)
+            (and (symbolp sig-type) (symbolp arg-type)
+                 (string-equal (symbol-name sig-type) (symbol-name arg-type)))
+
+            ;; Implicit Template Expansion: SERVER -> (SERVER T)
+            (and (symbolp sig-type)
+                 (gethash sig-type *template-registry*)
+                 (let* ((tmpl (first (gethash sig-type *template-registry*)))
+                        (params (mapcar (lambda (p) (if (consp p) (first p) p)) (template-data-parameters tmpl))))
+                   (when params
+                         (match-template-arg (cons sig-type params) arg-type inference-map template-params)))))))))

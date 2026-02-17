@@ -409,13 +409,16 @@ Assault On Pytorch
 - [x] brand -- 
 - - [x] requires documentation and decisions before work can begin.
 - [ ] --differentiate
+- - [ ] brand cell
 - - [ ] ANF transform.
+- - [ ] generate shadow signatures
+- - [ ] wengert list
 - - [ ] kernel and function transforms
 - - [ ] A/D
 
 
 
-- [ ] branded types. expand syntax to capture "always" vs. "when differentiating"
+- [x] branded types. expand syntax to capture "always" vs. "when differentiating"
 - [ ] math intermediaries - this also strongly pushes to more explicit passes and testing. expand user macros / desugar Crisp macros / nodes / analyze / compile ?
 - [ ] --differentiate flag and testing. square cell could be simple test
 - [ ] get-global-id or whatever and friends. 
