@@ -863,3 +863,101 @@
                         (params (mapcar (lambda (p) (if (consp p) (first p) p)) (template-data-parameters tmpl))))
                    (when params
                          (match-template-arg (cons sig-type params) arg-type inference-map template-params)))))))))
+
+;;; =========================================================
+;;; FIX: register-brand-definition - member-type check for parameterized brands
+;;; Fixes tests 035-brand/errors/30 and 035-brand/errors/32
+;;; =========================================================
+
+;; src/types/brand.lisp
+(defun register-brand-definition (struct-name brand-form)
+  "Registers a brand declaration from within a struct definition.
+   When the brand is active: registers as a derived type in the DAG.
+   When inactive: registers as a type alias (transparent erasure).
+   Parameterized brands (base type varies across template specializations,
+   and the brand is NOT used as a concrete struct member type) skip global
+   registration and are resolved lazily per-owner.
+   Brands that conflict in base type AND appear as a concrete struct member
+   in the existing owner are always an error (cannot be parameterized)."
+  (cl:let* ((brand-def (if (brand-definition-p brand-form)
+                           brand-form
+                           (parse-brand-declaration brand-form)))
+            (brand-name (brand-definition-brand-name brand-def))
+            (base-type (brand-definition-base-type brand-def))
+            (subst-mode (brand-definition-subst-mode brand-def))
+            (is-parameterized (gethash brand-name *parameterized-brand-names*)))
+
+    ;; Check for name collisions
+    (cl:when (gethash brand-name *crisp-structs*)
+          (error "Brand name collision: ~a is already defined as a struct." brand-name))
+    (cl:when (gethash brand-name *function-table*)
+          (error "Brand name collision: ~a is already defined as a function." brand-name))
+    (cl:when (and (gethash brand-name *crisp-types*)
+               (not (is-brand-type-p brand-name)))
+          (error "Brand name collision: ~a is already defined as a non-brand type." brand-name))
+
+    ;; When a brand conflict is detected (same name, different base type), determine
+    ;; whether it is an illegal redefinition or a legitimate parameterized brand.
+    ;;
+    ;; Rule: A conflict is ILLEGAL if the brand appears as a concrete member type
+    ;; in the existing owner struct.  The brand is PARAMETERIZED (allowed) only
+    ;; when it appears solely in function signatures (not in member lists).
+    ;;
+    ;; Example - ILLEGAL (token-t IS a member of server):
+    ;;   (def-struct server (brand token-t ulong ...) (active-token token-t) ...)
+    ;;   (def-struct virtual-server (brand token-t float ...) ...)  ;; ERROR
+    ;;
+    ;; Example - ALLOWED (value-t is NOT a member of fake-cell):
+    ;;   (def-record fake-cell (brand value-t T ...) (length index-t) ...)
+    ;;   ;; value-t used only in function sigs => parameterized brand, ok
+    (cl:unless is-parameterized
+      (cl:let ((existing (is-brand-type-p brand-name)))
+        (cl:when (and existing
+                      (not (eq (brand-definition-base-type existing) base-type)))
+          (cl:let* ((existing-owner (brand-definition-owner-struct existing))
+                    (existing-struct-def (find-struct-definition-by-name existing-owner))
+                    (brand-used-as-member-p
+                      (and existing-struct-def
+                           (some (lambda (m) (eq (second m) brand-name))
+                                 (crisp-struct-definition-members existing-struct-def)))))
+            (if brand-used-as-member-p
+                ;; Brand is a concrete member type - conflict is an illegal redefinition
+                (error "Cannot define derived type ~a: type already exists with DIFFERENT definition (Original: ~a, New: ~a)."
+                       brand-name
+                       (brand-definition-base-type existing)
+                       base-type)
+                ;; Brand is not a member type - parameterized brand (varies by template instance)
+                (progn
+                 (log:info "Brand ~a detected as PARAMETERIZED: base ~a (from ~a) vs ~a (from ~a)"
+                           brand-name
+                           (brand-definition-base-type existing) existing-owner
+                           base-type struct-name)
+                 (setf is-parameterized t)
+                 (setf (gethash brand-name *parameterized-brand-names*) t)
+                 ;; Remove previous global registration (alias table for inactive brands)
+                 (remhash brand-name *crisp-type-aliases*)))))))
+
+    ;; Store the owner struct
+    (setf (brand-definition-owner-struct brand-def) struct-name)
+
+    ;; Store in *brand-definitions* keyed by (brand-name . struct-type)
+    (setf (gethash (cons brand-name struct-name) *brand-definitions*) brand-def)
+    (log:info "Registered brand definition: ~a for struct ~a (base: ~a, subst: ~a, enforce: ~a~a)"
+              brand-name struct-name base-type subst-mode
+              (brand-definition-enforce-mode brand-def)
+              (if is-parameterized ", PARAMETERIZED" ""))
+
+    ;; Register the type based on active/inactive status.
+    ;; SKIP global registration for parameterized brands (resolved lazily per owner).
+    (if is-parameterized
+        (log:info "Brand ~a is PARAMETERIZED - skipping global type registration (resolved lazily per owner)"
+                  brand-name)
+        (if (brand-active-p brand-def)
+            (progn
+             (log:info "Brand ~a is ACTIVE - registering as derived type of ~a with :subst ~a"
+                       brand-name base-type subst-mode)
+             (register-derived-type brand-name base-type subst-mode))
+            (progn
+             (log:info "Brand ~a is INACTIVE - registering as type alias for ~a"
+                       brand-name base-type)
+             (setf (gethash brand-name *crisp-type-aliases*) base-type))))))
