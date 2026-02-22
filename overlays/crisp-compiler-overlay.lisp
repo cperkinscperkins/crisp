@@ -961,3 +961,344 @@
              (log:info "Brand ~a is INACTIVE - registering as type alias for ~a"
                        brand-name base-type)
              (setf (gethash brand-name *crisp-type-aliases*) base-type))))))
+
+;;; =========================================================
+;;; FIX: analyze-generic-as-expression - brand application in cast type
+;;; Fixes test 037-cell-branded/03-fake-cell-offset.crisp
+;;; =========================================================
+
+;; src/analysis/ops.lisp
+(defun analyze-generic-as-expression (expr env context location)
+  "Analyzes the generic (as type value) form.
+   Extended to handle brand application forms like (index-t fc) where
+   index-t is a brand, resolving to the concrete target type before validation."
+  (let* ((raw-type-form (second expr))
+         (value-form (third expr))
+
+         ;; Pre-resolution: detect brand application (brand-name var-ref).
+         ;; e.g. (as (index-t fc) delta) with active brand index-t resolves to
+         ;; (as index-t delta), and with inactive brand resolves to (as ulong delta).
+         (type-form
+           (if (and (listp raw-type-form)
+                    (= (length raw-type-form) 2)
+                    (symbolp (first raw-type-form))
+                    (symbolp (second raw-type-form))
+                    (is-brand-type-p (first raw-type-form)))
+               (let* ((brand-name (first raw-type-form))
+                      (var-ref (second raw-type-form))
+                      (brand-def (is-brand-type-p brand-name))
+                      ;; Try to find per-owner brand def using var's type from env
+                      (param (find var-ref env :key #'parameter-def-name))
+                      (owner-type (and param (parameter-def-type param)))
+                      (per-owner-def (and owner-type
+                                          (find-brand-for-owner brand-name owner-type)))
+                      (effective-brand-def (or per-owner-def brand-def)))
+                 (cond
+                  ;; Active brand, globally registered in *crisp-types* (non-parameterized):
+                  ;; cast to the brand type name directly.
+                  ((and effective-brand-def
+                        (brand-active-p effective-brand-def)
+                        (gethash brand-name *crisp-types*))
+                    (log:info "AS: resolved brand application (~a ~a) -> active brand ~a"
+                              brand-name var-ref brand-name)
+                    brand-name)
+                  ;; Active brand, parameterized (not globally registered):
+                  ;; use the per-owner base type.
+                  ((and effective-brand-def
+                        (brand-active-p effective-brand-def))
+                    (let ((base (brand-definition-base-type effective-brand-def)))
+                      (log:info "AS: resolved brand application (~a ~a) -> parameterized active base ~a"
+                                brand-name var-ref base)
+                      base))
+                  ;; Inactive brand: resolve to the alias or base type.
+                  ((and effective-brand-def
+                        (not (brand-active-p effective-brand-def)))
+                    (let ((base (or (gethash brand-name *crisp-type-aliases*)
+                                    (brand-definition-base-type effective-brand-def))))
+                      (log:info "AS: resolved brand application (~a ~a) -> inactive base ~a"
+                                brand-name var-ref base)
+                      base))
+                  ;; No brand def found: leave as-is (will fail the valid-type-p check later)
+                  (t
+                    (log:warn "AS: brand application (~a ~a) - no brand def found, leaving as-is"
+                              (first raw-type-form) (second raw-type-form))
+                    raw-type-form)))
+               raw-type-form))
+
+         (orig-type-name (if (or (symbolp type-form) (listp type-form))
+                             type-form
+                             (error "Generic AS expects a type specifier, got ~a" type-form)))
+         ;; Generic 'AS' alias resolution
+         (type-name (loop for name = orig-type-name then (gethash name *crisp-type-aliases*)
+                          while (and (symbolp name) (gethash name *crisp-type-aliases*))
+                          finally (cl:return name)))
+         (target-type (if (symbolp type-name) (gethash type-name *crisp-types*) nil))
+         (arg-node (analyze-expression value-form env context (append location '(2)))))
+
+    (unless (or target-type (valid-type-p type-name))
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    ;; No casting of voidp
+    (when (or (eq type-name 'voidp)
+              (and target-type (eq (crisp-type-category target-type) :void)))
+          (error 'crisp-compiler-error :message "Cannot cast to 'voidp'. Use a specific pointer type or handle." :source-location location))
+
+    (make-semantic-value-cast :type type-name :arg arg-node :source-location location)))
+
+;;;; ===========================================================================
+;;;; Fix for 037-cell-branded/07-fake-cell-incomplete.crisp
+;;;; Incomplete struct template dispatch via MAKE-X%DISPATCH CL macro.
+;;;;
+;;;; When a struct template has :c-t fields with no default (incomplete), we
+;;;; store partial instantiation info and install a CL macro for MAKE-X%DISPATCH.
+;;;; When that macro is expanded (at Crisp analysis time), the dispatch converts
+;;;; positional args back to keyword args and calls the partial struct's own
+;;;; constructor directly (which validates the required incomplete CT values).
+;;;;
+;;;; The return type is the PARTIAL mangled type (e.g. FAKE-CELL_INT), which has
+;;;; 1 template type arg and therefore allows template resolvers for ~ and set-~
+;;;; (also arity 1) to correctly infer T=INT from FAKE-CELL_INT.
+;;;; ===========================================================================
+
+;; src/templates.lisp
+(defvar *partial-template-instantiations* (make-hash-table :test 'eq)
+  "Maps template name symbols to lists of partial instantiation plists.
+   Each plist has keys:
+     :partial-mangled-name - symbol for the partial concrete type (e.g. FAKE-CELL_INT)
+     :data-members         - ordered data-member specs (excluding brand forms)")
+
+;; src/templates.lisp
+(defun %dispatch-incomplete-template (template-name all-args)
+  "Called at CL macro expansion time when MAKE-X%DISPATCH expands for an incomplete
+   struct template. Maps positional args back to keyword args and calls the partial
+   struct's constructor with all values (including the required incomplete CT ones).
+   Returns a direct constructor call whose result type is the partial mangled type
+   (e.g. FAKE-CELL_INT), preserving correct arity for template function resolution."
+  (let* ((partials (gethash template-name *partial-template-instantiations*))
+         (partial  (or (first partials)
+                       (error "DISPATCH-INCOMPLETE: No partial instantiation for ~a" template-name)))
+         (partial-mangled  (getf partial :partial-mangled-name))
+         (data-members     (getf partial :data-members))
+         ;; Constructor for the partial type (e.g. MAKE-FAKE-CELL_INT)
+         (constructor-name (intern (format nil "MAKE-~a" partial-mangled)
+                                   (symbol-package template-name)))
+         ;; Map positional args back to keyword args using data-member names
+         (keyword-call-args
+           (loop for m in data-members
+                 for i from 0
+                 for member-name = (first m)
+                 for kw = (intern (symbol-name member-name) :keyword)
+                 when (< i (length all-args))
+                 collect kw
+                 and collect (nth i all-args))))
+    (log:info "DISPATCH-INCOMPLETE: ~a -> ~a with keyword args ~a"
+              template-name constructor-name keyword-call-args)
+    `(,constructor-name ,@keyword-call-args)))
+
+;; src/templates.lisp
+(defun %instantiate-structure-template (name body substitutions concrete-types)
+  "Instantiates a struct template with the given substitutions and concrete types.
+   For incomplete templates (those with :c-t fields lacking a default value), stores
+   partial instantiation info in *partial-template-instantiations* and installs a CL
+   macro for MAKE-X%DISPATCH so dispatch can complete the type at call-site expansion.
+   For complete templates, generates the wrapper def-function and registers the overload
+   as before."
+  (let* ((mangled-name       (mangle-template-struct-name name concrete-types))
+         (substituted-body   (sublis substitutions (subst mangled-name name body)))
+         (members            (cddr substituted-body))
+         (data-members       (remove-if (lambda (m)
+                                          (and (consp m)
+                                               (string-equal (symbol-name (car m)) "BRAND")))
+                                        members))
+         (all-parsed-members (mapcar #'parse-struct-member-spec data-members))
+         ;; Remove only INCOMPLETE :c-t fields (nil fourth) from the wrapper param list
+         (parsed-members     (remove-if (lambda (m)
+                                          (and (consp m) (eq (third m) :c-t) (not (fourth m))))
+                                        all-parsed-members))
+         (param-names        (mapcar #'first parsed-members))
+         (wrapper-name       (intern (format nil "MAKE-~a_WRAPPER" mangled-name)
+                                     (symbol-package name)))
+         (constructor-alias  (intern (format nil "MAKE-~a%DISPATCH" name)
+                                     (symbol-package name)))
+         (mangled-constructor (intern (format nil "MAKE-~a" mangled-name)
+                                      (symbol-package name)))
+         (keyword-args       (loop for pname in param-names
+                                   collect (intern (symbol-name pname) :keyword)
+                                   collect pname))
+         (incomplete-fields  (remove-if-not (lambda (m)
+                                              (and (consp m) (eq (third m) :c-t) (null (fourth m))))
+                                            all-parsed-members)))
+    ;; Side-effect: for incomplete types, store partial info and install dispatch macro
+    (when incomplete-fields
+      (log:info "INSTANTIATE-STRUCT-TEMPLATE: ~a is incomplete (missing CT: ~a), storing partial"
+                mangled-name (mapcar #'first incomplete-fields))
+      (push (list :partial-mangled-name mangled-name
+                  :data-members         data-members)
+            (gethash name *partial-template-instantiations*))
+      ;; Install MAKE-X%DISPATCH as a CL macro (once per template name)
+      (unless (macro-function constructor-alias)
+        (let ((tname name))
+          (setf (macro-function constructor-alias)
+                (lambda (whole-form env)
+                  (declare (ignore env))
+                  (%dispatch-incomplete-template tname (rest whole-form)))))))
+    `(progn
+       ,substituted-body
+       ;; Wrapper + overload registration only for complete types
+       ,@(unless incomplete-fields
+           `((def-function ,wrapper-name ,parsed-members
+                           (declare (return-type ,mangled-name))
+                           (return (,mangled-constructor ,@keyword-args)))
+             (eval-when (:compile-toplevel :load-toplevel :execute)
+               (register-overload ',constructor-alias ',wrapper-name)))))))
+
+
+;;;; ===========================================================================
+;;;; Fix for analyze-struct-construction: use get-single-value-type
+;;;;
+;;;; When an arg to a struct constructor is a function call (e.g. (parent~ c-in)),
+;;;; (semantic-node-type node) returns the raw return-types list ((STORAGE GLOBAL))
+;;;; rather than the single type (STORAGE GLOBAL).  get-single-value-type
+;;;; correctly unwraps that wrapper so type comparison succeeds.
+;;;;
+;;;; Destination: src/analysis/structs.lisp
+;;;; ===========================================================================
+
+;; src/analysis/structs.lisp
+(defun analyze-struct-construction (expr env context location)
+  "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
+   Supports implicit promotion of base-type values to branded member types
+   in struct constructors (the birthplace of branded values).
+   Uses get-single-value-type to normalize function-call return type lists
+   (e.g. ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)) before type comparison."
+  (let* ((type-name (second expr))
+         (args (cddr expr))
+         (struct-def (lookup-struct-definition type-name)))
+    (unless struct-def
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    ;; Validate argument count against original members (excluding compile-time properties)
+    (let* ((all-members (crisp-struct-definition-members struct-def))
+           (members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) all-members)))
+      (unless (= (length args) (length members))
+        (error "Struct constructor for ~a expects ~a arguments, got ~a."
+          type-name (length members) (length args)))
+
+      ;; Analyze arguments
+      (let ((arg-nodes
+             (loop for arg in args
+                   for member in members
+                   for i from 0
+                   collect (let ((node (analyze-expression arg env context (append location (list (+ 2 i)))))
+                                 (expected-type (second member)))
+                             ;; get-single-value-type unwraps ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)
+                             ;; for function-call nodes whose semantic-call-type is a return-types list
+                             (let ((arg-type (get-single-value-type node)))
+                               (log:debug "STRUCT-CTOR ~a member ~a: arg-type=~a expected=~a"
+                                          type-name (first member) arg-type expected-type)
+                               ;; Type check with branded type promotion
+                               (unless (type-equal-p arg-type expected-type)
+                                 (cl:let ((brand-def (is-brand-type-p expected-type)))
+                                   (if brand-def
+                                       ;; Branded member: check numeric compatibility with base type
+                                       (cl:let* ((base-type (brand-definition-base-type brand-def))
+                                                 (arg-cat (numeric-type-category arg-type))
+                                                 (base-cat (numeric-type-category base-type)))
+                                         (if (and arg-cat base-cat)
+                                             ;; Compatible numeric types - wrap in a value cast to the base type
+                                             (progn
+                                              (log:debug "Constructor promotion: ~a -> ~a (base ~a) for member ~a"
+                                                         arg-type expected-type base-type (first member))
+                                              (setf node (make-semantic-value-cast
+                                                          :type base-type
+                                                          :arg node
+                                                          :source-location (append location (list (+ 2 i))))))
+                                             ;; Not numeric-compatible
+                                             (error 'crisp-type-error
+                                               :expected expected-type
+                                               :inferred arg-type
+                                               :source-location location)))
+                                       ;; Not a branded member -> real type error
+                                       (error 'crisp-type-error
+                                         :expected expected-type
+                                         :inferred arg-type
+                                         :source-location location))))
+                               node)))))
+
+        (make-semantic-struct-construction
+         :type type-name
+         :args arg-nodes
+         :source-location location)))))
+
+
+;;;; ===========================================================================
+;;;; Fix for detect-and-register-implicit-template: concrete structs are complete
+;;;;
+;;;; When SET-~ is instantiated with T=INT its param c has type FAKE-CELL_INT.
+;;;; FAKE-CELL_INT is registered in *crisp-structs* (it's a concrete struct), but
+;;;; it has a :c-t member (access) with no default -- so incomplete-type-p returns T.
+;;;; This causes detect-and-register-implicit-template to (wrongly) treat SET-~ as
+;;;; an implicit template, removing it from *function-table* before the overload can
+;;;; be used, causing "No matching function overload found for SET-~".
+;;;;
+;;;; Fix: in the implicit-args collection loop, guard the incomplete-type-p check
+;;;; with (not (find-struct-definition-by-name ptype)).  A type with a registered
+;;;; concrete struct definition IS a complete type for function-signature purposes.
+;;;;
+;;;; Destination: src/environment.lisp
+;;;; ===========================================================================
+
+;; src/environment.lisp
+(defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
+  "Detects if a function is an implicit template (e.g. has function-type args),
+   and if so, registers it as a template and returns T. Otherwise returns NIL.
+
+   A type is treated as incomplete only if incomplete-type-p says so AND the type
+   does NOT have a registered concrete struct definition.  Concrete registered
+   structs (like FAKE-CELL_INT) are fully resolved types even when they contain
+   :c-t members with no default value."
+  (when (or (find 'crisp-system-generated body :key (lambda (x) (if (listp x) (car x) x)) :test #'eq)
+            (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)) :test #'eq))
+        (return-from detect-and-register-implicit-template nil))
+
+  (let ((implicit-args (loop for p in explicit-env
+                             for pname = (parameter-def-name p)
+                             for ptype = (parameter-def-type p)
+                               when (or (and (listp ptype) (eq (first ptype) :function-type))
+                                        ;; Only treat as incomplete if it has no registered struct definition.
+                                        ;; Concrete mangled types like FAKE-CELL_INT are complete types.
+                                        (and (incomplete-type-p ptype)
+                                             (not (and (symbolp ptype)
+                                                       (find-struct-definition-by-name ptype)))))
+                             collect p)))
+    (when implicit-args
+          (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
+          ;; REMOVE from function table because register-function-signature already put it there!
+          (remhash name *function-table*)
+
+          ;; Convert to template
+          (let* ((template-params (loop for i from 0 repeat (length implicit-args) collect (intern (format nil "<IMPLICIT-F-~a>" i))))
+                 (subst-map (loop for p in implicit-args
+                                  for tparam in template-params
+                                  collect (cons (parameter-def-name p) tparam)))
+                 ;; Reconstruct environment with template params
+                 (new-env (loop for p in explicit-env
+                                collect (let ((match (assoc (parameter-def-name p) subst-map)))
+                                          (if match
+                                              (make-parameter-def
+                                               :name (parameter-def-name p)
+                                               :type (cdr match)
+                                               :kind (parameter-def-kind p)
+                                               :is-optional (parameter-def-is-optional p)
+                                               :is-key (parameter-def-is-key p)
+                                               :default-value (parameter-def-default-value p)
+                                               :source-location (parameter-def-source-location p))
+                                              p))))
+                 ;; Construct signature for inference
+                 (signature-list (append (mapcar #'parameter-def-type new-env) '(=>) return-type))
+                 ;; Reconstruct body form using signature
+                 (new-def-form `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
+
+            (log:info "Registering implicit template ~a with params ~a" name template-params)
+            (register-template name template-params nil new-def-form signature-list)
+            t))))
