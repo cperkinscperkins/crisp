@@ -1302,3 +1302,128 @@
             (log:info "Registering implicit template ~a with params ~a" name template-params)
             (register-template name template-params nil new-def-form signature-list)
             t))))
+
+
+;;;; ===========================================================================
+;;;; Fix: clear *brand-instance-cache* in initialize-compiler
+;;;;
+;;;; *brand-instance-cache* maps (brand-name . var-name) -> gensym.
+;;;; initialize-compiler clears *type-derivation-graph* (via
+;;;; initialize-type-hierarchy) but did NOT clear *brand-instance-cache*.
+;;;;
+;;;; This means that after initialize-compiler, stale gensyms remain in the
+;;;; cache.  When a subsequent compilation reuses the same (brand-name . var)
+;;;; pair, resolve-brand-type returns the stale gensym WITHOUT calling
+;;;; register-derived-type.  The gensym is then absent from the fresh type
+;;;; graph, so is-substitutable-for? returns NIL, types-compatible-p falls
+;;;; through to unmangle-template-struct-name, which crashes on uninterned
+;;;; symbols with (intern name NIL) -> "The name NIL does not designate any
+;;;; package."
+;;;;
+;;;; Fix: add (clrhash *brand-instance-cache*) alongside the other resets.
+;;;;
+;;;; Destination: src/compiler.lisp
+;;;; ===========================================================================
+
+;; src/compiler.lisp
+(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
+  "A master initialization function for the Crisp compiler.
+This should be called by any entry point into the system (REPL, executable, CI)."
+
+  (setf *runtime-checks-enabled* runtime-checks)
+  (setf *differentiate-p* differentiate)
+  ;; Load the LLVM shared library.
+  (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
+  ;; Configure the logging system to use stderr (important for stdout IR capture)
+  (if (eq log-level :off)
+      (log:config :off)
+      (log:config :sane :stream *error-output* log-level))
+
+  ;; Initialize the compiler's internal state.
+  (initialize-crisp-types)
+  (initialize-crisp-types)
+  (initialize-type-hierarchy) ;; Initialize type derivation graph (DAG)
+  (clrhash *function-table*) ;; Reset function table
+  (clrhash *crisp-structs*) ;; Reset struct definitions
+  (clrhash *crisp-type-aliases*) ;; Reset type aliases
+  (clrhash *crisp-template-aliases*) ;; Reset template aliases
+  (clrhash *generic-functions*) ;; Reset generic functions
+  (clrhash *kernel-declared-signatures*) ;; Reset kernel signatures
+  (when (boundp '*record-definitions*) (clrhash *record-definitions*)) ;; Reset records (if defined)
+
+  (setf *compiled-kernels* nil) ;; Reset compiled kernels list
+
+  (initialize-expression-analyzers) ;; In analysis.lisp, but usually registered.
+  ;; Note: analysis.lisp initializes *expression-analyzers* entries via def-expression-analyzer.
+  ;; Wait, where is initialize-expression-analyzers defined?
+  ;; It is usually in analysis.lisp.
+  (clrhash *implicit-arg-map*)
+  (initialize-advisements)
+
+  ;; Register intrinsic `die`
+  (setf (gethash 'die *function-table*)
+    (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
+
+  ;; Bind shadowed symbols to their CL equivalents so they work in macros
+  (setf (symbol-function 'truncate) #'cl:truncate)
+  (setf (symbol-function 'floor) #'cl:floor)
+  (setf (symbol-function 'ceil) #'cl:ceiling)
+  (setf (symbol-function 'round) #'cl:round)
+
+  ;; Auto-initialize templates if available (runtime check)
+  (if (fboundp 'initialize-templates)
+      (funcall 'initialize-templates)
+      (log:warn "Template system not loaded/initialized."))
+
+  ;; Reset brand definitions
+  (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
+
+  ;; Reset brand instance cache.
+  ;; CRITICAL: must be cleared whenever *type-derivation-graph* is reset.
+  ;; Stale gensyms in the cache are no longer registered in the fresh graph,
+  ;; causing is-substitutable-for? to return NIL and crashing unmangle.
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+
+  ;; Initialize built-in structs (storage)
+  (register-builtins))
+
+
+;;;; ===========================================================================
+;;;; Fix: guard unmangle-template-struct-name against uninterned gensyms
+;;;;
+;;;; Brand instance gensyms (e.g. #:TOKEN-T-204) are uninterned symbols
+;;;; (symbol-package = NIL).  When types-compatible-p check 6 calls
+;;;; unmangle-template-struct-name on such a gensym, the no-underscore branch
+;;;; executes (cl:intern name NIL) which signals "The name NIL does not
+;;;; designate any package."
+;;;;
+;;;; These gensyms can never be mangled struct names, so the correct result
+;;;; for an uninterned symbol is NIL (no unmangle possible).
+;;;;
+;;;; Destination: src/mangling.lisp
+;;;; ===========================================================================
+
+;; src/mangling.lisp
+(cl:defun unmangle-template-struct-name (symbol)
+  "Attempts to reverse mangling for known parameterized types like CELL.
+   Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.
+   Returns NIL immediately for uninterned symbols (gensyms produced by
+   brand instance differentiation) since they cannot be mangled struct names."
+  (cl:when (cl:symbolp symbol)
+    ;; Uninterned gensyms (brand instance types like #:TOKEN-T-204) have no
+    ;; package and can never be a mangled struct name.  Return NIL early to
+    ;; avoid the (intern name NIL) crash that follows.
+    (cl:unless (cl:symbol-package symbol)
+      (cl:return-from unmangle-template-struct-name nil))
+    (cl:let ((name (cl:symbol-name symbol)))
+      (cl:if (cl:find #\_ name)
+          (cl:let* ((parts (split-string name #\_))
+                    (base (cl:first parts))
+                    (reconstructed (reconstruct-template-args (cl:rest parts) (cl:symbol-package symbol))))
+            (cl:if base
+                (cl:let ((base-sym (cl:intern base (cl:symbol-package symbol))))
+                  `(,base-sym ,@reconstructed))
+                nil))
+          ;; No underscore: symbol is a bare type name (e.g. SHIRT -> (SHIRT))
+          `(,(cl:intern name (cl:symbol-package symbol)))))))
