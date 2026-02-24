@@ -4,8 +4,8 @@
 (with-template-type (T addr acc)
     (def-record fake-cell
         ;; branded types
-        (brand index-t ulong :subst :equal :enforce :diff)
-        (brand value-t T :subst :equal :enforce :diff) ;; oh no, this brand, as declared, will break the "one brand == one underlying type rule" after template specializations
+        (brand index-t ulong :subst :ancestor :enforce :diff)
+        (brand value-t T :subst :ancestor :enforce :diff) ;; oh no, this brand, as declared, will break the "one brand == one underlying type rule" after template specializations
         ;; members
         (parent (storage addr))
         (offset index-t)

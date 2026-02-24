@@ -1,0 +1,11 @@
+;; TEST-WITH[--differentiate]
+
+;; this should compile with and without the --differentiate flag.
+
+(def-type in-ish (cell int :address-space :global :access :read-write))
+(def-type out-ish (cell int :address-space :global :access :read-write))
+
+(def-kernel in_and_out (in &out out)
+    (declare #'(in-ish &out out-ish => nil))
+    (let ((v (~ in))) ;; v is a value-t<in> , which is distinct from value-t<out>
+        (set! (~ out) v)))  ;; branding not enforced for set! operations

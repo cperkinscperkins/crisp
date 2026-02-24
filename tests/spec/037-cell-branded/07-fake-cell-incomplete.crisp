@@ -11,8 +11,8 @@
     ;; because we only template the element-type (not address-space or access)
     (def-record fake-cell
         ;; branded types
-        (brand index-t ulong :subst :equal :enforce :diff)
-        (brand value-t T :subst :equal :enforce :diff) 
+        (brand index-t ulong :subst :ancestor :enforce :diff)
+        (brand value-t T :subst :ancestor :enforce :diff) 
         ;; members
         (parent (storage :global))
         (offset index-t)

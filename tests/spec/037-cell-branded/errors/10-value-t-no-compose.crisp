@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS 
+;; FAIL-WITH[--differentiate]: "message"
+
+(def-type in-ish (cell int :address-space :global :access :read-write))
+(def-type out-ish (cell int :address-space :global :access :read-write))
+
+(def-kernel value_t_no_composes (A B &out C)
+    (declare #'(in-ish in-ish &out out-ish => nil))
+    (let ((v1 (~ A))
+          (v2 (~ B))
+          (v-final (+ v1 v2)))
+      (set! (~ C) v-final)))

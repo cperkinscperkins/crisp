@@ -1,9 +1,6 @@
-;; TEST-WITH[--differentiate]
+;; TEST-EXPECT: PASS 
+;; FAIL-WITH[--differentiate]: "message"
 
-
-;; This test makes a new def-record type called fake-cell that employs
-;; branding for offset and value.  This allows us to test this works
-;; before updating the "real" cell with branding.
 
 (with-template-type (T addr acc)
     (def-record fake-cell
@@ -29,15 +26,18 @@
         ;; do something with storage
         (return)))
 
+
 (def-type in-ish (cell int :address-space :global :access :read-write))
 (def-type out-ish (cell int :address-space :global :access :read-write))
 
-(def-kernel test_fake_cell (c-in someV &out c-out)
-    (declare #'(in-ish int &out out-ish))
+(def-kernel fake_value_t_no_composes (off-A off-B &out C)
+    (declare #'(ulong ulong &out out-ish => nil))
     (gen-fake-cell int :global :read-write)
-    ; (gen-set-~ int :global :read-write) ;; unknown variable INT
-    (let ((fc (make-fake-cell :parent (parent~ c-in) :offset (to-ulong 0)  :address-space :global :access :read-write)))
-        (set-~ fc someV)                   
-        (set! (~ c-out) (~ fc))))
-    
+    (let ((A (make-fake-cell :parent (parent~ C) :offset off-A  :address-space :global :access :read-write))
+          (B (make-fake-cell :parent (parent~ C) :offset off-B  :address-space :global :access :read-write))
+          (v1 (~ A))
+          (v2 (~ B))
+          (v-final (+ v1 v2))) ;; :subst :ancestors should refuse to compile, no?
+      (set! (~ C) v-final)))
+
 
