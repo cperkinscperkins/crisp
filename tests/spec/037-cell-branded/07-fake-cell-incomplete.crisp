@@ -1,0 +1,45 @@
+
+;; TEST-WITH[--differentiate]
+
+;; we already have 011-incomplete-types/02-incomplete-templated.crisp
+;; which is supposed to ensure that incomplete types work in conjunction with templates.
+;; now we test that with branded records.
+
+
+(with-template-type (T)
+    ;; this version of fake-cell is simpler than the others (and of the original cell)
+    ;; because we only template the element-type (not address-space or access)
+    (def-record fake-cell
+        ;; branded types
+        (brand index-t ulong :subst :equal :enforce :diff)
+        (brand value-t T :subst :equal :enforce :diff) 
+        ;; members
+        (parent (storage :global))
+        (offset index-t)
+        ;(element-type type-spec :c-T T)
+        (address-space address-space :c-t :global) ;;providing a default
+        (access access :c-t))                      ;; NOT providing a default.
+
+    (def-function ~ (c)
+        (declare #'((fake-cell T) => (value-t c)))
+        ;; do something with storage.
+        (as T 1))
+
+    (def-function set-~ (c v)
+        (declare #'((fake-cell T) T => nil))
+        ;; do something with storage
+        (return)))
+
+
+(def-type in-ish (cell int :address-space :global :access :read-write))
+(def-type out-ish (cell int :address-space :global :access :read-write))
+
+(def-kernel test_fake_cell (c-in someV &out c-out)
+    (declare #'(in-ish int &out out-ish))
+    (gen-fake-cell int)
+  (let ((fc (make-fake-cell :parent (parent~ c-in) :offset (to-ulong 0)  :address-space :global :access :read-only)))
+        (set-~ fc someV)                   
+        (set! (~ c-out) (~ fc))))
+
+    
+

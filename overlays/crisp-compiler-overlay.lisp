@@ -1427,3 +1427,159 @@ This should be called by any entry point into the system (REPL, executable, CI).
                 nil))
           ;; No underscore: symbol is a bare type name (e.g. SHIRT -> (SHIRT))
           `(,(cl:intern name (cl:symbol-package symbol)))))))
+
+
+;;;; ===========================================================================
+;;;; Fix: detect-and-register-implicit-template guard is too broad
+;;;;
+;;;; The previous overlay guarded incomplete-type-p with:
+;;;;   (not (and (symbolp ptype) (find-struct-definition-by-name ptype)))
+;;;;
+;;;; This blocked ALL registered struct types — including legitimate incomplete
+;;;; types like PANTS (required :c-t field) and SHIRT (template with arity > 0)
+;;;; — from being recognized as implicit template parameters.
+;;;;
+;;;; Effect:
+;;;;   - 011-incomplete-types/02: SIZE~ accessor for shirt template not found
+;;;;     for SHIRT_INT_STITCHING-C_BLACK arguments.
+;;;;   - 011-incomplete-types/03: remeasure(p: PANTS) treated as concrete;
+;;;;     OP-ONLY-BLUE call with bare PANTS fails type check.
+;;;;
+;;;; Root cause: the guard should only block MANGLED/INSTANTIATED types — those
+;;;; that have already been concretely specialized, like FAKE-CELL_INT.  These
+;;;; always contain an underscore (_) in their name because the mangling scheme
+;;;; encodes template arguments with underscores.  Bare base names like PANTS
+;;;; and SHIRT never contain underscores and must remain eligible to be treated
+;;;; as incomplete types (i.e., implicit template parameters).
+;;;;
+;;;; Fix: add (cl:find #\_ (cl:symbol-name ptype)) to the guard, so only
+;;;; mangled concrete types are excluded.
+;;;;
+;;;; Destination: src/environment.lisp
+;;;; ===========================================================================
+
+;; src/environment.lisp
+(defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
+  "Detects if a function is an implicit template (e.g. has function-type args
+   or incomplete-type parameters), and if so registers it as a template and
+   returns T.  Otherwise returns NIL.
+
+   A type is treated as incomplete only if incomplete-type-p says so AND the
+   type is NOT a mangled/instantiated concrete struct (i.e. its name contains
+   an underscore AND has a registered struct definition).  Bare base names such
+   as PANTS and SHIRT have no underscore and remain eligible as implicit
+   template parameters even though they are in *crisp-structs*."
+  (when (or (find 'crisp-system-generated body
+                  :key (lambda (x) (if (listp x) (car x) x)) :test #'eq)
+            (find 'crisp-system-generated declarations
+                  :key (lambda (x) (if (listp x) (car x) x)) :test #'eq))
+        (return-from detect-and-register-implicit-template nil))
+
+  (let ((implicit-args
+          (loop for p in explicit-env
+                for pname = (parameter-def-name p)
+                for ptype = (parameter-def-type p)
+                  when (or (and (listp ptype) (eq (first ptype) :function-type))
+                           ;; Only exclude as complete if it is a MANGLED concrete type.
+                           ;; Mangled instantiated types (FAKE-CELL_INT, SHIRT_INT_...) have '_'
+                           ;; in their name.  Bare template/base names (PANTS, SHIRT) do not,
+                           ;; so they remain incomplete and eligible as implicit template params.
+                           (and (incomplete-type-p ptype)
+                                (not (and (symbolp ptype)
+                                          (cl:find #\_ (cl:symbol-name ptype))
+                                          (find-struct-definition-by-name ptype)))))
+                collect p)))
+    (when implicit-args
+          (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
+          ;; REMOVE from function table because register-function-signature already put it there!
+          (remhash name *function-table*)
+
+          ;; Convert to template
+          (let* ((template-params
+                   (loop for i from 0 repeat (length implicit-args)
+                         collect (intern (format nil "<IMPLICIT-F-~a>" i))))
+                 (subst-map
+                   (loop for p in implicit-args
+                         for tparam in template-params
+                         collect (cons (parameter-def-name p) tparam)))
+                 ;; Reconstruct environment with template params substituted in
+                 (new-env
+                   (loop for p in explicit-env
+                         collect (let ((match (assoc (parameter-def-name p) subst-map)))
+                                   (if match
+                                       (make-parameter-def
+                                        :name (parameter-def-name p)
+                                        :type (cdr match)
+                                        :kind (parameter-def-kind p)
+                                        :is-optional (parameter-def-is-optional p)
+                                        :is-key (parameter-def-is-key p)
+                                        :default-value (parameter-def-default-value p)
+                                        :source-location (parameter-def-source-location p))
+                                       p))))
+                 ;; Construct signature for inference
+                 (signature-list
+                   (append (mapcar #'parameter-def-type new-env) '(=>) return-type))
+                 ;; Reconstruct the def-function form for the template registry
+                 (new-def-form
+                   `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
+
+            (log:info "Registering implicit template ~a with params ~a" name template-params)
+            (register-template name template-params nil new-def-form signature-list)
+            t))))
+
+;; ============================================================
+;; FIX: extract-positional-from-keyword-args
+;; src/types/validation.lisp  (originally in this overlay, lines 9-29)
+;;
+;; Two calling conventions exist for type specs with more args than arity:
+;;
+;; 1. LABELED style (CELL-like user records, e.g. fake-cell):
+;;      (fake-cell int :address-space :global :access :read-write)  arity=3
+;;      -> label-strip -> (int :global :read-write)   [3 = arity] -> USE IT
+;;
+;; 2. POSITIONAL+C-T style (template structs with compile-time overrides):
+;;      (shirt int :blue :stitching-c :black)  arity=2
+;;      -> label-strip -> (int :stitching-c :black)   [3 != arity] -> FALLBACK
+;;      -> head-truncate -> (int :blue)                              -> USE IT
+;;
+;; Disambiguation heuristic: try label-stripping first.  If the result has
+;; exactly NUM-PARAMS elements the labeled convention was used.  Otherwise
+;; the extra args are c-t overrides; take only the first NUM-PARAMS args.
+;; ============================================================
+;; src/types/validation.lisp
+(defun extract-positional-from-keyword-args (args num-params)
+  "Extract NUM-PARAMS positional template args from ARGS when (length ARGS) > NUM-PARAMS.
+
+   Two conventions are supported:
+   1. Labeled style: (:label value) pairs identify template params by a descriptive name.
+      e.g. (int :address-space :global :access :read-write) with arity 3
+           => (int :global :read-write)
+   2. Positional+c-t style: first NUM-PARAMS args are positional template args;
+      any remaining args are compile-time field overrides handled elsewhere.
+      e.g. (int :blue :stitching-c :black) with arity 2
+           => (int :blue)
+
+   Disambiguation: label-strip the entire list.  If the result has exactly
+   NUM-PARAMS elements, the labeled convention was used and that result is
+   returned.  Otherwise the positional+c-t convention was used and the first
+   NUM-PARAMS elements of ARGS are returned unchanged."
+  (if (<= (length args) num-params)
+      args
+      ;; Try label-stripping the full arg list.
+      (let* ((stripped
+               (let ((result nil)
+                     (remaining args))
+                 (loop while remaining
+                       for item = (pop remaining)
+                       do (if (and (keywordp item) remaining)
+                              ;; Keyword label: skip label, push next item as value
+                              (push (pop remaining) result)
+                              ;; Non-keyword (or trailing keyword): push as positional
+                              (push item result)))
+                 (nreverse result))))
+        (if (= (length stripped) num-params)
+            ;; Label-stripping produced the right count -> labeled convention
+            stripped
+            ;; Label-stripping gave wrong count -> positional+c-t convention;
+            ;; take only the first num-params args as template args.
+            (subseq args 0 num-params)))))

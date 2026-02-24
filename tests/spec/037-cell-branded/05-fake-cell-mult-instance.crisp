@@ -1,0 +1,32 @@
+
+;; TEST-WITH[--differentiate]
+
+(with-template-type (T addr acc)
+    (def-record fake-cell
+        ;; branded types
+        (brand index-t ulong :subst :equal :enforce :diff)
+        (brand value-t T :subst :equal :enforce :diff) ;; oh no, this brand, as declared, will break the "one brand == one underlying type rule" after template specializations
+        ;; members
+        (parent (storage addr))
+        (offset index-t)
+        ;(element-type type-spec :c-T T)
+        (address-space address-space :c-t addr)
+        (access access :c-t acc))
+
+    (def-function ~ (c)
+        (declare #'((fake-cell T :address-space addr :access acc) => (value-t c)))
+        ;; do something with storage.
+        (as T 1)))
+
+
+
+
+;; two DIFFERENT instantiations. Ensure branding doesn't collide.
+
+(def-type fc-int (fake-cell int :address-space :global :access :read-write))
+(def-type fc-float (fake-cell float :address-space :global :access :read-write))
+
+(def-function two-different-types (fci fcf)
+    (declare #'(fc-int fc-float => (value-t fci) (index-t fcf)))
+    (return (~ fci) (offset~ fcf)))
+
