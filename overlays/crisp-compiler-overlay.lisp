@@ -1583,3 +1583,195 @@ This should be called by any entry point into the system (REPL, executable, CI).
             ;; Label-stripping gave wrong count -> positional+c-t convention;
             ;; take only the first num-params args as template args.
             (subseq args 0 num-params)))))
+
+;;;; ===========================================================================
+;;;; Fix: Brand instance type tracking and safe cross-instance arithmetic blocking
+;;;;
+;;;; Problem (with :descendant registration, original):
+;;;;   resolve-brand-type registers gensym instances as :descendant of the brand
+;;;;   type.  This means GENSYM-A.ancestors = [brand-name] and GENSYM-B.ancestors
+;;;;   = [brand-name].  find-common-promoted-type(GENSYM-A, GENSYM-B) finds
+;;;;   brand-name as a common ancestor and allows (+ GENSYM-A GENSYM-B).  This is
+;;;;   WRONG for --differentiate: two different variable instances of the same
+;;;;   brand should NOT compose in arithmetic.
+;;;;
+;;;; Problem (with :ancestor registration, the failed attempt):
+;;;;   GENSYM.ancestors = [], so GENSYM cannot substitute for brand-name.
+;;;;   Return-type checks like "Expected (TOKEN-T) but inferred (TOKEN-T-213)"
+;;;;   fail because the function body produces a gensym but the declared return
+;;;;   type is the brand name.
+;;;;
+;;;; Solution:
+;;;;   1. Keep :descendant registration (gensym IS-A brand → return-type checks
+;;;;      pass via is-substitutable-for?(gensym, brand)).
+;;;;   2. Track all gensym brand instances in *brand-instance-types* (gensym ->
+;;;;      brand-name).
+;;;;   3. Override resolve-dominance to:
+;;;;        a. Block same-brand cross-instance arithmetic (GENSYM-A + GENSYM-B
+;;;;           where both have the same brand → NIL).
+;;;;        b. Preserve brand instance type when mixing with compatible base types
+;;;;           (GENSYM-A * int → GENSYM-A, not brand-name, when brand dominates
+;;;;           int via the :ancestor relationship).
+;;;;
+;;;; src/types/brand.lisp (new state var)
+;;;; ===========================================================================
+
+(defvar *brand-instance-types* (make-hash-table :test 'equal)
+  "Maps gensym brand-instance type names (created by resolve-brand-type) to
+   the brand-name they instantiate.  Consulted by resolve-dominance to block
+   cross-instance arithmetic and to preserve instance types in arithmetic
+   with the brand's base type.
+   Cleared alongside *brand-instance-cache* in initialize-compiler.")
+
+;; src/types/brand.lisp
+(defun resolve-brand-type (brand-name var-ref)
+  "Resolves a branded type for a specific variable instance.
+   Returns a gensym'd type name unique to (brand-name, var-ref).
+   On first call for a given pair, creates a new type node in the DAG
+   as a :descendant of brand-name, caches it, and returns it.
+   On subsequent calls, returns the cached gensym.
+
+   The :descendant relationship means:
+   - The gensym CAN substitute for brand-name (return-type / signature checks work)
+   - Two different gensyms cannot substitute for each other (instance safety)
+   - Cross-instance arithmetic is blocked by resolve-dominance using
+     *brand-instance-types* rather than relying on the DAG structure."
+  (cl:let* ((cache-key (cons brand-name var-ref))
+            (cached (gethash cache-key *brand-instance-cache*)))
+    (or cached
+        (cl:let ((gensym-name (gensym (format nil "~a-" brand-name))))
+          ;; Register as a derived type: descendant of the brand type.
+          ;; This establishes: gensym -> brand-name in the ancestor chain,
+          ;; so the gensym is substitutable for the brand (a subtype).
+          (register-derived-type gensym-name brand-name :descendant)
+          ;; Track this gensym in *brand-instance-types* so resolve-dominance
+          ;; can identify it and apply brand-aware arithmetic rules.
+          (setf (gethash gensym-name *brand-instance-types*) brand-name)
+          ;; Cache for this compilation run's lifetime.
+          (setf (gethash cache-key *brand-instance-cache*) gensym-name)
+          (log:info "Created brand instance type ~a for (~a ~a)"
+                    gensym-name brand-name var-ref)
+          gensym-name))))
+
+;; src/compiler.lisp
+(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
+  "A master initialization function for the Crisp compiler.
+This should be called by any entry point into the system (REPL, executable, CI)."
+
+  (setf *runtime-checks-enabled* runtime-checks)
+  (setf *differentiate-p* differentiate)
+  ;; Load the LLVM shared library.
+  (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
+  ;; Configure the logging system to use stderr (important for stdout IR capture)
+  (if (eq log-level :off)
+      (log:config :off)
+      (log:config :sane :stream *error-output* log-level))
+
+  ;; Initialize the compiler's internal state.
+  (initialize-crisp-types)
+  (initialize-crisp-types)
+  (initialize-type-hierarchy) ;; Initialize type derivation graph (DAG)
+  (clrhash *function-table*) ;; Reset function table
+  (clrhash *crisp-structs*) ;; Reset struct definitions
+  (clrhash *crisp-type-aliases*) ;; Reset type aliases
+  (clrhash *crisp-template-aliases*) ;; Reset template aliases
+  (clrhash *generic-functions*) ;; Reset generic functions
+  (clrhash *kernel-declared-signatures*) ;; Reset kernel signatures
+  (when (boundp '*record-definitions*) (clrhash *record-definitions*)) ;; Reset records (if defined)
+
+  (setf *compiled-kernels* nil) ;; Reset compiled kernels list
+
+  (initialize-expression-analyzers) ;; In analysis.lisp, but usually registered.
+  (clrhash *implicit-arg-map*)
+  (initialize-advisements)
+
+  ;; Register intrinsic `die`
+  (setf (gethash 'die *function-table*)
+    (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
+
+  ;; Bind shadowed symbols to their CL equivalents so they work in macros
+  (setf (symbol-function 'truncate) #'cl:truncate)
+  (setf (symbol-function 'floor) #'cl:floor)
+  (setf (symbol-function 'ceil) #'cl:ceiling)
+  (setf (symbol-function 'round) #'cl:round)
+
+  ;; Auto-initialize templates if available (runtime check)
+  (if (fboundp 'initialize-templates)
+      (funcall 'initialize-templates)
+      (log:warn "Template system not loaded/initialized."))
+
+  ;; Reset brand definitions
+  (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
+
+  ;; Reset brand instance cache and brand instance type tracking.
+  ;; CRITICAL: must be cleared whenever *type-derivation-graph* is reset.
+  ;; Stale gensyms in the cache are no longer registered in the fresh graph,
+  ;; causing is-substitutable-for? to return NIL and crashing unmangle.
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+  (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+
+  ;; Initialize built-in structs (storage)
+  (register-builtins))
+
+;; src/types/hierarchy.lisp
+(defun resolve-dominance (type-a type-b)
+  "Determines which type dominates in arithmetic operations.
+   Returns the dominant type, or NIL if they cannot mix.
+
+   Standard rules:
+   - If same type, return it
+   - If one can substitute for the other, return the more general (target)
+
+   Brand instance rules (applied when standard substitutability fails):
+   - If both are brand instances of the SAME brand (but different variables),
+     they CANNOT mix -> return NIL.  This enforces instance isolation under
+     --differentiate.
+   - If one is a brand instance and the brand dominates the other type (via
+     find-common-promoted-type), the brand INSTANCE dominates (not just the
+     brand-name), preserving instance-specific type information through
+     arithmetic (e.g. (* (~ A) 2) -> same gensym type as (~ A)).
+
+   Fallback:
+   - find-common-promoted-type for all other cases."
+  (cl:cond
+    ((eq type-a type-b) type-a)
+
+    ;; Check substitutability (one dominates)
+    ((is-substitutable-for? type-a type-b) type-b) ; B is more general
+    ((is-substitutable-for? type-b type-a) type-a) ; A is more general
+
+    ;; Brand instance dominance rules
+    (t
+     (cl:let ((brand-a (and (boundp '*brand-instance-types*)
+                            (gethash type-a *brand-instance-types*)))
+              (brand-b (and (boundp '*brand-instance-types*)
+                            (gethash type-b *brand-instance-types*))))
+       (cl:cond
+         ;; Both are instances of the SAME brand -> incompatible, cannot mix
+         ((and brand-a brand-b (eq brand-a brand-b))
+          (log:debug "resolve-dominance: blocking cross-instance mix of ~a and ~a (both brand ~a)"
+                     type-a type-b brand-a)
+          nil)
+
+         ;; A is a brand instance; check if the brand (not the gensym) dominates B.
+         ;; If so, preserve the instance-specific type by returning type-a, not brand-a.
+         ((and brand-a
+               (find-common-promoted-type brand-a type-b))
+          (log:debug "resolve-dominance: brand instance ~a dominates ~a (via brand ~a)"
+                     type-a type-b brand-a)
+          type-a)
+
+         ;; B is a brand instance; check if the brand dominates A.
+         ((and brand-b
+               (find-common-promoted-type brand-b type-a))
+          (log:debug "resolve-dominance: brand instance ~a dominates ~a (via brand ~a)"
+                     type-b type-a brand-b)
+          type-b)
+
+         ;; Normal: find common promoted type using reachability intersection
+         (t
+          (cl:let ((common-type (find-common-promoted-type type-a type-b)))
+            (log:debug "resolve-dominance: common promoted type for ~a + ~a = ~a"
+                       type-a type-b common-type)
+            common-type)))))))
