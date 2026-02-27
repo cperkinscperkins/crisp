@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS 
-;; FAIL-WITH[--differentiate]: "message"
+;; FAIL-WITH[--differentiate]: "Type mismatch for operator '+'"
 
 
 (with-template-type (T addr acc)
