@@ -1775,3 +1775,800 @@ This should be called by any entry point into the system (REPL, executable, CI).
             (log:debug "resolve-dominance: common promoted type for ~a + ~a = ~a"
                        type-a type-b common-type)
             common-type)))))))
+
+;;;; ===========================================================================
+;;;; Add value-t and index-t brands to the real CELL template
+;;;; ===========================================================================
+;;;
+;;; By adding (brand value-t To :subst :ancestor :enforce :diff) to cell's
+;;; def-record, every instantiated cell type (e.g. CELL_INT_GLOBAL_READ-WRITE)
+;;; gets a value-t brand entry in *brand-definitions*.  When --differentiate is
+;;; active that brand is live, letting analyze-aref-expression issue per-variable
+;;; gensym types and thereby block cross-instance arithmetic via resolve-dominance.
+;;;
+;;; index-t is included for completeness (mirrors fake-cell); it brands offset
+;;; (index) values but is not yet exercised by any current test.
+
+;; src/compiler.lisp
+(defun register-builtins ()
+  "Registers built-in types and structs like 'storage' and 'cell' using def-struct
+   semantics.  Cell now carries value-t and index-t brands for --differentiate mode."
+  (log:info "Registering built-in structs...")
+
+  ;; STORAGE: parameterized by address space only.
+  (eval '(with-template-type ((Addr address-space :global))
+                             (def-record storage
+                                         (address (c-pointer :address-space Addr))
+                                         (byte-size ulong)
+                                         (address-space address-space :c-t Addr)
+                                         (access access :c-t :read-write))))
+
+  ;; CELL: opaque handle to a storage slice, with brands for --differentiate.
+  ;;   value-t To  - brands element reads so different cell vars produce distinct types
+  ;;   index-t ulong - brands offset values (not yet used by tests)
+  ;; Both brands use :subst :descendant (brand IS-A the base type, substitutable for it),
+  ;; :enforce :diff (only active when *differentiate-p* is T).
+  (eval '(with-template-type ((To T) (Addr address-space :global) (Acc access :read-write))
+                             (def-record cell
+                                         (brand value-t To :subst :descendant :enforce :diff)
+                                         (brand index-t ulong :subst :descendant :enforce :diff)
+                                         (parent (storage Addr))
+                                         (offset ulong)
+                                         (element-type type-spec :c-t To)
+                                         (address-space address-space :c-t Addr)
+                                         (access access :c-t Acc))))
+
+  ;; bytes~ helper: compile-time sizeof for cell element type.
+  (register-template 'bytes~ '(To (Addr address-space :global) (Acc access :read-write)) nil
+                     '(def-function bytes~ (c)
+                                    (declare (function ((cell To Addr Acc) => ulong)))
+                                    (declare (crisp-system-generated))
+                                    (return (sizeof To)))
+                     '((cell To Addr Acc) => ulong))
+
+  (log:info "Built-in structs registered."))
+
+;;;; ===========================================================================
+;;;; Brand-aware analyze-aref-expression for real cell reads
+;;;; ===========================================================================
+;;;
+;;; When --differentiate is active and a real cell type has an active value-t
+;;; brand, (~ cell-var) now returns a per-variable gensym type rather than the
+;;; raw element type.  This threads instance identity through arithmetic so that
+;;; resolve-dominance can block cross-instance operations such as (+ (~ A) (~ B)).
+;;;
+;;; The original code path is preserved for:
+;;;   - Write-mode access (set! targets): no brand resolution, raw elem-type used.
+;;;   - Inactive brands (no --differentiate): brand-def is found but brand-active-p
+;;;     is NIL, so resolved-type falls back to elem-type.
+;;;   - Missing target-sym (complex subexpressions): brand resolution skipped.
+
+;; src/analysis/structs.lisp
+(defun analyze-aref-expression (expr env context location)
+  "Analyzes a cell dereference expression (~ cell-var [index]).
+   For real cell types with an active value-t brand and a known target-sym,
+   returns a per-instance gensym type to enable --differentiate tracking."
+  (let* ((op (first expr))
+         (target-sym (if (symbolp (second expr)) (second expr) nil))
+         (array-node (analyze-expression (second expr) env context (append location '(1))))
+         (index-expr (third expr))
+         (index-node (if index-expr
+                         (analyze-expression index-expr env context (append location '(2)))
+                         ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
+                         (make-semantic-literal :value-type 'int :value 0 :source-location location)))
+         (elem-type (get-array-element-type (semantic-node-type array-node))))
+
+    ;; Check for invalid READ access on &out parameters
+    (when (and target-sym (not (eq *analysis-access-mode* :write)))
+          (let ((binding (find-variable-in-env target-sym env)))
+            (when (and binding (eq (parameter-def-kind binding) :out))
+                  (error 'crisp-illegal-access-error
+                    :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." target-sym)
+                    :source-location location))))
+
+    (if elem-type
+        (progn
+         ;; Check for VOID element type
+         (let ((is-void (or (eq elem-type 'void) (eq elem-type 'T)
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "T"))
+                            (and (consp elem-type)
+                                 (let ((head (first elem-type)))
+                                   (or (eq head 'void) (eq head 'T)
+                                       (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
+           (when is-void
+                 (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
+
+         ;; Brand-aware type resolution: when --differentiate is active, the cell
+         ;; has an active value-t brand, and we know the source variable (target-sym),
+         ;; resolve to a per-instance gensym type so arithmetic across different
+         ;; instances is blocked by resolve-dominance.
+         ;;
+         ;; Skip brand resolution for write-mode (set! target); set! does not
+         ;; type-check the value against the target, so the raw elem-type suffices.
+         (let* ((cell-type (semantic-node-type array-node))
+                (brand-def (and target-sym
+                                (not (eq *analysis-access-mode* :write))
+                                (find-brand-for-owner 'value-t cell-type)))
+                (resolved-type (if (and brand-def (brand-active-p brand-def))
+                                   (progn
+                                     (log:info "AREF: brand-aware read (~a) -> resolve-brand-type value-t ~a"
+                                               cell-type target-sym)
+                                     (resolve-brand-type 'value-t target-sym))
+                                   elem-type)))
+           (make-semantic-aref :type resolved-type
+                               :array-node array-node
+                               :index-node index-node
+                               :source-location location)))
+        ;; Fallback: If not an array/pointer, and op is ~, try as overloadable function call
+        (let ((op-name (symbol-name op)))
+          (if (or (string= op-name "~") (string= op-name "~REF~"))
+              (analyze-function-call op expr env context location)
+              (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+;; NOTE: this first analyze-aref-expression is superseded by the redefinition below.
+
+;;;; ===========================================================================
+;;;; Fix: resolve-brand-type -- handle parameterized brands
+;;;; ===========================================================================
+;;;
+;;; When the same brand name (e.g. value-t) is used across multiple template
+;;; specialisations with DIFFERENT base types (cell long, cell float, etc.),
+;;; register-brand-definition marks value-t as *parameterized*, removes its DAG
+;;; ancestor, and skips future DAG registrations.  This means VALUE-T-212 only
+;;; has value-t in its ancestor chain, value-t has NO ancestors, and therefore
+;;; VALUE-T-212 is NOT substitutable for the concrete element type (long, float…).
+;;; Return-type checks then fail with "Expected (LONG) but inferred (VALUE-T-212)".
+;;;
+;;; Fix: accept an optional BASE-TYPE argument.  When brand-name is parameterized
+;;; and a BASE-TYPE is known, register the gensym as a descendant of BASE-TYPE
+;;; directly (bypassing the parameterised, ancestor-less brand name).  The gensym
+;;; is still recorded in *brand-instance-types* under BRAND-NAME so that
+;;; resolve-dominance can block cross-instance arithmetic.
+
+;; src/types/brand.lisp
+(defun resolve-brand-type (brand-name var-ref &optional base-type)
+  "Resolves a branded type for a specific variable instance.
+   Returns a gensym'd type name unique to (brand-name, var-ref).
+
+   On first call, creates a new type node in the DAG:
+   - If brand-name is parameterised AND base-type is supplied, the gensym is
+     registered as a :descendant of base-type so it is substitutable for the
+     concrete element type in return-type checks.
+   - Otherwise the gensym is registered as a :descendant of brand-name.
+
+   In both cases the gensym is stored in *brand-instance-types* under brand-name
+   so that resolve-dominance can identify and block cross-instance arithmetic.
+
+   On subsequent calls for the same (brand-name . var-ref) pair, returns the
+   cached gensym."
+  (cl:let* ((cache-key (cons brand-name var-ref))
+            (cached (gethash cache-key *brand-instance-cache*)))
+    (or cached
+        (cl:let* ((gensym-name (gensym (format nil "~a-" brand-name)))
+                  (is-parameterized (and base-type
+                                         (boundp '*parameterized-brand-names*)
+                                         (gethash brand-name *parameterized-brand-names*)))
+                  (ancestor (if is-parameterized base-type brand-name)))
+          ;; Register gensym in the type DAG under the chosen ancestor.
+          (register-derived-type gensym-name ancestor :descendant)
+          ;; Track under brand-name (not ancestor) so resolve-dominance works.
+          (setf (gethash gensym-name *brand-instance-types*) brand-name)
+          (setf (gethash cache-key *brand-instance-cache*) gensym-name)
+          (log:info "Created brand instance type ~a for (~a ~a) [ancestor: ~a~a]"
+                    gensym-name brand-name var-ref ancestor
+                    (if is-parameterized " (parameterized-bypass)" ""))
+          gensym-name))))
+
+;;;; ===========================================================================
+;;;; Fix: resolve-dominance -- brand instances checked BEFORE substitutability
+;;;; ===========================================================================
+;;;
+;;; With :subst :descendant, a brand instance (VALUE-T-212) IS substitutable for
+;;; its base type (int).  The OLD resolve-dominance evaluated substitutability
+;;; FIRST, so (resolve-dominance VALUE-T-212 int) returned INT (more general),
+;;; losing the brand identity.  Test 15 (value-t-dominates) expects VALUE-T-212
+;;; to survive (* v1 2) unchanged.
+;;;
+;;; Fix: evaluate brand-instance rules BEFORE substitutability:
+;;;   1. eq  -> trivially same type
+;;;   2. both same-brand instances -> NIL (cross-instance blocked)
+;;;   3. one brand instance, one plain -> brand instance always dominates
+;;;   4. both non-brand -> standard substitutability / find-common-promoted-type
+
+;; src/types/hierarchy.lisp
+(defun resolve-dominance (type-a type-b)
+  "Determines which type dominates in arithmetic operations.
+   Returns the dominant type, or NIL if the types cannot mix.
+
+   Brand-instance rules are applied BEFORE substitutability so that a brand
+   instance always wins over the plain type it descends from:
+   - Same type: return it.
+   - Both instances of the SAME brand (different vars): cannot mix -> NIL.
+   - One brand instance, one non-brand: brand instance dominates.
+   - Neither is a brand instance: standard substitutability /
+     find-common-promoted-type."
+  (cl:cond
+    ((eq type-a type-b) type-a)
+
+    (t
+     (cl:let ((brand-a (and (boundp '*brand-instance-types*)
+                            (gethash type-a *brand-instance-types*)))
+              (brand-b (and (boundp '*brand-instance-types*)
+                            (gethash type-b *brand-instance-types*))))
+       (cl:cond
+         ;; Both brand instances of the SAME brand -> cannot mix
+         ((and brand-a brand-b (eq brand-a brand-b))
+          (log:debug "resolve-dominance: blocking cross-instance mix of ~a and ~a (both brand ~a)"
+                     type-a type-b brand-a)
+          nil)
+
+         ;; A is a brand instance, B is not -> A dominates unconditionally
+         ((and brand-a (not brand-b))
+          (log:debug "resolve-dominance: brand instance ~a dominates non-brand ~a"
+                     type-a type-b)
+          type-a)
+
+         ;; B is a brand instance, A is not -> B dominates unconditionally
+         ((and brand-b (not brand-a))
+          (log:debug "resolve-dominance: brand instance ~a dominates non-brand ~a"
+                     type-b type-a)
+          type-b)
+
+         ;; Neither is a brand instance -> standard type rules
+         ((is-substitutable-for? type-a type-b)
+          (log:debug "resolve-dominance: ~a substitutable for ~a -> ~a dominates"
+                     type-a type-b type-b)
+          type-b)
+         ((is-substitutable-for? type-b type-a)
+          (log:debug "resolve-dominance: ~a substitutable for ~a -> ~a dominates"
+                     type-b type-a type-a)
+          type-a)
+         (t
+          (log:debug "resolve-dominance: find-common-promoted-type ~a ~a"
+                     type-a type-b)
+          (find-common-promoted-type type-a type-b)))))))
+
+;;;; ===========================================================================
+;;;; Fix: analyze-aref-expression -- pass elem-type to resolve-brand-type
+;;;; ===========================================================================
+;;;
+;;; The previous version called (resolve-brand-type 'value-t target-sym) without
+;;; the element type.  With parameterised brands the gensym ended up as a
+;;; descendant of value-t (which has no ancestors), breaking return-type checks.
+;;; Pass elem-type as the optional BASE-TYPE so the fixed resolve-brand-type can
+;;; register against the concrete type when needed.
+
+;; src/analysis/structs.lisp
+(defun analyze-aref-expression (expr env context location)
+  "Analyzes a cell dereference expression (~ cell-var [index]).
+   For real cell types with an active value-t brand and a known target-sym,
+   returns a per-instance gensym type instead of the raw element type, so that
+   arithmetic across different cell variables is blocked by resolve-dominance
+   when --differentiate is active.
+
+   Passes elem-type to resolve-brand-type as optional BASE-TYPE so that
+   parameterised brands (value-t appearing with multiple element types in the
+   same compilation) still produce gensyms that are substitutable for the
+   concrete element type in return-type checks."
+  (let* ((op (first expr))
+         (target-sym (if (symbolp (second expr)) (second expr) nil))
+         (array-node (analyze-expression (second expr) env context (append location '(1))))
+         (index-expr (third expr))
+         (index-node (if index-expr
+                         (analyze-expression index-expr env context (append location '(2)))
+                         ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
+                         (make-semantic-literal :value-type 'int :value 0 :source-location location)))
+         (elem-type (get-array-element-type (semantic-node-type array-node))))
+
+    ;; Check for invalid READ access on &out parameters
+    (when (and target-sym (not (eq *analysis-access-mode* :write)))
+          (let ((binding (find-variable-in-env target-sym env)))
+            (when (and binding (eq (parameter-def-kind binding) :out))
+                  (error 'crisp-illegal-access-error
+                    :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." target-sym)
+                    :source-location location))))
+
+    (if elem-type
+        (progn
+         ;; Check for VOID element type
+         (let ((is-void (or (eq elem-type 'void) (eq elem-type 'T)
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "T"))
+                            (and (consp elem-type)
+                                 (let ((head (first elem-type)))
+                                   (or (eq head 'void) (eq head 'T)
+                                       (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
+           (when is-void
+                 (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
+
+         ;; Brand-aware type resolution: when --differentiate is active, the cell
+         ;; has an active value-t brand, and we know the source variable (target-sym),
+         ;; resolve to a per-instance gensym type so arithmetic across different
+         ;; instances is blocked by resolve-dominance.
+         ;;
+         ;; Skip brand resolution for write-mode (set! target); set! does not
+         ;; type-check the value against the target, so the raw elem-type suffices.
+         ;;
+         ;; elem-type is passed as BASE-TYPE so resolve-brand-type can bypass the
+         ;; parameterised brand's missing ancestor chain and register the gensym
+         ;; directly as a descendant of the concrete element type.
+         (let* ((cell-type (semantic-node-type array-node))
+                (brand-def (and target-sym
+                                (not (eq *analysis-access-mode* :write))
+                                (find-brand-for-owner 'value-t cell-type)))
+                (resolved-type (if (and brand-def (brand-active-p brand-def))
+                                   (progn
+                                     (log:info "AREF: brand-aware read (~a) -> resolve-brand-type value-t ~a [elem: ~a]"
+                                               cell-type target-sym elem-type)
+                                     (resolve-brand-type 'value-t target-sym elem-type))
+                                   elem-type)))
+           (make-semantic-aref :type resolved-type
+                               :array-node array-node
+                               :index-node index-node
+                               :source-location location)))
+        ;; Fallback: If not an array/pointer, and op is ~, try as overloadable function call
+        (let ((op-name (symbol-name op)))
+          (if (or (string= op-name "~") (string= op-name "~REF~"))
+              (analyze-function-call op expr env context location)
+              (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+
+;;;; ===========================================================================
+;;;; Fix2: resolve-brand-type -- base-type always used as ancestor when provided
+;;;; ===========================================================================
+;;;
+;;; The previous version checked *parameterized-brand-names* to decide whether
+;;; to register the gensym against brand-name or base-type.  This is fragile:
+;;; the first invocation may happen BEFORE the brand is marked as parameterized
+;;; (because a second cell element type hasn't been compiled yet), so the gensym
+;;; ends up as a descendant of brand-name.  When the brand is later marked
+;;; parameterised, brand-name's ancestor link is severed, leaving the gensym
+;;; with no path to the concrete element type.  Return-type checks then fail.
+;;;
+;;; Fix: whenever base-type is supplied, ALWAYS register the gensym directly
+;;; as a :descendant of base-type (bypassing brand-name entirely) and include
+;;; base-type in the cache key.  This means:
+;;;
+;;;   - VALUE-T-212 -> long   (substitutable for long in return-type checks)
+;;;   - VALUE-T-456 -> float  (substitutable for float in return-type checks)
+;;;
+;;; Both are still tracked in *brand-instance-types* under brand-name so that
+;;; resolve-dominance can block cross-instance arithmetic regardless of element type.
+;;;
+;;; For callers that do NOT supply base-type (fake-cell, future use), old
+;;; behaviour is preserved: register as descendant of brand-name.
+
+;; src/types/brand.lisp
+(defun resolve-brand-type (brand-name var-ref &optional base-type)
+  "Resolves a branded type for a specific variable instance.
+   Returns a gensym'd type name unique to (brand-name, var-ref [, base-type]).
+
+   When BASE-TYPE is supplied the gensym is registered as a :descendant of
+   BASE-TYPE directly.  This keeps the gensym substitutable for the concrete
+   element type even if brand-name later becomes parameterised.  The cache key
+   incorporates base-type so that the same variable name appearing with different
+   element types in different functions produces distinct gensyms.
+
+   When BASE-TYPE is NIL, the gensym is registered as a :descendant of
+   brand-name (original behaviour, used by fake-cell / template brands).
+
+   In all cases the gensym is stored in *brand-instance-types* under brand-name
+   so that resolve-dominance can block cross-instance arithmetic."
+  (cl:let* ((cache-key (if base-type
+                           (list brand-name var-ref base-type)
+                           (cons brand-name var-ref)))
+            (cached (gethash cache-key *brand-instance-cache*)))
+    (or cached
+        (cl:let* ((gensym-name (gensym (format nil "~a-" brand-name)))
+                  (ancestor (or base-type brand-name)))
+          ;; Register gensym directly against the chosen ancestor.
+          (register-derived-type gensym-name ancestor :descendant)
+          ;; Track under brand-name so resolve-dominance works across all
+          ;; element types of the same brand name.
+          (setf (gethash gensym-name *brand-instance-types*) brand-name)
+          (setf (gethash cache-key *brand-instance-cache*) gensym-name)
+          (log:info "Created brand instance type ~a for (~a ~a) [ancestor: ~a]"
+                    gensym-name brand-name var-ref ancestor)
+          gensym-name))))
+
+;;;; ===========================================================================
+;;;; Fix A: register-builtins -- remove index-t brand from real cell
+;;;; ===========================================================================
+;;;
+;;; The index-t brand on the real cell conflicted with fake-cell's index-t brand.
+;;; Real cell registers index-t with CRISP.COMPILER::ULONG, but fake-cell
+;;; registers it with CRISP-LANGUAGE::ULONG.  The eq check in register-derived-type's
+;;; idempotency guard fails because they are different symbol objects even though
+;;; they print the same.  Tests 037-cell-branded/01 and 07 fail with:
+;;;   "Cannot define derived type INDEX-T: type already exists with DIFFERENT definition"
+;;;
+;;; Fix: remove the index-t brand from real cell entirely.  The index-t brand on
+;;; fake-cell is still exercised by the fake-cell tests; real cell only needs
+;;; value-t for --differentiate tracking.
+
+;; src/compiler.lisp
+(defun register-builtins ()
+  "Registers built-in types and structs like 'storage' and 'cell' using def-struct
+   semantics.  Cell carries the value-t brand for --differentiate mode."
+  (log:info "Registering built-in structs...")
+
+  ;; Clear brand-specific state that is NOT cleared by initialize-compiler.
+  ;; initialize-compiler clears *brand-definitions* but not the extra tables
+  ;; introduced in the overlay.  Without this, the in-process test runner leaks
+  ;; state from one test into the next (e.g., *parameterized-brand-names* from
+  ;; test 01-fake-cell persists into test 02-fake-cell-value-t-no-compose,
+  ;; causing value-t to be treated as parameterized when it isn't in isolation).
+  (when (boundp '*parameterized-brand-names*) (clrhash *parameterized-brand-names*))
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+  (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+  (when (boundp '*brand-cache-last-function*) (setf *brand-cache-last-function* nil))
+
+  ;; STORAGE: parameterized by address space only.
+  (eval '(with-template-type ((Addr address-space :global))
+                             (def-record storage
+                                         (address (c-pointer :address-space Addr))
+                                         (byte-size ulong)
+                                         (address-space address-space :c-t Addr)
+                                         (access access :c-t :read-write))))
+
+  ;; CELL: opaque handle to a storage slice.
+  ;;   value-t To -- brands element reads so different cell vars produce distinct types
+  ;;   when --differentiate is active.  Only :read-write cells activate brand tracking;
+  ;;   :read-only/:write-only cells have the brand registered but analyze-aref-expression
+  ;;   skips instance differentiation for them (see Fix C).
+  ;;
+  ;; NOTE: index-t intentionally REMOVED from real cell to avoid package-symbol conflict
+  ;;   with fake-cell's index-t brand (CRISP.COMPILER::ULONG vs CRISP-LANGUAGE::ULONG).
+  (eval '(with-template-type ((To T) (Addr address-space :global) (Acc access :read-write))
+                             (def-record cell
+                                         (brand value-t To :subst :descendant :enforce :diff)
+                                         (parent (storage Addr))
+                                         (offset ulong)
+                                         (element-type type-spec :c-t To)
+                                         (address-space address-space :c-t Addr)
+                                         (access access :c-t Acc))))
+
+  ;; bytes~ helper: compile-time sizeof for cell element type.
+  (register-template 'bytes~ '(To (Addr address-space :global) (Acc access :read-write)) nil
+                     '(def-function bytes~ (c)
+                                    (declare (function ((cell To Addr Acc) => ulong)))
+                                    (declare (crisp-system-generated))
+                                    (return (sizeof To)))
+                     '((cell To Addr Acc) => ulong))
+
+  (log:info "Built-in structs registered."))
+
+;;;; ===========================================================================
+;;;; Fix B: register-brand-definition -- guard against non-symbol base-type
+;;;; ===========================================================================
+;;;
+;;; When a cell is instantiated with a compound element type such as (point int),
+;;; the template substitution produces a brand form like:
+;;;   (brand value-t (POINT INT) :subst :descendant :enforce :diff)
+;;; The brand-definition struct has (:type symbol) on its base-type slot.
+;;; Calling make-brand-definition with a list as base-type raises a type error.
+;;;
+;;; Fix: if the raw brand-form is a list (not pre-parsed) and its third element
+;;; (the base-type position) is not a symbol, skip registration gracefully.
+;;; Non-symbol element types cannot be meaningfully branded: the brand infrastructure
+;;; expects a single symbol for DAG registration and alias lookup.
+
+;; src/types/brand.lisp
+(defun register-brand-definition (struct-name brand-form)
+  "Registers a brand declaration from within a struct definition.
+   When the brand is active: registers as a derived type in the DAG.
+   When inactive: registers as a type alias (transparent erasure).
+   Parameterized brands (base type varies across template specializations,
+   and the brand is NOT used as a concrete struct member type) skip global
+   registration and are resolved lazily per-owner.
+   Brands that conflict in base type AND appear as a concrete struct member
+   in the existing owner are always an error (cannot be parameterized).
+
+   Non-symbol base types (e.g., compound types like (POINT INT)) are silently
+   skipped: they cannot be registered in the type DAG."
+  ;; Guard: compound element types (cell (point int), etc.) produce brand forms
+  ;; like (brand value-t (POINT INT) ...).  The brand-definition struct requires
+  ;; a symbol for base-type; skip registration rather than crashing.
+  (when (and (listp brand-form) (not (brand-definition-p brand-form)))
+    (let ((raw-base-type (third brand-form)))
+      (unless (symbolp raw-base-type)
+        (log:info "Skipping brand registration for ~a: base-type ~a is not a symbol (compound element types cannot be branded)"
+                  struct-name raw-base-type)
+        (return-from register-brand-definition nil))))
+
+  (cl:let* ((brand-def (if (brand-definition-p brand-form)
+                           brand-form
+                           (parse-brand-declaration brand-form)))
+            (brand-name (brand-definition-brand-name brand-def))
+            (base-type (brand-definition-base-type brand-def))
+            (subst-mode (brand-definition-subst-mode brand-def))
+            (is-parameterized (gethash brand-name *parameterized-brand-names*))
+            ;; Set to T when this brand is already globally registered (same base-type,
+            ;; different owner struct).  In that case we store the per-owner entry in
+            ;; *brand-definitions* but skip calling register-derived-type again.
+            ;; This prevents subst-mode conflicts when multiple structs share a brand
+            ;; name with the same element type but declare different :subst modes
+            ;; (e.g., real cell uses :descendant, fake-cell uses :ancestor).
+            (skip-global nil))
+
+    ;; Check for name collisions
+    (cl:when (gethash brand-name *crisp-structs*)
+          (error "Brand name collision: ~a is already defined as a struct." brand-name))
+    (cl:when (gethash brand-name *function-table*)
+          (error "Brand name collision: ~a is already defined as a function." brand-name))
+    (cl:when (and (gethash brand-name *crisp-types*)
+               (not (is-brand-type-p brand-name)))
+          (error "Brand name collision: ~a is already defined as a non-brand type." brand-name))
+
+    ;; Examine any existing registration for the same brand name.
+    (cl:unless is-parameterized
+      (cl:let ((existing (is-brand-type-p brand-name)))
+        (cl:when existing
+          (cl:cond
+            ;; Different base-type: conflict or parameterize
+            ((not (eq (brand-definition-base-type existing) base-type))
+             (cl:let* ((existing-owner (brand-definition-owner-struct existing))
+                       (existing-struct-def (find-struct-definition-by-name existing-owner))
+                       (brand-used-as-member-p
+                         (and existing-struct-def
+                              (some (lambda (m) (eq (second m) brand-name))
+                                    (crisp-struct-definition-members existing-struct-def)))))
+               (if brand-used-as-member-p
+                   (error "Cannot define derived type ~a: type already exists with DIFFERENT definition (Original: ~a, New: ~a)."
+                          brand-name
+                          (brand-definition-base-type existing)
+                          base-type)
+                   (progn
+                    (log:info "Brand ~a detected as PARAMETERIZED: base ~a (from ~a) vs ~a (from ~a)"
+                              brand-name
+                              (brand-definition-base-type existing) existing-owner
+                              base-type struct-name)
+                    (setf is-parameterized t)
+                    (setf (gethash brand-name *parameterized-brand-names*) t)
+                    (remhash brand-name *crisp-type-aliases*)))))
+
+            ;; Same base-type, different owner: brand already globally registered.
+            ;; Skip global re-registration to avoid subst-mode conflicts.
+            ;; This handles the case where real cell registers value-t with
+            ;; :descendant and fake-cell later registers value-t with :ancestor
+            ;; for the same element type.  The first owner's subst-mode wins;
+            ;; subsequent owners just get a per-owner *brand-definitions* entry.
+            ((not (eq (brand-definition-owner-struct existing) struct-name))
+             (log:info "Brand ~a already globally registered (first owner: ~a); skipping global re-registration for ~a (same base-type ~a)"
+                       brand-name (brand-definition-owner-struct existing) struct-name base-type)
+             (setf skip-global t))
+
+            ;; Same base-type, same owner: idempotent, nothing to do
+            (t nil)))))
+
+    ;; Store the owner struct
+    (setf (brand-definition-owner-struct brand-def) struct-name)
+
+    ;; Store in *brand-definitions* keyed by (brand-name . struct-type)
+    (setf (gethash (cons brand-name struct-name) *brand-definitions*) brand-def)
+    (log:info "Registered brand definition: ~a for struct ~a (base: ~a, subst: ~a, enforce: ~a~a)"
+              brand-name struct-name base-type subst-mode
+              (brand-definition-enforce-mode brand-def)
+              (cond (is-parameterized ", PARAMETERIZED")
+                    (skip-global ", SKIP-GLOBAL")
+                    (t "")))
+
+    ;; Register the type based on active/inactive status.
+    ;; Skip global registration for parameterized brands (resolved lazily per owner)
+    ;; and for brands already globally registered by another owner (skip-global).
+    (cond
+      (is-parameterized
+       (log:info "Brand ~a is PARAMETERIZED - skipping global type registration (resolved lazily per owner)"
+                 brand-name))
+      (skip-global
+       (log:info "Brand ~a - skip global type registration (already registered by first owner with same base-type ~a)"
+                 brand-name base-type))
+      ((brand-active-p brand-def)
+       (log:info "Brand ~a is ACTIVE - registering as derived type of ~a with :subst ~a"
+                 brand-name base-type subst-mode)
+       (register-derived-type brand-name base-type subst-mode))
+      (t
+       (log:info "Brand ~a is INACTIVE - registering as type alias for ~a"
+                 brand-name base-type)
+       (setf (gethash brand-name *crisp-type-aliases*) base-type)))))
+
+;;;; ===========================================================================
+;;;; Fix C: analyze-aref-expression -- only brand-track :read-write cells
+;;;; ===========================================================================
+;;;
+;;; The previous version applied value-t brand tracking to ALL cell reads when
+;;; --differentiate was active, including :read-only and :write-only cells.
+;;; This caused failures in pre-branding tests like:
+;;;   022-def-kernel/05,07,11  (cell long :access :read-only inputs)
+;;;   029-hoist-l0/08,09       (cell inputs with :read-only)
+;;;
+;;; Design rationale: :read-only and :write-only cells represent constants,
+;;; masks, or non-differentiated inputs.  Only :read-write cells participate
+;;; in the differentiation pass and need per-instance brand tracking.
+;;;
+;;; The owner struct name encodes the access mode (e.g., CELL_INT_GLOBAL_READ-WRITE
+;;; vs CELL_LONG_GLOBAL_READ-ONLY).  We check for "READ-WRITE" in the owner
+;;; struct's symbol name to determine whether to activate brand tracking.
+
+;; src/analysis/structs.lisp
+(defun analyze-aref-expression (expr env context location)
+  "Analyzes a cell dereference expression (~ cell-var [index]).
+   For real cell types with an active value-t brand and a known target-sym,
+   returns a per-instance gensym type instead of the raw element type, so that
+   arithmetic across different cell variables is blocked by resolve-dominance
+   when --differentiate is active.
+
+   Brand tracking is ONLY applied for :read-write cells.  :read-only and
+   :write-only cells skip brand tracking (their owner struct name does not
+   contain 'READ-WRITE'), preserving the behaviour of pre-branding kernels
+   that use read-only cells for constants and non-differentiated inputs.
+
+   Passes elem-type to resolve-brand-type as optional BASE-TYPE so that
+   parameterised brands (value-t appearing with multiple element types in the
+   same compilation) still produce gensyms that are substitutable for the
+   concrete element type in return-type checks."
+  (let* ((op (first expr))
+         (target-sym (if (symbolp (second expr)) (second expr) nil))
+         (array-node (analyze-expression (second expr) env context (append location '(1))))
+         (index-expr (third expr))
+         (index-node (if index-expr
+                         (analyze-expression index-expr env context (append location '(2)))
+                         ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
+                         (make-semantic-literal :value-type 'int :value 0 :source-location location)))
+         (elem-type (get-array-element-type (semantic-node-type array-node))))
+
+    ;; Check for invalid READ access on &out parameters
+    (when (and target-sym (not (eq *analysis-access-mode* :write)))
+          (let ((binding (find-variable-in-env target-sym env)))
+            (when (and binding (eq (parameter-def-kind binding) :out))
+                  (error 'crisp-illegal-access-error
+                    :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." target-sym)
+                    :source-location location))))
+
+    (if elem-type
+        (progn
+         ;; Check for VOID element type
+         (let ((is-void (or (eq elem-type 'void) (eq elem-type 'T)
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "T"))
+                            (and (consp elem-type)
+                                 (let ((head (first elem-type)))
+                                   (or (eq head 'void) (eq head 'T)
+                                       (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
+           (when is-void
+                 (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
+
+         ;; Brand-aware type resolution for --differentiate mode.
+         ;; Only applies to :read-write cell types.  The owner struct name encodes
+         ;; the access mode (e.g., CELL_INT_GLOBAL_READ-WRITE vs READ-ONLY).
+         ;; Read-only / write-only cells fall through to plain elem-type.
+         (let* ((cell-type (semantic-node-type array-node))
+                (brand-def (and target-sym
+                                (not (eq *analysis-access-mode* :write))
+                                (find-brand-for-owner 'value-t cell-type)))
+                ;; Check that the owning cell struct is :read-write (not :read-only/:write-only)
+                (is-rw-cell (and brand-def
+                                 (let ((owner (brand-definition-owner-struct brand-def)))
+                                   (and (symbolp owner)
+                                        (search "READ-WRITE" (symbol-name owner))))))
+                (resolved-type (if (and is-rw-cell (brand-active-p brand-def))
+                                   (progn
+                                     (log:info "AREF: brand-aware read (~a) -> resolve-brand-type value-t ~a [elem: ~a]"
+                                               cell-type target-sym elem-type)
+                                     (resolve-brand-type 'value-t target-sym elem-type))
+                                   elem-type)))
+           (make-semantic-aref :type resolved-type
+                               :array-node array-node
+                               :index-node index-node
+                               :source-location location)))
+        ;; Fallback: If not an array/pointer, and op is ~, try as overloadable function call
+        (let ((op-name (symbol-name op)))
+          (if (or (string= op-name "~") (string= op-name "~REF~"))
+              (analyze-function-call op expr env context location)
+              (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+
+;;;; ===========================================================================
+;;;; Fix: clear *partial-template-instantiations* and their CL dispatch macros
+;;;;      in initialize-compiler.
+;;;;
+;;;; When an incomplete struct template is instantiated (one with :c-t fields
+;;;; that lack a default value), %instantiate-structure-template stores info in
+;;;; *partial-template-instantiations* and installs a CL macro for MAKE-X%DISPATCH
+;;;; so that dispatch can find the partial mangled type at call-site expansion.
+;;;;
+;;;; initialize-templates (called inside initialize-compiler) clears
+;;;; *template-registry* and *instantiated-templates* but does NOT clear
+;;;; *partial-template-instantiations* or the installed CL macros.
+;;;;
+;;;; Consequence when tests run in-process (07 before errors/02):
+;;;;   - Test 07 (arity=1, FAKE-CELL_INT is incomplete) installs
+;;;;     MAKE-FAKE-CELL%DISPATCH as a CL macro that dispatches to FAKE-CELL_INT.
+;;;;   - initialize-compiler is called before test 02, but the CL macro and
+;;;;     hash entry are NOT cleared.
+;;;;   - Test 02 (arity=3, FAKE-CELL_INT_GLOBAL_READ-WRITE is COMPLETE) runs.
+;;;;     Its with-template-type redefines GEN-FAKE-CELL to arity=3, but
+;;;;     MAKE-FAKE-CELL%DISPATCH is still the arity=1 CL macro from test 07.
+;;;;   - (make-fake-cell ...) expands via MAKE-FAKE-CELL -> MAKE-FAKE-CELL%DISPATCH
+;;;;     -> %dispatch-incomplete-template -> MAKE-FAKE-CELL_INT -> UNKNOWN TYPE.
+;;;;
+;;;; Fix: extend initialize-compiler to also iterate *partial-template-instantiations*,
+;;;; remove each installed MAKE-X%DISPATCH CL macro, and then clear the hash.
+;;;;
+;;;; src/compiler.lisp
+(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
+  "A master initialization function for the Crisp compiler.
+This should be called by any entry point into the system (REPL, executable, CI)."
+
+  (setf *runtime-checks-enabled* runtime-checks)
+  (setf *differentiate-p* differentiate)
+  ;; Load the LLVM shared library.
+  (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
+  ;; Configure the logging system to use stderr (important for stdout IR capture)
+  (if (eq log-level :off)
+      (log:config :off)
+      (log:config :sane :stream *error-output* log-level))
+
+  ;; Initialize the compiler's internal state.
+  (initialize-crisp-types)
+  (initialize-crisp-types)
+  (initialize-type-hierarchy) ;; Initialize type derivation graph (DAG)
+  (clrhash *function-table*) ;; Reset function table
+  (clrhash *crisp-structs*) ;; Reset struct definitions
+  (clrhash *crisp-type-aliases*) ;; Reset type aliases
+  (clrhash *crisp-template-aliases*) ;; Reset template aliases
+  (clrhash *generic-functions*) ;; Reset generic functions
+  (clrhash *kernel-declared-signatures*) ;; Reset kernel signatures
+  (when (boundp '*record-definitions*) (clrhash *record-definitions*)) ;; Reset records (if defined)
+
+  (setf *compiled-kernels* nil) ;; Reset compiled kernels list
+
+  (initialize-expression-analyzers) ;; In analysis.lisp, but usually registered.
+  (clrhash *implicit-arg-map*)
+  (initialize-advisements)
+
+  ;; Register intrinsic `die`
+  (setf (gethash 'die *function-table*)
+    (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
+
+  ;; Bind shadowed symbols to their CL equivalents so they work in macros
+  (setf (symbol-function 'truncate) #'cl:truncate)
+  (setf (symbol-function 'floor) #'cl:floor)
+  (setf (symbol-function 'ceil) #'cl:ceiling)
+  (setf (symbol-function 'round) #'cl:round)
+
+  ;; Auto-initialize templates if available (runtime check)
+  (if (fboundp 'initialize-templates)
+      (funcall 'initialize-templates)
+      (log:warn "Template system not loaded/initialized."))
+
+  ;; Reset brand definitions
+  (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
+
+  ;; Reset brand instance cache and brand instance type tracking.
+  ;; CRITICAL: must be cleared whenever *type-derivation-graph* is reset.
+  ;; Stale gensyms in the cache are no longer registered in the fresh graph,
+  ;; causing is-substitutable-for? to return NIL and crashing unmangle.
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+  (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+
+  ;; Clear partial template instantiations and their CL dispatch macros.
+  ;; When an incomplete struct template (one with unresolved :c-t fields) is
+  ;; instantiated, %instantiate-structure-template stores partial info in
+  ;; *partial-template-instantiations* AND installs a CL macro for MAKE-X%DISPATCH.
+  ;; initialize-templates only clears *template-registry* and *instantiated-templates*;
+  ;; it does NOT touch *partial-template-instantiations* or the CL macros.
+  ;; Without this cleanup, stale dispatch macros survive initialize-compiler and
+  ;; misdirect MAKE-X calls in subsequent tests.
+  (when (boundp '*partial-template-instantiations*)
+    (loop for template-name being the hash-keys of *partial-template-instantiations*
+          do (let ((dispatch-sym (intern (format nil "MAKE-~a%DISPATCH" template-name)
+                                         (symbol-package template-name))))
+               (when (macro-function dispatch-sym)
+                 (log:info "INITIALIZE-COMPILER: clearing stale CL dispatch macro ~a" dispatch-sym)
+                 ;; Use fmakunbound to remove the macro definition cleanly.
+                 ;; (setf (macro-function sym) nil) is not valid in SBCL.
+                 (fmakunbound dispatch-sym))))
+    (clrhash *partial-template-instantiations*))
+
+  ;; Initialize built-in structs (storage)
+  (register-builtins))

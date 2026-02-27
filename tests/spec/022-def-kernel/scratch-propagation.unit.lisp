@@ -15,7 +15,9 @@
                (crisp.spec-runner::compile-crisp-file-to-ir-string file)
 
                ;; Retrieve the kernel function object
-               (let* ((sigs (gethash (intern "MY_KERNEL" :crisp.compiler) crisp.compiler::*function-table*))
+               ;; Note: compile-crisp-file-to-ir-string reads source in :crisp-language package,
+               ;; so kernel names are interned there (matching binary compiler behavior).
+               (let* ((sigs (gethash (intern "MY_KERNEL" :crisp-language) crisp.compiler::*function-table*))
                       (kernel-func (first sigs))
                       ;; (implicit-args (when kernel-func (crisp.compiler:function-implicit-args kernel-func)))
                       (user-args (when kernel-func (crisp.compiler:function-signature-parameters kernel-func))))
