@@ -300,7 +300,7 @@
     (log:info "Generated PTX: ~a" ptx-file)))
 
 
-
+#|
 (defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
@@ -392,3 +392,84 @@ This should be called by any entry point into the system (REPL, executable, CI).
                                     (declare (crisp-system-generated))
                                     (return (sizeof To)))
                      '((cell To Addr Acc) => ulong)))
+
+                     |#
+
+(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
+  "A master initialization function for the Crisp compiler.
+This should be called by any entry point into the system (REPL, executable, CI)."
+
+  (setf *runtime-checks-enabled* runtime-checks)
+  (setf *differentiate-p* differentiate)
+  ;; Load the LLVM shared library.
+  (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
+  ;; Configure the logging system to use stderr (important for stdout IR capture)
+  (if (eq log-level :off)
+      (log:config :off)
+      (log:config :sane :stream *error-output* log-level))
+
+  ;; Initialize the compiler's internal state.
+  (initialize-crisp-types)
+  (initialize-crisp-types)
+  (initialize-type-hierarchy) ;; Initialize type derivation graph (DAG)
+  (clrhash *function-table*) ;; Reset function table
+  (clrhash *crisp-structs*) ;; Reset struct definitions
+  (clrhash *crisp-type-aliases*) ;; Reset type aliases
+  (clrhash *crisp-template-aliases*) ;; Reset template aliases
+  (clrhash *generic-functions*) ;; Reset generic functions
+  (clrhash *kernel-declared-signatures*) ;; Reset kernel signatures
+  (when (boundp '*record-definitions*) (clrhash *record-definitions*)) ;; Reset records (if defined)
+
+  (setf *compiled-kernels* nil) ;; Reset compiled kernels list
+
+  (initialize-expression-analyzers) ;; In analysis.lisp, but usually registered.
+  (clrhash *implicit-arg-map*)
+  (initialize-advisements)
+
+  ;; Register intrinsic `die`
+  (setf (gethash 'die *function-table*)
+    (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
+
+  ;; Bind shadowed symbols to their CL equivalents so they work in macros
+  (setf (symbol-function 'truncate) #'cl:truncate)
+  (setf (symbol-function 'floor) #'cl:floor)
+  (setf (symbol-function 'ceil) #'cl:ceiling)
+  (setf (symbol-function 'round) #'cl:round)
+
+  ;; Auto-initialize templates if available (runtime check)
+  (if (fboundp 'initialize-templates)
+      (funcall 'initialize-templates)
+      (log:warn "Template system not loaded/initialized."))
+
+  ;; Reset brand definitions
+  (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
+
+  ;; Reset brand instance cache and brand instance type tracking.
+  ;; CRITICAL: must be cleared whenever *type-derivation-graph* is reset.
+  ;; Stale gensyms in the cache are no longer registered in the fresh graph,
+  ;; causing is-substitutable-for? to return NIL and crashing unmangle.
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+  (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+
+  ;; Clear partial template instantiations and their CL dispatch macros.
+  ;; When an incomplete struct template (one with unresolved :c-t fields) is
+  ;; instantiated, %instantiate-structure-template stores partial info in
+  ;; *partial-template-instantiations* AND installs a CL macro for MAKE-X%DISPATCH.
+  ;; initialize-templates only clears *template-registry* and *instantiated-templates*;
+  ;; it does NOT touch *partial-template-instantiations* or the CL macros.
+  ;; Without this cleanup, stale dispatch macros survive initialize-compiler and
+  ;; misdirect MAKE-X calls in subsequent tests.
+  (when (boundp '*partial-template-instantiations*)
+    (loop for template-name being the hash-keys of *partial-template-instantiations*
+          do (let ((dispatch-sym (intern (format nil "MAKE-~a%DISPATCH" template-name)
+                                         (symbol-package template-name))))
+               (when (macro-function dispatch-sym)
+                 (log:info "INITIALIZE-COMPILER: clearing stale CL dispatch macro ~a" dispatch-sym)
+                 ;; Use fmakunbound to remove the macro definition cleanly.
+                 ;; (setf (macro-function sym) nil) is not valid in SBCL.
+                 (fmakunbound dispatch-sym))))
+    (clrhash *partial-template-instantiations*))
+
+  ;; Initialize built-in structs (storage)
+  (register-builtins))

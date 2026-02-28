@@ -401,6 +401,7 @@
             brand-spec)))))
 
 ;; src/types/brand.lisp
+#|
 (defun register-brand-definition (struct-name brand-form)
   "Registers a brand declaration from within a struct definition.
    When the brand is active: registers as a derived type in the DAG.
@@ -463,6 +464,8 @@
              (log:info "Brand ~a is INACTIVE - registering as type alias for ~a"
                        brand-name base-type)
              (setf (gethash brand-name *crisp-type-aliases*) base-type))))))
+
+             |#
 
 ;; src/environment.lisp
 (defun parse-function-declarations (params declarations)
@@ -870,6 +873,7 @@
 ;;; =========================================================
 
 ;; src/types/brand.lisp
+#|
 (defun register-brand-definition (struct-name brand-form)
   "Registers a brand declaration from within a struct definition.
    When the brand is active: registers as a derived type in the DAG.
@@ -961,6 +965,8 @@
              (log:info "Brand ~a is INACTIVE - registering as type alias for ~a"
                        brand-name base-type)
              (setf (gethash brand-name *crisp-type-aliases*) base-type))))))
+
+             |#
 
 ;;; =========================================================
 ;;; FIX: analyze-generic-as-expression - brand application in cast type
@@ -1326,6 +1332,7 @@
 ;;;; ===========================================================================
 
 ;; src/compiler.lisp
+#|
 (defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
@@ -1387,6 +1394,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 
   ;; Initialize built-in structs (storage)
   (register-builtins))
+  |#
 
 
 ;;;; ===========================================================================
@@ -1624,6 +1632,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
    Cleared alongside *brand-instance-cache* in initialize-compiler.")
 
 ;; src/types/brand.lisp
+#|
 (defun resolve-brand-type (brand-name var-ref)
   "Resolves a branded type for a specific variable instance.
    Returns a gensym'd type name unique to (brand-name, var-ref).
@@ -1652,8 +1661,10 @@ This should be called by any entry point into the system (REPL, executable, CI).
           (log:info "Created brand instance type ~a for (~a ~a)"
                     gensym-name brand-name var-ref)
           gensym-name))))
+          |#
 
 ;; src/compiler.lisp
+#|
 (defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
@@ -1713,6 +1724,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 
   ;; Initialize built-in structs (storage)
   (register-builtins))
+  |#
 
 ;; src/types/hierarchy.lisp
 (defun resolve-dominance (type-a type-b)
@@ -1844,6 +1856,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;;   - Missing target-sym (complex subexpressions): brand resolution skipped.
 
 ;; src/analysis/structs.lisp
+#|
 (defun analyze-aref-expression (expr env context location)
   "Analyzes a cell dereference expression (~ cell-var [index]).
    For real cell types with an active value-t brand and a known target-sym,
@@ -1905,6 +1918,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
           (if (or (string= op-name "~") (string= op-name "~REF~"))
               (analyze-function-call op expr env context location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+
+              |#
 ;; NOTE: this first analyze-aref-expression is superseded by the redefinition below.
 
 ;;;; ===========================================================================
@@ -1926,6 +1941,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; resolve-dominance can block cross-instance arithmetic.
 
 ;; src/types/brand.lisp
+#|
 (defun resolve-brand-type (brand-name var-ref &optional base-type)
   "Resolves a branded type for a specific variable instance.
    Returns a gensym'd type name unique to (brand-name, var-ref).
@@ -1958,6 +1974,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                     gensym-name brand-name var-ref ancestor
                     (if is-parameterized " (parameterized-bypass)" ""))
           gensym-name))))
+          |#
 
 ;;;; ===========================================================================
 ;;;; Fix: resolve-dominance -- brand instances checked BEFORE substitutability
@@ -2039,6 +2056,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; register against the concrete type when needed.
 
 ;; src/analysis/structs.lisp
+#|
 (defun analyze-aref-expression (expr env context location)
   "Analyzes a cell dereference expression (~ cell-var [index]).
    For real cell types with an active value-t brand and a known target-sym,
@@ -2111,6 +2129,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
           (if (or (string= op-name "~") (string= op-name "~REF~"))
               (analyze-function-call op expr env context location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+              |#
 
 ;;;; ===========================================================================
 ;;;; Fix2: resolve-brand-type -- base-type always used as ancestor when provided
@@ -2138,6 +2157,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; behaviour is preserved: register as descendant of brand-name.
 
 ;; src/types/brand.lisp
+#|
 (defun resolve-brand-type (brand-name var-ref &optional base-type)
   "Resolves a branded type for a specific variable instance.
    Returns a gensym'd type name unique to (brand-name, var-ref [, base-type]).
@@ -2169,6 +2189,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
           (log:info "Created brand instance type ~a for (~a ~a) [ancestor: ~a]"
                     gensym-name brand-name var-ref ancestor)
           gensym-name))))
+          |#
 
 ;;;; ===========================================================================
 ;;;; Fix A: register-builtins -- remove index-t brand from real cell
@@ -2253,6 +2274,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; expects a single symbol for DAG registration and alias lookup.
 
 ;; src/types/brand.lisp
+#|
 (defun register-brand-definition (struct-name brand-form)
   "Registers a brand declaration from within a struct definition.
    When the brand is active: registers as a derived type in the DAG.
@@ -2371,6 +2393,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
                  brand-name base-type)
        (setf (gethash brand-name *crisp-type-aliases*) base-type)))))
 
+       |#
+
 ;;;; ===========================================================================
 ;;;; Fix C: analyze-aref-expression -- only brand-track :read-write cells
 ;;;; ===========================================================================
@@ -2390,6 +2414,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; struct's symbol name to determine whether to activate brand tracking.
 
 ;; src/analysis/structs.lisp
+#|
 (defun analyze-aref-expression (expr env context location)
   "Analyzes a cell dereference expression (~ cell-var [index]).
    For real cell types with an active value-t brand and a known target-sym,
@@ -2466,6 +2491,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
               (analyze-function-call op expr env context location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
 
+              |#
+
 ;;;; ===========================================================================
 ;;;; Fix: clear *partial-template-instantiations* and their CL dispatch macros
 ;;;;      in initialize-compiler.
@@ -2494,6 +2521,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;;; remove each installed MAKE-X%DISPATCH CL macro, and then clear the hash.
 ;;;;
 ;;;; src/compiler.lisp
+#|
 (defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
@@ -2573,6 +2601,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
   ;; Initialize built-in structs (storage)
   (register-builtins))
 
+  |#
+
 ;;;; ===========================================================================
 ;;;; Fix3: resolve-brand-type -- normalize base-type to canonical package
 ;;;; ===========================================================================
@@ -2609,6 +2639,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; Destination: src/types/brand.lisp
 
 ;; src/types/brand.lisp
+#|
 (defun resolve-brand-type (brand-name var-ref &optional base-type)
   "Resolves a branded type for a specific variable instance.
    Returns a gensym'd type name unique to (brand-name, var-ref [, base-type]).
@@ -2673,3 +2704,5 @@ This should be called by any entry point into the system (REPL, executable, CI).
           (log:info "Created brand instance type ~a for (~a ~a) [ancestor: ~a]"
                     gensym-name brand-name var-ref ancestor)
           gensym-name))))
+
+          |#

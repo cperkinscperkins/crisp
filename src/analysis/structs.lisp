@@ -211,7 +211,7 @@
          :value-node value-node
          :source-location location)))))
 
-
+#|
 (defun analyze-aref-expression (expr env context location)
   (let* ((op (first expr))
          (target-sym (if (symbolp (second expr)) (second expr) nil))
@@ -249,6 +249,83 @@
                              :index-node index-node
                              :source-location location))
         ;; Fallback: If not an array/pointer, and op is ~, try to treat as overloadable function call
+        (let ((op-name (symbol-name op)))
+          (if (or (string= op-name "~") (string= op-name "~REF~"))
+              (analyze-function-call op expr env context location)
+              (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+              |#
+
+(defun analyze-aref-expression (expr env context location)
+  "Analyzes a cell dereference expression (~ cell-var [index]).
+   For real cell types with an active value-t brand and a known target-sym,
+   returns a per-instance gensym type instead of the raw element type, so that
+   arithmetic across different cell variables is blocked by resolve-dominance
+   when --differentiate is active.
+
+   Brand tracking is ONLY applied for :read-write cells.  :read-only and
+   :write-only cells skip brand tracking (their owner struct name does not
+   contain 'READ-WRITE'), preserving the behaviour of pre-branding kernels
+   that use read-only cells for constants and non-differentiated inputs.
+
+   Passes elem-type to resolve-brand-type as optional BASE-TYPE so that
+   parameterised brands (value-t appearing with multiple element types in the
+   same compilation) still produce gensyms that are substitutable for the
+   concrete element type in return-type checks."
+  (let* ((op (first expr))
+         (target-sym (if (symbolp (second expr)) (second expr) nil))
+         (array-node (analyze-expression (second expr) env context (append location '(1))))
+         (index-expr (third expr))
+         (index-node (if index-expr
+                         (analyze-expression index-expr env context (append location '(2)))
+                         ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
+                         (make-semantic-literal :value-type 'int :value 0 :source-location location)))
+         (elem-type (get-array-element-type (semantic-node-type array-node))))
+
+    ;; Check for invalid READ access on &out parameters
+    (when (and target-sym (not (eq *analysis-access-mode* :write)))
+          (let ((binding (find-variable-in-env target-sym env)))
+            (when (and binding (eq (parameter-def-kind binding) :out))
+                  (error 'crisp-illegal-access-error
+                    :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." target-sym)
+                    :source-location location))))
+
+    (if elem-type
+        (progn
+         ;; Check for VOID element type
+         (let ((is-void (or (eq elem-type 'void) (eq elem-type 'T)
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "T"))
+                            (and (consp elem-type)
+                                 (let ((head (first elem-type)))
+                                   (or (eq head 'void) (eq head 'T)
+                                       (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
+           (when is-void
+                 (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
+
+         ;; Brand-aware type resolution for --differentiate mode.
+         ;; Only applies to :read-write cell types.  The owner struct name encodes
+         ;; the access mode (e.g., CELL_INT_GLOBAL_READ-WRITE vs READ-ONLY).
+         ;; Read-only / write-only cells fall through to plain elem-type.
+         (let* ((cell-type (semantic-node-type array-node))
+                (brand-def (and target-sym
+                                (not (eq *analysis-access-mode* :write))
+                                (find-brand-for-owner 'value-t cell-type)))
+                ;; Check that the owning cell struct is :read-write (not :read-only/:write-only)
+                (is-rw-cell (and brand-def
+                                 (let ((owner (brand-definition-owner-struct brand-def)))
+                                   (and (symbolp owner)
+                                        (search "READ-WRITE" (symbol-name owner))))))
+                (resolved-type (if (and is-rw-cell (brand-active-p brand-def))
+                                   (progn
+                                     (log:info "AREF: brand-aware read (~a) -> resolve-brand-type value-t ~a [elem: ~a]"
+                                               cell-type target-sym elem-type)
+                                     (resolve-brand-type 'value-t target-sym elem-type))
+                                   elem-type)))
+           (make-semantic-aref :type resolved-type
+                               :array-node array-node
+                               :index-node index-node
+                               :source-location location)))
+        ;; Fallback: If not an array/pointer, and op is ~, try as overloadable function call
         (let ((op-name (symbol-name op)))
           (if (or (string= op-name "~") (string= op-name "~REF~"))
               (analyze-function-call op expr env context location)

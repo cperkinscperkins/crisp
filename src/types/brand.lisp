@@ -104,7 +104,7 @@
 ;;; =========================================================
 ;;; Brand Registration
 ;;; =========================================================
-
+#|
 (defun register-brand-definition (struct-name brand-form)
   "Registers a brand declaration from within a struct definition.
    When the brand is active: registers as a derived type in the DAG.
@@ -159,11 +159,130 @@
          (log:info "Brand ~a is INACTIVE - registering as type alias for ~a"
                    brand-name base-type)
          (setf (gethash brand-name *crisp-type-aliases*) base-type)))))
+         |#
+
+(defun register-brand-definition (struct-name brand-form)
+  "Registers a brand declaration from within a struct definition.
+   When the brand is active: registers as a derived type in the DAG.
+   When inactive: registers as a type alias (transparent erasure).
+   Parameterized brands (base type varies across template specializations,
+   and the brand is NOT used as a concrete struct member type) skip global
+   registration and are resolved lazily per-owner.
+   Brands that conflict in base type AND appear as a concrete struct member
+   in the existing owner are always an error (cannot be parameterized).
+
+   Non-symbol base types (e.g., compound types like (POINT INT)) are silently
+   skipped: they cannot be registered in the type DAG."
+  ;; Guard: compound element types (cell (point int), etc.) produce brand forms
+  ;; like (brand value-t (POINT INT) ...).  The brand-definition struct requires
+  ;; a symbol for base-type; skip registration rather than crashing.
+  (cl:when (and (listp brand-form) (not (brand-definition-p brand-form)))
+    (cl:let ((raw-base-type (third brand-form)))
+      (cl:unless (symbolp raw-base-type)
+        (log:info "Skipping brand registration for ~a: base-type ~a is not a symbol (compound element types cannot be branded)"
+                  struct-name raw-base-type)
+        (return-from register-brand-definition nil))))
+
+  (cl:let* ((brand-def (if (brand-definition-p brand-form)
+                           brand-form
+                           (parse-brand-declaration brand-form)))
+            (brand-name (brand-definition-brand-name brand-def))
+            (base-type (brand-definition-base-type brand-def))
+            (subst-mode (brand-definition-subst-mode brand-def))
+            (is-parameterized (gethash brand-name *parameterized-brand-names*))
+            ;; Set to T when this brand is already globally registered (same base-type,
+            ;; different owner struct).  In that case we store the per-owner entry in
+            ;; *brand-definitions* but skip calling register-derived-type again.
+            ;; This prevents subst-mode conflicts when multiple structs share a brand
+            ;; name with the same element type but declare different :subst modes
+            ;; (e.g., real cell uses :descendant, fake-cell uses :ancestor).
+            (skip-global nil))
+
+    ;; Check for name collisions
+    (cl:when (gethash brand-name *crisp-structs*)
+          (error "Brand name collision: ~a is already defined as a struct." brand-name))
+    (cl:when (gethash brand-name *function-table*)
+          (error "Brand name collision: ~a is already defined as a function." brand-name))
+    (cl:when (and (gethash brand-name *crisp-types*)
+               (not (is-brand-type-p brand-name)))
+          (error "Brand name collision: ~a is already defined as a non-brand type." brand-name))
+
+    ;; Examine any existing registration for the same brand name.
+    (cl:unless is-parameterized
+      (cl:let ((existing (is-brand-type-p brand-name)))
+        (cl:when existing
+          (cl:cond
+            ;; Different base-type: conflict or parameterize
+            ((not (eq (brand-definition-base-type existing) base-type))
+             (cl:let* ((existing-owner (brand-definition-owner-struct existing))
+                       (existing-struct-def (find-struct-definition-by-name existing-owner))
+                       (brand-used-as-member-p
+                         (and existing-struct-def
+                              (some (lambda (m) (eq (second m) brand-name))
+                                    (crisp-struct-definition-members existing-struct-def)))))
+               (if brand-used-as-member-p
+                   (error "Cannot define derived type ~a: type already exists with DIFFERENT definition (Original: ~a, New: ~a)."
+                          brand-name
+                          (brand-definition-base-type existing)
+                          base-type)
+                   (progn
+                    (log:info "Brand ~a detected as PARAMETERIZED: base ~a (from ~a) vs ~a (from ~a)"
+                              brand-name
+                              (brand-definition-base-type existing) existing-owner
+                              base-type struct-name)
+                    (setf is-parameterized t)
+                    (setf (gethash brand-name *parameterized-brand-names*) t)
+                    (remhash brand-name *crisp-type-aliases*)))))
+
+            ;; Same base-type, different owner: brand already globally registered.
+            ;; Skip global re-registration to avoid subst-mode conflicts.
+            ;; This handles the case where real cell registers value-t with
+            ;; :descendant and fake-cell later registers value-t with :ancestor
+            ;; for the same element type.  The first owner's subst-mode wins;
+            ;; subsequent owners just get a per-owner *brand-definitions* entry.
+            ((not (eq (brand-definition-owner-struct existing) struct-name))
+             (log:info "Brand ~a already globally registered (first owner: ~a); skipping global re-registration for ~a (same base-type ~a)"
+                       brand-name (brand-definition-owner-struct existing) struct-name base-type)
+             (setf skip-global t))
+
+            ;; Same base-type, same owner: idempotent, nothing to do
+            (t nil)))))
+
+    ;; Store the owner struct
+    (setf (brand-definition-owner-struct brand-def) struct-name)
+
+    ;; Store in *brand-definitions* keyed by (brand-name . struct-type)
+    (setf (gethash (cons brand-name struct-name) *brand-definitions*) brand-def)
+    (log:info "Registered brand definition: ~a for struct ~a (base: ~a, subst: ~a, enforce: ~a~a)"
+              brand-name struct-name base-type subst-mode
+              (brand-definition-enforce-mode brand-def)
+              (cl:cond (is-parameterized ", PARAMETERIZED")
+                    (skip-global ", SKIP-GLOBAL")
+                    (t "")))
+
+    ;; Register the type based on active/inactive status.
+    ;; Skip global registration for parameterized brands (resolved lazily per owner)
+    ;; and for brands already globally registered by another owner (skip-global).
+    (cl:cond
+      (is-parameterized
+       (log:info "Brand ~a is PARAMETERIZED - skipping global type registration (resolved lazily per owner)"
+                 brand-name))
+      (skip-global
+       (log:info "Brand ~a - skip global type registration (already registered by first owner with same base-type ~a)"
+                 brand-name base-type))
+      ((brand-active-p brand-def)
+       (log:info "Brand ~a is ACTIVE - registering as derived type of ~a with :subst ~a"
+                 brand-name base-type subst-mode)
+       (register-derived-type brand-name base-type subst-mode))
+      (t
+       (log:info "Brand ~a is INACTIVE - registering as type alias for ~a"
+                 brand-name base-type)
+       (setf (gethash brand-name *crisp-type-aliases*) base-type)))))
 
 ;;; =========================================================
 ;;; Brand Instance Differentiation
 ;;; =========================================================
-
+#|
 (defun resolve-brand-type (brand-name var-ref)
   "Resolves a branded type for a specific variable instance.
    Returns a gensym'd type name unique to (brand-name, var-ref).
@@ -186,6 +305,72 @@
           (setf (gethash cache-key *brand-instance-cache*) gensym-name)
           (log:info "Created brand instance type ~a for (~a ~a)"
                     gensym-name brand-name var-ref)
+          gensym-name))))
+          |#
+
+(defun resolve-brand-type (brand-name var-ref &optional base-type)
+  "Resolves a branded type for a specific variable instance.
+   Returns a gensym'd type name unique to (brand-name, var-ref [, base-type]).
+
+   When BASE-TYPE is supplied the gensym is registered as a :descendant of
+   BASE-TYPE directly.  BASE-TYPE is first normalized against the type registries
+   to handle package mismatches: unmangle-template-struct-name creates symbols in
+   crisp.compiler (the cell type's package) while user structs are stored in
+   crisp-language (Fix D reads source files in that package).  A name-based scan
+   of *type-derivation-graph* then *crisp-structs* finds the canonical symbol.
+
+   When BASE-TYPE is NIL, the gensym is registered as a :descendant of
+   brand-name (original behaviour, used by fake-cell / template brands).
+
+   In all cases the gensym is stored in *brand-instance-types* under brand-name
+   so that resolve-dominance can block cross-instance arithmetic."
+  (cl:let* ((cache-key (if base-type
+                           (list brand-name var-ref base-type)
+                           (cons brand-name var-ref)))
+            (cached (gethash cache-key *brand-instance-cache*)))
+    (or cached
+        (cl:let* ((gensym-name (gensym (format nil "~a-" brand-name)))
+                  ;; Normalize base-type to the canonical symbol in the type
+                  ;; registries.  Fast path: symbol already findable by eq.
+                  ;; Slow path: name-based scan for package-mismatch cases.
+                  (canonical-base
+                   (when (and base-type (symbolp base-type))
+                     (or
+                      ;; Fast path: already canonical
+                      (and (or (gethash base-type *type-derivation-graph*)
+                               (gethash base-type *crisp-types*)
+                               (gethash base-type *crisp-structs*))
+                           base-type)
+                      ;; Slow path: same-named symbol in a different package
+                      (cl:let ((name (symbol-name base-type)))
+                        (or (block found
+                              (maphash (lambda (k v)
+                                         (declare (ignore v))
+                                         (when (and (symbolp k)
+                                                    (string= (symbol-name k) name))
+                                           (return-from found k)))
+                                       *type-derivation-graph*)
+                              nil)
+                            (block found
+                              (maphash (lambda (k v)
+                                         (declare (ignore v))
+                                         (when (and (symbolp k)
+                                                    (string= (symbol-name k) name))
+                                           (return-from found k)))
+                                       *crisp-structs*)
+                              nil))))))
+                  (ancestor (or canonical-base base-type brand-name)))
+          (cl:when (and base-type canonical-base (not (eq base-type canonical-base)))
+            (log:info "resolve-brand-type: normalized ~s -> ~s (package mismatch)"
+                      base-type canonical-base))
+          ;; Register gensym directly against the chosen ancestor.
+          (register-derived-type gensym-name ancestor :descendant)
+          ;; Track under brand-name so resolve-dominance works across all
+          ;; element types of the same brand name.
+          (setf (gethash gensym-name *brand-instance-types*) brand-name)
+          (setf (gethash cache-key *brand-instance-cache*) gensym-name)
+          (log:info "Created brand instance type ~a for (~a ~a) [ancestor: ~a]"
+                    gensym-name brand-name var-ref ancestor)
           gensym-name))))
 
 ;;; =========================================================

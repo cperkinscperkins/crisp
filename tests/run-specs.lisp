@@ -233,6 +233,7 @@
          ((eq ir-target :llvmir) (run-spec-llvmir-in-process file :validator validator))
          (t (run-spec-lisp-loader file))))))
 
+
 (defun compile-crisp-file-to-ir-string (filepath)
   "Compiles a .crisp file and returns the LLVM IR as a string."
   (let ((*standard-output* (make-broadcast-stream))) ; Discard stdout (redirect to null)
@@ -242,7 +243,12 @@
                   (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
                                                       :differentiate *compile-differentiate*) ;; Standard cleanup
                   (with-open-file (stream filepath)
-                    (let ((*package* (find-package :crisp.compiler)))
+                    ;; FIX: Use :crisp-language package to match binary compiler behavior.
+                    ;; Previously used :crisp.compiler which caused user-defined names like
+                    ;; VALUE-T to intern in CRISP.COMPILER:: namespace, conflicting with
+                    ;; the real cell's brand registration and causing `:ancestor` semantics
+                    ;; to be skipped by Fix B's skip-global check.
+                    (let ((*package* (find-package :crisp-language)))
                       (loop for form = (read stream nil :eof)
                             until (eq form :eof)
                             collect form))))))
