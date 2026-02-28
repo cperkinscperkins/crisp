@@ -206,34 +206,7 @@
       (t (dolist (type reachable-a nil)
            (cl:when (member type common :test #'eq)
              (cl:return type)))))))
-#|
-(defun resolve-dominance (type-a type-b)
-  "Determines which type dominates in arithmetic operations.
-   Returns the dominant type, or NIL if they cannot mix.
 
-   Used by get-promoted-type for binary operations like +, -, *, /.
-
-   Rules:
-   - If same type, return it
-   - If one can substitute for other, return the more general (target)
-   - If both derived from common base, apply dominance rules
-   - Otherwise, return NIL (caller should use category + size fallback)"
-  (cl:cond
-    ((eq type-a type-b) type-a)
-
-    ;; Check substitutability (one dominates)
-    ((is-substitutable-for? type-a type-b) type-b) ; B is more general
-    ((is-substitutable-for? type-b type-a) type-a) ; A is more general
-
-    ;; Phase 5: Common promoted type using reachability intersection
-    ;; Find the closest common type that both can substitute for
-    ;; Example: (steel, root) => iron, (weak, eq-weak) => float
-    (t
-     (cl:let ((common-type (find-common-promoted-type type-a type-b)))
-       (log:debug "resolve-dominance: common promoted type for ~a + ~a = ~a"
-                  type-a type-b common-type)
-       common-type))))
-       |#
 
 
 (defun resolve-dominance (type-a type-b)

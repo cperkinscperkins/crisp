@@ -1,20 +1,6 @@
 ;;; src/analysis/structs.lisp
 (in-package :crisp.compiler)
 
-#|
-(defun get-array-element-type (type)
-  "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown."
-  (let ((type (resolve-type-alias type)))
-    (cond
-     ((listp type) (second type)) ;; e.g. (ptr float), (array float 10)
-     ((symbolp type)
-       ;; Check if it is a Mangled Cell
-       (let ((unmangled (unmangle-template-struct-name type)))
-         (if (and (consp unmangled) (eq (first unmangled) 'cell))
-             (second unmangled)
-             nil)))
-     (t nil))))
-     |#
 
 (defun get-array-element-type (type)
   "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.
@@ -84,65 +70,6 @@
       (crisp-type-category crisp-type))))
 
 
-#|
-(defun analyze-struct-construction (expr env context location)
-  "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
-   Supports implicit promotion of base-type values to branded member types
-   in struct constructors (the birthplace of branded values)."
-  (let* ((type-name (second expr))
-         (args (cddr expr))
-         (struct-def (lookup-struct-definition type-name)))
-    (unless struct-def
-      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
-
-    ;; Validate argument count against original members (excluding compile-time properties)
-    (let* ((all-members (crisp-struct-definition-members struct-def))
-           (members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) all-members)))
-      (unless (= (length args) (length members))
-        (error "Struct constructor for ~a expects ~a arguments, got ~a."
-          type-name (length members) (length args)))
-
-      ;; Analyze arguments
-      (let ((arg-nodes
-             (loop for arg in args
-                   for member in members
-                   for i from 0
-                   collect (let ((node (analyze-expression arg env context (append location (list (+ 2 i)))))
-                                 (expected-type (second member)))
-                             ;; Type check with branded type promotion
-                             (unless (type-equal-p (semantic-node-type node) expected-type)
-                               (cl:let ((brand-def (is-brand-type-p expected-type)))
-                                 (if brand-def
-                                     ;; Branded member: check numeric compatibility with base type
-                                     (cl:let* ((base-type (brand-definition-base-type brand-def))
-                                               (arg-cat (numeric-type-category (semantic-node-type node)))
-                                               (base-cat (numeric-type-category base-type)))
-                                       (if (and arg-cat base-cat)
-                                           ;; Compatible numeric types - wrap in a value cast to the base type
-                                           (progn
-                                            (log:debug "Constructor promotion: ~a -> ~a (base ~a) for member ~a"
-                                                       (semantic-node-type node) expected-type base-type (first member))
-                                            (setf node (make-semantic-value-cast
-                                                        :type base-type
-                                                        :arg node
-                                                        :source-location (append location (list (+ 2 i))))))
-                                           ;; Not numeric-compatible
-                                           (error 'crisp-type-error
-                                             :expected expected-type
-                                             :inferred (semantic-node-type node)
-                                             :source-location location)))
-                                     ;; Not a branded member -> real type error
-                                     (error 'crisp-type-error
-                                       :expected expected-type
-                                       :inferred (semantic-node-type node)
-                                       :source-location location))))
-                             node))))
-
-        (make-semantic-struct-construction
-         :type type-name
-         :args arg-nodes
-         :source-location location)))))
-         |#
 
 (defun analyze-struct-construction (expr env context location)
   "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
@@ -300,49 +227,6 @@
          :value-node value-node
          :source-location location)))))
 
-#|
-(defun analyze-aref-expression (expr env context location)
-  (let* ((op (first expr))
-         (target-sym (if (symbolp (second expr)) (second expr) nil))
-         (array-node (analyze-expression (second expr) env context (append location '(1))))
-         (index-expr (third expr))
-         (index-node (if index-expr
-                         (analyze-expression index-expr env context (append location '(2)))
-                         ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
-                         (make-semantic-literal :value-type 'int :value 0 :source-location location)))
-         (elem-type (get-array-element-type (semantic-node-type array-node))))
-
-    ;; Check for invalid READ access on &out parameters
-    (when (and target-sym (not (eq *analysis-access-mode* :write)))
-          (let ((binding (find-variable-in-env target-sym env)))
-            (when (and binding (eq (parameter-def-kind binding) :out))
-                  (error 'crisp-illegal-access-error
-                    :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." target-sym)
-                    :source-location location))))
-
-    (if elem-type
-        (progn
-         ;; Check for VOID element type
-         (let ((is-void (or (eq elem-type 'void) (eq elem-type 'T)
-                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
-                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "T"))
-                            (and (consp elem-type)
-                                 (let ((head (first elem-type)))
-                                   (or (eq head 'void) (eq head 'T)
-                                       (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
-           (when is-void
-                 (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
-
-         (make-semantic-aref :type elem-type
-                             :array-node array-node
-                             :index-node index-node
-                             :source-location location))
-        ;; Fallback: If not an array/pointer, and op is ~, try to treat as overloadable function call
-        (let ((op-name (symbol-name op)))
-          (if (or (string= op-name "~") (string= op-name "~REF~"))
-              (analyze-function-call op expr env context location)
-              (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
-              |#
 
 (defun analyze-aref-expression (expr env context location)
   "Analyzes a cell dereference expression (~ cell-var [index]).

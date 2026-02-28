@@ -179,33 +179,6 @@
     (let ((arg-node (analyze-expression value-form env context (append location '(2)))))
       (make-semantic-value-cast :type type-name :arg arg-node :source-location location))))
 
-#|
-(defun analyze-generic-as-expression (expr env context location)
-  "Analyzes the generic (as type value) form."
-  (let* ((type-form (second expr))
-         (value-form (third expr))
-         (orig-type-name (if (or (symbolp type-form) (listp type-form))
-                             type-form
-                             (error "Generic AS expects a type specifier, got ~a" type-form)))
-         ;; Generic 'AS' Resolution
-         (type-name (loop for name = orig-type-name then (gethash name *crisp-type-aliases*)
-                          while (and (symbolp name) (gethash name *crisp-type-aliases*))
-                          finally (cl:return name)))
-         (target-type (if (symbolp type-name) (gethash type-name *crisp-types*) nil))
-         (arg-node (analyze-expression value-form env context (append location '(2)))))
-
-    (unless (or target-type (valid-type-p type-name))
-      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
-
-    ;; Deferred Error 03: No casting of voidp
-    ;; (as voidp ...) is invalid because voidp is an opaque pointer locally, usually used for handles.
-
-    (when (or (eq type-name 'voidp)
-              (and target-type (eq (crisp-type-category target-type) :void)))
-          (error 'crisp-compiler-error :message "Cannot cast to 'voidp'. Use a specific pointer type or handle." :source-location location))
-
-    (make-semantic-value-cast :type type-name :arg arg-node :source-location location)))
-    |#
 
 (defun analyze-generic-as-expression (expr env context location)
   "Analyzes the generic (as type value) form.

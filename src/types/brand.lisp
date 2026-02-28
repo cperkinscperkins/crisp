@@ -111,62 +111,7 @@
 ;;; =========================================================
 ;;; Brand Registration
 ;;; =========================================================
-#|
-(defun register-brand-definition (struct-name brand-form)
-  "Registers a brand declaration from within a struct definition.
-   When the brand is active: registers as a derived type in the DAG.
-   When inactive: registers as a type alias (transparent erasure)."
-  (cl:let* ((brand-def (if (brand-definition-p brand-form)
-                           brand-form
-                           (parse-brand-declaration brand-form)))
-            (brand-name (brand-definition-brand-name brand-def))
-            (base-type (brand-definition-base-type brand-def))
-            (subst-mode (brand-definition-subst-mode brand-def)))
 
-    ;; Check for name collisions
-    ;; 1. Structs: Brand name cannot be a struct name (ambiguous constructor)
-    (cl:when (gethash brand-name *crisp-structs*)
-          (error "Brand name collision: ~a is already defined as a struct." brand-name))
-
-    ;; 2. Functions: Brand name cannot be a function name (ambiguous constructor)
-    (cl:when (gethash brand-name *function-table*)
-          (error "Brand name collision: ~a is already defined as a function." brand-name))
-
-    ;; 3. Types: Brand name cannot be an existing NON-BRAND type.
-    ;;    (Redefinition of brands or shared brands is allowed)
-    (cl:when (and (gethash brand-name *crisp-types*)
-               (not (is-brand-type-p brand-name)))
-          (error "Brand name collision: ~a is already defined as a non-brand type." brand-name))
-
-    ;; 4. Brands: Check for redefinition with DIFFERENT base type.
-    (cl:let ((existing (is-brand-type-p brand-name)))
-      (cl:when existing
-            (cl:unless (eq (brand-definition-base-type existing) base-type)
-              (error "Cannot define derived type ~a: type already exists with DIFFERENT definition (Original: ~a, New: ~a)."
-                brand-name (brand-definition-base-type existing) base-type))))
-
-    ;; Store the owner struct
-    (setf (brand-definition-owner-struct brand-def) struct-name)
-
-    ;; Store in *brand-definitions* keyed by (brand-name . struct-type)
-    (setf (gethash (cons brand-name struct-name) *brand-definitions*) brand-def)
-    (log:info "Registered brand definition: ~a for struct ~a (base: ~a, subst: ~a, enforce: ~a)"
-              brand-name struct-name base-type subst-mode
-              (brand-definition-enforce-mode brand-def))
-
-    ;; Register the type based on active/inactive status
-    (if (brand-active-p brand-def)
-        ;; ACTIVE: register as a proper derived type with substitution rules
-        (progn
-         (log:info "Brand ~a is ACTIVE - registering as derived type of ~a with :subst ~a"
-                   brand-name base-type subst-mode)
-         (register-derived-type brand-name base-type subst-mode))
-        ;; INACTIVE: register as a transparent type alias
-        (progn
-         (log:info "Brand ~a is INACTIVE - registering as type alias for ~a"
-                   brand-name base-type)
-         (setf (gethash brand-name *crisp-type-aliases*) base-type)))))
-         |#
 
 (defun register-brand-definition (struct-name brand-form)
   "Registers a brand declaration from within a struct definition.
@@ -289,31 +234,7 @@
 ;;; =========================================================
 ;;; Brand Instance Differentiation
 ;;; =========================================================
-#|
-(defun resolve-brand-type (brand-name var-ref)
-  "Resolves a branded type for a specific variable instance.
-   Returns a gensym'd type name unique to (brand-name, var-ref).
-   On first call for a given pair, creates a new type node in the DAG
-   as a :descendant of brand-name, caches it, and returns it.
-   On subsequent calls, returns the cached gensym.
 
-   The :descendant relationship means:
-   - The gensym CAN substitute for brand-name (signature matching works)
-   - Two different gensyms CANNOT substitute for each other (instance safety)
-   - The gensym inherits brand-name's isolation from its base type"
-  (cl:let* ((cache-key (cons brand-name var-ref))
-            (cached (gethash cache-key *brand-instance-cache*)))
-    (or cached
-        (cl:let ((gensym-name (gensym (format nil "~a-" brand-name))))
-          ;; Register as a derived type: descendant of the brand type.
-          ;; This establishes the ancestor link gensym -> brand-name in the DAG.
-          (register-derived-type gensym-name brand-name :descendant)
-          ;; Cache for this function's lifetime
-          (setf (gethash cache-key *brand-instance-cache*) gensym-name)
-          (log:info "Created brand instance type ~a for (~a ~a)"
-                    gensym-name brand-name var-ref)
-          gensym-name))))
-          |#
 
 (defun resolve-brand-type (brand-name var-ref &optional base-type)
   "Resolves a branded type for a specific variable instance.
@@ -383,43 +304,6 @@
 ;;; =========================================================
 ;;; Brand Validation
 ;;; =========================================================
-#|
-(defun validate-dependent-brand-types (declare-forms env)
-  "Verifies that any parameters typed as (brand var) refer to a valid owner parameter.
-   Scans the raw declarations to find dependencies that parse-type-specifier might have flattened.
-   Supports shared brands (same brand name defined on multiple structs)."
-  (loop for decl in declare-forms do
-          (labels ((scan (form)
-                         (cl:cond
-                          ((and (listp form)
-                                (symbolp (car form))
-                                (is-brand-type-p (car form))
-                                (= (length form) 2)
-                                (symbolp (second form)))
-                            ;; Found (BRAND VAR) candidate
-                            (cl:let ((brand-name (car form))
-                                  (var-ref (second form)))
-                              ;; Check var exists in env
-                              (cl:let ((param (find var-ref env :key #'parameter-def-name)))
-                                (cl:unless param
-                                  (error "Brand dependency ~a refers to unknown parameter ~a." form var-ref))
-
-                                (cl:let ((owner-type (parameter-def-type param)))
-                                  ;; Check if this specific (Brand . OwnerType) pair is defined
-                                  ;; This handles shared brands: TOKEN-T might be defined for SERVER and VIRTUAL-SERVER.
-                                  (cl:unless (gethash (cons brand-name owner-type) *brand-definitions*)
-                                    ;; Not defined for this specific owner.
-                                    ;; Retrieve *any* definition to give a helpful error message.
-                                    (cl:let ((any-def (is-brand-type-p brand-name)))
-                                      (error "Brand dependency mismatch: ~a is defined for owner ~a, but ~a is of type ~a (and no shared definition found)."
-                                        brand-name
-                                        (if any-def (brand-definition-owner-struct any-def) "UNKNOWN")
-                                        var-ref owner-type)))))))
-                          ((consp form)
-                            (scan (car form))
-                            (scan (cdr form))))))
-            (scan decl))))
-            |#
 
 (defun validate-dependent-brand-types (declare-forms env)
   "Verifies that any parameters typed as (brand var) refer to a valid owner parameter.
@@ -457,20 +341,7 @@
                             (scan (car form))
                             (scan (cdr form))))))
             (scan decl))))
-#|
-(defun %find-brand-owner-var (brand-name sig-params arg-nodes)
-  "Finds the actual argument variable for the parameter that owns the brand instance.
-   Handles shared brands by checking if any parameter's type is a registered owner
-   for the given BRAND-NAME."
-  (loop for sp in sig-params
-        for an in arg-nodes
-        for param-type = (parameter-def-type sp)
-          ;; Check if this parameter's type is a registered owner for the brand
-          when (gethash (cons brand-name param-type) *brand-definitions*)
-        do (cl:return (if (typep an 'semantic-var-read)
-                          (semantic-var-read-name an)
-                          nil))))
-                          |#
+
 
 (defun %find-brand-owner-var (brand-name sig-params arg-nodes)
   "Finds the actual argument variable for the parameter that owns the brand instance.

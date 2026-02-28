@@ -5,8 +5,7 @@
 ;;; Centralized Name Mangling & Type Naming Logic
 ;;; =========================================================
 
-;;; From src/types.lisp
-;;; ===================
+
 
 (cl:defvar *template-arity-lookup-fn* nil
         "A hook for looking up the arity of a template by name (symbol or string).
@@ -101,25 +100,7 @@
             (cl:multiple-value-bind (rest-processed rest-remaining)
                 (reconstruct-template-args (cl:rest tokens) package)
               (cl:values (cl:cons token-sym rest-processed) rest-remaining))))))
-#|
-(cl:defun unmangle-template-struct-name (symbol)
-  "Attempts to reverse mangling for known parameterized types like CELL.
-   Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL."
-  (cl:when (cl:symbolp symbol)
-    (cl:let ((name (cl:symbol-name symbol)))
-      (cl:if (cl:find #\_ name)
-          (cl:let* ((parts (split-string name #\_))
-                    (base (cl:first parts))
-                    (reconstructed (reconstruct-template-args (cl:rest parts) (cl:symbol-package symbol))))
-            (cl:if base
-                (cl:let ((base-sym (cl:intern base (cl:symbol-package symbol))))
-                  `(,base-sym ,@reconstructed))
-                nil))
-          ;; No underscore? It might be a base type itself (e.g. SHIRT)
-          ;; Technically unmangle implies retrieving params.
-          ;; If symbol is SHIRT, return (SHIRT).
-          `(,(cl:intern name (cl:symbol-package symbol)))))))
-          |#
+
 (cl:defun unmangle-template-struct-name (symbol)
   "Attempts to reverse mangling for known parameterized types like CELL.
    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.

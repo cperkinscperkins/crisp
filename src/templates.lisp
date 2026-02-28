@@ -249,87 +249,7 @@
         `(:function-type ,ret :params ,params))
       type))
 
-#|
-(defun match-template-arg (raw-sig-type arg-type inference-map template-params)
-  "Recursively matches sig-type against arg-type, updating inference-map."
-  (let ((sig-type (normalize-template-sig-type raw-sig-type)))
-    (cond
-     ;; 1. Template Parameter (e.g. T)
-     ((member sig-type template-params)
-       (let ((existing (gethash sig-type inference-map)))
-         (if existing
-             (equal existing arg-type)
-             (progn (setf (gethash sig-type inference-map) arg-type) t))))
 
-     ;; 2. Match Function Literal against a Function Type Pattern
-     ;; Special Case: Only if we are looking for a function type and find a literal func-name.
-     ((and (listp sig-type) (eq (first sig-type) :function-type)
-           (listp arg-type) (eq (first arg-type) :function-literal))
-       (let* ((name (second arg-type))
-              (signatures (gethash name *function-table*)))
-         (loop for sig in signatures
-                 ;; Try to match this overload
-                 when (match-function-signature sig-type sig inference-map template-params)
-                 return t)))
-
-     ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
-     ((listp sig-type)
-       (or
-        ;; A. Dependent Type Match: (token-t s) matches token-t OR token-t-123 (gensym)
-        (and (symbolp (first sig-type)) (symbolp arg-type)
-             (let ((sig-name (symbol-name (first sig-type)))
-                   (arg-name (symbol-name arg-type)))
-               (or (string-equal sig-name arg-name)
-                   (and (> (length arg-name) (length sig-name))
-                        (string-equal sig-name (subseq arg-name 0 (length sig-name)))
-                        (cl:char= (cl:char arg-name (length sig-name)) #\-)))))
-
-        ;; B. Standard recursive list match
-        (match-list-structure sig-type arg-type inference-map template-params)
-        ;; Unmangle struct names to lists for matching (e.g. CELL_FLOAT -> (CELL FLOAT ...))
-        (and (symbolp arg-type)
-             (let ((unmangled (crisp.compiler::unmangle-template-struct-name arg-type)))
-               (when unmangled
-                     (match-list-structure sig-type unmangled inference-map template-params))))
-        ;; Check for Template Aliases (e.g. (out-c T) -> (cell T ...))
-        (let ((alias-def (and (symbolp (first sig-type))
-                              (gethash (first sig-type) crisp.compiler::*crisp-template-aliases*))))
-          (when alias-def
-                (let* ((alias-params (car alias-def))
-                       (alias-body (cdr alias-def))
-                       (args (rest sig-type))
-                       (arity (length alias-params))
-                       (required-args (subseq args 0 (min (length args) arity)))
-                       (rest-args (subseq args (length required-args)))
-                       (substitutions (pairlis alias-params required-args))
-                       (expanded-base (sublis substitutions alias-body))
-                       ;; If base expanded to a list, we append the rest args
-                       (expanded-sig (if (and rest-args (consp expanded-base))
-                                         (append expanded-base rest-args)
-                                         expanded-base)))
-                  (match-template-arg (crisp.compiler::canonicalize-type-specifier expanded-sig) arg-type inference-map template-params))))))
-
-     ;; Check for Symbol Alias (e.g. out-c)
-     ((and (symbolp sig-type)
-           (gethash sig-type crisp.compiler::*crisp-template-aliases*))
-       (let* ((alias-def (gethash sig-type crisp.compiler::*crisp-template-aliases*))
-              (alias-body (cdr alias-def)))
-         (match-template-arg (crisp.compiler::canonicalize-type-specifier alias-body) arg-type inference-map template-params)))
-
-     ;; 4. Concrete Type (int)
-     (t (or (equal sig-type arg-type)
-            (and (symbolp sig-type) (symbolp arg-type)
-                 (string-equal (symbol-name sig-type) (symbol-name arg-type)))
-
-            ;; Implicit Template Expansion: SERVER -> (SERVER T)
-            ;; Only if direct match fails.
-            (and (symbolp sig-type)
-                 (gethash sig-type crisp.compiler::*template-registry*)
-                 (let* ((tmpl (first (gethash sig-type crisp.compiler::*template-registry*)))
-                        (params (mapcar (lambda (p) (if (consp p) (first p) p)) (crisp.compiler::template-data-parameters tmpl))))
-                   (when params
-                         (match-template-arg (cons sig-type params) arg-type inference-map template-params)))))))))
-|#
 
 (defun match-template-arg (raw-sig-type arg-type inference-map template-params)
   "Recursively matches sig-type against arg-type, updating inference-map.
@@ -592,42 +512,7 @@
         (if is-struct
             (%instantiate-structure-template name body final-substitutions concrete-types)
             (%instantiate-callable-template name body final-substitutions override-name))))))
-#|
-(defun %instantiate-structure-template (name body substitutions concrete-types)
-  (let* ((mangled-name (crisp.compiler::mangle-template-struct-name name concrete-types))
-         (substituted-body (sublis substitutions (subst mangled-name name body)))
-         ;; Extract members from SUBSTITUTED body: (def-struct MANGLED-NAME (mem concrete-type)...)
-         (members (cddr substituted-body))
-         ;; Filter out (brand ...) forms
-         (data-members (remove-if (lambda (m) (and (consp m) (string-equal (symbol-name (car m)) "BRAND"))) members))
-         (all-parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec data-members))
-         ;; Filter out compile-time members for the generated wrapper signature
-         (parsed-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t) (not (fourth m)))) all-parsed-members))
-         (param-names (mapcar #'first parsed-members))
-         ;; Use a UNIQUE wrapper name to avoid LLVM collisions if multiple overloads are generated
-         (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package name)))
-         (constructor-alias (intern (format nil "MAKE-~a%DISPATCH" name) (symbol-package name)))
-         (mangled-constructor (intern (format nil "MAKE-~a" mangled-name) (symbol-package name)))
-         (keyword-args (loop for name in param-names
-                             collect (intern (symbol-name name) :keyword)
-                             collect name))
-         ;; Check for incomplete :c-t fields (no default value)
-         (incomplete-fields (remove-if-not (lambda (m) (and (consp m) (eq (third m) :c-t) (null (fourth m)))) all-parsed-members)))
-    `(progn
-      ,substituted-body
-      ;; Only generate runtime wrapper if all :c-t fields have defaults.
-      ;; If there are missing :c-t values, this type cannot be constructed via a runtime function.
-      ,@(unless incomplete-fields
-          `((def-function ,wrapper-name ,parsed-members
-                          (declare (return-type ,mangled-name))
-                          (return (,mangled-constructor ,@keyword-args)))))
 
-      ;; Register this wrapper as an overload (only if we generated it)
-      ,@(unless incomplete-fields
-          `((eval-when (:compile-toplevel :load-toplevel :execute)
-              (crisp.compiler::register-overload ',constructor-alias ',wrapper-name)))))))
-
-              |#
 
 (defun %instantiate-structure-template (name body substitutions concrete-types)
   "Instantiates a struct template with the given substitutions and concrete types.
