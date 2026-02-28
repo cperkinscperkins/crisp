@@ -409,7 +409,7 @@ Assault On Pytorch
 - [x] brand -- 
 - - [x] requires documentation and decisions before work can begin.
 - [ ] --differentiate
-- - [ ] brand cell
+- - [x] brand cell
 - - [ ] ANF transform.
 - - [ ] generate shadow signatures
 - - [ ] wengert list
