@@ -179,6 +179,7 @@
     (let ((arg-node (analyze-expression value-form env context (append location '(2)))))
       (make-semantic-value-cast :type type-name :arg arg-node :source-location location))))
 
+#|
 (defun analyze-generic-as-expression (expr env context location)
   "Analyzes the generic (as type value) form."
   (let* ((type-form (second expr))
@@ -199,6 +200,84 @@
     ;; Deferred Error 03: No casting of voidp
     ;; (as voidp ...) is invalid because voidp is an opaque pointer locally, usually used for handles.
 
+    (when (or (eq type-name 'voidp)
+              (and target-type (eq (crisp-type-category target-type) :void)))
+          (error 'crisp-compiler-error :message "Cannot cast to 'voidp'. Use a specific pointer type or handle." :source-location location))
+
+    (make-semantic-value-cast :type type-name :arg arg-node :source-location location)))
+    |#
+
+(defun analyze-generic-as-expression (expr env context location)
+  "Analyzes the generic (as type value) form.
+   Extended to handle brand application forms like (index-t fc) where
+   index-t is a brand, resolving to the concrete target type before validation."
+  (let* ((raw-type-form (second expr))
+         (value-form (third expr))
+
+         ;; Pre-resolution: detect brand application (brand-name var-ref).
+         ;; e.g. (as (index-t fc) delta) with active brand index-t resolves to
+         ;; (as index-t delta), and with inactive brand resolves to (as ulong delta).
+         (type-form
+           (if (and (listp raw-type-form)
+                    (= (length raw-type-form) 2)
+                    (symbolp (first raw-type-form))
+                    (symbolp (second raw-type-form))
+                    (is-brand-type-p (first raw-type-form)))
+               (let* ((brand-name (first raw-type-form))
+                      (var-ref (second raw-type-form))
+                      (brand-def (is-brand-type-p brand-name))
+                      ;; Try to find per-owner brand def using var's type from env
+                      (param (find var-ref env :key #'parameter-def-name))
+                      (owner-type (and param (parameter-def-type param)))
+                      (per-owner-def (and owner-type
+                                          (find-brand-for-owner brand-name owner-type)))
+                      (effective-brand-def (or per-owner-def brand-def)))
+                 (cond
+                  ;; Active brand, globally registered in *crisp-types* (non-parameterized):
+                  ;; cast to the brand type name directly.
+                  ((and effective-brand-def
+                        (brand-active-p effective-brand-def)
+                        (gethash brand-name *crisp-types*))
+                    (log:info "AS: resolved brand application (~a ~a) -> active brand ~a"
+                              brand-name var-ref brand-name)
+                    brand-name)
+                  ;; Active brand, parameterized (not globally registered):
+                  ;; use the per-owner base type.
+                  ((and effective-brand-def
+                        (brand-active-p effective-brand-def))
+                    (let ((base (brand-definition-base-type effective-brand-def)))
+                      (log:info "AS: resolved brand application (~a ~a) -> parameterized active base ~a"
+                                brand-name var-ref base)
+                      base))
+                  ;; Inactive brand: resolve to the alias or base type.
+                  ((and effective-brand-def
+                        (not (brand-active-p effective-brand-def)))
+                    (let ((base (or (gethash brand-name *crisp-type-aliases*)
+                                    (brand-definition-base-type effective-brand-def))))
+                      (log:info "AS: resolved brand application (~a ~a) -> inactive base ~a"
+                                brand-name var-ref base)
+                      base))
+                  ;; No brand def found: leave as-is (will fail the valid-type-p check later)
+                  (t
+                    (log:warn "AS: brand application (~a ~a) - no brand def found, leaving as-is"
+                              (first raw-type-form) (second raw-type-form))
+                    raw-type-form)))
+               raw-type-form))
+
+         (orig-type-name (if (or (symbolp type-form) (listp type-form))
+                             type-form
+                             (error "Generic AS expects a type specifier, got ~a" type-form)))
+         ;; Generic 'AS' alias resolution
+         (type-name (loop for name = orig-type-name then (gethash name *crisp-type-aliases*)
+                          while (and (symbolp name) (gethash name *crisp-type-aliases*))
+                          finally (cl:return name)))
+         (target-type (if (symbolp type-name) (gethash type-name *crisp-types*) nil))
+         (arg-node (analyze-expression value-form env context (append location '(2)))))
+
+    (unless (or target-type (valid-type-p type-name))
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    ;; No casting of voidp
     (when (or (eq type-name 'voidp)
               (and target-type (eq (crisp-type-category target-type) :void)))
           (error 'crisp-compiler-error :message "Cannot cast to 'voidp'. Use a specific pointer type or handle." :source-location location))

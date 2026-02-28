@@ -31,6 +31,7 @@
         |#
 
 ;; src/templates.lisp
+#|
 (defun strip-keyword-labels (type-list template-params)
   "Strips keyword LABEL pairs from a type specifier list, keeping keyword VALUES.
    A keyword is treated as a label (and stripped) only when the element following
@@ -51,7 +52,10 @@
               (t (push elem result))))
     (nreverse result)))
 
+    |#
+
 ;; src/templates.lisp
+#|
 (defun match-template-arg (raw-sig-type arg-type inference-map template-params)
   "Recursively matches sig-type against arg-type, updating inference-map."
   (let ((sig-type (normalize-template-sig-type raw-sig-type)))
@@ -149,8 +153,10 @@
                         (params (mapcar (lambda (p) (if (consp p) (first p) p)) (template-data-parameters tmpl))))
                    (when params
                          (match-template-arg (cons sig-type params) arg-type inference-map template-params)))))))))
+|#
 
 ;; src/types/validation.lisp
+#|
 (defun canonicalize-type-specifier (spec)
   "Canonicalizes type specifiers."
 
@@ -216,7 +222,10 @@
       ((consp spec) spec)
       (t (list spec)))))
 
+      |#
+
 ;; src/environment.lisp
+#|
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
    function types like #'(int => int), and brand type applications like (token-t s)."
@@ -332,6 +341,9 @@
      (log:error "PARSE: Unknown type spec: ~s" spec)
      (error 'crisp-unknown-type-error :type-name spec))))
 
+     |#
+
+#|
 ;;; =========================================================
 ;;; Parameterized Brand Support
 ;;; =========================================================
@@ -402,6 +414,8 @@
                       var-ref brand-name)
             brand-spec)))))
 
+            |#
+
 ;; src/types/brand.lisp
 #|
 (defun register-brand-definition (struct-name brand-form)
@@ -470,6 +484,7 @@
              |#
 
 ;; src/environment.lisp
+#|
 (defun parse-function-declarations (params declarations)
   "Parses a function's declarations and returns its environment and return type.
    Supports interleaved type syntax: ((p type)).
@@ -535,8 +550,10 @@
                     return-types)))
 
     (values env return-types optional-idx defaults key-idx)))
+    |#
 
 ;; src/types/brand.lisp
+#|
 (defun validate-dependent-brand-types (declare-forms env)
   "Verifies that any parameters typed as (brand var) refer to a valid owner parameter.
    Scans the raw declarations to find dependencies that parse-type-specifier might have flattened.
@@ -573,8 +590,10 @@
                             (scan (car form))
                             (scan (cdr form))))))
             (scan decl))))
+            |#
 
 ;; src/types/brand.lisp
+#|
 (defun %find-brand-owner-var (brand-name sig-params arg-nodes)
   "Finds the actual argument variable for the parameter that owns the brand instance.
    Handles shared brands by checking if any parameter's type is a registered owner
@@ -587,8 +606,10 @@
         do (cl:return (if (typep an 'semantic-var-read)
                           (semantic-var-read-name an)
                           nil))))
+                          |#
 
 ;; src/types/validation.lisp
+#|
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, with alias resolution and template handling.
    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels
@@ -653,7 +674,10 @@
       ((and (consp t2) (= (length t2) 1) (valid-type-p (cl:first t2)) (types-equivalent-p t1 (cl:first t2))) t)
       (t nil))))
 
+      |#
+
 ;; src/analysis/structs.lisp
+#|
 (defun get-array-element-type (type)
   "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.
    FIX: Only return element type for known array-like types (cell, vector, matrix, tensor, ptr, array),
@@ -675,7 +699,10 @@
              nil)))
      (t nil))))
 
+     |#
+
 ;; src/analysis/control.lisp
+#|
 (defun analyze-return-expression (expr env context location)
   "Analyzes a `(return ...)` expression.
    FIX: A 1-element list whose sole element is a symbol (e.g. (INDEX-T)) is always
@@ -762,7 +789,10 @@
                                      :value-nodes value-nodes
                                      :source-location location))))
 
+                                     |#
+
 ;; src/templates.lisp
+#|
 (defun match-template-arg (raw-sig-type arg-type inference-map template-params)
   "Recursively matches sig-type against arg-type, updating inference-map.
    FIX: Resolves type aliases (e.g., FC-INT -> (FAKE-CELL INT ...)) before matching
@@ -868,6 +898,7 @@
                         (params (mapcar (lambda (p) (if (consp p) (first p) p)) (template-data-parameters tmpl))))
                    (when params
                          (match-template-arg (cons sig-type params) arg-type inference-map template-params)))))))))
+|#
 
 ;;; =========================================================
 ;;; FIX: register-brand-definition - member-type check for parameterized brands
@@ -976,6 +1007,7 @@
 ;;; =========================================================
 
 ;; src/analysis/ops.lisp
+#|
 (defun analyze-generic-as-expression (expr env context location)
   "Analyzes the generic (as type value) form.
    Extended to handle brand application forms like (index-t fc) where
@@ -1053,6 +1085,8 @@
 
     (make-semantic-value-cast :type type-name :arg arg-node :source-location location)))
 
+    |#
+
 ;;;; ===========================================================================
 ;;;; Fix for 037-cell-branded/07-fake-cell-incomplete.crisp
 ;;;; Incomplete struct template dispatch via MAKE-X%DISPATCH CL macro.
@@ -1069,6 +1103,7 @@
 ;;;; ===========================================================================
 
 ;; src/templates.lisp
+#|
 (defvar *partial-template-instantiations* (make-hash-table :test 'eq)
   "Maps template name symbols to lists of partial instantiation plists.
    Each plist has keys:
@@ -1102,8 +1137,10 @@
     (log:info "DISPATCH-INCOMPLETE: ~a -> ~a with keyword args ~a"
               template-name constructor-name keyword-call-args)
     `(,constructor-name ,@keyword-call-args)))
+    |#
 
 ;; src/templates.lisp
+#|
 (defun %instantiate-structure-template (name body substitutions concrete-types)
   "Instantiates a struct template with the given substitutions and concrete types.
    For incomplete templates (those with :c-t fields lacking a default value), stores
@@ -1159,6 +1196,7 @@
                            (return (,mangled-constructor ,@keyword-args)))
              (eval-when (:compile-toplevel :load-toplevel :execute)
                (register-overload ',constructor-alias ',wrapper-name)))))))
+               |#
 
 
 ;;;; ===========================================================================

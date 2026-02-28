@@ -130,6 +130,7 @@
     (t (error "Template argument mismatch for ~a. Expected type ~a, got ~a (~a)"
          name type arg (type-of arg)))))
 
+#|
 (defun canonicalize-type-specifier (spec)
   "Canonicalizes type specifiers."
 
@@ -195,7 +196,74 @@
       ((consp spec) spec)
       (t (list spec)))))
 
+      |#
 
+(defun canonicalize-type-specifier (spec)
+  "Canonicalizes type specifiers."
+
+  ;; First, apply storage handle expansion
+  (cl:when (consp spec)
+    (setf spec (expand-storage-handle-type-specifier spec)))
+
+  (cl:let ((base (if (consp spec) (cl:first spec) spec))
+           (args (if (consp spec) (rest spec) nil)))
+    (cl:cond
+      ((symbolp base)
+       ;; 1. Check Template Aliases (def-type)
+       (cl:let ((alias-def (gethash base *crisp-template-aliases*)))
+         (cl:if alias-def
+                (cl:let ((params (car alias-def))
+                         (type-spec (cdr alias-def)))
+                  ;; Instantiate the alias
+                  (cl:if params
+                         (cl:let* ((arity (length params))
+                                   (required-args (subseq args 0 (min (length args) arity)))
+                                   (rest-args (subseq args (length required-args)))
+                                   (substitutions (pairlis params required-args)))
+                           ;; Apply substitution to the base spec
+                           (cl:let ((expanded-base (sublis substitutions type-spec)))
+                             ;; Append any extra args (overrides) to the result if it's a list
+                             (cl:if (and rest-args (consp expanded-base))
+                                    (canonicalize-type-specifier (append expanded-base rest-args))
+                                    (canonicalize-type-specifier expanded-base))))
+                         ;; No params? Just return the aliased type + args??
+                         (cl:if args
+                                (canonicalize-type-specifier (append (cl:if (consp type-spec) type-spec (list type-spec)) args))
+
+                                ;; FIX: Use resolve-type-alias cycle detection here!
+                                (cl:let ((resolved (resolve-type-alias base)))
+                                  (cl:if (equal resolved base)
+                                         ;; Cycle detected (A->A), return base as canonical
+                                         (progn
+                                          (log:warn "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base." base)
+                                          (list base))
+                                         ;; Recurse safely
+                                         (canonicalize-type-specifier resolved))))))
+
+                ;; 2. Standard Templates (With Validation)
+                (cl:let* ((template-data (first (gethash base *template-registry*)))
+                          (raw-params (and template-data (template-data-parameters template-data))))
+                  (cl:if raw-params
+                         (cl:let* ((parsed-params (mapcar #'parse-template-parameter-spec raw-params))
+                                   ;; FIX: Strip keyword labels when args has more items than params
+                                   ;; e.g. (INT :address-space :GLOBAL :access :READ-WRITE) => (INT :GLOBAL :READ-WRITE)
+                                   (clean-args (extract-positional-from-keyword-args args (length parsed-params)))
+                                   (full-args (cl:loop for (p-name p-type p-default) in parsed-params
+                                              for i from 0
+                                              for arg = (if (< i (length clean-args))
+                                                            (nth i clean-args)
+                                                            (or p-default
+                                                                (error "Missing required type argument for template ~a: ~a (index ~d)" base p-name i)))
+                                              do (validate-template-arg arg p-type p-name)
+                                              collect arg)))
+                           (cons base full-args))
+
+                         ;; Not a template, return as is (normalized to list)
+                         (cl:if (consp spec) spec (list spec)))))))
+      ((consp spec) spec)
+      (t (list spec)))))
+
+#|
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, with alias resolution and template handling."
   ;; Resolve aliases FIRST, then run all other checks on resolved types
@@ -249,6 +317,71 @@
                 (e2 (cl:if (cl:member (cl:symbol-name (cl:first t2)) '("CELL") :test #'cl:string-equal)
                            (canonicalize-type-specifier t2)
                            t2)))
+         (cl:equal e1 e2)))
+      ;; Keyword vs Enum
+      ((and (or (member t1 '(keyword :keyword symbol common-lisp:symbol))
+                (and (symbolp t1) (member (symbol-name t1) '("KEYWORD" "SYMBOL") :test #'string-equal)))
+            (gethash t2 *crisp-enums*)) t)
+      ((and (or (member t2 '(keyword :keyword symbol common-lisp:symbol))
+                (and (symbolp t2) (member (symbol-name t2) '("KEYWORD" "SYMBOL") :test #'string-equal)))
+            (gethash t1 *crisp-enums*)) t)
+      ;; Handle mismatched wrapping (e.g. (INT) vs INT)
+      ((and (consp t1) (= (length t1) 1) (valid-type-p (cl:first t1)) (types-equivalent-p (cl:first t1) t2)) t)
+      ((and (consp t2) (= (length t2) 1) (valid-type-p (cl:first t2)) (types-equivalent-p t1 (cl:first t2))) t)
+      (t nil))))
+      |#
+
+(defun types-equivalent-p (t1 t2)
+  "Checks if two types are equivalent, with alias resolution and template handling.
+   FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels
+   before mangling comparison. This supports def-type aliases for any template type."
+  ;; Resolve aliases FIRST, then run all other checks on resolved types
+  (cl:let ((t1 (resolve-type-alias t1))
+           (t2 (resolve-type-alias t2)))
+    (cl:cond
+      ((or (equal t1 t2)
+           (and (symbolp t1) (symbolp t2) (string-equal (symbol-name t1) (symbol-name t2))))
+       t)
+      ;; Treat VOID and NIL as equivalent return types
+      ((or (and (symbolp t1) (string-equal t1 "VOID") (null t2))
+           (and (null t1) (symbolp t2) (string-equal t2 "VOID")))
+       t)
+      ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT
+      ;; FIX: Always canonicalize, not just for CELL - handles keyword label stripping
+      ((and (consp t1) (symbolp t2))
+       (let* ((expanded (canonicalize-type-specifier t1))
+              (base-type (cl:first expanded))
+              (params (rest expanded)))
+         (if (and (symbolp base-type)
+                  (not (excluded-template-base-type-p base-type)))
+             (progn
+              (cl:when (gethash base-type *template-registry*)
+                (cl:let ((instantiated-form
+                          (funcall *template-instantiator-fn* base-type params
+                            (lambda (form location)
+                              (if (boundp '*current-module*)
+                                  (compile-toplevel-form form location
+                                                         *current-module*
+                                                         *current-builder*
+                                                         *current-di-builder*
+                                                         *current-di-compile-unit*
+                                                         *current-location-map*)
+                                  (eval form))))))
+                  instantiated-form
+                  t))
+              (cl:let ((mangled (mangle-template-struct-name base-type params)))
+                (cl:cond
+                  ((eq mangled t2) t)
+                  ((string-equal (symbol-name mangled) (symbol-name t2)) t)
+                  (t nil))))
+             nil)))
+      ((and (symbolp t1) (consp t2))
+       (types-equivalent-p t2 t1))
+      ;; Parameterized struct vs parameterized struct
+      ;; FIX: Always canonicalize both sides
+      ((and (cl:consp t1) (cl:consp t2))
+       (cl:let ((e1 (canonicalize-type-specifier t1))
+                (e2 (canonicalize-type-specifier t2)))
          (cl:equal e1 e2)))
       ;; Keyword vs Enum
       ((and (or (member t1 '(keyword :keyword symbol common-lisp:symbol))

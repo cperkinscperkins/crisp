@@ -1,11 +1,34 @@
 ;;; src/analysis/structs.lisp
 (in-package :crisp.compiler)
 
+#|
 (defun get-array-element-type (type)
   "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown."
   (let ((type (resolve-type-alias type)))
     (cond
      ((listp type) (second type)) ;; e.g. (ptr float), (array float 10)
+     ((symbolp type)
+       ;; Check if it is a Mangled Cell
+       (let ((unmangled (unmangle-template-struct-name type)))
+         (if (and (consp unmangled) (eq (first unmangled) 'cell))
+             (second unmangled)
+             nil)))
+     (t nil))))
+     |#
+
+(defun get-array-element-type (type)
+  "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.
+   FIX: Only return element type for known array-like types (cell, vector, matrix, tensor, ptr, array),
+   not for arbitrary parameterized struct types like (fake-cell int ...)."
+  (let ((type (resolve-type-alias type)))
+    (cond
+     ((listp type)
+       ;; Only treat as array-like if the base is a known array/cell type
+       (let ((base (first type)))
+         (if (and (symbolp base)
+                  (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR" "PTR" "ARRAY" "POINTER") :test #'string-equal))
+             (second type)
+             nil)))
      ((symbolp type)
        ;; Check if it is a Mangled Cell
        (let ((unmangled (unmangle-template-struct-name type)))
