@@ -16,7 +16,7 @@
 
 (parachute:define-test (anf-let-test transform-let-complex-body)
                        "Let forms with complex bodies have their bodies ANF transformed."
-                       (parachute:is equal '(let ((x 10)) (let ((t-1 (+ x x))) (* t-1 2)))
+                       (parachute:is equal '(let ((x 10) (t-1 (+ x x))) (* t-1 2))
                                      (anf-transform '(let ((x 10)) (* (+ x x) 2)))))
 
 (parachute:define-test (anf-let-test transform-let-multivalue)

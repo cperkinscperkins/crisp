@@ -19,7 +19,7 @@
 
 (parachute:define-test (anf-misc-test transform-progn)
                        "Progn forms (mostly found implicitly in bodies) ANF each form sequentially."
-                       (parachute:is equal '(progn (let ((t-1 (foo x))) t-1) (let ((t-2 (* y 2))) t-2))
+                       (parachute:is equal '(progn (foo x) (* y 2))
                                      (anf-transform '(progn (foo x) (* y 2)))))
 
 (parachute:define-test (anf-misc-test transform-bounded-loops)

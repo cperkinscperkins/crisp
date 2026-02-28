@@ -6,31 +6,31 @@
 
 (parachute:define-test (anf-control-flow-basic-test transform-if-atomic-condition)
                        "If forms with atomic conditions pass through, but branches are recursively ANF transformed."
-                       (parachute:is equal '(if cond-var (let ((t-1 (+ a b))) t-1) (let ((t-2 (- c d))) t-2))
+                       (parachute:is equal '(if cond-var (+ a b) (- c d))
                                      (anf-transform '(if cond-var (+ a b) (- c d))))
                        (parachute:is equal '(if T 1 2)
                                      (anf-transform '(if T 1 2))))
 
 (parachute:define-test (anf-control-flow-basic-test transform-if-complex-condition)
                        "If forms with complex conditions hoist the condition, branches are recursively ANF'd."
-                       (parachute:is equal '(let ((t-1 (> x 10))) (if t-1 (let ((t-2 (* x 2))) t-2) x))
+                       (parachute:is equal '(let ((t-1 (> x 10))) (if t-1 (* x 2) x))
                                      (anf-transform '(if (> x 10) (* x 2) x))))
 
 (parachute:define-test (anf-control-flow-basic-test transform-if-in-call)
                        "If the IF form is an argument to a call, its entire result is hoisted."
-                       (parachute:is equal '(let ((t-1 (if flag (let ((t-2 (+ a 1))) t-2) (let ((t-3 (- b 1))) t-3)))) (* 10 t-1))
+                       (parachute:is equal '(let ((t-1 (if flag (+ a 1) (- b 1)))) (* 10 t-1))
                                      (anf-transform '(* 10 (if flag (+ a 1) (- b 1))))))
 
 (parachute:define-test (anf-control-flow-basic-test transform-when-unless)
                        "When and unless forms hoist conditions identically to if. Only the true/false branch exists."
-                       (parachute:is equal '(when flag (let ((t-1 (foo x))) t-1))
+                       (parachute:is equal '(when flag (foo x))
                                      (anf-transform '(when flag (foo x))))
-                       (parachute:is equal '(let ((t-1 (is-valid? data))) (unless t-1 (let ((t-2 (bail))) t-2)))
+                       (parachute:is equal '(let ((t-1 (is-valid? data))) (unless t-1 (bail)))
                                      (anf-transform '(unless (is-valid? data) (bail)))))
 
 (parachute:define-test (anf-control-flow-basic-test transform-compile-time-variants)
                        "Compile time variants (if+, when+, unless+) are handled exactly like their runtime counterparts."
                        (parachute:is equal '(let ((t-1 (> N 0))) (if+ t-1 1 0))
                                      (anf-transform '(if+ (> N 0) 1 0)))
-                       (parachute:is equal '(let ((t-1 (is-set? opt-arg))) (when+ t-1 (let ((t-2 (do-thing))) t-2)))
+                       (parachute:is equal '(let ((t-1 (is-set? opt-arg))) (when+ t-1 (do-thing)))
                                      (anf-transform '(when+ (is-set? opt-arg) (do-thing)))))

@@ -6,14 +6,14 @@
 
 (parachute:define-test (anf-control-flow-cond-test transform-cond-atomic-predicates)
                        "Cond forms with atomic predicates pass the predicates through. Bodies are ANF'd."
-                       (parachute:is equal '(cond (a (let ((t-1 (foo x))) t-1)) (b (let ((t-2 (bar y))) t-2)) (else 0))
+                       (parachute:is equal '(cond (a (foo x)) (b (bar y)) (else 0))
                                      (anf-transform '(cond (a (foo x)) (b (bar y)) (else 0)))))
 
 (parachute:define-test (anf-control-flow-cond-test transform-cond-complex-predicates)
                        "Cond forms with complex predicates ANF the predicate *inside* the clause list so it only evaluates if reached."
-                       (parachute:is equal '(cond ((let ((t-1 (> x 10))) t-1) x)
-                                                  (else (let ((t-2 (* x 2))) t-2)))
-                                     (anf-transform '(cond ((> x 10) x) (else (* x 2))))))
+                       (parachute:is equal '(cond ((let ((t-1 (get-val))) (> t-1 10)) x)
+                                                  (else (* x 2)))
+                                     (anf-transform '(cond ((> (get-val) 10) x) (else (* x 2))))))
 
 (parachute:define-test (anf-control-flow-cond-test transform-cond-in-call)
                        "Cond form inside a call has its entire result hoisted."
