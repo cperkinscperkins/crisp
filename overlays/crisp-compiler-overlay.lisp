@@ -2572,3 +2572,104 @@ This should be called by any entry point into the system (REPL, executable, CI).
 
   ;; Initialize built-in structs (storage)
   (register-builtins))
+
+;;;; ===========================================================================
+;;;; Fix3: resolve-brand-type -- normalize base-type to canonical package
+;;;; ===========================================================================
+;;;
+;;; When a cell is declared with a user-defined struct element type (e.g.
+;;; `(cell point :address-space :global :access :read-write)`), the mangled cell
+;;; type symbol is created in the crisp.compiler package (the package of the
+;;; built-in CELL template).  Later, get-array-element-type calls
+;;; unmangle-template-struct-name on that symbol to recover the element type.
+;;; unmangle-template-struct-name uses the *cell type symbol's* package
+;;; (crisp.compiler) when re-interning the argument tokens, so the returned
+;;; element type is crisp.compiler::POINT.
+;;;
+;;; However, def-struct reads its name from source with *package* = crisp-language
+;;; (Fix D), so *crisp-structs* stores crisp-language::POINT.  These are two
+;;; distinct CL symbols with the same name -- gethash uses eq and finds nothing.
+;;; register-derived-type then signals "original type does not exist (single-pass
+;;; semantics violation)" when trying to register VALUE-T-N as a descendant of
+;;; the crisp.compiler::POINT that is NOT in any registry.
+;;;
+;;; Diagnostic confirmation (put_temp_files_here/diag-41.lisp):
+;;;   Part 1: mangle/unmangle produces crisp.compiler::POINT from crisp-language::POINT
+;;;   Part 2: *crisp-structs* stores crisp-language::POINT (Fix D effect)
+;;;   Part 3: gethash exact-eq fails; name-based scan succeeds -> CONFIRMED
+;;;
+;;; Fix: in resolve-brand-type, before calling register-derived-type, normalize
+;;; base-type to the canonical symbol by scanning *type-derivation-graph* and
+;;; *crisp-structs* by name (string=).  This is safe because by the time
+;;; analyze-aref-expression (Fix C) calls resolve-brand-type in pass 2, the
+;;; register-brand-definition for the cell has already run (pass 1), which adds
+;;; crisp-language::POINT to *type-derivation-graph* via the VALUE-T registration.
+;;; The name-based scan therefore finds it.
+;;;
+;;; Destination: src/types/brand.lisp
+
+;; src/types/brand.lisp
+(defun resolve-brand-type (brand-name var-ref &optional base-type)
+  "Resolves a branded type for a specific variable instance.
+   Returns a gensym'd type name unique to (brand-name, var-ref [, base-type]).
+
+   When BASE-TYPE is supplied the gensym is registered as a :descendant of
+   BASE-TYPE directly.  BASE-TYPE is first normalized against the type registries
+   to handle package mismatches: unmangle-template-struct-name creates symbols in
+   crisp.compiler (the cell type's package) while user structs are stored in
+   crisp-language (Fix D reads source files in that package).  A name-based scan
+   of *type-derivation-graph* then *crisp-structs* finds the canonical symbol.
+
+   When BASE-TYPE is NIL, the gensym is registered as a :descendant of
+   brand-name (original behaviour, used by fake-cell / template brands).
+
+   In all cases the gensym is stored in *brand-instance-types* under brand-name
+   so that resolve-dominance can block cross-instance arithmetic."
+  (cl:let* ((cache-key (if base-type
+                           (list brand-name var-ref base-type)
+                           (cons brand-name var-ref)))
+            (cached (gethash cache-key *brand-instance-cache*)))
+    (or cached
+        (cl:let* ((gensym-name (gensym (format nil "~a-" brand-name)))
+                  ;; Normalize base-type to the canonical symbol in the type
+                  ;; registries.  Fast path: symbol already findable by eq.
+                  ;; Slow path: name-based scan for package-mismatch cases.
+                  (canonical-base
+                   (when (and base-type (symbolp base-type))
+                     (or
+                      ;; Fast path: already canonical
+                      (and (or (gethash base-type *type-derivation-graph*)
+                               (gethash base-type *crisp-types*)
+                               (gethash base-type *crisp-structs*))
+                           base-type)
+                      ;; Slow path: same-named symbol in a different package
+                      (let ((name (symbol-name base-type)))
+                        (or (block found
+                              (maphash (lambda (k v)
+                                         (declare (ignore v))
+                                         (when (and (symbolp k)
+                                                    (string= (symbol-name k) name))
+                                           (return-from found k)))
+                                       *type-derivation-graph*)
+                              nil)
+                            (block found
+                              (maphash (lambda (k v)
+                                         (declare (ignore v))
+                                         (when (and (symbolp k)
+                                                    (string= (symbol-name k) name))
+                                           (return-from found k)))
+                                       *crisp-structs*)
+                              nil))))))
+                  (ancestor (or canonical-base base-type brand-name)))
+          (when (and base-type canonical-base (not (eq base-type canonical-base)))
+            (log:info "resolve-brand-type: normalized ~s -> ~s (package mismatch)"
+                      base-type canonical-base))
+          ;; Register gensym directly against the chosen ancestor.
+          (register-derived-type gensym-name ancestor :descendant)
+          ;; Track under brand-name so resolve-dominance works across all
+          ;; element types of the same brand name.
+          (setf (gethash gensym-name *brand-instance-types*) brand-name)
+          (setf (gethash cache-key *brand-instance-cache*) gensym-name)
+          (log:info "Created brand instance type ~a for (~a ~a) [ancestor: ~a]"
+                    gensym-name brand-name var-ref ancestor)
+          gensym-name))))
