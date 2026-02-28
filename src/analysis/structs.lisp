@@ -61,7 +61,7 @@
       (crisp-type-category crisp-type))))
 
 
-
+#|
 (defun analyze-struct-construction (expr env context location)
   "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
    Supports implicit promotion of base-type values to branded member types
@@ -114,6 +114,72 @@
                                        :inferred (semantic-node-type node)
                                        :source-location location))))
                              node))))
+
+        (make-semantic-struct-construction
+         :type type-name
+         :args arg-nodes
+         :source-location location)))))
+         |#
+
+(defun analyze-struct-construction (expr env context location)
+  "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
+   Supports implicit promotion of base-type values to branded member types
+   in struct constructors (the birthplace of branded values).
+   Uses get-single-value-type to normalize function-call return type lists
+   (e.g. ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)) before type comparison."
+  (let* ((type-name (second expr))
+         (args (cddr expr))
+         (struct-def (lookup-struct-definition type-name)))
+    (unless struct-def
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    ;; Validate argument count against original members (excluding compile-time properties)
+    (let* ((all-members (crisp-struct-definition-members struct-def))
+           (members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) all-members)))
+      (unless (= (length args) (length members))
+        (error "Struct constructor for ~a expects ~a arguments, got ~a."
+          type-name (length members) (length args)))
+
+      ;; Analyze arguments
+      (let ((arg-nodes
+             (loop for arg in args
+                   for member in members
+                   for i from 0
+                   collect (let ((node (analyze-expression arg env context (append location (list (+ 2 i)))))
+                                 (expected-type (second member)))
+                             ;; get-single-value-type unwraps ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)
+                             ;; for function-call nodes whose semantic-call-type is a return-types list
+                             (let ((arg-type (get-single-value-type node)))
+                               (log:debug "STRUCT-CTOR ~a member ~a: arg-type=~a expected=~a"
+                                          type-name (first member) arg-type expected-type)
+                               ;; Type check with branded type promotion
+                               (unless (type-equal-p arg-type expected-type)
+                                 (cl:let ((brand-def (is-brand-type-p expected-type)))
+                                   (if brand-def
+                                       ;; Branded member: check numeric compatibility with base type
+                                       (cl:let* ((base-type (brand-definition-base-type brand-def))
+                                                 (arg-cat (numeric-type-category arg-type))
+                                                 (base-cat (numeric-type-category base-type)))
+                                         (if (and arg-cat base-cat)
+                                             ;; Compatible numeric types - wrap in a value cast to the base type
+                                             (progn
+                                              (log:debug "Constructor promotion: ~a -> ~a (base ~a) for member ~a"
+                                                         arg-type expected-type base-type (first member))
+                                              (setf node (make-semantic-value-cast
+                                                          :type base-type
+                                                          :arg node
+                                                          :source-location (append location (list (+ 2 i))))))
+                                             ;; Not numeric-compatible
+                                             (error 'crisp-type-error
+                                               :expected expected-type
+                                               :inferred arg-type
+                                               :source-location location)))
+                                       ;; Not a branded member -> real type error
+                                       (error 'crisp-type-error
+                                         :expected expected-type
+                                         :inferred arg-type
+                                         :source-location location))))
+                               node)))))
 
         (make-semantic-struct-construction
          :type type-name

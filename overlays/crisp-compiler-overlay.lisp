@@ -6,6 +6,7 @@
 (in-package :crisp.compiler)
 
 ;; src/types/validation.lisp
+#|
 (defun extract-positional-from-keyword-args (args num-params)
   "When a type spec has more args than template params, keyword labels are present.
    Extracts positional values by stripping keyword labels.
@@ -27,6 +28,7 @@
                      ;; Positional arg
                      (push item result)))
         (nreverse result))))
+        |#
 
 ;; src/templates.lisp
 (defun strip-keyword-labels (type-list template-params)
@@ -1171,6 +1173,7 @@
 ;;;; ===========================================================================
 
 ;; src/analysis/structs.lisp
+#|
 (defun analyze-struct-construction (expr env context location)
   "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
    Supports implicit promotion of base-type values to branded member types
@@ -1236,6 +1239,8 @@
          :args arg-nodes
          :source-location location)))))
 
+         |#
+
 
 ;;;; ===========================================================================
 ;;;; Fix for detect-and-register-implicit-template: concrete structs are complete
@@ -1255,6 +1260,7 @@
 ;;;; ===========================================================================
 
 ;; src/environment.lisp
+#|
 (defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
   "Detects if a function is an implicit template (e.g. has function-type args),
    and if so, registers it as a template and returns T. Otherwise returns NIL.
@@ -1308,6 +1314,7 @@
             (log:info "Registering implicit template ~a with params ~a" name template-params)
             (register-template name template-params nil new-def-form signature-list)
             t))))
+            |#
 
 
 ;;;; ===========================================================================
@@ -1413,6 +1420,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;;; ===========================================================================
 
 ;; src/mangling.lisp
+#|
 (cl:defun unmangle-template-struct-name (symbol)
   "Attempts to reverse mangling for known parameterized types like CELL.
    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.
@@ -1435,7 +1443,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                 nil))
           ;; No underscore: symbol is a bare type name (e.g. SHIRT -> (SHIRT))
           `(,(cl:intern name (cl:symbol-package symbol)))))))
-
+|#
 
 ;;;; ===========================================================================
 ;;;; Fix: detect-and-register-implicit-template guard is too broad
@@ -1467,6 +1475,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;;; ===========================================================================
 
 ;; src/environment.lisp
+#|
 (defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
   "Detects if a function is an implicit template (e.g. has function-type args
    or incomplete-type parameters), and if so registers it as a template and
@@ -1534,6 +1543,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
             (log:info "Registering implicit template ~a with params ~a" name template-params)
             (register-template name template-params nil new-def-form signature-list)
             t))))
+            |#
 
 ;; ============================================================
 ;; FIX: extract-positional-from-keyword-args
@@ -1555,6 +1565,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;; the extra args are c-t overrides; take only the first NUM-PARAMS args.
 ;; ============================================================
 ;; src/types/validation.lisp
+#|
 (defun extract-positional-from-keyword-args (args num-params)
   "Extract NUM-PARAMS positional template args from ARGS when (length ARGS) > NUM-PARAMS.
 
@@ -1592,6 +1603,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
             ;; take only the first num-params args as template args.
             (subseq args 0 num-params)))))
 
+            |#
+
 ;;;; ===========================================================================
 ;;;; Fix: Brand instance type tracking and safe cross-instance arithmetic blocking
 ;;;;
@@ -1623,13 +1636,14 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;;;
 ;;;; src/types/brand.lisp (new state var)
 ;;;; ===========================================================================
-
+#|
 (defvar *brand-instance-types* (make-hash-table :test 'equal)
   "Maps gensym brand-instance type names (created by resolve-brand-type) to
    the brand-name they instantiate.  Consulted by resolve-dominance to block
    cross-instance arithmetic and to preserve instance types in arithmetic
    with the brand's base type.
    Cleared alongside *brand-instance-cache* in initialize-compiler.")
+   |#
 
 ;; src/types/brand.lisp
 #|
@@ -1727,6 +1741,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
   |#
 
 ;; src/types/hierarchy.lisp
+#|
 (defun resolve-dominance (type-a type-b)
   "Determines which type dominates in arithmetic operations.
    Returns the dominant type, or NIL if they cannot mix.
@@ -1787,6 +1802,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
             (log:debug "resolve-dominance: common promoted type for ~a + ~a = ~a"
                        type-a type-b common-type)
             common-type)))))))
+            |#
 
 ;;;; ===========================================================================
 ;;;; Add value-t and index-t brands to the real CELL template
@@ -1802,6 +1818,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; (index) values but is not yet exercised by any current test.
 
 ;; src/compiler.lisp
+#|
 (defun register-builtins ()
   "Registers built-in types and structs like 'storage' and 'cell' using def-struct
    semantics.  Cell now carries value-t and index-t brands for --differentiate mode."
@@ -1839,6 +1856,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                      '((cell To Addr Acc) => ulong))
 
   (log:info "Built-in structs registered."))
+  |#
 
 ;;;; ===========================================================================
 ;;;; Brand-aware analyze-aref-expression for real cell reads
@@ -1993,6 +2011,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;;   4. both non-brand -> standard substitutability / find-common-promoted-type
 
 ;; src/types/hierarchy.lisp
+#|
 (defun resolve-dominance (type-a type-b)
   "Determines which type dominates in arithmetic operations.
    Returns the dominant type, or NIL if the types cannot mix.
@@ -2044,6 +2063,8 @@ This should be called by any entry point into the system (REPL, executable, CI).
           (log:debug "resolve-dominance: find-common-promoted-type ~a ~a"
                      type-a type-b)
           (find-common-promoted-type type-a type-b)))))))
+
+          |#
 
 ;;;; ===========================================================================
 ;;;; Fix: analyze-aref-expression -- pass elem-type to resolve-brand-type
@@ -2207,6 +2228,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
 ;;; value-t for --differentiate tracking.
 
 ;; src/compiler.lisp
+#|
 (defun register-builtins ()
   "Registers built-in types and structs like 'storage' and 'cell' using def-struct
    semantics.  Cell carries the value-t brand for --differentiate mode."
@@ -2257,6 +2279,7 @@ This should be called by any entry point into the system (REPL, executable, CI).
                      '((cell To Addr Acc) => ulong))
 
   (log:info "Built-in structs registered."))
+  |#
 
 ;;;; ===========================================================================
 ;;;; Fix B: register-brand-definition -- guard against non-symbol base-type

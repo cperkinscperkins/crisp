@@ -622,3 +622,42 @@
                       nil)))))
            nil))) ;; Not a symbol base?
     (t nil)))
+
+
+
+(defun extract-positional-from-keyword-args (args num-params)
+  "Extract NUM-PARAMS positional template args from ARGS when (length ARGS) > NUM-PARAMS.
+
+   Two conventions are supported:
+   1. Labeled style: (:label value) pairs identify template params by a descriptive name.
+      e.g. (int :address-space :global :access :read-write) with arity 3
+           => (int :global :read-write)
+   2. Positional+c-t style: first NUM-PARAMS args are positional template args;
+      any remaining args are compile-time field overrides handled elsewhere.
+      e.g. (int :blue :stitching-c :black) with arity 2
+           => (int :blue)
+
+   Disambiguation: label-strip the entire list.  If the result has exactly
+   NUM-PARAMS elements, the labeled convention was used and that result is
+   returned.  Otherwise the positional+c-t convention was used and the first
+   NUM-PARAMS elements of ARGS are returned unchanged."
+  (if (<= (length args) num-params)
+      args
+      ;; Try label-stripping the full arg list.
+      (let* ((stripped
+               (cl:let ((result nil)
+                     (remaining args))
+                 (loop while remaining
+                       for item = (pop remaining)
+                       do (if (and (keywordp item) remaining)
+                              ;; Keyword label: skip label, push next item as value
+                              (push (pop remaining) result)
+                              ;; Non-keyword (or trailing keyword): push as positional
+                              (push item result)))
+                 (nreverse result))))
+        (if (= (length stripped) num-params)
+            ;; Label-stripping produced the right count -> labeled convention
+            stripped
+            ;; Label-stripping gave wrong count -> positional+c-t convention;
+            ;; take only the first num-params args as template args.
+            (subseq args 0 num-params)))))

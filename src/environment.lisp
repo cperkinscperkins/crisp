@@ -344,7 +344,7 @@
 
                      (when all-implicits
                            (setf (gethash name *implicit-arg-map*) all-implicits)))))))))
-
+#|
 (defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
   "Detects if a function is an implicit template (e.g. has function-type args),
    and if so, registers it as a template and returns T. Otherwise returns NIL."
@@ -385,6 +385,75 @@
                  (signature-list (append (mapcar #'parameter-def-type new-env) '(=>) return-type))
                  ;; Reconstruct body form using signature
                  (new-def-form `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
+
+            (log:info "Registering implicit template ~a with params ~a" name template-params)
+            (register-template name template-params nil new-def-form signature-list)
+            t))))
+            |#
+
+(defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
+  "Detects if a function is an implicit template (e.g. has function-type args
+   or incomplete-type parameters), and if so registers it as a template and
+   returns T.  Otherwise returns NIL.
+
+   A type is treated as incomplete only if incomplete-type-p says so AND the
+   type is NOT a mangled/instantiated concrete struct (i.e. its name contains
+   an underscore AND has a registered struct definition).  Bare base names such
+   as PANTS and SHIRT have no underscore and remain eligible as implicit
+   template parameters even though they are in *crisp-structs*."
+  (when (or (find 'crisp-system-generated body
+                  :key (lambda (x) (if (listp x) (car x) x)) :test #'eq)
+            (find 'crisp-system-generated declarations
+                  :key (lambda (x) (if (listp x) (car x) x)) :test #'eq))
+        (return-from detect-and-register-implicit-template nil))
+
+  (let ((implicit-args
+          (loop for p in explicit-env
+                for pname = (parameter-def-name p)
+                for ptype = (parameter-def-type p)
+                  when (or (and (listp ptype) (eq (first ptype) :function-type))
+                           ;; Only exclude as complete if it is a MANGLED concrete type.
+                           ;; Mangled instantiated types (FAKE-CELL_INT, SHIRT_INT_...) have '_'
+                           ;; in their name.  Bare template/base names (PANTS, SHIRT) do not,
+                           ;; so they remain incomplete and eligible as implicit template params.
+                           (and (incomplete-type-p ptype)
+                                (not (and (symbolp ptype)
+                                          (cl:find #\_ (cl:symbol-name ptype))
+                                          (find-struct-definition-by-name ptype)))))
+                collect p)))
+    (when implicit-args
+          (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
+          ;; REMOVE from function table because register-function-signature already put it there!
+          (remhash name *function-table*)
+
+          ;; Convert to template
+          (let* ((template-params
+                   (loop for i from 0 repeat (length implicit-args)
+                         collect (intern (format nil "<IMPLICIT-F-~a>" i))))
+                 (subst-map
+                   (loop for p in implicit-args
+                         for tparam in template-params
+                         collect (cons (parameter-def-name p) tparam)))
+                 ;; Reconstruct environment with template params substituted in
+                 (new-env
+                   (loop for p in explicit-env
+                         collect (let ((match (assoc (parameter-def-name p) subst-map)))
+                                   (if match
+                                       (make-parameter-def
+                                        :name (parameter-def-name p)
+                                        :type (cdr match)
+                                        :kind (parameter-def-kind p)
+                                        :is-optional (parameter-def-is-optional p)
+                                        :is-key (parameter-def-is-key p)
+                                        :default-value (parameter-def-default-value p)
+                                        :source-location (parameter-def-source-location p))
+                                       p))))
+                 ;; Construct signature for inference
+                 (signature-list
+                   (append (mapcar #'parameter-def-type new-env) '(=>) return-type))
+                 ;; Reconstruct the def-function form for the template registry
+                 (new-def-form
+                   `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
 
             (log:info "Registering implicit template ~a with params ~a" name template-params)
             (register-template name template-params nil new-def-form signature-list)

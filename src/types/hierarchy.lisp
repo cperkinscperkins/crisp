@@ -206,7 +206,7 @@
       (t (dolist (type reachable-a nil)
            (cl:when (member type common :test #'eq)
              (cl:return type)))))))
-
+#|
 (defun resolve-dominance (type-a type-b)
   "Determines which type dominates in arithmetic operations.
    Returns the dominant type, or NIL if they cannot mix.
@@ -233,6 +233,60 @@
        (log:debug "resolve-dominance: common promoted type for ~a + ~a = ~a"
                   type-a type-b common-type)
        common-type))))
+       |#
+
+
+(defun resolve-dominance (type-a type-b)
+  "Determines which type dominates in arithmetic operations.
+   Returns the dominant type, or NIL if the types cannot mix.
+
+   Brand-instance rules are applied BEFORE substitutability so that a brand
+   instance always wins over the plain type it descends from:
+   - Same type: return it.
+   - Both instances of the SAME brand (different vars): cannot mix -> NIL.
+   - One brand instance, one non-brand: brand instance dominates.
+   - Neither is a brand instance: standard substitutability /
+     find-common-promoted-type."
+  (cl:cond
+    ((eq type-a type-b) type-a)
+
+    (t
+     (cl:let ((brand-a (and (boundp '*brand-instance-types*)
+                            (gethash type-a *brand-instance-types*)))
+              (brand-b (and (boundp '*brand-instance-types*)
+                            (gethash type-b *brand-instance-types*))))
+       (cl:cond
+         ;; Both brand instances of the SAME brand -> cannot mix
+         ((and brand-a brand-b (eq brand-a brand-b))
+          (log:debug "resolve-dominance: blocking cross-instance mix of ~a and ~a (both brand ~a)"
+                     type-a type-b brand-a)
+          nil)
+
+         ;; A is a brand instance, B is not -> A dominates unconditionally
+         ((and brand-a (not brand-b))
+          (log:debug "resolve-dominance: brand instance ~a dominates non-brand ~a"
+                     type-a type-b)
+          type-a)
+
+         ;; B is a brand instance, A is not -> B dominates unconditionally
+         ((and brand-b (not brand-a))
+          (log:debug "resolve-dominance: brand instance ~a dominates non-brand ~a"
+                     type-b type-a)
+          type-b)
+
+         ;; Neither is a brand instance -> standard type rules
+         ((is-substitutable-for? type-a type-b)
+          (log:debug "resolve-dominance: ~a substitutable for ~a -> ~a dominates"
+                     type-a type-b type-b)
+          type-b)
+         ((is-substitutable-for? type-b type-a)
+          (log:debug "resolve-dominance: ~a substitutable for ~a -> ~a dominates"
+                     type-b type-a type-a)
+          type-a)
+         (t
+          (log:debug "resolve-dominance: find-common-promoted-type ~a ~a"
+                     type-a type-b)
+          (find-common-promoted-type type-a type-b)))))))
 
 ;;; Derived Type Registration
 ;;; =========================

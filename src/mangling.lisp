@@ -101,7 +101,7 @@
             (cl:multiple-value-bind (rest-processed rest-remaining)
                 (reconstruct-template-args (cl:rest tokens) package)
               (cl:values (cl:cons token-sym rest-processed) rest-remaining))))))
-
+#|
 (cl:defun unmangle-template-struct-name (symbol)
   "Attempts to reverse mangling for known parameterized types like CELL.
    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL."
@@ -118,6 +118,29 @@
           ;; No underscore? It might be a base type itself (e.g. SHIRT)
           ;; Technically unmangle implies retrieving params.
           ;; If symbol is SHIRT, return (SHIRT).
+          `(,(cl:intern name (cl:symbol-package symbol)))))))
+          |#
+(cl:defun unmangle-template-struct-name (symbol)
+  "Attempts to reverse mangling for known parameterized types like CELL.
+   Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.
+   Returns NIL immediately for uninterned symbols (gensyms produced by
+   brand instance differentiation) since they cannot be mangled struct names."
+  (cl:when (cl:symbolp symbol)
+    ;; Uninterned gensyms (brand instance types like #:TOKEN-T-204) have no
+    ;; package and can never be a mangled struct name.  Return NIL early to
+    ;; avoid the (intern name NIL) crash that follows.
+    (cl:unless (cl:symbol-package symbol)
+      (cl:return-from unmangle-template-struct-name nil))
+    (cl:let ((name (cl:symbol-name symbol)))
+      (cl:if (cl:find #\_ name)
+          (cl:let* ((parts (split-string name #\_))
+                    (base (cl:first parts))
+                    (reconstructed (reconstruct-template-args (cl:rest parts) (cl:symbol-package symbol))))
+            (cl:if base
+                (cl:let ((base-sym (cl:intern base (cl:symbol-package symbol))))
+                  `(,base-sym ,@reconstructed))
+                nil))
+          ;; No underscore: symbol is a bare type name (e.g. SHIRT -> (SHIRT))
           `(,(cl:intern name (cl:symbol-package symbol)))))))
 
 ;;; From src/environment.lisp

@@ -27,6 +27,13 @@
 (defvar *brand-cache-last-function* nil
   "The name of the function for which the brand instance cache was last cleared.")
 
+(defvar *brand-instance-types* (make-hash-table :test 'equal)
+  "Maps gensym brand-instance type names (created by resolve-brand-type) to
+   the brand-name they instantiate.  Consulted by resolve-dominance to block
+   cross-instance arithmetic and to preserve instance types in arithmetic
+   with the brand's base type.
+   Cleared alongside *brand-instance-cache* in initialize-compiler.")
+
 ;;; =========================================================
 ;;; Brand Predicates & Queries
 ;;; =========================================================
