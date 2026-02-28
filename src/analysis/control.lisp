@@ -201,18 +201,26 @@
        :body nodes
        :source-location location))))
 
+
 (defun analyze-return-expression (expr env context location)
-  "Analyzes a `(return ...)` expression."
+  "Analyzes a `(return ...)` expression.
+   FIX: A 1-element list whose sole element is a symbol (e.g. (INDEX-T)) is always
+   treated as a return-types list, not a parameterized type. This mirrors the fix
+   in validate-return-types."
   (let* ((value-forms (rest expr))
          (value-nodes (loop for form in value-forms
                             for i from 1
                             collect (analyze-expression form env context (append location (list i)))))
 
          ;; Flatten types to check against signature
+         ;; FIX: Also treat 1-element symbol lists as return-type lists, not parameterized types
          (all-inferred-types (if value-nodes
                                  (loop for node in value-nodes
                                          append (let ((t-spec (semantic-node-type node)))
-                                                  (if (and (listp t-spec) (not (valid-type-p t-spec)))
+                                                  (if (and (listp t-spec)
+                                                           (or (not (valid-type-p t-spec))
+                                                               (and (= (length t-spec) 1)
+                                                                    (symbolp (first t-spec)))))
                                                       t-spec
                                                       (list t-spec))))
                                  '(nil)))
@@ -223,7 +231,6 @@
          (declared-ret (if sig (function-signature-return-types sig) nil))
 
          ;; Check for invalid return (Deferred Error 04)
-         ;; If declared return is NIL (void), we cannot return values.
          (is-kernel (member '(entry-point) (compiler-context-declarations context) :test #'equal))
          (invalid-return-p (and declared-ret
                                 (or (null declared-ret) (equal declared-ret '(nil)))
@@ -239,7 +246,6 @@
                                          value-nodes)))))
 
     (when invalid-return-p
-          ;; Only error if the value is NOT nil. (return nil) is allowed for void.
           (let* ((node (first value-nodes))
                  (is-explicit-nil (and (= (length value-nodes) 1)
                                        (or (and (typep node 'semantic-literal)

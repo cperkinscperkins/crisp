@@ -301,6 +301,57 @@
 
 
 
+(defun register-builtins ()
+  "Registers built-in types and structs like 'storage' and 'cell' using def-struct
+   semantics.  Cell carries the value-t brand for --differentiate mode."
+  (log:info "Registering built-in structs...")
+
+  ;; Clear brand-specific state that is NOT cleared by initialize-compiler.
+  ;; initialize-compiler clears *brand-definitions* but not the extra tables
+  ;; introduced in the overlay.  Without this, the in-process test runner leaks
+  ;; state from one test into the next (e.g., *parameterized-brand-names* from
+  ;; test 01-fake-cell persists into test 02-fake-cell-value-t-no-compose,
+  ;; causing value-t to be treated as parameterized when it isn't in isolation).
+  (when (boundp '*parameterized-brand-names*) (clrhash *parameterized-brand-names*))
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+  (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+  (when (boundp '*brand-cache-last-function*) (setf *brand-cache-last-function* nil))
+
+  ;; STORAGE: parameterized by address space only.
+  (eval '(with-template-type ((Addr address-space :global))
+                             (def-record storage
+                                         (address (c-pointer :address-space Addr))
+                                         (byte-size ulong)
+                                         (address-space address-space :c-t Addr)
+                                         (access access :c-t :read-write))))
+
+  ;; CELL: opaque handle to a storage slice.
+  ;;   value-t To -- brands element reads so different cell vars produce distinct types
+  ;;   when --differentiate is active.  Only :read-write cells activate brand tracking;
+  ;;   :read-only/:write-only cells have the brand registered but analyze-aref-expression
+  ;;   skips instance differentiation for them (see Fix C).
+  ;;
+  ;; NOTE: index-t intentionally REMOVED from real cell to avoid package-symbol conflict
+  ;;   with fake-cell's index-t brand (CRISP.COMPILER::ULONG vs CRISP-LANGUAGE::ULONG).
+  (eval '(with-template-type ((To T) (Addr address-space :global) (Acc access :read-write))
+                             (def-record cell
+                                         (brand value-t To :subst :descendant :enforce :diff)
+                                         (parent (storage Addr))
+                                         (offset ulong)
+                                         (element-type type-spec :c-t To)
+                                         (address-space address-space :c-t Addr)
+                                         (access access :c-t Acc))))
+
+  ;; bytes~ helper: compile-time sizeof for cell element type.
+  (register-template 'bytes~ '(To (Addr address-space :global) (Acc access :read-write)) nil
+                     '(def-function bytes~ (c)
+                                    (declare (function ((cell To Addr Acc) => ulong)))
+                                    (declare (crisp-system-generated))
+                                    (return (sizeof To)))
+                     '((cell To Addr Acc) => ulong))
+
+  (log:info "Built-in structs registered."))
+
 (defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
@@ -330,9 +381,6 @@ This should be called by any entry point into the system (REPL, executable, CI).
   (setf *compiled-kernels* nil) ;; Reset compiled kernels list
 
   (initialize-expression-analyzers) ;; In analysis.lisp, but usually registered.
-  ;; Note: analysis.lisp initializes *expression-analyzers* entries via def-expression-analyzer.
-  ;; Wait, where is initialize-expression-analyzers defined?
-  ;; It is usually in analysis.lisp.
   (clrhash *implicit-arg-map*)
   (initialize-advisements)
 
@@ -354,41 +402,31 @@ This should be called by any entry point into the system (REPL, executable, CI).
   ;; Reset brand definitions
   (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
 
+  ;; Reset brand instance cache and brand instance type tracking.
+  ;; CRITICAL: must be cleared whenever *type-derivation-graph* is reset.
+  ;; Stale gensyms in the cache are no longer registered in the fresh graph,
+  ;; causing is-substitutable-for? to return NIL and crashing unmangle.
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+  (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+
+  ;; Clear partial template instantiations and their CL dispatch macros.
+  ;; When an incomplete struct template (one with unresolved :c-t fields) is
+  ;; instantiated, %instantiate-structure-template stores partial info in
+  ;; *partial-template-instantiations* AND installs a CL macro for MAKE-X%DISPATCH.
+  ;; initialize-templates only clears *template-registry* and *instantiated-templates*;
+  ;; it does NOT touch *partial-template-instantiations* or the CL macros.
+  ;; Without this cleanup, stale dispatch macros survive initialize-compiler and
+  ;; misdirect MAKE-X calls in subsequent tests.
+  (when (boundp '*partial-template-instantiations*)
+    (loop for template-name being the hash-keys of *partial-template-instantiations*
+          do (let ((dispatch-sym (intern (format nil "MAKE-~a%DISPATCH" template-name)
+                                         (symbol-package template-name))))
+               (when (macro-function dispatch-sym)
+                 (log:info "INITIALIZE-COMPILER: clearing stale CL dispatch macro ~a" dispatch-sym)
+                 ;; Use fmakunbound to remove the macro definition cleanly.
+                 ;; (setf (macro-function sym) nil) is not valid in SBCL.
+                 (fmakunbound dispatch-sym))))
+    (clrhash *partial-template-instantiations*))
+
   ;; Initialize built-in structs (storage)
   (register-builtins))
-
-(defun register-builtins ()
-  "Registers built-in types and structs like 'storage' using def-struct semantics."
-  ;; Register built-in structs like 'storage'
-  (log:info "Registering built-in structs...")
-
-  ;; Redefine STORAGE as a TEMPLATED RECORD (Register-based, passed by value)
-  ;; This replaces the old global-only storage.
-  ;; Now parameterized by AddressSpace (Addr).
-  (eval '(with-template-type ((Addr address-space :global))
-                             (def-record storage
-                                         (address (c-pointer :address-space Addr))
-                                         (byte-size ulong)
-                                         (address-space address-space :c-t Addr)
-                                         (access access :c-t :read-write))))
-
-  ;; Register CELL record template
-  ;; CELL is an opaque handle to a storage slice.
-  ;; It contains a pointer to the storage struct and an offset.
-  ;; It now tracks element-type, address-space, and access as compile-time properties.
-
-  (eval '(with-template-type ((To T) (Addr address-space :global) (Acc access :read-write))
-                             (def-record cell
-                                         (parent (storage Addr)) ;; Pointer to STORAGE struct (matching address space)
-                                         (offset ulong)
-                                         (element-type type-spec :c-t To)
-                                         (address-space address-space :c-t Addr)
-                                         (access access :c-t Acc))))
-
-  ;; Register bytes~ helper (sizeof T)
-  (register-template 'bytes~ '(To (Addr address-space :global) (Acc access :read-write)) nil
-                     '(def-function bytes~ (c)
-                                    (declare (function ((cell To Addr Acc) => ulong)))
-                                    (declare (crisp-system-generated))
-                                    (return (sizeof To)))
-                     '((cell To Addr Acc) => ulong)))

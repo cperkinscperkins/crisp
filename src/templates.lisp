@@ -18,6 +18,12 @@
   (body nil :type list) ; The full (def-function ...) form
   (signature nil :type list)) ; The declared signature, if any
 
+(defvar *partial-template-instantiations* (make-hash-table :test 'eq)
+  "Maps template name symbols to lists of partial instantiation plists.
+   Each plist has keys:
+     :partial-mangled-name - symbol for the partial concrete type (e.g. FAKE-CELL_INT)
+     :data-members         - ordered data-member specs (excluding brand forms)")
+
 
 (defun register-template (name params constraints body signature)
   "Registers a new template definition."
@@ -186,6 +192,28 @@
                          (setf (gethash ',name crisp.compiler::*crisp-template-aliases*)
                            (cons ',params ',type-spec)))))))))))
 
+
+
+(defun strip-keyword-labels (type-list template-params)
+  "Strips keyword LABEL pairs from a type specifier list, keeping keyword VALUES.
+   A keyword is treated as a label (and stripped) only when the element following
+   it is a template parameter.  Keyword values (concrete types like :global) are kept.
+   e.g. (fake-cell T :address-space addr :access acc) with params (T addr acc)
+        => (fake-cell T addr acc)
+   But  (cell T :global :read-write) with params (T)
+        => (cell T :global :read-write)  -- :global and :read-write are values, kept."
+  (let ((result nil))
+    (loop for (elem . rest) on type-list
+          do (cond
+              ;; Keyword followed by a template param = label. Skip the keyword.
+              ;; The template param itself will be collected on the next iteration.
+              ((and (keywordp elem)
+                    rest
+                    (member (car rest) template-params))
+               nil)
+              (t (push elem result))))
+    (nreverse result)))
+
 ;;; ----------------------------------------------------------------------------
 ;;; Template Instantiation Logic
 ;;; ----------------------------------------------------------------------------
@@ -221,8 +249,12 @@
         `(:function-type ,ret :params ,params))
       type))
 
+
+
 (defun match-template-arg (raw-sig-type arg-type inference-map template-params)
-  "Recursively matches sig-type against arg-type, updating inference-map."
+  "Recursively matches sig-type against arg-type, updating inference-map.
+   FIX: Resolves type aliases (e.g., FC-INT -> (FAKE-CELL INT ...)) before matching
+   list structures, so def-type aliases work with template inference."
   (let ((sig-type (normalize-template-sig-type raw-sig-type)))
     (cond
      ;; 1. Template Parameter (e.g. T)
@@ -233,20 +265,18 @@
              (progn (setf (gethash sig-type inference-map) arg-type) t))))
 
      ;; 2. Match Function Literal against a Function Type Pattern
-     ;; Special Case: Only if we are looking for a function type and find a literal func-name.
      ((and (listp sig-type) (eq (first sig-type) :function-type)
            (listp arg-type) (eq (first arg-type) :function-literal))
        (let* ((name (second arg-type))
               (signatures (gethash name *function-table*)))
          (loop for sig in signatures
-                 ;; Try to match this overload
                  when (match-function-signature sig-type sig inference-map template-params)
                  return t)))
 
-     ;; 3. Generic List Pattern - Handles (vector T) AND (:function-type ...)
+     ;; 3. Generic List Pattern
      ((listp sig-type)
        (or
-        ;; A. Dependent Type Match: (token-t s) matches token-t OR token-t-123 (gensym)
+        ;; A. Dependent Type Match
         (and (symbolp (first sig-type)) (symbolp arg-type)
              (let ((sig-name (symbol-name (first sig-type)))
                    (arg-name (symbol-name arg-type)))
@@ -257,14 +287,42 @@
 
         ;; B. Standard recursive list match
         (match-list-structure sig-type arg-type inference-map template-params)
-        ;; Unmangle struct names to lists for matching (e.g. CELL_FLOAT -> (CELL FLOAT ...))
+        ;; C. Unmangle struct names to lists for matching (e.g. CELL_FLOAT -> (CELL FLOAT ...))
+        ;;    Strip keyword labels from sig-type since mangled names are purely positional.
+        ;;    e.g. sig (fake-cell T :address-space addr :access acc) stripped to (fake-cell T addr acc)
+        ;;         matches unmangled (FAKE-CELL INT GLOBAL READ-WRITE)
         (and (symbolp arg-type)
-             (let ((unmangled (crisp.compiler::unmangle-template-struct-name arg-type)))
+             (let ((unmangled (unmangle-template-struct-name arg-type)))
                (when unmangled
-                     (match-list-structure sig-type unmangled inference-map template-params))))
-        ;; Check for Template Aliases (e.g. (out-c T) -> (cell T ...))
+                     (let ((stripped (strip-keyword-labels sig-type template-params)))
+                       (log:debug "match-template-arg unmangle path: sig=~s stripped=~s unmangled=~s"
+                                  sig-type stripped unmangled)
+                       (when (match-list-structure stripped unmangled inference-map template-params)
+                         ;; Post-process: mangling loses keyword-ness (format "~a" :GLOBAL => "GLOBAL").
+                         ;; For template params that were preceded by keyword labels in the original
+                         ;; sig-type, convert the inferred plain symbol back to a keyword.
+                         (loop for (elem . rest) on sig-type
+                               when (and (keywordp elem) rest (member (car rest) template-params))
+                               do (let* ((param (car rest))
+                                         (val (gethash param inference-map)))
+                                    (when (and val (symbolp val) (not (keywordp val)))
+                                      (log:debug "keywordify inferred param ~s: ~s => :~a" param val (symbol-name val))
+                                      (setf (gethash param inference-map)
+                                            (intern (symbol-name val) :keyword)))))
+                         t)))))
+
+        ;; D. Resolve type aliases and try matching (use raw resolved form, not canonical,
+        ;; to preserve keyword labels for element-by-element matching with sig-type)
+        ;; e.g., FC-INT -> (FAKE-CELL INT :ADDRESS-SPACE :GLOBAL :ACCESS :READ-WRITE)
+        (and (symbolp arg-type)
+             (let ((resolved (resolve-type-alias arg-type)))
+               (when (and resolved (not (eq resolved arg-type)) (listp resolved))
+                     (log:debug "Template match: resolved alias ~a -> ~a" arg-type resolved)
+                     (match-list-structure sig-type resolved inference-map template-params))))
+
+        ;; E. Check for Template Aliases (e.g. (out-c T) -> (cell T ...))
         (let ((alias-def (and (symbolp (first sig-type))
-                              (gethash (first sig-type) crisp.compiler::*crisp-template-aliases*))))
+                              (gethash (first sig-type) *crisp-template-aliases*))))
           (when alias-def
                 (let* ((alias-params (car alias-def))
                        (alias-body (cdr alias-def))
@@ -274,30 +332,28 @@
                        (rest-args (subseq args (length required-args)))
                        (substitutions (pairlis alias-params required-args))
                        (expanded-base (sublis substitutions alias-body))
-                       ;; If base expanded to a list, we append the rest args
                        (expanded-sig (if (and rest-args (consp expanded-base))
                                          (append expanded-base rest-args)
                                          expanded-base)))
-                  (match-template-arg (crisp.compiler::canonicalize-type-specifier expanded-sig) arg-type inference-map template-params))))))
+                  (match-template-arg (canonicalize-type-specifier expanded-sig) arg-type inference-map template-params))))))
 
-     ;; Check for Symbol Alias (e.g. out-c)
+     ;; 4. Check for Symbol Alias (e.g. out-c)
      ((and (symbolp sig-type)
-           (gethash sig-type crisp.compiler::*crisp-template-aliases*))
-       (let* ((alias-def (gethash sig-type crisp.compiler::*crisp-template-aliases*))
+           (gethash sig-type *crisp-template-aliases*))
+       (let* ((alias-def (gethash sig-type *crisp-template-aliases*))
               (alias-body (cdr alias-def)))
-         (match-template-arg (crisp.compiler::canonicalize-type-specifier alias-body) arg-type inference-map template-params)))
+         (match-template-arg (canonicalize-type-specifier alias-body) arg-type inference-map template-params)))
 
-     ;; 4. Concrete Type (int)
+     ;; 5. Concrete Type (int)
      (t (or (equal sig-type arg-type)
             (and (symbolp sig-type) (symbolp arg-type)
                  (string-equal (symbol-name sig-type) (symbol-name arg-type)))
 
             ;; Implicit Template Expansion: SERVER -> (SERVER T)
-            ;; Only if direct match fails.
             (and (symbolp sig-type)
-                 (gethash sig-type crisp.compiler::*template-registry*)
-                 (let* ((tmpl (first (gethash sig-type crisp.compiler::*template-registry*)))
-                        (params (mapcar (lambda (p) (if (consp p) (first p) p)) (crisp.compiler::template-data-parameters tmpl))))
+                 (gethash sig-type *template-registry*)
+                 (let* ((tmpl (first (gethash sig-type *template-registry*)))
+                        (params (mapcar (lambda (p) (if (consp p) (first p) p)) (template-data-parameters tmpl))))
                    (when params
                          (match-template-arg (cons sig-type params) arg-type inference-map template-params)))))))))
 
@@ -457,39 +513,93 @@
             (%instantiate-structure-template name body final-substitutions concrete-types)
             (%instantiate-callable-template name body final-substitutions override-name))))))
 
-(defun %instantiate-structure-template (name body substitutions concrete-types)
-  (let* ((mangled-name (crisp.compiler::mangle-template-struct-name name concrete-types))
-         (substituted-body (sublis substitutions (subst mangled-name name body)))
-         ;; Extract members from SUBSTITUTED body: (def-struct MANGLED-NAME (mem concrete-type)...)
-         (members (cddr substituted-body))
-         ;; Filter out (brand ...) forms
-         (data-members (remove-if (lambda (m) (and (consp m) (string-equal (symbol-name (car m)) "BRAND"))) members))
-         (all-parsed-members (mapcar #'crisp.compiler::parse-struct-member-spec data-members))
-         ;; Filter out compile-time members for the generated wrapper signature
-         (parsed-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t) (not (fourth m)))) all-parsed-members))
-         (param-names (mapcar #'first parsed-members))
-         ;; Use a UNIQUE wrapper name to avoid LLVM collisions if multiple overloads are generated
-         (wrapper-name (intern (format nil "MAKE-~a_WRAPPER" mangled-name) (symbol-package name)))
-         (constructor-alias (intern (format nil "MAKE-~a%DISPATCH" name) (symbol-package name)))
-         (mangled-constructor (intern (format nil "MAKE-~a" mangled-name) (symbol-package name)))
-         (keyword-args (loop for name in param-names
-                             collect (intern (symbol-name name) :keyword)
-                             collect name))
-         ;; Check for incomplete :c-t fields (no default value)
-         (incomplete-fields (remove-if-not (lambda (m) (and (consp m) (eq (third m) :c-t) (null (fourth m)))) all-parsed-members)))
-    `(progn
-      ,substituted-body
-      ;; Only generate runtime wrapper if all :c-t fields have defaults.
-      ;; If there are missing :c-t values, this type cannot be constructed via a runtime function.
-      ,@(unless incomplete-fields
-          `((def-function ,wrapper-name ,parsed-members
-                          (declare (return-type ,mangled-name))
-                          (return (,mangled-constructor ,@keyword-args)))))
 
-      ;; Register this wrapper as an overload (only if we generated it)
-      ,@(unless incomplete-fields
-          `((eval-when (:compile-toplevel :load-toplevel :execute)
-              (crisp.compiler::register-overload ',constructor-alias ',wrapper-name)))))))
+(defun %instantiate-structure-template (name body substitutions concrete-types)
+  "Instantiates a struct template with the given substitutions and concrete types.
+   For incomplete templates (those with :c-t fields lacking a default value), stores
+   partial instantiation info in *partial-template-instantiations* and installs a CL
+   macro for MAKE-X%DISPATCH so dispatch can complete the type at call-site expansion.
+   For complete templates, generates the wrapper def-function and registers the overload
+   as before."
+  (let* ((mangled-name       (mangle-template-struct-name name concrete-types))
+         (substituted-body   (sublis substitutions (subst mangled-name name body)))
+         (members            (cddr substituted-body))
+         (data-members       (remove-if (lambda (m)
+                                          (and (consp m)
+                                               (string-equal (symbol-name (car m)) "BRAND")))
+                                        members))
+         (all-parsed-members (mapcar #'parse-struct-member-spec data-members))
+         ;; Remove only INCOMPLETE :c-t fields (nil fourth) from the wrapper param list
+         (parsed-members     (remove-if (lambda (m)
+                                          (and (consp m) (eq (third m) :c-t) (not (fourth m))))
+                                        all-parsed-members))
+         (param-names        (mapcar #'first parsed-members))
+         (wrapper-name       (intern (format nil "MAKE-~a_WRAPPER" mangled-name)
+                                     (symbol-package name)))
+         (constructor-alias  (intern (format nil "MAKE-~a%DISPATCH" name)
+                                     (symbol-package name)))
+         (mangled-constructor (intern (format nil "MAKE-~a" mangled-name)
+                                      (symbol-package name)))
+         (keyword-args       (loop for pname in param-names
+                                   collect (intern (symbol-name pname) :keyword)
+                                   collect pname))
+         (incomplete-fields  (remove-if-not (lambda (m)
+                                              (and (consp m) (eq (third m) :c-t) (null (fourth m))))
+                                            all-parsed-members)))
+    ;; Side-effect: for incomplete types, store partial info and install dispatch macro
+    (when incomplete-fields
+      (log:info "INSTANTIATE-STRUCT-TEMPLATE: ~a is incomplete (missing CT: ~a), storing partial"
+                mangled-name (mapcar #'first incomplete-fields))
+      (push (list :partial-mangled-name mangled-name
+                  :data-members         data-members)
+            (gethash name *partial-template-instantiations*))
+      ;; Install MAKE-X%DISPATCH as a CL macro (once per template name)
+      (unless (macro-function constructor-alias)
+        (let ((tname name))
+          (setf (macro-function constructor-alias)
+                (lambda (whole-form env)
+                  (declare (ignore env))
+                  (%dispatch-incomplete-template tname (rest whole-form)))))))
+    `(progn
+       ,substituted-body
+       ;; Wrapper + overload registration only for complete types
+       ,@(unless incomplete-fields
+           `((def-function ,wrapper-name ,parsed-members
+                           (declare (return-type ,mangled-name))
+                           (return (,mangled-constructor ,@keyword-args)))
+             (eval-when (:compile-toplevel :load-toplevel :execute)
+               (register-overload ',constructor-alias ',wrapper-name)))))))
+
+
+
+
+
+(defun %dispatch-incomplete-template (template-name all-args)
+  "Called at CL macro expansion time when MAKE-X%DISPATCH expands for an incomplete
+   struct template. Maps positional args back to keyword args and calls the partial
+   struct's constructor with all values (including the required incomplete CT ones).
+   Returns a direct constructor call whose result type is the partial mangled type
+   (e.g. FAKE-CELL_INT), preserving correct arity for template function resolution."
+  (let* ((partials (gethash template-name *partial-template-instantiations*))
+         (partial  (or (first partials)
+                       (error "DISPATCH-INCOMPLETE: No partial instantiation for ~a" template-name)))
+         (partial-mangled  (getf partial :partial-mangled-name))
+         (data-members     (getf partial :data-members))
+         ;; Constructor for the partial type (e.g. MAKE-FAKE-CELL_INT)
+         (constructor-name (intern (format nil "MAKE-~a" partial-mangled)
+                                   (symbol-package template-name)))
+         ;; Map positional args back to keyword args using data-member names
+         (keyword-call-args
+           (loop for m in data-members
+                 for i from 0
+                 for member-name = (first m)
+                 for kw = (intern (symbol-name member-name) :keyword)
+                 when (< i (length all-args))
+                 collect kw
+                 and collect (nth i all-args))))
+    (log:info "DISPATCH-INCOMPLETE: ~a -> ~a with keyword args ~a"
+              template-name constructor-name keyword-call-args)
+    `(,constructor-name ,@keyword-call-args)))
 
 (defun %instantiate-callable-template (name body substitutions override-name)
   (let ((substituted-body (sublis substitutions body)))

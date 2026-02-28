@@ -13,5 +13,5 @@
              (type l (cell int :address-space :local :access :read-write))
              (type gc (cell int :address-space :global :access :read-write)))
     (set! (~ l) 17) ;; setup local
-    (set! (~ gc) (+ (~ g) (~ l))))
+    (set! (~ gc)  (~ l)))
 

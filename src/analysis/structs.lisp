@@ -1,11 +1,20 @@
 ;;; src/analysis/structs.lisp
 (in-package :crisp.compiler)
 
+
 (defun get-array-element-type (type)
-  "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown."
+  "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.
+   FIX: Only return element type for known array-like types (cell, vector, matrix, tensor, ptr, array),
+   not for arbitrary parameterized struct types like (fake-cell int ...)."
   (let ((type (resolve-type-alias type)))
     (cond
-     ((listp type) (second type)) ;; e.g. (ptr float), (array float 10)
+     ((listp type)
+       ;; Only treat as array-like if the base is a known array/cell type
+       (let ((base (first type)))
+         (if (and (symbolp base)
+                  (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR" "PTR" "ARRAY" "POINTER") :test #'string-equal))
+             (second type)
+             nil)))
      ((symbolp type)
        ;; Check if it is a Mangled Cell
        (let ((unmangled (unmangle-template-struct-name type)))
@@ -65,7 +74,9 @@
 (defun analyze-struct-construction (expr env context location)
   "Analyzes a (%construct-struct type-name arg1 arg2 ...) form.
    Supports implicit promotion of base-type values to branded member types
-   in struct constructors (the birthplace of branded values)."
+   in struct constructors (the birthplace of branded values).
+   Uses get-single-value-type to normalize function-call return type lists
+   (e.g. ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)) before type comparison."
   (let* ((type-name (second expr))
          (args (cddr expr))
          (struct-def (lookup-struct-definition type-name)))
@@ -86,34 +97,39 @@
                    for i from 0
                    collect (let ((node (analyze-expression arg env context (append location (list (+ 2 i)))))
                                  (expected-type (second member)))
-                             ;; Type check with branded type promotion
-                             (unless (type-equal-p (semantic-node-type node) expected-type)
-                               (cl:let ((brand-def (is-brand-type-p expected-type)))
-                                 (if brand-def
-                                     ;; Branded member: check numeric compatibility with base type
-                                     (cl:let* ((base-type (brand-definition-base-type brand-def))
-                                               (arg-cat (numeric-type-category (semantic-node-type node)))
-                                               (base-cat (numeric-type-category base-type)))
-                                       (if (and arg-cat base-cat)
-                                           ;; Compatible numeric types - wrap in a value cast to the base type
-                                           (progn
-                                            (log:debug "Constructor promotion: ~a -> ~a (base ~a) for member ~a"
-                                                       (semantic-node-type node) expected-type base-type (first member))
-                                            (setf node (make-semantic-value-cast
-                                                        :type base-type
-                                                        :arg node
-                                                        :source-location (append location (list (+ 2 i))))))
-                                           ;; Not numeric-compatible
-                                           (error 'crisp-type-error
-                                             :expected expected-type
-                                             :inferred (semantic-node-type node)
-                                             :source-location location)))
-                                     ;; Not a branded member -> real type error
-                                     (error 'crisp-type-error
-                                       :expected expected-type
-                                       :inferred (semantic-node-type node)
-                                       :source-location location))))
-                             node))))
+                             ;; get-single-value-type unwraps ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)
+                             ;; for function-call nodes whose semantic-call-type is a return-types list
+                             (let ((arg-type (get-single-value-type node)))
+                               (log:debug "STRUCT-CTOR ~a member ~a: arg-type=~a expected=~a"
+                                          type-name (first member) arg-type expected-type)
+                               ;; Type check with branded type promotion
+                               (unless (type-equal-p arg-type expected-type)
+                                 (cl:let ((brand-def (is-brand-type-p expected-type)))
+                                   (if brand-def
+                                       ;; Branded member: check numeric compatibility with base type
+                                       (cl:let* ((base-type (brand-definition-base-type brand-def))
+                                                 (arg-cat (numeric-type-category arg-type))
+                                                 (base-cat (numeric-type-category base-type)))
+                                         (if (and arg-cat base-cat)
+                                             ;; Compatible numeric types - wrap in a value cast to the base type
+                                             (progn
+                                              (log:debug "Constructor promotion: ~a -> ~a (base ~a) for member ~a"
+                                                         arg-type expected-type base-type (first member))
+                                              (setf node (make-semantic-value-cast
+                                                          :type base-type
+                                                          :arg node
+                                                          :source-location (append location (list (+ 2 i))))))
+                                             ;; Not numeric-compatible
+                                             (error 'crisp-type-error
+                                               :expected expected-type
+                                               :inferred arg-type
+                                               :source-location location)))
+                                       ;; Not a branded member -> real type error
+                                       (error 'crisp-type-error
+                                         :expected expected-type
+                                         :inferred arg-type
+                                         :source-location location))))
+                               node)))))
 
         (make-semantic-struct-construction
          :type type-name
@@ -213,6 +229,21 @@
 
 
 (defun analyze-aref-expression (expr env context location)
+  "Analyzes a cell dereference expression (~ cell-var [index]).
+   For real cell types with an active value-t brand and a known target-sym,
+   returns a per-instance gensym type instead of the raw element type, so that
+   arithmetic across different cell variables is blocked by resolve-dominance
+   when --differentiate is active.
+
+   Brand tracking is ONLY applied for :read-write cells.  :read-only and
+   :write-only cells skip brand tracking (their owner struct name does not
+   contain 'READ-WRITE'), preserving the behaviour of pre-branding kernels
+   that use read-only cells for constants and non-differentiated inputs.
+
+   Passes elem-type to resolve-brand-type as optional BASE-TYPE so that
+   parameterised brands (value-t appearing with multiple element types in the
+   same compilation) still produce gensyms that are substitutable for the
+   concrete element type in return-type checks."
   (let* ((op (first expr))
          (target-sym (if (symbolp (second expr)) (second expr) nil))
          (array-node (analyze-expression (second expr) env context (append location '(1))))
@@ -244,11 +275,30 @@
            (when is-void
                  (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
 
-         (make-semantic-aref :type elem-type
-                             :array-node array-node
-                             :index-node index-node
-                             :source-location location))
-        ;; Fallback: If not an array/pointer, and op is ~, try to treat as overloadable function call
+         ;; Brand-aware type resolution for --differentiate mode.
+         ;; Only applies to :read-write cell types.  The owner struct name encodes
+         ;; the access mode (e.g., CELL_INT_GLOBAL_READ-WRITE vs READ-ONLY).
+         ;; Read-only / write-only cells fall through to plain elem-type.
+         (let* ((cell-type (semantic-node-type array-node))
+                (brand-def (and target-sym
+                                (not (eq *analysis-access-mode* :write))
+                                (find-brand-for-owner 'value-t cell-type)))
+                ;; Check that the owning cell struct is :read-write (not :read-only/:write-only)
+                (is-rw-cell (and brand-def
+                                 (let ((owner (brand-definition-owner-struct brand-def)))
+                                   (and (symbolp owner)
+                                        (search "READ-WRITE" (symbol-name owner))))))
+                (resolved-type (if (and is-rw-cell (brand-active-p brand-def))
+                                   (progn
+                                     (log:info "AREF: brand-aware read (~a) -> resolve-brand-type value-t ~a [elem: ~a]"
+                                               cell-type target-sym elem-type)
+                                     (resolve-brand-type 'value-t target-sym elem-type))
+                                   elem-type)))
+           (make-semantic-aref :type resolved-type
+                               :array-node array-node
+                               :index-node index-node
+                               :source-location location)))
+        ;; Fallback: If not an array/pointer, and op is ~, try as overloadable function call
         (let ((op-name (symbol-name op)))
           (if (or (string= op-name "~") (string= op-name "~REF~"))
               (analyze-function-call op expr env context location)

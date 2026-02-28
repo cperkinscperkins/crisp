@@ -5,10 +5,10 @@
 ;;; Environment & Declaration Parsing
 ;;; =========================================================
 
-
 (defun parse-function-declarations (params declarations)
   "Parses a function's declarations and returns its environment and return type.
-   Supports interleaved type syntax: ((p type))"
+   Supports interleaved type syntax: ((p type)).
+   Post-processes return types to resolve parameterized brand applications."
   (log:debug "PARSE PARAMS: ~s Type: ~a Length: ~a" params (type-of params) (length params))
 
   ;; Defensive patch: unwrap double nested params (bug in def-record)
@@ -38,7 +38,6 @@
      ;; Case 2: Interleaved syntax ((a int) (b float))
      ((some #'listp params)
        (log:debug "PARSE CASE 2: Interleaved syntax detected. Params: ~s" params)
-       ;; TODO: Support &optional in interleaved syntax if needed.
        (setf env (loop for p in params
                        collect (if (listp p)
                                    (progn
@@ -55,6 +54,20 @@
      (t
        (log:debug "PARSE CASE 3: Standard declarations. Params: ~s" params)
        (setf env (analyze-environment-from-list params declarations))))
+
+    ;; Post-process: resolve parameterized brand applications in return types.
+    ;; A parameterized brand application looks like (BRAND-NAME VAR-REF) where
+    ;; BRAND-NAME is in *parameterized-brand-names*. We resolve it using the
+    ;; environment to find the variable's owner type and the per-owner base type.
+    (when env
+      (setf return-types
+            (mapcar (lambda (rt)
+                      (if (and (listp rt) (= (length rt) 2)
+                               (symbolp (first rt)) (symbolp (second rt))
+                               (gethash (first rt) *parameterized-brand-names*))
+                          (resolve-parameterized-brand-in-env rt env)
+                          rt))
+                    return-types)))
 
     (values env return-types optional-idx defaults key-idx)))
 
@@ -345,46 +358,70 @@
                      (when all-implicits
                            (setf (gethash name *implicit-arg-map*) all-implicits)))))))))
 
+
 (defun detect-and-register-implicit-template (name explicit-env return-type params body declarations)
-  "Detects if a function is an implicit template (e.g. has function-type args),
-   and if so, registers it as a template and returns T. Otherwise returns NIL."
-  (when (or (find 'crisp-system-generated body :key (lambda (x) (if (listp x) (car x) x)) :test #'eq)
-            (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)) :test #'eq))
+  "Detects if a function is an implicit template (e.g. has function-type args
+   or incomplete-type parameters), and if so registers it as a template and
+   returns T.  Otherwise returns NIL.
+
+   A type is treated as incomplete only if incomplete-type-p says so AND the
+   type is NOT a mangled/instantiated concrete struct (i.e. its name contains
+   an underscore AND has a registered struct definition).  Bare base names such
+   as PANTS and SHIRT have no underscore and remain eligible as implicit
+   template parameters even though they are in *crisp-structs*."
+  (when (or (find 'crisp-system-generated body
+                  :key (lambda (x) (if (listp x) (car x) x)) :test #'eq)
+            (find 'crisp-system-generated declarations
+                  :key (lambda (x) (if (listp x) (car x) x)) :test #'eq))
         (return-from detect-and-register-implicit-template nil))
 
-  (let ((implicit-args (loop for p in explicit-env
-                             for pname = (parameter-def-name p)
-                             for ptype = (parameter-def-type p)
-                               when (or (and (listp ptype) (eq (first ptype) :function-type))
-                                        (incomplete-type-p ptype))
-                             collect p)))
+  (let ((implicit-args
+          (loop for p in explicit-env
+                for pname = (parameter-def-name p)
+                for ptype = (parameter-def-type p)
+                  when (or (and (listp ptype) (eq (first ptype) :function-type))
+                           ;; Only exclude as complete if it is a MANGLED concrete type.
+                           ;; Mangled instantiated types (FAKE-CELL_INT, SHIRT_INT_...) have '_'
+                           ;; in their name.  Bare template/base names (PANTS, SHIRT) do not,
+                           ;; so they remain incomplete and eligible as implicit template params.
+                           (and (incomplete-type-p ptype)
+                                (not (and (symbolp ptype)
+                                          (cl:find #\_ (cl:symbol-name ptype))
+                                          (find-struct-definition-by-name ptype)))))
+                collect p)))
     (when implicit-args
           (log:info "Detected implicit template candidates in function ~a: ~a" name implicit-args)
           ;; REMOVE from function table because register-function-signature already put it there!
           (remhash name *function-table*)
 
           ;; Convert to template
-          (let* ((template-params (loop for i from 0 repeat (length implicit-args) collect (intern (format nil "<IMPLICIT-F-~a>" i))))
-                 (subst-map (loop for p in implicit-args
-                                  for tparam in template-params
-                                  collect (cons (parameter-def-name p) tparam)))
-                 ;; Reconstruct environment with template params
-                 (new-env (loop for p in explicit-env
-                                collect (let ((match (assoc (parameter-def-name p) subst-map)))
-                                          (if match
-                                              (make-parameter-def
-                                               :name (parameter-def-name p)
-                                               :type (cdr match)
-                                               :kind (parameter-def-kind p)
-                                               :is-optional (parameter-def-is-optional p)
-                                               :is-key (parameter-def-is-key p)
-                                               :default-value (parameter-def-default-value p)
-                                               :source-location (parameter-def-source-location p))
-                                              p))))
+          (let* ((template-params
+                   (loop for i from 0 repeat (length implicit-args)
+                         collect (intern (format nil "<IMPLICIT-F-~a>" i))))
+                 (subst-map
+                   (loop for p in implicit-args
+                         for tparam in template-params
+                         collect (cons (parameter-def-name p) tparam)))
+                 ;; Reconstruct environment with template params substituted in
+                 (new-env
+                   (loop for p in explicit-env
+                         collect (let ((match (assoc (parameter-def-name p) subst-map)))
+                                   (if match
+                                       (make-parameter-def
+                                        :name (parameter-def-name p)
+                                        :type (cdr match)
+                                        :kind (parameter-def-kind p)
+                                        :is-optional (parameter-def-is-optional p)
+                                        :is-key (parameter-def-is-key p)
+                                        :default-value (parameter-def-default-value p)
+                                        :source-location (parameter-def-source-location p))
+                                       p))))
                  ;; Construct signature for inference
-                 (signature-list (append (mapcar #'parameter-def-type new-env) '(=>) return-type))
-                 ;; Reconstruct body form using signature
-                 (new-def-form `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
+                 (signature-list
+                   (append (mapcar #'parameter-def-type new-env) '(=>) return-type))
+                 ;; Reconstruct the def-function form for the template registry
+                 (new-def-form
+                   `(def-function ,name ,params (declare (function ,signature-list)) ,@body)))
 
             (log:info "Registering implicit template ~a with params ~a" name template-params)
             (register-template name template-params nil new-def-form signature-list)
@@ -398,10 +435,9 @@
   (cond
    ;; 0. Type Aliases -- FIX: Use resolve-type-alias for cycle detection
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
-     ;; Validate cycle but return alias to preserve it for metadata
      (let ((resolved (resolve-type-alias spec)))
-       (valid-type-p resolved) ;; Force instantiation of underlying template
-       spec)) ;; Return alias, NOT resolved
+       (valid-type-p resolved)
+       spec))
 
    ;; 0.1 Template Aliases (e.g. (in-cell int))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
@@ -417,15 +453,12 @@
        (let ((expanded (sublis substitutions body-spec)))
          (let ((final-spec (if (and rest-args (consp expanded))
                                (append expanded rest-args)
-                               (if rest-args ;; Fix if expanded is atom but more args exist
+                               (if rest-args
                                    (cons expanded rest-args)
                                    expanded))))
            (parse-type-specifier final-spec)))))
 
    ;; 0.15 Brand Type Application: (brand-name var-ref)
-   ;; e.g. (token-t s) where token-t is a brand declared in a struct.
-   ;; Must come BEFORE the alias-as-list-head branch because inactive brands
-   ;; are registered as type aliases and would be incorrectly expanded.
    ((and (listp spec)
          (= (length spec) 2)
          (symbolp (first spec))
@@ -434,22 +467,25 @@
      (cl:let* ((brand-name (first spec))
                (var-ref (second spec))
                (brand-def (is-brand-type-p brand-name)))
-       ;; Always resolve to the brand type name.
-       ;; When active: brand-name is a proper derived type in the DAG.
-       ;; When inactive: brand-name is a type alias (transparent erasure).
-       ;; Either way, returning the symbol is correct and consistent with
-       ;; how parse-type-specifier handles aliases (branch 0 returns alias, not resolved).
-       (log:info "PARSE: Brand type application (~a ~a) -> ~a [~a]"
-                 brand-name var-ref brand-name
-                 (if (brand-active-p brand-def) "active" "inactive"))
-       brand-name))
+       (if (gethash brand-name *parameterized-brand-names*)
+           ;; Parameterized brand: keep as (brand-name var-ref) for lazy resolution
+           ;; in parse-function-declarations where we have the environment.
+           (progn
+             (log:info "PARSE: Parameterized brand application (~a ~a) - deferring resolution"
+                       brand-name var-ref)
+             spec)
+           ;; Non-parameterized brand: resolve to brand name (original behavior)
+           (progn
+             (log:info "PARSE: Brand type application (~a ~a) -> ~a [~a]"
+                       brand-name var-ref brand-name
+                       (if (brand-active-p brand-def) "active" "inactive"))
+             brand-name))))
 
    ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
      (let* ((alias-name (first spec))
             (args (rest spec))
             (expanded-base (gethash alias-name *crisp-type-aliases*)))
-       ;; If alias expands to a list, append args. If symbol, make a new list.
        (let ((final-spec (if (listp expanded-base)
                              (append expanded-base args)
                              (cons expanded-base args))))
@@ -486,11 +522,16 @@
    ((and (listp spec) (valid-function-type-p spec)) spec)
 
    ;; Generic Parameterized Type: e.g. '(point float)
+   ;; FIX: Strip keyword labels when present (more args than template arity)
    ((and (listp spec) (valid-type-p spec))
      (log:info "PARSE: Generic path for ~s" spec)
      (let* ((base (first spec))
-            (params (rest spec))
-            (arity (get-template-arity base)))
+            (raw-params (rest spec))
+            (arity (get-template-arity base))
+            ;; Strip keyword labels if more args than arity
+            (params (if (and arity (> (length raw-params) arity))
+                        (extract-positional-from-keyword-args raw-params arity)
+                        raw-params)))
        (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
          (if (and arity (> arity 0))
              (mangle-template-struct-name base resolved-params)

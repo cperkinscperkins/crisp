@@ -130,11 +130,10 @@
     (t (error "Template argument mismatch for ~a. Expected type ~a, got ~a (~a)"
          name type arg (type-of arg)))))
 
+
+
 (defun canonicalize-type-specifier (spec)
   "Canonicalizes type specifiers."
-
-  ;; DEBUG LOGGING
-  ;; (when (symbolp spec) (format *error-output* "[canonicalize] Processing symbol: ~a~%" spec))
 
   ;; First, apply storage handle expansion
   (cl:when (consp spec)
@@ -165,10 +164,10 @@
                          (cl:if args
                                 (canonicalize-type-specifier (append (cl:if (consp type-spec) type-spec (list type-spec)) args))
 
-                                ;; FIX: Use resolve-type-alias cycle detection here! 
+                                ;; FIX: Use resolve-type-alias cycle detection here!
                                 (cl:let ((resolved (resolve-type-alias base)))
                                   (cl:if (equal resolved base)
-                                         ;; Cycle detected (A->A), return base as canonical 
+                                         ;; Cycle detected (A->A), return base as canonical
                                          (progn
                                           (log:warn "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base." base)
                                           (list base))
@@ -180,10 +179,13 @@
                           (raw-params (and template-data (template-data-parameters template-data))))
                   (cl:if raw-params
                          (cl:let* ((parsed-params (mapcar #'parse-template-parameter-spec raw-params))
+                                   ;; FIX: Strip keyword labels when args has more items than params
+                                   ;; e.g. (INT :address-space :GLOBAL :access :READ-WRITE) => (INT :GLOBAL :READ-WRITE)
+                                   (clean-args (extract-positional-from-keyword-args args (length parsed-params)))
                                    (full-args (cl:loop for (p-name p-type p-default) in parsed-params
                                               for i from 0
-                                              for arg = (if (< i (length args))
-                                                            (nth i args)
+                                              for arg = (if (< i (length clean-args))
+                                                            (nth i clean-args)
                                                             (or p-default
                                                                 (error "Missing required type argument for template ~a: ~a (index ~d)" base p-name i)))
                                               do (validate-template-arg arg p-type p-name)
@@ -197,7 +199,9 @@
 
 
 (defun types-equivalent-p (t1 t2)
-  "Checks if two types are equivalent, with alias resolution and template handling."
+  "Checks if two types are equivalent, with alias resolution and template handling.
+   FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels
+   before mangling comparison. This supports def-type aliases for any template type."
   ;; Resolve aliases FIRST, then run all other checks on resolved types
   (cl:let ((t1 (resolve-type-alias t1))
            (t2 (resolve-type-alias t2)))
@@ -210,10 +214,9 @@
            (and (null t1) (symbolp t2) (string-equal t2 "VOID")))
        t)
       ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT
+      ;; FIX: Always canonicalize, not just for CELL - handles keyword label stripping
       ((and (consp t1) (symbolp t2))
-       (let* ((expanded (if (member (symbol-name (cl:first t1)) '("CELL") :test #'string-equal)
-                            (canonicalize-type-specifier t1)
-                            t1))
+       (let* ((expanded (canonicalize-type-specifier t1))
               (base-type (cl:first expanded))
               (params (rest expanded)))
          (if (and (symbolp base-type)
@@ -242,13 +245,10 @@
       ((and (symbolp t1) (consp t2))
        (types-equivalent-p t2 t1))
       ;; Parameterized struct vs parameterized struct
+      ;; FIX: Always canonicalize both sides
       ((and (cl:consp t1) (cl:consp t2))
-       (cl:let ((e1 (cl:if (cl:member (cl:symbol-name (cl:first t1)) '("CELL") :test #'cl:string-equal)
-                           (canonicalize-type-specifier t1)
-                           t1))
-                (e2 (cl:if (cl:member (cl:symbol-name (cl:first t2)) '("CELL") :test #'cl:string-equal)
-                           (canonicalize-type-specifier t2)
-                           t2)))
+       (cl:let ((e1 (canonicalize-type-specifier t1))
+                (e2 (canonicalize-type-specifier t2)))
          (cl:equal e1 e2)))
       ;; Keyword vs Enum
       ((and (or (member t1 '(keyword :keyword symbol common-lisp:symbol))
@@ -622,3 +622,42 @@
                       nil)))))
            nil))) ;; Not a symbol base?
     (t nil)))
+
+
+
+(defun extract-positional-from-keyword-args (args num-params)
+  "Extract NUM-PARAMS positional template args from ARGS when (length ARGS) > NUM-PARAMS.
+
+   Two conventions are supported:
+   1. Labeled style: (:label value) pairs identify template params by a descriptive name.
+      e.g. (int :address-space :global :access :read-write) with arity 3
+           => (int :global :read-write)
+   2. Positional+c-t style: first NUM-PARAMS args are positional template args;
+      any remaining args are compile-time field overrides handled elsewhere.
+      e.g. (int :blue :stitching-c :black) with arity 2
+           => (int :blue)
+
+   Disambiguation: label-strip the entire list.  If the result has exactly
+   NUM-PARAMS elements, the labeled convention was used and that result is
+   returned.  Otherwise the positional+c-t convention was used and the first
+   NUM-PARAMS elements of ARGS are returned unchanged."
+  (if (<= (length args) num-params)
+      args
+      ;; Try label-stripping the full arg list.
+      (let* ((stripped
+               (cl:let ((result nil)
+                     (remaining args))
+                 (loop while remaining
+                       for item = (pop remaining)
+                       do (if (and (keywordp item) remaining)
+                              ;; Keyword label: skip label, push next item as value
+                              (push (pop remaining) result)
+                              ;; Non-keyword (or trailing keyword): push as positional
+                              (push item result)))
+                 (nreverse result))))
+        (if (= (length stripped) num-params)
+            ;; Label-stripping produced the right count -> labeled convention
+            stripped
+            ;; Label-stripping gave wrong count -> positional+c-t convention;
+            ;; take only the first num-params args as template args.
+            (subseq args 0 num-params)))))

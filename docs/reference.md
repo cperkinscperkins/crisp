@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-02-14T05:21:24.063803Z
+Generated on 2026-02-28T04:57:45.267383Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -56,7 +56,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `ANALYZE-RETURN-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(return ...)` expression.
+  > Analyzes a `(return ...)` expression.  >    FIX: A 1-element list whose sole element is a symbol (e.g. (INDEX-T)) is always  >    treated as a return-types list, not a parameterized type. This mirrors the fix  >    in validate-return-types.
 
 
 ---
@@ -402,7 +402,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `ANALYZE-GENERIC-AS-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes the generic (as type value) form.
+  > Analyzes the generic (as type value) form.  >    Extended to handle brand application forms like (index-t fc) where  >    index-t is a brand, resolving to the concrete target type before validation.
 
 
 ---
@@ -428,7 +428,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
 - **Args**: `(TYPE)`
 
-  > Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.
+  > Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.  >    FIX: Only return element type for known array-like types (cell, vector, matrix, tensor, ptr, array),  >    not for arbitrary parameterized struct types like (fake-cell int ...).
 
 
 ---
@@ -449,7 +449,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `ANALYZE-STRUCT-CONSTRUCTION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a (%construct-struct type-name arg1 arg2 ...) form.  >    Supports implicit promotion of base-type values to branded member types  >    in struct constructors (the birthplace of branded values).
+  > Analyzes a (%construct-struct type-name arg1 arg2 ...) form.  >    Supports implicit promotion of base-type values to branded member types  >    in struct constructors (the birthplace of branded values).  >    Uses get-single-value-type to normalize function-call return type lists  >    (e.g. ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)) before type comparison.
 
 
 ---
@@ -469,6 +469,9 @@ Generated on 2026-02-14T05:21:24.063803Z
 ---
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes a cell dereference expression (~ cell-var [index]).  >    For real cell types with an active value-t brand and a known target-sym,  >    returns a per-instance gensym type instead of the raw element type, so that  >    arithmetic across different cell variables is blocked by resolve-dominance  >    when --differentiate is active.  >   >    Brand tracking is ONLY applied for :read-write cells.  :read-only and  >    :write-only cells skip brand tracking (their owner struct name does not  >    contain 'READ-WRITE'), preserving the behaviour of pre-branding kernels  >    that use read-only cells for constants and non-differentiated inputs.  >   >    Passes elem-type to resolve-brand-type as optional BASE-TYPE so that  >    parameterised brands (value-t appearing with multiple element types in the  >    same compilation) still produce gensyms that are substitutable for the  >    concrete element type in return-type checks.
+
 
 ---
 ### DEFUN `ANALYZE-SET!-EXPRESSION`
@@ -806,16 +809,16 @@ Generated on 2026-02-14T05:21:24.063803Z
 
 
 ---
+### DEFUN `REGISTER-BUILTINS`
+
+  > Registers built-in types and structs like 'storage' and 'cell' using def-struct  >    semantics.  Cell carries the value-t brand for --differentiate mode.
+
+
+---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
 
   > A master initialization function for the Crisp compiler.  > This should be called by any entry point into the system (REPL, executable, CI).
-
-
----
-### DEFUN `REGISTER-BUILTINS`
-
-  > Registers built-in types and structs like 'storage' using def-struct semantics.
 
 
 ---
@@ -844,7 +847,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `PARSE-FUNCTION-DECLARATIONS`
 - **Args**: `(PARAMS DECLARATIONS)`
 
-  > Parses a function's declarations and returns its environment and return type.  >    Supports interleaved type syntax: ((p type))
+  > Parses a function's declarations and returns its environment and return type.  >    Supports interleaved type syntax: ((p type)).  >    Post-processes return types to resolve parameterized brand applications.
 
 
 ---
@@ -945,7 +948,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `DETECT-AND-REGISTER-IMPLICIT-TEMPLATE`
 - **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)`
 
-  > Detects if a function is an implicit template (e.g. has function-type args),  >    and if so, registers it as a template and returns T. Otherwise returns NIL.
+  > Detects if a function is an implicit template (e.g. has function-type args  >    or incomplete-type parameters), and if so registers it as a template and  >    returns T.  Otherwise returns NIL.  >   >    A type is treated as incomplete only if incomplete-type-p says so AND the  >    type is NOT a mangled/instantiated concrete struct (i.e. its name contains  >    an underscore AND has a registered struct definition).  Bare base names such  >    as PANTS and SHIRT have no underscore and remain eligible as implicit  >    template parameters even though they are in *crisp-structs*.
 
 
 ---
@@ -1586,7 +1589,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `UNMANGLE-TEMPLATE-STRUCT-NAME`
 - **Args**: `(SYMBOL)`
 
-  > Attempts to reverse mangling for known parameterized types like CELL.  >    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.
+  > Attempts to reverse mangling for known parameterized types like CELL.  >    Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.  >    Returns NIL immediately for uninterned symbols (gensyms produced by  >    brand instance differentiation) since they cannot be mangled struct names.
 
 
 ---
@@ -2158,6 +2161,12 @@ Generated on 2026-02-14T05:21:24.063803Z
 
 
 ---
+### DEFVAR `*PARTIAL-TEMPLATE-INSTANTIATIONS*`
+
+  > Maps template name symbols to lists of partial instantiation plists.  >    Each plist has keys:  >      :partial-mangled-name - symbol for the partial concrete type (e.g. FAKE-CELL_INT)  >      :data-members         - ordered data-member specs (excluding brand forms)
+
+
+---
 ### DEFUN `REGISTER-TEMPLATE`
 - **Args**: `(NAME PARAMS CONSTRAINTS BODY SIGNATURE)`
 
@@ -2186,6 +2195,13 @@ Generated on 2026-02-14T05:21:24.063803Z
 
 
 ---
+### DEFUN `STRIP-KEYWORD-LABELS`
+- **Args**: `(TYPE-LIST TEMPLATE-PARAMS)`
+
+  > Strips keyword LABEL pairs from a type specifier list, keeping keyword VALUES.  >    A keyword is treated as a label (and stripped) only when the element following  >    it is a template parameter.  Keyword values (concrete types like :global) are kept.  >    e.g. (fake-cell T :address-space addr :access acc) with params (T addr acc)  >         => (fake-cell T addr acc)  >    But  (cell T :global :read-write) with params (T)  >         => (cell T :global :read-write)  -- :global and :read-write are values, kept.
+
+
+---
 ### DEFUN `GET-TEMPLATE-SIGNATURE`
 - **Args**: `(NAME CONCRETE-TYPES)`
 
@@ -2203,7 +2219,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `MATCH-TEMPLATE-ARG`
 - **Args**: `(RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)`
 
-  > Recursively matches sig-type against arg-type, updating inference-map.
+  > Recursively matches sig-type against arg-type, updating inference-map.  >    FIX: Resolves type aliases (e.g., FC-INT -> (FAKE-CELL INT ...)) before matching  >    list structures, so def-type aliases work with template inference.
 
 
 ---
@@ -2230,6 +2246,16 @@ Generated on 2026-02-14T05:21:24.063803Z
 ---
 ### DEFUN `%INSTANTIATE-STRUCTURE-TEMPLATE`
 - **Args**: `(NAME BODY SUBSTITUTIONS CONCRETE-TYPES)`
+
+  > Instantiates a struct template with the given substitutions and concrete types.  >    For incomplete templates (those with :c-t fields lacking a default value), stores  >    partial instantiation info in *partial-template-instantiations* and installs a CL  >    macro for MAKE-X%DISPATCH so dispatch can complete the type at call-site expansion.  >    For complete templates, generates the wrapper def-function and registers the overload  >    as before.
+
+
+---
+### DEFUN `%DISPATCH-INCOMPLETE-TEMPLATE`
+- **Args**: `(TEMPLATE-NAME ALL-ARGS)`
+
+  > Called at CL macro expansion time when MAKE-X%DISPATCH expands for an incomplete  >    struct template. Maps positional args back to keyword args and calls the partial  >    struct's constructor with all values (including the required incomplete CT ones).  >    Returns a direct constructor call whose result type is the partial mangled type  >    (e.g. FAKE-CELL_INT), preserving correct arity for template function resolution.
+
 
 ---
 ### DEFUN `%INSTANTIATE-CALLABLE-TEMPLATE`
@@ -2329,6 +2355,12 @@ Generated on 2026-02-14T05:21:24.063803Z
 
 
 ---
+### DEFVAR `*BRAND-INSTANCE-TYPES*`
+
+  > Maps gensym brand-instance type names (created by resolve-brand-type) to  >    the brand-name they instantiate.  Consulted by resolve-dominance to block  >    cross-instance arithmetic and to preserve instance types in arithmetic  >    with the brand's base type.  >    Cleared alongside *brand-instance-cache* in initialize-compiler.
+
+
+---
 ### DEFUN `BRAND-ACTIVE-P`
 - **Args**: `(BRAND-DEF)`
 
@@ -2360,28 +2392,55 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `REGISTER-BRAND-DEFINITION`
 - **Args**: `(STRUCT-NAME BRAND-FORM)`
 
-  > Registers a brand declaration from within a struct definition.  >    When the brand is active: registers as a derived type in the DAG.  >    When inactive: registers as a type alias (transparent erasure).
+  > Registers a brand declaration from within a struct definition.  >    When the brand is active: registers as a derived type in the DAG.  >    When inactive: registers as a type alias (transparent erasure).  >    Parameterized brands (base type varies across template specializations,  >    and the brand is NOT used as a concrete struct member type) skip global  >    registration and are resolved lazily per-owner.  >    Brands that conflict in base type AND appear as a concrete struct member  >    in the existing owner are always an error (cannot be parameterized).  >   >    Non-symbol base types (e.g., compound types like (POINT INT)) are silently  >    skipped: they cannot be registered in the type DAG.
 
 
 ---
 ### DEFUN `RESOLVE-BRAND-TYPE`
-- **Args**: `(BRAND-NAME VAR-REF)`
+- **Args**: `(BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)`
 
-  > Resolves a branded type for a specific variable instance.  >    Returns a gensym'd type name unique to (brand-name, var-ref).  >    On first call for a given pair, creates a new type node in the DAG  >    as a :descendant of brand-name, caches it, and returns it.  >    On subsequent calls, returns the cached gensym.  >   >    The :descendant relationship means:  >    - The gensym CAN substitute for brand-name (signature matching works)  >    - Two different gensyms CANNOT substitute for each other (instance safety)  >    - The gensym inherits brand-name's isolation from its base type
+  > Resolves a branded type for a specific variable instance.  >    Returns a gensym'd type name unique to (brand-name, var-ref [, base-type]).  >   >    When BASE-TYPE is supplied the gensym is registered as a :descendant of  >    BASE-TYPE directly.  BASE-TYPE is first normalized against the type registries  >    to handle package mismatches: unmangle-template-struct-name creates symbols in  >    crisp.compiler (the cell type's package) while user structs are stored in  >    crisp-language (Fix D reads source files in that package).  A name-based scan  >    of *type-derivation-graph* then *crisp-structs* finds the canonical symbol.  >   >    When BASE-TYPE is NIL, the gensym is registered as a :descendant of  >    brand-name (original behaviour, used by fake-cell / template brands).  >   >    In all cases the gensym is stored in *brand-instance-types* under brand-name  >    so that resolve-dominance can block cross-instance arithmetic.
 
 
 ---
 ### DEFUN `VALIDATE-DEPENDENT-BRAND-TYPES`
 - **Args**: `(DECLARE-FORMS ENV)`
 
-  > Verifies that any parameters typed as (brand var) refer to a valid owner parameter.  >    Scans the raw declarations to find dependencies that parse-type-specifier might have flattened.  >    Supports shared brands (same brand name defined on multiple structs).
+  > Verifies that any parameters typed as (brand var) refer to a valid owner parameter.  >    Scans the raw declarations to find dependencies that parse-type-specifier might have flattened.  >    Supports shared brands (same brand name defined on multiple structs).  >    Uses find-brand-for-owner for alias resolution (e.g., FC-INT -> FAKE-CELL_INT_GLOBAL_READ-WRITE).
 
 
 ---
 ### DEFUN `%FIND-BRAND-OWNER-VAR`
 - **Args**: `(BRAND-NAME SIG-PARAMS ARG-NODES)`
 
-  > Finds the actual argument variable for the parameter that owns the brand instance.  >    Handles shared brands by checking if any parameter's type is a registered owner  >    for the given BRAND-NAME.
+  > Finds the actual argument variable for the parameter that owns the brand instance.  >    Handles shared brands by checking if any parameter's type is a registered owner  >    for the given BRAND-NAME. Uses find-brand-for-owner for alias resolution.
+
+
+---
+### DEFVAR `*PARAMETERIZED-BRAND-NAMES*`
+
+  > Set of brand names whose base type varies across template specializations.  >    These brands skip global type registration and are resolved lazily per-owner.
+
+
+---
+### DEFUN `RESOLVE-OWNER-TYPE-TO-MANGLED`
+- **Args**: `(TYPE-SPEC)`
+
+  > Resolves a type specifier (which may be an alias like FC-INT) to its  >    canonical mangled form (like FAKE-CELL_INT_GLOBAL_READ-WRITE).  >    Used for looking up per-owner brand definitions.
+
+
+---
+### DEFUN `FIND-BRAND-FOR-OWNER`
+- **Args**: `(BRAND-NAME OWNER-TYPE)`
+
+  > Looks up a brand definition for the given brand name and owner type.  >    Resolves type aliases (e.g., FC-INT -> FAKE-CELL_INT_GLOBAL_READ-WRITE)  >    before lookup.
+
+
+---
+### DEFUN `RESOLVE-PARAMETERIZED-BRAND-IN-ENV`
+- **Args**: `(BRAND-SPEC ENV)`
+
+  > Resolves a parameterized brand application (brand-name var-ref) using  >    the function environment. Returns the concrete base type for the brand  >    based on the variable's owner type.  >    For inactive brands, returns the base type directly (transparent).  >    For active brands, returns the base type (instance differentiation  >    happens later in analyze-function-call).
 
 
 ---
@@ -2469,7 +2528,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `RESOLVE-DOMINANCE`
 - **Args**: `(TYPE-A TYPE-B)`
 
-  > Determines which type dominates in arithmetic operations.  >    Returns the dominant type, or NIL if they cannot mix.  >   >    Used by get-promoted-type for binary operations like +, -, *, /.  >   >    Rules:  >    - If same type, return it  >    - If one can substitute for other, return the more general (target)  >    - If both derived from common base, apply dominance rules  >    - Otherwise, return NIL (caller should use category + size fallback)
+  > Determines which type dominates in arithmetic operations.  >    Returns the dominant type, or NIL if the types cannot mix.  >   >    Brand-instance rules are applied BEFORE substitutability so that a brand  >    instance always wins over the plain type it descends from:  >    - Same type: return it.  >    - Both instances of the SAME brand (different vars): cannot mix -> NIL.  >    - One brand instance, one non-brand: brand instance dominates.  >    - Neither is a brand instance: standard substitutability /  >      find-common-promoted-type.
 
 
 ---
@@ -2708,7 +2767,7 @@ Generated on 2026-02-14T05:21:24.063803Z
 ### DEFUN `TYPES-EQUIVALENT-P`
 - **Args**: `(T1 T2)`
 
-  > Checks if two types are equivalent, with alias resolution and template handling.
+  > Checks if two types are equivalent, with alias resolution and template handling.  >    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels  >    before mangling comparison. This supports def-type aliases for any template type.
 
 
 ---
@@ -2794,6 +2853,13 @@ Generated on 2026-02-14T05:21:24.063803Z
 - **Args**: `(TYPE-SPEC)`
 
   > Checks if a type specifier is incomplete (missing required compile-time properties).  >    Returns T if incomplete, NIL if complete.
+
+
+---
+### DEFUN `EXTRACT-POSITIONAL-FROM-KEYWORD-ARGS`
+- **Args**: `(ARGS NUM-PARAMS)`
+
+  > Extract NUM-PARAMS positional template args from ARGS when (length ARGS) > NUM-PARAMS.  >   >    Two conventions are supported:  >    1. Labeled style: (:label value) pairs identify template params by a descriptive name.  >       e.g. (int :address-space :global :access :read-write) with arity 3  >            => (int :global :read-write)  >    2. Positional+c-t style: first NUM-PARAMS args are positional template args;  >       any remaining args are compile-time field overrides handled elsewhere.  >       e.g. (int :blue :stitching-c :black) with arity 2  >            => (int :blue)  >   >    Disambiguation: label-strip the entire list.  If the result has exactly  >    NUM-PARAMS elements, the labeled convention was used and that result is  >    returned.  Otherwise the positional+c-t convention was used and the first  >    NUM-PARAMS elements of ARGS are returned unchanged.
 
 
 ---

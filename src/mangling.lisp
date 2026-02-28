@@ -5,8 +5,7 @@
 ;;; Centralized Name Mangling & Type Naming Logic
 ;;; =========================================================
 
-;;; From src/types.lisp
-;;; ===================
+
 
 (cl:defvar *template-arity-lookup-fn* nil
         "A hook for looking up the arity of a template by name (symbol or string).
@@ -104,8 +103,15 @@
 
 (cl:defun unmangle-template-struct-name (symbol)
   "Attempts to reverse mangling for known parameterized types like CELL.
-   Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL."
+   Returns the list form (e.g. (CELL FLOAT :GLOBAL :READ-WRITE)) or NIL.
+   Returns NIL immediately for uninterned symbols (gensyms produced by
+   brand instance differentiation) since they cannot be mangled struct names."
   (cl:when (cl:symbolp symbol)
+    ;; Uninterned gensyms (brand instance types like #:TOKEN-T-204) have no
+    ;; package and can never be a mangled struct name.  Return NIL early to
+    ;; avoid the (intern name NIL) crash that follows.
+    (cl:unless (cl:symbol-package symbol)
+      (cl:return-from unmangle-template-struct-name nil))
     (cl:let ((name (cl:symbol-name symbol)))
       (cl:if (cl:find #\_ name)
           (cl:let* ((parts (split-string name #\_))
@@ -115,9 +121,7 @@
                 (cl:let ((base-sym (cl:intern base (cl:symbol-package symbol))))
                   `(,base-sym ,@reconstructed))
                 nil))
-          ;; No underscore? It might be a base type itself (e.g. SHIRT)
-          ;; Technically unmangle implies retrieving params.
-          ;; If symbol is SHIRT, return (SHIRT).
+          ;; No underscore: symbol is a bare type name (e.g. SHIRT -> (SHIRT))
           `(,(cl:intern name (cl:symbol-package symbol)))))))
 
 ;;; From src/environment.lisp
