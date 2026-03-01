@@ -29,8 +29,8 @@
                                      (anf-transform '(unless (is-valid? data) (bail)))))
 
 (parachute:define-test (anf-control-flow-basic-test transform-compile-time-variants)
-                       "Compile time variants (if+, when+, unless+) are handled exactly like their runtime counterparts."
-                       (parachute:is equal '(let ((t-1 (> N 0))) (if+ t-1 1 0))
+                       "Compile time variants (if+, when+, unless+) are handled exactly like their runtime counterparts, EXCEPT their conditions are completely untouched by ANF."
+                       (parachute:is equal '(if+ (> N 0) 1 0)
                                      (anf-transform '(if+ (> N 0) 1 0)))
-                       (parachute:is equal '(let ((t-1 (is-set? opt-arg))) (when+ t-1 (do-thing)))
+                       (parachute:is equal '(when+ (is-set? opt-arg) (do-thing))
                                      (anf-transform '(when+ (is-set? opt-arg) (do-thing)))))

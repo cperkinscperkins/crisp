@@ -33,6 +33,7 @@
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
   "Orchestrates the multi-pass compilation of a list of top-level forms."
   (log:debug "*crisp-types*: ~s~%*expression-analyzers*: ~s" (alexandria:hash-table-keys *crisp-types*) (alexandria:hash-table-keys *expression-analyzers*))
+
   ;; Pass 1: Gather all function signatures and build the call graph.
   (let ((*call-graph* (make-hash-table))
         (*originator-functions* (make-hash-table))
@@ -564,6 +565,16 @@
 (defun internal-def-function (name params declarations body location)
   "This is a wrapper around internal-compile-function that parses declarations."
   (log:info "Analyzing function ~s" name)
+
+  (when *differentiate-p*
+        (log:info "Applying ANF to function body")
+        (let* ((progn-body `(progn ,@body))
+               (anf-body (anf-normalize progn-body nil))
+               (unwrapped-body (if (and (consp anf-body) (eq (car anf-body) 'progn))
+                                   (cdr anf-body)
+                                   (list anf-body))))
+          (setf body unwrapped-body)))
+
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
     (let ((*compiler-context* (or *compiler-context* (make-compiler-context))))

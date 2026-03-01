@@ -1,0 +1,10 @@
+;; tests/spec/039-anf-transform/10-e2e.crisp
+
+;; E2E Test to ensure ANF transformation runs successfully when --differentiate is active
+;; The compiler should normalize the body of `e2e_anf_test`.
+
+(def-kernel e2e_anf_test (in &out out)
+  (declare #'((cell float :global :read-only) &out (cell float :global :read-write)))
+  (let ((idx 0)
+        (val (+ (~ in idx) 42.0)))
+    (set! (~ out idx) val)))
