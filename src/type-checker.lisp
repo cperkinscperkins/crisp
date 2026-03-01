@@ -119,7 +119,7 @@
     (unless signature
       (setf signature (find-if (lambda (sig)
                                  (types-list-compatible-p explicit-arg-types
-                                                         (mapcar #'parameter-def-type (function-signature-parameters sig))))
+                                                          (mapcar #'parameter-def-type (function-signature-parameters sig))))
                           signatures)))
 
     (unless signature
@@ -127,25 +127,25 @@
 
       ;; 1. Try Lazy Instantiation for &optional / &key
       (let ((generic-def (gethash op *generic-functions*)))
-        (when generic-def
-              (log:info "Found generic function ~a, attempting lazy instantiation..." op)
-              (let ((new-sig (instantiate-generic-function generic-def explicit-arg-types context nil ; location unavailable here
+        (cl:when generic-def
+          (log:info "Found generic function ~a, attempting lazy instantiation..." op)
+          (let ((new-sig (instantiate-generic-function generic-def explicit-arg-types context nil ; location unavailable here
                                                           )))
-                (when new-sig
-                      (setf signature new-sig)))))
+            (cl:when new-sig
+              (setf signature new-sig)))))
 
       ;; 2. Try Template Instantiator (C++ Style)
-      (when (and (not signature) *template-instantiator-fn*)
-            (loop repeat 3 until signature do
-                    (if (funcall *template-instantiator-fn* op explicit-arg-types
-                          (lambda (form location)
-                            (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
-                        (progn
-                         (setf signatures (gethash op *function-table*))
-                         (setf signature (find-if (lambda (sig)
-                                                    (types-list-compatible-p explicit-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig))))
-                                             signatures)))
-                        (cl:return)))))
+      (cl:when (and (not signature) *template-instantiator-fn*)
+        (loop repeat 3 until signature do
+                (if (funcall *template-instantiator-fn* op explicit-arg-types
+                      (lambda (form location)
+                        (compile-toplevel-form form location *current-module* *current-builder* *current-di-builder* *current-di-compile-unit* *current-location-map*)))
+                    (progn
+                     (setf signatures (gethash op *function-table*))
+                     (setf signature (find-if (lambda (sig)
+                                                (types-list-compatible-p explicit-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig))))
+                                         signatures)))
+                    (cl:return)))))
 
     (unless signature
       (error "No matching function overload found for '~a' with argument types ~a." op explicit-arg-types))

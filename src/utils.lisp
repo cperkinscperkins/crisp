@@ -35,7 +35,7 @@
   It correctly handles multiple return values."
   (let ((original-fn (symbol-function fn-symbol)))
     ;; Avoid advising a function more than once.
-    (when (get fn-symbol :advised)
+    (cl:when (get fn-symbol :advised)
           (log:warn "Function ~s is already advised. Skipping." fn-symbol)
           (return-from advise-function))
 

@@ -21,14 +21,14 @@
 ;;; =========================================================
 
 (defvar *brand-instance-cache* (make-hash-table :test 'equal)
-  "Per-function cache mapping (brand-name . variable-identity) to a gensym'd
+        "Per-function cache mapping (brand-name . variable-identity) to a gensym'd
    instance-specific type name. Cleared at the start of each function compilation.")
 
 (defvar *brand-cache-last-function* nil
-  "The name of the function for which the brand instance cache was last cleared.")
+        "The name of the function for which the brand instance cache was last cleared.")
 
 (defvar *brand-instance-types* (make-hash-table :test 'equal)
-  "Maps gensym brand-instance type names (created by resolve-brand-type) to
+        "Maps gensym brand-instance type names (created by resolve-brand-type) to
    the brand-name they instantiate.  Consulted by resolve-dominance to block
    cross-instance arithmetic and to preserve instance types in arithmetic
    with the brand's base type.
@@ -49,7 +49,7 @@
 (defun is-brand-type-p (type-name)
   "Returns the brand-definition if TYPE-NAME is a registered brand, NIL otherwise."
   (cl:cond
-   ((symbolp type-name)
+    ((symbolp type-name)
      ;; For symbol types, check if any brand definition matches the name
      (maphash (lambda (key val)
                 (declare (ignore key))
@@ -58,10 +58,10 @@
               *brand-definitions*)
      nil)
 
-   ((and (listp type-name) (symbolp (first type-name)))
+    ((and (listp type-name) (symbolp (first type-name)))
      (is-brand-type-p (first type-name)))
 
-   (t nil)))
+    (t nil)))
 
 (defun brand-member-p (member-type)
   "Returns T if MEMBER-TYPE is a branded type whose brand is currently active."
@@ -152,12 +152,12 @@
 
     ;; Check for name collisions
     (cl:when (gethash brand-name *crisp-structs*)
-          (error "Brand name collision: ~a is already defined as a struct." brand-name))
+      (error "Brand name collision: ~a is already defined as a struct." brand-name))
     (cl:when (gethash brand-name *function-table*)
-          (error "Brand name collision: ~a is already defined as a function." brand-name))
+      (error "Brand name collision: ~a is already defined as a function." brand-name))
     (cl:when (and (gethash brand-name *crisp-types*)
-               (not (is-brand-type-p brand-name)))
-          (error "Brand name collision: ~a is already defined as a non-brand type." brand-name))
+                  (not (is-brand-type-p brand-name)))
+      (error "Brand name collision: ~a is already defined as a non-brand type." brand-name))
 
     ;; Examine any existing registration for the same brand name.
     (cl:unless is-parameterized
@@ -169,14 +169,14 @@
              (cl:let* ((existing-owner (brand-definition-owner-struct existing))
                        (existing-struct-def (find-struct-definition-by-name existing-owner))
                        (brand-used-as-member-p
-                         (and existing-struct-def
-                              (some (lambda (m) (eq (second m) brand-name))
-                                    (crisp-struct-definition-members existing-struct-def)))))
+                        (and existing-struct-def
+                             (some (lambda (m) (eq (second m) brand-name))
+                                 (crisp-struct-definition-members existing-struct-def)))))
                (if brand-used-as-member-p
                    (error "Cannot define derived type ~a: type already exists with DIFFERENT definition (Original: ~a, New: ~a)."
-                          brand-name
-                          (brand-definition-base-type existing)
-                          base-type)
+                     brand-name
+                     (brand-definition-base-type existing)
+                     base-type)
                    (progn
                     (log:info "Brand ~a detected as PARAMETERIZED: base ~a (from ~a) vs ~a (from ~a)"
                               brand-name
@@ -209,8 +209,8 @@
               brand-name struct-name base-type subst-mode
               (brand-definition-enforce-mode brand-def)
               (cl:cond (is-parameterized ", PARAMETERIZED")
-                    (skip-global ", SKIP-GLOBAL")
-                    (t "")))
+                (skip-global ", SKIP-GLOBAL")
+                (t "")))
 
     ;; Register the type based on active/inactive status.
     ;; Skip global registration for parameterized brands (resolved lazily per owner)
@@ -262,7 +262,7 @@
                   ;; registries.  Fast path: symbol already findable by eq.
                   ;; Slow path: name-based scan for package-mismatch cases.
                   (canonical-base
-                   (when (and base-type (symbolp base-type))
+                   (cl:when (and base-type (symbolp base-type))
                      (or
                       ;; Fast path: already canonical
                       (and (or (gethash base-type *type-derivation-graph*)
@@ -274,16 +274,16 @@
                         (or (block found
                               (maphash (lambda (k v)
                                          (declare (ignore v))
-                                         (when (and (symbolp k)
-                                                    (string= (symbol-name k) name))
+                                         (cl:when (and (symbolp k)
+                                                       (string= (symbol-name k) name))
                                            (return-from found k)))
                                        *type-derivation-graph*)
                               nil)
                             (block found
                               (maphash (lambda (k v)
                                          (declare (ignore v))
-                                         (when (and (symbolp k)
-                                                    (string= (symbol-name k) name))
+                                         (cl:when (and (symbolp k)
+                                                       (string= (symbol-name k) name))
                                            (return-from found k)))
                                        *crisp-structs*)
                               nil))))))
@@ -313,14 +313,14 @@
   (loop for decl in declare-forms do
           (labels ((scan (form)
                          (cl:cond
-                          ((and (listp form)
-                                (symbolp (car form))
-                                (is-brand-type-p (car form))
-                                (= (length form) 2)
-                                (symbolp (second form)))
+                           ((and (listp form)
+                                 (symbolp (car form))
+                                 (is-brand-type-p (car form))
+                                 (= (length form) 2)
+                                 (symbolp (second form)))
                             ;; Found (BRAND VAR) candidate
                             (cl:let ((brand-name (car form))
-                                  (var-ref (second form)))
+                                     (var-ref (second form)))
                               ;; Check var exists in env
                               (cl:let ((param (find var-ref env :key #'parameter-def-name)))
                                 (cl:unless param
@@ -337,7 +337,7 @@
                                         brand-name
                                         (if any-def (brand-definition-owner-struct any-def) "UNKNOWN")
                                         var-ref owner-type)))))))
-                          ((consp form)
+                           ((consp form)
                             (scan (car form))
                             (scan (cdr form))))))
             (scan decl))))
@@ -370,7 +370,7 @@
 ;;; parse-function-declarations where we have the environment context.
 
 (defvar *parameterized-brand-names* (make-hash-table :test 'eq)
-  "Set of brand names whose base type varies across template specializations.
+        "Set of brand names whose base type varies across template specializations.
    These brands skip global type registration and are resolved lazily per-owner.")
 
 ;; src/types/brand.lisp
@@ -419,10 +419,10 @@
                             brand-name var-ref owner-type base-type)
                   base-type)
                 (progn
-                  (log:warn "No brand definition found for (~a . ~a), returning brand-name as fallback"
-                            brand-name owner-type)
-                  brand-name)))
+                 (log:warn "No brand definition found for (~a . ~a), returning brand-name as fallback"
+                           brand-name owner-type)
+                 brand-name)))
           (progn
-            (log:warn "Variable ~a not found in env for parameterized brand ~a, returning spec as-is"
-                      var-ref brand-name)
-            brand-spec)))))
+           (log:warn "Variable ~a not found in env for parameterized brand ~a, returning spec as-is"
+                     var-ref brand-name)
+           brand-spec)))))

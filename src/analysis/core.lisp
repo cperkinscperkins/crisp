@@ -397,8 +397,6 @@
   (find name env :key #'parameter-def-name))
 
 
-
-
 (defun validate-return-types (name body env context declared-return-types location)
   "Analyzes the function body and validates return types.
    Fixes: A 1-element list whose sole element is a symbol (e.g. (TOKEN-T)) is always
@@ -657,7 +655,6 @@
     res))
 
 
-
 ;;; analyze-function-call to use the new finding logic
 (defun analyze-function-call (op expr env context location)
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
@@ -714,39 +711,39 @@
 
           ;; === Brand Instance Type Checking (when --differentiate is active) ===
           (let ((refined-return-types (function-signature-return-types augmented-signature)))
-            (when *differentiate-p*
-                  (let ((sig-params (function-signature-parameters augmented-signature)))
+            (cl:when *differentiate-p*
+              (let ((sig-params (function-signature-parameters augmented-signature)))
 
-                    ;; 1. Brand parameter type checking
-                    (loop for param in sig-params
-                          for arg-node in final-arg-nodes
-                          for param-type = (parameter-def-type param)
-                          do (cl:let ((brand-def (is-brand-type-p param-type)))
-                               (when (and brand-def (brand-active-p brand-def))
-                                     ;; FIX: Use brand-name to find owner, supporting shared brands
-                                     (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
-                                                                                sig-params final-arg-nodes)))
-                                       (when owner-var
-                                             (cl:let* ((expected-type (resolve-brand-type param-type owner-var))
-                                                       (actual-type (get-single-value-type arg-node)))
-                                               (unless (or (eq actual-type expected-type)
-                                                           (is-substitutable-for? actual-type expected-type))
-                                                 (error 'crisp-type-error
-                                                   :expected (list expected-type)
-                                                   :inferred (list actual-type)
-                                                   :source-location location))))))))
+                ;; 1. Brand parameter type checking
+                (loop for param in sig-params
+                      for arg-node in final-arg-nodes
+                      for param-type = (parameter-def-type param)
+                      do (cl:let ((brand-def (is-brand-type-p param-type)))
+                           (cl:when (and brand-def (brand-active-p brand-def))
+                             ;; FIX: Use brand-name to find owner, supporting shared brands
+                             (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                        sig-params final-arg-nodes)))
+                               (cl:when owner-var
+                                 (cl:let* ((expected-type (resolve-brand-type param-type owner-var))
+                                           (actual-type (get-single-value-type arg-node)))
+                                   (unless (or (eq actual-type expected-type)
+                                               (is-substitutable-for? actual-type expected-type))
+                                     (error 'crisp-type-error
+                                       :expected (list expected-type)
+                                       :inferred (list actual-type)
+                                       :source-location location))))))))
 
-                    ;; 2. Brand return type refinement
-                    (setf refined-return-types
-                      (loop for ret-type in (function-signature-return-types augmented-signature)
-                            collect (cl:let ((brand-def (is-brand-type-p ret-type)))
-                                      (if (and brand-def (brand-active-p brand-def))
-                                          (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
-                                                                                     sig-params final-arg-nodes)))
-                                            (if owner-var
-                                                (resolve-brand-type ret-type owner-var)
-                                                ret-type))
-                                          ret-type))))))
+                ;; 2. Brand return type refinement
+                (setf refined-return-types
+                  (loop for ret-type in (function-signature-return-types augmented-signature)
+                        collect (cl:let ((brand-def (is-brand-type-p ret-type)))
+                                  (if (and brand-def (brand-active-p brand-def))
+                                      (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                 sig-params final-arg-nodes)))
+                                        (if owner-var
+                                            (resolve-brand-type ret-type owner-var)
+                                            ret-type))
+                                      ret-type))))))
 
             (make-semantic-call :name (function-signature-name augmented-signature)
                                 :type refined-return-types

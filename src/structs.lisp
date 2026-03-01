@@ -264,7 +264,7 @@
          ;; Try direct lookup with base type
          (def-direct (gethash base-type *crisp-structs*))
          ;; Try package-agnostic lookup if needed
-         (def-alt (when (and (not def-direct) (symbolp base-type))
+         (def-alt (cl:when (and (not def-direct) (symbolp base-type))
                     (gethash (intern (symbol-name base-type)
                                      (find-package :crisp-language))
                              *crisp-structs*))))
@@ -300,10 +300,11 @@
                :size (* total-size 8)
                :category category))))
       (error (c)
-        (cond (*defer-struct-validation*
-                (log:info "Deferring struct registration for ~a. dependency missing/error: ~a" name c)
-                (push (list name members category) *pending-struct-definitions*))
-              (t (error c)))))))
+        (cl:when *defer-struct-validation*
+          (log:info "Deferring struct registration for ~a. dependency missing/error: ~a" name c)
+          (return-from register-struct-definition
+                       (push (list name members category) *pending-struct-definitions*)))
+        (error c)))))
 
 (defun finalize-struct-definitions ()
   "Iteratively attempts to register pending structs. Errors if a cycle or unknown type persists."
