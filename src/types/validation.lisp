@@ -95,9 +95,12 @@
                               (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
 
                              ;; 4. Ignored Keys (Legacy compatibility if needed)
+                             ((string-equal (string item) "DIRECTION")
+                              (cl:when remaining (pop remaining)))
+
+                             ;; 5. Unknown Keys -> Error
                              (t
-                              (log:warn "Ignoring unknown type option: ~s in spec ~s" item spec)
-                              (cl:when remaining (pop remaining))))))
+                              (error "Invalid type option: ~s in spec ~s" item spec)))))
 
                        ;; Return canonical positional form
                        (list base element-type addr acc)))))
@@ -460,16 +463,16 @@
       ((cl:and (cl:symbolp type-spec)
          (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
                    (node-alt (cl:when (not node-direct)
-                                   (cl:gethash (cl:intern (cl:symbol-name type-spec)
-                                                          (cl:find-package :crisp-language))
-                                               *type-derivation-graph*)))
+                               (cl:gethash (cl:intern (cl:symbol-name type-spec)
+                                                      (cl:find-package :crisp-language))
+                                           *type-derivation-graph*)))
                    (node (or node-direct node-alt)))
            (and node (type-node-original-type node))))
        (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
                  (node-alt (cl:when (not node-direct)
-                                 (cl:gethash (cl:intern (cl:symbol-name type-spec)
-                                                        (cl:find-package :crisp-language))
-                                             *type-derivation-graph*)))
+                             (cl:gethash (cl:intern (cl:symbol-name type-spec)
+                                                    (cl:find-package :crisp-language))
+                                         *type-derivation-graph*)))
                  (actual-type (if node-direct type-spec
                                   (cl:intern (cl:symbol-name type-spec)
                                              (cl:find-package :crisp-language))))
