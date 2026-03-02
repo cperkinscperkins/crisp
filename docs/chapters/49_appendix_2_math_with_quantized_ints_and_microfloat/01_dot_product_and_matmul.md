@@ -218,4 +218,3 @@ great with ReLU or any of the other common activation functions.
       (set! (~ output-M y x) (max zero-point (~ input-M y x))))))
 ```
 
-

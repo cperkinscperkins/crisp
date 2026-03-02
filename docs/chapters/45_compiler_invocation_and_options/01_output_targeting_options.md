@@ -101,3 +101,11 @@ reduce-vector.metacrisp
 
 ```
 
+
+### `--differentiate`
+
+This flag is discussed in the [Auto Differentiation (AD)](#auto-differentiation-ad) section above.
+When used the kernels are assumed to be "forward" kernels and the compiler will generate "backward" kernels for them with "backward" signatures.  The compiler will emit an error if the kernel is not differentiable.
+
+Use `(declare forward-only)` to opt out of differentiation for a specific kernel.
+

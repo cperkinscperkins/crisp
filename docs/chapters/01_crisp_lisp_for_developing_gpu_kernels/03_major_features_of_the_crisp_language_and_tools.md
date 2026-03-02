@@ -33,5 +33,7 @@
 
 - In-Memory Compilation API:  Crisp is designed as a compiler library with a C/Python API.  This enables fast, in-memory JIT compilation, allowing applications to dynamically generate and run new kernels on the fly without disk I/O.
 
+- Auto-Differentiation for GPU Kernels: The `--differentiate` compiler flag automatically generates high-performance reverse-mode gradient kernels from your forward code.  Write your math once. Crisp handles the calculus, generating the "backward pass" for you. Whether you're training neural networks, optimizing physical simulations, or performing sensitivity analysis, you can focus on the model and let the compiler worry about the derivatives. No manual backprop, no "calculus bugs," and no need to wrap your kernels in a heavy external framework.
+
 
 
