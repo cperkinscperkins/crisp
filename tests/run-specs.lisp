@@ -73,6 +73,7 @@
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
 (defvar *compile-differentiate* nil)
+(defvar *compile-lax* nil)
 (defvar *test-filter* nil)
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
@@ -116,6 +117,7 @@
     (setf args (append (when *compile-debug* '("--debug"))
                  (when *compile-single-pass* '("--single-pass"))
                  (when *compile-differentiate* '("--differentiate"))
+                 (when *compile-lax* '("--lax"))
                  (list (format nil "--log-level=~a" cl-user::*log-level*))
                  (list (uiop:native-namestring file))))
 
@@ -203,6 +205,7 @@
         (*compile-single-pass* (or *compile-single-pass* (member "--single-pass" flags :test #'string=)))
         (*compile-debug* (or *compile-debug* (member "--debug" flags :test #'string=)))
         (*compile-differentiate* (or *compile-differentiate* (member "--differentiate" flags :test #'string=)))
+        (*compile-lax* (or *compile-lax* (member "--lax" flags :test #'string=)))
         (emit-metadata (member "--metadata" flags :test #'string=))
 
         ;; Determine IR Target from flags (default to nil/generic)
@@ -241,7 +244,8 @@
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
                   (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
-                                                      :differentiate *compile-differentiate*) ;; Standard cleanup
+                                                      :differentiate *compile-differentiate*
+                                                      :lax-kernel-rules *compile-lax*) ;; Standard cleanup
                   (with-open-file (stream filepath)
                     ;; FIX: Use :crisp-language package to match binary compiler behavior.
                     ;; Previously used :crisp.compiler which caused user-defined names like
@@ -587,6 +591,9 @@
                     (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
+    (when *compile-differentiate* (push "--differentiate" args))
+    (when *compile-lax* (push "--lax" args))
+    (when *compile-single-pass* (push "--single-pass" args))
     (when emit-metadata (push "--metadata" args))
 
     (multiple-value-bind (output error-output exit-code)
@@ -653,7 +660,9 @@
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
                   ;; Initialize for PTX
-                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
+                                                      :differentiate *compile-differentiate*
+                                                      :lax-kernel-rules *compile-lax*)
                   (with-open-file (stream filepath)
                     (loop for form = (read stream nil :eof)
                           until (eq form :eof)
@@ -692,6 +701,9 @@
         (args (list (uiop:native-namestring file) "--ir-target=ptx" (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
+    (when *compile-differentiate* (push "--differentiate" args))
+    (when *compile-lax* (push "--lax" args))
+    (when *compile-single-pass* (push "--single-pass" args))
 
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
@@ -719,7 +731,9 @@
 
     (let ((crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
-                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
+                                                      :differentiate *compile-differentiate*
+                                                      :lax-kernel-rules *compile-lax*)
                   (with-open-file (stream filepath)
                     (let ((*package* (find-package :crisp.compiler)))
                       (loop for form = (read stream nil :eof)
@@ -773,6 +787,9 @@
                     (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
+    (when *compile-differentiate* (push "--differentiate" args))
+    (when *compile-lax* (push "--lax" args))
+    (when *compile-single-pass* (push "--single-pass" args))
 
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
@@ -1075,6 +1092,7 @@
              ((string= arg "--debug") (setf *compile-debug* t))
              ((string= arg "--single-pass") (setf *compile-single-pass* t))
              ((string= arg "--differentiate") (setf *compile-differentiate* t))
+             ((string= arg "--lax") (setf *compile-lax* t))
              ((string= arg "--only-unit-tests") (setf *only-unit-tests* t))
              ((string= arg "--skip-unit-tests") (setf *skip-unit-tests* t))
              ((string= arg "--keep-work") (setf *keep-work* t))
@@ -1112,8 +1130,12 @@
 
     (loop for file in spec-files do
             (when (or (not *test-filter*) (search *test-filter* (namestring file)))
-                  (let ((dir-name (get-parent-directory-name file))
-                        (expect-failure (should-expect-failure-p file)))
+                  (let* ((dir-name (get-parent-directory-name file))
+                         (is-legacy-lax (and (>= (length dir-name) 3)
+                                             (every #'digit-char-p (subseq dir-name 0 3))
+                                             (< (parse-integer (subseq dir-name 0 3)) 41)))
+                         (*compile-lax* (or *compile-lax* is-legacy-lax))
+                         (expect-failure (should-expect-failure-p file)))
 
                     ;; Check stop target
                     (when (and stop-target (string> dir-name stop-target))

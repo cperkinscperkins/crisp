@@ -72,6 +72,9 @@ This supports overloading templates by arity or other factors.")
         "If T, enable differentiation mode. Activates branded type enforcement
    for brands declared with :enforce :diff (the default).")
 
+(defvar *lax-kernel-rules-p* nil
+        "If T, bypass strict requirements on kernels (like forcing &out for differentiable kernels) in order to cleanly test legacy tests.")
+
 
 ;; (defvar *current-module* nil) -> Moved to session
 (define-symbol-macro *current-module* (compiler-session-module *compiler-session*))

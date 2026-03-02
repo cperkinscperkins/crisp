@@ -67,6 +67,7 @@
                       (member "--debug" flags :test #'string=)))
          (runtime-checks-p (member "--runtime-checks" flags :test #'string=))
          (differentiate-p (member "--differentiate" flags :test #'string=))
+         (lax-kernel-rules-p (member "--lax" flags :test #'string=))
 
          ;; Target Parsing
          (target-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--ir-target=" f)) flags))
@@ -95,7 +96,8 @@
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
                                         :runtime-checks runtime-checks-p
-                                        :differentiate differentiate-p)
+                                        :differentiate differentiate-p
+                                        :lax-kernel-rules lax-kernel-rules-p)
 
     (unless (= (length files) 1)
       (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")

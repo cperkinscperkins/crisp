@@ -422,6 +422,37 @@
     (log:info "All 5 derived type accessors defined and called correctly")
     t))
 
+(defun validate-basic-grad-signature (ir-path)
+  "Validates that cell_add_grad is generated with the correct expanded parameters.
+   Original: (A B &out C)
+   Backwards: (A B C C_grad &out A_grad B_grad)
+   Each cell expands to 3 fields (ptr, size, offset).
+   Total fields = 6 * 3 = 18. Thus 17 commas."
+  (cl:unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-basic-grad-signature nil))
+  (let ((content (uiop:read-file-string ir-path)))
+    (cl:unless (search "define void @cell_add(" content)
+      (log:error "Forward kernel @cell_add not found")
+      (return-from validate-basic-grad-signature nil))
+
+    (let ((pos (search "define void @cell_add_grad(" content)))
+      (cl:unless pos
+        (log:error "Backward kernel @cell_add_grad not found")
+        (return-from validate-basic-grad-signature nil))
+
+      (let* ((end-pos (search ") {" content :start2 pos))
+             (sig-slice (if end-pos (subseq content pos end-pos) (subseq content pos)))
+             (comma-count (count #\, sig-slice)))
+        (cl:unless end-pos
+          (log:error "Could not find end of signature for cell_add_grad")
+          (return-from validate-basic-grad-signature nil))
+        (cl:unless (= comma-count 17) ; 18 params = 17 commas
+          (log:error "Expected 18 parameters in cell_add_grad, found ~a commas. Signature: ~s" comma-count (subseq sig-slice 0 (min (length sig-slice) 100)))
+          (return-from validate-basic-grad-signature nil))))
+    (log:info "Validated backward kernel signature correctly")
+    t))
+
 ;;; ============================================================================
 ;;; Derived Type Metadata Validators
 ;;; ============================================================================

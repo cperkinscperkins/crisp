@@ -1,4 +1,4 @@
-;; TEST-WITH[--differentiate]: signature-and-name-validator-goes-here
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-basic-grad-signature
 
 
 (def-type in-ish (cell int :address-space :global :access :read-only))
