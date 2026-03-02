@@ -150,6 +150,10 @@
             (log:error "Illegal Overload Detected (Pattern): Name=~s Str=~s Pkg=~s IsSystem=~a" name name-str (symbol-package name) is-system)
             (error 'crisp-illegal-overload-error :name name)))
 
+    ;; Check for forward-only in def-function
+    (when (find "FORWARD-ONLY" declarations :key (lambda (x) (when (symbolp x) (symbol-name x))) :test #'string-equal)
+          (error "The 'forward-only' declaration is only allowed in kernels (def-kernel or def-grid-function), not in def-function."))
+
     (log:debug "which package?: ~a ~%" *package*)
 
     ;; Eagerly register the signature for single-pass compilation scenarios.
@@ -433,6 +437,13 @@
 
     signature-types))
 
+(defun %check-differentiate-kernel-signature (name signature-types declarations)
+  "Helper: Enforces kernel requirements when Auto-Differentiation is enabled."
+  (when (and *differentiate-p*
+             (not (find "FORWARD-ONLY" declarations :key (lambda (x) (when (symbolp x) (symbol-name x))) :test #'string-equal)))
+        (unless (member '&out signature-types)
+          (error "Differentiable Kernels require an '&out' parameter. If this kernel performs non-differentiable operations (like printing or shuffling), declare it as 'forward-only'. (~a)" name))))
+
 (defun parse-kernel-signature (name params body)
   "Parses kernel parameters and body, performing validation and type extraction.
    Returns (values exploded-params exploded-types reassembly-bindings raw-body other-decls)."
@@ -462,9 +473,13 @@
         (multiple-value-bind (exploded-params exploded-types reassembly-bindings)
             (%explode-kernel-args params signature-types)
 
+          ;; Check AD constraints for kernels
+          (%check-differentiate-kernel-signature name signature-types declarations)
+
           ;; Determine other declarations to preserve
           (let ((other-decls (loop for d in declarations
-                                     unless (member (car d) '(function type))
+                                     unless (or (and (consp d) (member (car d) '(function type)))
+                                                (and (symbolp d) (string-equal (symbol-name d) "FORWARD-ONLY")))
                                    collect d)))
             (values exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types)))))))
 

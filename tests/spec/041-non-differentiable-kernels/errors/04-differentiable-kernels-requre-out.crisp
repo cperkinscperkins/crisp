@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; TEST-WITH[--differentiate]: "message"
+;; FAIL-WITH[--differentiate]: "Differentiable Kernels require an '&out' parameter."
 
 ;; this kernel error when --differentiate is used, because it doesn't have an &out parameter.
 ;; hopefully the error message says something about declare forward-only.

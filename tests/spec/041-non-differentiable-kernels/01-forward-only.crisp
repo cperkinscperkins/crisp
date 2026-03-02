@@ -1,4 +1,5 @@
-;; TEST-WITH[--differentiate]: validate-not-output
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]: PASS
 
 ;; this kernel should compile without erroring when --differentiate is used, but
 ;; should not produce anything.  (i.e. no backwards kernel)
