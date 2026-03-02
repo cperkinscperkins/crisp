@@ -586,7 +586,7 @@
                                  (return (%extract-struct-member obj ,idx)))
             (1+ runtime-index))))))
 
-            
+
 (defmacro def-struct (name &rest members)
   "Defines a new Crisp struct type. Supports brand declarations."
   (let* (;; Separate brand declarations from regular members
@@ -605,7 +605,7 @@
         ;; Register brands
         ,@(mapcar (lambda (brand)
                     `(register-brand-definition ',name ',brand))
-                  brand-decls)
+              brand-decls)
         ;; Register struct
         (register-struct-definition ',name ',parsed-members))
 
@@ -620,8 +620,8 @@
           (dolist (member-spec parsed-members)
             (multiple-value-bind (accessor-form new-idx)
                 (%generate-struct-accessor member-spec name pkg runtime-index)
-              (when accessor-form
-                    (push accessor-form forms))
+              (cl:when accessor-form
+                (push accessor-form forms))
               (setf runtime-index new-idx)))
           (nreverse forms))
 
@@ -632,8 +632,8 @@
           (dolist (member-spec parsed-members)
             (multiple-value-bind (raw-form new-idx)
                 (%generate-raw-accessor member-spec name pkg runtime-index)
-              (when raw-form
-                    (push raw-form forms))
+              (cl:when raw-form
+                (push raw-form forms))
               (setf runtime-index new-idx)))
           (nreverse forms)))))
 
@@ -656,7 +656,7 @@
         ;; Register brands
         ,@(mapcar (lambda (brand)
                     `(register-brand-definition ',name ',brand))
-                  brand-decls)
+              brand-decls)
         ;; Register record
         (register-struct-definition ',name ',parsed-members :record))
 
@@ -670,7 +670,7 @@
                 collect
                   (let* ((member-name (first member-spec))
                          (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
-                         (value (when is-ct (fourth member-spec)))
+                         (value (cl:when is-ct (fourth member-spec)))
                          (type (second member-spec))
                          (accessor-name (intern (format nil "~a~~" member-name) pkg)))
                     (if is-ct
@@ -912,7 +912,6 @@
       result)))
 
 
-
 (defmacro set-derived (ancestor-type descendant-type)
   "Links two existing struct types in a type hierarchy.
    The descendant can implicitly pass where the ancestor is expected.
@@ -930,19 +929,19 @@
             (as-ancestor-name (cl:intern (format nil "AS-~a" ancestor-type) pkg))
             (as-descendant-name (cl:intern (format nil "AS-~a" descendant-type) pkg)))
     `(progn
-       (eval-when (:compile-toplevel :load-toplevel :execute)
-         (register-set-derived ',ancestor-type ',descendant-type))
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (register-set-derived ',ancestor-type ',descendant-type))
 
-       ;; Register expression analyzers for casting (if not already present)
-       (eval-when (:compile-toplevel :load-toplevel :execute)
-         (cl:unless (gethash ',as-ancestor-name *expression-analyzers*)
-           (setf (gethash ',as-ancestor-name *expression-analyzers*)
-             #'analyze-cast-expression)
-           (log:debug "set-derived: registered expression analyzer for ~a" ',as-ancestor-name))
-         (cl:unless (gethash ',as-descendant-name *expression-analyzers*)
-           (setf (gethash ',as-descendant-name *expression-analyzers*)
-             #'analyze-cast-expression)
-           (log:debug "set-derived: registered expression analyzer for ~a" ',as-descendant-name))))))
+      ;; Register expression analyzers for casting (if not already present)
+      (eval-when (:compile-toplevel :load-toplevel :execute)
+        (cl:unless (gethash ',as-ancestor-name *expression-analyzers*)
+          (setf (gethash ',as-ancestor-name *expression-analyzers*)
+            #'analyze-cast-expression)
+          (log:debug "set-derived: registered expression analyzer for ~a" ',as-ancestor-name))
+        (cl:unless (gethash ',as-descendant-name *expression-analyzers*)
+          (setf (gethash ',as-descendant-name *expression-analyzers*)
+            #'analyze-cast-expression)
+          (log:debug "set-derived: registered expression analyzer for ~a" ',as-descendant-name))))))
 
 (defmacro brand (&rest args)
   "Catches invalid usage of BRAND outside of DEF-STRUCT or DEF-RECORD."

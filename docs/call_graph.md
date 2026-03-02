@@ -310,6 +310,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
 - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
 - - - (INTERNAL-DEF-FUNCTION NAME PARAMS DECLARATIONS BODY LOCATION)  analysis/core.lisp
+- - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp
+- - - - - (ANF-IS-ATOMIC? EXPR)  anf-transform.lisp
+- - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
+- - - - - (ANF-NORMALIZE-PLACE PLACE)  anf-transform.lisp
+- - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp
+- - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
+- - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [RECURSION]
+- - - - - (ANF-FRESH-TEMP)  anf-transform.lisp
+- - - - - (%ANF-TRANSFORM EXPR)  anf-transform.lisp
+- - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
+- - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [See above]
 - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
 - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
 - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
@@ -534,6 +545,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-WHEN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-IF-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
+
+- (ANF-TRANSFORM EXPR)  anf-transform.lisp
+- - (%ANF-TRANSFORM EXPR)  anf-transform.lisp [See above]
+
+- (ANF-TRANSFORM-MODULE FORMS)  anf-transform.lisp
+- - (WITH-TEMPLATE-TYPE PARAMS &BODY BODY)  templates.lisp
 
 - (BRAND-MEMBER-P MEMBER-TYPE)  types/brand.lisp
 - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
@@ -761,6 +778,4 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-TOP-KERNEL-4-ARGS-IR IR-PATH)  metadata-val.lisp
 
 - (WITH-STRUCT-ACCESSORS STRUCT-TYPE BINDINGS &BODY BODY)  macros.lisp
-
-- (WITH-TEMPLATE-TYPE PARAMS &BODY BODY)  templates.lisp
 

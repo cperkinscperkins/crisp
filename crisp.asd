@@ -38,6 +38,7 @@
                                              (:file "src/analysis/ops")
                                              (:file "src/analysis/control")
                                              (:file "src/analysis/structs")
+                                             (:file "src/anf-transform")
                                              (:file "src/codegen/abi")
                                              (:file "src/codegen") ; 7. Uses compiler, defines codegen
                                              (:file "src/templates") ; 8. with-template-type macro

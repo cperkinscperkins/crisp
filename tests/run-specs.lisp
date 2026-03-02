@@ -199,7 +199,7 @@
 
 (defun run-single-spec-pass (file flags &optional validator)
   "Execute a single pass of a spec file with specific flags active."
-   (let ((*use-binary* (or *use-binary* (member "--use-binary" flags :test #'string=)))
+  (let ((*use-binary* (or *use-binary* (member "--use-binary" flags :test #'string=)))
         (*compile-single-pass* (or *compile-single-pass* (member "--single-pass" flags :test #'string=)))
         (*compile-debug* (or *compile-debug* (member "--debug" flags :test #'string=)))
         (*compile-differentiate* (or *compile-differentiate* (member "--differentiate" flags :test #'string=)))
@@ -877,6 +877,7 @@
             (progn (format t "PASS~%") t)
             (progn (format *error-output* "FAIL (Invalid IR)~%") nil)))
     (error (e)
+      (uiop:print-backtrace :condition e)
       (format *error-output* "FAIL (Condition: ~a)~%" e)
       nil)))
 

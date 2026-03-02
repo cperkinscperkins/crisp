@@ -94,8 +94,11 @@
                               (cl:unless remaining (error "Missing value for :ACCESS in ~s" spec))
                               (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
 
-                             ;; 4. Ignored Keys (Legacy compatibility if needed, strict otherwise)
-                             ;; We MUST error on unknown keys to pass bad-type-constructor-02
+                             ;; 4. Ignored Keys (Legacy compatibility if needed)
+                             ((string-equal (string item) "DIRECTION")
+                              (cl:when remaining (pop remaining)))
+
+                             ;; 5. Unknown Keys -> Error
                              (t
                               (error "Invalid type option: ~s in spec ~s" item spec)))))
 
@@ -129,7 +132,6 @@
      t)
     (t (error "Template argument mismatch for ~a. Expected type ~a, got ~a (~a)"
          name type arg (type-of arg)))))
-
 
 
 (defun canonicalize-type-specifier (spec)
@@ -459,21 +461,21 @@
       ;; Only match if it's ACTUALLY a derived type (has an original-type), not a base type node
       ;; Handle package mismatches by trying both current package and CRISP-LANGUAGE
       ((cl:and (cl:symbolp type-spec)
-               (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
-                         (node-alt (when (not node-direct)
-                                     (cl:gethash (cl:intern (cl:symbol-name type-spec)
-                                                            (cl:find-package :crisp-language))
-                                                 *type-derivation-graph*)))
-                         (node (or node-direct node-alt)))
-                 (and node (type-node-original-type node))))
+         (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
+                   (node-alt (cl:when (not node-direct)
+                               (cl:gethash (cl:intern (cl:symbol-name type-spec)
+                                                      (cl:find-package :crisp-language))
+                                           *type-derivation-graph*)))
+                   (node (or node-direct node-alt)))
+           (and node (type-node-original-type node))))
        (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
-                 (node-alt (when (not node-direct)
+                 (node-alt (cl:when (not node-direct)
                              (cl:gethash (cl:intern (cl:symbol-name type-spec)
                                                     (cl:find-package :crisp-language))
                                          *type-derivation-graph*)))
                  (actual-type (if node-direct type-spec
-                                (cl:intern (cl:symbol-name type-spec)
-                                           (cl:find-package :crisp-language))))
+                                  (cl:intern (cl:symbol-name type-spec)
+                                             (cl:find-package :crisp-language))))
                  (base-type (get-type-base actual-type)))
          (resolve-type-to-llvm base-type)))
 
@@ -624,7 +626,6 @@
     (t nil)))
 
 
-
 (defun extract-positional-from-keyword-args (args num-params)
   "Extract NUM-PARAMS positional template args from ARGS when (length ARGS) > NUM-PARAMS.
 
@@ -645,16 +646,16 @@
       args
       ;; Try label-stripping the full arg list.
       (let* ((stripped
-               (cl:let ((result nil)
-                     (remaining args))
-                 (loop while remaining
-                       for item = (pop remaining)
-                       do (if (and (keywordp item) remaining)
-                              ;; Keyword label: skip label, push next item as value
-                              (push (pop remaining) result)
-                              ;; Non-keyword (or trailing keyword): push as positional
-                              (push item result)))
-                 (nreverse result))))
+              (cl:let ((result nil)
+                       (remaining args))
+                (loop while remaining
+                      for item = (pop remaining)
+                      do (if (and (keywordp item) remaining)
+                             ;; Keyword label: skip label, push next item as value
+                             (push (pop remaining) result)
+                             ;; Non-keyword (or trailing keyword): push as positional
+                             (push item result)))
+                (nreverse result))))
         (if (= (length stripped) num-params)
             ;; Label-stripping produced the right count -> labeled convention
             stripped

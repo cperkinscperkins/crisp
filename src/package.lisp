@@ -194,6 +194,8 @@
    #:validate-scratch-cell-explosion
    #:validate-multiple-scratch-cells
 
+   #:anf-transform ;; <--- NEW
+
    ;; laungage symbols
    #:def-function
    #:def-function
