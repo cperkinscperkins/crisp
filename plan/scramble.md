@@ -410,7 +410,7 @@ Assault On Pytorch
 - - [x] requires documentation and decisions before work can begin.
 - [ ] --differentiate
 - - [x] brand cell
-- - [ ] ANF transform.
+- - [x] ANF transform.
 - - [ ] generate shadow signatures
 - - [ ] wengert list
 - - [ ] kernel and function transforms

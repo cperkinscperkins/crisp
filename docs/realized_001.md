@@ -253,6 +253,13 @@ that can do actual work, but have you ever tried CUTLASS? With Crisp you can hav
 the exact same experience of not having anything working, but the experience is 
 much more pleasant. 
 
+### brand
+Type branding is in. I'm sure nobody but me wants this, but it's there.  It is now
+default on cell when using the `--differentiate` flag.
+
+### ANF Transform
+All code is ANF transformed when using the `--differentiate` flag.
+
 
 Errors
 ======
