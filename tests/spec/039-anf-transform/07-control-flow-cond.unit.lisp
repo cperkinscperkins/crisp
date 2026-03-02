@@ -11,11 +11,11 @@
 
 (parachute:define-test (anf-control-flow-cond-test transform-cond-complex-predicates)
                        "Cond forms with complex predicates ANF the predicate *inside* the clause list so it only evaluates if reached."
-                       (parachute:is equal '(cond ((let ((t-1 (get-val))) (> t-1 10)) x)
+                       (parachute:is equal '(cond ((let ((%anf-t-1 (get-val))) (> %anf-t-1 10)) x)
                                                   (else (* x 2)))
                                      (anf-transform '(cond ((> (get-val) 10) x) (else (* x 2))))))
 
 (parachute:define-test (anf-control-flow-cond-test transform-cond-in-call)
                        "Cond form inside a call has its entire result hoisted."
-                       (parachute:is equal '(let ((t-1 (cond (flag 1) (else 0)))) (+ 10 t-1))
+                       (parachute:is equal '(let ((%anf-t-1 (cond (flag 1) (else 0)))) (+ 10 %anf-t-1))
                                      (anf-transform '(+ 10 (cond (flag 1) (else 0))))))

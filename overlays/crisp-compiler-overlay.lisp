@@ -8,7 +8,7 @@
 (defvar *anf-counter* 0)
 
 (defun anf-fresh-temp ()
-  (intern (format nil "T-~D" (incf *anf-counter*))))
+  (intern (format nil "%ANF-T-~D" (incf *anf-counter*))))
 
 (defun anf-is-atomic? (expr)
   "Returns true if EXPR is considered an atomic value in ANF."

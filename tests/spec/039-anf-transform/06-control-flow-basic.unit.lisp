@@ -13,19 +13,19 @@
 
 (parachute:define-test (anf-control-flow-basic-test transform-if-complex-condition)
                        "If forms with complex conditions hoist the condition, branches are recursively ANF'd."
-                       (parachute:is equal '(let ((t-1 (> x 10))) (if t-1 (* x 2) x))
+                       (parachute:is equal '(let ((%anf-t-1 (> x 10))) (if %anf-t-1 (* x 2) x))
                                      (anf-transform '(if (> x 10) (* x 2) x))))
 
 (parachute:define-test (anf-control-flow-basic-test transform-if-in-call)
                        "If the IF form is an argument to a call, its entire result is hoisted."
-                       (parachute:is equal '(let ((t-1 (if flag (+ a 1) (- b 1)))) (* 10 t-1))
+                       (parachute:is equal '(let ((%anf-t-1 (if flag (+ a 1) (- b 1)))) (* 10 %anf-t-1))
                                      (anf-transform '(* 10 (if flag (+ a 1) (- b 1))))))
 
 (parachute:define-test (anf-control-flow-basic-test transform-when-unless)
                        "When and unless forms hoist conditions identically to if. Only the true/false branch exists."
                        (parachute:is equal '(when flag (foo x))
                                      (anf-transform '(when flag (foo x))))
-                       (parachute:is equal '(let ((t-1 (is-valid? data))) (unless t-1 (bail)))
+                       (parachute:is equal '(let ((%anf-t-1 (is-valid? data))) (unless %anf-t-1 (bail)))
                                      (anf-transform '(unless (is-valid? data) (bail)))))
 
 (parachute:define-test (anf-control-flow-basic-test transform-compile-time-variants)

@@ -11,15 +11,15 @@
 
 (parachute:define-test (anf-let-test transform-let-complex-bindings)
                        "Let forms where the binding value is heavily nested hoists the inner expressions."
-                       (parachute:is equal '(let ((t-1 (* y z)) (x (+ w t-1))) (foo x))
+                       (parachute:is equal '(let ((%anf-t-1 (* y z)) (x (+ w %anf-t-1))) (foo x))
                                      (anf-transform '(let ((x (+ w (* y z)))) (foo x)))))
 
 (parachute:define-test (anf-let-test transform-let-complex-body)
                        "Let forms with complex bodies have their bodies ANF transformed."
-                       (parachute:is equal '(let ((x 10) (t-1 (+ x x))) (* t-1 2))
+                       (parachute:is equal '(let ((x 10) (%anf-t-1 (+ x x))) (* %anf-t-1 2))
                                      (anf-transform '(let ((x 10)) (* (+ x x) 2)))))
 
 (parachute:define-test (anf-let-test transform-let-multivalue)
                        "Multi-value let bindings support ANF."
-                       (parachute:is equal '(let ((t-1 (+ a b)) (q r (foo t-1))) (+ q r))
+                       (parachute:is equal '(let ((%anf-t-1 (+ a b)) (q r (foo %anf-t-1))) (+ q r))
                                      (anf-transform '(let ((q r (foo (+ a b)))) (+ q r)))))

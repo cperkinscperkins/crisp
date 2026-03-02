@@ -13,21 +13,21 @@
 
 (parachute:define-test (anf-accessors-test transform-nested-accessors)
                        "Accessors whose parent is a complex expression hoist the parent."
-                       (parachute:is equal '(let ((t-1 (get-cell))) (~ t-1))
+                       (parachute:is equal '(let ((%anf-t-1 (get-cell))) (~ %anf-t-1))
                                      (anf-transform '(~ (get-cell))))
-                       (parachute:is equal '(let ((t-1 (get-point))) (x~ t-1))
+                       (parachute:is equal '(let ((%anf-t-1 (get-point))) (x~ %anf-t-1))
                                      (anf-transform '(x~ (get-point))))
-                       (parachute:is equal '(let ((t-1 (get-vector))) (length~ t-1))
+                       (parachute:is equal '(let ((%anf-t-1 (get-vector))) (length~ %anf-t-1))
                                      (anf-transform '(length~ (get-vector)))))
 
 (parachute:define-test (anf-accessors-test transform-accessors-in-call)
                        "Accessors are treated as complex expressions themselves if they need to be atomic arguments to other calls."
-                       (parachute:is equal '(let ((t-1 (~ c))) (+ t-1 5))
+                       (parachute:is equal '(let ((%anf-t-1 (~ c))) (+ %anf-t-1 5))
                                      (anf-transform '(+ (~ c) 5)))
-                       (parachute:is equal '(let ((t-1 (x~ p)) (t-2 (y~ p))) (+ t-1 t-2))
+                       (parachute:is equal '(let ((%anf-t-1 (x~ p)) (%anf-t-2 (y~ p))) (+ %anf-t-1 %anf-t-2))
                                      (anf-transform '(+ (x~ p) (y~ p)))))
 
 (parachute:define-test (anf-accessors-test transform-nested-accessors-in-call)
                        "Deeply nested accessors in a call hoist everything in sequence."
-                       (parachute:is equal '(let ((t-1 (get-point)) (t-2 (x~ t-1))) (+ 10 t-2))
+                       (parachute:is equal '(let ((%anf-t-1 (get-point)) (%anf-t-2 (x~ %anf-t-1))) (+ 10 %anf-t-2))
                                      (anf-transform '(+ 10 (x~ (get-point))))))

@@ -14,7 +14,7 @@
 (parachute:define-test (anf-misc-test transform-return)
                        "Return forms normalize their argument to an atom."
                        (parachute:is equal '(return x) (anf-transform '(return x)))
-                       (parachute:is equal '(let ((t-1 (+ a b))) (return t-1))
+                       (parachute:is equal '(let ((%anf-t-1 (+ a b))) (return %anf-t-1))
                                      (anf-transform '(return (+ a b)))))
 
 (parachute:define-test (anf-misc-test transform-progn)
@@ -24,5 +24,5 @@
 
 (parachute:define-test (anf-misc-test transform-bounded-loops)
                        "Bounded loops (dotimes) hoist their bound and step, and recursively ANF their body."
-                       (parachute:is equal '(let ((t-1 (+ n 1))) (dotimes (i t-1) (let ((t-2 (* i 2))) (foo t-2))))
+                       (parachute:is equal '(let ((%anf-t-1 (+ n 1))) (dotimes (i %anf-t-1) (let ((%anf-t-2 (* i 2))) (foo %anf-t-2))))
                                      (anf-transform '(dotimes (i (+ n 1)) (foo (* i 2))))))

@@ -23,13 +23,3 @@
                        "Symbols (variables) should pass through ANF unchanged."
                        (parachute:is equal 'x (anf-transform 'x))
                        (parachute:is equal 'my-var (anf-transform 'my-var)))
-
-#|
-temporarily disabled.
-We need to get first order functions (#'+) included in the ANF transform test coverage
-but planning to do so later.  This serves as a reminder for now.
-
-(parachute:define-test (anf-atoms-test transform-function-ref)
-  "Function references should pass through ANF unchanged."
-  (parachute:is equal '(function +) (anf-transform '(function +))))
-|#
