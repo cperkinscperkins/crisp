@@ -31,15 +31,12 @@
         (return)))
 
 
-(def-type in-ish (cell int :address-space :global :access :read-write))
-(def-type out-ish (cell int :address-space :global :access :read-write))
+(def-type in-ish (cell float :address-space :global :access :read-write))
+(def-type out-ish (cell float :address-space :global :access :read-write))
 
 (def-kernel test_fake_cell (c-in someV &out c-out)
-    (declare #'(in-ish int &out out-ish))
-    (gen-fake-cell int)
+    (declare #'(in-ish float &out out-ish))
+    (gen-fake-cell float)
   (let ((fc (make-fake-cell :parent (parent~ c-in) :offset (to-ulong 0)  :address-space :global :access :read-only)))
         (set-~ fc someV)                   
         (set! (~ c-out) (~ fc))))
-
-    
-

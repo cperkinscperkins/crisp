@@ -1,10 +1,10 @@
 ;; TEST-WITH[--differentiate]
 
-(def-type in-ish (cell int :address-space :global :access :read-write))
-(def-type out-ish (cell int :address-space :global :access :read-write))
+(def-type in-ish (cell float :address-space :global :access :read-write))
+(def-type out-ish (cell float :address-space :global :access :read-write))
 
 (def-kernel value_t_dominates (in &out out)
     (declare #'(in-ish &out out-ish => nil))
     (let ((v1 (~ in))
-          (v-final (* v1 2))) ;; v-final should still be value-t<in>
+          (v-final (* v1 2.0))) ;; v-final should still be value-t<in>
       (set! (~ out) v-final)))

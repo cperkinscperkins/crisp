@@ -1,8 +1,8 @@
 ;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-basic-grad-signature
 
 
-(def-type in-ish (cell int :address-space :global :access :read-only))
-(def-type out-ish (cell int :address-space :global :access :write-only))
+(def-type in-ish (cell float :address-space :global :access :read-only))
+(def-type out-ish (cell float :address-space :global :access :write-only))
 
 (def-kernel cell_add (A B &out C)
   (declare #'(in-ish in-ish &out out-ish))

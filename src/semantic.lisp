@@ -110,6 +110,12 @@
 (defstruct semantic-div
   type left-arg right-arg source-location)
 
+(defstruct semantic-sin
+  type arg source-location)
+
+(defstruct semantic-cos
+  type arg source-location)
+
 (defstruct semantic-lt
   type left-arg right-arg source-location)
 
