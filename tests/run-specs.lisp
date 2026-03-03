@@ -300,10 +300,11 @@
 
 (defun compile-crisp-file-to-spirv (filepath &key (emit-metadata nil))
   "Compiles a .crisp file to .spv and returns the output path and metadata paths if successful."
-  (let ((out-path (make-pathname :type "spv" :defaults filepath))
-        (meta-base-path (make-pathname :type "metacrisp" :defaults filepath))
-        (meta-paths nil)
-        (*standard-output* (make-broadcast-stream)))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
+         (out-path (make-pathname :name base-name :type "spv" :defaults filepath))
+         (meta-base-path (make-pathname :name base-name :type "metacrisp" :defaults filepath))
+         (meta-paths nil)
+         (*standard-output* (make-broadcast-stream)))
     (when (probe-file out-path) (delete-file out-path))
 
     (let (;; Use a FRESH environment for each spec to ensure isolation
@@ -590,10 +591,11 @@
 
 (defun run-spec-spirv-binary (file &key (emit-metadata nil) (validator nil))
   "Runs the binary compiler with --ir-target=spv. Optionally emits metadata and runs a validator."
-  (let ((bin (get-binary-path))
-        (out-path (make-pathname :type "spv" :defaults file))
-        (args (list (uiop:native-namestring file) "--ir-target=spv"
-                    (format nil "--log-level=~a" cl-user::*log-level*))))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
+         (bin (get-binary-path))
+         (out-path (make-pathname :name base-name :type "spv" :defaults file))
+         (args (list (uiop:native-namestring file) "--ir-target=spv"
+                     (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
     (when *compile-differentiate* (push "--differentiate" args))
@@ -657,8 +659,9 @@
 
 (defun compile-crisp-file-to-ptx (filepath)
   "Compiles a .crisp file to .ptx and returns the output path if successful."
-  (let ((out-path (make-pathname :type "ptx" :defaults filepath))
-        (*standard-output* (make-broadcast-stream)))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
+         (out-path (make-pathname :name base-name :type "ptx" :defaults filepath))
+         (*standard-output* (make-broadcast-stream)))
     (when (probe-file out-path) (delete-file out-path))
 
     (let (;; Use a FRESH environment for each spec to ensure isolation
@@ -701,9 +704,10 @@
       nil)))
 
 (defun run-spec-ptx-binary (file)
-  (let ((bin (get-binary-path))
-        (out-path (make-pathname :type "ptx" :defaults file))
-        (args (list (uiop:native-namestring file) "--ir-target=ptx" (format nil "--log-level=~a" cl-user::*log-level*))))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
+         (bin (get-binary-path))
+         (out-path (make-pathname :name base-name :type "ptx" :defaults file))
+         (args (list (uiop:native-namestring file) "--ir-target=ptx" (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
     (when *compile-differentiate* (push "--differentiate" args))
@@ -730,8 +734,9 @@
 ;; LLVM IR Runner Functions
 (defun compile-crisp-file-to-llvmir (filepath)
   "Compiles a .crisp file to .ll and returns the output path if successful."
-  (let ((out-path (make-pathname :type "ll" :defaults filepath))
-        (*standard-output* (make-broadcast-stream)))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
+         (out-path (make-pathname :name base-name :type "ll" :defaults filepath))
+         (*standard-output* (make-broadcast-stream)))
     (when (probe-file out-path) (delete-file out-path))
 
     (let ((crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
@@ -786,10 +791,11 @@
 ;; Add validator support to binary mode LLVM IR compilation
 (defun run-spec-llvmir-binary (file &key (validator nil))
   "Runs the binary compiler with --ir-target=llvmir. Optionally runs a validator."
-  (let ((bin (get-binary-path))
-        (out-path (make-pathname :type "ll" :defaults file))
-        (args (list (uiop:native-namestring file) "--ir-target=llvmir"
-                    (format nil "--log-level=~a" cl-user::*log-level*))))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
+         (bin (get-binary-path))
+         (out-path (make-pathname :name base-name :type "ll" :defaults file))
+         (args (list (uiop:native-namestring file) "--ir-target=llvmir"
+                     (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
     (when *compile-differentiate* (push "--differentiate" args))

@@ -195,29 +195,32 @@
                              (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map))))
 
                      ;; Output Generation
-                     (case target-backend
-                       (:spirv
-                        (let ((out-path (make-pathname :type "spv" :defaults filepath)))
-                          (crisp.compiler:compile-to-spirv module out-path :debug-p debug-p)
-                          (push (list :spv out-path) generated-outputs)))
-                       (:ptx
-                        (let ((out-path (make-pathname :type "ptx" :defaults filepath)))
-                          (crisp.compiler:compile-to-ptx module out-path :debug-p debug-p)
-                          (push (list :ptx out-path) generated-outputs)))
-                       (:llvmir
-                        (let ((out-path (make-pathname :type "ll" :defaults filepath)))
+                     (let ((base-name (if crisp.compiler::*differentiate-p*
+                                          (format nil "~a_grad" (pathname-name filepath))
+                                          (pathname-name filepath))))
+                       (case target-backend
+                         (:spirv
+                          (let ((out-path (make-pathname :name base-name :type "spv" :defaults filepath)))
+                            (crisp.compiler:compile-to-spirv module out-path :debug-p debug-p)
+                            (push (list :spv out-path) generated-outputs)))
+                         (:ptx
+                          (let ((out-path (make-pathname :name base-name :type "ptx" :defaults filepath)))
+                            (crisp.compiler:compile-to-ptx module out-path :debug-p debug-p)
+                            (push (list :ptx out-path) generated-outputs)))
+                         (:llvmir
+                          (let ((out-path (make-pathname :name base-name :type "ll" :defaults filepath)))
+                            (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
+                              (unwind-protect
+                                  (with-open-file (stream out-path :direction :output :if-exists :supersede)
+                                    (write-string (cffi:foreign-string-to-lisp ir-ptr) stream))
+                                (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))
+                            (push (list :llvmir out-path) generated-outputs)))
+                         ;; Default/Generic: Print IR to stdout
+                         (t
                           (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
                             (unwind-protect
-                                (with-open-file (stream out-path :direction :output :if-exists :supersede)
-                                  (write-string (cffi:foreign-string-to-lisp ir-ptr) stream))
-                              (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))
-                          (push (list :llvmir out-path) generated-outputs)))
-                       ;; Default/Generic: Print IR to stdout
-                       (t
-                        (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
-                          (unwind-protect
-                              (format t "--- Generated LLVM IR (~a): ---~%~a~%" target-backend (cffi:foreign-string-to-lisp ir-ptr))
-                            (crisp.llvm-bindings:llvm-dispose-message ir-ptr))))))
+                                (format t "--- Generated LLVM IR (~a): ---~%~a~%" target-backend (cffi:foreign-string-to-lisp ir-ptr))
+                              (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))))))
 
                   ;; Error Handling
                   (crisp.compiler:crisp-compiler-error (c)
@@ -239,11 +242,15 @@
 
       ;; Metadata Generation (Once, after collecting all outputs)
       (when metadata-p
-            (let ((meta-paths
-                   (crisp.compiler::generate-metadata-for-file filepath
-                                                               (make-pathname :type "metacrisp" :defaults filepath)
-                                                               :output-targets (reverse generated-outputs)
-                                                               :forms captured-forms)))
+            (let* ((base-name (if crisp.compiler::*differentiate-p*
+                                  (format nil "~a_grad" (pathname-name filepath))
+                                  (pathname-name filepath)))
+                   (meta-path (make-pathname :name base-name :type "metacrisp" :defaults filepath))
+                   (meta-paths
+                    (crisp.compiler::generate-metadata-for-file filepath
+                                                                meta-path
+                                                                :output-targets (reverse generated-outputs)
+                                                                :forms captured-forms)))
               ;; Track generated metacrisp files for hoisting
               (setf generated-metacrisp-files
                 (if (listp meta-paths) meta-paths (list meta-paths)))))
