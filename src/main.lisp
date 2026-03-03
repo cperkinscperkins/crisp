@@ -93,6 +93,10 @@
          (metadata-p (or (member "--metadata" flags :test #'string=)
                          (and hoist-targets t))))
 
+    (when (and differentiate-p hoist-targets)
+          (format *error-output* "ERROR: --differentiate and --hoist are incompatible and cannot be used together.~%")
+          (uiop:quit 1))
+
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
                                         :runtime-checks runtime-checks-p

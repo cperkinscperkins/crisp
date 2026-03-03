@@ -420,7 +420,8 @@ Assault On Pytorch
       remove --lax.
 
 - [x] --differentiate and --ir-target=spv outputs the SAME .spv path as when not using differentiate. Should be named _grad.
-- [ ] --differentiate should not work with --hoist.  Error or skip hoist.
+- [x] --differentiate should not work with --hoist.  Error or skip hoist.
+- [ ] more testing: sub-functions (both with return values and &out params)
 
 
 
