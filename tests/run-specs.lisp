@@ -150,6 +150,11 @@
   (let ((directives (extract-test-directives file))
         (all-passed t))
 
+    ;; Check if we should skip this file entirely based on current flags
+    (when (parse-skip-with directives)
+          (format t "~&Running Spec: ~a (Default)... SKIP (Skipped due to SKIP-WITH matches active flags)~%" (pathname-name file))
+          (return-from run-spec-file t))
+
     ;; 1. Default Run (Current Global Flags)
     (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
     (finish-output) ;; Ensure "Running Spec..." is printed before runner output
@@ -1001,6 +1006,28 @@
                                    (t nil)))) ;; Ignore unknown flags for now
                       (when active
                             (return-from parse-fail-with t))))))))
+  nil)
+
+(defun parse-skip-with (directive-lines)
+  "Parses SKIP-WITH[--flag]: 'message' directives.
+   Returns T if any directive matches the CURRENT active flags."
+  (dolist (line directive-lines)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "SKIP-WITH[")
+            (let* ((end-bracket (position #\] trimmed))
+                   (colon (position #\: trimmed :start (or end-bracket 0)))
+                   (flag-str (when end-bracket (subseq trimmed 10 end-bracket))))
+
+              (when (and flag-str (> (length flag-str) 0))
+                    ;; Check if flag is active
+                    (let ((active (cond
+                                   ((string= flag-str "--single-pass") *compile-single-pass*)
+                                   ((string= flag-str "--debug") *compile-debug*)
+                                   ((string= flag-str "--use-binary") *use-binary*)
+                                   ((string= flag-str "--differentiate") *compile-differentiate*)
+                                   (t nil)))) ;; Ignore unknown flags for now
+                      (when active
+                            (return-from parse-skip-with t))))))))
   nil)
 
 (defun parse-test-with (directive-lines)
