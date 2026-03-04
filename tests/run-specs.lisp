@@ -932,30 +932,34 @@
 (defun run-unit-tests (unit-files)
   "Run discovered unit tests using Parachute"
   (when unit-files
-        ;; Load Parachute test framework
         (ql:quickload "parachute" :silent t)
-        (format t "~&~%=== Running Unit Tests ===~%"))
+        (format t "~&~%=== Loading Unit Tests ===~%"))
 
-  (let ((total 0)
-        (passed 0)
-        (failed-files nil))
-
+  (let ((failed-load-files nil))
     (dolist (file unit-files)
-      (format t "~&Unit Test: ~a... " (file-namestring file))
+      (format t "~&Loading Unit Test: ~a... " (file-namestring file))
       (finish-output)
-      (incf total)
-      (if (run-unit-test-loader file)
-          (incf passed)
-          (push (file-namestring file) failed-files)))
+      (handler-case
+          (let ((*standard-output* (make-broadcast-stream))
+                (*error-output* (make-broadcast-stream)))
+            (load file))
+        (error (e)
+          (push (file-namestring file) failed-load-files)
+          (format t "FAIL~%  Error: ~a~%" e))
+        (:no-error (r)
+                   (declare (ignore r))
+                   (format t "PASS~%"))))
 
-    (when unit-files
+    (when failed-load-files
           (format t "~&---------------------------~%")
-          (format t "Unit Tests: ~a/~a Passed.~%" passed total)
-          (when failed-files
-                (format t "Failed Unit Tests:~%~{  - ~a~%~}" (nreverse failed-files))))
+          (format t "Failed to Load Unit Tests:~%~{  - ~a~%~}" (nreverse failed-load-files))
+          (return-from run-unit-tests nil))
 
-    ;; Return success if all passed
-    (= passed total)))
+    (format t "~&~%=== Executing Unit Tests ===~%")
+    (let ((report (parachute:test 'crisp.compiler::crisp.tests)))
+      (if (parachute:tests-with-status :failed report)
+          nil
+          t))))
 
 ;; Directive parsing for test expectations
 ;; Extract header comments from test files containing directives like:
