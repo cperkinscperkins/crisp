@@ -438,7 +438,7 @@
         (log:error "Backward kernel @~a_grad not found" forward-name)
         (return-from validate-generic-grad-signature nil))
 
-      (let* ((end-pos (search ") {" content :start2 pos))
+      (let* ((end-pos (search "{" content :start2 pos))
              (sig-slice (if end-pos (subseq content pos end-pos) (subseq content pos)))
              (comma-count (count #\, sig-slice)))
         (cl:unless end-pos
