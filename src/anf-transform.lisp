@@ -113,19 +113,14 @@
                 (multiple-value-bind (new-val val-bindings) (anf-normalize val nil)
                   (setf new-bindings (append new-bindings val-bindings))
                   (setf new-bindings (append new-bindings (list `(,@vars ,new-val)))))))
-            (let ((anf-body-forms nil))
-              (loop for form in body-forms do
-                      (multiple-value-bind (new-form form-bindings) (anf-normalize form is-nested?)
-                        (setf new-bindings (append new-bindings form-bindings))
-                        (push new-form anf-body-forms)))
-              (let* ((anf-body (nreverse anf-body-forms))
-                     ;; Decls need to be hoisted into the new bindings list so they appear above the body
-                     (hoisted-decls (loop for d in decls collect `(declare ,d)))
-                     (anf-progn (if (> (length anf-body) 1) `(progn ,@anf-body) (car anf-body))))
-                (if is-nested?
-                    (let ((temp (anf-fresh-temp)))
-                      (values temp (append new-bindings hoisted-decls `((,temp ,anf-progn)))))
-                    (values anf-progn (append new-bindings hoisted-decls)))))))
+            (let* ((anf-body (mapcar #'%anf-transform body-forms))
+                   ;; Decls need to be hoisted into the new bindings list so they appear above the body
+                   (hoisted-decls (loop for d in decls collect `(declare ,d)))
+                   (anf-progn (if (> (length anf-body) 1) `(progn ,@anf-body) (car anf-body))))
+              (if is-nested?
+                  (let ((temp (anf-fresh-temp)))
+                    (values temp (append new-bindings hoisted-decls `((,temp ,anf-progn)))))
+                  (values anf-progn (append new-bindings hoisted-decls))))))
         ((eq op 'declare)
           (if is-nested?
               (let ((temp (anf-fresh-temp)))

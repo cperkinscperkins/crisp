@@ -94,6 +94,10 @@
                             (setf (gethash sin-a adjoint-map) sin-a)
                             (emit `(set! ,sin-a (sin ,a)))
                             (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
+                ((and (consp expr) (eq (car expr) '~))
+                  (let* ((a (cadr expr))
+                         (v-adj (local-adj v)))
+                    (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
                 (t nil))))
 
            ((and (consp form) (eq (car form) 'set!))
