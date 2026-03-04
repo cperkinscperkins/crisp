@@ -5,7 +5,7 @@
 
 - Explicit Output Parameters:  The `&out` modifier explicitly marks output-only parameters in function signatures.  This creates a clear, compiler-enforced contract that prevents race conditions and bugs caused by reading from uninitialized or partially-written output buffers.
 
-- Guaranteed Termination:  Crisp is intentionally not Turing-complete (no unbounded recursion or loops).  This provides a mathematical guarantee that kernels will always finish, preventing GPU hangs. It also unlocks a suite of powerful static analysis tools that are impossible in general-purpose languages.
+- Guaranteed Termination:  Crisp is intentionally not Turing-complete (no unbounded recursion or loops).  This provides a mathematical guarantee that kernels will always finish, preventing GPU hangs. It also unlocks a suite of powerful static analysis tools that are impossible in general-purpose languages, and is key to supporting auto differentiable kernels
 
 - First-Class GPU Primitives:  Common but complex GPU patterns like grid-strides, warp shuffles, and parallel reductions are provided as high-level, built-in language constructs.  This allows developers to write powerful, performant code that is both readable and correct, without having to reinvent these difficult algorithms from scratch.
 

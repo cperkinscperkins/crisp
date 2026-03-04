@@ -39,6 +39,10 @@ However, if the kernel strategy is declared as `one-thread-per-element`, then th
 
 The `--differentiate` flag significantly increases the complexity of the generated SPIR-V, as it effectively doubles the logic and may increase register pressure to store intermediate "primal" values. Use the `check-registers` and `check-divergence` flags in conjunction with `--differentiate` to ensure your adjoint kernels remain performant on your target hardware.
 
+### Output File Naming
+
+When using the `--differentiate` flag, the compiler will append `_grad` to the output filename. For example, if compiling `my-kernel.crisp` with `--differentiate` and the `--ir-target=spv` flag, the output file will be named `my-kernel_grad.spv`.
+
 
 
 

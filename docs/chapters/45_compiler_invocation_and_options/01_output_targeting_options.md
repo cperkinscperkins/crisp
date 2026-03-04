@@ -109,3 +109,5 @@ When used the kernels are assumed to be "forward" kernels and the compiler will 
 
 Use `(declare forward-only)` to opt out of differentiation for a specific kernel.
 
+Also note that at this time `--differentiate` and `--hoist` are mutually exclusive.  The compiler will emit an error if both flags are used.
+
