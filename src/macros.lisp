@@ -453,7 +453,8 @@
                     (error "Differentiable Kernels require an '&out' parameter. If this kernel performs non-differentiable operations (like printing or shuffling), declare it as 'forward-only'. (~a)" name)))))
       nil))
 
-(defun %generate-backward-kernel-ast (name params signature-types)
+
+(defun %generate-backward-kernel-ast (name params signature-types raw-body)
   "Helper: Generates the def-kernel-exact AST for the backward pass."
   (let ((inputs nil) (input-types nil)
                      (outputs nil) (output-types nil)
@@ -475,18 +476,35 @@
            (bwd-params (append inputs outputs out-grads (if in-grads (list '&out) nil) in-grads))
            (bwd-types (append input-types output-types output-types (if input-types (list '&out) nil) input-types)))
 
-      (multiple-value-bind (exploded-params exploded-types)
+      (multiple-value-bind (exploded-params exploded-types bwd-reassembly-bindings)
           (%explode-kernel-args bwd-params bwd-types)
 
-        `(progn
-          (eval-when (:compile-toplevel :load-toplevel :execute)
-            (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
-              (loop for p in ',bwd-params
-                    for t-spec in ',bwd-types
-                    collect (cons p t-spec))))
-          (def-kernel-exact ,bwd-name ,exploded-params
-                            (declare #'(,@exploded-types))
-                            (return)))))))
+        (let* ((anf-body (mapcar #'anf-transform raw-body))
+               (flat-anf (flatten-anf-body anf-body))
+               (forward-bindings
+                (loop for form in flat-anf
+                        when (and (consp form) (= (length form) 2) (symbolp (car form)))
+                      collect form))
+               (forward-side-effects
+                (loop for form in flat-anf
+                        when (or (not (consp form))
+                                 (not (= (length form) 2))
+                                 (not (symbolp (car form))))
+                      collect form))
+               (backward-walk (generate-backward-walk flat-anf inputs outputs input-types output-types)))
+
+          `(progn
+            (eval-when (:compile-toplevel :load-toplevel :execute)
+              (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
+                (loop for p in ',bwd-params
+                      for t-spec in ',bwd-types
+                      collect (cons p t-spec))))
+            (def-kernel-exact ,bwd-name ,exploded-params
+                              (declare #'(,@exploded-types))
+                              (let (,@bwd-reassembly-bindings)
+                                (let (,@forward-bindings)
+                                  ,backward-walk))
+                              (return))))))))
 
 
 (defun parse-kernel-signature (name params body)
@@ -555,7 +573,8 @@
 
       ;; Inject the Backward Kernel AST if differentiation is enabled and allowed
       ,@(when is-differentiable
-              (list (%generate-backward-kernel-ast name params signature-types))))))
+              (list (%generate-backward-kernel-ast name params signature-types raw-body))))))
+
 
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.

@@ -1,3 +1,8 @@
+;;;; Crisp - Lisp for Developing GPU Kernels
+;;;; Copyright (c) 2025 Christopher Perkins
+;;;;
+;;;; Licensed under the MIT License. See LICENSE file in the project root.
+
 (in-package :crisp.compiler)
 
 (defvar *anf-counter* 0)
@@ -221,3 +226,30 @@
                    (t form)))
                 form))
       forms))
+
+
+(defun flatten-anf-body (anf-body)
+  "Flattens an ANF body into a sequential list of bindings and side-effects.
+   Returns a list of elements formated as either (var expr) or just expr (for side-effects)."
+  (let ((flat nil))
+    (labels ((walk (expr)
+                   (cond
+                    ((and (consp expr) (eq (car expr) 'let))
+                      (let ((bindings (cadr expr))
+                            (body (cddr expr)))
+                        (dolist (b bindings)
+                          (if (and (consp b) (= (length b) 2))
+                              (push b flat)))
+                        (dolist (f body)
+                          (unless (and (consp f) (eq (car f) 'declare))
+                            (walk f)))))
+                    ((and (consp expr) (eq (car expr) 'progn))
+                      (dolist (f (cdr expr))
+                        (walk f)))
+                    ((and (consp expr) (eq (car expr) 'declare))
+                      nil)
+                    (t
+                      (push expr flat)))))
+      (dolist (form anf-body)
+        (walk form))
+      (nreverse flat))))
