@@ -73,6 +73,7 @@
 (defvar *compile-debug* nil)
 (defvar *compile-single-pass* nil)
 (defvar *compile-differentiate* nil)
+(defvar *compile-lax* nil)
 (defvar *test-filter* nil)
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
@@ -116,6 +117,7 @@
     (setf args (append (when *compile-debug* '("--debug"))
                  (when *compile-single-pass* '("--single-pass"))
                  (when *compile-differentiate* '("--differentiate"))
+                 (when *compile-lax* '("--lax"))
                  (list (format nil "--log-level=~a" cl-user::*log-level*))
                  (list (uiop:native-namestring file))))
 
@@ -148,6 +150,11 @@
   (let ((directives (extract-test-directives file))
         (all-passed t))
 
+    ;; Check if we should skip this file entirely based on current flags
+    (when (parse-skip-with directives)
+          (format t "~&Running Spec: ~a (Default)... SKIP (Skipped due to SKIP-WITH matches active flags)~%" (pathname-name file))
+          (return-from run-spec-file t))
+
     ;; 1. Default Run (Current Global Flags)
     (format t "~&Running Spec: ~a (Default)... " (pathname-name file))
     (finish-output) ;; Ensure "Running Spec..." is printed before runner output
@@ -165,34 +172,36 @@
 
     ;; 3. Hoist Tests (TEST-HOIST[backend]: validator)
     (let ((hoist-directives (parse-test-hoist directives)))
-      (dolist (directive hoist-directives)
-        (let ((backend (car directive))
-              (validator-name (cdr directive)))
-          (format t "~&Running Spec: ~a (Hoist[~a] -> ~a)... " (pathname-name file) backend validator-name)
-          (finish-output)
-          (let ((cpp-files (run-spec-with-hoist file backend)))
-            ;; Use find-symbol to look up the existing function symbol
-            (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
-              (if (fboundp validator-sym)
-                  (unless (funcall validator-sym file cpp-files)
-                    (setf all-passed nil))
-                  (progn
-                   (format t "FAIL (Validator ~a not found)~%" validator-name)
-                   (setf all-passed nil))))))
+      (if (and hoist-directives *compile-differentiate*)
+          (format t "~&Running Spec: ~a (Hoist)... SKIP (--differentiate active)~%" (pathname-name file))
+          (dolist (directive hoist-directives)
+            (let ((backend (car directive))
+                  (validator-name (cdr directive)))
+              (format t "~&Running Spec: ~a (Hoist[~a] -> ~a)... " (pathname-name file) backend validator-name)
+              (finish-output)
+              (let ((cpp-files (run-spec-with-hoist file backend)))
+                ;; Use find-symbol to look up the existing function symbol
+                (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
+                  (if (fboundp validator-sym)
+                      (unless (funcall validator-sym file cpp-files)
+                        (setf all-passed nil))
+                      (progn
+                       (format t "FAIL (Validator ~a not found)~%" validator-name)
+                       (setf all-passed nil))))))
 
-        ;; Cleanup Hoist Files on Success
-        (when (and all-passed (not *keep-work*))
-              (let* ((base-name (pathname-name file))
-                     (dir (pathname-directory file))
-                     (cpp-files (directory (make-pathname :directory dir :name :wild :type "cpp" :defaults file)))
-                     (exe-files (directory (make-pathname :directory dir :name :wild :type "exe" :defaults file)))
-                     (spv-files (directory (make-pathname :directory dir :name :wild :type "spv" :defaults file)))
-                     (meta-files (directory (make-pathname :directory dir :name :wild :type "metacrisp" :defaults file)))
-                     (all-files (append cpp-files exe-files spv-files meta-files)))
-                (dolist (f all-files)
-                  (when (and (stringp (pathname-name f))
-                             (uiop:string-prefix-p base-name (pathname-name f)))
-                        (delete-file f)))))))
+            ;; Cleanup Hoist Files on Success
+            (when (and all-passed (not *keep-work*))
+                  (let* ((base-name (pathname-name file))
+                         (dir (pathname-directory file))
+                         (cpp-files (directory (make-pathname :directory dir :name :wild :type "cpp" :defaults file)))
+                         (exe-files (directory (make-pathname :directory dir :name :wild :type "exe" :defaults file)))
+                         (spv-files (directory (make-pathname :directory dir :name :wild :type "spv" :defaults file)))
+                         (meta-files (directory (make-pathname :directory dir :name :wild :type "metacrisp" :defaults file)))
+                         (all-files (append cpp-files exe-files spv-files meta-files)))
+                    (dolist (f all-files)
+                      (when (and (stringp (pathname-name f))
+                                 (uiop:string-prefix-p base-name (pathname-name f)))
+                            (delete-file f))))))))
 
     all-passed))
 
@@ -203,6 +212,7 @@
         (*compile-single-pass* (or *compile-single-pass* (member "--single-pass" flags :test #'string=)))
         (*compile-debug* (or *compile-debug* (member "--debug" flags :test #'string=)))
         (*compile-differentiate* (or *compile-differentiate* (member "--differentiate" flags :test #'string=)))
+        (*compile-lax* (or *compile-lax* (member "--lax" flags :test #'string=)))
         (emit-metadata (member "--metadata" flags :test #'string=))
 
         ;; Determine IR Target from flags (default to nil/generic)
@@ -241,7 +251,8 @@
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
                   (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
-                                                      :differentiate *compile-differentiate*) ;; Standard cleanup
+                                                      :differentiate *compile-differentiate*
+                                                      :lax-kernel-rules *compile-lax*) ;; Standard cleanup
                   (with-open-file (stream filepath)
                     ;; FIX: Use :crisp-language package to match binary compiler behavior.
                     ;; Previously used :crisp.compiler which caused user-defined names like
@@ -291,10 +302,11 @@
 
 (defun compile-crisp-file-to-spirv (filepath &key (emit-metadata nil))
   "Compiles a .crisp file to .spv and returns the output path and metadata paths if successful."
-  (let ((out-path (make-pathname :type "spv" :defaults filepath))
-        (meta-base-path (make-pathname :type "metacrisp" :defaults filepath))
-        (meta-paths nil)
-        (*standard-output* (make-broadcast-stream)))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
+         (out-path (make-pathname :name base-name :type "spv" :defaults filepath))
+         (meta-base-path (make-pathname :name base-name :type "metacrisp" :defaults filepath))
+         (meta-paths nil)
+         (*standard-output* (make-broadcast-stream)))
     (when (probe-file out-path) (delete-file out-path))
 
     (let (;; Use a FRESH environment for each spec to ensure isolation
@@ -581,12 +593,16 @@
 
 (defun run-spec-spirv-binary (file &key (emit-metadata nil) (validator nil))
   "Runs the binary compiler with --ir-target=spv. Optionally emits metadata and runs a validator."
-  (let ((bin (get-binary-path))
-        (out-path (make-pathname :type "spv" :defaults file))
-        (args (list (uiop:native-namestring file) "--ir-target=spv"
-                    (format nil "--log-level=~a" cl-user::*log-level*))))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
+         (bin (get-binary-path))
+         (out-path (make-pathname :name base-name :type "spv" :defaults file))
+         (args (list (uiop:native-namestring file) "--ir-target=spv"
+                     (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
+    (when *compile-differentiate* (push "--differentiate" args))
+    (when *compile-lax* (push "--lax" args))
+    (when *compile-single-pass* (push "--single-pass" args))
     (when emit-metadata (push "--metadata" args))
 
     (multiple-value-bind (output error-output exit-code)
@@ -645,15 +661,18 @@
 
 (defun compile-crisp-file-to-ptx (filepath)
   "Compiles a .crisp file to .ptx and returns the output path if successful."
-  (let ((out-path (make-pathname :type "ptx" :defaults filepath))
-        (*standard-output* (make-broadcast-stream)))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
+         (out-path (make-pathname :name base-name :type "ptx" :defaults filepath))
+         (*standard-output* (make-broadcast-stream)))
     (when (probe-file out-path) (delete-file out-path))
 
     (let (;; Use a FRESH environment for each spec to ensure isolation
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
                   ;; Initialize for PTX
-                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
+                                                      :differentiate *compile-differentiate*
+                                                      :lax-kernel-rules *compile-lax*)
                   (with-open-file (stream filepath)
                     (loop for form = (read stream nil :eof)
                           until (eq form :eof)
@@ -687,11 +706,15 @@
       nil)))
 
 (defun run-spec-ptx-binary (file)
-  (let ((bin (get-binary-path))
-        (out-path (make-pathname :type "ptx" :defaults file))
-        (args (list (uiop:native-namestring file) "--ir-target=ptx" (format nil "--log-level=~a" cl-user::*log-level*))))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
+         (bin (get-binary-path))
+         (out-path (make-pathname :name base-name :type "ptx" :defaults file))
+         (args (list (uiop:native-namestring file) "--ir-target=ptx" (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
+    (when *compile-differentiate* (push "--differentiate" args))
+    (when *compile-lax* (push "--lax" args))
+    (when *compile-single-pass* (push "--single-pass" args))
 
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
@@ -713,13 +736,16 @@
 ;; LLVM IR Runner Functions
 (defun compile-crisp-file-to-llvmir (filepath)
   "Compiles a .crisp file to .ll and returns the output path if successful."
-  (let ((out-path (make-pathname :type "ll" :defaults filepath))
-        (*standard-output* (make-broadcast-stream)))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
+         (out-path (make-pathname :name base-name :type "ll" :defaults filepath))
+         (*standard-output* (make-broadcast-stream)))
     (when (probe-file out-path) (delete-file out-path))
 
     (let ((crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
-                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
+                                                      :differentiate *compile-differentiate*
+                                                      :lax-kernel-rules *compile-lax*)
                   (with-open-file (stream filepath)
                     (let ((*package* (find-package :crisp.compiler)))
                       (loop for form = (read stream nil :eof)
@@ -767,12 +793,16 @@
 ;; Add validator support to binary mode LLVM IR compilation
 (defun run-spec-llvmir-binary (file &key (validator nil))
   "Runs the binary compiler with --ir-target=llvmir. Optionally runs a validator."
-  (let ((bin (get-binary-path))
-        (out-path (make-pathname :type "ll" :defaults file))
-        (args (list (uiop:native-namestring file) "--ir-target=llvmir"
-                    (format nil "--log-level=~a" cl-user::*log-level*))))
+  (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name file)) (pathname-name file)))
+         (bin (get-binary-path))
+         (out-path (make-pathname :name base-name :type "ll" :defaults file))
+         (args (list (uiop:native-namestring file) "--ir-target=llvmir"
+                     (format nil "--log-level=~a" cl-user::*log-level*))))
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
+    (when *compile-differentiate* (push "--differentiate" args))
+    (when *compile-lax* (push "--lax" args))
+    (when *compile-single-pass* (push "--single-pass" args))
 
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (cons (uiop:native-namestring bin) args)
@@ -902,30 +932,34 @@
 (defun run-unit-tests (unit-files)
   "Run discovered unit tests using Parachute"
   (when unit-files
-        ;; Load Parachute test framework
         (ql:quickload "parachute" :silent t)
-        (format t "~&~%=== Running Unit Tests ===~%"))
+        (format t "~&~%=== Loading Unit Tests ===~%"))
 
-  (let ((total 0)
-        (passed 0)
-        (failed-files nil))
-
+  (let ((failed-load-files nil))
     (dolist (file unit-files)
-      (format t "~&Unit Test: ~a... " (file-namestring file))
+      (format t "~&Loading Unit Test: ~a... " (file-namestring file))
       (finish-output)
-      (incf total)
-      (if (run-unit-test-loader file)
-          (incf passed)
-          (push (file-namestring file) failed-files)))
+      (handler-case
+          (let ((*standard-output* (make-broadcast-stream))
+                (*error-output* (make-broadcast-stream)))
+            (load file))
+        (error (e)
+          (push (file-namestring file) failed-load-files)
+          (format t "FAIL~%  Error: ~a~%" e))
+        (:no-error (r)
+                   (declare (ignore r))
+                   (format t "PASS~%"))))
 
-    (when unit-files
+    (when failed-load-files
           (format t "~&---------------------------~%")
-          (format t "Unit Tests: ~a/~a Passed.~%" passed total)
-          (when failed-files
-                (format t "Failed Unit Tests:~%~{  - ~a~%~}" (nreverse failed-files))))
+          (format t "Failed to Load Unit Tests:~%~{  - ~a~%~}" (nreverse failed-load-files))
+          (return-from run-unit-tests nil))
 
-    ;; Return success if all passed
-    (= passed total)))
+    (format t "~&~%=== Executing Unit Tests ===~%")
+    (let ((report (parachute:test 'crisp.compiler::crisp.tests)))
+      (if (parachute:tests-with-status :failed report)
+          nil
+          t))))
 
 ;; Directive parsing for test expectations
 ;; Extract header comments from test files containing directives like:
@@ -984,6 +1018,28 @@
                                    (t nil)))) ;; Ignore unknown flags for now
                       (when active
                             (return-from parse-fail-with t))))))))
+  nil)
+
+(defun parse-skip-with (directive-lines)
+  "Parses SKIP-WITH[--flag]: 'message' directives.
+   Returns T if any directive matches the CURRENT active flags."
+  (dolist (line directive-lines)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "SKIP-WITH[")
+            (let* ((end-bracket (position #\] trimmed))
+                   (colon (position #\: trimmed :start (or end-bracket 0)))
+                   (flag-str (when end-bracket (subseq trimmed 10 end-bracket))))
+
+              (when (and flag-str (> (length flag-str) 0))
+                    ;; Check if flag is active
+                    (let ((active (cond
+                                   ((string= flag-str "--single-pass") *compile-single-pass*)
+                                   ((string= flag-str "--debug") *compile-debug*)
+                                   ((string= flag-str "--use-binary") *use-binary*)
+                                   ((string= flag-str "--differentiate") *compile-differentiate*)
+                                   (t nil)))) ;; Ignore unknown flags for now
+                      (when active
+                            (return-from parse-skip-with t))))))))
   nil)
 
 (defun parse-test-with (directive-lines)
@@ -1075,6 +1131,7 @@
              ((string= arg "--debug") (setf *compile-debug* t))
              ((string= arg "--single-pass") (setf *compile-single-pass* t))
              ((string= arg "--differentiate") (setf *compile-differentiate* t))
+             ((string= arg "--lax") (setf *compile-lax* t))
              ((string= arg "--only-unit-tests") (setf *only-unit-tests* t))
              ((string= arg "--skip-unit-tests") (setf *skip-unit-tests* t))
              ((string= arg "--keep-work") (setf *keep-work* t))
@@ -1112,8 +1169,12 @@
 
     (loop for file in spec-files do
             (when (or (not *test-filter*) (search *test-filter* (namestring file)))
-                  (let ((dir-name (get-parent-directory-name file))
-                        (expect-failure (should-expect-failure-p file)))
+                  (let* ((dir-name (get-parent-directory-name file))
+                         (is-legacy-lax (and (>= (length dir-name) 3)
+                                             (every #'digit-char-p (subseq dir-name 0 3))
+                                             (< (parse-integer (subseq dir-name 0 3)) 41)))
+                         (*compile-lax* (or *compile-lax* is-legacy-lax))
+                         (expect-failure (should-expect-failure-p file)))
 
                     ;; Check stop target
                     (when (and stop-target (string> dir-name stop-target))

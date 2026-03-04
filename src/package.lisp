@@ -389,6 +389,7 @@
                 #:to-uint #:as-uint
                 #:to-ulong #:as-ulong
                 #:truncate #:floor #:ceil #:round
+                #:sin #:cos
 
                 ;; NEW: Unified Let from Compiler
                 #:let
@@ -438,6 +439,7 @@
    #:to-uchar #:to-ushort #:to-uint #:to-ulong #:as-uchar #:as-ushort #:as-uint #:as-ulong
    #:to #:as
    #:truncate #:floor #:ceil #:round
+   #:sin #:cos
 
    #:if #:when #:unless #:cond #:case #:progn #:let #:funcall
    #:if+ #:else

@@ -29,6 +29,7 @@ For template usage, see the subequent section.
 | `uniform`     | `(uniform someVar)`         | Yes | Yes | declares that some param or variable must be uniform across the workgroup.  Compiler will error if it is not. |
 | `constexpr`   | `(constexpr someVar)`       | Yes | Yes | delares that some param or variable must be compile time calculable. Compiler will error if it is not |
 | `to-uniform`  | `(to-uniform someVar)`      | No  | Yes | tells the compiler to MAKE the newly defined variable uniform across the entire workgroup. This is non-trivial. See [to-uniform](#to-uniform-) |
+| `forward-only` | see [Auto-Differentiation](#auto-differentiation-ad)| Yes | No | tells the compiler that this function is forward-only and should not be differentiated. Will not be compiled when the `-differentiate` flag is used. |
 
 
 <!--

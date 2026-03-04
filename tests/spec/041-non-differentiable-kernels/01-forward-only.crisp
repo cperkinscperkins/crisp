@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]: PASS
+
+;; this kernel should compile without erroring when --differentiate is used, but
+;; should not produce anything.  (i.e. no backwards kernel)
+
+;; and, of course, it compiles perfectly when --differentiate is NOT used.
+
+(def-kernel not_me (C) 
+  (declare forward-only #'((cell float :address-space :global :access :read-write) => nil))
+  (set! (~ C) 2.0))
+

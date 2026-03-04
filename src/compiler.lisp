@@ -300,7 +300,6 @@
     (log:info "Generated PTX: ~a" ptx-file)))
 
 
-
 (defun register-builtins ()
   "Registers built-in types and structs like 'storage' and 'cell' using def-struct
    semantics.  Cell carries the value-t brand for --differentiate mode."
@@ -352,12 +351,13 @@
 
   (log:info "Built-in structs registered."))
 
-(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
+(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil) (lax-kernel-rules nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
 
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
+  (setf *lax-kernel-rules-p* lax-kernel-rules)
   ;; Load the LLVM shared library.
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
@@ -418,15 +418,15 @@ This should be called by any entry point into the system (REPL, executable, CI).
   ;; Without this cleanup, stale dispatch macros survive initialize-compiler and
   ;; misdirect MAKE-X calls in subsequent tests.
   (when (boundp '*partial-template-instantiations*)
-    (loop for template-name being the hash-keys of *partial-template-instantiations*
-          do (let ((dispatch-sym (intern (format nil "MAKE-~a%DISPATCH" template-name)
-                                         (symbol-package template-name))))
-               (when (macro-function dispatch-sym)
-                 (log:info "INITIALIZE-COMPILER: clearing stale CL dispatch macro ~a" dispatch-sym)
-                 ;; Use fmakunbound to remove the macro definition cleanly.
-                 ;; (setf (macro-function sym) nil) is not valid in SBCL.
-                 (fmakunbound dispatch-sym))))
-    (clrhash *partial-template-instantiations*))
+        (loop for template-name being the hash-keys of *partial-template-instantiations*
+              do (let ((dispatch-sym (intern (format nil "MAKE-~a%DISPATCH" template-name)
+                                             (symbol-package template-name))))
+                   (when (macro-function dispatch-sym)
+                         (log:info "INITIALIZE-COMPILER: clearing stale CL dispatch macro ~a" dispatch-sym)
+                         ;; Use fmakunbound to remove the macro definition cleanly.
+                         ;; (setf (macro-function sym) nil) is not valid in SBCL.
+                         (fmakunbound dispatch-sym))))
+        (clrhash *partial-template-instantiations*))
 
   ;; Initialize built-in structs (storage)
   (register-builtins))

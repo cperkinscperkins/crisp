@@ -408,13 +408,20 @@ Assault On Pytorch
 
 - [x] brand -- 
 - - [x] requires documentation and decisions before work can begin.
-- [ ] --differentiate
+- [x] --differentiate
 - - [x] brand cell
 - - [x] ANF transform.
-- - [ ] generate shadow signatures
-- - [ ] wengert list
-- - [ ] kernel and function transforms
-- - [ ] A/D
+- - [x] generate shadow signatures
+- - [x] wengert list
+- - [x] kernel and function transforms
+- - [x] A/D
+
+- [ ] --lax was added, but probably ;; SKIP-WITH[--differentiate] would have been better. Makes no sense to have two systems.
+      remove --lax.
+
+- [x] --differentiate and --ir-target=spv outputs the SAME .spv path as when not using differentiate. Should be named _grad.
+- [x] --differentiate should not work with --hoist.  Error or skip hoist.
+- [ ] more testing: sub-functions (both with return values and &out params)
 
 
 

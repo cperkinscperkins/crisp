@@ -103,5 +103,6 @@
 - local-mem                 [DP]
 - global-mem :return-value  [DP] 
 - string-concat
+- forward-only              [DP]
 
 

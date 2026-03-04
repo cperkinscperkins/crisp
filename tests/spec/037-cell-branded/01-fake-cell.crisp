@@ -29,13 +29,13 @@
         ;; do something with storage
         (return)))
 
-(def-type in-ish (cell int :address-space :global :access :read-write))
-(def-type out-ish (cell int :address-space :global :access :read-write))
+(def-type in-ish (cell float :address-space :global :access :read-write))
+(def-type out-ish (cell float :address-space :global :access :read-write))
 
 (def-kernel test_fake_cell (c-in someV &out c-out)
-    (declare #'(in-ish int &out out-ish))
-    (gen-fake-cell int :global :read-write)
-    ; (gen-set-~ int :global :read-write) ;; unknown variable INT
+    (declare #'(in-ish float &out out-ish))
+    (gen-fake-cell float :global :read-write)
+    ; (gen-set-~ float :global :read-write) ;; unknown variable FLOAT
     (let ((fc (make-fake-cell :parent (parent~ c-in) :offset (to-ulong 0)  :address-space :global :access :read-write)))
         (set-~ fc someV)                   
         (set! (~ c-out) (~ fc))))

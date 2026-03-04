@@ -1,3 +1,8 @@
+;;;; Crisp - Lisp for Developing GPU Kernels
+;;;; Copyright (c) 2025 Christopher Perkins
+;;;;
+;;;; Licensed under the MIT License. See LICENSE file in the project root.
+
 (in-package :crisp.compiler)
 
 (defvar *anf-counter* 0)
@@ -113,19 +118,14 @@
                 (multiple-value-bind (new-val val-bindings) (anf-normalize val nil)
                   (setf new-bindings (append new-bindings val-bindings))
                   (setf new-bindings (append new-bindings (list `(,@vars ,new-val)))))))
-            (let ((anf-body-forms nil))
-              (loop for form in body-forms do
-                      (multiple-value-bind (new-form form-bindings) (anf-normalize form is-nested?)
-                        (setf new-bindings (append new-bindings form-bindings))
-                        (push new-form anf-body-forms)))
-              (let* ((anf-body (nreverse anf-body-forms))
-                     ;; Decls need to be hoisted into the new bindings list so they appear above the body
-                     (hoisted-decls (loop for d in decls collect `(declare ,d)))
-                     (anf-progn (if (> (length anf-body) 1) `(progn ,@anf-body) (car anf-body))))
-                (if is-nested?
-                    (let ((temp (anf-fresh-temp)))
-                      (values temp (append new-bindings hoisted-decls `((,temp ,anf-progn)))))
-                    (values anf-progn (append new-bindings hoisted-decls)))))))
+            (let* ((anf-body (mapcar #'%anf-transform body-forms))
+                   ;; Decls need to be hoisted into the new bindings list so they appear above the body
+                   (hoisted-decls (loop for d in decls collect `(declare ,d)))
+                   (anf-progn (if (> (length anf-body) 1) `(progn ,@anf-body) (car anf-body))))
+              (if is-nested?
+                  (let ((temp (anf-fresh-temp)))
+                    (values temp (append new-bindings hoisted-decls `((,temp ,anf-progn)))))
+                  (values anf-progn (append new-bindings hoisted-decls))))))
         ((eq op 'declare)
           (if is-nested?
               (let ((temp (anf-fresh-temp)))
@@ -226,3 +226,30 @@
                    (t form)))
                 form))
       forms))
+
+
+(defun flatten-anf-body (anf-body)
+  "Flattens an ANF body into a sequential list of bindings and side-effects.
+   Returns a list of elements formated as either (var expr) or just expr (for side-effects)."
+  (let ((flat nil))
+    (labels ((walk (expr)
+                   (cond
+                    ((and (consp expr) (eq (car expr) 'let))
+                      (let ((bindings (cadr expr))
+                            (body (cddr expr)))
+                        (dolist (b bindings)
+                          (if (and (consp b) (= (length b) 2))
+                              (push b flat)))
+                        (dolist (f body)
+                          (unless (and (consp f) (eq (car f) 'declare))
+                            (walk f)))))
+                    ((and (consp expr) (eq (car expr) 'progn))
+                      (dolist (f (cdr expr))
+                        (walk f)))
+                    ((and (consp expr) (eq (car expr) 'declare))
+                      nil)
+                    (t
+                      (push expr flat)))))
+      (dolist (form anf-body)
+        (walk form))
+      (nreverse flat))))

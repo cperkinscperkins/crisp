@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-02T00:23:48.019614Z
+Generated on 2026-03-04T06:28:18.826947Z
 
 ## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
@@ -355,6 +355,10 @@ Generated on 2026-03-02T00:23:48.019614Z
 - **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
 
 ---
+### DEFMACRO `DEF-UNARY-MATH-ANALYZER`
+- **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
+
+---
 ### DEFMACRO `DEF-COMPARISON-ANALYZER`
 - **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
 
@@ -555,6 +559,22 @@ Generated on 2026-03-02T00:23:48.019614Z
 
 
 ---
+### DEFUN `FLATTEN-ANF-BODY`
+- **Args**: `(ANF-BODY)`
+
+  > Flattens an ANF body into a sequential list of bindings and side-effects.  >    Returns a list of elements formated as either (var expr) or just expr (for side-effects).
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp\src\autodiff.lisp`
+
+### DEFUN `GENERATE-BACKWARD-WALK`
+- **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)`
+
+  > Walks a flattened ANF body backwards to accumulate adjoints.  >    Returns a list of backward ANF forms.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp\src\codegen.lisp`
 
 ### DEFUN `GET-OR-CREATE-DI-TYPE`
@@ -684,6 +704,10 @@ Generated on 2026-03-02T00:23:48.019614Z
 ---
 ### DEFMACRO `DEF-BINARY-OP-CODEGEN`
 - **Args**: `(NODE-TYPE INT-INST FLOAT-INST ACCESSOR-PREFIX)`
+
+---
+### DEFMACRO `DEF-UNARY-MATH-CODEGEN`
+- **Args**: `(NODE-TYPE INTRINSIC-NAME)`
 
 ---
 ### DEFUN `GENERATE-COMPARISON-IR`
@@ -873,7 +897,8 @@ Generated on 2026-03-02T00:23:48.019614Z
 
 ---
 ### DEFUN `INITIALIZE-COMPILER`
-- **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
+- **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL)
+              (LAX-KERNEL-RULES NIL))`
 
   > A master initialization function for the Crisp compiler.  > This should be called by any entry point into the system (REPL, executable, CI).
 
@@ -1430,6 +1455,20 @@ Generated on 2026-03-02T00:23:48.019614Z
 
 
 ---
+### DEFUN `%CHECK-DIFFERENTIATE-KERNEL-SIGNATURE`
+- **Args**: `(NAME SIGNATURE-TYPES DECLARATIONS)`
+
+  > Helper: Enforces kernel requirements when Auto-Differentiation is enabled.  >    Returns T if the kernel should be differentiated, NIL if it is forward-only or bypassed via lax mode.
+
+
+---
+### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
+- **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
+
+  > Helper: Generates the def-kernel-exact AST for the backward pass.
+
+
+---
 ### DEFUN `PARSE-KERNEL-SIGNATURE`
 - **Args**: `(NAME PARAMS BODY)`
 
@@ -1815,11 +1854,43 @@ Generated on 2026-03-02T00:23:48.019614Z
 
 
 ---
+### DEFUN `VALIDATE-GENERIC-GRAD-SIGNATURE`
+- **Args**: `(IR-PATH FORWARD-NAME EXPECTED-COMMAS)`
+
+---
+### DEFUN `VALIDATE-BASIC-GRAD-SIGNATURE`
+- **Args**: `(IR-PATH)`
+
+---
 ### DEFUN `VALIDATE-POINT-IN-METADATA`
 - **Args**: `(METADATA-PATH)`
 
   > Validates that the base struct 'point' appears in metadata when a derived  >    type is used on a kernel boundary. Also verifies derived type names like  >    'coordinate', 'dot', 'conclusion' are NOT listed as separate structs.
 
+
+---
+### DEFUN `VALIDATE-ADDITION-CHAIN-RULE`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-MULTIPLY-CHAIN-RULE`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-SUBTRACTION-CHAIN-RULE`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-DIVISION-CHAIN-RULE`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-TRANSCENDENTAL-CHAIN-RULE`
+- **Args**: `(IR-PATH)`
+
+---
+### DEFUN `VALIDATE-NESTED-CHAIN-RULE`
+- **Args**: `(IR-PATH)`
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp\src\metadata.lisp`
@@ -1977,6 +2048,12 @@ Generated on 2026-03-02T00:23:48.019614Z
 
 ---
 ### DEFSTRUCT `SEMANTIC-DIV`
+
+---
+### DEFSTRUCT `SEMANTIC-SIN`
+
+---
+### DEFSTRUCT `SEMANTIC-COS`
 
 ---
 ### DEFSTRUCT `SEMANTIC-LT`
@@ -2701,6 +2778,12 @@ Generated on 2026-03-02T00:23:48.019614Z
 ### DEFVAR `*DIFFERENTIATE-P*`
 
   > If T, enable differentiation mode. Activates branded type enforcement  >    for brands declared with :enforce :diff (the default).
+
+
+---
+### DEFVAR `*LAX-KERNEL-RULES-P*`
+
+  > If T, bypass strict requirements on kernels (like forcing &out for differentiable kernels) in order to cleanly test legacy tests.
 
 
 ---

@@ -150,6 +150,10 @@
             (log:error "Illegal Overload Detected (Pattern): Name=~s Str=~s Pkg=~s IsSystem=~a" name name-str (symbol-package name) is-system)
             (error 'crisp-illegal-overload-error :name name)))
 
+    ;; Check for forward-only in def-function
+    (when (find "FORWARD-ONLY" declarations :key (lambda (x) (when (symbolp x) (symbol-name x))) :test #'string-equal)
+          (error "The 'forward-only' declaration is only allowed in kernels (def-kernel or def-grid-function), not in def-function."))
+
     (log:debug "which package?: ~a ~%" *package*)
 
     ;; Eagerly register the signature for single-pass compilation scenarios.
@@ -433,6 +437,76 @@
 
     signature-types))
 
+(defun %check-differentiate-kernel-signature (name signature-types declarations)
+  "Helper: Enforces kernel requirements when Auto-Differentiation is enabled.
+   Returns T if the kernel should be differentiated, NIL if it is forward-only or bypassed via lax mode."
+  (if *differentiate-p*
+      (let ((is-forward-only (find "FORWARD-ONLY" declarations :key (lambda (x) (when (symbolp x) (symbol-name x))) :test #'string-equal)))
+        (if is-forward-only
+            nil
+            (if (member '&out signature-types)
+                t
+                (if *lax-kernel-rules-p*
+                    (progn
+                     (log:warn "Lax Mode: Skipping differentiable kernel generation for '~a' because it lacks an '&out' parameter." name)
+                     nil)
+                    (error "Differentiable Kernels require an '&out' parameter. If this kernel performs non-differentiable operations (like printing or shuffling), declare it as 'forward-only'. (~a)" name)))))
+      nil))
+
+
+(defun %generate-backward-kernel-ast (name params signature-types raw-body)
+  "Helper: Generates the def-kernel-exact AST for the backward pass."
+  (let ((inputs nil) (input-types nil)
+                     (outputs nil) (output-types nil)
+                     (is-out nil))
+    (loop for p in params
+          for t-spec in signature-types do
+            (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                (setf is-out t)
+                (if is-out
+                    (progn (push p outputs) (push t-spec output-types))
+                    (progn (push p inputs) (push t-spec input-types)))))
+    (setf inputs (nreverse inputs) input-types (nreverse input-types)
+      outputs (nreverse outputs) output-types (nreverse output-types))
+
+    (let* ((pkg (symbol-package name))
+           (bwd-name (intern (format nil "~a_GRAD" (symbol-name name)) pkg))
+           (in-grads (loop for p in inputs collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+           (out-grads (loop for p in outputs collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+           (bwd-params (append inputs outputs out-grads (if in-grads (list '&out) nil) in-grads))
+           (bwd-types (append input-types output-types output-types (if input-types (list '&out) nil) input-types)))
+
+      (multiple-value-bind (exploded-params exploded-types bwd-reassembly-bindings)
+          (%explode-kernel-args bwd-params bwd-types)
+
+        (let* ((anf-body (mapcar #'anf-transform raw-body))
+               (flat-anf (flatten-anf-body anf-body))
+               (forward-bindings
+                (loop for form in flat-anf
+                        when (and (consp form) (= (length form) 2) (symbolp (car form)))
+                      collect form))
+               (forward-side-effects
+                (loop for form in flat-anf
+                        when (or (not (consp form))
+                                 (not (= (length form) 2))
+                                 (not (symbolp (car form))))
+                      collect form))
+               (backward-walk (generate-backward-walk flat-anf inputs outputs input-types output-types)))
+
+          `(progn
+            (eval-when (:compile-toplevel :load-toplevel :execute)
+              (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
+                (loop for p in ',bwd-params
+                      for t-spec in ',bwd-types
+                      collect (cons p t-spec))))
+            (def-kernel-exact ,bwd-name ,exploded-params
+                              (declare #'(,@exploded-types))
+                              (let (,@bwd-reassembly-bindings)
+                                (let (,@forward-bindings)
+                                  ,backward-walk))
+                              (return))))))))
+
+
 (defun parse-kernel-signature (name params body)
   "Parses kernel parameters and body, performing validation and type extraction.
    Returns (values exploded-params exploded-types reassembly-bindings raw-body other-decls)."
@@ -462,11 +536,15 @@
         (multiple-value-bind (exploded-params exploded-types reassembly-bindings)
             (%explode-kernel-args params signature-types)
 
-          ;; Determine other declarations to preserve
-          (let ((other-decls (loop for d in declarations
-                                     unless (member (car d) '(function type))
-                                   collect d)))
-            (values exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types)))))))
+          ;; Check AD constraints for kernels
+          (let ((is-differentiable (%check-differentiate-kernel-signature name signature-types declarations)))
+
+            ;; Determine other declarations to preserve
+            (let ((other-decls (loop for d in declarations
+                                       unless (or (and (consp d) (member (car d) '(function type)))
+                                                  (and (symbolp d) (string-equal (symbol-name d) "FORWARD-ONLY")))
+                                     collect d)))
+              (values exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types is-differentiable))))))))
 
 
 (defmacro def-kernel (name params &rest body)
@@ -477,7 +555,7 @@
    because the host must know the exact layout to marshall arguments."
 
   ;; Use the helper to parse and validate, avoiding code duplication and monolithic macros
-  (multiple-value-bind (exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types)
+  (multiple-value-bind (exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types is-differentiable)
       (parse-kernel-signature name params body)
 
     ;; Expand to def-kernel-exact
@@ -491,7 +569,12 @@
                         (declare #'(,@exploded-types))
                         ,@(when other-decls `((declare ,@other-decls)))
                         (let (,@reassembly-bindings)
-                          ,@raw-body)))))
+                          ,@raw-body))
+
+      ;; Inject the Backward Kernel AST if differentiation is enabled and allowed
+      ,@(when is-differentiable
+              (list (%generate-backward-kernel-ast name params signature-types raw-body))))))
+
 
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.

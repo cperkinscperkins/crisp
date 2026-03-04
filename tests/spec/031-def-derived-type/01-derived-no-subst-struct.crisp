@@ -1,3 +1,4 @@
+;; SKIP-WITH[--differentiate]: "Not supported in auto-diff yet"
 
 ;; TEST-WITH[--ir-target=llvmir] : validate-no-subst-overloads
 

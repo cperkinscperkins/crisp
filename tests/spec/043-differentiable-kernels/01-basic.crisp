@@ -1,0 +1,15 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-basic-grad-signature
+
+
+(def-type in-ish (cell float :address-space :global :access :read-only))
+(def-type out-ish (cell float :address-space :global :access :write-only))
+
+(def-kernel cell_add (A B &out C)
+  (declare #'(in-ish in-ish &out out-ish))
+  (set! (~ C) (+ (~ A) (~ B))))
+
+;; we expect the backward kernel to be named cell_add_grad
+;; and we expect the signature to be (A B C C_grad &out A_grad B_grad)
+;; in-ish and out-ish only differ in their :access. The final backwards kernel 
+;; signature likely won't mention "in-ish" or "out-ish" at all. 
+;; but it's roughly equivalent to  (in-ish in-ish in-ish in-ish &out out-ish out-ish)

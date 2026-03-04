@@ -130,3 +130,7 @@ These tests are currently failing to even compile.
   - the .metacrips indicates they are :local storage.
   - the hoist version should ensure that it compiles. 
 
+
+
+[ ] 027 - memory leak in spec runner.  The psec runner has an unwind-protect and if there are LOTS of errors then they
+backup leading to a freeze. It exhausts memory during teardown ( LLVM objects bypass their cleanup handler on the error path).

@@ -218,6 +218,7 @@ Header comment directives for test expectations:
 ;; TEST-WITH[--metadata] : validate-metacrisp
 ;; TEST-HOIST[L0]: validate-l0-compile-only
 ;; CHECK-FAIL: "message"   <-- for the negative tests in errors
+;; SKIP-WITH[--flag]: "reason for skipping" <-- for tests that should be skipped
 
 ;; These are not implemented yet:
 ;; CHECK-WARN: "Type inferred"

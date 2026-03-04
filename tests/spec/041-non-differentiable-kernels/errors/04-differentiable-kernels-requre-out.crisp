@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "Differentiable Kernels require an '&out' parameter."
+
+;; this kernel error when --differentiate is used, because it doesn't have an &out parameter.
+;; hopefully the error message says something about declare forward-only.
+
+;; and, of course, it compiles perfectly when --differentiate is NOT used.
+
+(def-kernel not_me (C) 
+  (declare #'((cell float :address-space :global :access :read-write) => nil))
+  (set! (~ C) 2.0))

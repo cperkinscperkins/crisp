@@ -1,0 +1,8 @@
+
+
+(def-type in-ish (cell float :address-space :global :access :read-only))
+(def-type out-ish (cell float :address-space :global :access :write-only))
+
+(def-kernel cell_square (x &out y)
+  (declare #'(in-ish &out out-ish))
+  (set! (~ y) (* (~ x) (~ x))))

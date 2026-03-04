@@ -551,17 +551,17 @@
                       (to-base (get-type-base to-type-name)))
                (if (eq from-base to-base)
                    (progn
-                     (log:debug "Derived type cast: ~a -> ~a (same base ~a, no-op)"
-                                from-type-name to-type-name from-base)
-                     ;; Same memory layout, no cast needed
-                     from-val)
+                    (log:debug "Derived type cast: ~a -> ~a (same base ~a, no-op)"
+                               from-type-name to-type-name from-base)
+                    ;; Same memory layout, no cast needed
+                    from-val)
                    ;; Different base types, fall through to error
                    (progn
-                     (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
-                     (log:error "  From Type: ~a (cat: ~a, base: ~a)" from-type from-cat from-base)
-                     (log:error "  To Type:   ~a (cat: ~a, base: ~a)" to-type to-cat to-base)
-                     (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
-                     (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name)))))
+                    (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
+                    (log:error "  From Type: ~a (cat: ~a, base: ~a)" from-type from-cat from-base)
+                    (log:error "  To Type:   ~a (cat: ~a, base: ~a)" to-type to-cat to-base)
+                    (log:error "  Value dump: ~a" (llvm-print-value-to-string from-val))
+                    (error "Unsupported value cast from ~a to ~a" from-type-name to-type-name)))))
            (t
              (log:error "CODEGEN CAST ERROR: ~a -> ~a" from-type-name to-type-name)
              (log:error "  From Type: ~a (cat: ~a)" from-type from-cat)
@@ -609,6 +609,46 @@
 ;; but simpler macro assumes sdiv for now or that llvm-build-sdiv is distinct.
 ;; Assuming signed integers for now as per initialized types.
 (def-binary-op-codegen semantic-div llvm-build-sdiv llvm-build-fdiv "SEMANTIC-DIV")
+
+(defmacro def-unary-math-codegen (node-type intrinsic-name)
+  `(defmethod generate-node-ir ((node ,node-type) builder module var-env di-builder di-scope location-map)
+     ,(format nil "Generates IR for ~a using ~a." node-type intrinsic-name)
+     (multiple-value-bind (arg-val arg-loc) (generate-node-ir (slot-value node 'arg) builder module var-env di-builder di-scope location-map)
+       (declare (ignore arg-loc))
+       (let* ((arg-type-name (semantic-node-type (slot-value node 'arg)))
+              (arg-crisp-type (gethash arg-type-name *crisp-types*))
+              (arg-llvm-type (crisp-type-to-llvm-type arg-type-name module))
+              (type-suffix (if (= (crisp-type-size arg-crisp-type) 64) "f64" "f32"))
+              (intrinsic-full-name (format nil "~a.~a" ,intrinsic-name type-suffix)))
+         (let ((f (llvm-get-named-function module intrinsic-full-name)))
+           (when (cffi:null-pointer-p f)
+                 (let ((ft (llvm-function-type arg-llvm-type
+                                               (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
+                                                 (setf (cffi:mem-aref arr 'llvm-type-ref 0) arg-llvm-type)
+                                                 arr)
+                                               1 nil)))
+                   (setf f (llvm-add-function module intrinsic-full-name ft))))
+
+           (let* ((args-array (cffi:foreign-alloc 'llvm-value-ref :count 1))
+                  (_ (setf (cffi:mem-aref args-array 'llvm-value-ref 0) arg-val))
+                  (inst (llvm-build-call2 builder
+                                          (llvm-function-type arg-llvm-type
+                                                              (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 1)))
+                                                                (setf (cffi:mem-aref arr 'llvm-type-ref 0) arg-llvm-type)
+                                                                arr)
+                                                              1 nil)
+                                          f args-array 1 "math_tmp"))
+                  (di-location (when (and di-builder di-scope location-map)
+                                     (let* ((loc (semantic-node-source-location node))
+                                            (line (gethash loc location-map 0)))
+                                       (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                                                              line 0 di-scope (cffi:null-pointer))))))
+             (declare (ignore _))
+             (when di-location (llvm-instruction-set-debug-loc inst di-location))
+             (values inst di-location)))))))
+
+(def-unary-math-codegen semantic-sin "llvm.sin")
+(def-unary-math-codegen semantic-cos "llvm.cos")
 
 ;; -- comparisons --
 (defun generate-comparison-ir (builder module var-env di-builder di-scope location-map node op-node-int op-node-float)

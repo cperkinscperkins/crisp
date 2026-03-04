@@ -30,6 +30,21 @@
 (def-binary-op-analyzer analyze-mul-expression make-semantic-mul "*")
 (def-binary-op-analyzer analyze-div-expression make-semantic-div "/")
 
+(defmacro def-unary-math-analyzer (name node-constructor op-string)
+  `(defun ,name (expr env context location)
+     ,(format nil "Analyzes a `(~a ...)` expression." op-string)
+     (let* ((arg-node (analyze-expression (second expr) env context (append location '(1))))
+            (arg-type (get-single-value-type arg-node))
+            (crisp-type (gethash arg-type *crisp-types*)))
+       (unless (and crisp-type (eq (crisp-type-category crisp-type) :float))
+         (error 'crisp-type-error
+           :message (format nil "Type mismatch for operator '~a'. Expected float, got ~a." ,op-string arg-type)
+           :source-location location))
+       (,node-constructor :type arg-type :arg arg-node :source-location location))))
+
+(def-unary-math-analyzer analyze-sin-expression make-semantic-sin "sin")
+(def-unary-math-analyzer analyze-cos-expression make-semantic-cos "cos")
+
 (defmacro def-comparison-analyzer (name node-constructor op-string)
   `(defun ,name (expr env context location)
      ,(format nil "Analyzes a `(~a ...)` expression." op-string)
@@ -191,51 +206,51 @@
          ;; e.g. (as (index-t fc) delta) with active brand index-t resolves to
          ;; (as index-t delta), and with inactive brand resolves to (as ulong delta).
          (type-form
-           (if (and (listp raw-type-form)
-                    (= (length raw-type-form) 2)
-                    (symbolp (first raw-type-form))
-                    (symbolp (second raw-type-form))
-                    (is-brand-type-p (first raw-type-form)))
-               (let* ((brand-name (first raw-type-form))
-                      (var-ref (second raw-type-form))
-                      (brand-def (is-brand-type-p brand-name))
-                      ;; Try to find per-owner brand def using var's type from env
-                      (param (find var-ref env :key #'parameter-def-name))
-                      (owner-type (and param (parameter-def-type param)))
-                      (per-owner-def (and owner-type
-                                          (find-brand-for-owner brand-name owner-type)))
-                      (effective-brand-def (or per-owner-def brand-def)))
-                 (cond
-                  ;; Active brand, globally registered in *crisp-types* (non-parameterized):
-                  ;; cast to the brand type name directly.
-                  ((and effective-brand-def
-                        (brand-active-p effective-brand-def)
-                        (gethash brand-name *crisp-types*))
-                    (log:info "AS: resolved brand application (~a ~a) -> active brand ~a"
-                              brand-name var-ref brand-name)
-                    brand-name)
-                  ;; Active brand, parameterized (not globally registered):
-                  ;; use the per-owner base type.
-                  ((and effective-brand-def
-                        (brand-active-p effective-brand-def))
-                    (let ((base (brand-definition-base-type effective-brand-def)))
-                      (log:info "AS: resolved brand application (~a ~a) -> parameterized active base ~a"
-                                brand-name var-ref base)
-                      base))
-                  ;; Inactive brand: resolve to the alias or base type.
-                  ((and effective-brand-def
-                        (not (brand-active-p effective-brand-def)))
-                    (let ((base (or (gethash brand-name *crisp-type-aliases*)
-                                    (brand-definition-base-type effective-brand-def))))
-                      (log:info "AS: resolved brand application (~a ~a) -> inactive base ~a"
-                                brand-name var-ref base)
-                      base))
-                  ;; No brand def found: leave as-is (will fail the valid-type-p check later)
-                  (t
-                    (log:warn "AS: brand application (~a ~a) - no brand def found, leaving as-is"
-                              (first raw-type-form) (second raw-type-form))
-                    raw-type-form)))
-               raw-type-form))
+          (if (and (listp raw-type-form)
+                   (= (length raw-type-form) 2)
+                   (symbolp (first raw-type-form))
+                   (symbolp (second raw-type-form))
+                   (is-brand-type-p (first raw-type-form)))
+              (let* ((brand-name (first raw-type-form))
+                     (var-ref (second raw-type-form))
+                     (brand-def (is-brand-type-p brand-name))
+                     ;; Try to find per-owner brand def using var's type from env
+                     (param (find var-ref env :key #'parameter-def-name))
+                     (owner-type (and param (parameter-def-type param)))
+                     (per-owner-def (and owner-type
+                                         (find-brand-for-owner brand-name owner-type)))
+                     (effective-brand-def (or per-owner-def brand-def)))
+                (cond
+                 ;; Active brand, globally registered in *crisp-types* (non-parameterized):
+                 ;; cast to the brand type name directly.
+                 ((and effective-brand-def
+                       (brand-active-p effective-brand-def)
+                       (gethash brand-name *crisp-types*))
+                   (log:info "AS: resolved brand application (~a ~a) -> active brand ~a"
+                             brand-name var-ref brand-name)
+                   brand-name)
+                 ;; Active brand, parameterized (not globally registered):
+                 ;; use the per-owner base type.
+                 ((and effective-brand-def
+                       (brand-active-p effective-brand-def))
+                   (let ((base (brand-definition-base-type effective-brand-def)))
+                     (log:info "AS: resolved brand application (~a ~a) -> parameterized active base ~a"
+                               brand-name var-ref base)
+                     base))
+                 ;; Inactive brand: resolve to the alias or base type.
+                 ((and effective-brand-def
+                       (not (brand-active-p effective-brand-def)))
+                   (let ((base (or (gethash brand-name *crisp-type-aliases*)
+                                   (brand-definition-base-type effective-brand-def))))
+                     (log:info "AS: resolved brand application (~a ~a) -> inactive base ~a"
+                               brand-name var-ref base)
+                     base))
+                 ;; No brand def found: leave as-is (will fail the valid-type-p check later)
+                 (t
+                   (log:warn "AS: brand application (~a ~a) - no brand def found, leaving as-is"
+                             (first raw-type-form) (second raw-type-form))
+                   raw-type-form)))
+              raw-type-form))
 
          (orig-type-name (if (or (symbolp type-form) (listp type-form))
                              type-form
@@ -282,6 +297,8 @@
   (def-expression-analyzer - analyze-sub-expression)
   (def-expression-analyzer * analyze-mul-expression)
   (def-expression-analyzer / analyze-div-expression)
+  (def-expression-analyzer sin analyze-sin-expression)
+  (def-expression-analyzer cos analyze-cos-expression)
   (def-expression-analyzer < analyze-lt-expression)
   (def-expression-analyzer > analyze-gt-expression)
   (def-expression-analyzer <= analyze-le-expression)
