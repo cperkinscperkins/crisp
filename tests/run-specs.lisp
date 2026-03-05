@@ -793,7 +793,6 @@
     (when (probe-file out-path) (delete-file out-path))
     (when *compile-debug* (push "--debug" args))
     (when *compile-differentiate* (push "--differentiate" args))
-    (when *compile-lax* (push "--lax" args))
     (when *compile-single-pass* (push "--single-pass" args))
 
     (multiple-value-bind (output error-output exit-code)
