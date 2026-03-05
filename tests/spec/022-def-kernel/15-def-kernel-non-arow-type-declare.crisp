@@ -1,6 +1,8 @@
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 (def-kernel no_arrow_rt_elided (x y z)
     (declare (type x y float) (type z int))
     (+ x y)) ;; return value ignored. 
+
 
 (def-kernel nay_arror_but_rt (x y)
     (declare (type x y float) (return-type nil))

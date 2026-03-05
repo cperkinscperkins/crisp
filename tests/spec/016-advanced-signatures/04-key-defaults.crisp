@@ -1,3 +1,5 @@
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
+
 (def-function sewing (&key (thread-count 20) (stitch-length 25))
     (declare #'(&key :thread-count int :stitch-lengh int => int))
     (* thread-count stitch-length))

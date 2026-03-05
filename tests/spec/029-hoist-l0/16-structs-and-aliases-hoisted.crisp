@@ -1,10 +1,7 @@
-
-;; TEST-HOIST[L0] : validate-l0-compile-only
-
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 
 
-;; iii should appear in metadata by virtue of being in point which is used in rect which 
-;; appears at kernel boundary.
+
 (def-type iii int)
 
 

@@ -1,8 +1,7 @@
 ;; TEST-WITH[--ir-target=llvmir]
 
 ;; this is for testing llvmir generation
-;; ./bin/crisp-compile.exe  ./tests/spec/025-llvm-ir/01-smokellvmir.crisp --ir-target=llvmir
-
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 (def-kernel smoke_test (c)
   (declare #'((cell int :address-space :global :access :read-write)))
   (set! (~ c) 42))

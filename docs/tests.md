@@ -21,6 +21,9 @@ sbcl --script tests/run-specs.lisp  --filter=<spec-name>
 - `--log-level=off`
 - `--single-pass`
 - `--debug`
+- `--only-unit-tests`
+- `--use-binary`
+- `--differentiate`
 
 The file `tests/ci-stop.txt` controls "how far" the spec runner goes. It lists the last directory (inclusive) to test.  Everything "after" is assumed to be future TDD planning.
 
@@ -29,6 +32,10 @@ The file `tests/ci-stop.txt` controls "how far" the spec runner goes. It lists t
 # Traditional unit tests in tests/*.lisp
 sbcl --script tests/run-ci.lisp --log-level=off
 ```
+
+
+### Note About Logging: off recommended
+The logging is EXTENSIVE.  It is highly recommended to use `--log-level=off` except when running individual spec tests.
 
 ### Single Test File
 ```bash

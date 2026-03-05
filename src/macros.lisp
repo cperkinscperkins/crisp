@@ -439,18 +439,14 @@
 
 (defun %check-differentiate-kernel-signature (name signature-types declarations)
   "Helper: Enforces kernel requirements when Auto-Differentiation is enabled.
-   Returns T if the kernel should be differentiated, NIL if it is forward-only or bypassed via lax mode."
+   Returns T if the kernel should be differentiated, NIL if it is forward-only."
   (if *differentiate-p*
       (let ((is-forward-only (find "FORWARD-ONLY" declarations :key (lambda (x) (when (symbolp x) (symbol-name x))) :test #'string-equal)))
         (if is-forward-only
             nil
             (if (member '&out signature-types)
                 t
-                (if *lax-kernel-rules-p*
-                    (progn
-                     (log:warn "Lax Mode: Skipping differentiable kernel generation for '~a' because it lacks an '&out' parameter." name)
-                     nil)
-                    (error "Differentiable Kernels require an '&out' parameter. If this kernel performs non-differentiable operations (like printing or shuffling), declare it as 'forward-only'. (~a)" name)))))
+                (error "Differentiable Kernels require an '&out' parameter. If this kernel performs non-differentiable operations (like printing or shuffling), declare it as 'forward-only'. (~a)" name))))
       nil))
 
 

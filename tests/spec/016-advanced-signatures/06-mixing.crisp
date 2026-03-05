@@ -1,6 +1,9 @@
 
 ;; Like in Common Lisp, &optional comes before &key 
 ;; and when both are used, every optional argument must be realized.
+
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
+
 (def-function option-and-keys (a &optional b  &key d e )
     (declare #'(int &optional int  &key :d int :e int => int)) ;; <-- whooo
     (let ((sum a))

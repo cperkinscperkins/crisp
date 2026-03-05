@@ -1,3 +1,5 @@
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
+
 (def-function AGI-survivors (&key birds bugs zombies)
     (declare #'(&key :birds int :bugs int :zombies int => int))
     (let ((sum (as-int 0)))

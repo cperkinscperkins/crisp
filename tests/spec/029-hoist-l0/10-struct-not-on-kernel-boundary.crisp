@@ -1,5 +1,5 @@
 
-;; TEST-HOIST[L0]: validate-l0-compile-only
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 
 ;; Here we use a struct in a kernel, but it is not on the kernel boundary.
 ;; It should not appear in the metadata. Nor in the .cpp

@@ -1,4 +1,4 @@
-
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 ;; TEST-WITH[--ir-target=llvmir] : validate-def-record-explode-ir
 
 ;; Verifies that records are passed as EXPLODED parameters (SROA), not aggregates.

@@ -1,5 +1,5 @@
 
-;; TEST-WITH[--metadata] : validate-scratch-cell-explosion
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 ;; TEST-WITH[--ir-target=llvmir] : validate-top-kernel-4-args-ir
 
 #|

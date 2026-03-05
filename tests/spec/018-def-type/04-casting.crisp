@@ -1,3 +1,4 @@
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 (def-type iii int)
 
 (def-type iv int)

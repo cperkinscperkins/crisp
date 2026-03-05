@@ -351,13 +351,12 @@
 
   (log:info "Built-in structs registered."))
 
-(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil) (lax-kernel-rules nil))
+(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
 
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
-  (setf *lax-kernel-rules-p* lax-kernel-rules)
   ;; Load the LLVM shared library.
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 

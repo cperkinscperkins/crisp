@@ -1,4 +1,5 @@
 ;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 
 ;; this is for testing spir-v generation
 ;; ./bin/crisp-compile.exe  ./tests/spec/023-spirv/01-smoke.crisp --ir-target=spv

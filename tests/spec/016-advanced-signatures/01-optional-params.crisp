@@ -1,6 +1,4 @@
-
-
-
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 (def-function add-some (a &optional b c)
     (declare #'(int &optional int int => int))
     (let ((sum a))

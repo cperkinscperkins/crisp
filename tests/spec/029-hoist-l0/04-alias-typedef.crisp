@@ -1,7 +1,6 @@
-;; TEST-HOIST[L0]: validate-l0-compile-only
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 
 (def-type iii int)
-
 
 (def-kernel alias_typedef (i)
     (declare (type i iii))

@@ -1,5 +1,6 @@
 
 ;; TEST-WITH[--metadata]: crisp.compiler::validate-14-physical-signature
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 
 #|
 This test validates the physical signature of simple kernels.

@@ -22,7 +22,7 @@
   1)
 
   (def-kernel happy_path ()
-    (declare (return-type nil))
+    (declare (return-type nil) forward-only)
   (let ((s1 (make-server :active-token 12345 :id 1)))
     
     ;; extract the token from s1. 

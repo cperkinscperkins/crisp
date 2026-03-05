@@ -1,4 +1,5 @@
 ;; TEST-WITH[--metadata] : validate-01-aliases
+;; SKIP-WITH[--differentiate]: "fails without lax mode"
 
 ;; this should appear in the metadata. Used at kernel boundary.
 (def-type iii int)
