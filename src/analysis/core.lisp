@@ -587,6 +587,7 @@
           unless (null expr)
         collect (analyze-expression expr env context (append location (list i)))))
 
+
 (defun analyze-expression (expr env context location)
   "Recursively analyzes a *single* expression."
   (log:debug "analyze-expression expr: ~s location: ~s" expr location)
@@ -609,19 +610,23 @@
           ((keywordp expr)
             (make-semantic-literal :value-type (list 'keyword expr) :value expr :source-location location))
 
-          ;; Case 2: It's a variable, like 'a'
+          ;; Case 2: It's a typed numeric literal (e.g. 255uc, 1000UL, 1.5f) or a variable.
+          ;; Try the literal parser first; fall through to env lookup if it doesn't match.
           ((symbolp expr)
-            (let ((found (find-variable-in-env expr env)))
-              (if found
-                  (let ((type-val (parameter-def-type found)))
-                    (log:warn "ANALYZE-EXPR VAR: ~a -> Type: ~a" expr type-val)
-                    (make-semantic-var-read :name expr :type type-val :source-location location))
-                  (progn
-                   (log:error "Unknown Variable Lookup: ~a (pkg: ~a)" expr (package-name (symbol-package expr)))
-                   (log:error "Env Keys: ~a" (mapcar (lambda (p) (let ((s (parameter-def-name p))) (if (symbolp s) (format nil "~a (pkg: ~a)" s (package-name (symbol-package s))) (format nil "NON-SYMBOL-KEY: ~a" s)))) env))
-                   (error 'crisp-unknown-variable
-                     :name expr
-                     :source-location location)))))
+            (let ((literal-node (%try-parse-typed-literal expr location)))
+              (if literal-node
+                  literal-node
+                  (let ((found (find-variable-in-env expr env)))
+                    (if found
+                        (let ((type-val (parameter-def-type found)))
+                          (log:warn "ANALYZE-EXPR VAR: ~a -> Type: ~a" expr type-val)
+                          (make-semantic-var-read :name expr :type type-val :source-location location))
+                        (progn
+                         (log:error "Unknown Variable Lookup: ~a (pkg: ~a)" expr (package-name (symbol-package expr)))
+                         (log:error "Env Keys: ~a" (mapcar (lambda (p) (let ((s (parameter-def-name p))) (if (symbolp s) (format nil "~a (pkg: ~a)" s (package-name (symbol-package s))) (format nil "NON-SYMBOL-KEY: ~a" s)))) env))
+                         (error 'crisp-unknown-variable
+                           :name expr
+                           :source-location location)))))))
 
           ;; Case 3: It's a function call, like '(+ a b)'
           ((listp expr) (let ((op (first expr)))
@@ -922,3 +927,53 @@
       (when di-builder (llvm-dispose-di-builder di-builder))
       (llvm-dispose-builder builder)
       (llvm-dispose-module module))))
+
+
+(defun %try-parse-typed-literal (expr location)
+  "If EXPR is a symbol whose name matches <integer><suffix> or <number><suffix>,
+   returns a semantic-literal node with the appropriate Crisp type and value.
+   Suffixes (symbols are already upcased by the SBCL reader):
+     BF -> bfloat16   UC -> uchar   UL -> ulong   US -> ushort
+     U  -> uint       S  -> short   L  -> long
+     H  -> half       F  -> float
+   Multi-character suffixes are tested first to avoid BF matching F,
+   UL matching L, etc.  Returns NIL if EXPR does not match."
+  (unless (symbolp expr)
+    (return-from %try-parse-typed-literal nil))
+  (let ((name (symbol-name expr)))
+    (flet ((try-int (suffix type)
+             (let ((slen (length suffix)))
+               (when (and (> (length name) slen)
+                          (string= name suffix :start1 (- (length name) slen)))
+                 (let ((num-str (subseq name 0 (- (length name) slen))))
+                   (multiple-value-bind (val end)
+                       (parse-integer num-str :junk-allowed t)
+                     (when (and val (= end (length num-str)))
+                       (log:debug "%try-parse-typed-literal: ~a -> (~a ~a)" name type val)
+                       (make-semantic-literal :value-type type
+                                              :value val
+                                              :source-location location)))))))
+           (try-float (suffix type)
+             (let ((slen (length suffix)))
+               (when (and (> (length name) slen)
+                          (string= name suffix :start1 (- (length name) slen)))
+                 (let* ((num-str (subseq name 0 (- (length name) slen)))
+                        (val (ignore-errors
+                               (let ((v (with-input-from-string (in num-str)
+                                          (read in nil nil))))
+                                 (when (realp v) v)))))
+                   (when val
+                     (log:debug "%try-parse-typed-literal: ~a -> (~a ~a)" name type val)
+                     (make-semantic-literal :value-type type
+                                            :value val
+                                            :source-location location)))))))
+      ;; Multi-char suffixes first to prevent substring ambiguity
+      (or (try-float "BF" 'bfloat16)
+          (try-int   "UC" 'uchar)
+          (try-int   "UL" 'ulong)
+          (try-int   "US" 'ushort)
+          (try-int   "U"  'uint)
+          (try-int   "S"  'short)
+          (try-int   "L"  'long)
+          (try-float "H"  'half)
+          (try-float "F"  'float)))))

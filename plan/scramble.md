@@ -175,7 +175,7 @@ LOOSE PRIORITIES
 - [ ] precision selections (declare / declaim / flags )
 - [x] .crisp files.  basic flag for crisp-compiler.exe
 - [x] SIDE CHANNEL MECHANISM.  probably sooner, rather than later. 
-- [ ] Literals: use suffix ?   0.0f  INSTEAD of (type a float) in a let clause?
+- [x] Literals: use suffix ?   0.0f  INSTEAD of (type a float) in a let clause?
 
 
 SHORT TERM PLAN
@@ -219,7 +219,7 @@ SHORT TERM PLAN
 
 - [x] def-type  <--  we will need this to create vector from tensor, etc.
                        I'm tempted to do def-derived-type too
-- [ ] damn literal numbers are long overdue.  1.0f 1i 2l  something.
+- [x] damn literal numbers are long overdue.  1.0f 1i 2l  something.
 - - [ ] also, give up on "no (to-int )" already. geebus
 - [ ] DENY setf and aref.  
 - [ ] &out has no verification that the argument is NOT READ FROM.

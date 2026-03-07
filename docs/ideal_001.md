@@ -532,20 +532,26 @@ are focused on type declaration and support in the Crisp language.
 Base Numeric Types
 ------------------
 
-| Type | Size |
-|------|------|
-| char | 8 bit |
-| uchar | 8 bit |
-| short | 16 bit |
-| ushort | 16 bit |
-| int | 32 bit |
-| uint | 32 bit |
-| long | 64 bit |
-| ulong | 64 bit |
-| half | 16 bit |
-| bfloat16 | 16 bit |
-| float | 32 bit |
-| double | 64 bit |
+
+
+
+``` markdown
+
+| Type | Bits | Suffix | Example |
+| :----------: | :----------: | :------------: | :-------------: |
+| char         | 8            |                |                 |
+| uchar        | 8            | uc             | 255uc           |
+| short        | 16           | s              | 100s            |
+| ushort       | 16           | us             | 65535us         |
+| uint         | 32           | u / U          | 10U             |
+| long         | 64           | l / L          | 1000L           |
+| ulong        | 64           | ul / UL        | 1000UL          |
+| half         | 16           | h              | 1.5h            |
+| bfloat16     | 16           | bf             | 1.5bf           |
+| float        | 32           | f / F          | 1.5f            |
+| double       | 64 bit       |                |                 |   
+
+```
 
 
 

@@ -9,8 +9,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (MAIN) :CRISP.MAIN  main.lisp
 - - (PARSE-CLI-ARGS ARGS) :CRISP.MAIN  main.lisp
 - - - (INITIALIZE-COMPILER &KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL) (DIFFERENTIATE
-                                                                       NIL) (LAX-KERNEL-RULES
-                                                                             NIL))  compiler.lisp
+                                                                       NIL))  compiler.lisp
 - - - - (INITIALIZE-CRISP-TYPES)  types/registry.lisp
 - - - - (INITIALIZE-TYPE-HIERARCHY)  types/hierarchy.lisp
 - - - - (INITIALIZE-EXPRESSION-ANALYZERS)  analysis/core.lisp
@@ -355,6 +354,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
 - - - - - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp
 - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - (%TRY-PARSE-TYPED-LITERAL EXPR LOCATION)  analysis/core.lisp
 - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp
 - - - - - - - - - (ANALYZE-INCOMPLETE-TYPE-ACCESSOR OP EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
@@ -787,6 +787,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-DIVISION-CHAIN-RULE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
+
+- (VALIDATE-FLOAT-LITERALS-IR IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-INTEGER-LITERALS-IR IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-MULTIPLE-SCRATCH-CELLS METADATA-PATH)  metadata-val.lisp
 

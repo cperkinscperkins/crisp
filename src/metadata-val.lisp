@@ -533,3 +533,43 @@
 
 (defun validate-nested-chain-rule (ir-path)
   (validate-generic-grad-signature ir-path "cell_nested" 17))
+
+
+
+(defun validate-integer-literals-ir (ir-path)
+  "Validates that integer literal suffixes produce the correct LLVM integer types.
+   Expects:  ret-uchar->i8, ret-short/ret-ushort->i16, ret-uint->i32, ret-long/ret-ulong->i64."
+  (unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-integer-literals-ir nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define i8 @ret_uchar" ir)
+         (progn (log:error "No i8 ret_uchar function found in IR") nil))
+     (or (search "define i16 @ret_short" ir)
+         (progn (log:error "No i16 ret_short function found in IR") nil))
+     (or (search "define i16 @ret_ushort" ir)
+         (progn (log:error "No i16 ret_ushort function found in IR") nil))
+     (or (search "define i32 @ret_uint" ir)
+         (progn (log:error "No i32 ret_uint function found in IR") nil))
+     (or (search "define i64 @ret_long" ir)
+         (progn (log:error "No i64 ret_long function found in IR") nil))
+     (or (search "define i64 @ret_ulong" ir)
+         (progn (log:error "No i64 ret_ulong function found in IR") nil))
+     t)))
+
+(defun validate-float-literals-ir (ir-path)
+  "Validates that float literal suffixes produce the correct LLVM float types.
+   Expects: ret-half->half, ret-float->float, ret-bfloat16->bfloat."
+  (unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-float-literals-ir nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define half @ret_half" ir)
+         (progn (log:error "No half ret_half function found in IR") nil))
+     (or (search "define float @ret_float" ir)
+         (progn (log:error "No float ret_float function found in IR") nil))
+     (or (search "define bfloat @ret_bfloat16" ir)
+         (progn (log:error "No bfloat ret_bfloat16 function found in IR") nil))
+     t)))

@@ -10,7 +10,6 @@ Global Variable,RESOLVE-TYPE-TO-LLVM,INITIALIZE-CRISP-TYPES,DEF-EXPRESSION-ANALY
 *CRISP-TYPES*,R,W,,R,RW,,,,R,R,,,,,,W,,,,,,,,,,,,,,,,,,R,,,R,,R,,,,,,,,,,R,
 *TARGET-BACKEND*,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,,,,,,R,,,,,,,,,,,,,,,,
 *COMPILED-KERNELS*,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,,,,,,,,
-*LAX-KERNEL-RULES-P*,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,,,,,,,,
 *DIFFERENTIATE-P*,,,,,,,,,,,,,,,,,R,,,,,,,,,,,,,,W,,,,,,,,,,R,R,,,,,,,,
 *BRAND-DEFINITIONS*,,,,,,,,,,W,,,,,,,,,,,,,,,,,,,,,RW,,,,,,,,,,,,,,,,,,,
 *RUNTIME-CHECKS-ENABLED*,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,,,,,,,,
