@@ -403,11 +403,25 @@ Assault On Pytorch
 
 TECHNICAL DEBT AND OVERSIGHTS
 ============================
-- [ ] def-record SHOULD be supportable at kernel boundary. We already do it for cell, might 
+- [x] def-record SHOULD be supportable at kernel boundary. We already do it for cell, might 
       as well general case that.
-- - [ ] metadata decision & test
-- - [ ] hoisting decision & test
-- - [ ] but structs no?  decision and test.
+- - records on kernel boundary cannot be in &out positon.  
+    Technically, threads CAN change record values as the record is passed down the call stack,
+    but those changes are NOT shared with other threads OR communicated back to the host.
+    Not sure what is the name for those semantics. "read only" ?? 
+- - [x] &out some_rec is compilation ERROR. <-- EXCEPT STORAGE HANDLES (cell, vector, matrix, tensor)
+- - [x] metadata decision & test
+- - - [x] records support branding. including :enforce :always
+- - - A: but that will be elided. No issue.
+- - [x] hoisting decision & test
+- [ ] def-record at kernel boundary and --differentiate:  NEED AUTODIFF SUPPORT
+
+- [x] what happens to cell in metadata if --metadata combined with --differentiate ?
+- - is that allowed? We do NOT allow with --hoist.   However, it should work fine.  
+    The branding is elided.
+- [x] what happens to struct with branding when IT appears in metacrisp?
+- - Answer: the branding does NOT appear in the metadata. It is elided.
+
 - [ ] def-struct can ALSO be at the kernel boundary. (If it's less than 4K?)
 - -   the struct is READ-ONLY <-- another damn thing.
 - -   the READ-ONLY thing means we need to walk struct params "up" the call
@@ -424,6 +438,8 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [ ] Visual Code to use "lisp" syntax highlighting with .crisp files?
 - [ ] LLVM-IR can only bitcast same size. So (as-ulong 12345) is a problem. (to-ulong 12345) works.
       Should revisit docs and decide how to handle this.
+- [ ] literals overlooked double and char (d / c) 
+- [ ] switch spec runner to default to `--log-level=off` ... but CI should still using something...
 
 
 

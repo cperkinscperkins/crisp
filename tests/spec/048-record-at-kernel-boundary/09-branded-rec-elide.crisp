@@ -1,0 +1,24 @@
+;; TEST-WITH[--metadata] : validate-no-brand-in-metadata
+;; SKIP-WITH[--differentiate] : "TODO: auto-diff needs to be extended for records at kernel boundary"
+
+;; branding should be elided in .metacrisp
+
+(def-record v-point 
+   (brand token-t ulong :subst :no :enforce :always)
+    (x token-t) 
+    (y int))
+
+
+(def-function authenticate (vp tkn)
+    (declare #'(v-point (token-t vp) => int))
+    1)
+
+(def-type out-c (cell int :address-space :global :access :read-write))
+
+(def-kernel record_on_boundary_k (vp &out c)
+    (declare #'(v-point &out out-c))
+    (set! (~ c) (authenticate vp (x~ vp))))
+
+
+
+

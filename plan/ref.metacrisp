@@ -10,7 +10,8 @@
 
 ;; aliases
 (:aliases
-  (def-type iii int))
+  (def-type iii int)
+  (def-type fff float))
 
 ;; structs are in reverse dependency order
 ;; we only need to include structs that are used at kernel boundary.
@@ -20,9 +21,27 @@
   (def-struct point (x iii) (y int))
   (def-struct rect (min point) (max point)))
 
+;; records are NEW. 
+(:records
+  (def-record v-point (x fff) (y int)))
+
+#|
+;; original
+(def-kernel my_kernel (v in-c &out out-c)
+  (declare #'(double (cell iii :address-space :global :access :read-only)
+              &out (cell double :address-space :global :access :write-only))) 
+   ;; some operation that calls (make-scratch-cell iii)
+   ...)
+
+(def-kernel rec_kernel (vp)
+   (declare #'(v-point))
+   ...)
+|#
+
 ;; the .metacrisp file might have multiple kernels.
 ;; the kernels will also have their "strategy" information recorded here. 
 (:kernels 
+    
     (:name "my_kernel" 
       :source #P"path/to/some.crisp"
       (:output-targets ((:spv #P"path/to/some/.spv") (:ptx #P"path/to/some/.ptx")))
@@ -88,7 +107,21 @@
              :address-space  :local 
              :access :read-write 
              :range (0 2)))
-))
+     )
+     ;;
+    (:name "rec_kernel"
+     :source #P"path/to/some.crisp"
+     (:output-targets ((:spv #P"path/to/some/.spv") (:ptx #P"path/to/some/.ptx")))
+     (:physical-signature 
+       ;; record is expanded
+       (0 float) ; v-point.x
+       (1 int)   ; v-point.y
+     )
+     (:declared-signature
+       (:name "vp"
+        :type v-point
+        :range (0 1))
+     )))
 
 
 ;; if there is an orchestration , it is inserted into the .metacrisp file

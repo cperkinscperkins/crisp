@@ -1,0 +1,17 @@
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: <something>
+;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
+
+;; v-rect is on the kernel boundary.
+;; by virtue of that, v-point will also appear in the metadata.
+
+(def-record v-point (x int) (y int))
+
+(def-record v-rect (top-left v-point) (bottom-right v-point))
+
+(def-type out-c (cell int :address-space :global :access :read-write))
+
+(def-kernel rect_on_boundary_k (vr &out c)
+    (declare #'(v-rect &out out-c))
+    (set! (~ c) (* (x~ (top-left~ vr))
+                   (y~ (bottom-right~ vr)))))

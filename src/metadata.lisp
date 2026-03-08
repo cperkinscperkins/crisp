@@ -217,29 +217,72 @@
 
 
 
+(defun %serialize-records (stream structs-hash)
+  "Emits the (:records ...) section for user-defined records found in STRUCTS-HASH.
+   Only runtime members are emitted (no :c-t members). Brand types resolved to base."
+  (let ((record-names
+          (loop for name being the hash-keys of structs-hash
+                when (let* ((type-rec (or (gethash name *crisp-types*)
+                                          (gethash (intern (symbol-name name) :crisp-language)
+                                                   *crisp-types*))))
+                       (and type-rec (eq (crisp-type-category type-rec) :record)))
+                collect name)))
+    (when record-names
+      (format stream "(:records~%")
+      (let ((sorted-names (sort-structs-by-dependency record-names)))
+        (dolist (name sorted-names)
+          (let ((def (gethash name *crisp-structs*)))
+            (when def
+              (format stream "  (def-record ~a" (strip-package-qualifiers name))
+              (dolist (m (crisp-struct-definition-members def))
+                (let* ((member-name (first m))
+                       (member-type (second m))
+                       (member-tag  (third m)))
+                  ;; Skip :c-t compile-time members
+                  (unless (eq member-tag :c-t)
+                    (let* ((brand-def  (is-brand-type-p member-type))
+                           (final-type (if brand-def
+                                           (brand-definition-base-type brand-def)
+                                           member-type)))
+                      (format stream " (~a ~a)"
+                        (strip-package-qualifiers member-name)
+                        (strip-package-qualifiers final-type))))))
+              (format stream ")~%")))))
+      (format stream "  )~%~%"))))
+
+
+
 (defun serialize-structs (stream structs-hash)
-  (format stream "(:structs~%")
-  (let ((struct-names (alexandria:hash-table-keys structs-hash)))
+  "Emits (:records ...) for def-records and (:structs ...) for def-structs.
+   Records are split into their own section; brand and :c-t members handled appropriately."
+  ;; Records section first
+  (%serialize-records stream structs-hash)
+  ;; Then structs section (non-record types only)
+  (let ((struct-names
+          (loop for name being the hash-keys of structs-hash
+                unless (let* ((type-rec (or (gethash name *crisp-types*)
+                                            (gethash (intern (symbol-name name) :crisp-language)
+                                                     *crisp-types*))))
+                          (and type-rec (eq (crisp-type-category type-rec) :record)))
+                collect name)))
+    (format stream "(:structs~%")
     (let ((sorted-names (sort-structs-by-dependency struct-names)))
       (dolist (name sorted-names)
         (let ((def (gethash name *crisp-structs*)))
           (when def
-                (format stream "  (def-struct ~a" (strip-package-qualifiers name))
-                (dolist (m (crisp-struct-definition-members def))
-                  (let* ((member-name (first m))
-                         (member-type (second m))
-                         ;; Resolve brand type to base type for metadata
-                         (brand-def (is-brand-type-p member-type))
-                         ;; Always resolve to base type for C++ metadata, regardless of active state.
-                         ;; C++ does not know about brands, only the underlying physical type.
-                         (final-type (if brand-def
-                                         (brand-definition-base-type brand-def)
-                                         member-type)))
-                    (format stream " (~a ~a)"
-                      (strip-package-qualifiers member-name)
-                      (strip-package-qualifiers final-type))))
-                (format stream ")~%"))))))
-  (format stream "  )~%~%"))
+            (format stream "  (def-struct ~a" (strip-package-qualifiers name))
+            (dolist (m (crisp-struct-definition-members def))
+              (let* ((member-name (first m))
+                     (member-type (second m))
+                     (brand-def   (is-brand-type-p member-type))
+                     (final-type  (if brand-def
+                                      (brand-definition-base-type brand-def)
+                                      member-type)))
+                (format stream " (~a ~a)"
+                  (strip-package-qualifiers member-name)
+                  (strip-package-qualifiers final-type))))
+            (format stream ")~%")))))
+    (format stream "  )~%~%")))
 
 
 (defun extract-defined-kernels (forms)
@@ -288,7 +331,10 @@
       (nreverse generated-files))))
 
 
+
 (defun get-physical-width (type)
+  "Returns the number of physical ABI slots for TYPE.
+   Cell -> 3, Storage -> 2, user-defined records -> recursively counted, others -> 1."
   (cond
    ((%storage-handle-type-p type)
      (let* ((canonical (canonicalize-type-specifier type))
@@ -297,15 +343,19 @@
         ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
           3)
         (t 1))))
-   ;; STORAGE is a buffer (ptr) + size (i64) -> 2 args
    ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
         (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
      2)
+   ((%user-record-type-p type)
+     (length (%enumerate-physical-types type)))
    (t 1)))
 
+
+
 (defun generate-physical-signature (sig-or-params)
+  "Generates the physical ABI signature from kernel parameters.
+   Records are flattened to primitive scalar entries."
   (let ((params (if (typep sig-or-params 'function-signature)
-                    ;; IMPLICITS FIRST based on IR observation
                     (append (function-signature-implicit-parameters sig-or-params)
                       (function-signature-parameters sig-or-params))
                     sig-or-params))
@@ -317,14 +367,15 @@
                       param)))
         (unless (and (symbolp type) (string-equal (symbol-name type) "&OUT"))
           (cond
-           ;; Handle STORAGE specially - flatten to PTR + I64
+           ;; STORAGE: flatten to PTR + I64
            ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
                 (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
-             (push (list current-index (strip-package-qualifiers '(c-pointer address-space global))) physical-args) ;; Flattened Arg 1
+             (push (list current-index (strip-package-qualifiers '(c-pointer address-space global))) physical-args)
              (incf current-index)
-             (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) ;; Flattened Arg 2
+             (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
              (incf current-index))
 
+           ;; CELL: ptr + size + offset
            ((%storage-handle-type-p type)
              (let* ((canonical (canonicalize-type-specifier type))
                     (base (if (consp canonical) (first canonical) canonical)))
@@ -339,6 +390,14 @@
                 (t
                   (push (list current-index (strip-package-qualifiers type)) physical-args)
                   (incf current-index)))))
+
+           ;; User-defined record: flatten to primitive fields
+           ((%user-record-type-p type)
+             (dolist (prim-type (%enumerate-physical-types type))
+               (push (list current-index (strip-package-qualifiers prim-type)) physical-args)
+               (incf current-index)))
+
+           ;; Scalar/other
            (t
              (push (list current-index (strip-package-qualifiers type)) physical-args)
              (incf current-index))))))
@@ -376,13 +435,16 @@
         t))))
 
 
+
 (defun generate-declared-signature (sig &optional declared-params)
+  "Generates the declared-signature plist for a kernel's metadata.
+   Handles user-defined records by using the corrected get-physical-width."
   (let ((declared-args nil)
         (current-phys-index 0)
-        (out-mode nil) ;; Track if we've encountered &out
+        (out-mode nil)
         (params-to-use (or declared-params (function-signature-parameters sig))))
 
-    ;; Implicits come first, so offset the start index for declared params
+    ;; Count implicit params
     (dolist (p (function-signature-implicit-parameters sig))
       (incf current-phys-index (get-physical-width (parameter-def-type p))))
 
@@ -390,27 +452,20 @@
       (let* ((name (if (consp param-def) (car param-def) (parameter-def-name param-def)))
              (type (if (consp param-def) (cdr param-def) (parameter-def-type param-def))))
 
-        ;; Check if this is the &out marker
         (if (and (symbolp name) (string-equal (symbol-name name) "&OUT"))
-            (setf out-mode t) ;; Switch to output mode
-            ;; Not &out marker, so it's a real parameter
+            (setf out-mode t)
             (let* ((width (get-physical-width type))
                    (start current-phys-index)
                    (end (+ start (max 0 (1- width))))
                    (entry (list :name (string-downcase (symbol-name name)))))
 
-              ;; Add type
               (setf entry (append entry (list :type (strip-package-qualifiers type))))
-
-              ;; Add direction (:in or :out)
               (setf entry (append entry (list :direction (if out-mode :out :in))))
 
-              ;; Add storage handle specific fields (address-space, access)
               (when (%storage-handle-type-p type)
                     (let* ((canonical (canonicalize-type-specifier type))
                            (base (if (consp canonical) (first canonical) canonical))
                            (is-cell (and (symbolp base) (string-equal (symbol-name base) "CELL")))
-                           ;; Canonical form is positional: (CELL T Addr Acc)
                            (as (if (and (consp canonical) is-cell (>= (length canonical) 3))
                                    (nth 2 canonical)
                                    (if (consp canonical)
@@ -425,7 +480,6 @@
                                         :read-write))))
                       (setf entry (append entry (list :address-space as :access acc)))))
 
-              ;; Add range
               (setf entry (append entry (list :range (list start end))))
               (push entry declared-args)
               (incf current-phys-index width)))))
