@@ -86,80 +86,113 @@
              (member :global canon)
              (not (or (member :local canon) (member :private canon) (member :generic canon)))))))
 
+(defun %record-base-from-list-form (type-spec)
+  "If TYPE-SPEC is a non-storage list form like (V-POINT :EARNESTNESS 3.0),
+   returns the base symbol V-POINT if it resolves to a user record type.
+   Otherwise returns NIL.  Plain symbols and storage list forms return NIL."
+  (when (and (consp type-spec)
+             (symbolp (first type-spec))
+             ;; Not a storage handle list form
+             (not (member (symbol-name (first type-spec))
+                          '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR")
+                          :test #'string-equal)))
+    (let* ((base (first type-spec))
+           (type-rec (or (gethash base *crisp-types*)
+                         (let ((alt (intern (symbol-name base) (find-package :crisp-language))))
+                           (gethash alt *crisp-types*)))))
+      (when (and type-rec (eq (crisp-type-category type-rec) :record))
+        base))))
+
+
+
 (defun get-expanded-types (type-spec module)
   "Returns a list of LLVM types for a given Crisp type spec.
-   For 'cell', returns (ptr i64 i64). For 'storage', returns (ptr i64). For records, explodes recursively. For others, returns (type).
-   
-   If *target-backend* is :spirv or :ptx, upgrade pointers in storage handles to Global Address Space (1)."
-  (let* ((expanded
-          ;; For storage handle types in list form like (CELL INT :GLOBAL :READ-WRITE), mangle to CELL_INT_GLOBAL_READ-WRITE
-          (let* ((is-storage-list (and (consp type-spec)
-                                       (symbolp (first type-spec))
-                                       (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)))
-                 (lookup-spec (if is-storage-list
-                                  (progn
-                                   (log:debug "GET-EXPANDED-TYPES: Storage handle list form detected: ~s" type-spec)
-                                   (log:debug "  Base: ~s  Params: ~s" (first type-spec) (rest type-spec))
-                                   (let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
-                                     (log:debug "  Mangled to: ~s (package: ~a)" mangled (package-name (symbol-package mangled)))
-                                     mangled))
-                                  type-spec))
-                 ;; Ensure type is instantiated/registered so we can check its category
-                 (ignored (ignore-errors (resolve-type-to-llvm lookup-spec)))
-
-                 ;; Try lookup in current package first, then fallback to CRISP-LANGUAGE
-                 (type-rec (or (gethash lookup-spec *crisp-types*)
-                               (when (and is-storage-list (symbolp lookup-spec))
-                                     (let ((alt-symbol (intern (symbol-name lookup-spec) (find-package :crisp-language))))
-                                       (log:debug "  Trying alternate package lookup: ~s" alt-symbol)
-                                       (gethash alt-symbol *crisp-types*)))))
-                 (struct-def (lookup-struct-definition lookup-spec))
-                 ;; Use the actual key that was found
-                 (actual-key (cond
-                              ((gethash lookup-spec *crisp-types*) lookup-spec)
-                              ((and is-storage-list (symbolp lookup-spec))
-                                (intern (symbol-name lookup-spec) (find-package :crisp-language)))
-                              (t lookup-spec))))
-            (log:debug "GET-EXPANDED-TYPES: lookup-spec=~s  found-type=~a  found-struct=~a  category=~a"
-                       actual-key
+   For 'cell', returns (ptr i64 i64). For 'storage', returns (ptr i64).
+   For records, explodes recursively. For others, returns (type).
+   Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
+   If *target-backend* is :spirv or :ptx, upgrades pointers to Global Address Space (1)."
+  (let* (;; Detect non-storage record list form: (V-POINT :EARNESTNESS 3.0) -> V-POINT
+         (record-base (%record-base-from-list-form type-spec))
+         (is-storage-list (and (consp type-spec)
+                               (symbolp (first type-spec))
+                               (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR")
+                                       :test #'string-equal)))
+         (lookup-spec (cond
+                        (record-base record-base)             ;; NEW: strip to base for record list forms
+                        (is-storage-list
+                         (progn
+                          (log:debug "GET-EXPANDED-TYPES: Storage handle list form detected: ~s" type-spec)
+                          (let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+                            (log:debug "  Mangled to: ~s (package: ~a)" mangled (package-name (symbol-package mangled)))
+                            mangled)))
+                        (t type-spec)))
+         ;; Ensure type is instantiated/registered
+         (ignored (ignore-errors (resolve-type-to-llvm lookup-spec)))
+         ;; Type lookup: for the new record-base case, also try crisp-language package
+         (type-rec (or (gethash lookup-spec *crisp-types*)
+                       (when (and record-base (symbolp lookup-spec))
+                         (let ((alt (intern (symbol-name lookup-spec) (find-package :crisp-language))))
+                           (gethash alt *crisp-types*)))
+                       (when (and is-storage-list (symbolp lookup-spec))
+                         (let ((alt-symbol (intern (symbol-name lookup-spec) (find-package :crisp-language))))
+                           (gethash alt-symbol *crisp-types*)))))
+         (struct-def (lookup-struct-definition lookup-spec))
+         (actual-key (cond
+                       ((gethash lookup-spec *crisp-types*) lookup-spec)
+                       ((and (or record-base is-storage-list) (symbolp lookup-spec))
+                        (let ((alt (intern (symbol-name lookup-spec) (find-package :crisp-language))))
+                          (if (gethash alt *crisp-types*) alt lookup-spec)))
+                       (t lookup-spec)))
+         (expanded
+          (progn
+            (log:debug "GET-EXPANDED-TYPES: type-spec=~s lookup=~s found-type=~a found-struct=~a category=~a"
+                       type-spec actual-key
                        (if type-rec "YES" "NO")
                        (if struct-def "YES" "NO")
                        (when type-rec (crisp-type-category type-rec)))
             (cond
-             ;; Case 1: Record Type -> Explode recursively
-             ((and type-rec (eq (crisp-type-category type-rec) :record))
+              ;; Case 1: Record Type -> Explode recursively
+              ((and type-rec (eq (crisp-type-category type-rec) :record))
                (when struct-def
-                     (let* ((members (crisp-struct-definition-members struct-def))
-                            ;; Filter out compile-time members (e.g. :c-t tagged)
-                            (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members)))
-                       (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members))))
-
-             ;; Case 2: Standard Type (Struct/Scalar) -> Return as is
-             (t (list (crisp-type-to-llvm-type actual-key module)))))))
+                 (let* ((members (crisp-struct-definition-members struct-def))
+                        (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members)))
+                   (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members))))
+              ;; Case 2: Standard Type (Struct/Scalar) -> Return as is
+              (t (list (crisp-type-to-llvm-type actual-key module)))))))
 
     ;; Post-Processing: Apply Address Spaces for GPU Backends
     (if (and (or (eq *target-backend* :spirv) (eq *target-backend* :ptx))
              (is-global-storage-handle-p type-spec))
         (mapcar (lambda (ty)
                   (if (llvm-type-kind-is-pointer? ty)
-                      ;; Upgrade to Global Address Space
-                      (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module)) (encode-address-space :global))
+                      (llvm-pointer-type (llvm-int8-type-in-context (llvm-get-module-context module))
+                                         (encode-address-space :global))
                       ty))
-            expanded)
+                expanded)
         expanded)))
+
+
 
 (defun explode-value (builder agg-val type-spec)
   "Extracts components from an aggregate value if necessary.
-   Returns a list of LLVM values."
-  ;; Mangle list-form storage handle types to their symbol form for lookup
-  (let* ((lookup-spec (if (and (consp type-spec)
-                               (symbolp (first type-spec))
-                               (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
-                          (mangle-template-struct-name (first type-spec) (rest type-spec))
-                          type-spec))
-         (type-rec (gethash lookup-spec *crisp-types*)))
+   Returns a list of LLVM values.
+   Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0)."
+  (let* ((record-base (%record-base-from-list-form type-spec))
+         (lookup-spec (if record-base
+                          record-base
+                          (if (and (consp type-spec)
+                                   (symbolp (first type-spec))
+                                   (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR")
+                                           :test #'string-equal))
+                              (mangle-template-struct-name (first type-spec) (rest type-spec))
+                              type-spec)))
+         (type-rec (or (gethash lookup-spec *crisp-types*)
+                       ;; For record-base case, try crisp-language
+                       (when record-base
+                         (gethash (intern (symbol-name lookup-spec) (find-package :crisp-language))
+                                  *crisp-types*)))))
     (cond
-     ((and type-rec (eq (crisp-type-category type-rec) :record))
+      ((and type-rec (eq (crisp-type-category type-rec) :record))
        (let* ((struct-def (lookup-struct-definition lookup-spec))
               (members (crisp-struct-definition-members struct-def))
               (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
@@ -167,32 +200,39 @@
          (loop for m in runtime-members
                for i from 0
                do (let* ((member-type (second m))
-                         ;; Extract the member from the aggregate
                          (extracted (llvm-build-extract-value builder agg-val i (format nil "~a_val" (first m)))))
-                    ;; Recursively explode the member (in case it's a nested record)
                     (setf values (append values (explode-value builder extracted member-type)))))
          values))
-     (t (list agg-val)))))
+      (t (list agg-val)))))
+
+
 
 (defun implode-value (builder components type-spec module)
   "Combines components into an aggregate value if necessary.
-   Returns a single LLVM value."
-  ;; Mangle list-form storage handle types to their symbol form for lookup
-  (let* ((lookup-spec (if (and (consp type-spec)
-                               (symbolp (first type-spec))
-                               (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
-                          (mangle-template-struct-name (first type-spec) (rest type-spec))
-                          type-spec))
-         (type-rec (gethash lookup-spec *crisp-types*)))
+   Returns a single LLVM value.
+   Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0)."
+  (let* ((record-base (%record-base-from-list-form type-spec))
+         (lookup-spec (if record-base
+                          record-base
+                          (if (and (consp type-spec)
+                                   (symbolp (first type-spec))
+                                   (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR")
+                                           :test #'string-equal))
+                              (mangle-template-struct-name (first type-spec) (rest type-spec))
+                              type-spec)))
+         (type-rec (or (gethash lookup-spec *crisp-types*)
+                       ;; For record-base case, try crisp-language
+                       (when record-base
+                         (gethash (intern (symbol-name lookup-spec) (find-package :crisp-language))
+                                  *crisp-types*)))))
     (cond
-     ((and type-rec (eq (crisp-type-category type-rec) :record))
+      ((and type-rec (eq (crisp-type-category type-rec) :record))
        (let* ((struct-def (lookup-struct-definition lookup-spec))
               (members (crisp-struct-definition-members struct-def))
               (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
-              (record-type (crisp-type-to-llvm-type type-spec module))
+              (record-type (crisp-type-to-llvm-type lookup-spec module))
               (agg (llvm-get-undef record-type))
               (current-components components))
-
          (loop for m in runtime-members
                for i from 0
                do (let* ((member-type (second m))
@@ -201,7 +241,7 @@
                     (setf agg (llvm-build-insert-value builder agg member-val i (format nil "~a_ins" (first m))))
                     (setf current-components (subseq current-components consumed-count))))
          agg))
-     (t (first components)))))
+      (t (first components)))))
 
 (defun extract-primary-value (builder value type-spec)
   "If the type indicates an MVR (multiple return value) struct, extract the first element.

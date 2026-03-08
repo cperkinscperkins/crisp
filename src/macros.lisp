@@ -399,16 +399,17 @@
 
     type-map))
 
+
 (defun %validate-kernel-parameters (params type-map name)
-  "Helper: Validates that kernel parameters are complete and not voidp."
+  "Helper: Validates that kernel parameters are complete, not voidp,
+   and that records do not appear in &out position."
   (dolist (p params)
     (let ((t-spec (gethash p type-map)))
-      ;; Check for incomplete storage handles
       (when (and t-spec (%incomplete-storage-handle-p t-spec))
             (error "def-kernel parameter '~a' has incomplete storage handle type ~a. Kernels require fully specified types (e.g. specify :address-space and :access)."
               p t-spec))))
 
-  ;; Build signature types for validation
+  ;; Build signature types
   (let ((signature-types nil)
         (p-ptr params))
     (loop while p-ptr do
@@ -421,12 +422,12 @@
                   (push (gethash p type-map) signature-types))))
     (setf signature-types (nreverse signature-types))
 
-    ;; Check completeness
+    ;; Check all params have types
     (unless (every #'identity signature-types)
       (error "def-kernel ~a: Missing type declarations for parameters: ~a" name
         (loop for p in params for t-spec in signature-types unless t-spec collect p)))
 
-    ;; Validate types
+    ;; Validate each type (completeness and voidp)
     (loop for t-spec in signature-types
           do (when (incomplete-type-p t-spec)
                    (error "Kernel parameters must be COMPLETE types. Found incomplete: ~a" t-spec))
@@ -434,6 +435,16 @@
               (when (or (eq canon 'voidp)
                         (and (symbolp canon) (string-equal (symbol-name canon) "VOIDP")))
                     (error "Kernel parameters cannot be of type 'voidp'. Use a specific pointer type with address space or a storage handle."))))
+
+    ;; Records must NOT appear in &out position
+    (let ((sig-ptr (copy-list signature-types)))
+      (loop while sig-ptr do
+              (let ((t-spec (pop sig-ptr)))
+                (when (and (symbolp t-spec) (string-equal (symbol-name t-spec) "&OUT"))
+                  (let ((next-type (first sig-ptr)))
+                    (when (and next-type (%user-record-type-p next-type))
+                      (error "Record type ~a cannot appear in &out position at the kernel boundary. Only storage handles (cell, vector, matrix) support &out position."
+                        next-type)))))))
 
     signature-types))
 
@@ -619,32 +630,49 @@
      (setf (gethash ',name crisp.compiler::*crisp-template-aliases*) (cons nil ',type-spec))
      (setf (gethash ',name crisp.compiler::*crisp-type-aliases*) ',type-spec)))
 
-;; Corrected def-struct macro for src/macros.lisp
-;; Replace the existing def-struct starting at line 452
+(defun %parse-ct-literal (value)
+  "If VALUE is a symbol whose name looks like a typed numeric literal (e.g. 2.0F,
+   100UC), parse and return the underlying number.  Otherwise return VALUE unchanged."
+  (if (not (symbolp value))
+      value
+      (let* ((name (symbol-name value))
+             ;; Longest-first so BF is checked before F, UL before L, etc.
+             (suffixes '("BF" "UC" "UL" "US" "U" "S" "L" "H" "F"))
+             (suffix (some (lambda (s)
+                             (let ((sl (length s)) (nl (length name)))
+                               (when (and (> nl sl)
+                                          (string= s (subseq name (- nl sl))))
+                                 s)))
+                           suffixes)))
+        (if suffix
+            (let* ((num-str (subseq name 0 (- (length name) (length suffix))))
+                   (parsed  (ignore-errors (read-from-string num-str))))
+              (if (numberp parsed) parsed value))
+            value))))
+
+
+
 (defun %generate-struct-accessor (member-spec name pkg runtime-index)
   "Helper: Generates accessor (and setter) for a single struct member.
-   Returns (values accessor-form new-runtime-index)."
+   Returns (values accessor-form new-runtime-index).
+   Fix: typed-literal symbols in :c-t defaults are resolved to their numeric values."
   (let* ((member-name (first member-spec))
          (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
-         (value (when is-ct (fourth member-spec)))
+         (raw-value (when is-ct (fourth member-spec)))
+         ;; Resolve typed-literal symbols (e.g. 2.0F -> 2.0) for c-t defaults.
+         (value (when is-ct (%parse-ct-literal raw-value)))
          (accessor-name (intern (format nil "~a~~" member-name) pkg)))
-
     (cond
      ;; Compile-time member with value -> constant accessor macro
      ((and is-ct value)
        (values `(defmacro ,accessor-name (obj)
                   (declare (ignore obj))
-                  '',value)
+                  ',value)
          runtime-index))
-
      ;; Compile-time member without value -> skip (incomplete type)
      (is-ct
        (values nil runtime-index))
-
-     ;; Runtime member -> function accessor ONLY
-     ;; We rely on set! analyzing the accessor form to generate update logic.
-     ;; We DO NOT generate a def-setter because struct updates are functional
-     ;; and must be wrapped in a set! for the holding variable.
+     ;; Runtime member -> function accessor
      (t
        (let ((idx runtime-index))
          (values `(def-function ,accessor-name ((obj ,name))

@@ -415,41 +415,36 @@
 
      (t (error "Invalid set! target structure: ~a" target-form)))))
 
+
+
 (defun analyze-incomplete-type-accessor (op expr env context location)
   "Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).
-   Returns a semantic-node (literal) if resolved, or NIL if not applicable."
+   Returns a semantic-node (literal) if resolved, or NIL if not applicable.
+
+   Fix: float values now return value-type 'float instead of 'quote."
   (let ((op-name (symbol-name op)))
-    ;; Check if it is an accessor (ends with ~)
     (when (and (> (length op-name) 1) (alexandria:ends-with #\~ op-name))
           (let* ((member-name (intern (string-trim "~" op-name) (symbol-package op)))
-                 ;; Analyze the first argument (obj)
                  (obj-expr (second expr)))
             (when obj-expr
-                  ;; To avoid double analysis if not resolved, we might need to be careful.
-                  ;; But analyze-expression is side-effect free mostly.
                   (let* ((obj-node (analyze-expression obj-expr env context (append location '(1))))
                          (obj-type (semantic-node-type obj-node)))
-
-                    ;; Check if obj-type carries the value
                     (when (and (consp obj-type) (valid-type-p obj-type))
                           (let* ((canon (canonicalize-type-specifier obj-type))
                                  (base (first canon))
                                  (params (rest canon)))
                             (log:info "  ObjType: ~s Canon: ~s Params: ~s" obj-type canon params)
-
-                            ;; Only proceed if it is a Record or Struct
                             (when (or (gethash base *crisp-structs*) (gethash base *crisp-types*))
-                                  ;; Look for the member in the parameters (e.g. :color :blue)
                                   (let ((kw (intern (symbol-name member-name) "KEYWORD")))
                                     (let ((val (getf params kw)))
                                       (when val
-                                            ;; Return the literal value
                                             (cond
                                              ((keywordp val) (make-semantic-literal :value-type 'keyword :value val :source-location location))
-                                             ((symbolp val) (make-semantic-literal :value-type 'symbol :value val :source-location location))
-                                             ((integerp val) (make-semantic-literal :value-type 'int :value val :source-location location))
+                                             ((symbolp val)  (make-semantic-literal :value-type 'symbol  :value val :source-location location))
+                                             ((integerp val) (make-semantic-literal :value-type 'int     :value val :source-location location))
+                                             ((floatp val)   (make-semantic-literal :value-type 'float   :value val :source-location location))
                                              (t (make-semantic-literal :value-type 'quote :value val :source-location location)))))))))))))))
-
+                                             
 
 (defun analyze-scratch-expression (expr env context location)
   "Analyzes a (make-scratch-cell ...) expression.

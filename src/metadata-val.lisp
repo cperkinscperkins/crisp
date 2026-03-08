@@ -573,3 +573,346 @@
      (or (search "define bfloat @ret_bfloat16" ir)
          (progn (log:error "No bfloat ret_bfloat16 function found in IR") nil))
      t)))
+
+
+
+(defun %read-metacrisp-forms (path)
+  "Reads all top-level forms from a .metacrisp file. Returns NIL if file missing."
+  (when (probe-file path)
+    (uiop:read-file-forms path)))
+
+(defun %metacrisp-section (forms key)
+  "Returns the cdr of the first top-level form whose car is KEY."
+  (rest (find key forms :key #'car)))
+
+(defun %metacrisp-find-kernel (forms kernel-name)
+  "Returns the plist for the named kernel, or NIL."
+  (block find-k
+    (dolist (k (%metacrisp-section forms :kernels))
+      (when (string-equal (getf k :name) kernel-name)
+            (return-from find-k k)))))
+
+(defun %find-record-def (records-section name)
+  "Finds (def-record NAME ...) in a list of forms. Returns the form or NIL."
+  (find name records-section
+        :test (lambda (n f)
+                (and (consp f)
+                     (symbolp (second f))
+                     (string-equal (symbol-name (second f)) n)))))
+
+(defun %record-member-count (rec-form)
+  "Counts the members listed in a (def-record NAME member...) form."
+  (length (cddr rec-form)))
+
+(defun %find-decl-entry (decl-sig name)
+  "Finds the declared-signature entry whose :name matches (case-insensitive)."
+  (find name decl-sig
+        :test (lambda (n e) (string-equal (getf e :name) n))))
+
+;;; Validator: 01-basic-rec-meta
+;;; Tests that a flat def-record at the kernel boundary appears in :records,
+;;; has the correct physical width, and shows up correctly in the declared sig.
+
+(defun validate-def-record-in-metadata (metadata-path)
+  "Validates 01-basic-rec-meta: v-point at kernel boundary.
+   Checks :records section, physical width (2+3=5), and declared sig."
+  (unless (probe-file metadata-path)
+    (log:error "validate-def-record-in-metadata: file not found: ~a" metadata-path)
+    (return-from validate-def-record-in-metadata nil))
+
+  (let* ((forms (%read-metacrisp-forms metadata-path))
+         (records (%metacrisp-section forms :records))
+         (k-def (%metacrisp-find-kernel forms "record_on_boundary_k")))
+
+    ;; :records section must exist
+    (unless records
+      (log:error "validate-def-record-in-metadata: no :records section")
+      (return-from validate-def-record-in-metadata nil))
+
+    ;; v-point must appear
+    (let ((vp (%find-record-def records "v-point")))
+      (unless vp
+        (log:error "validate-def-record-in-metadata: v-point not in :records section")
+        (return-from validate-def-record-in-metadata nil))
+      ;; exactly 2 runtime members (x, y)
+      (unless (= (%record-member-count vp) 2)
+        (log:error "validate-def-record-in-metadata: expected 2 members for v-point, got ~a: ~a"
+          (%record-member-count vp) (cddr vp))
+        (return-from validate-def-record-in-metadata nil)))
+
+    ;; v-rect must NOT appear (it is not at the kernel boundary)
+    (when (%find-record-def records "v-rect")
+      (log:error "validate-def-record-in-metadata: v-rect should NOT be in :records")
+      (return-from validate-def-record-in-metadata nil))
+
+    ;; kernel must be found
+    (unless k-def
+      (log:error "validate-def-record-in-metadata: kernel record_on_boundary_k not found")
+      (return-from validate-def-record-in-metadata nil))
+
+    ;; physical sig: 5 entries (2 for v-point fields + 3 for cell)
+    (let ((phys (getf k-def :physical-signature)))
+      (unless (= (length phys) 5)
+        (log:error "validate-def-record-in-metadata: expected 5 physical-sig entries, got ~a: ~a"
+          (length phys) phys)
+        (return-from validate-def-record-in-metadata nil)))
+
+    ;; declared sig: "vp" :in v-point, "c" :out
+    (let ((decl (getf k-def :declared-signature)))
+      (let ((vp-e (%find-decl-entry decl "vp")))
+        (unless vp-e
+          (log:error "validate-def-record-in-metadata: no 'vp' entry in declared-signature")
+          (return-from validate-def-record-in-metadata nil))
+        (unless (eq (getf vp-e :direction) :in)
+          (log:error "validate-def-record-in-metadata: vp direction should be :in, got ~a"
+            (getf vp-e :direction))
+          (return-from validate-def-record-in-metadata nil))
+        (unless (and (symbolp (getf vp-e :type))
+                     (string-equal (symbol-name (getf vp-e :type)) "v-point"))
+          (log:error "validate-def-record-in-metadata: vp :type should be v-point, got ~a"
+            (getf vp-e :type))
+          (return-from validate-def-record-in-metadata nil)))
+      (let ((c-e (%find-decl-entry decl "c")))
+        (unless c-e
+          (log:error "validate-def-record-in-metadata: no 'c' entry in declared-signature")
+          (return-from validate-def-record-in-metadata nil))
+        (unless (eq (getf c-e :direction) :out)
+          (log:error "validate-def-record-in-metadata: c direction should be :out, got ~a"
+            (getf c-e :direction))
+          (return-from validate-def-record-in-metadata nil))))
+
+    (log:info "validate-def-record-in-metadata: PASS")
+    t))
+
+
+;;; Validator: 03-record-with-ct-meta
+;;; Tests that a record with :c-t members shows only runtime members in :records,
+;;; and that the c-t spec appears in the declared signature type.
+
+(defun validate-def-rec-with-ct-in-metadata (metadata-path)
+  "Validates 03-record-with-ct-meta: v-point with :c-t earnestness at kernel boundary.
+   Checks :records shows only 2 runtime members, physical width is 2+2+3=7,
+   and declared sig shows the full (v-point :earnestness 3.0) type for vp-2."
+  (unless (probe-file metadata-path)
+    (log:error "validate-def-rec-with-ct-in-metadata: file not found: ~a" metadata-path)
+    (return-from validate-def-rec-with-ct-in-metadata nil))
+
+  (let* ((forms (%read-metacrisp-forms metadata-path))
+         (records (%metacrisp-section forms :records))
+         (k-def (%metacrisp-find-kernel forms "record_on_boundary_k")))
+
+    ;; :records section must exist and have v-point
+    (unless records
+      (log:error "validate-def-rec-with-ct-in-metadata: no :records section")
+      (return-from validate-def-rec-with-ct-in-metadata nil))
+
+    (let ((vp (%find-record-def records "v-point")))
+      (unless vp
+        (log:error "validate-def-rec-with-ct-in-metadata: v-point not in :records")
+        (return-from validate-def-rec-with-ct-in-metadata nil))
+      ;; earnestness is :c-t -- must NOT appear in the records section (runtime members only)
+      (unless (= (%record-member-count vp) 2)
+        (log:error "validate-def-rec-with-ct-in-metadata: expected 2 runtime members for v-point (no earnestness), got ~a: ~a"
+          (%record-member-count vp) (cddr vp))
+        (return-from validate-def-rec-with-ct-in-metadata nil)))
+
+    (unless k-def
+      (log:error "validate-def-rec-with-ct-in-metadata: kernel record_on_boundary_k not found")
+      (return-from validate-def-rec-with-ct-in-metadata nil))
+
+    ;; physical sig: 7 entries (2 + 2 + 3)
+    (let ((phys (getf k-def :physical-signature)))
+      (unless (= (length phys) 7)
+        (log:error "validate-def-rec-with-ct-in-metadata: expected 7 physical-sig entries (2+2+3), got ~a: ~a"
+          (length phys) phys)
+        (return-from validate-def-rec-with-ct-in-metadata nil)))
+
+    ;; declared sig: vp-1 :in v-point, vp-2 :in with list type (v-point :earnestness ...), c :out
+    (let ((decl (getf k-def :declared-signature)))
+      (let ((vp1 (%find-decl-entry decl "vp-1")))
+        (unless (and vp1 (eq (getf vp1 :direction) :in))
+          (log:error "validate-def-rec-with-ct-in-metadata: vp-1 not found or not :in")
+          (return-from validate-def-rec-with-ct-in-metadata nil)))
+      ;; vp-2 type should be a list form (v-point :earnestness ...)
+      (let ((vp2 (%find-decl-entry decl "vp-2")))
+        (unless vp2
+          (log:error "validate-def-rec-with-ct-in-metadata: vp-2 not found in declared-signature")
+          (return-from validate-def-rec-with-ct-in-metadata nil))
+        (let ((typ (getf vp2 :type)))
+          (unless (and (consp typ)
+                       (symbolp (first typ))
+                       (string-equal (symbol-name (first typ)) "v-point"))
+            (log:error "validate-def-rec-with-ct-in-metadata: vp-2 :type should be (v-point ...), got ~a" typ)
+            (return-from validate-def-rec-with-ct-in-metadata nil))))
+      (let ((c-e (%find-decl-entry decl "c")))
+        (unless (and c-e (eq (getf c-e :direction) :out))
+          (log:error "validate-def-rec-with-ct-in-metadata: c not found or not :out")
+          (return-from validate-def-rec-with-ct-in-metadata nil))))
+
+    (log:info "validate-def-rec-with-ct-in-metadata: PASS")
+    t))
+
+
+;;; Validator: 04-nested-records-meta
+;;; Tests that nested records (v-rect containing v-point) at the kernel boundary
+;;; cause both records to appear in :records, and that the physical sig is
+;;; fully flattened to primitive types.
+
+(defun validate-nested-rec-in-metadata (metadata-path)
+  "Validates 04-nested-records-meta: v-rect (containing v-point) at kernel boundary.
+   Checks both records in :records section, physical width is 4+3=7,
+   and declared sig shows vr with type v-rect and range (0 3)."
+  (unless (probe-file metadata-path)
+    (log:error "validate-nested-rec-in-metadata: file not found: ~a" metadata-path)
+    (return-from validate-nested-rec-in-metadata nil))
+
+  (let* ((forms (%read-metacrisp-forms metadata-path))
+         (records (%metacrisp-section forms :records))
+         (k-def (%metacrisp-find-kernel forms "rect_on_boundary_k")))
+
+    (unless records
+      (log:error "validate-nested-rec-in-metadata: no :records section")
+      (return-from validate-nested-rec-in-metadata nil))
+
+    ;; Both v-point and v-rect must appear
+    (unless (%find-record-def records "v-point")
+      (log:error "validate-nested-rec-in-metadata: v-point missing from :records (needed by v-rect)")
+      (return-from validate-nested-rec-in-metadata nil))
+
+    (unless (%find-record-def records "v-rect")
+      (log:error "validate-nested-rec-in-metadata: v-rect missing from :records")
+      (return-from validate-nested-rec-in-metadata nil))
+
+    (unless k-def
+      (log:error "validate-nested-rec-in-metadata: kernel rect_on_boundary_k not found")
+      (return-from validate-nested-rec-in-metadata nil))
+
+    ;; physical sig: 7 entries (v-rect flattens to 4 ints, cell = 3)
+    (let ((phys (getf k-def :physical-signature)))
+      (unless (= (length phys) 7)
+        (log:error "validate-nested-rec-in-metadata: expected 7 physical-sig entries (4+3), got ~a: ~a"
+          (length phys) phys)
+        (return-from validate-nested-rec-in-metadata nil)))
+
+    ;; declared sig: vr :in v-rect with range starting at 0 and spanning 4 slots
+    (let* ((decl (getf k-def :declared-signature))
+           (vr-e (%find-decl-entry decl "vr")))
+      (unless vr-e
+        (log:error "validate-nested-rec-in-metadata: no 'vr' in declared-signature")
+        (return-from validate-nested-rec-in-metadata nil))
+      (unless (eq (getf vr-e :direction) :in)
+        (log:error "validate-nested-rec-in-metadata: vr direction should be :in, got ~a"
+          (getf vr-e :direction))
+        (return-from validate-nested-rec-in-metadata nil))
+      (unless (and (symbolp (getf vr-e :type))
+                   (string-equal (symbol-name (getf vr-e :type)) "v-rect"))
+        (log:error "validate-nested-rec-in-metadata: vr :type should be v-rect, got ~a"
+          (getf vr-e :type))
+        (return-from validate-nested-rec-in-metadata nil))
+      ;; range should be (0 3) -- 4 physical slots indexed 0..3
+      (let ((range (getf vr-e :range)))
+        (unless (and (listp range) (= (length range) 2)
+                     (= (first range) 0) (= (second range) 3))
+          (log:error "validate-nested-rec-in-metadata: vr :range should be (0 3), got ~a" range)
+          (return-from validate-nested-rec-in-metadata nil))))
+
+    (log:info "validate-nested-rec-in-metadata: PASS")
+    t))
+
+
+;;; Validator: 09-branded-rec-elide
+;;; Tests that brand declarations are elided when a def-record with branding
+;;; appears in the :records section -- only the base type is shown.
+
+(defun validate-no-brand-in-metadata (metadata-path)
+  "Validates 09-branded-rec-elide: branded def-record at kernel boundary.
+   Checks that the :records section shows the base type (ulong) for branded
+   fields, not the brand type (token-t), and no brand declarations appear."
+  (unless (probe-file metadata-path)
+    (log:error "validate-no-brand-in-metadata: file not found: ~a" metadata-path)
+    (return-from validate-no-brand-in-metadata nil))
+
+  (let* ((forms (%read-metacrisp-forms metadata-path))
+         (records (%metacrisp-section forms :records))
+         (k-def (%metacrisp-find-kernel forms "record_on_boundary_k")))
+
+    (unless records
+      (log:error "validate-no-brand-in-metadata: no :records section")
+      (return-from validate-no-brand-in-metadata nil))
+
+    (let ((vp (%find-record-def records "v-point")))
+      (unless vp
+        (log:error "validate-no-brand-in-metadata: v-point not in :records")
+        (return-from validate-no-brand-in-metadata nil))
+
+      ;; No member should be named "brand" -- brand declarations must be elided
+      (dolist (m (cddr vp))
+        (when (and (consp m) (symbolp (first m))
+                   (string-equal (symbol-name (first m)) "brand"))
+          (log:error "validate-no-brand-in-metadata: brand declaration found in :records -- should be elided: ~a" m)
+          (return-from validate-no-brand-in-metadata nil)))
+
+      ;; The x field should have ulong type (base of token-t brand), not token-t
+      (let ((x-member (find "x" (cddr vp)
+                            :test (lambda (n m) (and (consp m) (symbolp (first m))
+                                                     (string-equal (symbol-name (first m)) n))))))
+        (when x-member
+          (let ((x-type (second x-member)))
+            (when (and (symbolp x-type)
+                       (string-equal (symbol-name x-type) "token-t"))
+              (log:error "validate-no-brand-in-metadata: x field still shows brand type 'token-t', expected base type 'ulong'")
+              (return-from validate-no-brand-in-metadata nil))))))
+
+    (unless k-def
+      (log:error "validate-no-brand-in-metadata: kernel record_on_boundary_k not found")
+      (return-from validate-no-brand-in-metadata nil))
+
+    (log:info "validate-no-brand-in-metadata: PASS")
+    t))
+
+
+
+;;; --- Helpers ---
+
+(defun %user-record-type-p (type-spec)
+  "Returns T if TYPE-SPEC refers to a user-defined def-record (not a storage handle or primitive).
+   Handles both bare symbols and list forms like (v-point :earnestness 3.0)."
+  (when (%storage-handle-type-p type-spec)
+    (return-from %user-record-type-p nil))
+  (let* ((base-sym (cond
+                     ((and (consp type-spec) (symbolp (car type-spec))) (car type-spec))
+                     ((symbolp type-spec) (get-type-base type-spec))
+                     (t nil)))
+         (type-rec (when (and base-sym (symbolp base-sym))
+                     (or (gethash base-sym *crisp-types*)
+                         (gethash (intern (symbol-name base-sym) :crisp-language)
+                                  *crisp-types*)))))
+    (and type-rec (eq (crisp-type-category type-rec) :record))))
+
+(defun %enumerate-physical-types (type-spec)
+  "Returns a flat list of primitive Crisp type-specs for TYPE-SPEC.
+   Records are recursively flattened to their runtime members (excluding :c-t members).
+   List forms like (v-point :earnestness 3.0) use the base record type.
+   Brand-typed members are resolved to their base types."
+  (let* ((base-sym (cond
+                     ((and (consp type-spec) (symbolp (car type-spec))
+                           (not (%storage-handle-type-p type-spec)))
+                      (car type-spec))
+                     ((symbolp type-spec) type-spec)
+                     (t nil)))
+         (struct-def (when (and base-sym (symbolp base-sym))
+                       (lookup-struct-definition base-sym)))
+         (type-rec (when (and base-sym (symbolp base-sym))
+                     (or (gethash base-sym *crisp-types*)
+                         (gethash (intern (symbol-name base-sym) :crisp-language)
+                                  *crisp-types*)))))
+    (if (and type-rec (eq (crisp-type-category type-rec) :record) struct-def)
+        ;; Record: flatten runtime members recursively
+        (let* ((all-members (crisp-struct-definition-members struct-def))
+               (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t)))
+                                           all-members)))
+          (mapcan (lambda (m) (%enumerate-physical-types (second m))) runtime-members))
+        ;; Not a record: resolve brand to base type if applicable
+        (let* ((brand-def (and (symbolp type-spec) (is-brand-type-p type-spec)))
+               (final-type (if brand-def (brand-definition-base-type brand-def) type-spec)))
+          (list final-type)))))
