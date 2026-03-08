@@ -52,6 +52,11 @@ run and validate the output of select tests.
 
 In other words, the Crisp system now has full E2E automated testing. 
 
+### --differentiate
+Crisp compiler can do auto-differentiation. With this flag, kernel interfaces are amended
+with gradient args and the kernel takes the derivative. Original kernal must use `&out` flag to 
+be differentiable.  `(declare forward-only)` also introduced. See the docs. 
+
 Pipeline
 ========
 
@@ -259,6 +264,9 @@ default on cell when using the `--differentiate` flag.
 
 ### ANF Transform
 All code is ANF transformed when using the `--differentiate` flag.
+
+### Numeric Literal Suffices
+`1.4f` instead of `(as float 1.5)` etc. 
 
 
 Errors

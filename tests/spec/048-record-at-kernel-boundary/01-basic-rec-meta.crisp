@@ -1,0 +1,17 @@
+
+;; TEST-WITH[--metadata] : validate-def-record-in-metadata
+
+;; aliasing
+(def-type fff float)
+
+(def-record v-point (x fff) (y int))
+
+;; the v-rect record is NOT at the kernel boundary.
+;; and so should NOT be in the .metacrisp
+(def-record v-rect (top-left v-point) (bottom-right v-point)) 
+
+(def-type out-c (cell float :address-space :global :access :read-write))
+
+(def-kernel record_on_boundary_k (vp &out c)
+    (declare #'(v-point &out out-c))
+    (set! (~ c) (* (x~ vp) (y~ vp))))

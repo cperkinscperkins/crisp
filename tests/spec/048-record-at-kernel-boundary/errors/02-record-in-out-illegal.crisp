@@ -1,0 +1,11 @@
+
+;; CHECK-FAIL : "&out position"
+
+(def-record v-point (x int) (y int))
+
+;; illegal. only storage handles can appear in &out position. 
+
+(def-kernel record_on_boundary_k (vp-in &out vp-out)
+    (declare #'(v-point &out v-point))
+    (set! (x~ vp-out) (y~ vp-in))
+    (set~ (y~ vp-out) (x~ vp-in)))

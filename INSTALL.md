@@ -108,6 +108,7 @@ The compiler supports a number of flags now:
 - `-g`
 - `--debug`
 - `--log-level=off`  ;; also `error`, `warn`, `info`, `debug`, `trace`
+- `--differentiate` 
 
 Run Tests
 ---------
@@ -124,7 +125,7 @@ that the E2E tests will be run up to (inclusive), but no futher.
 $ sbcl --load .\tests\run-ci.lisp     
 
 # run the E2E tests
-$ sbcl --script .\tests\run-specs.lisp  
+$ sbcl --script .\tests\run-specs.lisp  --log-level=off
 
 # run the negative tests (errors)
 $ sbcl --script .\tests\run-error-specs.lisp
