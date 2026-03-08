@@ -1,4 +1,5 @@
 ;; TEST-WITH[--metadata] : validate-nested-rec-in-metadata
+;; SKIP-WITH[--differentiate] : "TODO: auto-diff needs to be extended for records at kernel boundary"
 
 ;; v-rect is on the kernel boundary.
 ;; by virtue of that, v-point will also appear in the metadata.

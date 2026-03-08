@@ -403,17 +403,18 @@ Assault On Pytorch
 
 TECHNICAL DEBT AND OVERSIGHTS
 ============================
-- [ ] def-record SHOULD be supportable at kernel boundary. We already do it for cell, might 
+- [x] def-record SHOULD be supportable at kernel boundary. We already do it for cell, might 
       as well general case that.
 - - records on kernel boundary cannot be in &out positon.  
     Technically, threads CAN change record values as the record is passed down the call stack,
     but those changes are NOT shared with other threads OR communicated back to the host.
     Not sure what is the name for those semantics. "read only" ?? 
-- - [ ] &out some_rec is compilation ERROR. <-- EXCEPT STORAGE HANDLES (cell, vector, matrix, tensor)
-- - [ ] metadata decision & test
+- - [x] &out some_rec is compilation ERROR. <-- EXCEPT STORAGE HANDLES (cell, vector, matrix, tensor)
+- - [x] metadata decision & test
 - - - [x] records support branding. including :enforce :always
 - - - A: but that will be elided. No issue.
-- - [ ] hoisting decision & test
+- - [x] hoisting decision & test
+- [ ] def-record at kernel boundary and --differentiate:  NEED AUTODIFF SUPPORT
 
 - [x] what happens to cell in metadata if --metadata combined with --differentiate ?
 - - is that allowed? We do NOT allow with --hoist.   However, it should work fine.  

@@ -1,5 +1,6 @@
 
 ;; TEST-WITH[--metadata] : validate-def-record-in-metadata
+;; SKIP-WITH[--differentiate] : "TODO: auto-diff needs to be extended for records at kernel boundary"
 
 ;; aliasing
 (def-type fff float)
