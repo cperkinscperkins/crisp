@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-07T03:10:11.946396Z
+Generated on 2026-03-08T20:24:37.791509Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -495,7 +495,7 @@ Generated on 2026-03-07T03:10:11.946396Z
 ### DEFUN `ANALYZE-INCOMPLETE-TYPE-ACCESSOR`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
 
-  > Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).  >    Returns a semantic-node (literal) if resolved, or NIL if not applicable.
+  > Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).  >    Returns a semantic-node (literal) if resolved, or NIL if not applicable.  >   >    Fix: float values now return value-type 'float instead of 'quote.
 
 
 ---
@@ -797,24 +797,31 @@ Generated on 2026-03-07T03:10:11.946396Z
 
 
 ---
+### DEFUN `%RECORD-BASE-FROM-LIST-FORM`
+- **Args**: `(TYPE-SPEC)`
+
+  > If TYPE-SPEC is a non-storage list form like (V-POINT :EARNESTNESS 3.0),  >    returns the base symbol V-POINT if it resolves to a user record type.  >    Otherwise returns NIL.  Plain symbols and storage list forms return NIL.
+
+
+---
 ### DEFUN `GET-EXPANDED-TYPES`
 - **Args**: `(TYPE-SPEC MODULE)`
 
-  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64 i64). For 'storage', returns (ptr i64). For records, explodes recursively. For others, returns (type).  >      >    If *target-backend* is :spirv or :ptx, upgrade pointers in storage handles to Global Address Space (1).
+  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64 i64). For 'storage', returns (ptr i64).  >    For records, explodes recursively. For others, returns (type).  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).  >    If *target-backend* is :spirv or :ptx, upgrades pointers to Global Address Space (1).
 
 
 ---
 ### DEFUN `EXPLODE-VALUE`
 - **Args**: `(BUILDER AGG-VAL TYPE-SPEC)`
 
-  > Extracts components from an aggregate value if necessary.  >    Returns a list of LLVM values.
+  > Extracts components from an aggregate value if necessary.  >    Returns a list of LLVM values.  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
 
 
 ---
 ### DEFUN `IMPLODE-VALUE`
 - **Args**: `(BUILDER COMPONENTS TYPE-SPEC MODULE)`
 
-  > Combines components into an aggregate value if necessary.  >    Returns a single LLVM value.
+  > Combines components into an aggregate value if necessary.  >    Returns a single LLVM value.  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
 
 
 ---
@@ -1128,7 +1135,7 @@ Generated on 2026-03-07T03:10:11.946396Z
 
 ---
 ### DEFUN `GENERATE-CPP-MAIN`
-- **Args**: `(STREAM KERNEL-NAME SPV-PATH DECLARED-SIG ALIASES)`
+- **Args**: `(STREAM KERNEL-NAME SPV-PATH DECLARED-SIG ALIASES RECORDS)`
 
   > Generate C++ main function
 
@@ -1149,7 +1156,7 @@ Generated on 2026-03-07T03:10:11.946396Z
 
 ---
 ### DEFUN `GENERATE-KERNEL-LAUNCH`
-- **Args**: `(STREAM KERNEL-NAME DECLARED-SIG ALIASES)`
+- **Args**: `(STREAM KERNEL-NAME DECLARED-SIG ALIASES RECORDS)`
 
   > Generate kernel creation and launch code. Returns list of USM allocations.
 
@@ -1180,8 +1187,36 @@ Generated on 2026-03-07T03:10:11.946396Z
 
 
 ---
+### DEFUN `RECORD-BASE-TYPE`
+- **Args**: `(TYPE)`
+
+  > Extract the base record type symbol from a plain symbol or a list-form like (V-POINT EARNESTNESS 3.0).
+
+
+---
+### DEFUN `FIND-RECORD-DEF`
+- **Args**: `(TYPE RECORDS)`
+
+  > Find the def-record entry matching TYPE in RECORDS.  >    TYPE may be a plain symbol or a parameterized list form.
+
+
+---
+### DEFUN `RECORD-TYPE-P`
+- **Args**: `(TYPE RECORDS)`
+
+  > Returns true if TYPE refers to a def-record in RECORDS.
+
+
+---
+### DEFUN `%RECORD-FIELD-ARGS`
+- **Args**: `(STREAM MEMBERS VAR-PATH ARG-INDEX RECORDS ALIASES)`
+
+  > Recursively emit field initialization and zeKernelSetArgumentValue calls  >    for all scalar leaves of a record, following nested records.  >    Returns the updated arg-index after consuming all fields.
+
+
+---
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
-- **Args**: `(STREAM DECLARED-SIG ALIASES CONTEXT-VAR DEVICE-VAR)`
+- **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR)`
 
   > Generate kernel argument setup code with USM allocation for cells
 
@@ -1232,6 +1267,13 @@ Generated on 2026-03-07T03:10:11.946396Z
 - **Args**: `(METACRISP-DATA)`
 
   > Extract struct definitions from metacrisp data.
+
+
+---
+### DEFUN `METACRISP-RECORDS`
+- **Args**: `(METACRISP-DATA)`
+
+  > Extract def-record definitions from metacrisp data.
 
 
 ---
@@ -1457,7 +1499,7 @@ Generated on 2026-03-07T03:10:11.946396Z
 ### DEFUN `%VALIDATE-KERNEL-PARAMETERS`
 - **Args**: `(PARAMS TYPE-MAP NAME)`
 
-  > Helper: Validates that kernel parameters are complete and not voidp.
+  > Helper: Validates that kernel parameters are complete, not voidp,  >    and that records do not appear in &out position.
 
 
 ---
@@ -1503,10 +1545,17 @@ Generated on 2026-03-07T03:10:11.946396Z
 
 
 ---
+### DEFUN `%PARSE-CT-LITERAL`
+- **Args**: `(VALUE)`
+
+  > If VALUE is a symbol whose name looks like a typed numeric literal (e.g. 2.0F,  >    100UC), parse and return the underlying number.  Otherwise return VALUE unchanged.
+
+
+---
 ### DEFUN `%GENERATE-STRUCT-ACCESSOR`
 - **Args**: `(MEMBER-SPEC NAME PKG RUNTIME-INDEX)`
 
-  > Helper: Generates accessor (and setter) for a single struct member.  >    Returns (values accessor-form new-runtime-index).
+  > Helper: Generates accessor (and setter) for a single struct member.  >    Returns (values accessor-form new-runtime-index).  >    Fix: typed-literal symbols in :c-t defaults are resolved to their numeric values.
 
 
 ---
@@ -1521,6 +1570,13 @@ Generated on 2026-03-07T03:10:11.946396Z
 - **Args**: `(NAME &REST MEMBERS)`
 
   > Defines a new Crisp struct type. Supports brand declarations.
+
+
+---
+### DEFUN `%CT-RESOLVE-VALUE`
+- **Args**: `(VALUE)`
+
+  > Resolve VALUE to a Lisp number if it is a typed-literal symbol (e.g. 2.0F, 100UC).  >    SBCL reads suffix-notation literals as symbols; this converts them to the  >    underlying number so :c-t default accessors have the right return type.  >    Returns VALUE unchanged if it is not a recognisable typed literal.
 
 
 ---
@@ -1913,6 +1969,90 @@ Generated on 2026-03-07T03:10:11.946396Z
 
 
 ---
+### DEFUN `%READ-METACRISP-FORMS`
+- **Args**: `(PATH)`
+
+  > Reads all top-level forms from a .metacrisp file. Returns NIL if file missing.
+
+
+---
+### DEFUN `%METACRISP-SECTION`
+- **Args**: `(FORMS KEY)`
+
+  > Returns the cdr of the first top-level form whose car is KEY.
+
+
+---
+### DEFUN `%METACRISP-FIND-KERNEL`
+- **Args**: `(FORMS KERNEL-NAME)`
+
+  > Returns the plist for the named kernel, or NIL.
+
+
+---
+### DEFUN `%FIND-RECORD-DEF`
+- **Args**: `(RECORDS-SECTION NAME)`
+
+  > Finds (def-record NAME ...) in a list of forms. Returns the form or NIL.
+
+
+---
+### DEFUN `%RECORD-MEMBER-COUNT`
+- **Args**: `(REC-FORM)`
+
+  > Counts the members listed in a (def-record NAME member...) form.
+
+
+---
+### DEFUN `%FIND-DECL-ENTRY`
+- **Args**: `(DECL-SIG NAME)`
+
+  > Finds the declared-signature entry whose :name matches (case-insensitive).
+
+
+---
+### DEFUN `VALIDATE-DEF-RECORD-IN-METADATA`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates 01-basic-rec-meta: v-point at kernel boundary.  >    Checks :records section, physical width (2+3=5), and declared sig.
+
+
+---
+### DEFUN `VALIDATE-DEF-REC-WITH-CT-IN-METADATA`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates 03-record-with-ct-meta: v-point with :c-t earnestness at kernel boundary.  >    Checks :records shows only 2 runtime members, physical width is 2+2+3=7,  >    and declared sig shows the full (v-point :earnestness 3.0) type for vp-2.
+
+
+---
+### DEFUN `VALIDATE-NESTED-REC-IN-METADATA`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates 04-nested-records-meta: v-rect (containing v-point) at kernel boundary.  >    Checks both records in :records section, physical width is 4+3=7,  >    and declared sig shows vr with type v-rect and range (0 3).
+
+
+---
+### DEFUN `VALIDATE-NO-BRAND-IN-METADATA`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates 09-branded-rec-elide: branded def-record at kernel boundary.  >    Checks that the :records section shows the base type (ulong) for branded  >    fields, not the brand type (token-t), and no brand declarations appear.
+
+
+---
+### DEFUN `%USER-RECORD-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC refers to a user-defined def-record (not a storage handle or primitive).  >    Handles both bare symbols and list forms like (v-point :earnestness 3.0).
+
+
+---
+### DEFUN `%ENUMERATE-PHYSICAL-TYPES`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns a flat list of primitive Crisp type-specs for TYPE-SPEC.  >    Records are recursively flattened to their runtime members (excluding :c-t members).  >    List forms like (v-point :earnestness 3.0) use the base record type.  >    Brand-typed members are resolved to their base types.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
 
 ### DEFVAR `*EMIT-METADATA*`
@@ -1967,8 +2107,18 @@ Generated on 2026-03-07T03:10:11.946396Z
 - **Args**: `(STREAM ALIASES-HASH)`
 
 ---
+### DEFUN `%SERIALIZE-RECORDS`
+- **Args**: `(STREAM STRUCTS-HASH)`
+
+  > Emits the (:records ...) section for user-defined records found in STRUCTS-HASH.  >    Only runtime members are emitted (no :c-t members). Brand types resolved to base.
+
+
+---
 ### DEFUN `SERIALIZE-STRUCTS`
 - **Args**: `(STREAM STRUCTS-HASH)`
+
+  > Emits (:records ...) for def-records and (:structs ...) for def-structs.  >    Records are split into their own section; brand and :c-t members handled appropriately.
+
 
 ---
 ### DEFUN `EXTRACT-DEFINED-KERNELS`
@@ -1983,9 +2133,15 @@ Generated on 2026-03-07T03:10:11.946396Z
 ### DEFUN `GET-PHYSICAL-WIDTH`
 - **Args**: `(TYPE)`
 
+  > Returns the number of physical ABI slots for TYPE.  >    Cell -> 3, Storage -> 2, user-defined records -> recursively counted, others -> 1.
+
+
 ---
 ### DEFUN `GENERATE-PHYSICAL-SIGNATURE`
 - **Args**: `(SIG-OR-PARAMS)`
+
+  > Generates the physical ABI signature from kernel parameters.  >    Records are flattened to primitive scalar entries.
+
 
 ---
 ### DEFUN `VALIDATE-14-PHYSICAL-SIGNATURE`
@@ -1994,6 +2150,9 @@ Generated on 2026-03-07T03:10:11.946396Z
 ---
 ### DEFUN `GENERATE-DECLARED-SIGNATURE`
 - **Args**: `(SIG &OPTIONAL DECLARED-PARAMS)`
+
+  > Generates the declared-signature plist for a kernel's metadata.  >    Handles user-defined records by using the corrected get-physical-width.
+
 
 ---
 ### DEFUN `GENERATE-IMPLICIT-SIGNATURE`

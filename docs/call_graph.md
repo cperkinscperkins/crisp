@@ -134,6 +134,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - (%INSTANTIATE-CALLABLE-TEMPLATE NAME BODY SUBSTITUTIONS OVERRIDE-NAME)  templates.lisp
 - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
 - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp
+- - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp
 - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp
@@ -154,6 +155,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - (INITIALIZE-FUNCTION-PARAMETERS BUILDER FUNC PARAM-NODES MODULE VAR-ENV)  codegen.lisp
 - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - (IMPLODE-VALUE BUILDER COMPONENTS TYPE-SPEC MODULE)  codegen/abi.lisp
+- - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp [See above]
 - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
@@ -195,6 +197,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp
+- - - - - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp [RECURSION]
@@ -281,8 +284,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (SERIALIZE-ALIASES STREAM ALIASES-HASH)  metadata.lisp
 - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
 - - - - (SERIALIZE-STRUCTS STREAM STRUCTS-HASH)  metadata.lisp
-- - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp
-- - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - (%SERIALIZE-RECORDS STREAM STRUCTS-HASH)  metadata.lisp
+- - - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp
+- - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp [See above]
 - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
 - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
 - - - - (SERIALIZE-KERNELS OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)  metadata.lisp
@@ -291,10 +298,20 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp
 - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp
+- - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp
+- - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
+- - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [RECURSION]
+- - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
 - - - - - (GENERATE-DECLARED-SIGNATURE SIG &OPTIONAL DECLARED-PARAMS)  metadata.lisp
 - - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp
 - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp [See above]
+- - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [See above]
 - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
 - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -304,6 +321,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp
 - - - (INVOKE-HOISTER HOIST-ID METACRISP-FILE) :CRISP.MAIN  main.lisp
 - - - - (GET-HOISTER-BINARY-PATH HOIST-ID) :CRISP.MAIN  main.lisp
+
+- (%CT-RESOLVE-VALUE VALUE)  macros.lisp
 
 - (%GENERATE-BACKWARD-KERNEL-AST NAME PARAMS SIGNATURE-TYPES RAW-BODY)  macros.lisp
 - - (%EXPLODE-KERNEL-ARGS PARAMS SIGNATURE)  macros.lisp
@@ -402,6 +421,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (%GENERATE-STRUCT-ACCESSOR MEMBER-SPEC NAME PKG RUNTIME-INDEX)  macros.lisp
+- - (%PARSE-CT-LITERAL VALUE)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (ADDRESS-SPACE-VALUE K)  enums.lisp
@@ -629,6 +649,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp [See above]
 - - - (%EXPLODE-KERNEL-ARGS PARAMS SIGNATURE)  macros.lisp [See above]
 - - - (%CHECK-DIFFERENTIATE-KERNEL-SIGNATURE NAME SIGNATURE-TYPES DECLARATIONS)  macros.lisp
 - - (DEF-KERNEL-EXACT NAME PARAMS &REST BODY)  macros.lisp [See above]
@@ -774,11 +795,28 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-CELL-ADD-I-IR IR-PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp [See above]
 
+- (VALIDATE-DEF-REC-WITH-CT-IN-METADATA METADATA-PATH)  metadata-val.lisp
+- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp
+- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp
+- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp
+- - - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
+- - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp
+- - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp
+- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp
+
 - (VALIDATE-DEF-RECORD-EXPLODE-IR IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-DEF-RECORD-EXPLOSION METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-DEF-RECORD-EXPLOSION-IR IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-DEF-RECORD-IN-METADATA METADATA-PATH)  metadata-val.lisp
+- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
+- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
+- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
+- - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp [See above]
+- - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp [See above]
+- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
 
 - (VALIDATE-DERIVED-ACCESSORS IR-PATH)  metadata-val.lisp
 
@@ -801,6 +839,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-NESTED-CHAIN-RULE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
+
+- (VALIDATE-NESTED-REC-IN-METADATA METADATA-PATH)  metadata-val.lisp
+- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
+- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
+- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
+- - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp [See above]
+- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-NO-BRAND-IN-METADATA METADATA-PATH)  metadata-val.lisp
+- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
+- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
+- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
+- - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp [See above]
 
 - (VALIDATE-NO-SUBST-OVERLOADS IR-PATH)  metadata-val.lisp
 

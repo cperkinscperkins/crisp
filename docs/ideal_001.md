@@ -871,7 +871,8 @@ Declaring Types - Kernels
 - but it DOES support `&out` 
 - the function name for kernels MUST obey the C standard identifying rules.  Thus "do_something" is a valid name, but "do-something" is not.
 - unlike regular functions, kernel functions do NOT support overloading. Each kernel function must have a unique name.
-- `def-kernel` function has a constrained choice of accepts types for parameters. It does NOT support first order function arguments (unlike regular `def-function` and `def-grid-function`) nor can structs be passed as plain arguments (but they CAN be put in a Storage Handle )
+- `def-kernel` function has a constrained choice of accepts types for parameters. It does NOT support first order function arguments (unlike regular `def-function` and `def-grid-function`) 
+- structs and records (see `def-struct` and `def-record`) can be passed as arguments to `def-kernel` but they are private arguments, meaning that while they are editable, they are per thread. The alterations a thread might make to a kernel arg struct or record is not seen by other kernel threads, nor by the host.   For that you will need a Storage Handle (`cell`, `vector`, `matrix` or `tensor`)
 
 Like `def-function` ALL the parameters to the kernel function must have their types declared somehow. 
 
