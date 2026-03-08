@@ -776,3 +776,95 @@
          agg))
       (t (first components)))))
 
+
+;;; --- Redefine: %generate-struct-accessor
+;;; src/macros.lisp
+;;; Fix: typed-literal symbols (e.g. 2.0f read as a symbol by SBCL) in :c-t
+;;; default values were embedded as-is in the constant accessor macro.
+;;; The type checker then inferred SYMBOL instead of FLOAT, causing a type
+;;; mismatch when the accessor was used in a kernel body.
+;;; Fix: resolve known typed-literal suffixes to their numeric values before
+;;; embedding them in the generated defmacro.
+
+(defun %parse-ct-literal (value)
+  "If VALUE is a symbol whose name looks like a typed numeric literal (e.g. 2.0F,
+   100UC), parse and return the underlying number.  Otherwise return VALUE unchanged."
+  (if (not (symbolp value))
+      value
+      (let* ((name (symbol-name value))
+             ;; Longest-first so BF is checked before F, UL before L, etc.
+             (suffixes '("BF" "UC" "UL" "US" "U" "S" "L" "H" "F"))
+             (suffix (some (lambda (s)
+                             (let ((sl (length s)) (nl (length name)))
+                               (when (and (> nl sl)
+                                          (string= s (subseq name (- nl sl))))
+                                 s)))
+                           suffixes)))
+        (if suffix
+            (let* ((num-str (subseq name 0 (- (length name) (length suffix))))
+                   (parsed  (ignore-errors (read-from-string num-str))))
+              (if (numberp parsed) parsed value))
+            value))))
+
+(defun %generate-struct-accessor (member-spec name pkg runtime-index)
+  "Helper: Generates accessor (and setter) for a single struct member.
+   Returns (values accessor-form new-runtime-index).
+   Fix: typed-literal symbols in :c-t defaults are resolved to their numeric values."
+  (let* ((member-name (first member-spec))
+         (is-ct (and (consp member-spec) (eq (third member-spec) :c-t)))
+         (raw-value (when is-ct (fourth member-spec)))
+         ;; Resolve typed-literal symbols (e.g. 2.0F -> 2.0) for c-t defaults.
+         (value (when is-ct (%parse-ct-literal raw-value)))
+         (accessor-name (intern (format nil "~a~~" member-name) pkg)))
+    (cond
+     ;; Compile-time member with value -> constant accessor macro
+     ((and is-ct value)
+       (values `(defmacro ,accessor-name (obj)
+                  (declare (ignore obj))
+                  ',value)
+         runtime-index))
+     ;; Compile-time member without value -> skip (incomplete type)
+     (is-ct
+       (values nil runtime-index))
+     ;; Runtime member -> function accessor
+     (t
+       (let ((idx runtime-index))
+         (values `(def-function ,accessor-name ((obj ,name))
+                                (return (%extract-struct-member obj ,idx)))
+           (1+ runtime-index)))))))
+
+;;; =========================================================
+;;; 048-record-at-kernel-boundary -- Fix float c-t literal in parameterized type
+;;; src/analysis/structs.lisp
+;;;
+;;; analyze-incomplete-type-accessor fell through to value-type 'quote
+;;; for float values (e.g. (v-point :earnestness 3.0)).  Add a float case.
+
+(defun analyze-incomplete-type-accessor (op expr env context location)
+  "Attempts to resolve a call like (color~ obj) where obj is (shirt :color :blue).
+   Returns a semantic-node (literal) if resolved, or NIL if not applicable.
+
+   Fix: float values now return value-type 'float instead of 'quote."
+  (let ((op-name (symbol-name op)))
+    (when (and (> (length op-name) 1) (alexandria:ends-with #\~ op-name))
+          (let* ((member-name (intern (string-trim "~" op-name) (symbol-package op)))
+                 (obj-expr (second expr)))
+            (when obj-expr
+                  (let* ((obj-node (analyze-expression obj-expr env context (append location '(1))))
+                         (obj-type (semantic-node-type obj-node)))
+                    (when (and (consp obj-type) (valid-type-p obj-type))
+                          (let* ((canon (canonicalize-type-specifier obj-type))
+                                 (base (first canon))
+                                 (params (rest canon)))
+                            (log:info "  ObjType: ~s Canon: ~s Params: ~s" obj-type canon params)
+                            (when (or (gethash base *crisp-structs*) (gethash base *crisp-types*))
+                                  (let ((kw (intern (symbol-name member-name) "KEYWORD")))
+                                    (let ((val (getf params kw)))
+                                      (when val
+                                            (cond
+                                             ((keywordp val) (make-semantic-literal :value-type 'keyword :value val :source-location location))
+                                             ((symbolp val)  (make-semantic-literal :value-type 'symbol  :value val :source-location location))
+                                             ((integerp val) (make-semantic-literal :value-type 'int     :value val :source-location location))
+                                             ((floatp val)   (make-semantic-literal :value-type 'float   :value val :source-location location))
+                                             (t (make-semantic-literal :value-type 'quote :value val :source-location location)))))))))))))))
+

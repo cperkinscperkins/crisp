@@ -717,6 +717,22 @@
           (nreverse forms)))))
 
 
+(defun %ct-resolve-value (value)
+  "Resolve VALUE to a Lisp number if it is a typed-literal symbol (e.g. 2.0F, 100UC).
+   SBCL reads suffix-notation literals as symbols; this converts them to the
+   underlying number so :c-t default accessors have the right return type.
+   Returns VALUE unchanged if it is not a recognisable typed literal."
+  (if (and (symbolp value) (not (null value)) (not (eq value t)))
+      (let* ((nm (symbol-name value))
+             (sfxs '("BF" "UC" "UL" "US" "U" "S" "L" "H" "F"))
+             (sfx (some (lambda (s)
+                          (let ((sl (length s)) (nl (length nm)))
+                            (when (and (> nl sl) (string= s (subseq nm (- nl sl)))) s)))
+                        sfxs))
+             (num (when sfx (ignore-errors (read-from-string (subseq nm 0 (- (length nm) (length sfx))))))))
+        (if (numberp num) num value))
+      value))
+
 (defmacro def-record (name &rest members)
   "Defines a new Crisp record type (virtual struct). Supports brand declarations."
   (let* (;; Separate brand declarations from regular members
@@ -759,9 +775,10 @@
                             `(def-function ,accessor-name ((obj ,name))
                                            (declare (function ((,name) => ,type)))
                                            (declare (crisp-system-generated))
-                                           (return ,(if (or (numberp value) (stringp value) (eq value t) (eq value nil))
-                                                        value
-                                                        `',value))))
+                                           (return ,(cl:let ((v (%ct-resolve-value value)))
+                                                      (if (or (numberp v) (stringp v) (eq v t) (eq v nil))
+                                                          v
+                                                          `',v)))))
                         (let ((idx runtime-index))
                           (incf runtime-index)
                           `(def-function ,accessor-name ((obj ,name))

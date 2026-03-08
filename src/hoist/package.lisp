@@ -9,6 +9,7 @@
    #:metacrisp-kernels
    #:metacrisp-aliases
    #:metacrisp-structs
+   #:metacrisp-records
 
    ;; Code generation base
    #:generate-preamble

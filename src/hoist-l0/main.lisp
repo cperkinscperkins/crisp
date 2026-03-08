@@ -78,9 +78,9 @@
                  (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
                  (generate-cpp-includes stream)
                  (generate-cpp-typedefs stream aliases)
-                 (generate-cpp-structs stream (metacrisp-structs data))
+                 (generate-cpp-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
                  (generate-cpp-helpers stream)
-                 (generate-cpp-main stream kernel-name spv-path full-sig aliases))
+                 (generate-cpp-main stream kernel-name spv-path full-sig aliases (metacrisp-records data)))
 
                (format t "  Done: ~a~%" (namestring output-path)))))))))
 
@@ -166,7 +166,7 @@
   (format stream "    return buffer;~%")
   (format stream "}~%~%"))
 
-(defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases)
+(defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases records)
   "Generate C++ main function"
   (format stream "int main() {~%")
   (format stream "    ze_result_t result;~%")
@@ -180,7 +180,7 @@
         (generate-module-loading stream spv-path))
 
   ;; Kernel creation and launch
-  (let ((allocations (generate-kernel-launch stream kernel-name declared-sig aliases)))
+  (let ((allocations (generate-kernel-launch stream kernel-name declared-sig aliases records)))
 
     ;; Print output buffers
     (format stream "    // Verify Output~%")
@@ -281,7 +281,7 @@
   (format stream "    }~%")
   (format stream "    std::cout << \"Module loaded successfully\" << std::endl;~%~%"))
 
-(defun generate-kernel-launch (stream kernel-name declared-sig aliases)
+(defun generate-kernel-launch (stream kernel-name declared-sig aliases records)
   "Generate kernel creation and launch code. Returns list of USM allocations."
   (format stream "    // Create kernel~%")
   (format stream "    ze_kernel_desc_t kernelDesc = { ZE_STRUCTURE_TYPE_KERNEL_DESC };~%")
@@ -296,7 +296,7 @@
   ;; Set kernel arguments if any
   (let ((allocations '()))
     (when declared-sig
-          (setf allocations (generate-kernel-arguments-with-usm stream declared-sig aliases "context" "device")))
+          (setf allocations (generate-kernel-arguments-with-usm stream declared-sig aliases records "context" "device")))
 
     ;; Create command list and queue
     (format stream "    // Create command list~%")
@@ -383,8 +383,57 @@
   (when (cell-type-p param-type)
         (second param-type)))
 
+;; Record type helpers
+
+(defun record-base-type (type)
+  "Extract the base record type symbol from a plain symbol or a list-form like (V-POINT EARNESTNESS 3.0)."
+  (if (symbolp type) type (first type)))
+
+(defun find-record-def (type records)
+  "Find the def-record entry matching TYPE in RECORDS.
+   TYPE may be a plain symbol or a parameterized list form."
+  (let ((base (record-base-type type)))
+    (find base records
+          :key #'second
+          :test (lambda (a b) (string-equal (symbol-name a) (symbol-name b))))))
+
+(defun record-type-p (type records)
+  "Returns true if TYPE refers to a def-record in RECORDS."
+  (and (not (cell-type-p type))
+       (not (null (find-record-def type records)))))
+
+(defun %record-field-args (stream members var-path arg-index records aliases)
+  "Recursively emit field initialization and zeKernelSetArgumentValue calls
+   for all scalar leaves of a record, following nested records.
+   Returns the updated arg-index after consuming all fields."
+  (let ((idx arg-index))
+    (dolist (member members)
+      (let* ((field-sym (first member))
+             (field-type-raw (second member))
+             (field-type (resolve-type-alias field-type-raw aliases))
+             (field-name-cpp (format-cpp-identifier field-sym))
+             (field-path (format nil "~a.~a" var-path field-name-cpp)))
+        (cond
+          ;; Nested record — recurse into its members
+          ((record-type-p field-type records)
+           (let* ((nested-def (find-record-def field-type records))
+                  (nested-members (cddr nested-def)))
+             (setf idx (%record-field-args stream nested-members field-path idx records aliases))))
+          ;; Scalar leaf — emit initialization and kernel arg
+          (t
+           (let* ((cpp-type (crisp-type-to-cpp-type field-type))
+                  (init-val (cond ((string= cpp-type "float")  "1.0f")
+                                  ((string= cpp-type "double") "1.0")
+                                  (t "1"))))
+             (format stream "    ~a = ~a;~%" field-path init-val)
+             (format stream "    // Arg ~d: ~a~%" idx field-path)
+             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a);~%"
+                     idx cpp-type field-path)
+             (incf idx))))))
+    idx))
+
 ;; Updated generate-kernel-arguments to handle both scalars and cells
-(defun generate-kernel-arguments-with-usm (stream declared-sig aliases context-var device-var)
+(defun generate-kernel-arguments-with-usm (stream declared-sig aliases records context-var device-var)
   "Generate kernel argument setup code with USM allocation for cells"
   (format stream "    // Set up kernel arguments~%")
 
@@ -480,6 +529,19 @@
                   (push (list :name param-name :ptr ptr-var :size-var size-var :direction param-dir :type base-type) allocations)))
 
              (incf arg-index 3)))
+
+         ;; Handle record parameters (exploded to individual scalar kernel args)
+         ((record-type-p param-type records)
+           (let* ((base-type (record-base-type param-type))
+                  (record-def (find-record-def param-type records))
+                  (record-members (cddr record-def))
+                  (param-name-cpp (format-cpp-identifier param-name))
+                  (var-name (format nil "~a_val" param-name-cpp))
+                  (struct-type-str (format-cpp-identifier base-type)))
+             (format stream "~%    // Record argument: ~a (~a)~%" param-name struct-type-str)
+             (format stream "    ~a ~a;~%" struct-type-str var-name)
+             (setf arg-index (%record-field-args stream record-members var-name arg-index records aliases))
+             (format stream "~%")))
 
          ;; Handle scalar parameters
          ((symbolp param-type)
