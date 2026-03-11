@@ -1,5 +1,4 @@
-;; TEST-WITH[--differentiate] : validate-placholder
-
+;; TEST-WITH[--metadata --differentiate]: validate-placeholder
 
 
 (def-record v-point (x float) (y float))

@@ -1,4 +1,4 @@
-;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-multiply-chain-rule
+;; TEST-WITH[--metadata]: validate-placeholder
 
 (def-type in-ish (cell float :address-space :global :access :read-only))
 (def-type out-ish (cell float :address-space :global :access :write-only))

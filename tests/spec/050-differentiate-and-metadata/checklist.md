@@ -3,6 +3,6 @@
 [ ] kernel name ( xxxxx_grad) recorded correctly
 [ ] source recorded correct
 [ ] physical signature -- needs to be correct
-[ ] declared signature ??
+[ ] declared signature ??  probably use "derived" backward signature.
 [ ] implicit params 
 [ ] otherwise the same.  structs and records and aliases capture

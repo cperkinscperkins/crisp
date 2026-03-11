@@ -898,6 +898,7 @@ The example hoisting code that Crisp outputs will often have more arguments than
 
 There are four different cases where this happens:
  - Storage Handle parameters (`cell`, `vector`, `tensor`)
+ - records directly passed at kernel boundary. 
  - debug communication channel
  - scratch memory
  - user defined "implicit" Storage Handles
