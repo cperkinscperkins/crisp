@@ -1,5 +1,5 @@
 ;; TEST-HOIST[L0] : validate-l0-host-run
-;; HOIST-EXPECT: BUFFER c: <something>
+;; HOIST-EXPECT: BUFFER c: 7
 ;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
 
 ;; the :earnestness is kernel compile time property. It can't be set by the host.

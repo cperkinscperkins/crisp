@@ -417,6 +417,8 @@ TECHNICAL DEBT AND OVERSIGHTS
 
 - [x] def-record at kernel boundary and --differentiate:  NEED AUTODIFF SUPPORT
 
+- [x] we have tests with ;; HOIST-EXPECT: BUFFER c: <something>  that SHOULD fail, but don't
+      they output a FAIL, but don't trip
 - [ ] --metadata and --differentiate.  These SHOULD work together (unlike --hoist).
 
 
