@@ -415,7 +415,7 @@ TECHNICAL DEBT AND OVERSIGHTS
 - - - A: but that will be elided. No issue.
 - - [x] hoisting decision & test
 
-- [ ] def-record at kernel boundary and --differentiate:  NEED AUTODIFF SUPPORT
+- [x] def-record at kernel boundary and --differentiate:  NEED AUTODIFF SUPPORT
 
 - [ ] --metadata and --differentiate.  These SHOULD work together (unlike --hoist).
 

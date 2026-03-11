@@ -1,5 +1,5 @@
 
-;; TEST-WITH[--differentiate] : validate-placholder
+;; TEST-WITH[--ir-target=llvmir --differentiate] : validate-rec-kb-basic
 
 
 

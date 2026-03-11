@@ -916,3 +916,39 @@
         (let* ((brand-def (and (symbolp type-spec) (is-brand-type-p type-spec)))
                (final-type (if brand-def (brand-definition-base-type brand-def) type-spec)))
           (list final-type)))))
+
+
+
+;;; =========================================================
+;;; 049-auto-diff-record-at-kernel-boundary validators
+;;; src/metadata-val.lisp
+;;; =========================================================
+
+(defun validate-rec-kb-non-overloadable (ir-path)
+  "Validates backward kernel for 01-non-overloadable-accessor.
+   Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas."
+  (validate-generic-grad-signature ir-path "non_overloadable_accessor_k" 13))
+
+(defun validate-rec-kb-basic (ir-path)
+  "Validates backward kernel for 03-basic-rec-at-kb.
+   Same signature shape as non-overloadable: 14 params = 13 commas."
+  (validate-generic-grad-signature ir-path "record_on_boundary_k" 13))
+
+(defun validate-rec-kb-not-float (ir-path)
+  "Validates backward kernel for 05-not-float.
+   x field is int (no grad), y is float.
+   Expects: (VP_X VP_Y C C_GRAD &out VP_Y_GRAD) = 11 params = 10 commas."
+  (validate-generic-grad-signature ir-path "x_not_float_k" 10))
+
+(defun validate-rec-kb-unused-field (ir-path)
+  "Validates backward kernel for 07-unused-field.
+   Both fields are float, even though x is unused in the body (its grad is 0).
+   Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas."
+  (validate-generic-grad-signature ir-path "unused_k" 13))
+
+(defun validate-rec-kb-ct-prop (ir-path)
+  "Validates backward kernel for 09-compile-time-prop.
+   Two v-point inputs (c-t :earnestness excluded), each with 2 float fields.
+   Expects: (VP-1_X VP-1_Y VP-2_X VP-2_Y C C_GRAD &out VP-1_X_GRAD VP-1_Y_GRAD VP-2_X_GRAD VP-2_Y_GRAD)
+   = 22 params = 21 commas."
+  (validate-generic-grad-signature ir-path "record_on_boundary_k" 21))
