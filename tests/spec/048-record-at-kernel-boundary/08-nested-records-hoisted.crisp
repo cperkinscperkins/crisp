@@ -11,7 +11,7 @@
 
 (def-type out-c (cell int :address-space :global :access :read-write))
 
-(def-kernel rect_on_boundary_k (vr &out c)
+(def-kernel nested_recs_on_boundary_k (vr &out c)
     (declare #'(v-rect &out out-c))
     (set! (~ c) (* (x~ (top-left~ vr))
                    (y~ (bottom-right~ vr)))))
