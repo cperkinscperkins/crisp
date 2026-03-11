@@ -1,0 +1,21 @@
+;; TEST-WITH[--differentiate] : validate-placeholder
+
+;; the :earnestness is kernel compile time property. It can't be set by the host.
+;; It's fine for it to appear in the .metacrisp, but should NOT effect
+;; the kernel submission signature.  
+
+
+
+(def-record v-point (x float)
+                    (y float)
+                    (earnestness float :c-t 2.0))
+
+(def-type out-c (cell float :address-space :global :access :read-write))
+
+;; The earnestness :c-t field does NOT appear in the physical ABI.
+;; vp-1 uses the default (2.0), vp-2 uses a concrete binding (3.0).
+;; Both map to the same 2 physical slots (x, y).
+(def-kernel record_on_boundary_k (vp-1 vp-2 &out c)
+    (declare #'(v-point (v-point :earnestness 3.0) &out out-c))
+    (set! (~ c) (+ (* (x~ vp-1) (x~ vp-2))
+                   (* (y~ vp-1) (y~ vp-2)))))

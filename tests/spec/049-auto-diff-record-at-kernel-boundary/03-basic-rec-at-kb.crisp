@@ -1,0 +1,14 @@
+
+;; TEST-WITH[--differentiate] : validate-placholder
+
+
+
+(def-record v-point (x float) (y float))
+
+(def-type out-c (cell float :address-space :global :access :read-write))
+
+;; x~ and y~ accessors NOT overloaded.
+
+(def-kernel record_on_boundary_k (vp &out c)
+    (declare #'(v-point &out out-c))
+    (set! (~ c) (* (x~ vp) (y~ vp))))

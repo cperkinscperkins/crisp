@@ -1,0 +1,12 @@
+;; TEST-WITH[--differentiate] : validate-placholder
+
+
+
+(def-record v-point (x int) (y float))
+
+
+(def-type out-c (cell float :address-space :global :access :read-write))
+
+(def-kernel x_not_float_k (vp &out c)
+    (declare #'(v-point &out out-c))
+    (set! (~ c) (* (~x~ vp) (~y~ vp))))

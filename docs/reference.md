@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-08T20:24:37.791509Z
+Generated on 2026-03-11T02:11:55.133268Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -579,6 +579,62 @@ Generated on 2026-03-08T20:24:37.791509Z
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)`
 
   > Walks a flattened ANF body backwards to accumulate adjoints.  >    Returns a list of backward ANF forms.
+
+
+---
+### DEFUN `%CRISP-FLOAT-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a Crisp  >    float-category scalar type (float, double, half, bfloat16).
+
+
+---
+### DEFUN `%CRISP-RECORD-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC names a def-record (category :record).  >    Handles parameterized forms like (V-POINT :EARNESTNESS 3.0).
+
+
+---
+### DEFUN `%GET-RECORD-RUNTIME-FIELDS`
+- **Args**: `(REC-TYPE-SPEC)`
+
+  > Returns a list of (FIELD-NAME RESOLVED-FIELD-TYPE) for the runtime  >    (non-:c-t) members of the record type named by REC-TYPE-SPEC.  >    Handles parameterised forms like (V-POINT :EARNESTNESS 3.0).
+
+
+---
+### DEFUN `%RECORD-ACCESSOR-SYSTEM-GENERATED-P`
+- **Args**: `(ACCESSOR-SYM REC-TYPE)`
+
+  > Returns T if ACCESSOR-SYM (e.g. X~) is the single system-generated  >    accessor for REC-TYPE — i.e. it has NOT been user-overloaded.  >    Heuristic: count *function-table* entries whose first parameter type  >    matches REC-TYPE.  Exactly 1 means system-generated only.
+
+
+---
+### DEFUN `%RECORD-FIELD-PARAM-SYM`
+- **Args**: `(PARAM-SYM FIELD-NAME PKG)`
+
+  > Creates the exploded scalar symbol for PARAM-SYM's FIELD-NAME.  >    E.g. VP + X -> VP_X.
+
+
+---
+### DEFUN `%SUBSTITUTE-RECORD-ACCESSORS`
+- **Args**: `(FORM RECORD-SUBS-HT RECORD-TYPE-HT)`
+
+  > Recursively walks FORM (a raw Crisp body S-expression) and substitutes:  >      (~field~ p)  -> p_field   (always, ~field~ is non-overloadable)  >      (field~  p)  -> p_field   (only when field~ is system-generated for p's type)  >    RECORD-SUBS-HT maps param-sym -> alist of (field-sym . exploded-sym).  >    RECORD-TYPE-HT  maps param-sym -> rec-type-spec.
+
+
+---
+### DEFUN `%FIX-RECORD-GRAD-CELL-EMISSIONS`
+- **Args**: `(FORM GRAD-CELL-SYMS)`
+
+  > Post-processes the backward-walk output.  >    For any (SET! var expr) where VAR is in GRAD-CELL-SYMS,  >    rewrites to (SET! (~ var) expr), since the gradient output  >    for a record field is a cell, not a plain scalar.  >    GRAD-CELL-SYMS is a list of symbols that need cell-style emission.
+
+
+---
+### DEFUN `%EXPAND-RECORD-KERNEL-INPUTS`
+- **Args**: `(INPUTS INPUT-TYPES PKG)`
+
+  > Expands record-typed inputs into their scalar fields.  >    Returns (values flat-inputs flat-input-types  >                    reassembly-bindings  >                    grad-out-params grad-out-types  >                    record-subs-ht record-type-ht  >                    grad-cell-syms).  >   >    flat-inputs / flat-input-types : record params replaced by scalar field params.  >    reassembly-bindings : let-bindings to reconstruct each record from its fields.  >    grad-out-params / grad-out-types : gradient cell output params (float fields only).  >    record-subs-ht : param-sym -> alist (field-sym . exploded-sym).  >    record-type-ht  : param-sym -> rec-type-spec.  >    grad-cell-syms  : list of _GRAD symbols that need (set! (~ ..) adj) emission.
 
 
 ---
@@ -1513,7 +1569,7 @@ Generated on 2026-03-08T20:24:37.791509Z
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
 - **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
 
-  > Helper: Generates the def-kernel-exact AST for the backward pass.
+  > Generates the def-kernel-exact AST for the backward (gradient) pass.  >    Extends the original to handle def-record inputs at the kernel boundary  >    via Option B (scalar explosion before AD).
 
 
 ---

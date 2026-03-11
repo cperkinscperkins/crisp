@@ -325,6 +325,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%CT-RESOLVE-VALUE VALUE)  macros.lisp
 
 - (%GENERATE-BACKWARD-KERNEL-AST NAME PARAMS SIGNATURE-TYPES RAW-BODY)  macros.lisp
+- - (%EXPAND-RECORD-KERNEL-INPUTS INPUTS INPUT-TYPES PKG)  autodiff.lisp
+- - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp
+- - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
+- - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
+- - - (%RECORD-FIELD-PARAM-SYM PARAM-SYM FIELD-NAME PKG)  autodiff.lisp
+- - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - (%SUBSTITUTE-RECORD-ACCESSORS FORM RECORD-SUBS-HT RECORD-TYPE-HT)  autodiff.lisp
+- - - (%SUBSTITUTE-RECORD-ACCESSORS FORM RECORD-SUBS-HT RECORD-TYPE-HT)  autodiff.lisp [RECURSION]
+- - - (%RECORD-ACCESSOR-SYSTEM-GENERATED-P ACCESSOR-SYM REC-TYPE)  autodiff.lisp
+- - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - (%EXPLODE-KERNEL-ARGS PARAMS SIGNATURE)  macros.lisp
 - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -335,6 +348,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp
 - - (GENERATE-BACKWARD-WALK FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)  autodiff.lisp
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp
+- - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp [RECURSION]
 - - (DEF-KERNEL-EXACT NAME PARAMS &REST BODY)  macros.lisp
 - - - (STRICT-VALID-TYPE-P SPEC)  macros.lisp
 - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
@@ -403,8 +418,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)  types/brand.lisp
 - - - - - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
 - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
-- - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
+- - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
