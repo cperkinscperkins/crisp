@@ -326,30 +326,30 @@
                   ;; flat-inputs + outputs + out-grads + &out + rec-grad-outs + non-rec-scalar-in-grads
                   ;; (Note: record-field scalar in-grads are CELLS, already in rec-grad-out-params)
                   ;; For non-record non-cell flat inputs, their _GRAD is a plain scalar &out
+                  ;; Helper predicate: is P a record-exploded scalar field?
+                  ;; (Its grad is already included in rec-grad-out-params.)
+                  (record-exploded-syms
+                   (cl:loop for orig in inputs
+                            append (cl:let ((flds (gethash orig record-subs-ht)))
+                                     (when flds (mapcar #'cdr flds)))))
+
+                  ;; Non-record, non-record-exploded inputs get their own _GRAD output.
+                  ;; This includes original cell inputs (a, b) AND plain scalars —
+                  ;; regardless of int vs float (the backward walk handles type discrimination).
                   (non-rec-scalar-in-grad-params
                    (cl:loop for p in flat-inputs
                              for t-spec in flat-input-types
-                             ;; Only float non-record scalars that are not record-exploded fields
-                             when (and (%crisp-float-type-p t-spec)
-                                       (not (%crisp-record-type-p t-spec))
-                                       (not (%storage-handle-type-p t-spec))
-                                       ;; record-exploded scalar: its grad is already in rec-grad-out-params
-                                       (not (cl:loop for orig in inputs thereis
-                                              (cl:let ((flds (gethash orig record-subs-ht)))
-                                                (and flds (find p (mapcar #'cdr flds) :test #'eq))))))
+                             unless (or (%crisp-record-type-p t-spec)
+                                        (member p record-exploded-syms :test #'eq))
                              collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
                   (non-rec-scalar-in-grad-types
                    (cl:loop for p in flat-inputs
                              for t-spec in flat-input-types
-                             when (and (%crisp-float-type-p t-spec)
-                                       (not (%crisp-record-type-p t-spec))
-                                       (not (%storage-handle-type-p t-spec))
-                                       (not (cl:loop for orig in inputs thereis
-                                              (cl:let ((flds (gethash orig record-subs-ht)))
-                                                (and flds (find p (mapcar #'cdr flds) :test #'eq))))))
+                             unless (or (%crisp-record-type-p t-spec)
+                                        (member p record-exploded-syms :test #'eq))
                              collect t-spec))
 
-                  ;; The &out section combines record-field grads + non-record scalar grads
+                  ;; The &out section combines record-field grads + non-record scalar/cell grads
                   (all-grad-out-params (append rec-grad-out-params non-rec-scalar-in-grad-params))
                   (all-grad-out-types  (append rec-grad-out-types  non-rec-scalar-in-grad-types))
 
@@ -360,18 +360,24 @@
                                       (when all-grad-out-params (list '&out))
                                       all-grad-out-types))
 
-                  ;; Only differentiate float-typed flat inputs.
-                  ;; Integer fields from records (and non-record int scalars) are
-                  ;; treated as non-differentiable constants in the backward pass.
+                  ;; Backward walk inputs: all non-record-exploded inputs (cells + scalars),
+                  ;; PLUS float-typed record-exploded fields.
+                  ;; Integer record-exploded fields are excluded (not differentiable).
                   (diff-flat-inputs
                    (cl:loop for p in flat-inputs
                             for t-spec in flat-input-types
-                            when (%crisp-float-type-p t-spec)
+                            when (if (member p record-exploded-syms :test #'eq)
+                                     ;; record-exploded field: only float ones
+                                     (%crisp-float-type-p t-spec)
+                                     ;; original input (cell or scalar): always include
+                                     t)
                             collect p))
                   (diff-flat-input-types
                    (cl:loop for p in flat-inputs
                             for t-spec in flat-input-types
-                            when (%crisp-float-type-p t-spec)
+                            when (if (member p record-exploded-syms :test #'eq)
+                                     (%crisp-float-type-p t-spec)
+                                     t)
                             collect t-spec)))
 
           ;; --- Explode cell params (existing logic) -----------
