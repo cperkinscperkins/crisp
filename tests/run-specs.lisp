@@ -414,6 +414,8 @@
                           (uiop:getenv "CRISP_L0_INCLUDE"))))
     (find-if (lambda (p) (and p (probe-file p))) candidates)))
 
+
+
 (defun validate-l0-host-run (crisp-file cpp-files)
   "Validates C++ files compile AND run. Links against system ze_loader.dll."
   (if (null cpp-files)
@@ -437,7 +439,7 @@
                   (list (uiop:native-namestring clang-exe)
                         (uiop:native-namestring cpp)
                         "-I" (namestring l0-include)
-                        (uiop:native-namestring ze-loader) ;; Link directly to DLL
+                        (uiop:native-namestring ze-loader)
                         "-static"
                         "-o" (uiop:native-namestring exe-path))
                   :output :string :error-output :string :ignore-error-status t)
@@ -455,22 +457,20 @@
                        (uiop:run-program (uiop:native-namestring exe-path)
                          :output :string :error-output :string :ignore-error-status t)
                      (format t "Output:~%~a~%" run-out)
-                     (format t "Output:~%~a~%" run-out)
                      (if (zerop run-code)
                          ;; Check Expectations
                          (let ((expectations (parse-hoist-expect (extract-test-directives crisp-file)))
                                (passed t))
                            (when expectations
-                                 (dolist (exp expectations)
-                                   (unless (search exp run-out)
-                                     (format t "FAIL: Expectation not found in output: '~a'~%" exp)
-                                     (setf passed nil))))
-
+                             (dolist (exp expectations)
+                               (unless (search exp run-out)
+                                 (format t "FAIL: Expectation not found in output: '~a'~%" exp)
+                                 (setf passed nil))))
                            (if passed
                                (progn
                                 (format t "PASS: ~a ran successfully!~%" (file-namestring cpp))
                                 t)
-                               nil))
+                               (return-from validate-l0-host-run nil)))
                          (progn
                           (format t "FAIL: ~a execution failed (Code ~a)~%Error: ~a~%"
                             (file-namestring exe-path) run-code run-err)
