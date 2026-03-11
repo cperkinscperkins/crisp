@@ -414,7 +414,16 @@ TECHNICAL DEBT AND OVERSIGHTS
 - - - [x] records support branding. including :enforce :always
 - - - A: but that will be elided. No issue.
 - - [x] hoisting decision & test
+
 - [ ] def-record at kernel boundary and --differentiate:  NEED AUTODIFF SUPPORT
+
+- [ ] --metadata and --differentiate.  These SHOULD work together (unlike --hoist).
+
+
+- [ ] auto-diff only works with FLAT kernels. Chooose between
+- - [ ] documenting that limitation
+- - [ ] extending auto-diff down through call chain. This isn't impossible, but it is a
+        bit tricky. We are collecting A_grad, B_grad as they contribute to C.
 
 - [x] what happens to cell in metadata if --metadata combined with --differentiate ?
 - - is that allowed? We do NOT allow with --hoist.   However, it should work fine.  
@@ -440,6 +449,13 @@ TECHNICAL DEBT AND OVERSIGHTS
       Should revisit docs and decide how to handle this.
 - [ ] literals overlooked double and char (d / c) 
 - [ ] switch spec runner to default to `--log-level=off` ... but CI should still using something...
+
+- [ ] device vectors ( float4, int2, etc).  Time to support them.
+- - [ ] support at kernel boundary (private)
+- [ ] virtual vectors ( def-rec-vec ).  
+- - [ ] rename and update docs
+- - [ ] can ONLY be a member of def-record? like brand?
+- - [ ] test and support
 
 
 

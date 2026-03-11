@@ -36,6 +36,7 @@
 (load "tests/test-runtime-checks.lisp")
 (load "tests/test-def-kernel.lisp")
 (load "tests/test-storage-handles.lisp")
+(load "tests/spec/049-auto-diff-record-at-kernel-boundary/record-ad-transforms.unit.lisp")
 (let ((report (parachute:test :crisp.tests)))
   (unless (eq (parachute:status report) :passed)
     (format *error-output* "~&~%*** Crisp CI Tests FAILED! ***~%")
