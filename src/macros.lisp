@@ -461,57 +461,159 @@
       nil))
 
 
+
+
 (defun %generate-backward-kernel-ast (name params signature-types raw-body)
-  "Helper: Generates the def-kernel-exact AST for the backward pass."
-  (let ((inputs nil) (input-types nil)
-                     (outputs nil) (output-types nil)
-                     (is-out nil))
-    (loop for p in params
-          for t-spec in signature-types do
-            (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
-                (setf is-out t)
-                (if is-out
-                    (progn (push p outputs) (push t-spec output-types))
-                    (progn (push p inputs) (push t-spec input-types)))))
-    (setf inputs (nreverse inputs) input-types (nreverse input-types)
-      outputs (nreverse outputs) output-types (nreverse output-types))
+  "Generates the def-kernel-exact AST for the backward (gradient) pass.
+   Extends the original to handle def-record inputs at the kernel boundary
+   via Option B (scalar explosion before AD)."
+  (cl:let ((inputs nil) (input-types nil)
+                        (outputs nil) (output-types nil)
+                        (is-out nil))
+    (cl:loop for p in params
+             for t-spec in signature-types do
+      (if (and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+          (setf is-out t)
+          (if is-out
+              (progn (push p outputs) (push t-spec output-types))
+              (progn (push p inputs)  (push t-spec input-types)))))
+    (setf inputs      (nreverse inputs)      input-types  (nreverse input-types)
+          outputs     (nreverse outputs)     output-types (nreverse output-types))
 
-    (let* ((pkg (symbol-package name))
-           (bwd-name (intern (format nil "~a_GRAD" (symbol-name name)) pkg))
-           (in-grads (loop for p in inputs collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
-           (out-grads (loop for p in outputs collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
-           (bwd-params (append inputs outputs out-grads (if in-grads (list '&out) nil) in-grads))
-           (bwd-types (append input-types output-types output-types (if input-types (list '&out) nil) input-types)))
+    (cl:let* ((pkg (symbol-package name))
+              (bwd-name (intern (format nil "~a_GRAD" (symbol-name name)) pkg)))
 
-      (multiple-value-bind (exploded-params exploded-types bwd-reassembly-bindings)
-          (%explode-kernel-args bwd-params bwd-types)
+      ;; --- Expand record inputs to scalar fields --------------
+      (multiple-value-bind (flat-inputs flat-input-types
+                            record-reassembly-bindings
+                            rec-grad-out-params rec-grad-out-types
+                            record-subs-ht record-type-ht
+                            grad-cell-syms)
+          (%expand-record-kernel-inputs inputs input-types pkg)
 
-        (let* ((anf-body (mapcar #'anf-transform raw-body))
-               (flat-anf (flatten-anf-body anf-body))
-               (forward-bindings
-                (loop for form in flat-anf
-                        when (and (consp form) (= (length form) 2) (symbolp (car form)))
-                      collect form))
-               (forward-side-effects
-                (loop for form in flat-anf
-                        when (or (not (consp form))
-                                 (not (= (length form) 2))
-                                 (not (symbolp (car form))))
-                      collect form))
-               (backward-walk (generate-backward-walk flat-anf inputs outputs input-types output-types)))
+        ;; --- Pre-substitute record accessor calls in raw body -
+        (cl:let* ((subst-body
+                   (mapcar (lambda (form)
+                             (%substitute-record-accessors form record-subs-ht record-type-ht))
+                           raw-body))
 
-          `(progn
-            (eval-when (:compile-toplevel :load-toplevel :execute)
-              (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
-                (loop for p in ',bwd-params
-                      for t-spec in ',bwd-types
-                      collect (cons p t-spec))))
-            (def-kernel-exact ,bwd-name ,exploded-params
-                              (declare #'(,@exploded-types))
-                              (let (,@bwd-reassembly-bindings)
-                                (let (,@forward-bindings)
-                                  ,backward-walk))
-                              (return))))))))
+                  ;; Gradient output params for non-record inputs are built below
+                  (non-rec-in-grads
+                   (cl:loop for p in flat-inputs
+                            unless (gethash p record-subs-ht) ; already exploded away
+                            collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+
+                  ;; In-grads for the record-exploded scalars
+                  (rec-field-in-grads
+                   (cl:loop for p in flat-inputs
+                            when (cl:let ((orig (cl:loop for orig in inputs thereis
+                                                   (cl:let ((flds (gethash orig record-subs-ht)))
+                                                     (and flds (find p (mapcar #'cdr flds) :test #'eq) orig)))))
+                                   orig)
+                            collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+
+                  ;; All in-grad syms (for backward walk) — flat inputs are now scalars
+                  (all-in-grads
+                   (cl:loop for p in flat-inputs
+                            collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+
+                  ;; out-grads (for the cell outputs)
+                  (out-grads
+                   (cl:loop for p in outputs
+                            collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+
+                  ;; Backward kernel params:
+                  ;; flat-inputs + outputs + out-grads + &out + rec-grad-outs + non-rec-scalar-in-grads
+                  ;; (Note: record-field scalar in-grads are CELLS, already in rec-grad-out-params)
+                  ;; For non-record non-cell flat inputs, their _GRAD is a plain scalar &out
+                  ;; Helper predicate: is P a record-exploded scalar field?
+                  ;; (Its grad is already included in rec-grad-out-params.)
+                  (record-exploded-syms
+                   (cl:loop for orig in inputs
+                            append (cl:let ((flds (gethash orig record-subs-ht)))
+                                     (when flds (mapcar #'cdr flds)))))
+
+                  ;; Non-record, non-record-exploded inputs get their own _GRAD output.
+                  ;; This includes original cell inputs (a, b) AND plain scalars —
+                  ;; regardless of int vs float (the backward walk handles type discrimination).
+                  (non-rec-scalar-in-grad-params
+                   (cl:loop for p in flat-inputs
+                             for t-spec in flat-input-types
+                             unless (or (%crisp-record-type-p t-spec)
+                                        (member p record-exploded-syms :test #'eq))
+                             collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+                  (non-rec-scalar-in-grad-types
+                   (cl:loop for p in flat-inputs
+                             for t-spec in flat-input-types
+                             unless (or (%crisp-record-type-p t-spec)
+                                        (member p record-exploded-syms :test #'eq))
+                             collect t-spec))
+
+                  ;; The &out section combines record-field grads + non-record scalar/cell grads
+                  (all-grad-out-params (append rec-grad-out-params non-rec-scalar-in-grad-params))
+                  (all-grad-out-types  (append rec-grad-out-types  non-rec-scalar-in-grad-types))
+
+                  (bwd-params (append flat-inputs outputs out-grads
+                                      (when all-grad-out-params (list '&out))
+                                      all-grad-out-params))
+                  (bwd-types  (append flat-input-types output-types output-types
+                                      (when all-grad-out-params (list '&out))
+                                      all-grad-out-types))
+
+                  ;; Backward walk inputs: all non-record-exploded inputs (cells + scalars),
+                  ;; PLUS float-typed record-exploded fields.
+                  ;; Integer record-exploded fields are excluded (not differentiable).
+                  (diff-flat-inputs
+                   (cl:loop for p in flat-inputs
+                            for t-spec in flat-input-types
+                            when (if (member p record-exploded-syms :test #'eq)
+                                     ;; record-exploded field: only float ones
+                                     (%crisp-float-type-p t-spec)
+                                     ;; original input (cell or scalar): always include
+                                     t)
+                            collect p))
+                  (diff-flat-input-types
+                   (cl:loop for p in flat-inputs
+                            for t-spec in flat-input-types
+                            when (if (member p record-exploded-syms :test #'eq)
+                                     (%crisp-float-type-p t-spec)
+                                     t)
+                            collect t-spec)))
+
+          ;; --- Explode cell params (existing logic) -----------
+          (multiple-value-bind (exploded-params exploded-types bwd-cell-reassembly-bindings)
+              (%explode-kernel-args bwd-params bwd-types)
+
+            ;; --- ANF + backward walk on substituted body ------
+            (cl:let* ((anf-body      (mapcar #'anf-transform subst-body))
+                      (flat-anf      (flatten-anf-body anf-body))
+                      (forward-bindings
+                       (cl:loop for form in flat-anf
+                                when (and (consp form) (= (length form) 2) (symbolp (car form)))
+                                collect form))
+                      (raw-backward-walk
+                       (generate-backward-walk flat-anf diff-flat-inputs outputs
+                                               diff-flat-input-types output-types))
+                      ;; Fix (set! vp_x_GRAD adj) -> (set! (~ vp_x_GRAD) adj)
+                      (backward-walk
+                       (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
+
+                      ;; Combined reassembly: cells first (from %explode-kernel-args),
+                      ;; then record struct reconstruction
+                      (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
+
+              `(progn
+                (eval-when (:compile-toplevel :load-toplevel :execute)
+                  (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
+                    (cl:loop for p in ',bwd-params
+                             for t-spec in ',bwd-types
+                             collect (cons p t-spec))))
+                (def-kernel-exact ,bwd-name ,exploded-params
+                                  (declare #'(,@exploded-types))
+                                  (let (,@all-reassembly)
+                                    (let (,@forward-bindings)
+                                      ,backward-walk))
+                                  (return))))))))))
 
 
 (defun parse-kernel-signature (name params body)

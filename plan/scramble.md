@@ -450,6 +450,13 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [ ] literals overlooked double and char (d / c) 
 - [ ] switch spec runner to default to `--log-level=off` ... but CI should still using something...
 
+- [ ] device vectors ( float4, int2, etc).  Time to support them.
+- - [ ] support at kernel boundary (private)
+- [ ] virtual vectors ( def-rec-vec ).  
+- - [ ] rename and update docs
+- - [ ] can ONLY be a member of def-record? like brand?
+- - [ ] test and support
+
 
 
 
