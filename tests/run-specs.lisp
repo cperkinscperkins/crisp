@@ -296,6 +296,10 @@
            nil)))))
 
 
+
+;; Ensure SBCL knows these are special at compile time so dynamic bindings are followed.
+(declaim (special *compile-differentiate* *log-level* *keep-work*))
+
 (defun compile-crisp-file-to-spirv (filepath &key (emit-metadata nil))
   "Compiles a .crisp file to .spv and returns the output path and metadata paths if successful."
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
@@ -308,8 +312,9 @@
     (let (;; Use a FRESH environment for each spec to ensure isolation
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
-                  ;; Initialize for SPIR-V
-                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
+                  ;; Initialize for SPIR-V, passing differentiate flag so *differentiate-p* is set
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
+                                                      :differentiate *compile-differentiate*)
                   ;; FIX: Set *package* to :crisp-language to match binary compiler behavior
                   (let ((*package* (find-package :crisp-language)))
                     (with-open-file (stream filepath)

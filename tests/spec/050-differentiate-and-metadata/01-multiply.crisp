@@ -1,4 +1,4 @@
-;; TEST-WITH[--metadata --differentiate]: validate-debug-050
+;; TEST-WITH[--metadata --differentiate]: validate-multiply-grad-metadata
 
 (def-type in-ish (cell float :address-space :global :access :read-only))
 (def-type out-ish (cell float :address-space :global :access :write-only))
