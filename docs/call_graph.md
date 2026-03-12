@@ -281,6 +281,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - (%BWD-FIXUP-DECLARED-TYPES BWD-K-NAME)  metadata.lisp
+- - - - - (%BWD-RESOLVE-TYPE TYPE-SPEC &OPTIONAL NEW-ACCESS)  metadata.lisp
+- - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - (SERIALIZE-ALIASES STREAM ALIASES-HASH)  metadata.lisp
 - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
 - - - - (SERIALIZE-STRUCTS STREAM STRUCTS-HASH)  metadata.lisp
@@ -849,6 +852,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-MULTIPLY-CHAIN-RULE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
 
+- (VALIDATE-MULTIPLY-GRAD-METADATA PATHS)  metadata-val.lisp
+
 - (VALIDATE-MY-KERNEL-SCRATCH-IR IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-NESTED-CHAIN-RULE IR-PATH)  metadata-val.lisp
@@ -870,6 +875,23 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-NO-SUBST-OVERLOADS IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-POINT-IN-METADATA METADATA-PATH)  metadata-val.lisp
+
+- (VALIDATE-REC-KB-BASIC IR-PATH)  metadata-val.lisp
+- - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
+
+- (VALIDATE-REC-KB-CT-PROP IR-PATH)  metadata-val.lisp
+- - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
+
+- (VALIDATE-REC-KB-NON-OVERLOADABLE IR-PATH)  metadata-val.lisp
+- - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
+
+- (VALIDATE-REC-KB-NOT-FLOAT IR-PATH)  metadata-val.lisp
+- - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
+
+- (VALIDATE-REC-KB-UNUSED-FIELD IR-PATH)  metadata-val.lisp
+- - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
+
+- (VALIDATE-RECORD-GRAD-METADATA PATHS)  metadata-val.lisp
 
 - (VALIDATE-RETURN-7-IR IR-PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp [See above]

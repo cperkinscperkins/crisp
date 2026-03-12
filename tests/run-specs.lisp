@@ -296,6 +296,10 @@
            nil)))))
 
 
+
+;; Ensure SBCL knows these are special at compile time so dynamic bindings are followed.
+(declaim (special *compile-differentiate* *log-level* *keep-work*))
+
 (defun compile-crisp-file-to-spirv (filepath &key (emit-metadata nil))
   "Compiles a .crisp file to .spv and returns the output path and metadata paths if successful."
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
@@ -308,8 +312,9 @@
     (let (;; Use a FRESH environment for each spec to ensure isolation
           (crisp.compiler::*struct-name-prefix* (format nil "S_~a_" (substitute #\_ #\- (pathname-name filepath))))
           (forms (progn
-                  ;; Initialize for SPIR-V
-                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*)
+                  ;; Initialize for SPIR-V, passing differentiate flag so *differentiate-p* is set
+                  (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
+                                                      :differentiate *compile-differentiate*)
                   ;; FIX: Set *package* to :crisp-language to match binary compiler behavior
                   (let ((*package* (find-package :crisp-language)))
                     (with-open-file (stream filepath)
@@ -414,6 +419,8 @@
                           (uiop:getenv "CRISP_L0_INCLUDE"))))
     (find-if (lambda (p) (and p (probe-file p))) candidates)))
 
+
+
 (defun validate-l0-host-run (crisp-file cpp-files)
   "Validates C++ files compile AND run. Links against system ze_loader.dll."
   (if (null cpp-files)
@@ -437,7 +444,7 @@
                   (list (uiop:native-namestring clang-exe)
                         (uiop:native-namestring cpp)
                         "-I" (namestring l0-include)
-                        (uiop:native-namestring ze-loader) ;; Link directly to DLL
+                        (uiop:native-namestring ze-loader)
                         "-static"
                         "-o" (uiop:native-namestring exe-path))
                   :output :string :error-output :string :ignore-error-status t)
@@ -455,22 +462,20 @@
                        (uiop:run-program (uiop:native-namestring exe-path)
                          :output :string :error-output :string :ignore-error-status t)
                      (format t "Output:~%~a~%" run-out)
-                     (format t "Output:~%~a~%" run-out)
                      (if (zerop run-code)
                          ;; Check Expectations
                          (let ((expectations (parse-hoist-expect (extract-test-directives crisp-file)))
                                (passed t))
                            (when expectations
-                                 (dolist (exp expectations)
-                                   (unless (search exp run-out)
-                                     (format t "FAIL: Expectation not found in output: '~a'~%" exp)
-                                     (setf passed nil))))
-
+                             (dolist (exp expectations)
+                               (unless (search exp run-out)
+                                 (format t "FAIL: Expectation not found in output: '~a'~%" exp)
+                                 (setf passed nil))))
                            (if passed
                                (progn
                                 (format t "PASS: ~a ran successfully!~%" (file-namestring cpp))
                                 t)
-                               nil))
+                               (return-from validate-l0-host-run nil)))
                          (progn
                           (format t "FAIL: ~a execution failed (Code ~a)~%Error: ~a~%"
                             (file-namestring exe-path) run-code run-err)
