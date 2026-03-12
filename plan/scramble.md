@@ -461,6 +461,7 @@ TECHNICAL DEBT AND OVERSIGHTS
 
 - [ ] multi-file support
 - [ ] ieee / fast accuracy support
+- [ ] 02-kernel-illegal-voidp and friends. no CHECK-FAIL header.   Other negative tests same
 
 
 

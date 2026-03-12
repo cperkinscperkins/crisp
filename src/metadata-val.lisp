@@ -952,3 +952,126 @@
    Expects: (VP-1_X VP-1_Y VP-2_X VP-2_Y C C_GRAD &out VP-1_X_GRAD VP-1_Y_GRAD VP-2_X_GRAD VP-2_Y_GRAD)
    = 22 params = 21 commas."
   (validate-generic-grad-signature ir-path "record_on_boundary_k" 21))
+
+
+
+;;; =========================================================
+;;; 050-differentiate-and-metadata: validators
+;;; =========================================================
+
+(defun validate-multiply-grad-metadata (paths)
+  "Validates the backward grad metacrisp for 01-multiply/cell_mult_grad kernel.
+   (A B &out C) -> backward: (A B C C_grad &out A_grad B_grad)
+   Checks: kernel name, physical sig (18 params = 6 cells x 3),
+   declared sig: a/b/c/c_grad (:in :read-only), a_grad/b_grad (:out :write-only),
+   and source path present."
+  (let* ((paths (if (listp paths) paths (list paths)))
+         (meta-path (find "multiply_grad_cell_mult.metacrisp" paths
+                         :test #'search :key #'namestring)))
+    (unless meta-path
+      (log:error "validate-multiply-grad-metadata: no *multiply_grad_cell_mult.metacrisp* in ~a" paths)
+      (return-from validate-multiply-grad-metadata nil))
+    (let* ((content (uiop:read-file-forms meta-path))
+           (kernels (find :kernels content :key #'car))
+           (k-def   (find-if (lambda (k) (string-equal (getf k :name) "cell_mult_grad"))
+                             (cdr kernels))))
+      (unless k-def
+        (log:error "validate-multiply-grad-metadata: kernel 'cell_mult_grad' not found in ~a" meta-path)
+        (return-from validate-multiply-grad-metadata nil))
+      ;; Physical signature: 18 params (6 cells x 3)
+      (let ((phys-sig (getf k-def :physical-signature)))
+        (unless (= (length phys-sig) 18)
+          (log:error "validate-multiply-grad-metadata: expected 18 physical-sig entries, got ~a"
+                     (length phys-sig))
+          (return-from validate-multiply-grad-metadata nil)))
+      ;; Declared signature: 6 params with correct names, directions, access modes
+      (let ((decl-sig (getf k-def :declared-signature)))
+        (unless (= (length decl-sig) 6)
+          (log:error "validate-multiply-grad-metadata: expected 6 declared-sig params, got ~a"
+                     (length decl-sig))
+          (return-from validate-multiply-grad-metadata nil))
+        (flet ((check-cell (param expected-name expected-dir expected-access)
+                 (let ((name   (getf param :name))
+                       (dir    (getf param :direction))
+                       (access (getf param :access)))
+                   (unless (and (string-equal name expected-name)
+                                (eq dir expected-dir)
+                                (eq access expected-access))
+                     (log:error "validate-multiply-grad-metadata: param ~s: expected dir=~s access=~s, got name=~s dir=~s access=~s"
+                                expected-name expected-dir expected-access name dir access)
+                     (return-from validate-multiply-grad-metadata nil)))))
+          (check-cell (nth 0 decl-sig) "a"      :in  :read-only)
+          (check-cell (nth 1 decl-sig) "b"      :in  :read-only)
+          (check-cell (nth 2 decl-sig) "c"      :in  :read-only)
+          (check-cell (nth 3 decl-sig) "c_grad" :in  :read-only)
+          (check-cell (nth 4 decl-sig) "a_grad" :out :write-only)
+          (check-cell (nth 5 decl-sig) "b_grad" :out :write-only)))
+      ;; Source path present
+      (unless (getf k-def :source)
+        (log:error "validate-multiply-grad-metadata: no :source in kernel def")
+        (return-from validate-multiply-grad-metadata nil))
+      t)))
+
+(defun validate-record-grad-metadata (paths)
+  "Validates the backward grad metacrisp for 03-record-at-boundary.
+   The record v-point (x float, y float) is exploded to scalar fields at the boundary.
+   Checks: kernel name, physical sig (14 params), declared sig (6 params):
+     vp_x/vp_y (float scalars, :in), c/c_grad (cells, :in :read-only),
+     vp_x_grad/vp_y_grad (cells, :out :write-only), and source path present."
+  (let* ((paths (if (listp paths) paths (list paths)))
+         (meta-path (find "_grad_non_overloadable_accessor_k.metacrisp" paths
+                         :test #'search :key #'namestring)))
+    (unless meta-path
+      (log:error "validate-record-grad-metadata: no *_grad_non_overloadable_accessor_k.metacrisp* in ~a" paths)
+      (return-from validate-record-grad-metadata nil))
+    (let* ((content (uiop:read-file-forms meta-path))
+           (kernels (find :kernels content :key #'car))
+           (k-def   (find-if (lambda (k)
+                               (string-equal (getf k :name) "non_overloadable_accessor_k_grad"))
+                             (cdr kernels))))
+      (unless k-def
+        (log:error "validate-record-grad-metadata: kernel 'non_overloadable_accessor_k_grad' not found in ~a"
+                   meta-path)
+        (return-from validate-record-grad-metadata nil))
+      ;; Physical signature: 14 params
+      ;;   vp_x (float=1) + vp_y (float=1) + c (cell=3) + c_grad (cell=3)
+      ;;   + vp_x_grad (cell=3) + vp_y_grad (cell=3) = 14
+      (let ((phys-sig (getf k-def :physical-signature)))
+        (unless (= (length phys-sig) 14)
+          (log:error "validate-record-grad-metadata: expected 14 physical-sig entries, got ~a"
+                     (length phys-sig))
+          (return-from validate-record-grad-metadata nil)))
+      ;; Declared signature: 6 params
+      (let ((decl-sig (getf k-def :declared-signature)))
+        (unless (= (length decl-sig) 6)
+          (log:error "validate-record-grad-metadata: expected 6 declared-sig params, got ~a"
+                     (length decl-sig))
+          (return-from validate-record-grad-metadata nil))
+        (flet ((check-scalar-in (param expected-name)
+                 (let ((name (getf param :name))
+                       (dir  (getf param :direction)))
+                   (unless (and (string-equal name expected-name) (eq dir :in))
+                     (log:error "validate-record-grad-metadata: param ~s: expected float :in, got name=~s dir=~s"
+                                expected-name name dir)
+                     (return-from validate-record-grad-metadata nil))))
+               (check-cell (param expected-name expected-dir expected-access)
+                 (let ((name   (getf param :name))
+                       (dir    (getf param :direction))
+                       (access (getf param :access)))
+                   (unless (and (string-equal name expected-name)
+                                (eq dir expected-dir)
+                                (eq access expected-access))
+                     (log:error "validate-record-grad-metadata: param ~s: expected dir=~s access=~s, got name=~s dir=~s access=~s"
+                                expected-name expected-dir expected-access name dir access)
+                     (return-from validate-record-grad-metadata nil)))))
+          (check-scalar-in (nth 0 decl-sig) "vp_x")
+          (check-scalar-in (nth 1 decl-sig) "vp_y")
+          (check-cell      (nth 2 decl-sig) "c"        :in  :read-only)
+          (check-cell      (nth 3 decl-sig) "c_grad"   :in  :read-only)
+          (check-cell      (nth 4 decl-sig) "vp_x_grad" :out :write-only)
+          (check-cell      (nth 5 decl-sig) "vp_y_grad" :out :write-only)))
+      ;; Source path present
+      (unless (getf k-def :source)
+        (log:error "validate-record-grad-metadata: no :source in kernel def")
+        (return-from validate-record-grad-metadata nil))
+      t)))
