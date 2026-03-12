@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-11T02:11:55.133268Z
+Generated on 2026-03-12T01:52:31.327592Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2109,6 +2109,55 @@ Generated on 2026-03-11T02:11:55.133268Z
 
 
 ---
+### DEFUN `VALIDATE-REC-KB-NON-OVERLOADABLE`
+- **Args**: `(IR-PATH)`
+
+  > Validates backward kernel for 01-non-overloadable-accessor.  >    Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas.
+
+
+---
+### DEFUN `VALIDATE-REC-KB-BASIC`
+- **Args**: `(IR-PATH)`
+
+  > Validates backward kernel for 03-basic-rec-at-kb.  >    Same signature shape as non-overloadable: 14 params = 13 commas.
+
+
+---
+### DEFUN `VALIDATE-REC-KB-NOT-FLOAT`
+- **Args**: `(IR-PATH)`
+
+  > Validates backward kernel for 05-not-float.  >    x field is int (no grad), y is float.  >    Expects: (VP_X VP_Y C C_GRAD &out VP_Y_GRAD) = 11 params = 10 commas.
+
+
+---
+### DEFUN `VALIDATE-REC-KB-UNUSED-FIELD`
+- **Args**: `(IR-PATH)`
+
+  > Validates backward kernel for 07-unused-field.  >    Both fields are float, even though x is unused in the body (its grad is 0).  >    Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas.
+
+
+---
+### DEFUN `VALIDATE-REC-KB-CT-PROP`
+- **Args**: `(IR-PATH)`
+
+  > Validates backward kernel for 09-compile-time-prop.  >    Two v-point inputs (c-t :earnestness excluded), each with 2 float fields.  >    Expects: (VP-1_X VP-1_Y VP-2_X VP-2_Y C C_GRAD &out VP-1_X_GRAD VP-1_Y_GRAD VP-2_X_GRAD VP-2_Y_GRAD)  >    = 22 params = 21 commas.
+
+
+---
+### DEFUN `VALIDATE-MULTIPLY-GRAD-METADATA`
+- **Args**: `(PATHS)`
+
+  > Validates the backward grad metacrisp for 01-multiply/cell_mult_grad kernel.  >    (A B &out C) -> backward: (A B C C_grad &out A_grad B_grad)  >    Checks: kernel name, physical sig (18 params = 6 cells x 3),  >    declared sig: a/b/c/c_grad (:in :read-only), a_grad/b_grad (:out :write-only),  >    and source path present.
+
+
+---
+### DEFUN `VALIDATE-RECORD-GRAD-METADATA`
+- **Args**: `(PATHS)`
+
+  > Validates the backward grad metacrisp for 03-record-at-boundary.  >    The record v-point (x float, y float) is exploded to scalar fields at the boundary.  >    Checks: kernel name, physical sig (14 params), declared sig (6 params):  >      vp_x/vp_y (float scalars, :in), c/c_grad (cells, :in :read-only),  >      vp_x_grad/vp_y_grad (cells, :out :write-only), and source path present.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
 
 ### DEFVAR `*EMIT-METADATA*`
@@ -2185,6 +2234,9 @@ Generated on 2026-03-11T02:11:55.133268Z
 - **Args**: `(INPUT-PATH OUTPUT-PATH &KEY (OUTPUT-TARGETS NIL)
               (SOURCE-FILE NIL) (FORMS NIL))`
 
+  > Generates .metacrisp sidecar files for each kernel in INPUT-PATH.  >    In differentiate mode (*differentiate-p*), generates metadata for the backward  >    (_GRAD) kernel rather than the forward kernel, while preserving the file-name  >    convention established by main.lisp (output-path already carries the _grad prefix).
+
+
 ---
 ### DEFUN `GET-PHYSICAL-WIDTH`
 - **Args**: `(TYPE)`
@@ -2217,6 +2269,20 @@ Generated on 2026-03-11T02:11:55.133268Z
 ---
 ### DEFUN `SERIALIZE-KERNELS`
 - **Args**: `(OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)`
+
+---
+### DEFUN `%BWD-RESOLVE-TYPE`
+- **Args**: `(TYPE-SPEC &OPTIONAL NEW-ACCESS)`
+
+  > Resolves TYPE-SPEC alias to its inline form. If NEW-ACCESS (:read-only or :write-only)  >    is provided and the resolved type is a cell, replaces the :access keyword value.  >    Used to build semantically correct declared-types for backward kernel metadata (Option B).
+
+
+---
+### DEFUN `%BWD-FIXUP-DECLARED-TYPES`
+- **Args**: `(BWD-K-NAME)`
+
+  > Reads BWD-K-NAME's entry in *kernel-declared-signatures*, produces semantically  >    correct inline types (Option B), and updates the entry in place.  >    Rules:  >      - Params before &out: resolve alias, force cell :access to :read-only  >      - Params after  &out: resolve alias, force cell :access to :write-only  >    This corrects the raw types stored by %generate-backward-kernel-ast, which  >    copies them mechanically from the forward kernel's type list.
+
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\package.lisp`
