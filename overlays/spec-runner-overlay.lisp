@@ -23,7 +23,10 @@
 ;; Fix: pass *compile-differentiate* to initialize-compiler so *differentiate-p* is set
 ;; correctly when TEST-WITH[--differentiate] is active. Without this, backward kernels
 ;; are not generated and metadata reflects the forward kernel only.
-(in-package :cl-user)
+;;
+;; NOTE: The previous attempt defined this in :cl-user by mistake; the function called
+;; by the test runner lives in :crisp.spec-runner, so the fix must go there.
+(in-package :crisp.spec-runner)
 
 ;; Ensure SBCL knows these are special at compile time so dynamic bindings are followed.
 (declaim (special *compile-differentiate* *log-level* *keep-work*))

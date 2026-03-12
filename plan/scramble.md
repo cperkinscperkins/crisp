@@ -459,6 +459,9 @@ TECHNICAL DEBT AND OVERSIGHTS
 - - [ ] can ONLY be a member of def-record? like brand?
 - - [ ] test and support
 
+- [ ] multi-file support
+- [ ] ieee / fast accuracy support
+
 
 
 
