@@ -419,7 +419,7 @@ TECHNICAL DEBT AND OVERSIGHTS
 
 - [x] we have tests with ;; HOIST-EXPECT: BUFFER c: <something>  that SHOULD fail, but don't
       they output a FAIL, but don't trip
-- [ ] --metadata and --differentiate.  These SHOULD work together (unlike --hoist).
+- [x] --metadata and --differentiate.  These SHOULD work together (unlike --hoist).
 
 
 - [ ] auto-diff only works with FLAT kernels. Chooose between

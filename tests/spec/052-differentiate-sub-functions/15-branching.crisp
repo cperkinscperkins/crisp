@@ -1,0 +1,24 @@
+;; TEST-WITH[--differentiate]
+
+(def-type in-ish (cell float :address-space :global :access :read-only))
+(def-type out-ish (cell float :address-space :global :access :write-only))
+
+(def-function some-operation (a b)
+    (declare #'(float float => float))
+    (+ (* a a) b))
+
+(def-function other-operation (a b)
+  (declare #'(float float => float))
+  (* (+ a a) b))
+
+
+;; auto-diff signature will be (A B C C_grad &out A_grad B_grad)
+;; with the resulting C of the forward passed to the backward
+;; so we can use a recomputation strategy for handling branching
+
+(def-kernel branching_sub_op (A B &out C)
+  (declare #'(in-ish in-ish &out out-ish))
+  (let ((val (~ A)))
+    (if (< val 10.0f)
+       (set! (~ C) (some-operation (~ A) (~ B)))
+      (set! (~ C) (other-operation (~ A) (~ B))))))

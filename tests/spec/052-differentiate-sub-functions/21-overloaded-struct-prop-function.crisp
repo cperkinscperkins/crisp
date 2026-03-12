@@ -1,0 +1,18 @@
+;; TEST-WITH[--differentiate]
+
+(def-struct point (x float) (y float))
+
+(def-type in-ish (cell point :address-space :global :access :read-only))
+(def-type out-ish (cell point :address-space :global :access :write-only))
+
+(def-function some-operation (a b)
+    (declare #'(float float => float))
+    (+ (* a a) b))
+
+(def-function x~ (pt)
+    (declare #'(point => float))
+    (* (~x~ pt) (y~ pt)))
+
+(def-kernel struct_op (A &out C)
+  (declare #'(in-ish &out out-ish))
+  (set! (x~ (~ C)) (some-operation (x~ (~ A)) (y~ (~ A)))))
