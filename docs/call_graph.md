@@ -219,21 +219,119 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
 - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp
+- - - - - (%GENERATE-BACKWARD-FUNCTION-AST NAME PARAMS DECLARATIONS BODY-FORMS)  autodiff.lisp
+- - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
+- - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
+- - - - - - (%CRISP-FUNCTION-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp
+- - - - - - (%EXTRACT-RETURN-VARS FLAT-ANF)  autodiff.lisp
+- - - - - - (%CHECK-FN-BODY-FOR-MUTATIONS BODY-FORMS PARAM-NAMES FN-NAME)  autodiff.lisp
+- - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS)  autodiff.lisp
+- - - - - - - (%BACKWARD-SKIP-FN-P FN-SYM)  autodiff.lisp
+- - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp
+- - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
+- - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
+- - - - - - - (INTERNAL-DEF-FUNCTION NAME PARAMS DECLARATIONS BODY LOCATION)  analysis/core.lisp
+- - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp
+- - - - - - - - - (ANF-IS-ATOMIC? EXPR)  anf-transform.lisp
+- - - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
+- - - - - - - - - (ANF-NORMALIZE-PLACE PLACE)  anf-transform.lisp
+- - - - - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp
+- - - - - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
+- - - - - - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [RECURSION]
+- - - - - - - - - (ANF-FRESH-TEMP)  anf-transform.lisp
+- - - - - - - - - (%ANF-TRANSFORM EXPR)  anf-transform.lisp
+- - - - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
+- - - - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [See above]
+- - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
+- - - - - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
+- - - - - - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
+- - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
+- - - - - - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp [See above]
+- - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp
+- - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp
+- - - - - - - - - - (WITH-PEEK-SCRATCH-COUNTER &BODY BODY)  macros.lisp
+- - - - - - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp
+- - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp
+- - - - - - - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-CELL)) ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-CELL)) ARGS)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
+- - - - - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
+- - - - - - - - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - (%TRY-PARSE-TYPED-LITERAL EXPR LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp
+- - - - - - - - - - - - (ANALYZE-INCOMPLETE-TYPE-ACCESSOR OP EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
+- - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - (MULTI-PASS-MODE-P)  analysis/core.lisp
+- - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - (RESOLVE-BEST-SIGNATURE OP EXPLICIT-ARG-TYPES CONTEXT)  type-checker.lisp
+- - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp
+- - - - - - - - - - - - - - (INSTANTIATE-GENERIC-FUNCTION GENERIC-DEF EXPLICIT-ARG-TYPES CONTEXT LOCATION)  environment.lisp
+- - - - - - - - - - - - - - - (RESOLVE-ARGUMENT-BINDINGS GENERIC-DEF EXPLICIT-ARG-TYPES)  environment.lisp
+- - - - - - - - - - - - - - - - (BIND-KEYWORD-ARGS FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)  environment.lisp
+- - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
+- - - - - - - - - - - - - - - - (INJECT-DEFAULTS REMAINDER-ENV DEFAULTS)  environment.lisp
+- - - - - - - - - - - - - - - (MANGLE-FUNCTION-VARIANT-NAME BASE-NAME PARAM-TYPES)  mangling.lisp
+- - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
+- - - - - - - - - - - - - (%FIND-BRAND-OWNER-VAR BRAND-NAME SIG-PARAMS ARG-NODES)  types/brand.lisp
+- - - - - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
+- - - - - - - - - - - - - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)  types/brand.lisp
+- - - - - - - - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp [RECURSION]
+- - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - - - (COMPILE-DEF-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
 - - - (GENERATE-LOCATION-MAP FORMS)  analysis/core.lisp
 - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp
 - - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp [RECURSION]
 - - - (COMPILE-MODULE FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
 - - - - (ANALYZE-SIGNATURES-PASS FORMS)  analysis/core.lisp
+- - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS)  analysis/core.lisp
+- - - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp [See above]
+- - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%CRISP-FUNCTION-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS)  analysis/core.lisp [RECURSION]
+- - - - - - (%TREE-HAS-FUNCALL-P TREE TARGET-SYM)  analysis/core.lisp
+- - - - - - - (%TREE-HAS-FUNCALL-P TREE TARGET-SYM)  analysis/core.lisp [RECURSION]
 - - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp
 - - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [See above]
 - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
-- - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp
-- - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp
-- - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-CELL)) ARGS)  analysis/core.lisp
-- - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
-- - - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-CELL)) ARGS)  analysis/core.lisp [RECURSION]
-- - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp [See above]
+- - - - - (%PRE-REGISTER-HOF-TEMPLATES)  analysis/core.lisp
+- - - - - - (%TREE-HAS-FUNCALL-P TREE TARGET-SYM)  analysis/core.lisp [See above]
 - - - - (FINALIZE-STRUCT-DEFINITIONS)  structs.lisp
 - - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp
 - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
@@ -331,11 +429,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%EXPAND-RECORD-KERNEL-INPUTS INPUTS INPUT-TYPES PKG)  autodiff.lisp
 - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp
 - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp
-- - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
-- - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
-- - - (%RECORD-FIELD-PARAM-SYM PARAM-SYM FIELD-NAME PKG)  autodiff.lisp
-- - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp
 - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - (%RECORD-FIELD-PARAM-SYM PARAM-SYM FIELD-NAME PKG)  autodiff.lisp
+- - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - (%SUBSTITUTE-RECORD-ACCESSORS FORM RECORD-SUBS-HT RECORD-TYPE-HT)  autodiff.lisp
 - - - (%SUBSTITUTE-RECORD-ACCESSORS FORM RECORD-SUBS-HT RECORD-TYPE-HT)  autodiff.lisp [RECURSION]
 - - - (%RECORD-ACCESSOR-SYSTEM-GENERATED-P ACCESSOR-SYM REC-TYPE)  autodiff.lisp
@@ -348,8 +444,15 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - (INSTANTIATE-TEMPLATE NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)  templates.lisp [See above]
-- - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp
+- - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
 - - (GENERATE-BACKWARD-WALK FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)  autodiff.lisp
+- - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp
+- - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp [RECURSION]
+- - - (%REMOVE-FUNCALL FORM FN-PARAM-SYM CONCRETE-FN-SYM)  autodiff.lisp
+- - - - (%REMOVE-FUNCALL FORM FN-PARAM-SYM CONCRETE-FN-SYM)  autodiff.lisp [RECURSION]
+- - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
+- - - (%EXTRACT-RETURN-VARS FLAT-ANF)  autodiff.lisp [See above]
+- - - (%BACKWARD-SKIP-FN-P FN-SYM)  autodiff.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp
 - - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp [RECURSION]
@@ -358,81 +461,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
-- - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp
-- - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
-- - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
-- - - - (INTERNAL-DEF-FUNCTION NAME PARAMS DECLARATIONS BODY LOCATION)  analysis/core.lisp
-- - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp
-- - - - - - (ANF-IS-ATOMIC? EXPR)  anf-transform.lisp
-- - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
-- - - - - - (ANF-NORMALIZE-PLACE PLACE)  anf-transform.lisp
-- - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp
-- - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
-- - - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [RECURSION]
-- - - - - - (ANF-FRESH-TEMP)  anf-transform.lisp
-- - - - - - (%ANF-TRANSFORM EXPR)  anf-transform.lisp
-- - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
-- - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [See above]
-- - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
-- - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
-- - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
-- - - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
-- - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
-- - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
-- - - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp [See above]
-- - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp
-- - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp
-- - - - - - - (WITH-PEEK-SCRATCH-COUNTER &BODY BODY)  macros.lisp
-- - - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp [See above]
-- - - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
-- - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
-- - - - - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - (%TRY-PARSE-TYPED-LITERAL EXPR LOCATION)  analysis/core.lisp
-- - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp
-- - - - - - - - - (ANALYZE-INCOMPLETE-TYPE-ACCESSOR OP EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
-- - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
-- - - - - - - - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - - (MULTI-PASS-MODE-P)  analysis/core.lisp
-- - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
-- - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - (RESOLVE-BEST-SIGNATURE OP EXPLICIT-ARG-TYPES CONTEXT)  type-checker.lisp
-- - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp
-- - - - - - - - - - - (INSTANTIATE-GENERIC-FUNCTION GENERIC-DEF EXPLICIT-ARG-TYPES CONTEXT LOCATION)  environment.lisp
-- - - - - - - - - - - - (RESOLVE-ARGUMENT-BINDINGS GENERIC-DEF EXPLICIT-ARG-TYPES)  environment.lisp
-- - - - - - - - - - - - - (BIND-KEYWORD-ARGS FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)  environment.lisp
-- - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
-- - - - - - - - - - - - - (INJECT-DEFAULTS REMAINDER-ENV DEFAULTS)  environment.lisp
-- - - - - - - - - - - - (MANGLE-FUNCTION-VARIANT-NAME BASE-NAME PARAM-TYPES)  mangling.lisp
-- - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
-- - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
-- - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
-- - - - - - - - - - (%FIND-BRAND-OWNER-VAR BRAND-NAME SIG-PARAMS ARG-NODES)  types/brand.lisp
-- - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
-- - - - - - - - - - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)  types/brand.lisp
-- - - - - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
-- - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
-- - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp
-- - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp [RECURSION]
-- - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
-- - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (%GENERATE-RAW-ACCESSOR MEMBER-SPEC NAME PKG RUNTIME-INDEX)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
