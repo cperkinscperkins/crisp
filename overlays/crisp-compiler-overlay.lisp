@@ -3507,3 +3507,21 @@ derived-type coercions, and TO-<int-type> integer conversions."
                         (string= (subseq name 0 3) "TO-")
                         (string= (subseq name (- (length name) (length suffix))) suffix))
               return t))))
+
+;;; Fix: %backward-skip-fn-p — >= not > for exact-length TO-INT/SHORT/CHAR matches.
+;;; (> (length "TO-INT") (+ 3 3)) = (> 6 6) = NIL. Correct check is >=.
+;;; src/autodiff.lisp
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
+Skips: system-generated functions (name contains %), AS/AS-* type casts and
+derived-type coercions, and TO-<int-type> integer conversions."
+  (cl:let ((name (symbol-name fn-sym)))
+    (or
+     (cl:find #\% name)
+     (string= name "AS")
+     (and (>= (length name) 3) (string= (subseq name 0 3) "AS-"))
+     (cl:loop for suffix in '("ULONG" "LONG" "UINT" "INT" "USHORT" "SHORT" "UCHAR" "CHAR" "BOOL")
+              when (and (>= (length name) (+ 3 (length suffix)))
+                        (string= (subseq name 0 3) "TO-")
+                        (string= (subseq name (- (length name) (length suffix))) suffix))
+              return t))))
