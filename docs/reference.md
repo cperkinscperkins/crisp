@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-12T01:52:31.327592Z
+Generated on 2026-03-15T20:54:21.728534Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -220,7 +220,7 @@ Generated on 2026-03-12T01:52:31.327592Z
 - **Args**: `(FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
               LOCATION-MAP)`
 
-  > Compiles a single def-function form. Handles optional parameters by generating overloaded variants.
+  > Compiles a single def-function form. Handles optional parameters by generating  > overloaded variants. When *differentiate-p* is T, also generates and compiles  > the _GRAD backward companion after the forward function.
 
 
 ---
@@ -234,7 +234,7 @@ Generated on 2026-03-12T01:52:31.327592Z
 ### DEFUN `ANALYZE-SIGNATURES-PASS`
 - **Args**: `(FORMS)`
 
-  > Pass 1: Iterates through forms to find and register function signatures.
+  > Pass 1: Pre-register differentiable functions, then iterate through forms  > to find and register all function signatures and build the call graph.  > Pre-registration ensures *differentiable-functions* is populated before  > def-kernel macros expand and call generate-backward-walk (feature 052).  > Also scans *template-registry* for HOF templates after walk-code-forms.
 
 
 ---
@@ -353,6 +353,26 @@ Generated on 2026-03-12T01:52:31.327592Z
 - **Args**: `(EXPR LOCATION)`
 
   > If EXPR is a symbol whose name matches <integer><suffix> or <number><suffix>,  >    returns a semantic-literal node with the appropriate Crisp type and value.  >    Suffixes (symbols are already upcased by the SBCL reader):  >      BF -> bfloat16   UC -> uchar   UL -> ulong   US -> ushort  >      U  -> uint       S  -> short   L  -> long  >      H  -> half       F  -> float  >    Multi-character suffixes are tested first to avoid BF matching F,  >    UL matching L, etc.  Returns NIL if EXPR does not match.
+
+
+---
+### DEFUN `%PRE-REGISTER-DIFFERENTIABLE-FNS`
+- **Args**: `(FORMS)`
+
+  > When *differentiate-p* is T, walk FORMS for def-function forms and  > pre-register them in *differentiable-functions* (and *differentiable-hof-store*  > for HOF functions). Handles top-level def-function, progn, and with-template-type.  > Guards parse-function-declarations against unknown-type errors from brand types  > that are not yet registered at pre-registration time.
+
+
+---
+### DEFUN `%PRE-REGISTER-HOF-TEMPLATES`
+
+  > When *differentiate-p* is T, scan *template-registry* for def-function templates  > that use (funcall <param> ...) in their body, indicating a HOF parameter. Pre-register  > each such template in *differentiable-hof-store* and *differentiable-functions*.  > Must be called after walk-code-forms so *template-registry* is populated.
+
+
+---
+### DEFUN `%TREE-HAS-FUNCALL-P`
+- **Args**: `(TREE TARGET-SYM)`
+
+  > Returns T if any subtree in TREE contains (funcall TARGET-SYM ...).
 
 
 ---
@@ -569,7 +589,7 @@ Generated on 2026-03-12T01:52:31.327592Z
 ### DEFUN `FLATTEN-ANF-BODY`
 - **Args**: `(ANF-BODY)`
 
-  > Flattens an ANF body into a sequential list of bindings and side-effects.  >    Returns a list of elements formated as either (var expr) or just expr (for side-effects).
+  > Flattens an ANF body into a sequential list of bindings and side-effects.  > Returns a list of elements formatted as either (var expr), (var0 var1 expr) for  > multi-value bindings, or just expr (for side-effects).  > Accepts bindings of length >= 2 (fix: was = 2, dropping multi-value bindings).
 
 
 ---
@@ -578,14 +598,14 @@ Generated on 2026-03-12T01:52:31.327592Z
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)`
 
-  > Walks a flattened ANF body backwards to accumulate adjoints.  >    Returns a list of backward ANF forms.
+  > Walks a flattened ANF body backwards to accumulate adjoints.  > Returns a backward ANF body (a let form).  > Extended for feature 052: handles differentiable sub-function calls (B1/B2),  > multi-value bindings, HOF inline backward, errors for non-differentiable  > functions (B3), and mutation errors (B4).
 
 
 ---
 ### DEFUN `%CRISP-FLOAT-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a Crisp  >    float-category scalar type (float, double, half, bfloat16).
+  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a Crisp  > float-category scalar type (float, double, half, bfloat16).  > Checks *crisp-types* directly first (for primitives like 'float),  > then falls back to compute-base-type for derived/alias types.
 
 
 ---
@@ -635,6 +655,66 @@ Generated on 2026-03-12T01:52:31.327592Z
 - **Args**: `(INPUTS INPUT-TYPES PKG)`
 
   > Expands record-typed inputs into their scalar fields.  >    Returns (values flat-inputs flat-input-types  >                    reassembly-bindings  >                    grad-out-params grad-out-types  >                    record-subs-ht record-type-ht  >                    grad-cell-syms).  >   >    flat-inputs / flat-input-types : record params replaced by scalar field params.  >    reassembly-bindings : let-bindings to reconstruct each record from its fields.  >    grad-out-params / grad-out-types : gradient cell output params (float fields only).  >    record-subs-ht : param-sym -> alist (field-sym . exploded-sym).  >    record-type-ht  : param-sym -> rec-type-spec.  >    grad-cell-syms  : list of _GRAD symbols that need (set! (~ ..) adj) emission.
+
+
+---
+### DEFUN `%BACKWARD-SKIP-FN-P`
+- **Args**: `(FN-SYM)`
+
+  > Returns T if FN-SYM should be silently skipped in the AD backward walk.  > Skips: system-generated functions (name contains %), AS/AS-* type casts and  > derived-type coercions, and TO-<int-type> integer conversions.
+
+
+---
+### DEFUN `%GENERATE-BACKWARD-FUNCTION-AST`
+- **Args**: `(NAME PARAMS DECLARATIONS BODY-FORMS)`
+
+---
+### DEFUN `%GENERATE-BACKWARD-FUNCTION-WALK`
+- **Args**: `(FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS)`
+
+  > Generates the backward-pass body for a def-function.  > FLAT-ANF         : flattened ANF of the forward function body.  > FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).  > T-GRAD-SYMS      : symbols for the incoming gradient inputs (one per return value).  > RETURN-VARS      : symbols of the return variables (identified from FLAT-ANF last element).  > Returns a (let (...) ...) form suitable as the body of the _GRAD companion function.
+
+
+---
+### DEFUN `%CHECK-FN-BODY-FOR-MUTATIONS`
+- **Args**: `(BODY-FORMS PARAM-NAMES FN-NAME)`
+
+  > Walks BODY-FORMS looking for (set! (~ p) ...) where p is in PARAM-NAMES.  > Signals a compiler error if any mutation is detected, naming FN-NAME.
+
+
+---
+### DEFUN `%CRISP-FUNCTION-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC is a parsed :function-type or :function-literal specifier.
+
+
+---
+### DEFUN `%SUBST-FORM`
+- **Args**: `(FORM SUBST-ALIST)`
+
+  > Recursively substitute atoms in FORM according to SUBST-ALIST (list of (sym . replacement)).
+
+
+---
+### DEFUN `%REMOVE-FUNCALL`
+- **Args**: `(FORM FN-PARAM-SYM CONCRETE-FN-SYM)`
+
+  > Recursively replace (funcall FN-PARAM-SYM ...) or (funcall (function X) ...)  > with (CONCRETE-FN-SYM ...) in FORM.
+
+
+---
+### DEFUN `%FN-NAME-IS-GRAD-P`
+- **Args**: `(NAME)`
+
+  > Returns T if NAME ends with the _GRAD suffix, indicating it is already  > a backward companion and should not receive its own companion.
+
+
+---
+### DEFUN `%EXTRACT-RETURN-VARS`
+- **Args**: `(FLAT-ANF)`
+
+  > Returns the list of return-value symbols from FLAT-ANF.  > Handles both implicit last-expression and explicit (return v0 v1 ...) forms.
 
 
 ---
@@ -966,6 +1046,12 @@ Generated on 2026-03-12T01:52:31.327592Z
 
 
 ---
+### DEFVAR `*DIFFERENTIABLE-HOF-STORE*`
+
+  > Maps HOF function name to info plist for inline backward differentiation.
+
+
+---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
 
@@ -1106,7 +1192,7 @@ Generated on 2026-03-12T01:52:31.327592Z
 ### DEFUN `PARSE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Parses a single type specifier, handling basic types, parameterized types,  >    function types like #'(int => int), and brand type applications like (token-t s).
+  > Parses a single type specifier, handling basic types, parameterized types,  >    function types like #'(int => int), and brand type applications like (token-t s).  >    Extended: when a type alias resolves to a raw function type, parses it to :function-type.
 
 
 ---
@@ -2707,7 +2793,7 @@ Generated on 2026-03-12T01:52:31.327592Z
 ### DEFUN `%INFER-FROM-SINGLE-TEMPLATE`
 - **Args**: `(TMPL ARGUMENT-TYPES)`
 
-  > Helper: Attempts to infer template types for a single template.  >    Returns NIL on failure, or (list template-data concrete-types) on success.
+  > Helper: Attempts to infer template types for a single template.  > Returns NIL on failure, or (list template-data concrete-types) on success.  > Extended: HOF-type sig-params are allowed to fail matching when all template  > parameters have already been inferred from earlier arguments.
 
 
 ---
@@ -3016,6 +3102,12 @@ Generated on 2026-03-12T01:52:31.327592Z
 
 
 ---
+### DEFVAR `*DIFFERENTIABLE-FUNCTIONS*`
+
+  > Registry of user def-functions for which a _GRAD backward companion has been generated.  > Maps function-name -> (:bkwd-name sym :n-float-params N :n-return M).
+
+
+---
 ### DEFVAR `*CALL-GRAPH*`
 
   > A hash table representing the call graph of functions.  >   Keys are caller function names, values are lists of callee names.
@@ -3227,7 +3319,7 @@ Generated on 2026-03-12T01:52:31.327592Z
 ### DEFUN `VALID-FUNCTION-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Checks if type-spec is a valid function literal or descriptor.
+  > Checks if type-spec is a valid function literal or descriptor.  > Extended to also accept raw (function ...) forms from the Crisp reader  > (i.e., #'(float float => float) which the CL reader gives as (function ...)).
 
 
 ---

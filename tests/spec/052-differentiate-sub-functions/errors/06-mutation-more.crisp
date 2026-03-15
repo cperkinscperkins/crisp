@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "message"
+
+(def-type in-ish (cell float :address-space :global :access :read-write))
+(def-type out-ish (cell float :address-space :global :access :write-only))
+
+(def-function some-operation (a b)
+    (declare #'(float float => float))
+    (+ (* a a) b))
+
+(def-kernel sub_op (A B &out C)
+  (declare #'(in-ish in-ish &out out-ish))
+  (set! (~ A) (~ B)) ;; <-- mutation
+  (set! (~ C) (some-operation (~ A) (~ B))))

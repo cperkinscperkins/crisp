@@ -429,33 +429,45 @@
 
 ;; --- #'(...) Syntax Parsers ---
 
+
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
-   function types like #'(int => int), and brand type applications like (token-t s)."
+   function types like #'(int => int), and brand type applications like (token-t s).
+   Extended: when a type alias resolves to a raw function type, parses it to :function-type."
   (cond
-   ;; 0. Type Aliases -- FIX: Use resolve-type-alias for cycle detection
+   ;; 0. Type Aliases: resolve and check. If the alias resolves to a function type,
+   ;;    return the parsed :function-type form so funcall analysis works correctly.
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
-     (let ((resolved (resolve-type-alias spec)))
+     (cl:let ((resolved (resolve-type-alias spec)))
        (valid-type-p resolved)
-       spec))
+       ;; If resolved is a raw function type form, parse it to :function-type
+       (if (and (consp resolved) (eq (cl:first resolved) 'common-lisp:function))
+           (cl:let* ((sig (if (listp (second resolved)) (second resolved) (rest resolved)))
+                     (arrow-pos (position-if (lambda (x) (and (symbolp x)
+                                                              (string-equal (symbol-name x) "=>")))
+                                             sig))
+                     (param-types (if arrow-pos (subseq sig 0 arrow-pos) sig))
+                     (return-types (if arrow-pos (nthcdr (1+ arrow-pos) sig) nil)))
+             `(:function-type ,return-types :params ,(mapcar #'parse-type-specifier param-types)))
+           spec)))
 
    ;; 0.1 Template Aliases (e.g. (in-cell int))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
-     (let* ((alias-name (first spec))
-            (args (rest spec))
-            (alias-def (gethash alias-name *crisp-template-aliases*))
-            (params (car alias-def))
-            (body-spec (cdr alias-def))
-            (arity (length params))
-            (required-args (subseq args 0 (min (length args) arity)))
-            (rest-args (subseq args (length required-args)))
-            (substitutions (pairlis params required-args)))
-       (let ((expanded (sublis substitutions body-spec)))
-         (let ((final-spec (if (and rest-args (consp expanded))
-                               (append expanded rest-args)
-                               (if rest-args
-                                   (cons expanded rest-args)
-                                   expanded))))
+     (cl:let* ((alias-name (first spec))
+               (args (rest spec))
+               (alias-def (gethash alias-name *crisp-template-aliases*))
+               (params (car alias-def))
+               (body-spec (cdr alias-def))
+               (arity (length params))
+               (required-args (subseq args 0 (min (length args) arity)))
+               (rest-args (subseq args (length required-args)))
+               (substitutions (pairlis params required-args)))
+       (cl:let ((expanded (sublis substitutions body-spec)))
+         (cl:let ((final-spec (if (and rest-args (consp expanded))
+                                  (append expanded rest-args)
+                                  (if rest-args
+                                      (cons expanded rest-args)
+                                      expanded))))
            (parse-type-specifier final-spec)))))
 
    ;; 0.15 Brand Type Application: (brand-name var-ref)
@@ -468,13 +480,10 @@
                (var-ref (second spec))
                (brand-def (is-brand-type-p brand-name)))
        (if (gethash brand-name *parameterized-brand-names*)
-           ;; Parameterized brand: keep as (brand-name var-ref) for lazy resolution
-           ;; in parse-function-declarations where we have the environment.
            (progn
              (log:info "PARSE: Parameterized brand application (~a ~a) - deferring resolution"
                        brand-name var-ref)
              spec)
-           ;; Non-parameterized brand: resolve to brand name (original behavior)
            (progn
              (log:info "PARSE: Brand type application (~a ~a) -> ~a [~a]"
                        brand-name var-ref brand-name
@@ -483,12 +492,12 @@
 
    ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
-     (let* ((alias-name (first spec))
-            (args (rest spec))
-            (expanded-base (gethash alias-name *crisp-type-aliases*)))
-       (let ((final-spec (if (listp expanded-base)
-                             (append expanded-base args)
-                             (cons expanded-base args))))
+     (cl:let* ((alias-name (first spec))
+               (args (rest spec))
+               (expanded-base (gethash alias-name *crisp-type-aliases*)))
+       (cl:let ((final-spec (if (listp expanded-base)
+                                (append expanded-base args)
+                                (cons expanded-base args))))
          (log:info "EXPAND-ALIAS-HEAD: ~a -> ~a" spec final-spec)
          (parse-type-specifier final-spec))))
 
@@ -500,39 +509,37 @@
      (log:info "PARSE: Promoting symbol ~a to list (~a)" spec spec)
      (parse-type-specifier (list spec)))
 
-   ;; Function Type: #'(int => int)
+   ;; Function Type: #'(int => int) — raw (function ...) form from reader
    ((and (listp spec) (member (first spec) '(function common-lisp:function)))
-     (let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
+     (cl:let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
        `(:function-type ,(analyze-return-type-from-spec sig)
                         :params ,(mapcar #'parse-type-specifier
-                                   (subseq sig 0 (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "=>"))) sig))))))
+                                    (subseq sig 0 (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "=>"))) sig))))))
 
    ;; Storage Handle Constructor Rules
    ((and (listp spec) (member (symbol-name (first spec)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
      (log:info "PARSE: Calling expand for ~s" spec)
-     (let ((canonical (expand-storage-handle-type-specifier spec)))
+     (cl:let ((canonical (expand-storage-handle-type-specifier spec)))
        (if (valid-type-p canonical)
-           (let ((base (first canonical))
-                 (params (rest canonical)))
-             (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+           (cl:let ((base (first canonical))
+                    (params (rest canonical)))
+             (cl:let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
                (mangle-template-struct-name base resolved-params)))
            (error 'crisp-unknown-type-error :type-name spec))))
 
-   ;; Function Type/Literal
+   ;; Function Type/Literal (already parsed to :function-type or :function-literal)
    ((and (listp spec) (valid-function-type-p spec)) spec)
 
    ;; Generic Parameterized Type: e.g. '(point float)
-   ;; FIX: Strip keyword labels when present (more args than template arity)
    ((and (listp spec) (valid-type-p spec))
      (log:info "PARSE: Generic path for ~s" spec)
-     (let* ((base (first spec))
-            (raw-params (rest spec))
-            (arity (get-template-arity base))
-            ;; Strip keyword labels if more args than arity
-            (params (if (and arity (> (length raw-params) arity))
-                        (extract-positional-from-keyword-args raw-params arity)
-                        raw-params)))
-       (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+     (cl:let* ((base (first spec))
+               (raw-params (rest spec))
+               (arity (get-template-arity base))
+               (params (if (and arity (> (length raw-params) arity))
+                           (extract-positional-from-keyword-args raw-params arity)
+                           raw-params)))
+       (cl:let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
          (if (and arity (> arity 0))
              (mangle-template-struct-name base resolved-params)
              (if resolved-params

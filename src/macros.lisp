@@ -172,11 +172,11 @@
            (body-forms (nthcdr (length declare-forms) body)))
 
       `(internal-def-function
-        ',name
-        ',params
-        ',declarations ;  '(((type a b int)) ((return-type int)))
-        ',body-forms ;  '((+ a b))
-        ,source-location))))
+         ',name
+         ',params
+         ',declarations  ;  '(((type a b int)) ((return-type int)))
+         ',body-forms    ;  '((+ a b))
+         ,source-location))))
 
 ;; Helper for disambiguation (Pass 1 relaxation makes valid-type-p too permissive for symbols)
 (defun strict-valid-type-p (spec)

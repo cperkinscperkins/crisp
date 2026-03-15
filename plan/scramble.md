@@ -419,13 +419,16 @@ TECHNICAL DEBT AND OVERSIGHTS
 
 - [x] we have tests with ;; HOIST-EXPECT: BUFFER c: <something>  that SHOULD fail, but don't
       they output a FAIL, but don't trip
-- [ ] --metadata and --differentiate.  These SHOULD work together (unlike --hoist).
+- [x] --metadata and --differentiate.  These SHOULD work together (unlike --hoist).
 
 
-- [ ] auto-diff only works with FLAT kernels. Chooose between
-- - [ ] documenting that limitation
-- - [ ] extending auto-diff down through call chain. This isn't impossible, but it is a
+- [x] auto-diff only works with FLAT kernels. Chooose between
+- - [/] documenting that limitation
+- - [x] extending auto-diff down through call chain. This isn't impossible, but it is a
         bit tricky. We are collecting A_grad, B_grad as they contribute to C.
+- - [ ] def-function with &out param <-- NOT correctly handled for "sub-function differentiation" at this
+        time.  We assume def-function returns value and differentiate off that.  
+        
 
 - [x] what happens to cell in metadata if --metadata combined with --differentiate ?
 - - is that allowed? We do NOT allow with --hoist.   However, it should work fine.  

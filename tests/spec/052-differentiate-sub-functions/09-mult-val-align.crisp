@@ -1,0 +1,13 @@
+;; TEST-WITH[--differentiate]
+
+(def-type in-ish (cell float :address-space :global :access :read-only))
+(def-type out-ish (cell float :address-space :global :access :write-only))
+
+(def-function some-operation (a w b x)
+    (declare #'(float float float float => float))
+    (- (+ (* a a) b) 
+       (* w x)))
+
+(def-kernel sub_align_op (A B &out C)
+  (declare #'(in-ish in-ish &out out-ish))
+  (set! (~ C) (some-operation (~ A) 41.0f (~ B) 26.6f)))

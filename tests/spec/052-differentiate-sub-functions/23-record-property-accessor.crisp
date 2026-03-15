@@ -1,0 +1,13 @@
+;; TEST-WITH[--differentiate]
+
+(def-record point (x float) (y float))
+
+(def-type out-ish (cell float :address-space :global :access :write-only))
+
+(def-function some-operation (a b)
+    (declare #'(float float => float))
+    (+ (* a a) b))
+
+(def-kernel struct_op (A &out C)
+  (declare #'(point &out out-ish))
+  (set! (~ C) (some-operation (x~ A) (y~ A))))

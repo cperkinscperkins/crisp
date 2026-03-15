@@ -17,6 +17,10 @@
         "A hash table mapping function names (symbols) to a list of
   FUNCTION-SIGNATURE structs. This supports overloading.")
 
+(defvar *differentiable-functions* (make-hash-table :test 'eq)
+  "Registry of user def-functions for which a _GRAD backward companion has been generated.
+Maps function-name -> (:bkwd-name sym :n-float-params N :n-return M).")
+
 
 (defvar *call-graph* nil
         "A hash table representing the call graph of functions.

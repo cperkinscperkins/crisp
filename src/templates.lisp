@@ -619,28 +619,36 @@
       (second raw-sig)
       raw-sig))
 
+
 (defun %infer-from-single-template (tmpl argument-types)
   "Helper: Attempts to infer template types for a single template.
-   Returns NIL on failure, or (list template-data concrete-types) on success."
-  (let* ((raw-sig (template-data-signature tmpl))
-         (sig (%unwrap-function-signature raw-sig))
-         (raw-params (template-data-parameters tmpl))
-         (params (mapcar (lambda (p) (if (consp p) (first p) p)) raw-params))
-         ;; sig is now (T T => T)
-         (sig-params (when sig (butlast sig 2))))
+Returns NIL on failure, or (list template-data concrete-types) on success.
+Extended: HOF-type sig-params are allowed to fail matching when all template
+parameters have already been inferred from earlier arguments."
+  (cl:let* ((raw-sig (crisp.compiler::template-data-signature tmpl))
+            (sig (crisp.compiler::%unwrap-function-signature raw-sig))
+            (raw-params (crisp.compiler::template-data-parameters tmpl))
+            (params (mapcar (lambda (p) (if (consp p) (cl:first p) p)) raw-params))
+            (sig-params (when sig (butlast sig 2))))
 
-    ;; Check arity match between args and signature params
     (when (and sig-params (= (length sig-params) (length argument-types)))
-          (let ((inference-map (make-hash-table)))
-            (when (loop for sig-param in sig-params
-                        for arg-type in argument-types
-                          always (match-template-arg sig-param arg-type inference-map params))
-
-                  ;; Ensure all template parameters were inferred
-                  (let ((concrete-types (loop for p in params
-                                              collect (gethash p inference-map))))
-                    (when (every #'identity concrete-types)
-                          (list (list tmpl concrete-types))))))))) ; Return pair!
+          (cl:let ((inference-map (make-hash-table)))
+            ;; Try to match each sig-param against arg-type.
+            ;; If matching fails for a HOF-type parameter but all template params
+            ;; are already inferred, allow it to proceed.
+            (cl:let ((all-matched
+                      (cl:loop for sig-param in sig-params
+                               for arg-type in argument-types
+                               always
+                               (or (crisp.compiler::match-template-arg
+                                    sig-param arg-type inference-map params)
+                                   ;; Fallback: if all params already inferred, skip this param
+                                   (cl:every (lambda (p) (gethash p inference-map)) params)))))
+              (when all-matched
+                    (cl:let ((concrete-types (cl:loop for p in params
+                                                      collect (gethash p inference-map))))
+                      (when (cl:every #'identity concrete-types)
+                            (list (list tmpl concrete-types))))))))))
 
 (defun try-infer-template-types (name argument-types)
   "Attempts to infer template parameters for 'name' given 'argument-types'.

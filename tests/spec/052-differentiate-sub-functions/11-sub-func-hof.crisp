@@ -1,0 +1,14 @@
+;; TEST-WITH[--differentiate]
+
+(def-type in-ish (cell float :address-space :global :access :read-only))
+(def-type out-ish (cell float :address-space :global :access :write-only))
+
+(def-type binop-t #'(float float => float))
+
+(def-function hof-operation (a b f)
+    (declare #'(float float binop-t => float))
+    (funcall f (* a a) b))
+
+(def-kernel sub_op (A B &out C)
+  (declare #'(in-ish in-ish &out out-ish))
+  (set! (~ C) (hof-operation (~ A) (~ B) #'+)))

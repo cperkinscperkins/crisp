@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "message"
+
+(def-type in-ish (cell float :address-space :global :access :read-only))
+(def-type out-ish (cell float :address-space :global :access :write-only))
+
+
+;; call an undifferentiable function. get an error
+
+(def-kernel black_op (A B &out C)
+  (declare #'(in-ish in-ish &out out-ish))
+  (set! (~ C) (to float (bytes~ A))))
