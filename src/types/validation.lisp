@@ -305,11 +305,18 @@
        (log:debug "  Available types keys: ~a" (alexandria:hash-table-keys *crisp-types*))
        nil))))
 
+
+
 (defun valid-function-type-p (type-spec)
-  "Checks if type-spec is a valid function literal or descriptor."
+  "Checks if type-spec is a valid function literal or descriptor.
+Extended to also accept raw (function ...) forms from the Crisp reader
+(i.e., #'(float float => float) which the CL reader gives as (function ...))."
   (or (and (consp type-spec) (eq (cl:first type-spec) :function-literal)
            (= (length type-spec) 2) (symbolp (second type-spec)))
-      (and (consp type-spec) (eq (cl:first type-spec) :function-type))))
+      (and (consp type-spec) (eq (cl:first type-spec) :function-type))
+      ;; Raw function type from #'(...) reader expansion: (function (... => ...))
+      ;; Note: must return T (boolean), not the member result, to satisfy valid-type-p's type decl.
+      (and (consp type-spec) (eq (cl:first type-spec) 'common-lisp:function))))
 
 
 (defun %instantiate-template-if-needed (base-type template-args mangled-name)

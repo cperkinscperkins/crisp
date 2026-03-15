@@ -270,6 +270,7 @@
       ;; Cleanup: clear current function (replaces pop of stack)
       (setf (compiler-context-current-compiling-function context) nil))))
 
+#|
 (defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
   "Compiles a single def-function form. Handles optional parameters by generating overloaded variants."
   ;; In single-pass mode, the signature won't be registered yet.
@@ -299,12 +300,67 @@
        (t
          (%compile-standard-function form location module builder di-builder di-compile-unit location-map))))))
 
+         |#
+
+;;; Fix: compile-def-function — Option A: wrap backward companion compilation
+;;; in handler-case. If the generated _GRAD def-function fails to compile
+;;; (e.g. type mismatch for double/derived-type gradients), catch the error,
+;;; unregister the function from *differentiable-functions*, log info, and
+;;; continue. The kernel backward walk (GBW) will error if this function is
+;;; actually called in a differentiable context.
+;;; src/analysis/core.lisp
+(defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
+  "Compiles a single def-function form. Handles optional parameters by generating
+overloaded variants. When *differentiate-p* is T, also generates and compiles
+the _GRAD backward companion after the forward function."
+  ;; In single-pass mode, the signature won't be registered yet.
+  (unless (gethash (second form) *function-table*)
+    (register-function-signature form location))
+
+  (cl:let* ((name (second form))
+            (params (third form))
+            (body-and-loc (cdddr form))
+            ;; Extract declarations manually to check for optional args and system flag.
+            (declare-forms (cl:loop for f in body-and-loc
+                                    while (and (listp f) (eq (car f) 'declare))
+                                    collect f))
+            (declarations (cl:loop for f in declare-forms append (rest f)))
+            (is-system (member '(crisp-system-generated) declarations :test #'equal)))
+
+    (multiple-value-bind (explicit-env return-types optional-idx defaults key-idx)
+        (parse-function-declarations params declarations)
+      (declare (ignore explicit-env return-types defaults))
+
+      (cond
+       ;; --- OPTIONAL/KEY PARAMETERS: Lazy Instantiation (Generic Template) ---
+       ((or optional-idx key-idx)
+         (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name))
+
+       ;; --- STANDARD Compilation (No Optionals) ---
+       (t
+         (%compile-standard-function form location module builder di-builder di-compile-unit location-map)
+         ;; Feature 052: After compiling the forward function, generate and compile
+         ;; the _GRAD backward companion when differentiating.
+         (when (and *differentiate-p*
+                    (not (%fn-name-is-grad-p name))
+                    (not is-system))
+           (cl:let* ((body-forms (nthcdr (length declare-forms) body-and-loc))
+                     (bkwd-form (%generate-backward-function-ast name params declarations body-forms)))
+             (when bkwd-form
+               (log:info "AUTODIFF: Compiling backward companion for ~a" name)
+               (handler-case
+                 (compile-def-function bkwd-form location module builder
+                                       di-builder di-compile-unit location-map)
+                 (error (e)
+                   (log:info "AUTODIFF: ~a _GRAD compilation failed: ~a. Unregistering; will error if called from a differentiable kernel." name e)
+                   (remhash name *differentiable-functions*)))))))))))
+
 (defun walk-code-forms (forms visitor-fn)
   "Walks top-level forms, handling macros and progn, and calling visitor-fn on def-function."
   (loop for form in forms
         for i from 0
         do (visit-toplevel-form form (list i) visitor-fn)))
-
+#|
 (defun analyze-signatures-pass (forms)
   "Pass 1: Iterates through forms to find and register function signatures."
   (walk-code-forms forms
@@ -322,6 +378,34 @@
                            (when is-originator
                                  (setf (gethash name *originator-functions*) t))
                            (setf (gethash name *call-graph*) callees)))))))
+                           |#
+
+;;; Updated analyze-signatures-pass — calls %pre-register-hof-templates after
+;;; walk-code-forms so HOF templates in the template registry are registered.
+;;; src/analysis/core.lisp
+(defun analyze-signatures-pass (forms)
+  "Pass 1: Pre-register differentiable functions, then iterate through forms
+to find and register all function signatures and build the call graph.
+Pre-registration ensures *differentiable-functions* is populated before
+def-kernel macros expand and call generate-backward-walk (feature 052).
+Also scans *template-registry* for HOF templates after walk-code-forms."
+  ;; Step 1: Pre-populate from top-level def-function forms.
+  (%pre-register-differentiable-fns forms)
+  ;; Step 2: Walk all forms (registers templates, signatures, etc.)
+  (walk-code-forms forms
+                   (lambda (form location)
+                     (cl:let* ((name (second form))
+                               (body (cdddr form)))
+                       (register-function-signature form location)
+                       (cl:let ((*compiler-context* (make-compiler-context)))
+                         (setf (compiler-context-scanning-function-name *compiler-context*) name)
+                         (multiple-value-bind (is-originator callees)
+                             (shallow-analyze-body body)
+                           (when is-originator
+                             (setf (gethash name *originator-functions*) t))
+                           (setf (gethash name *call-graph*) callees))))))
+  ;; Step 3: After walk-code-forms, scan template registry for HOF templates.
+  (%pre-register-hof-templates))
 
 (defun compile-forms-pass (forms module builder di-builder di-compile-unit location-map)
   "Pass 2: Iterates through forms to perform full analysis and codegen."
@@ -977,3 +1061,192 @@
           (try-int   "L"  'long)
           (try-float "H"  'half)
           (try-float "F"  'float)))))
+
+
+
+
+(defun %pre-register-differentiable-fns (forms)
+  "When *differentiate-p* is T, walk FORMS for def-function forms and
+pre-register them in *differentiable-functions* (and *differentiable-hof-store*
+for HOF functions). Handles top-level def-function, progn, and with-template-type.
+Guards parse-function-declarations against unknown-type errors from brand types
+that are not yet registered at pre-registration time."
+  (when *differentiate-p*
+    (cl:dolist (form forms)
+      (cond
+        ;; Top-level def-function: existing HOF-aware logic
+        ((and (consp form) (eq (car form) 'def-function))
+         (cl:let* ((name (second form))
+                   (params (third form))
+                   (body-and-loc (cdddr form))
+                   (declare-forms (cl:loop for f in body-and-loc
+                                          while (and (listp f) (eq (car f) 'declare))
+                                          collect f))
+                   (declarations (cl:loop for f in declare-forms append (rest f)))
+                   (is-system (member '(crisp-system-generated) declarations :test #'equal)))
+           (unless (or is-system (%fn-name-is-grad-p name))
+             (handler-case
+               (multiple-value-bind (env return-types)
+                   (parse-function-declarations params declarations)
+                 (cl:let* ((float-param-entries
+                            (cl:loop for pd in env
+                                     when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                               (%crisp-float-type-p (parameter-def-type pd)))
+                                     collect pd))
+                           (n-float-params (length float-param-entries))
+                         (return-types-nv (remove nil return-types))
+                           (n-return (length return-types-nv))
+                           (fn-param-entries
+                            (cl:loop for pd in env
+                                     for i from 0
+                                     when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                               (%crisp-function-type-p (parameter-def-type pd)))
+                                     collect (cons i pd)))
+                           (is-hof (consp fn-param-entries)))
+                   (when (> n-float-params 0)
+                     (if is-hof
+                         (cl:let* ((fn-param-idx  (car (car fn-param-entries)))
+                                   (fn-param-sym  (parameter-def-name (cdr (car fn-param-entries))))
+                                   (float-param-syms (mapcar #'parameter-def-name float-param-entries))
+                                   (body-forms (cl:loop for f in body-and-loc
+                                                        unless (and (listp f) (eq (car f) 'declare))
+                                                        collect f))
+                                   (clean-body  (cl:loop for f in body-forms
+                                                         unless (and (atom f) (not (symbolp f)))
+                                                         collect f)))
+                           (log:info "AUTODIFF: Pre-registering HOF ~a (fn-param=~a idx=~a)"
+                                     name fn-param-sym fn-param-idx)
+                           (setf (gethash name *differentiable-hof-store*)
+                                 (list :param-syms       (cl:loop for pd in env
+                                                                  collect (parameter-def-name pd))
+                                       :fn-param-idx     fn-param-idx
+                                       :fn-param-sym     fn-param-sym
+                                       :float-param-syms float-param-syms
+                                       :body-forms       clean-body))
+                           (setf (gethash name *differentiable-functions*)
+                                 (list :hof t
+                                       :n-float-params n-float-params
+                                       :n-return n-return)))
+                         (cl:let* ((pkg (symbol-package name))
+                                   (bkwd-name (intern (format nil "~A_GRAD" (symbol-name name)) pkg)))
+                           (log:info "AUTODIFF: Pre-registering ~a -> ~a (n-fp=~a n-ret=~a)"
+                                     name bkwd-name n-float-params n-return)
+                           (setf (gethash name *differentiable-functions*)
+                                 (list :bkwd-name bkwd-name
+                                       :n-float-params n-float-params
+                                       :n-return n-return)))))))
+               (error (e)
+                 (log:debug "AUTODIFF: Skipping pre-registration of ~a -- type parse error: ~a" name e))))))
+
+        ;; progn: recurse
+        ((and (consp form) (eq (car form) 'progn))
+         (%pre-register-differentiable-fns (rest form)))
+
+        ;; with-template-type: walk body for HOF def-functions using funcall scanning
+        ;; (cannot use parse-function-declarations here -- types contain T placeholder)
+        ((and (consp form) (eq (car form) 'with-template-type))
+         (cl:dolist (bform (cddr form))   ; skip 'with-template-type' and params list
+           (when (and (consp bform) (eq (car bform) 'def-function))
+             (cl:let* ((name        (second bform))
+                       (params      (third bform))
+                       (body-and-loc (cdddr bform))
+                       (declare-forms (cl:loop for f in body-and-loc
+                                               while (and (listp f) (eq (cl:first f) 'declare))
+                                               collect f))
+                       (fn-body     (cl:nthcdr (length declare-forms) body-and-loc))
+                       fn-param-idx
+                       fn-param-sym)
+               ;; Detect HOF param by looking for (funcall <param> ...) in body
+               (cl:loop for p in params
+                        for i from 0
+                        do (when (%tree-has-funcall-p fn-body p)
+                             (setf fn-param-idx i)
+                             (setf fn-param-sym p)
+                             (cl:return)))
+               (when (and fn-param-idx
+                          (not (gethash name *differentiable-functions*)))
+                 (log:info "AUTODIFF: Pre-registering HOF template ~a via with-template-type (fn-param=~a idx=~a)"
+                           name fn-param-sym fn-param-idx)
+                 (setf (gethash name *differentiable-hof-store*)
+                       (list :param-syms       params
+                             :fn-param-idx     fn-param-idx
+                             :fn-param-sym     fn-param-sym
+                             :float-param-syms (cl:loop for p in params
+                                                        for i from 0
+                                                        unless (= i fn-param-idx)
+                                                        collect p)
+                             :body-forms       fn-body))
+                 (setf (gethash name *differentiable-functions*)
+                       (list :hof t
+                             :n-float-params (1- (length params))
+                             :n-return 1)))))))))))
+
+
+
+
+(defun %pre-register-hof-templates ()
+  "When *differentiate-p* is T, scan *template-registry* for def-function templates
+that use (funcall <param> ...) in their body, indicating a HOF parameter. Pre-register
+each such template in *differentiable-hof-store* and *differentiable-functions*.
+Must be called after walk-code-forms so *template-registry* is populated."
+  (when *differentiate-p*
+    (maphash
+     (lambda (name templates)
+       (cl:dolist (tmpl templates)
+         (cl:let* ((body (template-data-body tmpl)))
+           ;; Only process def-function templates (not def-kernel, def-struct, etc.)
+           (when (and (consp body)
+                      (symbolp (cl:first body))
+                      (string= (symbol-name (cl:first body)) "DEF-FUNCTION"))
+             (cl:let* ((params      (cl:third body))
+                       (body-and-loc (cl:nthcdr 3 body))
+                       (declare-forms (cl:loop for f in body-and-loc
+                                               while (and (listp f)
+                                                          (symbolp (cl:first f))
+                                                          (string= (symbol-name (cl:first f)) "DECLARE"))
+                                               collect f))
+                       (fn-body     (cl:nthcdr (length declare-forms) body-and-loc))
+                       fn-param-idx
+                       fn-param-sym)
+               ;; Find which param appears as (funcall <param> ...) in the body
+               (cl:loop for p in params
+                        for i from 0
+                        do (when (%tree-has-funcall-p fn-body p)
+                             (setf fn-param-idx i)
+                             (setf fn-param-sym p)
+                             (cl:return)))
+               ;; If found and not already registered, pre-register as HOF
+               (when (and fn-param-idx
+                          (not (gethash name *differentiable-functions*)))
+                 (log:info "AUTODIFF: Pre-registering HOF template ~a (fn-param=~a idx=~a)"
+                           name fn-param-sym fn-param-idx)
+                 (setf (gethash name *differentiable-hof-store*)
+                       (list :param-syms       params
+                             :fn-param-idx     fn-param-idx
+                             :fn-param-sym     fn-param-sym
+                             :float-param-syms (cl:loop for p in params
+                                                        for i from 0
+                                                        unless (= i fn-param-idx)
+                                                        collect p)
+                             :body-forms       fn-body))
+                 (setf (gethash name *differentiable-functions*)
+                       (list :hof t
+                             :n-float-params (1- (length params))
+                             :n-return 1))))))))
+     *template-registry*)))
+
+
+
+
+(defun %tree-has-funcall-p (tree target-sym)
+  "Returns T if any subtree in TREE contains (funcall TARGET-SYM ...)."
+  (cond
+    ((null tree) nil)
+    ((atom tree) nil)
+    ;; Is this a (funcall target ...) form?
+    ((and (symbolp (cl:first tree))
+          (string= (symbol-name (cl:first tree)) "FUNCALL")
+          (eq (cl:second tree) target-sym))
+     t)
+    ;; Recurse into sub-trees
+    (t (cl:some (lambda (sub) (%tree-has-funcall-p sub target-sym)) tree))))

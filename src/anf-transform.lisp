@@ -228,28 +228,32 @@
       forms))
 
 
+
 (defun flatten-anf-body (anf-body)
   "Flattens an ANF body into a sequential list of bindings and side-effects.
-   Returns a list of elements formated as either (var expr) or just expr (for side-effects)."
+Returns a list of elements formatted as either (var expr), (var0 var1 expr) for
+multi-value bindings, or just expr (for side-effects).
+Accepts bindings of length >= 2 (fix: was = 2, dropping multi-value bindings)."
   (let ((flat nil))
     (labels ((walk (expr)
-                   (cond
-                    ((and (consp expr) (eq (car expr) 'let))
-                      (let ((bindings (cadr expr))
-                            (body (cddr expr)))
-                        (dolist (b bindings)
-                          (if (and (consp b) (= (length b) 2))
-                              (push b flat)))
-                        (dolist (f body)
-                          (unless (and (consp f) (eq (car f) 'declare))
-                            (walk f)))))
-                    ((and (consp expr) (eq (car expr) 'progn))
-                      (dolist (f (cdr expr))
-                        (walk f)))
-                    ((and (consp expr) (eq (car expr) 'declare))
-                      nil)
-                    (t
-                      (push expr flat)))))
+               (cond
+                ((and (consp expr) (eq (car expr) 'let))
+                  (let ((bindings (cadr expr))
+                        (body (cddr expr)))
+                    (dolist (b bindings)
+                      ;; Accept length >= 2: covers (var expr) and (v0 v1 ... expr)
+                      (when (and (consp b) (>= (length b) 2))
+                        (push b flat)))
+                    (dolist (f body)
+                      (unless (and (consp f) (eq (car f) 'declare))
+                        (walk f)))))
+                ((and (consp expr) (eq (car expr) 'progn))
+                  (dolist (f (cdr expr))
+                    (walk f)))
+                ((and (consp expr) (eq (car expr) 'declare))
+                  nil)
+                (t
+                  (push expr flat)))))
       (dolist (form anf-body)
         (walk form))
       (nreverse flat))))
