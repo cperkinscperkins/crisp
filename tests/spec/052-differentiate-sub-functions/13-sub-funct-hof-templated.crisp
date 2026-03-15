@@ -5,14 +5,14 @@
     (def-type in-ish (cell T :address-space :global :access :read-only))
     (def-type out-ish (cell T :address-space :global :access :write-only))
 
-    (def-type binop-t #'(T T => T)) ;; did we ever test this for type aliases
+    (def-type binop-t #'(T T => T)) ;; templated function type alias
 
     (def-function hof-operation (a b f)
-        (declare #'(T T binop-t => T))
+        (declare #'(T T (binop-t T) => T))
         (funcall f (* a a) b))
 
     (def-kernel sub_op_k (A B &out C)
-        (declare #'(in-ish in-ish &out out-ish))
+        (declare #'((in-ish T) (in-ish T) &out (out-ish T)))
         (set! (~ C) (hof-operation (~ A) (~ B) #'+))))
 
 (gen-sub_op_k float)

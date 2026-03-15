@@ -1,5 +1,5 @@
-;; CHECK-FAIL: "message"
-;; FAIL-WITH[--differentiate]: "message"
+;; CHECK-FAIL: "Recursion is not allowed"
+;; FAIL-WITH[--differentiate]: "Recursion is not allowed"
 
 (def-type in-ish (cell float :address-space :global :access :read-only))
 (def-type out-ish (cell float :address-space :global :access :write-only))
