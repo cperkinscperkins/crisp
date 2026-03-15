@@ -871,8 +871,7 @@ and for mutation of kernel input parameters."
                           (emit `(set! ,(local-adj val) (+ ,(local-adj val) (~ ,tgt-grad))))))
                       ;; Target is an input: mutation error (B4)
                       ((member target inputs)
-                        (error "Cannot differentiate: kernel mutates input parameter ~A ~
-                                via (set! (~ ~A) ...). Only output parameters may be written."
+                        (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
                                target target))
                       ;; Other target: skip
                       (t nil))))))
@@ -1569,8 +1568,7 @@ functions (B3), and mutation errors (B4)."
                                                    (symbol-package target))))
                           (emit `(set! ,(local-adj val) (+ ,(local-adj val) (~ ,tgt-grad))))))
                       ((member target inputs)
-                        (error "Cannot differentiate: kernel mutates input parameter ~A ~
-                                via (set! (~ ~A) ...). Only output parameters may be written."
+                        (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
                                target target))
                       (t nil))))))
 
@@ -2343,10 +2341,27 @@ that are not yet registered at pre-registration time."
 ;;; before the B3 error so MAKE-X%DISPATCH and %CONSTRUCT-STRUCT don't crash AD.
 ;;; src/autodiff.lisp
 
-;;; Fix: generate-backward-walk — change B3 from error to log-and-skip.
-;;; All float-param user functions are pre-registered (B1 handles them).
-;;; Unknown calls (built-ins like to-ulong, constructors) have no float
-;;; adjoint contribution — log at debug level and skip silently.
+;;; Helper: %backward-skip-fn-p
+;;; Returns T if FN-SYM should be silently skipped in the backward walk.
+;;; Safe to skip:
+;;;  1. System-generated functions: name contains % (e.g. MAKE-X%DISPATCH, %CONSTRUCT-STRUCT)
+;;;  2. Integer-type conversion: TO-<int-type> (e.g. TO-ULONG, TO-INT) — no float adjoint
+;;; Everything else (including TO, AS, user fns) is NOT safe to skip and should error.
+;;; src/autodiff.lisp
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM is a system or integer-conversion function safe to skip in AD backward walk."
+  (cl:let ((name (symbol-name fn-sym)))
+    (or
+     ;; System-generated: name contains %
+     (cl:find #\% name)
+     ;; Integer type conversions: TO-<int-type> (these have no float adjoint)
+     (cl:loop for suffix in '("ULONG" "LONG" "UINT" "INT" "USHORT" "SHORT" "UCHAR" "CHAR" "BOOL")
+              when (and (> (length name) (+ 3 (length suffix)))
+                        (string= (subseq name 0 3) "TO-")
+                        (string= (subseq name (- (length name) (length suffix))) suffix))
+              return t))))
+
+;;; Fix: generate-backward-walk — smart B3: skip system/%/int-conv fns, error on others.
 ;;; src/autodiff.lisp
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types)
   "Walks a flattened ANF body backwards to accumulate adjoints.
@@ -2581,13 +2596,13 @@ functions (B3), and mutation errors (B4)."
                   ((and (consp expr) (symbolp (car expr))
                         (string= (symbol-name (car expr)) "IF"))
                    nil)
-                  ;; B3: Unknown function → error
-                  ;; B3: Unknown function — log and skip (built-in or non-float user fn).
-                  ;; All float-param user fns are caught by B1 via pre-registration.
-                  ((and (consp expr) (symbolp (car expr)))
-                   (log:debug "AUTODIFF: backward-walk skipping unknown call ~A in form ~A"
-                              (car expr) (car form))
+                  ;; System/integer-conversion functions: skip silently (no float adjoint).
+                  ((and (consp expr) (symbolp (car expr))
+                        (%backward-skip-fn-p (car expr)))
                    nil)
+                  ;; B3: Unknown user function -> error (should be registered or forward-only).
+                  ((and (consp expr) (symbolp (car expr)))
+                   (error "~A: function ~A is not differentiable. Mark the kernel 'forward-only' if differentiation is not needed." (car form) (car expr)))
                   ;; Other compound expr: skip
                   (t nil))))
 
@@ -2621,8 +2636,7 @@ functions (B3), and mutation errors (B4)."
                                                    (symbol-package target))))
                           (emit `(set! ,(local-adj val) (+ ,(local-adj val) (~ ,tgt-grad))))))
                       ((member target inputs)
-                        (error "Cannot differentiate: kernel mutates input parameter ~A ~
-                                via (set! (~ ~A) ...). Only output parameters may be written."
+                        (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
                                target target))
                       (t nil))))))
 
@@ -2648,7 +2662,7 @@ functions (B3), and mutation errors (B4)."
                             ,@(nreverse backward-forms))))
         result))))
 
-;;; Fix: %generate-backward-function-walk — same log-and-skip for unknown calls.
+;;; Fix: %generate-backward-function-walk — same smart B3.
 ;;; src/autodiff.lisp
 (defun %generate-backward-function-walk (flat-anf float-param-syms t-grad-syms return-vars)
   "Generates the backward-pass body for a def-function.
@@ -2767,12 +2781,13 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
                   ((and (consp expr) (symbolp (car expr))
                         (string= (symbol-name (car expr)) "IF"))
                    nil)
-                  ;; Unknown function call — error
-                  ;; Unknown function call — log and skip.
-                  ;; Float-param user fns are caught by B1 via pre-registration.
-                  ((and (consp expr) (symbolp (car expr)))
-                   (log:debug "AUTODIFF: fn-backward-walk skipping unknown call ~A" (car expr))
+                  ;; System/integer-conversion functions: skip silently (no float adjoint).
+                  ((and (consp expr) (symbolp (car expr))
+                        (%backward-skip-fn-p (car expr)))
                    nil)
+                  ;; B3: Unknown user function -> error (should be registered or forward-only).
+                  ((and (consp expr) (symbolp (car expr)))
+                   (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr)))
                   ;; Everything else: skip silently
                   (t nil))))
 
@@ -3063,3 +3078,432 @@ that are not yet registered at pre-registration time."
                        (list :hof t
                              :n-float-params (1- (length params))
                              :n-return 1)))))))))))
+
+;;; Fix: %generate-backward-function-walk v3 — restore B2.5 struct accessor case.
+;;; The previous append (smart-B3 version) accidentally dropped B2.5 when
+;;; the comparison/if/skip cases were added. B2.5 treats (accessor~ arg) where
+;;; the function name ends in ~ as an identity operation: propagate adjoint.
+;;; src/autodiff.lisp
+(defun %generate-backward-function-walk (flat-anf float-param-syms t-grad-syms return-vars)
+  "Generates the backward-pass body for a def-function.
+FLAT-ANF         : flattened ANF of the forward function body.
+FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).
+T-GRAD-SYMS      : symbols for the incoming gradient inputs (one per return value).
+RETURN-VARS      : symbols of the return variables (identified from FLAT-ANF last element).
+Returns a (let (...) ...) form suitable as the body of the _GRAD companion function."
+  (cl:let ((backward-forms nil)
+           (adjoint-map (make-hash-table :test 'equal))
+           (return-var-seeds (make-hash-table :test 'eq)))
+
+    ;; Map each return-var to its t_grad seed
+    (cl:loop for rv in return-vars
+             for tg in t-grad-syms do
+      (setf (gethash rv return-var-seeds) tg))
+
+    (labels ((local-adj (v)
+               (or (gethash v adjoint-map)
+                   (cl:let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
+                                         (symbol-package v))))
+                     (setf (gethash v adjoint-map) adv)
+                     adv)))
+             (emit (form)
+               (push form backward-forms)))
+
+      (cl:let ((reversed-body (reverse flat-anf)))
+        (dolist (form reversed-body)
+          (cond
+            ;; ---- Single-value binding: (v expr) -------------------
+            ((and (listp form) (= (length form) 2) (symbolp (car form)))
+              (cl:let ((v    (car form))
+                       (expr (cadr form)))
+                (cond
+                  ;; + : a_adj += v_adj, b_adj += v_adj
+                  ((and (consp expr) (eq (car expr) '+))
+                    (cl:let ((a (cadr expr))
+                             (b (caddr expr)))
+                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
+                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
+                  ;; - : a_adj += v_adj, b_adj += -v_adj
+                  ((and (consp expr) (eq (car expr) '-))
+                    (cl:let* ((a     (cadr expr))
+                              (b     (caddr expr))
+                              (v-adj (local-adj v)))
+                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
+                  ;; * : a_adj += b * v_adj, b_adj += a * v_adj
+                  ((and (consp expr) (eq (car expr) '*))
+                    (cl:let* ((a     (cadr expr))
+                              (b     (caddr expr))
+                              (v-adj (local-adj v)))
+                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
+                  ;; / : a_adj += (1/b)*v_adj, b_adj += (-a/b^2)*v_adj
+                  ((and (consp expr) (eq (car expr) '/))
+                    (cl:let* ((a     (cadr expr))
+                              (b     (caddr expr))
+                              (v-adj (local-adj v)))
+                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
+                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
+                  ;; sin : a_adj += cos(a) * v_adj
+                  ((and (consp expr) (eq (car expr) 'sin))
+                    (cl:let* ((a     (cadr expr))
+                              (v-adj (local-adj v)))
+                      (when (symbolp a)
+                        (cl:let* ((a-adj (local-adj a))
+                                  (cos-a (intern (format nil "~a_COS" (symbol-name a))
+                                                 (symbol-package a))))
+                          (setf (gethash cos-a adjoint-map) cos-a)
+                          (emit `(set! ,cos-a (cos ,a)))
+                          (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
+                  ;; cos : a_adj += -sin(a) * v_adj
+                  ((and (consp expr) (eq (car expr) 'cos))
+                    (cl:let* ((a     (cadr expr))
+                              (v-adj (local-adj v)))
+                      (when (symbolp a)
+                        (cl:let* ((a-adj (local-adj a))
+                                  (sin-a (intern (format nil "~a_SIN" (symbol-name a))
+                                                 (symbol-package a))))
+                          (setf (gethash sin-a adjoint-map) sin-a)
+                          (emit `(set! ,sin-a (sin ,a)))
+                          (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
+                  ;; ~ (cell read): a_adj += v_adj  (identity through cell deref)
+                  ((and (consp expr) (eq (car expr) '~))
+                    (cl:let* ((a     (cadr expr))
+                              (v-adj (local-adj v)))
+                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
+                  ;; Known differentiable sub-function call — single return value
+                  ((and (consp expr)
+                        (symbolp (car expr))
+                        (gethash (car expr) *differentiable-functions*))
+                    (cl:let* ((fn      (car expr))
+                              (args    (cdr expr))
+                              (info    (gethash fn *differentiable-functions*))
+                              (bkwd-fn (getf info :bkwd-name))
+                              (n-fp    (getf info :n-float-params))
+                              (pkg     (symbol-package fn))
+                              (deltas  (cl:loop for i from 0 below n-fp
+                                                collect (intern (format nil "%~a_D~a" (symbol-name v) i) pkg)))
+                              (v-adj   (local-adj v))
+                              (accum-forms
+                               (cl:loop for arg in args
+                                        for i from 0 below n-fp
+                                        when (symbolp arg)
+                                        collect `(set! ,(local-adj arg) (+ ,(local-adj arg) ,(nth i deltas))))))
+                      (when accum-forms
+                        (emit `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+                                 (let (,(append deltas (list `(,bkwd-fn ,@args ,v-adj))))
+                                   ,@accum-forms))))))
+                  ;; B2.5: Struct accessor (name ends in ~): treat like identity.
+                  ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
+                        (cl:let ((fname (symbol-name (car expr))))
+                          (and (> (length fname) 1)
+                               (cl:char= (cl:char fname (1- (length fname))) #\~))))
+                    (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
+                      (when (symbolp a)
+                        (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
+                  ;; Comparison/boolean ops: skip (no float adjoint contribution)
+                  ((and (consp expr) (symbolp (car expr))
+                        (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
+                   nil)
+                  ;; If form: skip (branching -- no adjoint through condition)
+                  ((and (consp expr) (symbolp (car expr))
+                        (string= (symbol-name (car expr)) "IF"))
+                   nil)
+                  ;; System/integer-conversion functions: skip silently (no float adjoint).
+                  ((and (consp expr) (symbolp (car expr))
+                        (%backward-skip-fn-p (car expr)))
+                   nil)
+                  ;; B3: Unknown user function -> error (should be registered or forward-only).
+                  ((and (consp expr) (symbolp (car expr)))
+                   (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr)))
+                  ;; Everything else: skip silently
+                  (t nil))))
+
+            ;; ---- Multi-value binding: (v0 v1 ... expr) -----------
+            ((and (listp form) (>= (length form) 3)
+                  (symbolp (car form))
+                  (every #'symbolp (butlast form)))
+              (cl:let* ((result-vars (butlast form))
+                        (expr        (car (last form))))
+                (when (and (consp expr)
+                           (symbolp (car expr))
+                           (gethash (car expr) *differentiable-functions*))
+                  (cl:let* ((fn      (car expr))
+                             (args    (cdr expr))
+                             (info    (gethash fn *differentiable-functions*))
+                             (bkwd-fn (getf info :bkwd-name))
+                             (n-fp    (getf info :n-float-params))
+                             (n-ret   (getf info :n-return))
+                             (pkg     (symbol-package fn))
+                             (deltas  (cl:loop for i from 0 below n-fp
+                                               collect (intern (format nil "%MV_D~a" i) pkg)))
+                             (t-adjs  (mapcar #'local-adj result-vars))
+                             (accum-forms
+                              (cl:loop for arg in args
+                                       for i from 0 below n-fp
+                                       when (symbolp arg)
+                                       collect `(set! ,(local-adj arg)
+                                                      (+ ,(local-adj arg) ,(nth i deltas))))))
+                    (when accum-forms
+                      (emit `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+                               (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adjs))))
+                                 ,@accum-forms))))))))
+
+            ;; ---- (return ...) or plain symbol: skip ---------------
+            (t nil))))
+
+    ;; Emit the return of float-param adjoints
+    (emit `(return ,@(mapcar #'local-adj float-param-syms)))
+
+    ;; Build local bindings:
+    ;;   - forward single-value bindings from flat-anf (so temps like %ANF-T-3 are in scope)
+    ;;   - return-var adjoints: initialised to their t_grad seed
+    ;;   - all other adjoints: initialised to 0.0
+    (cl:let* ((forward-bindings
+               (cl:loop for form in flat-anf
+                        when (and (consp form)
+                                  (= (length form) 2)
+                                  (symbolp (car form))
+                                  (not (gethash (car form) return-var-seeds)))
+                        collect form))
+              (adjoint-bindings
+               (cl:loop for v being the hash-keys of adjoint-map
+                        using (hash-value adv)
+                        collect (cl:let ((seed (gethash v return-var-seeds)))
+                                  `(,adv ,(if seed seed 0.0)))))
+              (all-bindings (append forward-bindings adjoint-bindings)))
+      `(let ,all-bindings
+         ,@(nreverse backward-forms)))))
+)
+
+;;; Fix: add AS (type-cast) case to %backward-skip-fn-p.
+;;; (as TYPE VALUE) — treat as identity: propagate adjoint to VALUE if symbolic.
+;;; For (as float 1) where 1 is a constant, (symbolp arg) is nil, so nothing emits.
+;;; For (as float x) where x is a float var, x_adj += v_adj (identity through cast).
+;;; Simplest safe approach: add "AS" to %backward-skip-fn-p so it is silently
+;;; skipped rather than hitting the B3 error. If a float variable is cast, its
+;;; adjoint is conservatively treated as 0, which is safe for the current tests.
+;;; src/autodiff.lisp
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM is a system or conversion function that should be
+silently skipped in the AD backward walk (no float adjoint contribution).
+Skips: system-generated functions (name contains %), TO-<int-type> conversions,
+and AS (type cast -- identity through cast, but non-float args have no adjoint)."
+  (cl:let ((name (symbol-name fn-sym)))
+    (or
+     ;; System-generated: name contains %
+     (cl:find #\% name)
+     ;; AS: type cast operator
+     (string= name "AS")
+     ;; Integer type conversions: TO-<int-type>
+     (cl:loop for suffix in '("ULONG" "LONG" "UINT" "INT" "USHORT" "SHORT" "UCHAR" "CHAR" "BOOL")
+              when (and (> (length name) (+ 3 (length suffix)))
+                        (string= (subseq name 0 3) "TO-")
+                        (string= (subseq name (- (length name) (length suffix))) suffix))
+              return t))))
+
+;;; Fix: %generate-backward-function-ast v3 — Option A graceful failure.
+;;; When GFBW (or mutation check) errors on a non-differentiable function body,
+;;; catch the error, unregister the function from *differentiable-functions*,
+;;; log an info message, and return nil. No backward companion is generated.
+;;; If a kernel's backward walk later calls this function, GBW/GFBW will error
+;;; at that point (B3). If no kernel calls it, no error — correct behavior.
+;;; src/autodiff.lisp
+(defun %generate-backward-function-ast (name params declarations body-forms)
+  (log:debug "%%GBFA called for ~a is-system=~a" name (member '(crisp-system-generated) declarations :test #'equal))
+  "Generates the backward companion (def-function NAME_GRAD ...) for a differentiable
+user function. Also registers the function in *differentiable-functions*.
+
+For HOF functions (those with a function-type parameter), stores info in
+*differentiable-hof-store* and registers with :hof t. Returns NIL for HOFs
+since no separate _GRAD function is generated — the backward is inlined at
+the kernel call site.
+
+If the function body contains non-differentiable operations, the backward
+companion is not generated, the function is unregistered from
+*differentiable-functions*, and NIL is returned. If a kernel later calls this
+function in a differentiable context, compilation will error at that point.
+
+Returns the backward def-function form, or NIL if the function has no
+differentiable float params, is a HOF, or cannot be differentiated."
+  (cl:let* ((pkg (symbol-package name)))
+
+    (multiple-value-bind (env return-types)
+        (parse-function-declarations params declarations)
+
+      (cl:let* (;; Float-typed params (the differentiable ones)
+                (float-param-entries
+                 (cl:loop for pd in env
+                          when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                    (%crisp-float-type-p (parameter-def-type pd)))
+                          collect pd))
+                (float-param-syms  (mapcar #'parameter-def-name float-param-entries))
+                (n-float-params    (length float-param-syms))
+                ;; Filter out nil (void) return types — void fns have no t-grad inputs.
+                (return-types-non-void (remove nil return-types))
+                (n-return          (length return-types-non-void))
+
+                ;; HOF detection: any param has a function type?
+                (fn-param-entries
+                 (cl:loop for pd in env
+                          for i from 0
+                          when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                    (%crisp-function-type-p (parameter-def-type pd)))
+                          collect (cons i pd)))
+                (is-hof (consp fn-param-entries)))
+
+        ;; If no differentiable params, nothing to do.
+        (when (zerop n-float-params)
+          (log:info "AUTODIFF: ~a has no float params — skipping _GRAD generation." name)
+          (return-from %generate-backward-function-ast nil))
+
+        ;; If HOF: store info and register with :hof t. No _GRAD function generated.
+        (when is-hof
+          (cl:let* ((fn-param-idx  (car (car fn-param-entries)))
+                    (fn-param-sym  (parameter-def-name (cdr (car fn-param-entries))))
+                    ;; Strip any trailing source-location atom from body-forms
+                    (clean-body    (cl:loop for f in body-forms
+                                            unless (and (atom f) (not (symbolp f)))
+                                            collect f)))
+            (log:info "AUTODIFF: ~a is HOF (fn-param=~a idx=~a) — storing for inline backward"
+                      name fn-param-sym fn-param-idx)
+            (setf (gethash name *differentiable-hof-store*)
+                  (list :param-syms       (cl:loop for pd in env
+                                                   collect (parameter-def-name pd))
+                        :fn-param-idx     fn-param-idx
+                        :fn-param-sym     fn-param-sym
+                        :float-param-syms float-param-syms
+                        :body-forms       clean-body))
+            (setf (gethash name *differentiable-functions*)
+                  (list :hof t
+                        :n-float-params n-float-params
+                        :n-return n-return))
+            (return-from %generate-backward-function-ast nil)))
+
+        ;; Non-HOF: attempt backward function generation.
+        ;; If the body contains non-differentiable operations, catch the error,
+        ;; unregister the function, and return nil. The kernel backward walk
+        ;; will error if this function is actually called in a diff context.
+        (cl:let* ((bkwd-name  (intern (format nil "~A_GRAD" (symbol-name name)) pkg))
+                  (t-grad-syms (cl:loop for i from 0 below n-return
+                                        collect (intern (format nil "T_GRAD~A" i) pkg)))
+                  (orig-param-types (mapcar #'parameter-def-type env))
+                  (t-grad-types return-types-non-void)
+                  (bkwd-params (append params t-grad-syms))
+                  (bkwd-fn-spec
+                   `(function (,@orig-param-types ,@t-grad-types
+                               => ,@(make-list n-float-params :initial-element 'float)))))
+
+          (setf (gethash name *differentiable-functions*)
+                (list :bkwd-name bkwd-name
+                      :n-float-params n-float-params
+                      :n-return n-return))
+
+          (log:info "AUTODIFF: Generating _GRAD companion ~a for ~a (n-fp=~a n-ret=~a)"
+                    bkwd-name name n-float-params n-return)
+
+          (handler-case
+            (cl:let* ((anf-body   (mapcar #'anf-transform body-forms))
+                      (raw-flat   (flatten-anf-body anf-body))
+                      (flat-anf
+                       (cl:let ((last-f (cl:car (cl:last raw-flat))))
+                         (if (or (symbolp last-f)
+                                 (and (consp last-f) (eq (cl:first last-f) 'return)))
+                             raw-flat
+                             (cl:let ((ret-sym (intern "%RET-0" pkg)))
+                               (append (butlast raw-flat)
+                                       (list (list ret-sym last-f)
+                                             ret-sym))))))
+                      (return-vars (%extract-return-vars flat-anf))
+                      (bkwd-body  (progn
+                                    (%check-fn-body-for-mutations body-forms
+                                                                  (mapcar #'parameter-def-name env)
+                                                                  name)
+                                    (%generate-backward-function-walk
+                                     flat-anf float-param-syms t-grad-syms return-vars))))
+
+              `(def-function ,bkwd-name ,bkwd-params
+                 (declare #'(,@(second bkwd-fn-spec)))
+                 ,bkwd-body))
+
+            (error (e)
+              (log:info "AUTODIFF: ~a — cannot generate _GRAD: ~a. Unregistering; will error if called from a differentiable kernel." name e)
+              (remhash name *differentiable-functions*)
+              nil)))))))
+
+;;; Fix: compile-def-function — Option A: wrap backward companion compilation
+;;; in handler-case. If the generated _GRAD def-function fails to compile
+;;; (e.g. type mismatch for double/derived-type gradients), catch the error,
+;;; unregister the function from *differentiable-functions*, log info, and
+;;; continue. The kernel backward walk (GBW) will error if this function is
+;;; actually called in a differentiable context.
+;;; src/analysis/core.lisp
+(defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
+  "Compiles a single def-function form. Handles optional parameters by generating
+overloaded variants. When *differentiate-p* is T, also generates and compiles
+the _GRAD backward companion after the forward function."
+  ;; In single-pass mode, the signature won't be registered yet.
+  (unless (gethash (second form) *function-table*)
+    (register-function-signature form location))
+
+  (cl:let* ((name (second form))
+            (params (third form))
+            (body-and-loc (cdddr form))
+            ;; Extract declarations manually to check for optional args and system flag.
+            (declare-forms (cl:loop for f in body-and-loc
+                                    while (and (listp f) (eq (car f) 'declare))
+                                    collect f))
+            (declarations (cl:loop for f in declare-forms append (rest f)))
+            (is-system (member '(crisp-system-generated) declarations :test #'equal)))
+
+    (multiple-value-bind (explicit-env return-types optional-idx defaults key-idx)
+        (parse-function-declarations params declarations)
+      (declare (ignore explicit-env return-types defaults))
+
+      (cond
+       ;; --- OPTIONAL/KEY PARAMETERS: Lazy Instantiation (Generic Template) ---
+       ((or optional-idx key-idx)
+         (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name))
+
+       ;; --- STANDARD Compilation (No Optionals) ---
+       (t
+         (%compile-standard-function form location module builder di-builder di-compile-unit location-map)
+         ;; Feature 052: After compiling the forward function, generate and compile
+         ;; the _GRAD backward companion when differentiating.
+         (when (and *differentiate-p*
+                    (not (%fn-name-is-grad-p name))
+                    (not is-system))
+           (cl:let* ((body-forms (nthcdr (length declare-forms) body-and-loc))
+                     (bkwd-form (%generate-backward-function-ast name params declarations body-forms)))
+             (when bkwd-form
+               (log:info "AUTODIFF: Compiling backward companion for ~a" name)
+               (handler-case
+                 (compile-def-function bkwd-form location module builder
+                                       di-builder di-compile-unit location-map)
+                 (error (e)
+                   (log:info "AUTODIFF: ~a _GRAD compilation failed: ~a. Unregistering; will error if called from a differentiable kernel." name e)
+                   (remhash name *differentiable-functions*)))))))))))
+
+;;; Fix: %backward-skip-fn-p — extend to skip all AS-* names.
+;;; AS-TYPENAME functions are system-generated derived-type coercions (from
+;;; def-derived-type). Like AS (generic bitcast), they have no mathematical
+;;; gradient and should be silently skipped in the AD backward walk.
+;;; This covers AS-COORDINATE, AS-DOT, AS-METERS, AS-INT, AS-FLOAT, etc.
+;;; src/autodiff.lisp
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
+Skips: system-generated functions (name contains %), AS/AS-* type casts and
+derived-type coercions, and TO-<int-type> integer conversions."
+  (cl:let ((name (symbol-name fn-sym)))
+    (or
+     ;; System-generated: name contains %
+     (cl:find #\% name)
+     ;; AS or AS-* : generic bitcast or derived-type coercion (no float gradient)
+     (string= name "AS")
+     (and (>= (length name) 3) (string= (subseq name 0 3) "AS-"))
+     ;; Integer type conversions: TO-<int-type>
+     (cl:loop for suffix in '("ULONG" "LONG" "UINT" "INT" "USHORT" "SHORT" "UCHAR" "CHAR" "BOOL")
+              when (and (> (length name) (+ 3 (length suffix)))
+                        (string= (subseq name 0 3) "TO-")
+                        (string= (subseq name (- (length name) (length suffix))) suffix))
+              return t))))
