@@ -27,6 +27,14 @@ Example:
   ...)
 ```
 
+A simple way to make the type clear is use a type literal suffix on the first element. 
+```
+(let ((my-ushort3-v ##(5us 6 7)) ;; <-- first term "5us" declares the type for all
+      (my-half4-v ##(3.0h 4.0 5.1 6.0)))
+   ;; declare not necessary.  
+  ...)
+```
+
 ### Dereferencing and Swizzles
 The subelements can be dereferences with the `x~`, `y~`, `z~` and `w~` functions.
 Furthermore, Crisp supports "swizzles" (like `xyyy~`)

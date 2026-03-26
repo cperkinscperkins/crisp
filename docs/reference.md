@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-15T20:54:21.728534Z
+Generated on 2026-03-26T06:36:07.840785Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -125,9 +125,44 @@ Generated on 2026-03-15T20:54:21.728534Z
 ### DEFVAR `*ANALYSIS-ACCESS-MODE*`
 
 ---
+### DEFUN `%DVEC-INTEGRAL-TYPE-P`
+- **Args**: `(TYPE-SYM)`
+
+  > Returns T if TYPE-SYM is a registered integer (signed or unsigned) Crisp type.
+
+
+---
+### DEFUN `%DVEC-FLOAT-TYPE-P`
+- **Args**: `(TYPE-SYM)`
+
+  > Returns T if TYPE-SYM is a registered floating-point Crisp type.
+
+
+---
+### DEFUN `%DVEC-INFER-COMP-TYPE`
+- **Args**: `(ELEM-NODE LOCATION)`
+
+  > Returns the component type symbol for a device vector element node.  >    Plain int literals -> 'int, plain float literals -> 'float,  >    typed literals -> their explicit type.  >    Signals crisp-compiler-error for device-vector or unknown types.
+
+
+---
+### DEFUN `%DVEC-ELEMENT-COMPATIBLE-P`
+- **Args**: `(ELEM-TYPE COMP-TYPE)`
+
+  > Returns T if ELEM-TYPE (of a subsequent element) is compatible with COMP-TYPE  >    under the first-term coercion rule:  >    - Exact match always passes.  >    - Plain 'int is coercible to any integral comp-type.  >    - Plain 'float is coercible to any float comp-type.
+
+
+---
+### DEFUN `ANALYZE-CRISP-DVEC-LITERAL`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (crisp-vec-literal e1 e2 ...) — produced by the ##(...) reader macro.  >    Infers the component type from the first element, validates width (2-4) and  >    element type compatibility, then returns a semantic-device-vec-literal node.
+
+
+---
 ### DEFUN `INITIALIZE-EXPRESSION-ANALYZERS`
 
-  > Registers all expression analyzers.
+  > Registers all expression analyzers, including device vector support.
 
 
 ---
@@ -249,7 +284,7 @@ Generated on 2026-03-15T20:54:21.728534Z
 - **Args**: `(FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
               LOCATION-MAP)`
 
-  > Analyzes and compiles a single top-level form (used in Pass 2).
+  > Analyzes and compiles a single top-level form (used in Pass 2 and single-pass mode).  > When *differentiate-p* is T, also calls %pre-register-hof-templates after each form  > so that with-template-type HOF definitions are available before kernel backward walks  > in single-pass mode.
 
 
 ---
@@ -352,7 +387,7 @@ Generated on 2026-03-15T20:54:21.728534Z
 ### DEFUN `%TRY-PARSE-TYPED-LITERAL`
 - **Args**: `(EXPR LOCATION)`
 
-  > If EXPR is a symbol whose name matches <integer><suffix> or <number><suffix>,  >    returns a semantic-literal node with the appropriate Crisp type and value.  >    Suffixes (symbols are already upcased by the SBCL reader):  >      BF -> bfloat16   UC -> uchar   UL -> ulong   US -> ushort  >      U  -> uint       S  -> short   L  -> long  >      H  -> half       F  -> float  >    Multi-character suffixes are tested first to avoid BF matching F,  >    UL matching L, etc.  Returns NIL if EXPR does not match.
+  > If EXPR is a symbol whose name matches <integer><suffix> or <number><suffix>,  >    returns a semantic-literal node with the appropriate Crisp type and value.  >    Suffixes (symbols are already upcased by the SBCL reader):  >      BF -> bfloat16   UC -> uchar   UL -> ulong   US -> ushort  >      U  -> uint       S  -> short   L  -> long     C  -> char  >      H  -> half       F  -> float   D  -> double  >    Multi-character suffixes are tested first to avoid BF matching F,  >    UL matching L, etc.  Returns NIL if EXPR does not match.
 
 
 ---
@@ -904,6 +939,14 @@ Generated on 2026-03-15T20:54:21.728534Z
 
 
 ---
+### DEFUN `%DVEC-COERCE-ELEMENT-IR`
+- **Args**: `(ELEM-NODE COMP-TYPE COMP-LLVM-TYPE BUILDER MODULE VAR-ENV
+              DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Generates the LLVM value for one element of a ##(...) literal.  >    If the element type already matches COMP-TYPE, generates normally.  >    If the element is a plain-int or plain-float constant being coerced to  >    a different integral/float type, produces the correctly-typed constant  >    directly without emitting a conversion instruction.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
@@ -1053,7 +1096,7 @@ Generated on 2026-03-15T20:54:21.728534Z
 
 ---
 ### DEFUN `INITIALIZE-COMPILER`
-- **Args**: `(&KEY (LOG-LEVEL INFO) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
+- **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
 
   > A master initialization function for the Crisp compiler.  > This should be called by any entry point into the system (REPL, executable, CI).
 
@@ -2100,14 +2143,14 @@ Generated on 2026-03-15T20:54:21.728534Z
 ### DEFUN `VALIDATE-INTEGER-LITERALS-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates that integer literal suffixes produce the correct LLVM integer types.  >    Expects:  ret-uchar->i8, ret-short/ret-ushort->i16, ret-uint->i32, ret-long/ret-ulong->i64.
+  > Validates that integer literal suffixes produce the correct LLVM integer types.  >    Expects:  ret-uchar->i8, ret-char->i8, ret-short/ret-ushort->i16,  >              ret-uint->i32, ret-long/ret-ulong->i64.
 
 
 ---
 ### DEFUN `VALIDATE-FLOAT-LITERALS-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates that float literal suffixes produce the correct LLVM float types.  >    Expects: ret-half->half, ret-float->float, ret-bfloat16->bfloat.
+  > Validates that float literal suffixes produce the correct LLVM float types.  >    Expects: ret-half->half, ret-float->float, ret-bfloat16->bfloat, ret-double->double.
 
 
 ---
@@ -2381,6 +2424,8 @@ Generated on 2026-03-15T20:54:21.728534Z
 
 
 ---
+## File: `C:\Users\cperk\Documents\crisp-man\src\reader.lisp`
+
 ## File: `C:\Users\cperk\Documents\crisp-man\src\semantic.lisp`
 
 ### DEFSTRUCT `CRISP-TYPE`
@@ -2417,6 +2462,12 @@ Generated on 2026-03-15T20:54:21.728534Z
 
 ---
 ### DEFSTRUCT `SEMANTIC-LITERAL`
+
+---
+### DEFSTRUCT `SEMANTIC-DEVICE-VEC-LITERAL`
+
+  > Represents a ##(...) device vector literal.  >    VEC-TYPE is the full Crisp type symbol (e.g. 'float4).  >    ELEMENT-TYPE is the component type symbol (e.g. 'float).  >    WIDTH is the number of elements (2, 3, or 4).  >    ELEMENTS is a list of analyzed semantic nodes, one per element.
+
 
 ---
 ### DEFSTRUCT `SEMANTIC-PARAM`
@@ -3246,7 +3297,7 @@ Generated on 2026-03-15T20:54:21.728534Z
 ---
 ### DEFUN `INITIALIZE-CRISP-TYPES`
 
-  > Populates the *crisp-types* hash table with built-in scalar types.
+  > Populates *crisp-types* with built-in scalar types and device vector types.
 
 
 ---

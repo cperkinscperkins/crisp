@@ -450,13 +450,14 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [ ] audit errors: some are NOT showing the location.
 - [ ] ;; FAIL-WITH[--differentiate]: "message!"  <-- message isn't getting checked for "normal" tests.
 - [ ] Visual Code to use "lisp" syntax highlighting with .crisp files?
+- [ ] script to generate Table of Contents for docs?  It's woefully out of date.
 - [ ] LLVM-IR can only bitcast same size. So (as-ulong 12345) is a problem. (to-ulong 12345) works.
       Should revisit docs and decide how to handle this.
 - [x] literals overlooked double and char (d / c) 
 - [x] switch spec runner to default to `--log-level=off` ... but CI should still using something...
 
 - [x] device vectors ( float4, int2, etc).  Time to support them.  (054: type registration, ##() construction, basic param/return types)
-- - [ ] support at kernel boundary (private)
+- - [x] support at kernel boundary 
 - [ ] virtual vectors ( def-rec-vec ).  
 - - [ ] rename and update docs
 - - [ ] can ONLY be a member of def-record? like brand?
