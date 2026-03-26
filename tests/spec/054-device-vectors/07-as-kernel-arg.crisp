@@ -1,0 +1,6 @@
+
+
+(def-kernel dev_vec_arg (u2 v2)
+    (declare forward-only (type u2 v2 ushort2))
+    ;; do something
+    (return))

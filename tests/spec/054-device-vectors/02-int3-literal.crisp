@@ -1,0 +1,8 @@
+;; TEST-EXPECT: PASS
+
+;; Verifies that ##(...) with plain integer elements infers int as the
+;; component type and produces the correct intN vector type.
+
+(def-function make-int3 ()
+  (declare (return-type int3))
+  ##(1 2 3))

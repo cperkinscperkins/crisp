@@ -133,8 +133,9 @@ This supports overloading templates by arity or other factors.")
 ;; ==============
 
 (defun initialize-crisp-types ()
-  "Populates the *crisp-types* hash table with built-in scalar types."
+  "Populates *crisp-types* with built-in scalar types and device vector types."
   (clrhash *crisp-types*)
+  ;; --- Scalar types (unchanged from original) ---
   (cl:let ((types
             `(;; Signed Integers
               (char ,#'llvm-int8-type 8 :signed-int)
@@ -163,4 +164,39 @@ This supports overloading templates by arity or other factors.")
                (make-crisp-type :name name
                                 :llvm-type-fn llvm-fn
                                 :size size
-                                :category category)))))
+                                :category category))))
+  ;; --- Device vector types ---
+  ;; Each base type paired with its element-llvm-fn, element size (bits), and category.
+  ;; Symbols are interned in :crisp-language so Crisp source lookups succeed.
+  (cl:let ((cl-pkg (find-package :crisp-language))
+        (base-specs
+         (list (list 'char   #'llvm-int8-type   8  :signed-int)
+               (list 'uchar  #'llvm-int8-type   8  :unsigned-int)
+               (list 'short  #'llvm-int16-type  16 :signed-int)
+               (list 'ushort #'llvm-int16-type  16 :unsigned-int)
+               (list 'int    (lambda () (llvm-int32-type)) 32 :signed-int)
+               (list 'uint   (lambda () (llvm-int32-type)) 32 :unsigned-int)
+               (list 'long   #'llvm-int64-type  64 :signed-int)
+               (list 'ulong  #'llvm-int64-type  64 :unsigned-int)
+               (list 'half   #'llvm-half-type   16 :float)
+               (list 'float  #'llvm-float-type  32 :float)
+               (list 'double #'llvm-double-type 64 :float))))
+    (dolist (spec base-specs)
+      (destructuring-bind (base-sym elem-fn elem-bits _cat) spec
+        (declare (ignore _cat))
+        (dolist (width '(2 3 4))
+          (let* ((vec-name-cl   (intern (format nil "~a~a" (symbol-name base-sym) width) cl-pkg))
+                 ;; Also intern in :crisp.compiler so cell/template machinery can resolve.
+                 ;; Use explicit package (not *package*) since this fn may be called with any *package*.
+                 (vec-name-comp (intern (format nil "~a~a" (symbol-name base-sym) width)
+                                       (find-package :crisp.compiler)))
+                 ;; Capture loop variables for the lambda
+                 (fn   elem-fn)
+                 (w    width)
+                 (entry (make-crisp-type
+                         :name        vec-name-cl
+                         :llvm-type-fn (lambda () (llvm-vector-type (funcall fn) w))
+                         :size        (* elem-bits width)
+                         :category    :device-vector)))
+            (setf (gethash vec-name-cl   *crisp-types*) entry)
+            (setf (gethash vec-name-comp *crisp-types*) entry)))))))

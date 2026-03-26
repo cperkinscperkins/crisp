@@ -1,0 +1,3 @@
+(def-function add-shorty (u2 v2)
+    (declare #'(ushort2 ushort2 => ushort2))
+    (+ u2 v2))

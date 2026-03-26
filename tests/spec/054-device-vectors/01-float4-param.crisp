@@ -1,0 +1,8 @@
+;; TEST-EXPECT: PASS
+
+;; Verifies that device vector types (e.g. float4) are recognised as
+;; valid parameter and return types without any literal construction.
+
+(def-function passthrough (v)
+  (declare #'(float4 => float4))
+  v)

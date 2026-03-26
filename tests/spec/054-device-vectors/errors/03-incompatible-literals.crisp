@@ -1,0 +1,8 @@
+;;
+;; CHECK-FAIL: "mixed element types"
+;;
+
+
+(def-function incompatible ()
+  (declare (return-type float4))
+  ##(1c 2s 3u 4l))
