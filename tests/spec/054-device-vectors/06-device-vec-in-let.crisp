@@ -1,0 +1,5 @@
+
+(def-function has-let (f4)
+    (declare #'(float4 => float3))
+    (let ((f3 ##(2.0f 3.0 4.0)))
+        f3))

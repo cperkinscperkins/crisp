@@ -455,7 +455,7 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [x] literals overlooked double and char (d / c) 
 - [x] switch spec runner to default to `--log-level=off` ... but CI should still using something...
 
-- [ ] device vectors ( float4, int2, etc).  Time to support them.
+- [x] device vectors ( float4, int2, etc).  Time to support them.  (054: type registration, ##() construction, basic param/return types)
 - - [ ] support at kernel boundary (private)
 - [ ] virtual vectors ( def-rec-vec ).  
 - - [ ] rename and update docs

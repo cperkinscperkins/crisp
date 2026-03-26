@@ -70,16 +70,21 @@
       (destructuring-bind (base-sym elem-fn elem-bits _cat) spec
         (declare (ignore _cat))
         (dolist (width '(2 3 4))
-          (let* ((vec-name (intern (format nil "~a~a" (symbol-name base-sym) width) cl-pkg))
+          (let* ((vec-name-cl   (intern (format nil "~a~a" (symbol-name base-sym) width) cl-pkg))
+                 ;; Also intern in :crisp.compiler so cell/template machinery can resolve.
+                 ;; Use explicit package (not *package*) since this fn may be called with any *package*.
+                 (vec-name-comp (intern (format nil "~a~a" (symbol-name base-sym) width)
+                                       (find-package :crisp.compiler)))
                  ;; Capture loop variables for the lambda
                  (fn   elem-fn)
-                 (w    width))
-            (setf (gethash vec-name *crisp-types*)
-                  (make-crisp-type
-                   :name        vec-name
-                   :llvm-type-fn (lambda () (llvm-vector-type (funcall fn) w))
-                   :size        (* elem-bits width)
-                   :category    :device-vector))))))))
+                 (w    width)
+                 (entry (make-crisp-type
+                         :name        vec-name-cl
+                         :llvm-type-fn (lambda () (llvm-vector-type (funcall fn) w))
+                         :size        (* elem-bits width)
+                         :category    :device-vector)))
+            (setf (gethash vec-name-cl   *crisp-types*) entry)
+            (setf (gethash vec-name-comp *crisp-types*) entry)))))))
 
 ;; ----------------------------------------------------------
 ;; 2. ##(...) reader macro
@@ -325,5 +330,37 @@
                      (llvm-build-insert-element builder result elem-ir idx-ir name))))
     (values result nil)))
 
+;; ----------------------------------------------------------
+;; 6. Arithmetic ops — allow :device-vector category
+;; ----------------------------------------------------------
 
+;; src/analysis/ops.lisp
+;; Redefine the macro with :device-vector added to the category whitelist,
+;; then re-expand all four binary ops so the new check takes effect.
+(defmacro def-binary-op-analyzer (name node-constructor op-string)
+  `(defun ,name (expr env context location)
+     ,(format nil "Analyzes a `(~a ...)` expression." op-string)
+     (let* ((left-node (analyze-expression (second expr) env context (append location '(1))))
+            (right-node (analyze-expression (third expr) env context (append location '(2))))
+            (left-type (get-single-value-type left-node))
+            (right-type (get-single-value-type right-node))
+            (promoted-type (get-promoted-type left-type right-type)))
+
+       (if promoted-type
+           (let ((result-crisp-type (gethash promoted-type *crisp-types*)))
+             ;; Ensure the resulting type is numeric and supports the op.
+             (unless (and result-crisp-type (member (crisp-type-category result-crisp-type)
+                                                    '(:signed-int :unsigned-int :float :device-vector)))
+               (error 'crisp-type-error
+                 :message (format nil "Type mismatch for operator '~a'. Cannot operate on ~a and ~a." ,op-string left-type right-type)
+                 :source-location location))
+             (,node-constructor :type promoted-type :left-arg left-node :right-arg right-node :source-location location))
+           (error 'crisp-type-error
+             :message (format nil "Type mismatch for operator '~a'. Cannot operate on ~a and ~a." ,op-string left-type right-type)
+             :source-location location)))))
+
+(def-binary-op-analyzer analyze-add-expression make-semantic-add "+")
+(def-binary-op-analyzer analyze-sub-expression make-semantic-sub "-")
+(def-binary-op-analyzer analyze-mul-expression make-semantic-mul "*")
+(def-binary-op-analyzer analyze-div-expression make-semantic-div "/")
 
