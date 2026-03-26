@@ -1,0 +1,8 @@
+;; TEST-EXPECT: PASS
+
+;; Verifies that ##(...) with plain float elements infers float as the
+;; component type and produces the correct floatN vector type.
+
+(def-function make-float2 ()
+  (declare (return-type float2))
+  ##(1.0 2.0))

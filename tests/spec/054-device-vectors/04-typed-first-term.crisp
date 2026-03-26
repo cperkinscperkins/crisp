@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+
+;; Verifies the first-term typing rule: the first element carries a type
+;; suffix which sets the component type; remaining plain integers are
+;; coerced to that type.
+
+(def-function make-ushort3 ()
+  (declare (return-type ushort3))
+  ##(8us 9 10))

@@ -14,7 +14,8 @@
   ;; when we first define all the types.
   (llvm-type-fn nil :type function)
   (size 0 :type integer) ; size in bits
-  (category nil :type (member :signed-int :unsigned-int :float :void :struct :record :pointer :meta)))
+  (category nil :type (member :signed-int :unsigned-int :float :void :struct :record :pointer :meta :device-vector)))
+
 
 
 (defstruct function-signature
@@ -81,6 +82,20 @@
   value-type ; 'i32
   value ; 7
   source-location)
+
+;; blueprint for a ##(...) device vector literal, e.g. ##(1.0f 2.0f 3.0f) -> float3
+(defstruct semantic-device-vec-literal
+  "Represents a ##(...) device vector literal.
+   VEC-TYPE is the full Crisp type symbol (e.g. 'float4).
+   ELEMENT-TYPE is the component type symbol (e.g. 'float).
+   WIDTH is the number of elements (2, 3, or 4).
+   ELEMENTS is a list of analyzed semantic nodes, one per element."
+  vec-type
+  element-type
+  width
+  elements
+  source-location)
+
 
 ;; Represents a function parameter (e.g., 'a' and its type 'i32)
 (defstruct semantic-param

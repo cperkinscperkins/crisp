@@ -1,0 +1,10 @@
+;;
+;; CHECK-FAIL: "mixed element types"
+;;
+
+;; ##(1 2.0) has an integer first element (infers int) but a plain float
+;; second element.  Integer and float components cannot be mixed.
+
+(def-function bad-mix ()
+  (declare (return-type float2))
+  ##(1 2.0))

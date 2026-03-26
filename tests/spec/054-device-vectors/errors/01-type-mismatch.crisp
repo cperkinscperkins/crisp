@@ -1,0 +1,10 @@
+;;
+;; CHECK-FAIL: "type mismatch"
+;;
+
+;; ##(1 2 3) infers int3, but the declared return type is float3.
+;; This should be a compile-time type mismatch error.
+
+(def-function bad-return ()
+  (declare (return-type float3))
+  ##(1 2 3))
