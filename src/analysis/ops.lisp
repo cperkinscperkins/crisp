@@ -3,6 +3,8 @@
 
 ;; --- #'(...) Syntax Parsers ---
 
+;; Redefine the macro with :device-vector added to the category whitelist,
+;; then re-expand all four binary ops so the new check takes effect.
 (defmacro def-binary-op-analyzer (name node-constructor op-string)
   `(defun ,name (expr env context location)
      ,(format nil "Analyzes a `(~a ...)` expression." op-string)
@@ -16,7 +18,7 @@
            (let ((result-crisp-type (gethash promoted-type *crisp-types*)))
              ;; Ensure the resulting type is numeric and supports the op.
              (unless (and result-crisp-type (member (crisp-type-category result-crisp-type)
-                                                    '(:signed-int :unsigned-int :float)))
+                                                    '(:signed-int :unsigned-int :float :device-vector)))
                (error 'crisp-type-error
                  :message (format nil "Type mismatch for operator '~a'. Cannot operate on ~a and ~a." ,op-string left-type right-type)
                  :source-location location))

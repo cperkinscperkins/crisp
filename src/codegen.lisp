@@ -1275,3 +1275,50 @@
   "Explict handler for NIL nodes (e.g. empty body return values or missing value nodes)."
   (declare (ignore builder module var-env di-builder di-scope location-map))
   (values nil))
+
+
+(defun %dvec-coerce-element-ir (elem-node comp-type comp-llvm-type builder module var-env di-builder di-scope location-map)
+  "Generates the LLVM value for one element of a ##(...) literal.
+   If the element type already matches COMP-TYPE, generates normally.
+   If the element is a plain-int or plain-float constant being coerced to
+   a different integral/float type, produces the correctly-typed constant
+   directly without emitting a conversion instruction."
+  (let ((elem-type (semantic-node-type elem-node)))
+    (if (eq elem-type comp-type)
+        ;; Exact match — generate normally
+        (nth-value 0 (generate-node-ir elem-node builder module var-env
+                                       di-builder di-scope location-map))
+        ;; Coercion needed — only constant literals are supported here
+        (if (typep elem-node 'semantic-literal)
+            (let* ((val (semantic-literal-value elem-node))
+                   (ct  (gethash comp-type *crisp-types*)))
+              (cond
+                ((member (crisp-type-category ct) '(:signed-int :unsigned-int))
+                 (llvm-const-int comp-llvm-type val nil))
+                ((eq (crisp-type-category ct) :float)
+                 (llvm-const-real comp-llvm-type (coerce val 'double-float)))
+                (t
+                 (error "##(...): cannot coerce element of type ~a to ~a" elem-type comp-type))))
+            (error "##(...): non-literal element of type ~a cannot be coerced to ~a"
+                   elem-type comp-type)))))
+
+(defmethod generate-node-ir ((node semantic-device-vec-literal) builder module var-env di-builder di-scope location-map)
+  "Generates LLVM IR for a ##(...) device vector literal via insertelement chain."
+  (let* ((vec-type-sym  (semantic-device-vec-literal-vec-type node))
+         (elem-type-sym (semantic-device-vec-literal-element-type node))
+         (elements      (semantic-device-vec-literal-elements node))
+         (llvm-vec-type (crisp-type-to-llvm-type vec-type-sym module))
+         (llvm-elem-type (crisp-type-to-llvm-type elem-type-sym module))
+         ;; Start from an undef vector and fold insertions left-to-right
+         (result (llvm-get-undef llvm-vec-type)))
+    (log:debug "generate-node-ir dvec: ~a" vec-type-sym)
+    (loop for elem-node in elements
+          for i from 0
+          do (let* ((elem-ir (%dvec-coerce-element-ir elem-node elem-type-sym llvm-elem-type
+                                                      builder module var-env
+                                                      di-builder di-scope location-map))
+                    (idx-ir  (llvm-const-int (llvm-int32-type) i nil))
+                    (name    (format nil "dvec_~a" i)))
+               (setf result
+                     (llvm-build-insert-element builder result elem-ir idx-ir name))))
+    (values result nil)))

@@ -45,6 +45,7 @@
                                              (:file "src/templates") ; 8. with-template-type macro
                                              (:file "src/metadata") ; 9. Metadata generation
                                              (:file "src/metadata-val") ; 10. Metadata validators
+                                             (:file "src/reader")
                                              (:file "src/main") ; 11. Uses compiler, defines main
 
                                              ;; overlays - when testings out new functions, we just

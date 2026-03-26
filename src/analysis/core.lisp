@@ -3,14 +3,98 @@
 
 (defvar *analysis-access-mode* :read)
 
+
+(defun %dvec-integral-type-p (type-sym)
+  "Returns T if TYPE-SYM is a registered integer (signed or unsigned) Crisp type."
+  (let ((ct (gethash type-sym *crisp-types*)))
+    (and ct (member (crisp-type-category ct) '(:signed-int :unsigned-int)))))
+
+(defun %dvec-float-type-p (type-sym)
+  "Returns T if TYPE-SYM is a registered floating-point Crisp type."
+  (let ((ct (gethash type-sym *crisp-types*)))
+    (and ct (eq (crisp-type-category ct) :float))))
+
+(defun %dvec-infer-comp-type (elem-node location)
+  "Returns the component type symbol for a device vector element node.
+   Plain int literals -> 'int, plain float literals -> 'float,
+   typed literals -> their explicit type.
+   Signals crisp-compiler-error for device-vector or unknown types."
+  (let ((ty (semantic-node-type elem-node)))
+    (cond
+      ((eq ty 'int)   'int)
+      ((eq ty 'float) 'float)
+      ((and (gethash ty *crisp-types*)
+            (not (eq (crisp-type-category (gethash ty *crisp-types*)) :device-vector)))
+       ty)
+      ((eq (crisp-type-category (gethash ty *crisp-types*)) :device-vector)
+       (error 'crisp-compiler-error
+              :message "##(...) elements cannot themselves be device vectors"
+              :source-location location))
+      (t
+       (error 'crisp-compiler-error
+              :message (format nil "##(...) first element has unrecognised type ~a" ty)
+              :source-location location)))))
+
+(defun %dvec-element-compatible-p (elem-type comp-type)
+  "Returns T if ELEM-TYPE (of a subsequent element) is compatible with COMP-TYPE
+   under the first-term coercion rule:
+   - Exact match always passes.
+   - Plain 'int is coercible to any integral comp-type.
+   - Plain 'float is coercible to any float comp-type."
+  (or (eq elem-type comp-type)
+      (and (eq elem-type 'int)   (%dvec-integral-type-p comp-type))
+      (and (eq elem-type 'float) (%dvec-float-type-p    comp-type))))
+
+(defun analyze-crisp-dvec-literal (expr env context location)
+  "Analyzes (crisp-vec-literal e1 e2 ...) — produced by the ##(...) reader macro.
+   Infers the component type from the first element, validates width (2-4) and
+   element type compatibility, then returns a semantic-device-vec-literal node."
+  (let* ((raw-elements (rest expr))
+         (width        (length raw-elements)))
+    ;; Width check
+    (unless (member width '(2 3 4))
+      (error 'crisp-compiler-error
+             :message (format nil "##(...) must have 2, 3, or 4 elements; got ~a" width)
+             :source-location location))
+    ;; Analyze all elements
+    (let* ((analyzed  (mapcar (lambda (e) (analyze-expression e env context location))
+                              raw-elements))
+           (comp-type (%dvec-infer-comp-type (first analyzed) location)))
+      ;; Validate remaining elements
+      (dolist (elem (rest analyzed))
+        (let ((et (semantic-node-type elem)))
+          (unless (%dvec-element-compatible-p et comp-type)
+            (error 'crisp-compiler-error
+                   :message (format nil "##(...) has mixed element types: component type is ~a but got ~a"
+                                    comp-type et)
+                   :source-location location))))
+      ;; Look up the NxT type (e.g. float4, int3) in :crisp-language
+      (let* ((vec-name (intern (format nil "~a~a" (symbol-name comp-type) width)
+                               (find-package :crisp-language)))
+             (vec-ct   (gethash vec-name *crisp-types*)))
+        (unless vec-ct
+          (error 'crisp-compiler-error
+                 :message (format nil "##(...) no registered device vector type ~a" vec-name)
+                 :source-location location))
+        (log:debug "analyze-crisp-dvec-literal: ~a width=~a comp=~a -> ~a"
+                   expr width comp-type vec-name)
+        (make-semantic-device-vec-literal
+         :vec-type     vec-name
+         :element-type comp-type
+         :width        width
+         :elements     analyzed
+         :source-location location)))))
+
+;; src/analysis/core.lisp
+;; Redefine to include crisp-vec-literal alongside the built-in registrations.
 (defun initialize-expression-analyzers ()
-  "Registers all expression analyzers."
+  "Registers all expression analyzers, including device vector support."
   (clrhash *expression-analyzers*)
   (register-ops-analyzers)
   (register-control-analyzers)
   (register-struct-analyzers)
-  ;; Core/Self registration if any?
-  )
+  (setf (gethash 'crisp-vec-literal *expression-analyzers*)
+        #'analyze-crisp-dvec-literal))
 
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
@@ -867,9 +951,11 @@ in single-pass mode."
                                 :source-location location)))))))
 
 ;; --- Helper to get the type from any node ---
+
 (defun semantic-node-type (node)
   (etypecase node
     (semantic-literal (semantic-literal-value-type node))
+    (semantic-device-vec-literal (semantic-device-vec-literal-vec-type node))
     (semantic-var-read (semantic-var-read-type node))
     (semantic-add (semantic-add-type node))
     (semantic-sub (semantic-sub-type node))
@@ -904,6 +990,7 @@ in single-pass mode."
 (defun semantic-node-source-location (node)
   (etypecase node
     (semantic-literal (semantic-literal-source-location node))
+    (semantic-device-vec-literal (semantic-device-vec-literal-source-location node))
     (semantic-var-read (semantic-var-read-source-location node))
     (semantic-value-cast (semantic-value-cast-source-location node))
     (semantic-bitcast (semantic-bitcast-source-location node))
