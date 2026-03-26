@@ -16,14 +16,15 @@
   (if crisp-type
       ;; It's a known, simple type.
       (or (gethash (crisp-type-name crisp-type) di-type-cache)
-          (let* ((name-str (string-downcase (crisp-type-name crisp-type)))
+          (let* ((name-str (string-downcase (symbol-name (crisp-type-name crisp-type))))
                  (encoding (ecase (crisp-type-category crisp-type)
-                             (:signed-int 5) ; DW_ATE_signed
-                             (:unsigned-int 7) ; DW_ATE_unsigned
-                             (:float 4) ; DW_ATE_float
-                             (:struct 7) ; Fallback: Treat struct as unsigned blob for now
-                             (:record 7) ; Treat record as struct/unsigned for now
+                             (:signed-int 5)     ; DW_ATE_signed
+                             (:unsigned-int 7)   ; DW_ATE_unsigned
+                             (:float 4)          ; DW_ATE_float
+                             (:struct 7)         ; Fallback: unsigned blob
+                             (:record 7)         ; Treat record as struct/unsigned
                              (:pointer 7)
+                             (:device-vector 7)  ; SIMD vector: treat as unsigned blob
                              (:void (return-from get-or-create-di-type (cffi:null-pointer)))))
                  (di-type (llvm-di-builder-create-basic-type
                            di-builder name-str (length name-str)
