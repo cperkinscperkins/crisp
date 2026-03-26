@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL: "type mismatch"
+;; CHECK-FAIL: "Type mismatch!"
 ;;
 
 ;; ##(1 2 3) infers int3, but the declared return type is float3.

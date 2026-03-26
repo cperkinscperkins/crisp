@@ -71,7 +71,8 @@
    #:llvm-get-param
    #:llvm-build-alloca
    #:llvm-build-load #:llvm-build-load2 #:llvm-build-store #:llvm-build-gep2 #:llvm-build-struct-gep2 #:llvm-build-in-bounds-gep2
-   #:llvm-build-extract-value #:llvm-build-insert-value #:llvm-get-undef
+   #:llvm-build-extract-value #:llvm-build-insert-value #:llvm-build-insert-element #:llvm-get-undef
+   #:llvm-vector-type
    #:llvm-build-ret-void
    #:llvm-build-add
    #:llvm-build-fadd
