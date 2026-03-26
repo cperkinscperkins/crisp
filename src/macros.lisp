@@ -739,7 +739,7 @@
       value
       (let* ((name (symbol-name value))
              ;; Longest-first so BF is checked before F, UL before L, etc.
-             (suffixes '("BF" "UC" "UL" "US" "U" "S" "L" "H" "F"))
+             (suffixes '("BF" "UC" "UL" "US" "U" "S" "L" "C" "H" "F" "D"))
              (suffix (some (lambda (s)
                              (let ((sl (length s)) (nl (length name)))
                                (when (and (> nl sl)
@@ -854,7 +854,7 @@
    Returns VALUE unchanged if it is not a recognisable typed literal."
   (if (and (symbolp value) (not (null value)) (not (eq value t)))
       (let* ((nm (symbol-name value))
-             (sfxs '("BF" "UC" "UL" "US" "U" "S" "L" "H" "F"))
+             (sfxs '("BF" "UC" "UL" "US" "U" "S" "L" "C" "H" "F" "D"))
              (sfx (some (lambda (s)
                           (let ((sl (length s)) (nl (length nm)))
                             (when (and (> nl sl) (string= s (subseq nm (- nl sl)))) s)))

@@ -536,9 +536,12 @@
 
 
 
+
+;; src/metadata-val.lisp
 (defun validate-integer-literals-ir (ir-path)
   "Validates that integer literal suffixes produce the correct LLVM integer types.
-   Expects:  ret-uchar->i8, ret-short/ret-ushort->i16, ret-uint->i32, ret-long/ret-ulong->i64."
+   Expects:  ret-uchar->i8, ret-char->i8, ret-short/ret-ushort->i16,
+             ret-uint->i32, ret-long/ret-ulong->i64."
   (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-integer-literals-ir nil))
@@ -546,6 +549,8 @@
     (and
      (or (search "define i8 @ret_uchar" ir)
          (progn (log:error "No i8 ret_uchar function found in IR") nil))
+     (or (search "define i8 @ret_char" ir)
+         (progn (log:error "No i8 ret_char function found in IR") nil))
      (or (search "define i16 @ret_short" ir)
          (progn (log:error "No i16 ret_short function found in IR") nil))
      (or (search "define i16 @ret_ushort" ir)
@@ -558,9 +563,10 @@
          (progn (log:error "No i64 ret_ulong function found in IR") nil))
      t)))
 
+;; src/metadata-val.lisp
 (defun validate-float-literals-ir (ir-path)
   "Validates that float literal suffixes produce the correct LLVM float types.
-   Expects: ret-half->half, ret-float->float, ret-bfloat16->bfloat."
+   Expects: ret-half->half, ret-float->float, ret-bfloat16->bfloat, ret-double->double."
   (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-float-literals-ir nil))
@@ -572,6 +578,8 @@
          (progn (log:error "No float ret_float function found in IR") nil))
      (or (search "define bfloat @ret_bfloat16" ir)
          (progn (log:error "No bfloat ret_bfloat16 function found in IR") nil))
+     (or (search "define double @ret_double" ir)
+         (progn (log:error "No double ret_double function found in IR") nil))
      t)))
 
 

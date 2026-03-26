@@ -33,6 +33,11 @@
   (let ((ir (%compile-literal-fn "uchar" "255uc")))
     (true (search "define i8 @test_lit" ir))))
 
+(define-test (literals char-suffix)
+  "100c should compile to an i8-returning function"
+  (let ((ir (%compile-literal-fn "char" "100c")))
+    (true (search "define i8 @test_lit" ir))))
+
 (define-test (literals short-suffix)
   "100s should compile to an i16-returning function"
   (let ((ir (%compile-literal-fn "short" "100s")))
@@ -76,6 +81,11 @@
   "1.5bf should compile to a bfloat-returning function"
   (let ((ir (%compile-literal-fn "bfloat16" "1.5bf")))
     (true (search "define bfloat @test_lit" ir))))
+
+(define-test (literals double-suffix)
+  "1.5d should compile to a double-returning function"
+  (let ((ir (%compile-literal-fn "double" "1.5d")))
+    (true (search "define double @test_lit" ir))))
 
 ;; Run tests - will error if any fail
 (test 'literals)

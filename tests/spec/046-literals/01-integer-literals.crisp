@@ -5,6 +5,7 @@
 ;; so any type mismatch would also be caught as a compile error.
 
 (def-function ret-uchar  () (declare (return-type uchar))  200uc)
+(def-function ret-char   () (declare (return-type char))   100c)
 (def-function ret-short  () (declare (return-type short))  100s)
 (def-function ret-ushort () (declare (return-type ushort)) 60000us)
 (def-function ret-uint   () (declare (return-type uint))   42U)

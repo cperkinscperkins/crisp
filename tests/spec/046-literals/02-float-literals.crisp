@@ -6,3 +6,4 @@
 (def-function ret-half     () (declare (return-type half))     1.5h)
 (def-function ret-float    () (declare (return-type float))    1.5f)
 (def-function ret-bfloat16 () (declare (return-type bfloat16)) 1.5bf)
+(def-function ret-double   () (declare (return-type double))   1.5d)

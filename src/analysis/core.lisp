@@ -1028,13 +1028,15 @@ in single-pass mode."
       (llvm-dispose-module module))))
 
 
+
+;; src/analysis/core.lisp
 (defun %try-parse-typed-literal (expr location)
   "If EXPR is a symbol whose name matches <integer><suffix> or <number><suffix>,
    returns a semantic-literal node with the appropriate Crisp type and value.
    Suffixes (symbols are already upcased by the SBCL reader):
      BF -> bfloat16   UC -> uchar   UL -> ulong   US -> ushort
-     U  -> uint       S  -> short   L  -> long
-     H  -> half       F  -> float
+     U  -> uint       S  -> short   L  -> long     C  -> char
+     H  -> half       F  -> float   D  -> double
    Multi-character suffixes are tested first to avoid BF matching F,
    UL matching L, etc.  Returns NIL if EXPR does not match."
   (unless (symbolp expr)
@@ -1074,9 +1076,10 @@ in single-pass mode."
           (try-int   "U"  'uint)
           (try-int   "S"  'short)
           (try-int   "L"  'long)
+          (try-int   "C"  'char)
           (try-float "H"  'half)
-          (try-float "F"  'float)))))
-
+          (try-float "F"  'float)
+          (try-float "D"  'double)))))
 
 
 
