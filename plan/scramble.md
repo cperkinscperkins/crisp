@@ -453,7 +453,7 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [ ] LLVM-IR can only bitcast same size. So (as-ulong 12345) is a problem. (to-ulong 12345) works.
       Should revisit docs and decide how to handle this.
 - [ ] literals overlooked double and char (d / c) 
-- [ ] switch spec runner to default to `--log-level=off` ... but CI should still using something...
+- [x] switch spec runner to default to `--log-level=off` ... but CI should still using something...
 
 - [ ] device vectors ( float4, int2, etc).  Time to support them.
 - - [ ] support at kernel boundary (private)
@@ -472,7 +472,7 @@ TECHNICAL DEBT AND OVERSIGHTS
 
 - [x] branded types. expand syntax to capture "always" vs. "when differentiating"
 - [ ] math intermediaries - this also strongly pushes to more explicit passes and testing. expand user macros / desugar Crisp macros / nodes / analyze / compile ?
-- [ ] --differentiate flag and testing. square cell could be simple test
+- [x] --differentiate flag and testing. square cell could be simple test
 - [ ] get-global-id or whatever and friends. 
 - [ ] strategy
 - [ ] tensors and vectors and matrices

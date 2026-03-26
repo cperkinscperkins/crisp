@@ -355,9 +355,8 @@
 (defvar *differentiable-hof-store* (make-hash-table :test 'eq)
   "Maps HOF function name to info plist for inline backward differentiation.")
 
-;;; Updated initialize-compiler — also clears *differentiable-hof-store*.
-;;; src/compiler.lisp
-(defun initialize-compiler (&key (log-level :info) (runtime-checks nil) (differentiate nil))
+
+(defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
 This should be called by any entry point into the system (REPL, executable, CI)."
   (setf *runtime-checks-enabled* runtime-checks)

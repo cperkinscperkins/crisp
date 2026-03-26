@@ -61,7 +61,7 @@
          (log-level-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--log-level=" f)) flags))
          (log-level (if log-level-flag
                         (intern (string-upcase (subseq log-level-flag (length "--log-level="))) :keyword)
-                        :info))
+                        :off))
          (single-pass-p (member "--single-pass" flags :test #'string=))
          (debug-p (or (member "-g" flags :test #'string=)
                       (member "--debug" flags :test #'string=)))
