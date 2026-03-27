@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-27T15:47:41.944390Z
+Generated on 2026-03-27T21:59:59.462490Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -408,6 +408,27 @@ Generated on 2026-03-27T15:47:41.944390Z
 - **Args**: `(TREE TARGET-SYM)`
 
   > Returns T if any subtree in TREE contains (funcall TARGET-SYM ...).
+
+
+---
+### DEFUN `%DVEC-TYPE-LOOKUP`
+- **Args**: `(TYPE-SYM)`
+
+  > Returns the crisp-type entry for TYPE-SYM if it is a registered device-vector  >    type, trying both :crisp-language and :crisp.compiler packages.  >    Returns NIL when TYPE-SYM is not a device-vector type.
+
+
+---
+### DEFUN `%DVEC-CHECK-CELL-WRITE-ACCESS`
+- **Args**: `(AREF-NODE LOCATION)`
+
+  > Signals crisp-compiler-error if the cell accessed through AREF-NODE is  >    read-only.  The check examines the mangled struct name for 'READ-ONLY'.
+
+
+---
+### DEFUN `ANALYZE-DVEC-COMPONENT-REF`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (x~ v), (y~ v), (z~ v), (w~ v) — device-vector component accessors.  >    The operator symbol determines the 0-based LLVM element index (0..3).  >    Returns a semantic-extract-value node whose type is the scalar component type.  >   >    In :write mode (inside a set! target), also validates that a cell-deref  >    aggregate is not read-only.
 
 
 ---

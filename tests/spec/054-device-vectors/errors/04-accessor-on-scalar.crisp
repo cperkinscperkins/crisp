@@ -1,0 +1,8 @@
+;;
+;; CHECK-FAIL: "x~"
+;;
+;; x~ on a plain scalar (not a device vector) should be a type error.
+
+(def-function bad-access (f)
+  (declare #'(float => float))
+  (x~ f))

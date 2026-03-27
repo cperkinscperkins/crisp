@@ -461,7 +461,7 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [x] device vectors ( float4, int2, etc).  Time to support them.  (054: type registration, ##() construction, basic param/return types)
 - - [x] support at kernel boundary 
 - - [x] make sure hoisting works
-- - [ ] even if we don't do all swizzles, need some sort of access to elements, for set! too
+- - [x] even if we don't do all swizzles, need some sort of access to elements, for set! too
         maybe just x~, y~, z~ and w~.  
         or (~ v <index>)
 - [ ] virtual vectors ( def-rec-vec ).  

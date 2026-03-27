@@ -1,0 +1,7 @@
+;; TEST-EXPECT: PASS
+;;
+;; x~ applied directly to a vector literal constructed with ##().
+
+(def-function x-of-literal ()
+  (declare (return-type float))
+  (x~ ##(3.0f 4.0)))

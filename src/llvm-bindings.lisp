@@ -676,3 +676,12 @@
   (elt-val    :pointer)
   (index      :pointer)   ; must be an i32 LLVM value, e.g. (llvm-const-int (llvm-int32-type) N nil)
   (name       :string))
+
+
+(defcfun ("LLVMBuildExtractElement" llvm-build-extract-element) :pointer
+  "Extract the scalar element at position INDEX (an i32 LLVM value) from
+   the LLVM vector value VEC-VAL, producing a scalar result."
+  (builder  :pointer)
+  (vec-val  :pointer)
+  (index    :pointer)   ; must be an i32 LLVM value, e.g. (llvm-const-int (llvm-int32-type) N nil)
+  (name     :string))

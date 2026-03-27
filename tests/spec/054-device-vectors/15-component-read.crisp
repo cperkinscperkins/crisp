@@ -1,0 +1,8 @@
+;; TEST-EXPECT: PASS
+;;
+;; x~ extracts the first (x) component from a device vector.
+;; Result type is the scalar component type of the vector.
+
+(def-function get-x (v)
+  (declare #'(float2 => float))
+  (x~ v))

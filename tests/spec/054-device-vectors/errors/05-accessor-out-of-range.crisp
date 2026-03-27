@@ -1,0 +1,8 @@
+;;
+;; CHECK-FAIL: "w~"
+;;
+;; w~ on a width-2 vector (only x, y exist) should be a type error.
+
+(def-function bad-range (v)
+  (declare #'(float2 => float))
+  (w~ v))

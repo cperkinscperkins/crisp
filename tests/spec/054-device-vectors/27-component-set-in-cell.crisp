@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;;
+;; (set! (x~ (~ cell)) val) is a read-modify-write on the cell's vector:
+;; OpLoad the float2, OpCompositeInsert the new component, OpStore back.
+;; This is distinct from (set! (x~ local-var) val), which is pure SSA.
+
+(def-type rw-float2 (cell float2 :address-space :global :access :read-write))
+
+(def-kernel set_x_in_cell (c)
+  (declare forward-only #'(rw-float2))
+  (set! (x~ (~ c)) 5.0))

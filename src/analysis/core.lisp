@@ -85,6 +85,7 @@
          :elements     analyzed
          :source-location location)))))
 
+#|
 ;; src/analysis/core.lisp
 ;; Redefine to include crisp-vec-literal alongside the built-in registrations.
 (defun initialize-expression-analyzers ()
@@ -95,6 +96,27 @@
   (register-struct-analyzers)
   (setf (gethash 'crisp-vec-literal *expression-analyzers*)
         #'analyze-crisp-dvec-literal))
+        |#
+
+
+(defun initialize-expression-analyzers ()
+  "Registers all expression analyzers, including device vector support."
+  (clrhash *expression-analyzers*)
+  (register-ops-analyzers)
+  (register-control-analyzers)
+  (register-struct-analyzers)
+  ;; ##(...) device vector literal
+  (setf (gethash 'crisp-vec-literal *expression-analyzers*)
+        #'analyze-crisp-dvec-literal)
+  ;; Component accessors  x~ / y~ / z~ / w~
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (name '("X~" "Y~" "Z~" "W~"))
+      (let ((sym-cl (intern name cl-pkg))
+            (sym-cc (intern name cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) #'analyze-dvec-component-ref)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) #'analyze-dvec-component-ref))))))
 
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
@@ -1355,3 +1377,98 @@ Must be called after walk-code-forms so *template-registry* is populated."
      t)
     ;; Recurse into sub-trees
     (t (cl:some (lambda (sub) (%tree-has-funcall-p sub target-sym)) tree))))
+
+
+
+
+;; src/analysis/core.lisp
+(defun %dvec-type-lookup (type-sym)
+  "Returns the crisp-type entry for TYPE-SYM if it is a registered device-vector
+   type, trying both :crisp-language and :crisp.compiler packages.
+   Returns NIL when TYPE-SYM is not a device-vector type."
+  (when (symbolp type-sym)
+    (or (gethash type-sym *crisp-types*)
+        (let ((alt (intern (symbol-name type-sym) (find-package :crisp.compiler))))
+          (gethash alt *crisp-types*)))))
+
+;; src/analysis/core.lisp
+(defun %dvec-check-cell-write-access (aref-node location)
+  "Signals crisp-compiler-error if the cell accessed through AREF-NODE is
+   read-only.  The check examines the mangled struct name for 'READ-ONLY'."
+  (let* ((cell-type (semantic-node-type (semantic-aref-array-node aref-node)))
+         (resolved  (resolve-type-alias cell-type))
+         (canon     (canonicalize-type-specifier resolved))
+         (cell-spec (when (and (listp canon) (eq (first canon) 'cell)) canon)))
+    (when cell-spec
+      (let ((mangled (mangle-template-struct-name (first cell-spec) (rest cell-spec))))
+        (when (search "READ-ONLY" (symbol-name mangled))
+          (error 'crisp-compiler-error
+                 :message (format nil
+                   "Cannot write through read-only cell of type ~a" cell-type)
+                 :source-location location))))))
+
+(defun analyze-dvec-component-ref (expr env context location)
+  "Analyzes (x~ v), (y~ v), (z~ v), (w~ v) — device-vector component accessors.
+   The operator symbol determines the 0-based LLVM element index (0..3).
+   Returns a semantic-extract-value node whose type is the scalar component type.
+
+   In :write mode (inside a set! target), also validates that a cell-deref
+   aggregate is not read-only."
+  (let* ((op       (first expr))
+         (op-name  (symbol-name op))
+         (index    (cond ((cl:string= op-name "X~") 0)
+                         ((cl:string= op-name "Y~") 1)
+                         ((cl:string= op-name "Z~") 2)
+                         ((cl:string= op-name "W~") 3)
+                         (t (error "analyze-dvec-component-ref: unknown accessor ~a" op))))
+         ;; Always read the aggregate; the write context is on the component, not the vector.
+         (arg-node (let ((*analysis-access-mode* :read))
+                     (analyze-expression (second expr) env context
+                                         (append location '(1)))))
+         (arg-type (semantic-node-type arg-node))
+         (ct       (%dvec-type-lookup arg-type)))
+
+    ;; If the argument is NOT a device-vector:
+    ;; - When ct is nil (user-defined struct/record not in *crisp-types*), or
+    ;;   ct is a struct/record category — fall back to the function call path
+    ;;   so that user-defined x~/y~/z~/w~ struct accessors still work.
+    ;; - For clearly non-aggregate built-in types (scalar, void, pointer, meta)
+    ;;   signal a type error immediately so the user gets a clear message.
+    (unless (and ct (eq (crisp-type-category ct) :device-vector))
+      (let ((should-fallback
+             (or (null ct)   ; not in *crisp-types* => user-defined struct
+                 (member (crisp-type-category ct) '(:struct :record)))))
+        (if should-fallback
+            (return-from analyze-dvec-component-ref
+              (analyze-function-call op expr env context location))
+            (error 'crisp-compiler-error
+                   :message (format nil "~a requires a device-vector argument; got ~a"
+                                    (cl:string-downcase op-name) arg-type)
+                   :source-location location))))
+
+    ;; Validate: component index must be in range for this vector width.
+    (let* ((type-name  (symbol-name arg-type))
+           (width      (cl:digit-char-p (cl:char type-name (cl:1- (cl:length type-name))))))
+      (unless (and width (< index width))
+        (error 'crisp-compiler-error
+               :message (format nil
+                 "~a is out of range for ~a (width ~a); valid accessors: ~a"
+                 (cl:string-downcase op-name) arg-type width
+                 (subseq '("x~" "y~" "z~" "w~") 0 width))
+               :source-location location))
+
+      ;; In write mode: check that a cell-dereference aggregate is writable.
+      (when (and (eq *analysis-access-mode* :write) (semantic-aref-p arg-node))
+        (%dvec-check-cell-write-access arg-node location))
+
+      ;; Component scalar type: strip trailing width digit(s) from the type name.
+      ;; e.g.  "FLOAT2" -> "FLOAT",  "USHORT4" -> "USHORT",  "HALF3" -> "HALF"
+      (let* ((base-name (cl:string-right-trim "1234" type-name))
+             (comp-sym  (intern base-name (find-package :crisp-language))))
+        (log:debug "analyze-dvec-component-ref: ~a on ~a -> index ~a, comp ~a"
+                   op-name arg-type index comp-sym)
+        (make-semantic-extract-value
+         :type           comp-sym
+         :aggregate-node arg-node
+         :index          index
+         :source-location location)))))

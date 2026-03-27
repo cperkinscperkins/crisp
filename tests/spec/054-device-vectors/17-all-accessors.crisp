@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;;
+;; All four named component accessors: x~, y~, z~, w~.
+;; Each returns the scalar component type.
+
+(def-function get-y (v)
+  (declare #'(float2 => float))
+  (y~ v))
+
+(def-function get-z (v)
+  (declare #'(float3 => float))
+  (z~ v))
+
+(def-function get-w (v)
+  (declare #'(float4 => float))
+  (w~ v))

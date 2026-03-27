@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;;
+;; (set! (x~ v) val) replaces the x component via OpCompositeInsert,
+;; rebinding v to the new vector.  The updated v is then returned.
+
+(def-function with-x (v newx)
+  (declare #'(float2 float => float2))
+  (set! (x~ v) newx)
+  v)

@@ -1,0 +1,8 @@
+;; TEST-EXPECT: PASS
+;;
+;; A component extracted by x~/y~ participates in arithmetic.
+;; The result type of x~ is the scalar component type, so + works as usual.
+
+(def-function x-plus-y (v)
+  (declare #'(float2 => float))
+  (+ (x~ v) (y~ v)))

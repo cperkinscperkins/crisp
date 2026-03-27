@@ -879,16 +879,6 @@
       (%build-function-call builder module var-env di-builder di-scope location-map node sig
                             callee-name llvm-fn-type param-nodes param-count return-type-names))))
 
-(defmethod generate-node-ir ((node semantic-extract-value) builder module var-env di-builder di-scope location-map)
-  "Generates IR for extracting a value from an aggregate."
-  (multiple-value-bind (agg-val agg-loc)
-      (generate-node-ir (semantic-extract-value-aggregate-node node) builder module var-env di-builder di-scope location-map)
-    (declare (ignore agg-loc))
-    (let ((index (semantic-extract-value-index node))
-          (extract-val (llvm-build-extract-value builder agg-val index (format nil "extract_~a" index))))
-      ;; TODO: Should this have a debug location? It corresponds to a variable binding,
-      ;; but not a distinct expression in the source.
-      (values extract-val nil))))
 
 (defmethod generate-node-ir ((node semantic-progn) builder module var-env di-builder di-scope location-map)
   "Generates IR for a progn expression."
@@ -1105,80 +1095,164 @@
             (values handle nil))
           (values agg-val nil)))))
 
-(defmethod generate-node-ir ((node semantic-extract-value) builder module var-env di-builder di-scope location-map)
-  "Generates IR for extracting a value from an aggregate."
-  (let* ((agg-node (semantic-extract-value-aggregate-node node))
-         (index (semantic-extract-value-index node))
-         (agg-val (generate-node-ir agg-node builder module var-env di-builder di-scope location-map)))
 
-    ;; Recursively resolve the aggregate if it is a handle (ptr)
-    (let ((final-agg-val
-           (if (llvm-type-kind-is-pointer? (llvm-type-of agg-val))
-               (let* ((crisp-type (semantic-node-type agg-node))
-                      ;; Use ensure-struct-llvm-type for Structs (like Cell)
-                      ;; But semantic-node-type might be list (CELL INT).
-                      (struct-type (if (and (listp crisp-type) (eq (first crisp-type) 'cell))
-                                       (ensure-struct-llvm-type (mangle-template-struct-name 'cell (rest crisp-type)))
-                                       (if (symbolp crisp-type)
-                                           (ensure-struct-llvm-type crisp-type)
-                                           (error "Cannot extract from non-struct/handle type: ~a" crisp-type)))))
-                 (llvm-build-load2 builder struct-type agg-val "loaded_agg"))
-               agg-val)))
 
-      (let ((val (llvm-build-extract-value builder final-agg-val index (format nil "extract_~d" index))))
-        (values val nil)))))
+(defmethod generate-node-ir ((node semantic-extract-value) builder module var-env
+                              di-builder di-scope location-map)
+  "Generates IR for extracting a value from an aggregate.
+   Device-vector aggregates use LLVMBuildExtractElement; struct aggregates
+   use LLVMBuildExtractValue (existing behaviour)."
+  (let* ((agg-node  (semantic-extract-value-aggregate-node node))
+         (index     (semantic-extract-value-index node))
+         (agg-type  (semantic-node-type agg-node))
+         (ct        (%dvec-type-lookup agg-type))
+         (is-dvec   (and ct (eq (crisp-type-category ct) :device-vector)))
+         (agg-val   (generate-node-ir agg-node builder module var-env
+                                      di-builder di-scope location-map)))
 
-(defmethod generate-node-ir ((node semantic-insert-value) builder module var-env di-builder di-scope location-map)
-  "Generates IR for inserting a value into an aggregate."
-  (let* ((agg-node (semantic-insert-value-aggregate-node node))
-         (index (semantic-insert-value-index node))
+    (if is-dvec
+        ;; Device-vector path: extractelement
+        (let ((i32-idx (llvm-const-int (llvm-int32-type) index nil)))
+          (log:debug "extract-element ~a[~a] (dvec ~a)" agg-type index agg-val)
+          (values (llvm-build-extract-element
+                   builder agg-val i32-idx (format nil "comp_~d" index))
+                  nil))
+
+        ;; Struct aggregate path (original logic)
+        (let ((final-agg-val
+               (if (llvm-type-kind-is-pointer? (llvm-type-of agg-val))
+                   (let* ((crisp-type  agg-type)
+                          (struct-type (if (and (listp crisp-type)
+                                                (eq (first crisp-type) 'cell))
+                                           (ensure-struct-llvm-type
+                                            (mangle-template-struct-name
+                                             'cell (rest crisp-type)))
+                                           (if (symbolp crisp-type)
+                                               (ensure-struct-llvm-type crisp-type)
+                                               (error "Cannot extract from non-struct/handle type: ~a"
+                                                      crisp-type)))))
+                     (llvm-build-load2 builder struct-type agg-val "loaded_agg"))
+                   agg-val)))
+          (values (llvm-build-extract-value builder final-agg-val index
+                                            (format nil "extract_~d" index))
+                  nil)))))
+
+(defmethod generate-node-ir ((node semantic-insert-value) builder module var-env
+                              di-builder di-scope location-map)
+  "Generates IR for inserting a value into an aggregate.
+   Device-vector aggregates use LLVMBuildInsertElement; struct aggregates
+   use LLVMBuildInsertValue (existing behaviour)."
+  (let* ((agg-node   (semantic-insert-value-aggregate-node node))
+         (index      (semantic-insert-value-index node))
          (value-node (semantic-insert-value-value-node node))
-         (agg-val (generate-node-ir agg-node builder module var-env di-builder di-scope location-map))
-         (value-val (generate-node-ir value-node builder module var-env di-builder di-scope location-map)))
+         (agg-type   (semantic-node-type agg-node))
+         (ct         (%dvec-type-lookup agg-type))
+         (is-dvec    (and ct (eq (crisp-type-category ct) :device-vector)))
+         (agg-val    (generate-node-ir agg-node builder module var-env
+                                       di-builder di-scope location-map))
+         (value-val  (generate-node-ir value-node builder module var-env
+                                       di-builder di-scope location-map)))
 
-    ;; Recursively resolve the aggregate if it is a handle (ptr)
-    (let ((final-agg-val
-           (if (llvm-type-kind-is-pointer? (llvm-type-of agg-val))
-               (let* ((crisp-type (semantic-node-type agg-node))
-                      (struct-type (if (symbolp crisp-type)
-                                       (ensure-struct-llvm-type crisp-type)
-                                       (error "Cannot insert into non-struct type: ~a" crisp-type))))
-                 (llvm-build-load2 builder struct-type agg-val "loaded_agg"))
-               agg-val)))
+    (if is-dvec
+        ;; Device-vector path: insertelement
+        (let* ((final-val (extract-primary-value builder value-val
+                                                 (semantic-node-type value-node)))
+               (i32-idx  (llvm-const-int (llvm-int32-type) index nil)))
+          (log:debug "insert-element ~a[~a] (dvec)" agg-type index)
+          (values (llvm-build-insert-element builder agg-val final-val i32-idx
+                                             (format nil "vec_ins_~d" index))
+                  nil))
 
-      ;; Extract primary value from the value node if needed
-      (let ((final-value-val (extract-primary-value builder value-val (semantic-node-type value-node))))
-        (let ((new-agg-val (llvm-build-insert-value builder final-agg-val final-value-val index (format nil "insert_~d" index))))
-          (values new-agg-val nil))))))
+        ;; Struct aggregate path (original logic)
+        (let ((final-agg-val
+               (if (llvm-type-kind-is-pointer? (llvm-type-of agg-val))
+                   (let* ((struct-type (if (symbolp agg-type)
+                                          (ensure-struct-llvm-type agg-type)
+                                          (error "Cannot insert into non-struct type: ~a"
+                                                 agg-type))))
+                     (llvm-build-load2 builder struct-type agg-val "loaded_agg"))
+                   agg-val)))
+          (let ((final-value-val (extract-primary-value builder value-val
+                                                        (semantic-node-type value-node))))
+            (values (llvm-build-insert-value builder final-agg-val final-value-val index
+                                             (format nil "insert_~d" index))
+                    nil))))))
 
-
-(defmethod generate-node-ir ((node semantic-set!) builder module var-env di-builder di-scope location-map)
-  "Generates IR for (set! target value)."
+(defmethod generate-node-ir ((node semantic-set!) builder module var-env
+                              di-builder di-scope location-map)
+  "Generates IR for (set! target value).
+   Case 1: simple variable store.
+   Case 2: cell/pointer store via aref.
+   Case 3: device-vector component write via semantic-extract-value target.
+     Sub-case A — aggregate is a local var: load-insertelement-store on the alloca.
+     Sub-case B — aggregate is a cell deref: load-insertelement-store via the cell pointer."
   (let* ((target-node (semantic-set!-target-node node))
-         (value-node (semantic-set!-value-node node))
-         (new-val (generate-node-ir value-node builder module var-env di-builder di-scope location-map))
-         (new-val (extract-primary-value builder new-val (semantic-node-type value-node))))
+         (value-node  (semantic-set!-value-node node))
+         (new-val     (generate-node-ir value-node builder module var-env
+                                        di-builder di-scope location-map))
+         (new-val     (extract-primary-value builder new-val
+                                             (semantic-node-type value-node))))
 
     (cond
-     ;; Case 1: Variable assignment. We need the ALLOCA, not the loaded value.
+     ;; Case 1: Variable assignment.  We need the ALLOCA, not the loaded value.
      ((semantic-var-read-p target-node)
        (let* ((var-name (semantic-var-read-name target-node))
-              (var-ptr (gethash var-name var-env)))
+              (var-ptr  (gethash var-name var-env)))
          (unless var-ptr
-           (error "Compiler error in set!: Variable ~a not found in environment." var-name))
+           (error "Compiler error in set!: Variable ~a not found in environment."
+                  var-name))
          (llvm-build-store builder new-val var-ptr)
-         ;; set! returns the new value (or void? Common Lisp returns the value)
          (values new-val nil)))
 
-     ;; Case 2: Array/Pointer assignment (set! (aref x i) v)
+     ;; Case 2: Array/Pointer assignment  (set! (aref x i) v)  or  (set! (~ cell) v)
      ((semantic-aref-p target-node)
        (multiple-value-bind (val loc ptr)
-           (generate-node-ir target-node builder module var-env di-builder di-scope location-map)
+           (generate-node-ir target-node builder module var-env
+                              di-builder di-scope location-map)
          (declare (ignore val loc))
          (unless ptr
-           (error "Compiler error in set!: Target ~a did not return an address." target-node))
+           (error "Compiler error in set!: Target ~a did not return an address."
+                  target-node))
          (llvm-build-store builder new-val ptr)
          (values new-val nil)))
+
+     ;; Case 3: Device-vector component write
+     ;;   (set! (x~ local-var)   val)  — sub-case A: load-insert-store on alloca
+     ;;   (set! (x~ (~ cell))    val)  — sub-case B: load-insert-store via cell ptr
+     ((semantic-extract-value-p target-node)
+       (let* ((agg-node (semantic-extract-value-aggregate-node target-node))
+              (index    (semantic-extract-value-index target-node))
+              (i32-idx  (llvm-const-int (llvm-int32-type) index nil)))
+         (cond
+          ;; Sub-case A: aggregate is a local variable (alloca in var-env)
+          ((semantic-var-read-p agg-node)
+            (let* ((var-name   (semantic-var-read-name agg-node))
+                   (alloca     (gethash var-name var-env))
+                   (vec-type   (crisp-type-to-llvm-type
+                                (semantic-node-type agg-node) module))
+                   (loaded-vec (llvm-build-load2 builder vec-type alloca
+                                                 (format nil "~a_load" var-name)))
+                   (new-vec    (llvm-build-insert-element builder loaded-vec
+                                                          new-val i32-idx "vec_ins")))
+              (log:debug "set! (x~~ local) sub-case A: var=~a index=~a" var-name index)
+              (llvm-build-store builder new-vec alloca)
+              (values new-vec nil)))
+
+          ;; Sub-case B: aggregate is a cell dereference — load-modify-store
+          ((semantic-aref-p agg-node)
+            (multiple-value-bind (loaded-vec _loc cell-ptr)
+                (generate-node-ir agg-node builder module var-env
+                                  di-builder di-scope location-map)
+              (declare (ignore _loc))
+              (unless cell-ptr
+                (error "Compiler error: (set! (x~ (~ cell)) val) — aref gave no pointer."))
+              (log:debug "set! (x~~ (~~ cell)) sub-case B: index=~a" index)
+              (let ((new-vec (llvm-build-insert-element builder loaded-vec
+                                                        new-val i32-idx "vec_ins")))
+                (llvm-build-store builder new-vec cell-ptr)
+                (values new-vec nil))))
+
+          (t (error "Unsupported aggregate kind in (set! (x~ ...) val): ~a" agg-node)))))
 
      (t (error "Unsupported target for set! codegen: ~a" target-node)))))
 

@@ -35,8 +35,17 @@ A simple way to make the type clear is use a type literal suffix on the first el
   ...)
 ```
 
-### Dereferencing and Swizzles
-The subelements can be dereferences with the `x~`, `y~`, `z~` and `w~` functions.
+### Dereferencing 
+The subelements can be dereferences with the `x~`, `y~`, `z~` and `w~` functions, 
+and those can be used for `set!` as well.
+
+```
+(let ((my-svec ##(5us 6 7 8))
+      (six    (y~ my-svec)))
+    (set! (w~ my-svec) six)) ;; last element is now '6' instead of '8'
+```
+
+### Swizzles
 Furthermore, Crisp supports "swizzles" (like `xyyy~`)
 
 ```

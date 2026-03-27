@@ -305,58 +305,78 @@
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
 
 
+
+
+;; src/analysis/structs.lisp
+;; Redefine so that Sub-case 2b only keeps the expression-analyzer result when it
+;; produces a known assignable node (semantic-extract-value or semantic-aref).
+;; Otherwise falls through to Sub-case 2c (struct member update), which handles
+;; struct/record accessors whose names happen to match x~/y~/z~/w~.
 (defun analyze-set!-expression (expr env context location)
   "Analyzes a (set! target value) expression."
   (let* ((target-form (second expr))
-         (value-form (third expr))
-         (value-node (analyze-expression value-form env context (append location '(2)))))
+         (value-form  (third expr))
+         (value-node  (analyze-expression value-form env context (append location '(2)))))
 
     (cond
-     ;; Case 1: Simple variable assignment (set! x v)
+     ;; Case 1: Simple variable assignment  (set! x v)
      ((symbolp target-form)
        (let ((var-info (find-variable-in-env target-form env)))
          (unless var-info
            (error 'crisp-unknown-variable :name target-form :source-location location))
-
-         ;; Verify types match
          (let ((var-type (parameter-def-type var-info))
                (val-type (semantic-node-type value-node)))
            (unless (types-compatible-p val-type var-type)
-             (error 'crisp-type-error :expected var-type :inferred val-type :source-location location)))
-
+             (error 'crisp-type-error :expected var-type :inferred val-type
+                    :source-location location)))
          (make-semantic-set!
-          :target-node (make-semantic-var-read :name target-form :type (parameter-def-type var-info) :source-location location)
+          :target-node (make-semantic-var-read
+                        :name target-form
+                        :type (parameter-def-type var-info)
+                        :source-location location)
           :value-node value-node
           :source-location location)))
 
-     ;; Case 2: Function Call / Struct Accessor
+     ;; Case 2: Function call / struct accessor
      ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
-       (let* ((op (first target-form))
-              (op-args (rest target-form))
-              ;; Analyze the arguments to `(op args...)`
-              (arg-nodes (loop for arg in op-args
-                               for i from 1
-                               collect (analyze-expression arg env context (append location (list 1 i)))))
-              (all-arg-nodes (append arg-nodes (list value-node)))
-              (all-arg-types (mapcar #'semantic-node-type all-arg-nodes))
-              ;; Check for a matching setter function signature: (op arg1 ... argN value)
+       (let* ((op           (first target-form))
+              (op-args      (rest target-form))
+              (arg-nodes    (loop for arg in op-args
+                                  for i from 1
+                                  collect (analyze-expression arg env context
+                                                              (append location (list 1 i)))))
+              (all-arg-nodes  (append arg-nodes (list value-node)))
+              (all-arg-types  (mapcar #'semantic-node-type all-arg-nodes))
               (full-setter-name (intern (format nil "~a_SET!" op) (symbol-package op)))
-              (signatures (append (gethash op *function-table*)
-                            (gethash full-setter-name *function-table*)))
-              (match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig)))) signatures)))
+              (signatures   (append (gethash op *function-table*)
+                                    (gethash full-setter-name *function-table*)))
+              (match        (find-if (lambda (sig)
+                                       (types-list-compatible-p
+                                        all-arg-types
+                                        (mapcar #'parameter-def-type
+                                                (function-signature-parameters sig))))
+                                     signatures)))
 
-         ;; If no match found, try checking if it's a template we can instantiate
+         ;; Try template instantiation if no direct match
          (unless match
-           (let ((template-op (if (gethash full-setter-name *template-registry*) full-setter-name op)))
+           (let ((template-op (if (gethash full-setter-name *template-registry*)
+                                  full-setter-name op)))
              (when (gethash template-op *template-registry*)
-                   (ensure-template-instantiation template-op all-arg-types (lambda (f l) (declare (ignore l)) (eval f)))
-                   ;; Re-fetch signatures after possible instantiation
-                   (setf signatures (append (gethash op *function-table*)
-                                      (gethash full-setter-name *function-table*)))
-                   (setf match (find-if (lambda (sig) (types-list-compatible-p all-arg-types (mapcar #'parameter-def-type (function-signature-parameters sig)))) signatures)))))
+               (ensure-template-instantiation
+                template-op all-arg-types
+                (lambda (f l) (declare (ignore l)) (eval f)))
+               (setf signatures (append (gethash op *function-table*)
+                                        (gethash full-setter-name *function-table*)))
+               (setf match (find-if
+                            (lambda (sig)
+                              (types-list-compatible-p
+                               all-arg-types
+                               (mapcar #'parameter-def-type
+                                       (function-signature-parameters sig))))
+                            signatures)))))
 
          (cond
-          ;; Sub-case 2a: Found an overloaded setter function -> Call it.
+          ;; Sub-case 2a: Found an overloaded setter function -> call it.
           (match
             (make-semantic-call
              :name (function-signature-name match)
@@ -365,53 +385,84 @@
              :signature match
              :source-location location))
 
-          ;; Sub-case 2b: It is an expression analyzer (e.g. `~`, `aref`)
+          ;; Sub-case 2b: Expression analyzer — only if result is an assignable lvalue.
+          ;; Device-vector component write (semantic-extract-value) and cell deref
+          ;; (semantic-aref) are assignable.  Struct accessor fallbacks return
+          ;; semantic-call which is NOT assignable — fall through to 2c in that case.
           ((gethash op *expression-analyzers*)
             (let ((target-node
                    (let ((*analysis-access-mode* :write))
                      (analyze-expression target-form env context (append location '(1))))))
-              (make-semantic-set!
-               :target-node target-node
-               :value-node value-node
-               :source-location location)))
+              (if (or (semantic-extract-value-p target-node)
+                      (semantic-aref-p target-node))
+                  (make-semantic-set!
+                   :target-node target-node
+                   :value-node value-node
+                   :source-location location)
+                  ;; Not an assignable lvalue — fall through to Sub-case 2c.
+                  (let* ((op-name (symbol-name op))
+                         (is-accessor
+                          (or (alexandria:ends-with #\~ op-name)
+                              (and (alexandria:starts-with #\~ op-name)
+                                   (alexandria:ends-with #\~ op-name)))))
+                    (unless is-accessor
+                      (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor."
+                             target-form))
+                    (unless (= (length arg-nodes) 1)
+                      (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a."
+                             op (length arg-nodes)))
+                    (let* ((clean-name  (cl:string-trim "~" op-name))
+                           (member-sym  (intern clean-name (symbol-package op)))
+                           (struct-node (first arg-nodes))
+                           (struct-type (semantic-node-type struct-node)))
+                      (unless (or (semantic-var-read-p struct-node)
+                                  (semantic-aref-p struct-node))
+                        (error "Cannot set member of non-variable/non-reference struct form: ~a"
+                               (second target-form)))
+                      (let ((update-node
+                             (make-semantic-struct-member-update
+                              :type struct-type
+                              :struct-node struct-node
+                              :member-index (get-struct-member-index struct-type member-sym)
+                              :value-node value-node
+                              :source-location location)))
+                        (make-semantic-set!
+                         :target-node struct-node
+                         :value-node update-node
+                         :source-location location)))))))
 
-          ;; Sub-case 2c: Fallback to Struct Member Update (Legacy Accessor Logic)
-          ;; Only valid if default accessors are used and no explicit setter overrides it.
+          ;; Sub-case 2c: Struct member update (legacy accessor logic).
           (t
             (let* ((op-name (symbol-name op))
-                   (is-accessor (or (alexandria:ends-with #\~ op-name)
-                                    (and (alexandria:starts-with #\~ op-name)
-                                         (alexandria:ends-with #\~ op-name)))))
+                   (is-accessor
+                    (or (alexandria:ends-with #\~ op-name)
+                        (and (alexandria:starts-with #\~ op-name)
+                             (alexandria:ends-with #\~ op-name)))))
               (unless is-accessor
-                (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor." target-form))
-
+                (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor."
+                       target-form))
               (unless (= (length arg-nodes) 1)
-                (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a." op (length arg-nodes)))
-
-              (let* ((clean-name (string-trim "~" op-name))
-                     (member-sym (intern clean-name (symbol-package op)))
+                (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a."
+                       op (length arg-nodes)))
+              (let* ((clean-name  (cl:string-trim "~" op-name))
+                     (member-sym  (intern clean-name (symbol-package op)))
                      (struct-node (first arg-nodes))
                      (struct-type (semantic-node-type struct-node)))
-
-                ;; Verify struct node is a variable (l-value) or reference (aref)
                 (unless (or (semantic-var-read-p struct-node)
                             (semantic-aref-p struct-node))
-                  (error "Cannot set member of non-variable/non-reference struct form: ~a" (second target-form)))
-
-                (let ((member-index (get-struct-member-index struct-type member-sym)))
-                  ;; Create the update node
-                  (let ((update-node (make-semantic-struct-member-update
-                                      :type struct-type
-                                      :struct-node struct-node
-                                      :member-index member-index
-                                      :value-node value-node
-                                      :source-location location)))
-
-                    ;; Wrap in a set! for the struct variable
-                    (make-semantic-set!
-                     :target-node struct-node
-                     :value-node update-node
-                     :source-location location)))))))))
+                  (error "Cannot set member of non-variable/non-reference struct form: ~a"
+                         (second target-form)))
+                (let ((update-node
+                       (make-semantic-struct-member-update
+                        :type struct-type
+                        :struct-node struct-node
+                        :member-index (get-struct-member-index struct-type member-sym)
+                        :value-node value-node
+                        :source-location location)))
+                  (make-semantic-set!
+                   :target-node struct-node
+                   :value-node update-node
+                   :source-location location)))))))) ; closes: make-semantic-set!, let, let*, let*, (t), inner-cond, outer-let*, case-2-clause
 
      (t (error "Invalid set! target structure: ~a" target-form)))))
 

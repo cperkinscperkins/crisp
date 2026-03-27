@@ -1,0 +1,10 @@
+;;
+;; CHECK-FAIL: "read-only"
+;;
+;; (set! (x~ (~ cell)) val) on a read-only cell should be a compile error.
+
+(def-type ro-float2 (cell float2 :address-space :global :access :read-only))
+
+(def-kernel bad-set-x (c)
+  (declare forward-only #'(ro-float2))
+  (set! (x~ (~ c)) 5.0))

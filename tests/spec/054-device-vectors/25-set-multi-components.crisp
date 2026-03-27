@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;;
+;; Sequential set! on multiple components: each rebinds the vector,
+;; so the final v has all updated values.
+
+(def-function set-xy (v nx ny)
+  (declare #'(float2 float float => float2))
+  (set! (x~ v) nx)
+  (set! (y~ v) ny)
+  v)
