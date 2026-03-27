@@ -1,0 +1,12 @@
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER res2: 3
+
+
+(def-type in-c (cell ushort2 :address-space :global :access :read-only))
+
+(def-type out-c (cell ushort2 :address-space :global :access :write-only))
+
+(def-kernel cell_arg (u2 &out res2)
+    (declare forward-only #'(in-c  &out out-c))
+    (let ((v2 ##(3us 4)))
+        (set! (~ res2) (+ (~ u2) v2))))

@@ -451,6 +451,7 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [ ] ;; FAIL-WITH[--differentiate]: "message!"  <-- message isn't getting checked for "normal" tests.
 - [ ] Visual Code to use "lisp" syntax highlighting with .crisp files?
 - [ ] script to generate Table of Contents for docs?  It's woefully out of date.
+- [ ] refactor. warnings when compiling, running tests. (string-downcase (symbol-name ...)) if over let, etc.
 - [ ] LLVM-IR can only bitcast same size. So (as-ulong 12345) is a problem. (to-ulong 12345) works.
       Should revisit docs and decide how to handle this.
 - [x] literals overlooked double and char (d / c) 
@@ -458,6 +459,10 @@ TECHNICAL DEBT AND OVERSIGHTS
 
 - [x] device vectors ( float4, int2, etc).  Time to support them.  (054: type registration, ##() construction, basic param/return types)
 - - [x] support at kernel boundary 
+- - [ ] make sure hoisting works
+- - [ ] even if we don't do all swizzles, need some sort of access to elements, for set! too
+        maybe just x~, y~, z~ and w~.  
+        or (~ v <index>)
 - [ ] virtual vectors ( def-rec-vec ).  
 - - [ ] rename and update docs
 - - [ ] can ONLY be a member of def-record? like brand?
