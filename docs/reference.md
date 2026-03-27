@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-26T06:36:07.840785Z
+Generated on 2026-03-27T15:47:41.944390Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -876,7 +876,7 @@ Generated on 2026-03-26T06:36:07.840785Z
 ### DEFUN `BUILD-CAST-IF-NEEDED`
 - **Args**: `(BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)`
 
-  > Builds LLVM cast instruction if types differ, with alias resolution.  >    MODULE is required to resolve types correctly.
+  > Builds LLVM cast instruction if types differ, with alias resolution.  >    MODULE is required to resolve types correctly.  >    Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;  >    treat same symbol-name as no-op cast.
 
 
 ---
@@ -1354,24 +1354,6 @@ Generated on 2026-03-26T06:36:07.840785Z
 
 
 ---
-### DEFUN `RESOLVE-TYPE-ALIAS`
-- **Args**: `(TYPE ALIASES)`
-
----
-### DEFUN `CELL-TYPE-P`
-- **Args**: `(PARAM-TYPE)`
-
-  > Check if a parameter type is a cell type
-
-
----
-### DEFUN `CELL-BASE-TYPE`
-- **Args**: `(PARAM-TYPE)`
-
-  > Extract the base type from a cell type like (cell int ...)
-
-
----
 ### DEFUN `RECORD-BASE-TYPE`
 - **Args**: `(TYPE)`
 
@@ -1422,6 +1404,59 @@ Generated on 2026-03-26T06:36:07.840785Z
 - **Args**: `(LISP-SYMBOL)`
 
   > Convert Lisp symbol to C++-safe identifier.
+
+
+---
+### DEFUN `%DVEC-PARSE`
+- **Args**: `(TYPE-SYM)`
+
+  > If TYPE-SYM names a device vector type (e.g. USHORT2, FLOAT4), returns  >    (values base-name width) where base-name is a lowercase string (e.g. "ushort")  >    and width is an integer (2, 3, or 4).  Returns NIL if not a device vector type.
+
+
+---
+### DEFUN `%DVEC-CPP-SCALAR-TYPE`
+- **Args**: `(BASE-NAME)`
+
+  > Map a Crisp scalar base name (e.g. "ushort") to a C++ <cstdint> type string.
+
+
+---
+### DEFUN `%EMIT-DVEC-TYPEDEF`
+- **Args**: `(STREAM TYPE-SYM)`
+
+  > Emit a C++ struct definition for a device vector type (e.g. ushort2).  >    Uses <cstdint> types for the members.  >    Uses 'struct NAME { };' (not typedef struct) so that the type name is in scope  >    inside the body, which is required for the friend operator<< declaration.  >    The operator<< prints space-separated components, matching the HOIST-EXPECT  >    substring-match convention.
+
+
+---
+### DEFUN `%COLLECT-DVEC-TYPES`
+- **Args**: `(DECLARED-SIG ALIASES)`
+
+  > Collect all distinct device vector type symbols used in DECLARED-SIG and ALIASES.  >    Checks cell element types from aliases and direct scalar param types.  >    Returns a deduplicated list ordered by first appearance.
+
+
+---
+### DEFUN `GENERATE-CPP-DVEC-TYPEDEFS`
+- **Args**: `(STREAM DVEC-TYPES)`
+
+  > Emit C++ typedef structs for all device vector types in DVEC-TYPES.  >    Called from generate-l0-launcher after generate-cpp-typedefs.
+
+
+---
+### DEFUN `RESOLVE-TYPE-ALIAS`
+- **Args**: `(TYPE ALIASES)`
+
+---
+### DEFUN `CELL-TYPE-P`
+- **Args**: `(PARAM-TYPE)`
+
+  > Check if a parameter type is a cell type
+
+
+---
+### DEFUN `CELL-BASE-TYPE`
+- **Args**: `(PARAM-TYPE)`
+
+  > Extract the base type from a cell type like (cell int ...)
 
 
 ---
@@ -2888,7 +2923,7 @@ Generated on 2026-03-26T06:36:07.840785Z
 ### DEFUN `GET-PROMOTED-TYPE`
 - **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
 
-  > Determines result type of binary operation with alias resolution.  >    Now uses type derivation hierarchy (DAG) for promotion rules.
+  > Determines result type of binary operation with alias resolution.  >    Now uses type derivation hierarchy (DAG) for promotion rules.  >    Cross-package same-name fix: device vector types like USHORT2 may be interned in  >    :crisp-language or :crisp.compiler depending on the code path; treat same symbol-name  >    as the same type after alias resolution.
 
 
 ---

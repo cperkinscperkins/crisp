@@ -19,4 +19,16 @@
 
    ;; Utilities
    #:crisp-type-to-cpp-type
-   #:format-cpp-identifier))
+   #:format-cpp-identifier
+
+   ;; Cell type helpers
+   #:resolve-type-alias
+   #:cell-type-p
+   #:cell-base-type
+
+   ;; Device vector type support
+   #:%dvec-parse
+   #:%dvec-cpp-scalar-type
+   #:%emit-dvec-typedef
+   #:%collect-dvec-types
+   #:generate-cpp-dvec-typedefs))

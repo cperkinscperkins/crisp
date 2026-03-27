@@ -7,34 +7,45 @@
 
 (defun get-promoted-type (type-a-name type-b-name)
   "Determines result type of binary operation with alias resolution.
-   Now uses type derivation hierarchy (DAG) for promotion rules."
+   Now uses type derivation hierarchy (DAG) for promotion rules.
+   Cross-package same-name fix: device vector types like USHORT2 may be interned in
+   :crisp-language or :crisp.compiler depending on the code path; treat same symbol-name
+   as the same type after alias resolution."
   (cl:let ((type-a-name (resolve-type-alias type-a-name))
            (type-b-name (resolve-type-alias type-b-name)))
-    (if (eq type-a-name type-b-name)
-        type-a-name
-        ;; Try DAG-based dominance resolution first
-        (cl:let ((dominant-type (resolve-dominance type-a-name type-b-name)))
-          (log:debug "get-promoted-type: ~a + ~a => dominant=~a" type-a-name type-b-name dominant-type)
-          (if dominant-type
-              dominant-type
-              ;; Fall back to category + size promotion for types not in hierarchy
-              (let ((type-a (gethash type-a-name *crisp-types*))
-                    (type-b (gethash type-b-name *crisp-types*)))
-                (cond
-                 ((or (null type-a) (null type-b)) nil)
-                 ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
-                       (> (crisp-type-size type-b) (crisp-type-size type-a)))
-                   type-b-name)
-                 ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
-                       (> (crisp-type-size type-a) (crisp-type-size type-b)))
-                   type-a-name)
-                 ((and (member (crisp-type-category type-a) '(:signed-int :unsigned-int))
-                       (eq (crisp-type-category type-b) :float))
-                   type-b-name)
-                 ((and (member (crisp-type-category type-b) '(:signed-int :unsigned-int))
-                       (eq (crisp-type-category type-a) :float))
-                   type-a-name)
-                 (t nil))))))))
+    (cond
+      ;; Fast path: identical symbols
+      ((eq type-a-name type-b-name)
+       type-a-name)
+      ;; Cross-package same-name: CRISP.COMPILER::USHORT2 vs CRISP-LANGUAGE::USHORT2
+      ((and (symbolp type-a-name) (symbolp type-b-name)
+            (string= (symbol-name type-a-name) (symbol-name type-b-name)))
+       (log:debug "get-promoted-type: cross-package same-name match ~a == ~a" type-a-name type-b-name)
+       type-a-name)
+      ;; Try DAG-based dominance resolution
+      (t
+       (cl:let ((dominant-type (resolve-dominance type-a-name type-b-name)))
+         (log:debug "get-promoted-type: ~a + ~a => dominant=~a" type-a-name type-b-name dominant-type)
+         (if dominant-type
+             dominant-type
+             ;; Fall back to category + size promotion for types not in hierarchy
+             (let ((type-a (gethash type-a-name *crisp-types*))
+                   (type-b (gethash type-b-name *crisp-types*)))
+               (cond
+                ((or (null type-a) (null type-b)) nil)
+                ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
+                      (> (crisp-type-size type-b) (crisp-type-size type-a)))
+                 type-b-name)
+                ((and (eq (crisp-type-category type-a) (crisp-type-category type-b))
+                      (> (crisp-type-size type-a) (crisp-type-size type-b)))
+                 type-a-name)
+                ((and (member (crisp-type-category type-a) '(:signed-int :unsigned-int))
+                      (eq (crisp-type-category type-b) :float))
+                 type-b-name)
+                ((and (member (crisp-type-category type-b) '(:signed-int :unsigned-int))
+                      (eq (crisp-type-category type-a) :float))
+                 type-a-name)
+                (t nil)))))))))
 
 (defun types-compatible-p (arg-type param-type)
   "Checks if an argument type is compatible with a parameter type."
