@@ -9,7 +9,7 @@
 ;; src/hoist-l0/main.lisp  (generate-l0-launcher, generate-kernel-arguments-with-usm)
 ;; src/hoist/codegen-base.lisp  (support helpers)
 ;; -----------------------------------------------------------------------
-
+#|
 (defun %dvec-parse (type-sym)
   "If TYPE-SYM names a device vector type (e.g. USHORT2, FLOAT4), returns
    (values base-name width) where base-name is a lowercase string (e.g. \"ushort\")
@@ -102,10 +102,13 @@
     (dolist (type-sym dvec-types)
       (%emit-dvec-typedef stream type-sym))))
 
+      |#
+
 ;; src/hoist-l0/main.lisp
 ;; Fix: collect device vector types used in the kernel and emit C++ typedef structs
 ;; so that ushort2, float4, etc. are defined before they are referenced in the
 ;; USM allocation and kernel argument code.
+#|
 (defun generate-l0-launcher (metacrisp-path)
   "Generate Level Zero C++ launcher code from metacrisp file"
   (let* ((data (parse-metacrisp-file metacrisp-path))
@@ -156,12 +159,14 @@
                    (generate-cpp-helpers stream)
                    (generate-cpp-main stream kernel-name spv-path full-sig aliases (metacrisp-records data))))
                (format t "  Done: ~a~%" (namestring output-path)))))))))
+               |#
 
 ;; src/hoist-l0/main.lisp
 ;; Fix: device vector scalar params (e.g. ushort2 v2_arg) cannot be initialized
 ;; as a plain integer literal.  Use aggregate init {N, N+1, ...} matching the
 ;; existing (+ arg-index 42) placeholder pattern so the values are non-zero
 ;; and distinguishable for manual inspection.
+#|
 (defun generate-kernel-arguments-with-usm (stream declared-sig aliases records context-var device-var)
   "Generate kernel argument setup code with USM allocation for cells"
   (format stream "    // Set up kernel arguments~%")
@@ -285,3 +290,4 @@
            (incf arg-index)))))
 
     (nreverse allocations)))
+    |#

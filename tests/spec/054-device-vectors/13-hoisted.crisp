@@ -1,5 +1,5 @@
 ;; TEST-HOIST[L0]: validate-l0-host-run
-;; HOIST-EXPECT: BUFFER res2: 3
+;; HOIST-EXPECT: BUFFER res2: 3 4
 
 
 (def-type in-c (cell ushort2 :address-space :global :access :read-only))
