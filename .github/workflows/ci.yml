@@ -64,7 +64,7 @@ jobs:
           sudo apt-get install -y sbcl llvm-21-dev llvm-21
 
           # Build llvm-spirv from source for LLVM 21 (avoids Docker Hub rate limits)
-          git clone --depth 1 -b main https://github.com/KhronosGroup/SPIRV-LLVM-Translator.git
+          git clone --depth 1 -b llvm_release_210 https://github.com/KhronosGroup/SPIRV-LLVM-Translator.git
           cd SPIRV-LLVM-Translator
           mkdir build && cd build
           cmake .. -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm -DCMAKE_BUILD_TYPE=Release
