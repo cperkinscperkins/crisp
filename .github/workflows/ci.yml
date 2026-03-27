@@ -1,4 +1,4 @@
-﻿# .github/workflows/ci.yml
+# .github/workflows/ci.yml
 name: Crisp CI
 
 on: [push, pull_request]
@@ -63,16 +63,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sbcl llvm-21-dev llvm-21
 
-          # Extract llvm-spirv from OneAPI image (dynamically finding it)
-          docker run --rm -v ${{ github.workspace }}:/work intel/oneapi-basekit:latest bash -c "cp \$(find /opt/intel -name llvm-spirv -type f -executable | head -n 1) /work/llvm-spirv"
-          sudo chmod +x ./llvm-spirv
-          sudo mv ./llvm-spirv /usr/bin/llvm-spirv
+          # Build llvm-spirv from source for LLVM 21 (avoids Docker Hub rate limits)
+          git clone --depth 1 -b main https://github.com/KhronosGroup/SPIRV-LLVM-Translator.git
+          cd SPIRV-LLVM-Translator
+          mkdir build && cd build
+          cmake .. -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm -DCMAKE_BUILD_TYPE=Release
+          make llvm-spirv -j$(nproc)
+          sudo cp tools/llvm-spirv/llvm-spirv /usr/bin/llvm-spirv
+          cd ../..
 
           # Create symlinks
           sudo ln -s /usr/bin/llc-21 /usr/bin/llc
           sudo ln -s /usr/bin/llvm-as-21 /usr/bin/llvm-as
           # We just installed llvm-spirv manually, check it
-          llvm-spirv --version || echo "⚠️ llvm-spirv extraction failed"
+          llvm-spirv --version || echo "⚠️ llvm-spirv build failed"
 
       - name: 3.5 Build C Validator Image
         run: docker build -t crisp-c-validator -f Dockerfile.validator .
