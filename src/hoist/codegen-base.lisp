@@ -119,8 +119,6 @@
       (%emit-dvec-typedef stream type-sym))))
 
 
-;; moving here
-
 
 ;; Helper function to check if a type is a cell
 (defun resolve-type-alias (type aliases)
