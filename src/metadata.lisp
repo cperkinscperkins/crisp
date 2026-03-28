@@ -252,9 +252,21 @@
 
 
 
+
+
+;;; -----------------------------------------------------------------------
+;;; def-struct c-t members are compile-time constants, NOT part of the
+;;; struct memory layout (compute-std140-layout already excludes them).
+;;; The metacrisp :structs section must reflect the actual runtime layout
+;;; so the C++ hoist generates the correct sizeof() and field assignments.
+;;; -----------------------------------------------------------------------
+
+;; src/metadata.lisp
 (defun serialize-structs (stream structs-hash)
   "Emits (:records ...) for def-records and (:structs ...) for def-structs.
-   Records are split into their own section; brand and :c-t members handled appropriately."
+   Records are split into their own section; brand and :c-t members handled.
+   For def-structs: c-t members are excluded (they are compile-time constants
+   not in the runtime memory layout)."
   ;; Records section first
   (%serialize-records stream structs-hash)
   ;; Then structs section (non-record types only)
@@ -272,15 +284,17 @@
           (when def
             (format stream "  (def-struct ~a" (strip-package-qualifiers name))
             (dolist (m (crisp-struct-definition-members def))
-              (let* ((member-name (first m))
-                     (member-type (second m))
-                     (brand-def   (is-brand-type-p member-type))
-                     (final-type  (if brand-def
-                                      (brand-definition-base-type brand-def)
-                                      member-type)))
-                (format stream " (~a ~a)"
-                  (strip-package-qualifiers member-name)
-                  (strip-package-qualifiers final-type))))
+              ;; Skip compile-time members — they are not part of the runtime layout
+              (unless (and (consp m) (eq (third m) :c-t))
+                (let* ((member-name (first m))
+                       (member-type (second m))
+                       (brand-def   (is-brand-type-p member-type))
+                       (final-type  (if brand-def
+                                        (brand-definition-base-type brand-def)
+                                        member-type)))
+                  (format stream " (~a ~a)"
+                    (strip-package-qualifiers member-name)
+                    (strip-package-qualifiers final-type)))))
             (format stream ")~%")))))
     (format stream "  )~%~%")))
 

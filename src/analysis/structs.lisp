@@ -307,13 +307,11 @@
 
 
 
-;; src/analysis/structs.lisp
-;; Redefine so that Sub-case 2b only keeps the expression-analyzer result when it
-;; produces a known assignable node (semantic-extract-value or semantic-aref).
-;; Otherwise falls through to Sub-case 2c (struct member update), which handles
-;; struct/record accessors whose names happen to match x~/y~/z~/w~.
+
+
 (defun analyze-set!-expression (expr env context location)
-  "Analyzes a (set! target value) expression."
+  "Analyzes a (set! target value) expression.
+   Enforces struct immutability at kernel boundary via *boundary-struct-params*."
   (let* ((target-form (second expr))
          (value-form  (third expr))
          (value-node  (analyze-expression value-form env context (append location '(2)))))
@@ -419,6 +417,8 @@
                                   (semantic-aref-p struct-node))
                         (error "Cannot set member of non-variable/non-reference struct form: ~a"
                                (second target-form)))
+                      ;; Immutability check
+                      (%check-struct-boundary-mutation struct-node env context location)
                       (let ((update-node
                              (make-semantic-struct-member-update
                               :type struct-type
@@ -452,6 +452,8 @@
                             (semantic-aref-p struct-node))
                   (error "Cannot set member of non-variable/non-reference struct form: ~a"
                          (second target-form)))
+                ;; Immutability check
+                (%check-struct-boundary-mutation struct-node env context location)
                 (let ((update-node
                        (make-semantic-struct-member-update
                         :type struct-type
@@ -462,7 +464,7 @@
                   (make-semantic-set!
                    :target-node struct-node
                    :value-node update-node
-                   :source-location location)))))))) ; closes: make-semantic-set!, let, let*, let*, (t), inner-cond, outer-let*, case-2-clause
+                   :source-location location))))))))
 
      (t (error "Invalid set! target structure: ~a" target-form)))))
 

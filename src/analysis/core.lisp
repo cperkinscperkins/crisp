@@ -767,8 +767,112 @@ in single-pass mode."
         (log:info "INTERNAL-COMPILE-FUNCTION RESULT ~s" (type-of compilation-result))
         compilation-result))))
 
+
+
+
+
+;;; ============================================================
+;;; Struct Immutability at Kernel Boundary
+;;; src/analysis/core.lisp, src/analysis/structs.lisp
+;;; ============================================================
+;;; def-struct parameters at the kernel boundary are semantically
+;;; immutable (SPIR-V constant memory). Two dynamic variables and
+;;; checks in the analysis phase enforce this.
+;;;
+;;; *boundary-struct-params* — list of uppercase param-name strings
+;;;   for def-struct-typed parameters of the current entry-point kernel.
+;;;   Nil when compiling regular functions.
+;;;
+;;; *struct-mutating-functions* — hash table mapping uppercase
+;;;   function names -> T for functions that (directly or indirectly)
+;;;   mutate a struct-typed :in parameter.
+;;;
+;;; Enforcement paths:
+;;;   1. Direct: (set! (x~ p) val) in kernel where p is boundary → error
+;;;   2. Indirect: (f p) in kernel where f is struct-mutating → error
+;;;   3. Propagation: f mutates :in param → register f as struct-mutating
+;;; ============================================================
+
+(defvar *boundary-struct-params* nil
+  "Dynamic variable: list of uppercase param name strings that are def-struct
+   params at the current kernel boundary. Non-nil only when compiling an
+   entry-point kernel body. Nil in regular functions.")
+
+(defvar *struct-mutating-functions* (make-hash-table :test #'equal)
+  "Maps uppercase function name (string) -> T for functions that directly or
+   indirectly mutate a struct-typed :in parameter.")
+
+;; Helper: check if a type symbol names a registered def-struct (not def-record, package-safe)
+(defun %boundary-struct-type-p (type)
+  "Returns T if TYPE is a symbol naming a registered def-struct (category :struct)
+   in *crisp-structs*. Returns NIL for def-record types (category :record).
+   Uses string-equal for package-agnostic comparison."
+  (when (symbolp type)
+    (let ((type-name (symbol-name type)))
+      (loop for k being the hash-keys of *crisp-structs*
+            thereis (and (symbolp k)
+                         (string-equal (symbol-name k) type-name)
+                         ;; Only match actual def-struct entries (not def-record)
+                         (let ((ct (gethash k *crisp-types*)))
+                           (and ct (eq (crisp-type-category ct) :struct))))))))
+
+;; Helper: enforce immutability or mark current function as struct-mutating
+(defun %check-struct-boundary-mutation (struct-node env context location)
+  "Called when a struct member update is about to be emitted.
+   In kernel context (*boundary-struct-params* bound): error if the struct
+   being mutated is a kernel boundary parameter.
+   In function context: mark the current function as struct-mutating if it is
+   mutating an :in parameter."
+  (when (semantic-var-read-p struct-node)
+    (let* ((vname     (semantic-var-read-name struct-node))
+           (vname-str (string-upcase (symbol-name vname))))
+      (if *boundary-struct-params*
+          ;; Kernel context: check if this var is a boundary struct param
+          (when (member vname-str *boundary-struct-params* :test #'string=)
+            (error 'crisp-compiler-error
+                   :message (format nil "Cannot mutate struct parameter '~a': struct parameters at kernel boundary are immutable"
+                                    vname)
+                   :source-location location))
+          ;; Regular function context: mark as struct-mutating if mutating :in param
+          (let ((var-info (find-variable-in-env vname env)))
+            (when (and var-info (eq (parameter-def-kind var-info) :in))
+              (let ((fn-name (compiler-context-current-compiling-function context)))
+                (when fn-name
+                  (log:debug "Marking ~a as struct-mutating (mutates :in param ~a)" fn-name vname)
+                  (setf (gethash (string-upcase (symbol-name fn-name)) *struct-mutating-functions*) t)))))))))
+
+;; Helper: check if a function call passes a boundary struct to a mutating function
+(defun %check-struct-mutating-call (op explicit-arg-nodes env context location)
+  "Called during function call analysis when OP is in *struct-mutating-functions*.
+   Kernel context: error if any arg is a boundary struct param.
+   Function context: propagate struct-mutating mark if any :in struct param is passed."
+  (when (and (symbolp op)
+             (gethash (string-upcase (symbol-name op)) *struct-mutating-functions*))
+    (dolist (arg-node explicit-arg-nodes)
+      (when (semantic-var-read-p arg-node)
+        (let* ((vname     (semantic-var-read-name arg-node))
+               (vname-str (string-upcase (symbol-name vname))))
+          (if *boundary-struct-params*
+              ;; Kernel context: error if passing a boundary param to struct-mutating fn
+              (when (member vname-str *boundary-struct-params* :test #'string=)
+                (error 'crisp-compiler-error
+                       :message (format nil "Cannot pass boundary struct '~a' to '~a' which mutates its struct argument: struct parameters at kernel boundary are immutable"
+                                        vname op)
+                       :source-location location))
+              ;; Regular function context: propagate struct-mutating mark
+              (let ((var-info (find-variable-in-env vname env)))
+                (when (and var-info
+                           (eq (parameter-def-kind var-info) :in)
+                           (%boundary-struct-type-p (parameter-def-type var-info)))
+                  (let ((fn-name (compiler-context-current-compiling-function context)))
+                    (when fn-name
+                      (log:debug "Marking ~a as struct-mutating (passes :in param ~a to ~a)" fn-name vname op)
+                      (setf (gethash (string-upcase (symbol-name fn-name)) *struct-mutating-functions*) t)))))))))))
+
+
 (defun internal-def-function (name params declarations body location)
-  "This is a wrapper around internal-compile-function that parses declarations."
+  "Wrapper around internal-compile-function. Detects kernel entry-points and
+   binds *boundary-struct-params* to enforce struct immutability at the boundary."
   (log:info "Analyzing function ~s" name)
 
   (when *differentiate-p*
@@ -782,8 +886,21 @@ in single-pass mode."
 
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
-    (let ((*compiler-context* (or *compiler-context* (make-compiler-context))))
+    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (is-entry-p (loop for d in declarations
+                             thereis (and (listp d)
+                                          (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (*boundary-struct-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%boundary-struct-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-struct-params*)))
+      (when (and is-entry-p *boundary-struct-params*)
+            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
       (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
+
 
 (defun analyze-body-expressions (body-list env context location)
   "Recursively analyzes a list of expressions."
@@ -876,8 +993,11 @@ in single-pass mode."
     res))
 
 
-;;; analyze-function-call to use the new finding logic
+
+
 (defun analyze-function-call (op expr env context location)
+  "Analyzes a function call expression.
+   Checks for struct immutability violations via %check-struct-mutating-call."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
 
   ;; Recursion / call-graph tracking
@@ -898,6 +1018,9 @@ in single-pass mode."
                                      collect (analyze-expression arg-form env context (append location (list i)))))
            (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
            (signature (resolve-best-signature op explicit-arg-types context)))
+
+      ;; Struct mutating function check
+      (%check-struct-mutating-call op explicit-arg-nodes env context location)
 
       (let ((final-arg-nodes
              (if implicit-args-required
@@ -932,6 +1055,7 @@ in single-pass mode."
 
           ;; === Brand Instance Type Checking (when --differentiate is active) ===
           (let ((refined-return-types (function-signature-return-types augmented-signature)))
+
             (cl:when *differentiate-p*
               (let ((sig-params (function-signature-parameters augmented-signature)))
 

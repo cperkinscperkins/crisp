@@ -436,16 +436,16 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [x] what happens to struct with branding when IT appears in metacrisp?
 - - Answer: the branding does NOT appear in the metadata. It is elided.
 
-- [ ] def-struct can ALSO be at the kernel boundary. (If it's less than 4K?)
+- [x] def-struct can ALSO be at the kernel boundary. (If it's less than 4K?)
 - -   the struct is READ-ONLY <-- another damn thing.
 - -   the READ-ONLY thing means we need to walk struct params "up" the call
       stack to see if they originate at the kernel param boundary or not. 
       We need to be able to do this for other vars as well, to determine if they 
       are uniform or not.  So maybe for any function param (originates-at-kernel-boundary? v)
       is needed?
-- - [ ] we need tests for both mutation of def-record at kernel boundary
+- - [x] we need tests for both mutation of def-record at kernel boundary
         and immutability of def-struct at kernel boundary
-- - [ ] update docs too.
+- - [x] update docs too.
 
 - [ ] Auto-Diff and structs as direct kernel params.
 ;; the most likely future scenario is that auto-diff will NEVER support structs that appear
