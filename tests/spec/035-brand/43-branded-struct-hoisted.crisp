@@ -1,5 +1,5 @@
 ;; TEST-HOIST[L0]: validate-l0-host-run
-;; HOIST-EXPECT: BUFFER c: {x=1 y=0}
+;; HOIST-EXPECT: BUFFER c: 1 0
 
 ;; reusing existing validator
 

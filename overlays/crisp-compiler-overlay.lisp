@@ -445,3 +445,493 @@ Returns the form or NIL."
             (format stream ")~%")))))
     (format stream "  )~%~%")))
 
+
+;;; ============================================================
+;;; Struct Immutability at Kernel Boundary
+;;; src/analysis/core.lisp, src/analysis/structs.lisp
+;;; ============================================================
+;;; def-struct parameters at the kernel boundary are semantically
+;;; immutable (SPIR-V constant memory). Two dynamic variables and
+;;; checks in the analysis phase enforce this.
+;;;
+;;; *boundary-struct-params* — list of uppercase param-name strings
+;;;   for def-struct-typed parameters of the current entry-point kernel.
+;;;   Nil when compiling regular functions.
+;;;
+;;; *struct-mutating-functions* — hash table mapping uppercase
+;;;   function names -> T for functions that (directly or indirectly)
+;;;   mutate a struct-typed :in parameter.
+;;;
+;;; Enforcement paths:
+;;;   1. Direct: (set! (x~ p) val) in kernel where p is boundary → error
+;;;   2. Indirect: (f p) in kernel where f is struct-mutating → error
+;;;   3. Propagation: f mutates :in param → register f as struct-mutating
+;;; ============================================================
+
+(defvar *boundary-struct-params* nil
+  "Dynamic variable: list of uppercase param name strings that are def-struct
+   params at the current kernel boundary. Non-nil only when compiling an
+   entry-point kernel body. Nil in regular functions.")
+
+(defvar *struct-mutating-functions* (make-hash-table :test #'equal)
+  "Maps uppercase function name (string) -> T for functions that directly or
+   indirectly mutate a struct-typed :in parameter.")
+
+;; Helper: check if a type symbol names a registered def-struct (not def-record, package-safe)
+(defun %boundary-struct-type-p (type)
+  "Returns T if TYPE is a symbol naming a registered def-struct (category :struct)
+   in *crisp-structs*. Returns NIL for def-record types (category :record).
+   Uses string-equal for package-agnostic comparison."
+  (when (symbolp type)
+    (let ((type-name (symbol-name type)))
+      (loop for k being the hash-keys of *crisp-structs*
+            thereis (and (symbolp k)
+                         (string-equal (symbol-name k) type-name)
+                         ;; Only match actual def-struct entries (not def-record)
+                         (let ((ct (gethash k *crisp-types*)))
+                           (and ct (eq (crisp-type-category ct) :struct))))))))
+
+;; Helper: enforce immutability or mark current function as struct-mutating
+(defun %check-struct-boundary-mutation (struct-node env context location)
+  "Called when a struct member update is about to be emitted.
+   In kernel context (*boundary-struct-params* bound): error if the struct
+   being mutated is a kernel boundary parameter.
+   In function context: mark the current function as struct-mutating if it is
+   mutating an :in parameter."
+  (when (semantic-var-read-p struct-node)
+    (let* ((vname     (semantic-var-read-name struct-node))
+           (vname-str (string-upcase (symbol-name vname))))
+      (if *boundary-struct-params*
+          ;; Kernel context: check if this var is a boundary struct param
+          (when (member vname-str *boundary-struct-params* :test #'string=)
+            (error 'crisp-compiler-error
+                   :message (format nil "Cannot mutate struct parameter '~a': struct parameters at kernel boundary are immutable"
+                                    vname)
+                   :source-location location))
+          ;; Regular function context: mark as struct-mutating if mutating :in param
+          (let ((var-info (find-variable-in-env vname env)))
+            (when (and var-info (eq (parameter-def-kind var-info) :in))
+              (let ((fn-name (compiler-context-current-compiling-function context)))
+                (when fn-name
+                  (log:debug "Marking ~a as struct-mutating (mutates :in param ~a)" fn-name vname)
+                  (setf (gethash (string-upcase (symbol-name fn-name)) *struct-mutating-functions*) t)))))))))
+
+;; Helper: check if a function call passes a boundary struct to a mutating function
+(defun %check-struct-mutating-call (op explicit-arg-nodes env context location)
+  "Called during function call analysis when OP is in *struct-mutating-functions*.
+   Kernel context: error if any arg is a boundary struct param.
+   Function context: propagate struct-mutating mark if any :in struct param is passed."
+  (when (and (symbolp op)
+             (gethash (string-upcase (symbol-name op)) *struct-mutating-functions*))
+    (dolist (arg-node explicit-arg-nodes)
+      (when (semantic-var-read-p arg-node)
+        (let* ((vname     (semantic-var-read-name arg-node))
+               (vname-str (string-upcase (symbol-name vname))))
+          (if *boundary-struct-params*
+              ;; Kernel context: error if passing a boundary param to struct-mutating fn
+              (when (member vname-str *boundary-struct-params* :test #'string=)
+                (error 'crisp-compiler-error
+                       :message (format nil "Cannot pass boundary struct '~a' to '~a' which mutates its struct argument: struct parameters at kernel boundary are immutable"
+                                        vname op)
+                       :source-location location))
+              ;; Regular function context: propagate struct-mutating mark
+              (let ((var-info (find-variable-in-env vname env)))
+                (when (and var-info
+                           (eq (parameter-def-kind var-info) :in)
+                           (%boundary-struct-type-p (parameter-def-type var-info)))
+                  (let ((fn-name (compiler-context-current-compiling-function context)))
+                    (when fn-name
+                      (log:debug "Marking ~a as struct-mutating (passes :in param ~a to ~a)" fn-name vname op)
+                      (setf (gethash (string-upcase (symbol-name fn-name)) *struct-mutating-functions*) t)))))))))))
+
+
+;;; -----------------------------------------------------------------------
+;;; Redefine internal-def-function to bind *boundary-struct-params* for
+;;; entry-point kernels.
+;;; src/analysis/core.lisp
+;;; -----------------------------------------------------------------------
+
+;; src/analysis/core.lisp
+(defun internal-def-function (name params declarations body location)
+  "Wrapper around internal-compile-function. Detects kernel entry-points and
+   binds *boundary-struct-params* to enforce struct immutability at the boundary."
+  (log:info "Analyzing function ~s" name)
+
+  (when *differentiate-p*
+        (log:info "Applying ANF to function body")
+        (let* ((progn-body `(progn ,@body))
+               (anf-body (anf-normalize progn-body nil))
+               (unwrapped-body (if (and (consp anf-body) (eq (car anf-body) 'progn))
+                                   (cdr anf-body)
+                                   (list anf-body))))
+          (setf body unwrapped-body)))
+
+  (multiple-value-bind (explicit-env return-type)
+      (parse-function-declarations params declarations)
+    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (is-entry-p (loop for d in declarations
+                             thereis (and (listp d)
+                                          (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (*boundary-struct-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%boundary-struct-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-struct-params*)))
+      (when (and is-entry-p *boundary-struct-params*)
+            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
+      (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
+
+
+;;; -----------------------------------------------------------------------
+;;; Redefine analyze-set!-expression to call %check-struct-boundary-mutation
+;;; src/analysis/structs.lisp
+;;; -----------------------------------------------------------------------
+
+;; src/analysis/structs.lisp
+(defun analyze-set!-expression (expr env context location)
+  "Analyzes a (set! target value) expression.
+   Enforces struct immutability at kernel boundary via *boundary-struct-params*."
+  (let* ((target-form (second expr))
+         (value-form  (third expr))
+         (value-node  (analyze-expression value-form env context (append location '(2)))))
+
+    (cond
+     ;; Case 1: Simple variable assignment  (set! x v)
+     ((symbolp target-form)
+       (let ((var-info (find-variable-in-env target-form env)))
+         (unless var-info
+           (error 'crisp-unknown-variable :name target-form :source-location location))
+         (let ((var-type (parameter-def-type var-info))
+               (val-type (semantic-node-type value-node)))
+           (unless (types-compatible-p val-type var-type)
+             (error 'crisp-type-error :expected var-type :inferred val-type
+                    :source-location location)))
+         (make-semantic-set!
+          :target-node (make-semantic-var-read
+                        :name target-form
+                        :type (parameter-def-type var-info)
+                        :source-location location)
+          :value-node value-node
+          :source-location location)))
+
+     ;; Case 2: Function call / struct accessor
+     ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
+       (let* ((op           (first target-form))
+              (op-args      (rest target-form))
+              (arg-nodes    (loop for arg in op-args
+                                  for i from 1
+                                  collect (analyze-expression arg env context
+                                                              (append location (list 1 i)))))
+              (all-arg-nodes  (append arg-nodes (list value-node)))
+              (all-arg-types  (mapcar #'semantic-node-type all-arg-nodes))
+              (full-setter-name (intern (format nil "~a_SET!" op) (symbol-package op)))
+              (signatures   (append (gethash op *function-table*)
+                                    (gethash full-setter-name *function-table*)))
+              (match        (find-if (lambda (sig)
+                                       (types-list-compatible-p
+                                        all-arg-types
+                                        (mapcar #'parameter-def-type
+                                                (function-signature-parameters sig))))
+                                     signatures)))
+
+         ;; Try template instantiation if no direct match
+         (unless match
+           (let ((template-op (if (gethash full-setter-name *template-registry*)
+                                  full-setter-name op)))
+             (when (gethash template-op *template-registry*)
+               (ensure-template-instantiation
+                template-op all-arg-types
+                (lambda (f l) (declare (ignore l)) (eval f)))
+               (setf signatures (append (gethash op *function-table*)
+                                        (gethash full-setter-name *function-table*)))
+               (setf match (find-if
+                            (lambda (sig)
+                              (types-list-compatible-p
+                               all-arg-types
+                               (mapcar #'parameter-def-type
+                                       (function-signature-parameters sig))))
+                            signatures)))))
+
+         (cond
+          ;; Sub-case 2a: Found an overloaded setter function -> call it.
+          (match
+            (make-semantic-call
+             :name (function-signature-name match)
+             :type (function-signature-return-types match)
+             :args all-arg-nodes
+             :signature match
+             :source-location location))
+
+          ;; Sub-case 2b: Expression analyzer — only if result is an assignable lvalue.
+          ;; Device-vector component write (semantic-extract-value) and cell deref
+          ;; (semantic-aref) are assignable.  Struct accessor fallbacks return
+          ;; semantic-call which is NOT assignable — fall through to 2c in that case.
+          ((gethash op *expression-analyzers*)
+            (let ((target-node
+                   (let ((*analysis-access-mode* :write))
+                     (analyze-expression target-form env context (append location '(1))))))
+              (if (or (semantic-extract-value-p target-node)
+                      (semantic-aref-p target-node))
+                  (make-semantic-set!
+                   :target-node target-node
+                   :value-node value-node
+                   :source-location location)
+                  ;; Not an assignable lvalue — fall through to Sub-case 2c.
+                  (let* ((op-name (symbol-name op))
+                         (is-accessor
+                          (or (alexandria:ends-with #\~ op-name)
+                              (and (alexandria:starts-with #\~ op-name)
+                                   (alexandria:ends-with #\~ op-name)))))
+                    (unless is-accessor
+                      (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor."
+                             target-form))
+                    (unless (= (length arg-nodes) 1)
+                      (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a."
+                             op (length arg-nodes)))
+                    (let* ((clean-name  (cl:string-trim "~" op-name))
+                           (member-sym  (intern clean-name (symbol-package op)))
+                           (struct-node (first arg-nodes))
+                           (struct-type (semantic-node-type struct-node)))
+                      (unless (or (semantic-var-read-p struct-node)
+                                  (semantic-aref-p struct-node))
+                        (error "Cannot set member of non-variable/non-reference struct form: ~a"
+                               (second target-form)))
+                      ;; Immutability check
+                      (%check-struct-boundary-mutation struct-node env context location)
+                      (let ((update-node
+                             (make-semantic-struct-member-update
+                              :type struct-type
+                              :struct-node struct-node
+                              :member-index (get-struct-member-index struct-type member-sym)
+                              :value-node value-node
+                              :source-location location)))
+                        (make-semantic-set!
+                         :target-node struct-node
+                         :value-node update-node
+                         :source-location location)))))))
+
+          ;; Sub-case 2c: Struct member update (legacy accessor logic).
+          (t
+            (let* ((op-name (symbol-name op))
+                   (is-accessor
+                    (or (alexandria:ends-with #\~ op-name)
+                        (and (alexandria:starts-with #\~ op-name)
+                             (alexandria:ends-with #\~ op-name)))))
+              (unless is-accessor
+                (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor."
+                       target-form))
+              (unless (= (length arg-nodes) 1)
+                (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a."
+                       op (length arg-nodes)))
+              (let* ((clean-name  (cl:string-trim "~" op-name))
+                     (member-sym  (intern clean-name (symbol-package op)))
+                     (struct-node (first arg-nodes))
+                     (struct-type (semantic-node-type struct-node)))
+                (unless (or (semantic-var-read-p struct-node)
+                            (semantic-aref-p struct-node))
+                  (error "Cannot set member of non-variable/non-reference struct form: ~a"
+                         (second target-form)))
+                ;; Immutability check
+                (%check-struct-boundary-mutation struct-node env context location)
+                (let ((update-node
+                       (make-semantic-struct-member-update
+                        :type struct-type
+                        :struct-node struct-node
+                        :member-index (get-struct-member-index struct-type member-sym)
+                        :value-node value-node
+                        :source-location location)))
+                  (make-semantic-set!
+                   :target-node struct-node
+                   :value-node update-node
+                   :source-location location))))))))
+
+     (t (error "Invalid set! target structure: ~a" target-form)))))
+
+
+;;; -----------------------------------------------------------------------
+;;; Redefine analyze-function-call to call %check-struct-mutating-call
+;;; src/analysis/core.lisp
+;;; -----------------------------------------------------------------------
+
+;; src/analysis/core.lisp
+(defun analyze-function-call (op expr env context location)
+  "Analyzes a function call expression.
+   Checks for struct immutability violations via %check-struct-mutating-call."
+  (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
+
+  ;; Recursion / call-graph tracking
+  (if (multi-pass-mode-p)
+      (when (compiler-context-current-compiling-function context)
+            (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
+      (when (eq op (compiler-context-current-compiling-function context))
+            (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
+
+  ;; Implicit args
+  (let ((implicit-args-required (gethash op *implicit-arg-map*)))
+    (when (and (single-pass-mode-p) implicit-args-required)
+          (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
+
+    (let* ((arg-forms (rest expr))
+           (explicit-arg-nodes (loop for arg-form in arg-forms
+                                     for i from 1
+                                     collect (analyze-expression arg-form env context (append location (list i)))))
+           (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
+           (signature (resolve-best-signature op explicit-arg-types context)))
+
+      ;; Struct mutating function check
+      (%check-struct-mutating-call op explicit-arg-nodes env context location)
+
+      (let ((final-arg-nodes
+             (if implicit-args-required
+                 (let ((implicit-arg-nodes
+                        (loop for (param-name . param-type) in implicit-args-required
+                              collect (let ((found (find-variable-in-env param-name env)))
+                                        (if found
+                                            (make-semantic-var-read :name param-name :type (parameter-def-type found) :source-location location)
+                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
+                                              (compiler-context-current-compiling-function context) param-name))))))
+                   (append implicit-arg-nodes explicit-arg-nodes))
+                 explicit-arg-nodes)))
+
+        (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
+          (error 'crisp-signature-arity-error
+            :expected (length (function-signature-parameters signature))
+            :inferred (length explicit-arg-types)
+            :source-location location))
+
+        (let ((augmented-signature
+               (if implicit-args-required
+                   (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
+                                                collect (make-parameter-def :name param-name :type param-type :kind :in))))
+                     (make-function-signature
+                      :name (function-signature-name signature)
+                      :parameters (append implicit-params (function-signature-parameters signature))
+                      :return-types (function-signature-return-types signature)
+                      :source-location (function-signature-source-location signature)
+                      :is-template-p (function-signature-is-template-p signature)
+                      :template-params (function-signature-template-params signature)))
+                   signature)))
+
+          ;; === Brand Instance Type Checking (when --differentiate is active) ===
+          (let ((refined-return-types (function-signature-return-types augmented-signature)))
+
+            (cl:when *differentiate-p*
+              (let ((sig-params (function-signature-parameters augmented-signature)))
+
+                ;; 1. Brand parameter type checking
+                (loop for param in sig-params
+                      for arg-node in final-arg-nodes
+                      for param-type = (parameter-def-type param)
+                      do (cl:let ((brand-def (is-brand-type-p param-type)))
+                           (cl:when (and brand-def (brand-active-p brand-def))
+                             ;; FIX: Use brand-name to find owner, supporting shared brands
+                             (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                        sig-params final-arg-nodes)))
+                               (cl:when owner-var
+                                 (cl:let* ((expected-type (resolve-brand-type param-type owner-var))
+                                           (actual-type (get-single-value-type arg-node)))
+                                   (unless (or (eq actual-type expected-type)
+                                               (is-substitutable-for? actual-type expected-type))
+                                     (error 'crisp-type-error
+                                       :expected (list expected-type)
+                                       :inferred (list actual-type)
+                                       :source-location location))))))))
+
+                ;; 2. Brand return type refinement
+                (setf refined-return-types
+                  (loop for ret-type in (function-signature-return-types augmented-signature)
+                        collect (cl:let ((brand-def (is-brand-type-p ret-type)))
+                                  (if (and brand-def (brand-active-p brand-def))
+                                      (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                 sig-params final-arg-nodes)))
+                                        (if owner-var
+                                            (resolve-brand-type ret-type owner-var)
+                                            ret-type))
+                                      ret-type))))))
+
+            (make-semantic-call :name (function-signature-name augmented-signature)
+                                :type refined-return-types
+                                :args final-arg-nodes
+                                :signature augmented-signature
+                                :source-location location)))))))
+
+
+;;; -----------------------------------------------------------------------
+;;; Redefine initialize-compiler to clear *struct-mutating-functions*
+;;; src/compiler.lisp
+;;; -----------------------------------------------------------------------
+
+;; src/compiler.lisp
+(defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil))
+  "A master initialization function for the Crisp compiler.
+This should be called by any entry point into the system (REPL, executable, CI).
+Extended to clear *struct-mutating-functions* between compilations."
+  (setf *runtime-checks-enabled* runtime-checks)
+  (setf *differentiate-p* differentiate)
+  (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
+  (if (eq log-level :off)
+      (log:config :off)
+      (log:config :sane :stream *error-output* log-level))
+
+  (initialize-crisp-types)
+  (initialize-crisp-types)
+  (initialize-type-hierarchy)
+  (clrhash *function-table*)
+  (clrhash *crisp-structs*)
+  (clrhash *crisp-type-aliases*)
+  (clrhash *crisp-template-aliases*)
+  (clrhash *generic-functions*)
+  (clrhash *kernel-declared-signatures*)
+  (when (boundp '*record-definitions*) (clrhash *record-definitions*))
+
+  (setf *compiled-kernels* nil)
+
+  ;; Feature 052: clear both registries on each compile.
+  (clrhash *differentiable-functions*)
+  (clrhash *differentiable-hof-store*)
+
+  (initialize-expression-analyzers)
+  (clrhash *implicit-arg-map*)
+  (initialize-advisements)
+
+  (setf (gethash 'die *function-table*)
+    (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
+
+  (setf (symbol-function 'truncate) #'cl:truncate)
+  (setf (symbol-function 'floor) #'cl:floor)
+  (setf (symbol-function 'ceil) #'cl:ceiling)
+  (setf (symbol-function 'round) #'cl:round)
+
+  ;; Auto-initialize templates if available (runtime check)
+  (if (fboundp 'initialize-templates)
+      (funcall 'initialize-templates)
+      (log:warn "Template system not loaded/initialized."))
+
+  ;; Reset brand definitions
+  (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
+
+  ;; Reset brand instance cache and brand instance type tracking.
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+  (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+
+  ;; Clear partial template instantiations and their CL dispatch macros.
+  (when (boundp '*partial-template-instantiations*)
+        (loop for template-name being the hash-keys of *partial-template-instantiations*
+              do (let ((dispatch-sym (intern (format nil "MAKE-~a%DISPATCH" template-name)
+                                             (symbol-package template-name))))
+                   (when (macro-function dispatch-sym)
+                         (log:info "INITIALIZE-COMPILER: clearing stale CL dispatch macro ~a" dispatch-sym)
+                         (fmakunbound dispatch-sym))))
+        (clrhash *partial-template-instantiations*))
+
+  ;; Clear struct-mutating function registry (feature 056).
+  (when (boundp '*struct-mutating-functions*)
+        (clrhash *struct-mutating-functions*))
+
+  ;; Initialize built-in structs (storage) — includes cell, vector, matrix templates
+  (register-builtins)
+
+  (log:info "Compiler initialized. differentiate=~a" differentiate))

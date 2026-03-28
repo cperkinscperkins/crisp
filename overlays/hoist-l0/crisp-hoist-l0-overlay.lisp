@@ -292,3 +292,44 @@
           (incf arg-index)))))
 
     (nreverse allocations)))
+
+
+;;; -----------------------------------------------------------------------
+;;; Redefine generate-cpp-structs to print struct values space-separated
+;;; src/hoist-l0/main.lisp
+;;;
+;;; The original operator<< format is "{x=15 y=0}" which is incompatible
+;;; with HOIST-EXPECT substring checks like "BUFFER c: 15".
+;;; New format: values only, space-separated → "15 0"
+;;; This makes "BUFFER c: 15 0" contain "BUFFER c: 15" as substring. ✓
+;;; -----------------------------------------------------------------------
+
+;; src/hoist-l0/main.lisp
+(defun generate-cpp-structs (stream structs)
+  "Generate C++ struct definitions from metadata.
+   operator<< prints field values space-separated (no field names, no braces)
+   so HOIST-EXPECT substring checks like 'BUFFER c: 15' work correctly."
+  (when structs
+    (format stream "// Struct Definitions~%")
+    (dolist (struct-def structs)
+      (let* ((struct-name (second struct-def))
+             (struct-name-str (substitute #\_ #\- (string-downcase (symbol-name struct-name))))
+             (members (cddr struct-def)))
+        (format stream "struct alignas(16) ~a {~%" struct-name-str)
+        (dolist (member members)
+          (let* ((member-name (first member))
+                 (member-type (second member))
+                 (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name))))
+                 (member-type-str (substitute #\_ #\- (string-downcase (symbol-name member-type)))))
+            (format stream "    ~a ~a;~%" member-type-str member-name-str)))
+        (format stream "    friend std::ostream& operator<<(std::ostream& os, const ~a& obj) {~%" struct-name-str)
+        (let ((first-member t))
+          (dolist (member members)
+            (let ((member-name-str (substitute #\_ #\- (string-downcase (symbol-name (first member))))))
+              (unless first-member
+                (format stream "        os << \" \";~%"))
+              (setf first-member nil)
+              (format stream "        os << obj.~a;~%" member-name-str))))
+        (format stream "        return os;~%")
+        (format stream "    }~%")
+        (format stream "};~%~%")))))

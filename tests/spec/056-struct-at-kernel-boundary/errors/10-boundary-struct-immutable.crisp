@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "message"
+;; CHECK-FAIL: "immutable"
 
 (def-struct point (x float) (y float))
 
