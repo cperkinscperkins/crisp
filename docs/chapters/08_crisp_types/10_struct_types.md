@@ -6,7 +6,9 @@
 It also generates functions to create instances of struct (`make-XXXX`), and to access its members.
 Additionally, the type constraint function `is-XXXX?` is also generated.
 
-
+Storage Handles can be specialized to struct types. If a struct needs to be passed directly to a 
+kernel, that is the most common way of doing so for both input and output arguments. Note that structs CAN be passed directly to a kernel, without being wrapped by a Storage Handle. But in that
+case the struct is configured with constant memory and is read only, immutable. 
 
 <!-- NOTES:  The compiler will treat these custom "functions"  as direct data offsets.  
 If a user wants to pass #'make-point or #'x~ as first order arguments, 

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-27T21:59:59.462490Z
+Generated on 2026-03-28T15:55:23.980649Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -323,10 +323,43 @@ Generated on 2026-03-27T21:59:59.462490Z
 
 
 ---
+### DEFVAR `*BOUNDARY-STRUCT-PARAMS*`
+
+  > Dynamic variable: list of uppercase param name strings that are def-struct  >    params at the current kernel boundary. Non-nil only when compiling an  >    entry-point kernel body. Nil in regular functions.
+
+
+---
+### DEFVAR `*STRUCT-MUTATING-FUNCTIONS*`
+
+  > Maps uppercase function name (string) -> T for functions that directly or  >    indirectly mutate a struct-typed :in parameter.
+
+
+---
+### DEFUN `%BOUNDARY-STRUCT-TYPE-P`
+- **Args**: `(TYPE)`
+
+  > Returns T if TYPE is a symbol naming a registered def-struct (category :struct)  >    in *crisp-structs*. Returns NIL for def-record types (category :record).  >    Uses string-equal for package-agnostic comparison.
+
+
+---
+### DEFUN `%CHECK-STRUCT-BOUNDARY-MUTATION`
+- **Args**: `(STRUCT-NODE ENV CONTEXT LOCATION)`
+
+  > Called when a struct member update is about to be emitted.  >    In kernel context (*boundary-struct-params* bound): error if the struct  >    being mutated is a kernel boundary parameter.  >    In function context: mark the current function as struct-mutating if it is  >    mutating an :in parameter.
+
+
+---
+### DEFUN `%CHECK-STRUCT-MUTATING-CALL`
+- **Args**: `(OP EXPLICIT-ARG-NODES ENV CONTEXT LOCATION)`
+
+  > Called during function call analysis when OP is in *struct-mutating-functions*.  >    Kernel context: error if any arg is a boundary struct param.  >    Function context: propagate struct-mutating mark if any :in struct param is passed.
+
+
+---
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > This is a wrapper around internal-compile-function that parses declarations.
+  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params* to enforce struct immutability at the boundary.
 
 
 ---
@@ -346,6 +379,9 @@ Generated on 2026-03-27T21:59:59.462490Z
 ---
 ### DEFUN `ANALYZE-FUNCTION-CALL`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes a function call expression.  >    Checks for struct immutability violations via %check-struct-mutating-call.
+
 
 ---
 ### DEFUN `SEMANTIC-NODE-TYPE`
@@ -564,7 +600,7 @@ Generated on 2026-03-27T21:59:59.462490Z
 ### DEFUN `ANALYZE-SET!-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a (set! target value) expression.
+  > Analyzes a (set! target value) expression.  >    Enforces struct immutability at kernel boundary via *boundary-struct-params*.
 
 
 ---
@@ -949,7 +985,7 @@ Generated on 2026-03-27T21:59:59.462490Z
 - **Args**: `(BINDING BUILDER MODULE LET-ENV DI-BUILDER DI-SCOPE LOCATION-MAP
               MEMOIZED-AGGREGATES)`
 
-  > Helper: Generates IR for a single let binding.  >    Updates let-env with the new binding and returns the alloca.
+  > Helper: Generates IR for a single let binding.  >    Updates let-env with the new binding and returns the alloca.  >    Extended to use llvm-build-extract-element for device-vector aggregates  >    instead of llvm-build-extract-value (which is for struct aggregates only).
 
 
 ---
@@ -1065,14 +1101,14 @@ Generated on 2026-03-27T21:59:59.462490Z
 ### DEFUN `EXTRACT-KERNEL-PARAMS`
 - **Args**: `(IR-TEXT FUNC-START FUNC-END)`
 
-  > Extract parameter types from a kernel function signature.  >  Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64').
+  > Extract parameter types from a kernel function signature.  > Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64', '%POINT').
 
 
 ---
 ### DEFUN `IR-TYPE-TO-OPENCL-METADATA`
 - **Args**: `(IR-TYPE)`
 
-  > Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).  >  Returns (values addr-space-int access-qual-string type-name-string).
+  > Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).  > Returns (values addr-space-int access-qual-string type-name-string).
 
 
 ---
@@ -1119,7 +1155,7 @@ Generated on 2026-03-27T21:59:59.462490Z
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
 
-  > A master initialization function for the Crisp compiler.  > This should be called by any entry point into the system (REPL, executable, CI).
+  > A master initialization function for the Crisp compiler.  > This should be called by any entry point into the system (REPL, executable, CI).  > Extended to clear *struct-mutating-functions* between compilations.
 
 
 ---
@@ -1298,10 +1334,44 @@ Generated on 2026-03-27T21:59:59.462490Z
 
 
 ---
+### DEFVAR `*HOIST-CURRENT-STRUCTS*`
+
+  > Dynamic variable: list of (def-struct NAME ...) forms from the current  >    metacrisp :structs section.  Bound by generate-l0-launcher.
+
+
+---
+### DEFUN `%FIND-STRUCT-DEF-L0`
+- **Args**: `(NAME)`
+
+  > Find (def-struct NAME ...) in *hoist-current-structs*.  >    NAME is a symbol; all comparisons use string-equal to be package-agnostic.  >    The metacrisp is parsed with standard READ (cl-user package), so symbols  >    from the parsed data will not eq symbols from overlay source code.
+
+
+---
+### DEFUN `STRUCT-TYPE-P-L0`
+- **Args**: `(TYPE)`
+
+  > Returns T if TYPE names a def-struct in *hoist-current-structs*.  >    Accepts plain symbols or list forms like (POINT :EARNESTNESS 3.0).
+
+
+---
+### DEFUN `%STRUCT-BASE-TYPE`
+- **Args**: `(PARAM-TYPE)`
+
+  > Extract the base struct name from PARAM-TYPE (symbol or list form).
+
+
+---
+### DEFUN `%STRUCT-EMIT-FIELDS`
+- **Args**: `(STREAM VAR-PATH MEMBERS ALIASES)`
+
+  > Recursively emit C++ field assignments for a struct variable at VAR-PATH.  >    MEMBERS is the member list from the (def-struct NAME ...) form: each member  >    is (FIELD-NAME TYPE).  Nested structs are recursed into.
+
+
+---
 ### DEFUN `GENERATE-L0-LAUNCHER`
 - **Args**: `(METACRISP-PATH)`
 
-  > Generate Level Zero C++ launcher code from metacrisp file
+  > Generate Level Zero C++ launcher code from metacrisp file.  >    Binds *hoist-current-structs* so generate-kernel-arguments-with-usm  >    can identify and handle def-struct parameters.
 
 
 ---
@@ -1322,7 +1392,7 @@ Generated on 2026-03-27T21:59:59.462490Z
 ### DEFUN `GENERATE-CPP-STRUCTS`
 - **Args**: `(STREAM STRUCTS)`
 
-  > Generate C++ struct definitions from metadata
+  > Generate C++ struct definitions from metadata.  >    operator<< prints field values space-separated (no field names, no braces)  >    so HOIST-EXPECT substring checks like 'BUFFER c: 15' work correctly.
 
 
 ---
@@ -1406,7 +1476,7 @@ Generated on 2026-03-27T21:59:59.462490Z
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR)`
 
-  > Generate kernel argument setup code with USM allocation for cells
+  > Generate kernel argument setup code with USM allocation for cells.  >    Handles cell (3 args: ptr, size, offset), def-struct (1 arg: aggregate),  >    def-record (exploded scalar args), and plain scalar parameters.
 
 
 ---
@@ -2343,6 +2413,41 @@ Generated on 2026-03-27T21:59:59.462490Z
 
 
 ---
+### DEFUN `%FIND-STRUCT-DEF`
+- **Args**: `(STRUCTS-SECTION NAME)`
+
+  > Finds (def-struct NAME ...) in a list of forms from a :structs section.  > Returns the form or NIL.
+
+
+---
+### DEFUN `VALIDATE-DEF-STRUCT-IN-METADATA`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates 056/01-basic-struct-meta: point at kernel boundary.  >    Checks :structs contains POINT (2 members) but NOT RECT,  >    physical-signature has 4 entries (1 struct + 3 cell), and  >    declared-signature shows p :in with type point.
+
+
+---
+### DEFUN `VALIDATE-DEF-STRUCT-WITH-CT-IN-METADATA`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates 056/03-struct-with-ct-meta: point with :c-t earnestness.  >    Checks :structs shows 2 runtime members only (c-t earnestness excluded),  >    physical-signature has 5 entries (2 struct + 3 cell), and  >    declared-sig shows (point earnestness 3.0) for p2.
+
+
+---
+### DEFUN `VALIDATE-NESTED-STRUCT-IN-METADATA`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates 056/04-nested-structs-meta: rect (containing point) at kernel boundary.  >    Checks :structs contains both RECT and POINT (dependency),  >    physical-signature has 4 entries (1 struct + 3 cell), and  >    declared-sig shows r :in rect.
+
+
+---
+### DEFUN `VALIDATE-STRUCT-NO-BRAND-IN-METADATA`
+- **Args**: `(METADATA-PATH)`
+
+  > Validates 056/09-branded-struct-elide: branded def-struct at kernel boundary.  >    Checks that the :structs section shows the base type (ulong) for branded  >    fields (not token-t), no brand declarations appear, and the kernel is present.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
 
 ### DEFVAR `*EMIT-METADATA*`
@@ -2407,7 +2512,7 @@ Generated on 2026-03-27T21:59:59.462490Z
 ### DEFUN `SERIALIZE-STRUCTS`
 - **Args**: `(STREAM STRUCTS-HASH)`
 
-  > Emits (:records ...) for def-records and (:structs ...) for def-structs.  >    Records are split into their own section; brand and :c-t members handled appropriately.
+  > Emits (:records ...) for def-records and (:structs ...) for def-structs.  >    Records are split into their own section; brand and :c-t members handled.  >    For def-structs: c-t members are excluded (they are compile-time constants  >    not in the runtime memory layout).
 
 
 ---
