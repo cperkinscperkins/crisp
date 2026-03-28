@@ -27,11 +27,14 @@
 
 (defun %find-struct-def-l0 (name)
   "Find (def-struct NAME ...) in *hoist-current-structs*.
-   NAME is a symbol; comparison is case-insensitive by symbol name."
+   NAME is a symbol; all comparisons use string-equal to be package-agnostic.
+   The metacrisp is parsed with standard READ (cl-user package), so symbols
+   from the parsed data will not eq symbols from overlay source code."
   (find name *hoist-current-structs*
         :test (lambda (n f)
                 (and (consp f)
-                     (eq (first f) 'def-struct)
+                     (symbolp (first f))
+                     (string-equal (symbol-name (first f)) "DEF-STRUCT")
                      (symbolp (second f))
                      (string-equal (symbol-name n) (symbol-name (second f)))))))
 

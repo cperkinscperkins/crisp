@@ -214,15 +214,16 @@ Returns the form or NIL."
 
 
 ;;; Validator: 056/03-struct-with-ct-meta
-;;; Tests that a struct with a :c-t field appears fully in :structs
-;;; (unlike records, c-t fields ARE in the struct layout), that both
-;;; struct params show as single physical slots, and that the
-;;; parameterized type (point :earnestness 3.0) appears in declared-sig.
+;;; Tests that a struct with a :c-t field appears correctly in :structs.
+;;; c-t fields are compile-time constants (not in the runtime layout), so
+;;; they must be excluded from the :structs section (same as compute-std140-layout
+;;; excludes them).  Only the 2 runtime members (x, y) should appear.
+;;; The parameterized type (point :earnestness 3.0) still appears in declared-sig.
 
 ;; src/metadata-val.lisp
 (defun validate-def-struct-with-ct-in-metadata (metadata-path)
   "Validates 056/03-struct-with-ct-meta: point with :c-t earnestness.
-   Checks :structs shows 3 members (c-t field IS in struct layout),
+   Checks :structs shows 2 runtime members only (c-t earnestness excluded),
    physical-signature has 5 entries (2 struct + 3 cell), and
    declared-sig shows (point earnestness 3.0) for p2."
   (unless (probe-file metadata-path)
@@ -237,13 +238,13 @@ Returns the form or NIL."
       (log:error "validate-def-struct-with-ct-in-metadata: no :structs section")
       (return-from validate-def-struct-with-ct-in-metadata nil))
 
-    ;; POINT must appear with 3 members (x, y, earnestness)
+    ;; POINT must appear with 2 runtime members (x, y) — earnestness is c-t, excluded
     (let ((pt (%find-struct-def structs "point")))
       (unless pt
         (log:error "validate-def-struct-with-ct-in-metadata: point not in :structs")
         (return-from validate-def-struct-with-ct-in-metadata nil))
-      (unless (= (%record-member-count pt) 3)
-        (log:error "validate-def-struct-with-ct-in-metadata: expected 3 members for point (including earnestness), got ~a: ~a"
+      (unless (= (%record-member-count pt) 2)
+        (log:error "validate-def-struct-with-ct-in-metadata: expected 2 runtime members for point (c-t earnestness excluded), got ~a: ~a"
           (%record-member-count pt) (cddr pt))
         (return-from validate-def-struct-with-ct-in-metadata nil)))
 
