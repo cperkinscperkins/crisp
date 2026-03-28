@@ -1008,7 +1008,9 @@ Struct Types
 It also generates functions to create instances of struct (`make-XXXX`), and to access its members.
 Additionally, the type constraint function `is-XXXX?` is also generated.
 
-
+Storage Handles can be specialized to struct types. If a struct needs to be passed directly to a 
+kernel, that is the most common way of doing so for both input and output arguments. Note that structs CAN be passed directly to a kernel, without being wrapped by a Storage Handle. But in that
+case the struct is configured with constant memory and is read only, immutable. 
 
 <!-- NOTES:  The compiler will treat these custom "functions"  as direct data offsets.  
 If a user wants to pass #'make-point or #'x~ as first order arguments, 
@@ -1281,8 +1283,19 @@ Though there is no equivalent of `soa-vector` for records.
     ...))
 ```
 
-Importantly, types defined by `def-record` cannot be wrapped in Storage Handles, nor can they appear on 
-the parameter boundary of kernels. (The Storage Handles are an exception to this last restriction. Obviously, they DO appear on the kernel boundary).
+
+
+### Notes
+
+- Importantly, types defined by `def-record` cannot be wrapped in Storage Handles.
+- Both records and structs can be passed directly to kernels on the kernel boundary. 
+- - But when doing so structs are immutable and cannot have their properties changed.
+- - Records, on the other hand, are mutable in the current thread context. Any value
+    change is not communicated back to the host or to other threads.
+- kernels with structs directly on the parameter boundary (not in a Storage Handle) cannot
+  be auto differentiated (with the `--differentiate` flag)
+- In contrast, kernels with records directly on the parameter boundary CAN be auto differentiated,
+  though that would be unusual.
 
 <!-- IMPLEMENTATION NOTE
   So make-XXXX for records is capturing register identities, not values.

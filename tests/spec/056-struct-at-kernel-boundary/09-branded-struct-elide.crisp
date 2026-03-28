@@ -1,0 +1,25 @@
+;; TEST-WITH[--metadata] : validate-struct-no-brand-in-metadata
+
+;; SKIP-WITH[--differentiate] : "TODO: auto-diff needs to be extended for records at kernel boundary"
+
+;; branding should be elided in .metacrisp
+
+(def-struct point 
+   (brand token-t ulong :subst :no :enforce :always)
+    (x token-t) 
+    (y int))
+
+
+(def-function authenticate (p tkn)
+    (declare #'(point (token-t p) => int))
+    1)
+
+(def-type out-c (cell int :address-space :global :access :read-write))
+
+(def-kernel struct_on_boundary_k (p &out c)
+    (declare #'(point &out out-c))
+    (set! (~ c) (authenticate p (x~ p))))
+
+
+
+

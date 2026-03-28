@@ -204,6 +204,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - (%GENERATE-LET-BINDING BINDING BUILDER MODULE LET-ENV DI-BUILDER DI-SCOPE LOCATION-MAP MEMOIZED-AGGREGATES)  codegen.lisp
 - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp
 - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
 - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
@@ -213,7 +215,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
 - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp
+- - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp [See above]
 - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -251,6 +253,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
 - - - - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [See above]
 - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp
 - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
 - - - - - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
 - - - - - - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
@@ -296,6 +299,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - (MANGLE-FUNCTION-VARIANT-NAME BASE-NAME PARAM-TYPES)  mangling.lisp
 - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - (%CHECK-STRUCT-MUTATING-CALL OP EXPLICIT-ARG-NODES ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
 - - - - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
@@ -598,6 +604,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp [See above]
 - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
 - - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp [See above]
+- - (%CHECK-STRUCT-BOUNDARY-MUTATION STRUCT-NODE ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - (GET-STRUCT-MEMBER-INDEX STRUCT-TYPE-NAME MEMBER-NAME)  analysis/structs.lisp
 - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
@@ -889,6 +897,22 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp [See above]
 - - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
 
+- (VALIDATE-DEF-STRUCT-IN-METADATA METADATA-PATH)  metadata-val.lisp
+- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
+- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
+- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
+- - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp
+- - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp [See above]
+- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-DEF-STRUCT-WITH-CT-IN-METADATA METADATA-PATH)  metadata-val.lisp
+- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
+- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
+- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
+- - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp [See above]
+- - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp [See above]
+- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
+
 - (VALIDATE-DERIVED-ACCESSORS IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-DESCENDANT-DISTANCE IR-PATH)  metadata-val.lisp
@@ -918,6 +942,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
 - - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
 - - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp [See above]
+- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-NESTED-STRUCT-IN-METADATA METADATA-PATH)  metadata-val.lisp
+- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
+- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
+- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
+- - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp [See above]
 - - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
 
 - (VALIDATE-NO-BRAND-IN-METADATA METADATA-PATH)  metadata-val.lisp
@@ -953,6 +984,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-SCRATCH-CELL-EXPLOSION METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-SCRATCH-CELL-EXPLOSION-IR IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-STRUCT-NO-BRAND-IN-METADATA METADATA-PATH)  metadata-val.lisp
+- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
+- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
+- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
+- - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp [See above]
 
 - (VALIDATE-SUBTRACTION-CHAIN-RULE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]

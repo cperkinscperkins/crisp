@@ -75,9 +75,13 @@
                (push (list func-name define-pos brace-pos) kernels))
 
          (setf pos (1+ kernel-pos)))))))
+
+
+
+
 (defun extract-kernel-params (ir-text func-start func-end)
   "Extract parameter types from a kernel function signature.
- Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64')."
+Returns list of type strings (e.g., 'ptr addrspace(1)', 'i64', '%POINT')."
   (let* ((sig-text (subseq ir-text func-start func-end))
          (paren-start (position #\( sig-text))
          (paren-end (position #\) sig-text :from-end t)))
@@ -96,10 +100,21 @@
           (when (> (length trimmed) 0)
                 (let ((percent-pos (position #\% trimmed)))
                   (if percent-pos
-                      (let ((type-text (string-trim '(#\Space #\Tab) (subseq trimmed 0 percent-pos))))
-                        (when (> (length type-text) 0)
-                              (log:info "  extracted type: ~s" type-text)
-                              (push type-text params)))
+                      (if (zerop percent-pos)
+                          ;; Struct type: starts with %, e.g. "%POINT %0".
+                          ;; Use the LAST % as the name boundary.
+                          (let* ((last-percent (position #\% trimmed :from-end t))
+                                 (type-text (string-trim '(#\Space #\Tab)
+                                                         (subseq trimmed 0 last-percent))))
+                            (when (> (length type-text) 0)
+                                  (log:info "  extracted struct type: ~s" type-text)
+                                  (push type-text params)))
+                          ;; Normal case: type precedes the first %.
+                          (let ((type-text (string-trim '(#\Space #\Tab)
+                                                        (subseq trimmed 0 percent-pos))))
+                            (when (> (length type-text) 0)
+                                  (log:info "  extracted type: ~s" type-text)
+                                  (push type-text params))))
                       (progn
                        (log:info "  extracted type (no name): ~s" trimmed)
                        (push trimmed params)))))))
@@ -108,23 +123,29 @@
 
 (defun ir-type-to-opencl-metadata (ir-type)
   "Convert LLVM IR type to OpenCL metadata (addr-space, access-qual, type-name).
- Returns (values addr-space-int access-qual-string type-name-string)."
-  (let ((addr-space 0) ; default: private
-                      (access-qual "none")
-                      (type-name "void*")) ; default
+Returns (values addr-space-int access-qual-string type-name-string)."
+  (let ((addr-space 0)
+        (access-qual "none")
+        (type-name "void*"))
 
     (cond
+     ;; Struct types: start with % (e.g. \"%POINT\")
+     ;; Passed by value, addr-space 0, type-name is the struct name without %
+     ((and (> (length ir-type) 0) (char= (cl:char ir-type 0) #\%))
+       (setf addr-space 0
+             type-name (subseq ir-type 1)))
+
      ;; Pointer types: ptr addrspace(N)
      ((search "ptr" ir-type)
        (cond
         ((search "addrspace(1)" ir-type)
-          (setf addr-space 1 type-name "int*")) ; global
+          (setf addr-space 1 type-name "int*"))
         ((search "addrspace(2)" ir-type)
-          (setf addr-space 2 type-name "int*")) ; constant
+          (setf addr-space 2 type-name "int*"))
         ((search "addrspace(3)" ir-type)
-          (setf addr-space 3 type-name "int*")) ; local
+          (setf addr-space 3 type-name "int*"))
         (t
-          (setf addr-space 0 type-name "int*")))) ; private/generic
+          (setf addr-space 0 type-name "int*"))))
 
      ;; Integer types
      ((search "i64" ir-type)
@@ -356,9 +377,12 @@
   "Maps HOF function name to info plist for inline backward differentiation.")
 
 
+
+  
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil))
   "A master initialization function for the Crisp compiler.
-This should be called by any entry point into the system (REPL, executable, CI)."
+This should be called by any entry point into the system (REPL, executable, CI).
+Extended to clear *struct-mutating-functions* between compilations."
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
@@ -417,6 +441,10 @@ This should be called by any entry point into the system (REPL, executable, CI).
                          (log:info "INITIALIZE-COMPILER: clearing stale CL dispatch macro ~a" dispatch-sym)
                          (fmakunbound dispatch-sym))))
         (clrhash *partial-template-instantiations*))
+
+  ;; Clear struct-mutating function registry (feature 056).
+  (when (boundp '*struct-mutating-functions*)
+        (clrhash *struct-mutating-functions*))
 
   ;; Initialize built-in structs (storage) — includes cell, vector, matrix templates
   (register-builtins)

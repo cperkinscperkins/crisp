@@ -1,0 +1,20 @@
+
+;; TEST-WITH[--metadata] : validate-def-struct-in-metadata
+;; SKIP-WITH[--differentiate] : "TODO: auto-diff needs to be extended for structs at kernel boundary"
+
+
+
+;; aliasing
+(def-type fff float)
+
+(def-struct point (x fff) (y int))
+
+;; the rect def-struct is NOT at the kernel boundary.
+;; and so should NOT be in the .metacrisp
+(def-struct rect (top-left point) (bottom-right point)) 
+
+(def-type out-c (cell float :address-space :global :access :read-write))
+
+(def-kernel struct_on_boundary_k (p &out c)
+    (declare #'(point &out out-c))
+    (set! (~ c) (* (x~ p) (y~ p))))

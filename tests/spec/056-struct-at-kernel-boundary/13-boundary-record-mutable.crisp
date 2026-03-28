@@ -1,0 +1,12 @@
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: 14
+
+
+(def-record v-point (x float) (y float))
+
+(def-type out-c (cell float :address-space :global :access :read-write))
+
+(def-kernel direct_rec_mutable (p &out c)
+    (declare #'(v-point &out out-c))
+    (set! (x~ p) 14.0f)
+    (set! (~ c) (x~ p)))
