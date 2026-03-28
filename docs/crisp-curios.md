@@ -32,6 +32,8 @@ Curious Things To Know About Crisp
   to use the type system to make a type for "meters" and for "yards" (for example) that cannot be in mixed math operations.
 - with `set-derived` the type system can also be used to do  C++ style subclassing between structs.
 
+- Crisp has "branded" types. This is available only inside def-struct and def-record declaraations. Essentially, the user can declare a branded type using `(brand newTypeName originalType ...)` and then use `newTypeName` as the type of some member of the struct
+or record.  The actual type is specialized to the object INSTANCE.  The other args to `brand` are the substitution keys that are used by `def-derived-type`.
 
 
 # def-struct vs def-record
@@ -58,6 +60,13 @@ From the design documents:
 - Parameters are **exploded** at function boundaries
 - Zero-cost abstraction for views (cell, vector, matrix, tensor)
 - Enables efficient mutation through register shadowing/rebinding
+
+
+Note that BOTH def-record and def-struct can appear on the kernel boundary.  In the case of def-record, the host code has to pass each property as an individual arg.  And that record
+is mutable. It can't be used to transmit data back to the host or even to another thread,
+but if kernel receives a point record as a direct argument and modifes its x~ value and then sends the point to a sub-function, that sub-function gets the modified x.
+
+But for def-struct that are passed directly at the kernel boundary we carve out some contstnat memory and it is NOT mutable.  The compiler needs to track that the struct orignates at the kernel boundary and error if there is an attempt to modify it (if it were DIRECTLY passed, rather than in a cell or something).
 
 ---
 

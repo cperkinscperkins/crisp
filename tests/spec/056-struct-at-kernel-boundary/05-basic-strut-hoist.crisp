@@ -1,0 +1,14 @@
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: 1
+;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
+
+;; aliasing
+(def-type fff float)
+
+(def-struct point (x fff) (y int))
+
+(def-type out-c (cell float :address-space :global :access :read-write))
+
+(def-kernel struct_on_boundary_k (p &out c)
+    (declare #'(point &out out-c))
+    (set! (~ c) (* (x~ p) (y~ p))))

@@ -1,0 +1,9 @@
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: 15
+
+
+(def-struct point (x int) (y int))
+
+(def-kernel cell_struct_mutable (c)
+    (declare forward-only (type c (cell point :address-space :global :access :read-write)))
+    (set! (x~ (~ c)) 15))

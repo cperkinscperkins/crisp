@@ -443,6 +443,22 @@ TECHNICAL DEBT AND OVERSIGHTS
       We need to be able to do this for other vars as well, to determine if they 
       are uniform or not.  So maybe for any function param (originates-at-kernel-boundary? v)
       is needed?
+- - [ ] we need tests for both mutation of def-record at kernel boundary
+        and immutability of def-struct at kernel boundary
+- - [ ] update docs too.
+
+- [ ] Auto-Diff and structs as direct kernel params.
+;; the most likely future scenario is that auto-diff will NEVER support structs that appear
+;; on the kernel boundary. Maybe they could be welcome in forward kernels, but if they actually
+;; contribute to the calculation of any &out forward param, then we should probably just error
+;; if someone tries to differentiate.  
+;;  NOTE: while technically if the struct is bound in a Storage Handle (like cell) then we COULD
+;;        take its gradient, that complicates things a lot. Probably just limit A|D to 
+;;        scalars. 
+;; ALSO NOTE: we DO support differentiation of records. This is because they are SROA flatted
+;;            at the kernel boundary, so the auto-diff is just an extension of that. It doesn't
+;;            even know those scalar args 'were together'. 
+
 - [ ] scratch cells as OPTIONAL/KEY args.  TEST 
 - [ ] r-t-assert and --runtime-checks NEED TESTING     
 - [ ] for errors involving the return type, make sure the error message

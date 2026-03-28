@@ -1,0 +1,8 @@
+
+;; CHECK-FAIL: "message"
+
+(def-struct point (x float) (y float))
+
+(def-kernel direct_struct_immutable (p)
+    (declare (type p point))
+    (set! (x~ p) 14.0f))
