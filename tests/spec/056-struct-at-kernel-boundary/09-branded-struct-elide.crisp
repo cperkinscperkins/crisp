@@ -1,4 +1,5 @@
-;; TEST-WITH[--metadata] : validate-no-brand-in-metadata
+;; TEST-WITH[--metadata] : validate-struct-no-brand-in-metadata
+
 ;; SKIP-WITH[--differentiate] : "TODO: auto-diff needs to be extended for records at kernel boundary"
 
 ;; branding should be elided in .metacrisp
