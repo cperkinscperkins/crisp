@@ -399,6 +399,10 @@ Assault On Pytorch
 
 - [x] --differentiate and --ir-target=spv outputs the SAME .spv path as when not using differentiate. Should be named _grad.
 - [x] --differentiate should not work with --hoist.  Error or skip hoist.
+- [x] branded types. expand syntax to capture "always" vs. "when differentiating"
+- [x] --differentiate flag and testing. square cell could be simple test
+- [ ] math intermediaries - this also strongly pushes to more explicit passes and testing. expand user macros / desugar Crisp macros / nodes / analyze / compile ?
+
 - [ ] more testing: sub-functions (both with return values and &out params)
 
 TECHNICAL DEBT AND OVERSIGHTS
@@ -465,6 +469,7 @@ TECHNICAL DEBT AND OVERSIGHTS
       very clearly states what return type the compiler thinks it is (if any).
 - [ ] audit errors: some are NOT showing the location.
 - [ ] ;; FAIL-WITH[--differentiate]: "message!"  <-- message isn't getting checked for "normal" tests.
+- [ ] 02-kernel-illegal-voidp and friends. no CHECK-FAIL header.   Other negative tests same
 - [ ] Visual Code to use "lisp" syntax highlighting with .crisp files?
 - [ ] script to generate Table of Contents for docs?  It's woefully out of date.
 - [ ] do the docs on "declare" include "forward-only" ?
@@ -480,26 +485,34 @@ TECHNICAL DEBT AND OVERSIGHTS
 - - [x] even if we don't do all swizzles, need some sort of access to elements, for set! too
         maybe just x~, y~, z~ and w~.  
         or (~ v <index>)
+
+Miscelleny
+==========
+- [ ] multi-file support
+- [ ] ieee / fast accuracy support
+- [ ] is-uniform? and if*/when* variants
+
+
+Tensors Vectors and Matrices
+============================
 - [ ] virtual vectors ( def-rec-vec ).  
 - - [ ] rename and update docs
 - - [ ] can ONLY be a member of def-record? like brand?
 - - [ ] test and support
-
-- [ ] multi-file support
-- [ ] ieee / fast accuracy support
-- [ ] 02-kernel-illegal-voidp and friends. no CHECK-FAIL header.   Other negative tests same
-
-
-
-
-
-- [x] branded types. expand syntax to capture "always" vs. "when differentiating"
-- [ ] math intermediaries - this also strongly pushes to more explicit passes and testing. expand user macros / desugar Crisp macros / nodes / analyze / compile ?
-- [x] --differentiate flag and testing. square cell could be simple test
-- [ ] get-global-id or whatever and friends. 
-- [ ] strategy
 - [ ] tensors and vectors and matrices
 
+
+Preperatory
+===========
+- [ ] get-global-id or whatever and friends. 
+- [ ] strategy
+
+Grid vs Thread Context
+=======================
+- [ ] def-grid-function / dispatch/grid/thread context checking.
+
+Grid Stride
+===========
 
 
 QUESTIONS

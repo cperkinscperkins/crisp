@@ -10490,6 +10490,14 @@ tells the compiler that function is a top-level API function that should not be 
 Further `entrypoint` functions are compiled "library-wise", meaning the function and all its dependencies get
 bundled together (typically in a .bc file). This results in fast compilation for any kernel that uses it.
 
+`defmacro` and `T`
+==================
+
+Remember that `defmacro` executes in a Common Lisp environment, not Crisp. And while it is
+common in Crisp to use `T` as a template type placeholder (like in C++), in 
+Common Lisp, `T` is reserved and means True.  If using `defmacro` over types, use `typ` or
+something.
+
 
 
 
@@ -11285,6 +11293,14 @@ not joined with any other, regardless of any `def-orchestration`.
 It is an error to use both these flags together.
 
 Also note that the metadata and hoisting output is always output per-orchestration. They are unaffected by either flag. 
+
+### multiple .crisp files
+
+`$ crisp-compile.exe library.crisp app.crisp`
+
+Multiple `.crisp` files can be sent to the compiler at one time. It reads them in order and then 
+compiles. Note that while the compiler does default to multi-pass by default, macros (`defmacro`) 
+are ALWAYS order sensitive, multi-pass or single-pass. 
 
 
 
