@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL: "x~"
+;; CHECK-FAIL: "x~ requires a device-vector argument"
 ;;
 ;; x~ on a plain scalar (not a device vector) should be a type error.
 

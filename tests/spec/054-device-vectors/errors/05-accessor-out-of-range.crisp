@@ -1,5 +1,5 @@
 ;;
-;; CHECK-FAIL: "w~"
+;; CHECK-FAIL: "w~ is out of range for FLOAT2 (width 2);"
 ;;
 ;; w~ on a width-2 vector (only x, y exist) should be a type error.
 

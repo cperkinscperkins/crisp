@@ -268,6 +268,14 @@ All code is ANF transformed when using the `--differentiate` flag.
 ### Numeric Literal Suffices
 `1.4f` instead of `(as float 1.5)` etc. 
 
+### Device Vectors
+
+```
+ (let ((h3 ##(1.0h 2.0 4.0)) ;; h3 is a half3
+       (four (z~ h3)))
+    (set! (x~ h3) four))
+```
+
 
 Errors
 ======
