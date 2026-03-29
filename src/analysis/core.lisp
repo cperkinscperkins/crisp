@@ -1316,6 +1316,8 @@ in single-pass mode."
 
 
 
+
+
 (defun %pre-register-differentiable-fns (forms)
   "When *differentiate-p* is T, walk FORMS for def-function forms and
 pre-register them in *differentiable-functions* (and *differentiable-hof-store*
@@ -1345,7 +1347,7 @@ that are not yet registered at pre-registration time."
                                                (%crisp-float-type-p (parameter-def-type pd)))
                                      collect pd))
                            (n-float-params (length float-param-entries))
-                         (return-types-nv (remove nil return-types))
+                           (return-types-nv (remove nil return-types))
                            (n-return (length return-types-nv))
                            (fn-param-entries
                             (cl:loop for pd in env
@@ -1393,8 +1395,11 @@ that are not yet registered at pre-registration time."
         ((and (consp form) (eq (car form) 'progn))
          (%pre-register-differentiable-fns (rest form)))
 
-        ;; with-template-type: walk body for HOF def-functions using funcall scanning
-        ;; (cannot use parse-function-declarations here -- types contain T placeholder)
+        ;; with-template-type: walk body for def-functions using funcall scanning.
+        ;; Cannot use parse-function-declarations here -- types contain T placeholder.
+        ;; HOF branch: funcall detected -> register in *differentiable-hof-store*.
+        ;; Non-HOF branch: register optimistically; concrete instantiation will update
+        ;;   the entry with accurate counts before the backward walk runs.
         ((and (consp form) (eq (car form) 'with-template-type))
          (cl:dolist (bform (cddr form))   ; skip 'with-template-type' and params list
            (when (and (consp bform) (eq (car bform) 'def-function))
@@ -1414,24 +1419,42 @@ that are not yet registered at pre-registration time."
                              (setf fn-param-idx i)
                              (setf fn-param-sym p)
                              (cl:return)))
-               (when (and fn-param-idx
-                          (not (gethash name *differentiable-functions*)))
-                 (log:info "AUTODIFF: Pre-registering HOF template ~a via with-template-type (fn-param=~a idx=~a)"
-                           name fn-param-sym fn-param-idx)
-                 (setf (gethash name *differentiable-hof-store*)
-                       (list :param-syms       params
-                             :fn-param-idx     fn-param-idx
-                             :fn-param-sym     fn-param-sym
-                             :float-param-syms (cl:loop for p in params
-                                                        for i from 0
-                                                        unless (= i fn-param-idx)
-                                                        collect p)
-                             :body-forms       fn-body))
-                 (setf (gethash name *differentiable-functions*)
-                       (list :hof t
-                             :n-float-params (1- (length params))
-                             :n-return 1)))))))))))
-
+               (cond
+                 ;; HOF template: register in hof-store (existing behavior)
+                 ((and fn-param-idx
+                       (not (gethash name *differentiable-functions*)))
+                  (log:info "AUTODIFF: Pre-registering HOF template ~a via with-template-type (fn-param=~a idx=~a)"
+                            name fn-param-sym fn-param-idx)
+                  (setf (gethash name *differentiable-hof-store*)
+                        (list :param-syms       params
+                              :fn-param-idx     fn-param-idx
+                              :fn-param-sym     fn-param-sym
+                              :float-param-syms (cl:loop for p in params
+                                                         for i from 0
+                                                         unless (= i fn-param-idx)
+                                                         collect p)
+                              :body-forms       fn-body))
+                  (setf (gethash name *differentiable-functions*)
+                        (list :hof t
+                              :n-float-params (1- (length params))
+                              :n-return 1)))
+                 ;; Non-HOF template: register optimistically.
+                 ;; Types are T placeholders so we cannot parse them; treat all
+                 ;; non-&OUT params as potentially float. Concrete instantiation
+                 ;; will overwrite this entry with accurate counts.
+                 ((not (gethash name *differentiable-functions*))
+                  (cl:let* ((n-params (cl:count-if
+                                       (lambda (p)
+                                         (not (string-equal (symbol-name p) "&OUT")))
+                                       params))
+                            (pkg      (symbol-package name))
+                            (bkwd-name (intern (format nil "~A_GRAD" (symbol-name name)) pkg)))
+                    (log:info "AUTODIFF: Pre-registering non-HOF template ~a via with-template-type (n-params=~a, optimistic)"
+                              name n-params)
+                    (setf (gethash name *differentiable-functions*)
+                          (list :bkwd-name      bkwd-name
+                                :n-float-params n-params
+                                :n-return       1)))))))))))))
 
 
 
@@ -1531,10 +1554,17 @@ Must be called after walk-code-forms so *template-registry* is populated."
                    "Cannot write through read-only cell of type ~a" cell-type)
                  :source-location location))))))
 
+
+
+
 (defun analyze-dvec-component-ref (expr env context location)
   "Analyzes (x~ v), (y~ v), (z~ v), (w~ v) — device-vector component accessors.
    The operator symbol determines the 0-based LLVM element index (0..3).
    Returns a semantic-extract-value node whose type is the scalar component type.
+
+   Brand-instance gensyms (e.g. VALUE-T-204 derived from float2) are resolved
+   to their concrete device-vector base type via *type-derivation-graph* before
+   width and component-scalar extraction.
 
    In :write mode (inside a set! target), also validates that a cell-deref
    aggregate is not read-only."
@@ -1560,7 +1590,7 @@ Must be called after walk-code-forms so *template-registry* is populated."
     ;;   signal a type error immediately so the user gets a clear message.
     (unless (and ct (eq (crisp-type-category ct) :device-vector))
       (let ((should-fallback
-             (or (null ct)   ; not in *crisp-types* => user-defined struct
+             (or (null ct)
                  (member (crisp-type-category ct) '(:struct :record)))))
         (if should-fallback
             (return-from analyze-dvec-component-ref
@@ -1570,27 +1600,33 @@ Must be called after walk-code-forms so *template-registry* is populated."
                                     (cl:string-downcase op-name) arg-type)
                    :source-location location))))
 
-    ;; Validate: component index must be in range for this vector width.
-    (let* ((type-name  (symbol-name arg-type))
-           (width      (cl:digit-char-p (cl:char type-name (cl:1- (cl:length type-name))))))
+    ;; Resolve brand-instance / derived types to their concrete device-vector
+    ;; base type for width and component-scalar extraction.
+    ;; e.g. VALUE-T-204 (descendant of float2) -> float2 -> width 2, comp "FLOAT"
+    (let* ((dvec-type (let ((node (gethash arg-type *type-derivation-graph*)))
+                        (if node (type-node-base-type node) arg-type)))
+           (type-name (symbol-name dvec-type))
+           (width     (cl:digit-char-p (cl:char type-name (cl:1- (cl:length type-name))))))
+
+      ;; Validate: component index must be in range for this vector width.
       (unless (and width (< index width))
         (error 'crisp-compiler-error
                :message (format nil
                  "~a is out of range for ~a (width ~a); valid accessors: ~a"
                  (cl:string-downcase op-name) arg-type width
-                 (subseq '("x~" "y~" "z~" "w~") 0 width))
+                 (subseq '("x~" "y~" "z~" "w~") 0 (or width 0)))
                :source-location location))
 
       ;; In write mode: check that a cell-dereference aggregate is writable.
       (when (and (eq *analysis-access-mode* :write) (semantic-aref-p arg-node))
         (%dvec-check-cell-write-access arg-node location))
 
-      ;; Component scalar type: strip trailing width digit(s) from the type name.
+      ;; Component scalar type: strip trailing width digit(s) from the CONCRETE type name.
       ;; e.g.  "FLOAT2" -> "FLOAT",  "USHORT4" -> "USHORT",  "HALF3" -> "HALF"
       (let* ((base-name (cl:string-right-trim "1234" type-name))
              (comp-sym  (intern base-name (find-package :crisp-language))))
-        (log:debug "analyze-dvec-component-ref: ~a on ~a -> index ~a, comp ~a"
-                   op-name arg-type index comp-sym)
+        (log:debug "analyze-dvec-component-ref: ~a on ~a (dvec ~a) -> index ~a, comp ~a"
+                   op-name arg-type dvec-type index comp-sym)
         (make-semantic-extract-value
          :type           comp-sym
          :aggregate-node arg-node

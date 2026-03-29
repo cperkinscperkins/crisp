@@ -54,8 +54,11 @@
      (cffi:null-pointer) 0 ; sdk
      )))
 
+
+
 (defun parse-cli-args (args)
-  "Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets)."
+  "Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets).
+Supports one or more .crisp source files: the last file is treated as the primary (determines output name)."
   (let* ((flags (remove-if-not (lambda (arg) (char= (char arg 0) #\-)) args))
          (files (remove-if (lambda (arg) (char= (char arg 0) #\-)) args))
          (log-level-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--log-level=" f)) flags))
@@ -101,8 +104,9 @@
                                         :runtime-checks runtime-checks-p
                                         :differentiate differentiate-p)
 
-    (unless (= (length files) 1)
-      (format *error-output* "Usage: crisp-compile [flags] <filename.crisp>~%")
+    ;; Require at least one source file; support multiple files.
+    (unless (>= (length files) 1)
+      (format *error-output* "Usage: crisp-compile [flags] <file1.crisp> [file2.crisp ...]~%")
       (uiop:quit 1))
 
     ;; --- Hoisting Logic ---
@@ -155,11 +159,22 @@
          (format *error-output* "~&       Please build the hoister: sbcl --load build/build-hoist-~(~a~).lisp~%" hoist-id)
          (uiop:quit 1)))))
 
+
+
+
 (defun compile-files (files output-file debug-p single-pass-p targets metadata-p hoist-targets)
-  "Compiles the given files, iterating over requested targets, then invokes hoisters."
+  "Compiles the given files as a single unit (in order), iterating over requested targets, then invokes hoisters.
+When multiple files are given, forms are read from each file in order and compiled together as if they
+had been one file.  The LAST file is the primary: its name determines output file names and the debug
+compile-unit filepath."
   (declare (ignore output-file)) ; Handled per-target
-  (let* ((filename (first files))
+  ;; The last file is the primary: determines output naming and debug context.
+  (let* ((filename (car (last files)))
          (filepath (uiop:truename* filename))
+         ;; For error messages, show all files (list them if more than one).
+         (file-display (if (= (length files) 1)
+                           filename
+                           (format nil "[~{~a~^, ~}]" (mapcar #'file-namestring files))))
          ;; Default to :generic (stdout) if no targets specified
          (passes (if targets targets '(:generic))))
 
@@ -179,24 +194,32 @@
             (unwind-protect
                 (handler-case
                     (progn
-                     (with-open-file (stream filename)
-                       (if single-pass-p
-                           ;; --- SINGLE-PASS MODE ---
-                           (let ((toplevel-index 0)
-                                 (*package* (find-package :crisp-language)))
-                             (loop for form = (read stream nil :eof)
-                                   until (eq form :eof)
-                                   do (let ((location (list toplevel-index)))
-                                        (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
-                                        (incf toplevel-index))))
-                           ;; --- MULTI-PASS MODE (DEFAULT) ---
-                           (let* ((*package* (find-package :crisp-language))
-                                  (forms (loop for form = (read stream nil :eof) until (eq form :eof) collect form))
-                                  (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
-                             (setf captured-forms forms)
-                             (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map))))
+                     (if single-pass-p
+                         ;; --- SINGLE-PASS MODE (multiple files) ---
+                         ;; Process each file's forms in order with a shared toplevel-index so that
+                         ;; location indices are unique across the entire compilation unit.
+                         (let ((toplevel-index 0)
+                               (*package* (find-package :crisp-language)))
+                           (dolist (f files)
+                             (with-open-file (stream f)
+                               (loop for form = (read stream nil :eof)
+                                     until (eq form :eof)
+                                     do (let ((location (list toplevel-index)))
+                                          (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
+                                          (incf toplevel-index))))))
+                         ;; --- MULTI-PASS MODE (DEFAULT, multiple files) ---
+                         ;; Read all forms from all files in order into one flat list, then compile-module.
+                         (let* ((*package* (find-package :crisp-language))
+                                (forms (loop for f in files
+                                             appending (with-open-file (stream f)
+                                                         (loop for form = (read stream nil :eof)
+                                                               until (eq form :eof)
+                                                               collect form))))
+                                (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
+                           (setf captured-forms forms)
+                           (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map)))
 
-                     ;; Output Generation
+                     ;; Output Generation — keyed off the primary (last) file.
                      (let ((base-name (if crisp.compiler::*differentiate-p*
                                           (format nil "~a_grad" (pathname-name filepath))
                                           (pathname-name filepath))))
@@ -224,15 +247,15 @@
                                 (format t "--- Generated LLVM IR (~a): ---~%~a~%" target-backend (cffi:foreign-string-to-lisp ir-ptr))
                               (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))))))
 
-                  ;; Error Handling
+                  ;; Error Handling — report all files involved.
                   (crisp.compiler:crisp-compiler-error (c)
-                                                       (print-compiler-error c filename)
+                                                       (print-compiler-error c file-display)
                                                        (uiop:quit 1))
                   (end-of-file ()
-                               (print-compiler-error (make-condition 'crisp.compiler:crisp-unexpected-eof-error) filename)
+                               (print-compiler-error (make-condition 'crisp.compiler:crisp-unexpected-eof-error) file-display)
                                (uiop:quit 1))
                   (error (c)
-                    (print-compiler-error c filename)
+                    (print-compiler-error c file-display)
                     (uiop:quit 1)))
 
               ;; Cleanup resources

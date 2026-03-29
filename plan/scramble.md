@@ -488,14 +488,16 @@ TECHNICAL DEBT AND OVERSIGHTS
 
 Miscelleny
 ==========
-- [ ] multi-file support
+- [x] multi-file support
+- [ ] TEST-FILES[ 01-basic.crisp 11-app.crisp]  
 - [ ] ieee / fast accuracy support
 - [ ] is-uniform? and if*/when* variants
 
 
 Tensors Vectors and Matrices
 ============================
-- [ ] virtual vectors ( def-rec-vec ).  
+- [ ] (array T N)
+- [ ] ~~virtual vectors ( def-rec-vec ).~~  
 - - [ ] rename and update docs
 - - [ ] can ONLY be a member of def-record? like brand?
 - - [ ] test and support
