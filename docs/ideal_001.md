@@ -495,7 +495,8 @@ All subsequent parameters in the list are treated as output parameters and are s
 to the write-only contract within the function's scope. Following  `&out` there can be `&optional` and then `&key` paramters, these are NOT considered to be `&out` parameters.
 Note that these advanced signature constructs are order sensitive. The order is `&out => &optional => &key` and it is a compile error to order them otherwise.
 
-
+`&out` parameters can only be Storage Handles (`cell`, `vector`, `matrix` or `tensor`). 
+Any other type for an `&out` parameter is a compilation error.
 
 
 Argument Passing and Side Channels
@@ -1040,6 +1041,7 @@ This would include:
 - Scalar types (`int`, `float`, etc)
 - Hardware vector types (`float4` etc)
 - Other structs
+- Compile time sized `array` 
 - Views to large data (`cell`, `vector`, `tensor`, `matrix`)
 
 But it excludes:
@@ -1321,49 +1323,48 @@ Though there is no equivalent of `soa-vector` for records.
 
 > Implementation Note: consider changing `make-` to `marshall-` for `def-record`.
 
-`def-rec-vec`
-------------
 
-Just as `def-record` makes a virtualized struct, so does `def-rec-vec` maka a virtualized
-vector, though far simpler than either `def-record` or `vector` for that matter. 
+Array Type
+----------
 
-### Type declaration
+`(array T N)`
 
-`(def-rec-vec <TypeName> T N)`
-The `def-rec-vec` declares a new type. `T` is the element type which is limited to the basic hardware types (`float`, `long` `int4`, `half` etc). And `N` is the length of the vector. All arguments must be 
-known at compile-time. 
+In Crisp an `array` type is a 1 dimensional vector type of consecutive elements where
+both the element type `T` and the length `N` of the array are known at compile time.
 
-### `marshall-XXXX`
-`(marshall-<TypeName> a0 a1 ... aN)`
-The `marshall-XXXX` macro names the variables (ie register ids) that are bound. All `N` are required. 
+This is mostly a utility type used by some of the Crisp built-ins. Most users will be
+better served by the `vector` Storage Handle. 
+
+Like for `vector` the simple `~` accessor is available for dereferencing.
+
+```
+(let ((my-arr (array long 10)))
+  (set! (~ my-arr 0) 0)
+  (set! (~ my-arr 1) 1)
+  (return (length~ my-arr)))
+```
+
+Arrays can be direct kernel parameters. But if they are appear directly on the kernel boundary,
+they are read only, immutable.
+
+Arrays always use `:std140` alignment. `:compact` is not available. 
+
+Arrays can be elements of a struct, and can ALSO be in a record, but if used in a
+`def-record` they are automatically virtualized like the other `def-record` members 
+( which means the `:std140` alignment will not apply).
 
 ### `~`
-Like vectors, `def-rec-vec` instance support `~` for refer-by-index semantics. This can be used for both
+Like vectors, arrays support `~` for refer-by-index semantics. This can be used for both
 get and set.
-
-> Implementation Note: this mutability will likely mean we'll need to lower this to an `alloca` for LLVM.
 
 ### `length~`
 The `length~` compile time property is supported.
 
-### example
-```
-(def-rec-vec virt-arr long 5)
+### Note: soa-vector Disambiguation
 
-...
-(let ((va (marshall-virt-arr a b c d e))
-      (A   (~ va 0))
-      (B   (~ va 1))
-      (len (length~ va))) ;; <-- 5
+Crisp also has the `soa-vector` data type, where "soa" stands for "Struct of Arrays." The fixed-size `(array T N)` type is architecturally distinct from `soa-vector`. An `array` is a stack-allocated or register-backed primitive, whereas `soa-vector` is a pointer-backed Storage Handle.
 
-      (set! (~ va 2) someVal)
 
-      ...)
-```
-
-`def-rec-vec` is mostly used internally by Crisp itself when modelling advanced Storage Handle types
-like tensors and matrices.  If you are modelling your own data type and need to marshall it during `def-kernel-exact` then `def-rec-vec` might be useful to you. But for true linear access to data interchanged between the host and the kernel, use `vector`, `soa-vector` or the other provided
-Storage Handle types (`cell`, `vector`, `matrix`, `tensor`).  
 
 
 Incomplete Types
