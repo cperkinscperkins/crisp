@@ -1,0 +1,19 @@
+;; Template with type parameter T, fixed array size N=4.
+;; (array T 4) in a def-record: T is substituted at instantiation time,
+;; N stays as the literal integer 4 and never passes through unmangle.
+;; This is the primary tensor use case: shape/stride arrays templated on element type.
+
+(with-template-type (T)
+  (def-record shape-block
+    (extents (array T 4))))
+
+;; Instantiate for long (typical shape/stride type)
+(gen-shape-block long)
+
+(def-function first-extent (b)
+    (declare #'(shape-block_long => long))
+    (~ (extents~ b) 0))
+
+(def-function total-extents (b)
+    (declare #'(shape-block_long => ulong))
+    (length~ (extents~ b)))

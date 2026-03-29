@@ -91,10 +91,9 @@ better served by the `vector` Storage Handle.
 Like for `vector` the simple `~` accessor is available for dereferencing.
 
 ```
-(let ((my-arr (array long 10)))
-  (set! (~ my-arr 0) 0)
-  (set! (~ my-arr 1) 1)
-  (return (length~ my-arr)))
+(def-kernel something (arr)
+  (declare #'((array long 4) => nil))
+  (+ (~ arr 0) (~ arr 3))) 
 ```
 
 Arrays can be direct kernel parameters. But if they are appear directly on the kernel boundary,
@@ -113,7 +112,37 @@ get and set.
 ### `length~`
 The `length~` compile time property is supported.
 
+### No `make-array`
+Arrays are expected to be part of structs or records, or passed from the host when enqueing. 
+There is no `make-array` expression. 
+
+### No Nesting
+
+arrays cannot be nested in one another. And expression like `(array (array long 4) 6)` 
+will trigger a compilation error.
+
 ### Note: soa-vector Disambiguation
 
 Crisp also has the `soa-vector` data type, where "soa" stands for "Struct of Arrays." The fixed-size `(array T N)` type is architecturally distinct from `soa-vector`. An `array` is a stack-allocated or register-backed primitive, whereas `soa-vector` is a pointer-backed Storage Handle.
 
+
+TDD Tests
+=========
+
+- length~
+- - ~ deref
+- - set! (~ arr i)
+- kernel boundary arg
+- - immutability
+- - metadata?
+- - hoisting.
+- inside def-struct
+- - ~ deref and set!
+- - struct on kernel boundary => immutability
+- - hoisting?
+- inside def-record  !!
+- - ~ deref and set!
+- - record on kernel boundary => IS mutable.
+- - hoisting?
+- (cell (array long 5))
+- (array (array long 4) 5) <-- ILLEGAL

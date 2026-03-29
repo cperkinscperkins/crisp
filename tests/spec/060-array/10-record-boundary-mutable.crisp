@@ -1,0 +1,13 @@
+;; def-record at kernel boundary with an array member.
+;; Unlike structs, records at the kernel boundary ARE mutable.
+;; Verifies: write to virtual array element is permitted.
+
+(def-type out-c (cell int :address-space :global :access :read-write))
+
+(def-record stats-block
+  (counts (array int 4)))
+
+(def-kernel stats_mutable_k (b &out c)
+    (declare #'(stats-block &out out-c))
+    (set! (~ (counts~ b) 0) 42)
+    (set! (~ c) (~ (counts~ b) 0)))

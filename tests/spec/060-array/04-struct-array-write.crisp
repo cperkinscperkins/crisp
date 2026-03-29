@@ -1,0 +1,11 @@
+;; Write to an array member of a def-struct.
+;; Verifies: (set! (~ (accessor~ s) i) val) for struct array member mutation.
+;; Uses nested insertvalue: struct field index + array element index.
+
+(def-struct data-block
+  (values (array float 4)))
+
+(def-function zero-first (b)
+    (declare #'(data-block => data-block))
+    (set! (~ (values~ b) 0) 0.0)
+    (return b))

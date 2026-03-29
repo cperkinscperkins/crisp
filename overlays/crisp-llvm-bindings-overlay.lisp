@@ -7,3 +7,14 @@
 
 (in-package :crisp.llvm-bindings)
 
+;;; src/llvm-bindings.lisp
+;;; Array type support for (array T N)
+(defcfun ("LLVMArrayType" llvm-array-type) :pointer
+  "Create a fixed-size array type with COUNT elements of ELEMENT-TYPE.
+   Corresponds to LLVM's [COUNT x ELEMENT-TYPE]."
+  (element-type :pointer)
+  (count :unsigned-int))
+
+;; NOTE: Add #:llvm-array-type to the (:export ...) list in src/package.lisp
+;; for :crisp.llvm-bindings to make this symbol accessible without :: qualification.
+

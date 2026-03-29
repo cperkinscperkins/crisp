@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "nested"
+
+;; Arrays cannot be nested. (array (array T N) M) must be a compiler error.
+
+(def-function nested-illegal (x)
+    (declare (type x (array (array long 4) 6)))
+    x)

@@ -1,0 +1,11 @@
+;; def-record with an (array int 4) member - constant index access.
+;; With constant index, the compiler resolves directly to the correct SROA SSA value.
+;; No switch chain needed.
+
+(def-record stats-block
+  (counts (array int 4)))
+
+(def-function first-plus-last (b)
+    (declare #'(stats-block => int))
+    (+ (~ (counts~ b) 0)
+       (~ (counts~ b) 3)))

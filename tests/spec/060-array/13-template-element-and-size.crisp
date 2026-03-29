@@ -1,0 +1,23 @@
+;; Template with both type parameter T and integer size parameter N.
+;; (array T N) in a def-record where N is a template arg (an integer).
+;; This exercises reconstruct-one-arg in mangling.lisp: the token "4" must
+;; be reconstructed as the integer 4, not the symbol |4|.
+;; NOTE: This test may require a small fix to reconstruct-one-arg to call
+;; parse-integer on tokens before interning them as symbols.
+
+(with-template-type (T N)
+  (def-record sized-block
+    (data (array T N))))
+
+;; Instantiate: element type = float, size = 3
+(gen-sized-block float 3)
+
+(def-function block-sum (b)
+    (declare #'(sized-block_float_3 => float))
+    (+ (~ (data~ b) 0)
+       (+ (~ (data~ b) 1)
+          (~ (data~ b) 2))))
+
+(def-function block-length (b)
+    (declare #'(sized-block_float_3 => ulong))
+    (length~ (data~ b)))

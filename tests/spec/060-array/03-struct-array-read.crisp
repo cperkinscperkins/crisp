@@ -1,0 +1,12 @@
+;; def-struct with an (array float 4) member.
+;; Verifies: array as struct field, (~ (accessor~ s) i) for read access.
+
+(def-struct data-block
+  (values (array float 4)))
+
+(def-function sum-block (b)
+    (declare #'(data-block => float))
+    (+ (~ (values~ b) 0)
+       (+ (~ (values~ b) 1)
+          (+ (~ (values~ b) 2)
+             (~ (values~ b) 3)))))

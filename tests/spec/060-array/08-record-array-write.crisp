@@ -1,0 +1,11 @@
+;; Write to an element of a virtual array member in a def-record.
+;; For constant index, the compiler directly rebinds the appropriate SROA scalar.
+;; Verifies: (set! (~ (accessor~ r) i) val) for def-record virtual array mutation.
+
+(def-record stats-block
+  (counts (array int 4)))
+
+(def-function zero-first-count (b)
+    (declare #'(stats-block => stats-block))
+    (set! (~ (counts~ b) 0) 0)
+    (return b))
