@@ -7,5 +7,5 @@
 (def-type arr-c (cell (array long 5) :address-space :global :access :read-write))
 
 (def-kernel cell_of_array (c)
-    (declare #'(arr-c) forward-only)
+    (declare forward-only #'(arr-c) )
     (set! (~ (~ c) 1) (as-long 14)))
