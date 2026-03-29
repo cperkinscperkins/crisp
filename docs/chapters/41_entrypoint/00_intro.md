@@ -11,6 +11,3 @@ tells the compiler that function is a top-level API function that should not be 
 Further `entrypoint` functions are compiled "library-wise", meaning the function and all its dependencies get
 bundled together (typically in a .bc file). This results in fast compilation for any kernel that uses it.
 
-
-
-

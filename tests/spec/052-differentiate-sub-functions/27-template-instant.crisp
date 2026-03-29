@@ -1,0 +1,26 @@
+;; TEST-WITH[--differentiate]
+;; SKIP-WITH[--single-pass]: template function pre-registration requires multipass signature scan
+
+(def-function add-three-ints (a b c)
+    (declare #'(int int int => int))
+    (+ a (+ b c)))
+
+
+(with-template-type (T)
+   (def-function add-three (a b c)
+    (declare #'(T T T => T))
+    (+ a (+ b c))))
+
+
+(defmacro gen-3 (typ)
+    `(gen-add-three ,typ))
+
+(with-template-type (T)
+    (def-type out-c (cell T :address-space :global :access :read-write))
+
+    (def-kernel add_three (a b c &out res)
+        (declare #'(T T T &out (out-c T)))
+        (let ((r (add-three a b c)))
+            (set! (~ res) r))))
+
+(gen-add_three float "add_three_f")

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-28T15:55:23.980649Z
+Generated on 2026-03-29T00:56:17.562671Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -464,7 +464,7 @@ Generated on 2026-03-28T15:55:23.980649Z
 ### DEFUN `ANALYZE-DVEC-COMPONENT-REF`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (x~ v), (y~ v), (z~ v), (w~ v) — device-vector component accessors.  >    The operator symbol determines the 0-based LLVM element index (0..3).  >    Returns a semantic-extract-value node whose type is the scalar component type.  >   >    In :write mode (inside a set! target), also validates that a cell-deref  >    aggregate is not read-only.
+  > Analyzes (x~ v), (y~ v), (z~ v), (w~ v) — device-vector component accessors.  >    The operator symbol determines the 0-based LLVM element index (0..3).  >    Returns a semantic-extract-value node whose type is the scalar component type.  >   >    Brand-instance gensyms (e.g. VALUE-T-204 derived from float2) are resolved  >    to their concrete device-vector base type via *type-derivation-graph* before  >    width and component-scalar extraction.  >   >    In :write mode (inside a set! target), also validates that a cell-deref  >    aggregate is not read-only.
 
 
 ---
@@ -1980,7 +1980,7 @@ Generated on 2026-03-28T15:55:23.980649Z
 ### DEFUN `PARSE-CLI-ARGS`
 - **Args**: `(ARGS)`
 
-  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets).
+  > Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets).  > Supports one or more .crisp source files: the last file is treated as the primary (determines output name).
 
 
 ---
@@ -2002,7 +2002,7 @@ Generated on 2026-03-28T15:55:23.980649Z
 - **Args**: `(FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P
               HOIST-TARGETS)`
 
-  > Compiles the given files, iterating over requested targets, then invokes hoisters.
+  > Compiles the given files as a single unit (in order), iterating over requested targets, then invokes hoisters.  > When multiple files are given, forms are read from each file in order and compiled together as if they  > had been one file.  The LAST file is the primary: its name determines output file names and the debug  > compile-unit filepath.
 
 
 ---

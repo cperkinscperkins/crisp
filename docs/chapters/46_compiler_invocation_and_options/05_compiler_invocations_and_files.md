@@ -11,5 +11,13 @@ It is an error to use both these flags together.
 
 Also note that the metadata and hoisting output is always output per-orchestration. They are unaffected by either flag. 
 
+### multiple .crisp files
+
+`$ crisp-compile.exe library.crisp app.crisp`
+
+Multiple `.crisp` files can be sent to the compiler at one time. It reads them in order and then 
+compiles. Note that while the compiler does default to multi-pass by default, macros (`defmacro`) 
+are ALWAYS order sensitive, multi-pass or single-pass. 
+
 
 
