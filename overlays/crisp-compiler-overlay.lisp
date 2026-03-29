@@ -213,3 +213,245 @@ compile-unit filepath."
 (in-package :crisp.compiler)
 
 
+;; ============================================================
+;; %pre-register-differentiable-fns — add non-HOF template support
+;; src/analysis/core.lisp
+;; ============================================================
+;;
+;; The original with-template-type branch only pre-registered HOF def-functions
+;; (those that use funcall). Non-HOF template functions (e.g. a simple add-three
+;; defined inside with-template-type) were silently skipped, causing "function X
+;; is not differentiable" errors when called from a differentiated kernel in a
+;; separate file. We add an else branch: if no HOF param was found, register the
+;; template function optimistically with n-float-params = (number of non-&OUT params),
+;; n-return = 1. This is a placeholder; the concrete instantiation will update
+;; *differentiable-functions* with the real count before the backward walk runs.
+
+(defun %pre-register-differentiable-fns (forms)
+  "When *differentiate-p* is T, walk FORMS for def-function forms and
+pre-register them in *differentiable-functions* (and *differentiable-hof-store*
+for HOF functions). Handles top-level def-function, progn, and with-template-type.
+Guards parse-function-declarations against unknown-type errors from brand types
+that are not yet registered at pre-registration time."
+  (when *differentiate-p*
+    (cl:dolist (form forms)
+      (cond
+        ;; Top-level def-function: existing HOF-aware logic
+        ((and (consp form) (eq (car form) 'def-function))
+         (cl:let* ((name (second form))
+                   (params (third form))
+                   (body-and-loc (cdddr form))
+                   (declare-forms (cl:loop for f in body-and-loc
+                                          while (and (listp f) (eq (car f) 'declare))
+                                          collect f))
+                   (declarations (cl:loop for f in declare-forms append (rest f)))
+                   (is-system (member '(crisp-system-generated) declarations :test #'equal)))
+           (unless (or is-system (%fn-name-is-grad-p name))
+             (handler-case
+               (multiple-value-bind (env return-types)
+                   (parse-function-declarations params declarations)
+                 (cl:let* ((float-param-entries
+                            (cl:loop for pd in env
+                                     when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                               (%crisp-float-type-p (parameter-def-type pd)))
+                                     collect pd))
+                           (n-float-params (length float-param-entries))
+                           (return-types-nv (remove nil return-types))
+                           (n-return (length return-types-nv))
+                           (fn-param-entries
+                            (cl:loop for pd in env
+                                     for i from 0
+                                     when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                               (%crisp-function-type-p (parameter-def-type pd)))
+                                     collect (cons i pd)))
+                           (is-hof (consp fn-param-entries)))
+                   (when (> n-float-params 0)
+                     (if is-hof
+                         (cl:let* ((fn-param-idx  (car (car fn-param-entries)))
+                                   (fn-param-sym  (parameter-def-name (cdr (car fn-param-entries))))
+                                   (float-param-syms (mapcar #'parameter-def-name float-param-entries))
+                                   (body-forms (cl:loop for f in body-and-loc
+                                                        unless (and (listp f) (eq (car f) 'declare))
+                                                        collect f))
+                                   (clean-body  (cl:loop for f in body-forms
+                                                         unless (and (atom f) (not (symbolp f)))
+                                                         collect f)))
+                           (log:info "AUTODIFF: Pre-registering HOF ~a (fn-param=~a idx=~a)"
+                                     name fn-param-sym fn-param-idx)
+                           (setf (gethash name *differentiable-hof-store*)
+                                 (list :param-syms       (cl:loop for pd in env
+                                                                  collect (parameter-def-name pd))
+                                       :fn-param-idx     fn-param-idx
+                                       :fn-param-sym     fn-param-sym
+                                       :float-param-syms float-param-syms
+                                       :body-forms       clean-body))
+                           (setf (gethash name *differentiable-functions*)
+                                 (list :hof t
+                                       :n-float-params n-float-params
+                                       :n-return n-return)))
+                         (cl:let* ((pkg (symbol-package name))
+                                   (bkwd-name (intern (format nil "~A_GRAD" (symbol-name name)) pkg)))
+                           (log:info "AUTODIFF: Pre-registering ~a -> ~a (n-fp=~a n-ret=~a)"
+                                     name bkwd-name n-float-params n-return)
+                           (setf (gethash name *differentiable-functions*)
+                                 (list :bkwd-name bkwd-name
+                                       :n-float-params n-float-params
+                                       :n-return n-return)))))))
+               (error (e)
+                 (log:debug "AUTODIFF: Skipping pre-registration of ~a -- type parse error: ~a" name e))))))
+
+        ;; progn: recurse
+        ((and (consp form) (eq (car form) 'progn))
+         (%pre-register-differentiable-fns (rest form)))
+
+        ;; with-template-type: walk body for def-functions using funcall scanning.
+        ;; Cannot use parse-function-declarations here -- types contain T placeholder.
+        ;; HOF branch: funcall detected -> register in *differentiable-hof-store*.
+        ;; Non-HOF branch: register optimistically; concrete instantiation will update
+        ;;   the entry with accurate counts before the backward walk runs.
+        ((and (consp form) (eq (car form) 'with-template-type))
+         (cl:dolist (bform (cddr form))   ; skip 'with-template-type' and params list
+           (when (and (consp bform) (eq (car bform) 'def-function))
+             (cl:let* ((name        (second bform))
+                       (params      (third bform))
+                       (body-and-loc (cdddr bform))
+                       (declare-forms (cl:loop for f in body-and-loc
+                                               while (and (listp f) (eq (cl:first f) 'declare))
+                                               collect f))
+                       (fn-body     (cl:nthcdr (length declare-forms) body-and-loc))
+                       fn-param-idx
+                       fn-param-sym)
+               ;; Detect HOF param by looking for (funcall <param> ...) in body
+               (cl:loop for p in params
+                        for i from 0
+                        do (when (%tree-has-funcall-p fn-body p)
+                             (setf fn-param-idx i)
+                             (setf fn-param-sym p)
+                             (cl:return)))
+               (cond
+                 ;; HOF template: register in hof-store (existing behavior)
+                 ((and fn-param-idx
+                       (not (gethash name *differentiable-functions*)))
+                  (log:info "AUTODIFF: Pre-registering HOF template ~a via with-template-type (fn-param=~a idx=~a)"
+                            name fn-param-sym fn-param-idx)
+                  (setf (gethash name *differentiable-hof-store*)
+                        (list :param-syms       params
+                              :fn-param-idx     fn-param-idx
+                              :fn-param-sym     fn-param-sym
+                              :float-param-syms (cl:loop for p in params
+                                                         for i from 0
+                                                         unless (= i fn-param-idx)
+                                                         collect p)
+                              :body-forms       fn-body))
+                  (setf (gethash name *differentiable-functions*)
+                        (list :hof t
+                              :n-float-params (1- (length params))
+                              :n-return 1)))
+                 ;; Non-HOF template: register optimistically.
+                 ;; Types are T placeholders so we cannot parse them; treat all
+                 ;; non-&OUT params as potentially float. Concrete instantiation
+                 ;; will overwrite this entry with accurate counts.
+                 ((not (gethash name *differentiable-functions*))
+                  (cl:let* ((n-params (cl:count-if
+                                       (lambda (p)
+                                         (not (string-equal (symbol-name p) "&OUT")))
+                                       params))
+                            (pkg      (symbol-package name))
+                            (bkwd-name (intern (format nil "~A_GRAD" (symbol-name name)) pkg)))
+                    (log:info "AUTODIFF: Pre-registering non-HOF template ~a via with-template-type (n-params=~a, optimistic)"
+                              name n-params)
+                    (setf (gethash name *differentiable-functions*)
+                          (list :bkwd-name      bkwd-name
+                                :n-float-params n-params
+                                :n-return       1)))))))))))))
+
+
+;; ============================================================
+;; analyze-dvec-component-ref — resolve brand-instance types to base dvec name
+;; src/analysis/core.lisp
+;; ============================================================
+;;
+;; register-derived-type stores brand-instance gensyms (e.g. VALUE-T-204
+;; derived from float2) into *crisp-types* inheriting the :device-vector
+;; category.  The original analyze-dvec-component-ref extracted vector width
+;; from the last character of arg-type's symbol name, which is meaningless for
+;; gensym'd names like "VALUE-T-204" or "VALUE-T-220".  Fix: resolve the type
+;; to its concrete base via *type-derivation-graph* before extracting width and
+;; component scalar type.
+
+(defun analyze-dvec-component-ref (expr env context location)
+  "Analyzes (x~ v), (y~ v), (z~ v), (w~ v) — device-vector component accessors.
+   The operator symbol determines the 0-based LLVM element index (0..3).
+   Returns a semantic-extract-value node whose type is the scalar component type.
+
+   Brand-instance gensyms (e.g. VALUE-T-204 derived from float2) are resolved
+   to their concrete device-vector base type via *type-derivation-graph* before
+   width and component-scalar extraction.
+
+   In :write mode (inside a set! target), also validates that a cell-deref
+   aggregate is not read-only."
+  (let* ((op       (first expr))
+         (op-name  (symbol-name op))
+         (index    (cond ((cl:string= op-name "X~") 0)
+                         ((cl:string= op-name "Y~") 1)
+                         ((cl:string= op-name "Z~") 2)
+                         ((cl:string= op-name "W~") 3)
+                         (t (error "analyze-dvec-component-ref: unknown accessor ~a" op))))
+         ;; Always read the aggregate; the write context is on the component, not the vector.
+         (arg-node (let ((*analysis-access-mode* :read))
+                     (analyze-expression (second expr) env context
+                                         (append location '(1)))))
+         (arg-type (semantic-node-type arg-node))
+         (ct       (%dvec-type-lookup arg-type)))
+
+    ;; If the argument is NOT a device-vector:
+    ;; - When ct is nil (user-defined struct/record not in *crisp-types*), or
+    ;;   ct is a struct/record category — fall back to the function call path
+    ;;   so that user-defined x~/y~/z~/w~ struct accessors still work.
+    ;; - For clearly non-aggregate built-in types (scalar, void, pointer, meta)
+    ;;   signal a type error immediately so the user gets a clear message.
+    (unless (and ct (eq (crisp-type-category ct) :device-vector))
+      (let ((should-fallback
+             (or (null ct)
+                 (member (crisp-type-category ct) '(:struct :record)))))
+        (if should-fallback
+            (return-from analyze-dvec-component-ref
+              (analyze-function-call op expr env context location))
+            (error 'crisp-compiler-error
+                   :message (format nil "~a requires a device-vector argument; got ~a"
+                                    (cl:string-downcase op-name) arg-type)
+                   :source-location location))))
+
+    ;; Resolve brand-instance / derived types to their concrete device-vector
+    ;; base type for width and component-scalar extraction.
+    ;; e.g. VALUE-T-204 (descendant of float2) -> float2 -> width 2, comp "FLOAT"
+    (let* ((dvec-type (let ((node (gethash arg-type *type-derivation-graph*)))
+                        (if node (type-node-base-type node) arg-type)))
+           (type-name (symbol-name dvec-type))
+           (width     (cl:digit-char-p (cl:char type-name (cl:1- (cl:length type-name))))))
+
+      ;; Validate: component index must be in range for this vector width.
+      (unless (and width (< index width))
+        (error 'crisp-compiler-error
+               :message (format nil
+                 "~a is out of range for ~a (width ~a); valid accessors: ~a"
+                 (cl:string-downcase op-name) arg-type width
+                 (subseq '("x~" "y~" "z~" "w~") 0 (or width 0)))
+               :source-location location))
+
+      ;; In write mode: check that a cell-dereference aggregate is writable.
+      (when (and (eq *analysis-access-mode* :write) (semantic-aref-p arg-node))
+        (%dvec-check-cell-write-access arg-node location))
+
+      ;; Component scalar type: strip trailing width digit(s) from the CONCRETE type name.
+      ;; e.g.  "FLOAT2" -> "FLOAT",  "USHORT4" -> "USHORT",  "HALF3" -> "HALF"
+      (let* ((base-name (cl:string-right-trim "1234" type-name))
+             (comp-sym  (intern base-name (find-package :crisp-language))))
+        (log:debug "analyze-dvec-component-ref: ~a on ~a (dvec ~a) -> index ~a, comp ~a"
+                   op-name arg-type dvec-type index comp-sym)
+        (make-semantic-extract-value
+         :type           comp-sym
+         :aggregate-node arg-node
+         :index          index
+         :source-location location)))))
+

@@ -5,7 +5,7 @@
     (def-type out-c (cell T :address-space :global :access :read-write))
 
     (def-kernel add_three (a b c &out res)
-        (declare #'(T T T &out out-c))
+        (declare #'(T T T &out (out-c T)))
         (let ((r (add-three a b c)))
             (set! (~ res) r))))
 
