@@ -1,0 +1,9 @@
+;; length~ on a struct array member.
+;; (length~ (accessor~ s)) extracts N from the member's type at compile time.
+
+(def-struct data-block
+  (values (array float 4)))
+
+(def-function block-length (b)
+    (declare #'(data-block => ulong))
+    (length~ (values~ b)))

@@ -433,14 +433,16 @@
 (defun parse-type-specifier (spec)
   "Parses a single type specifier, handling basic types, parameterized types,
    function types like #'(int => int), and brand type applications like (token-t s).
-   Extended: when a type alias resolves to a raw function type, parses it to :function-type."
+   Extended: (array T N) is returned as-is (not mangled) before the generic path."
   (cond
-   ;; 0. Type Aliases: resolve and check. If the alias resolves to a function type,
-   ;;    return the parsed :function-type form so funcall analysis works correctly.
+   ;; (array T N) — return as a list spec unchanged, not mangled
+   ((%array-type-p spec)
+    spec)
+
+   ;; 0. Type Aliases
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
      (cl:let ((resolved (resolve-type-alias spec)))
        (valid-type-p resolved)
-       ;; If resolved is a raw function type form, parse it to :function-type
        (if (and (consp resolved) (eq (cl:first resolved) 'common-lisp:function))
            (cl:let* ((sig (if (listp (second resolved)) (second resolved) (rest resolved)))
                      (arrow-pos (position-if (lambda (x) (and (symbolp x)

@@ -38,6 +38,7 @@ This would include:
 - Scalar types (`int`, `float`, etc)
 - Hardware vector types (`float4` etc)
 - Other structs
+- Compile time sized `array` 
 - Views to large data (`cell`, `vector`, `tensor`, `matrix`)
 
 But it excludes:

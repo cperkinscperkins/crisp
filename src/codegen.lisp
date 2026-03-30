@@ -1281,73 +1281,124 @@
          (new-struct-val (llvm-build-insert-value builder struct-val new-member-val member-index "struct_update")))
     (values new-struct-val nil)))
 
+
+
 (defmethod generate-node-ir ((node semantic-aref) builder module var-env di-builder di-scope location-map)
-  "Generates IR for array access (aref). Currently supports CELL types."
-  (let* ((array-node (semantic-aref-array-node node))
-         (index-node (semantic-aref-index-node node))
-         (array-type (semantic-node-type array-node))
+  "Generates IR for array/cell access (aref / ~).
+   Case 1: CELL parameterized type  — existing behaviour unchanged.
+   Case 2: (array T N) fixed-size array — GEP into the alloca (or pointer).
+     For a simple var-read of type (array T N), the alloca is fetched directly
+     from var-env so we never load the aggregate value before GEP-ing into it.
+     Returns (loaded-elem, nil, elem-ptr) so that set! can store through the pointer."
+  (let* ((array-node   (semantic-aref-array-node node))
+         (index-node   (semantic-aref-index-node node))
+         ;; Unwrap single-element list types produced by function-call return types
+         ;; e.g. ((array float 4)) -> (array float 4)
+         (array-type   (let ((raw (semantic-node-type array-node)))
+                         (if (and (listp raw) (= (cl:length raw) 1) (listp (cl:first raw)))
+                             (cl:first raw)
+                             raw)))
          (element-type (semantic-aref-type node))
-         (cell-val (generate-node-ir array-node builder module var-env di-builder di-scope location-map))
-         (index-val (generate-node-ir index-node builder module var-env di-builder di-scope location-map)))
+         (index-val    (generate-node-ir index-node builder module var-env
+                                         di-builder di-scope location-map)))
 
     (let ((cell-spec (let* ((resolved (resolve-type-alias array-type))
-                            (canon (canonicalize-type-specifier resolved)))
+                            (canon    (canonicalize-type-specifier resolved)))
                        (cond
-                        ;; Case A: Already (CELL ...)
-                        ((and (listp canon) (eq (first canon) 'cell)) canon)
-                        ;; Case B: (CELL_LONG_...) -> Unmangle content
-                        ((and (listp canon) (= (length canon) 1) (symbolp (first canon)))
-                          (unmangle-template-struct-name (first canon)))
-                        ;; Case C: Symbol CELL_LONG_...
+                        ((and (listp canon) (eq (cl:first canon) 'cell)) canon)
+                        ((and (listp canon) (= (cl:length canon) 1) (symbolp (cl:first canon)))
+                         (unmangle-template-struct-name (cl:first canon)))
                         ((symbolp canon)
-                          (unmangle-template-struct-name canon))
+                         (unmangle-template-struct-name canon))
                         (t canon)))))
+
       (cond
-       ;; Case 1: CELL parameterized type
-       ((and (listp cell-spec) (eq (first cell-spec) 'cell))
-         (let* (;; Use element-type from analysis if reliable, otherwise safe to derive
-                (elem-type-spec element-type)
-                (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
-                (mangled-struct-name (mangle-template-struct-name (first cell-spec) (rest cell-spec))))
+       ;; Case 2: (array T N) — fixed-size array GEP
+       ((%array-type-p (resolve-type-alias array-type))
+        (let* ((resolved-arr-type (resolve-type-alias array-type))
+               (elem-type-spec    (cl:second resolved-arr-type))
+               ;; count may be a symbol like |5| after unmangle; coerce to integer
+               (count-raw         (cl:third  resolved-arr-type))
+               (count             (etypecase count-raw
+                                    (integer count-raw)
+                                    (symbol  (parse-integer (symbol-name count-raw)))))
+               (elem-llvm-type    (crisp-type-to-llvm-type elem-type-spec module))
+               (arr-llvm-type     (crisp.llvm-bindings::llvm-array-type elem-llvm-type count))
+               ;; Get the array pointer.
+               ;; For a direct var-read, grab the alloca from var-env so we avoid
+               ;; loading the aggregate value (which is useless for GEP).
+               ;; For a nested expression that returns a pointer (e.g. cell-of-array),
+               ;; use that pointer directly.
+               ;; For a nested expression that returns an aggregate value (e.g. struct member
+               ;; extraction via extractvalue), alloca a temp slot, store the value, and
+               ;; use the slot pointer for GEP.
+               (arr-ptr
+                (if (semantic-var-read-p array-node)
+                    (let ((alloca (gethash (semantic-var-read-name array-node) var-env)))
+                      (unless alloca
+                        (error "array aref: variable ~a not found in var-env"
+                               (semantic-var-read-name array-node)))
+                      alloca)
+                    (let ((sub-val (generate-node-ir array-node builder module var-env
+                                                     di-builder di-scope location-map)))
+                      (if (llvm-type-kind-is-pointer? (llvm-type-of sub-val))
+                          ;; Already a pointer (e.g. cell-of-array returns ptr)
+                          sub-val
+                          ;; Aggregate value (e.g. struct member) — spill to a temp alloca
+                          (let ((slot (llvm-build-alloca builder arr-llvm-type "arr_tmp")))
+                            (llvm-build-store builder sub-val slot)
+                            slot)))))
+               ;; Extend index to i64 for GEP
+               (idx-i64 (llvm-build-sext builder index-val (llvm-int64-type) "arr_idx")))
 
-           (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
-           (let ((cell-struct-type (ensure-struct-llvm-type mangled-struct-name)))
-             ;; Phase 5: Cell types are now Records passed by value.
-             ;; We must EXTRACT members (Parent, Offset) from the aggregate value.
-             ;; Do NOT use GEP on the cell value itself.
-             (log:info "semantic-aref: Using ExtractValue to access Cell Record members.")
-             ;; 1. Get PARENT (index 0) -> STORAGE Value
-             (let* ((parent-val (llvm-build-extract-value builder cell-val 0 "parent_val")))
+          (log:info "array-aref: type=(array ~a ~a) ptr=~a idx=~a"
+                    elem-type-spec count arr-ptr idx-i64)
 
-               ;; Extract STORAGE.PTR (index 0 of STORAGE)
-               (let* ((base-ptr (llvm-build-extract-value builder parent-val 0 "base_ptr")))
+          ;; GEP [N x T]* arr-ptr, i32 0, i64 idx
+          (cffi:with-foreign-object (indices :pointer 2)
+            (setf (cffi:mem-aref indices :pointer 0)
+                  (llvm-const-int (llvm-int32-type) 0 nil))  ; outer deref
+            (setf (cffi:mem-aref indices :pointer 1) idx-i64) ; element index
+            (let* ((elem-ptr (llvm-build-in-bounds-gep2
+                              builder arr-llvm-type arr-ptr indices 2 "arr_elem_ptr"))
+                   (loaded   (llvm-build-load2 builder elem-llvm-type elem-ptr "arr_elem")))
+              (values loaded nil elem-ptr)))))
 
-                 ;; 2. Get OFFSET (index 1 of CELL)
-                 (let* ((cell-offset (llvm-build-extract-value builder cell-val 1 "cell_offset")))
+       ;; Case 1: CELL parameterized type — original behaviour
+       ((and (listp cell-spec) (eq (cl:first cell-spec) 'cell))
+        (let* ((cell-val       (generate-node-ir array-node builder module var-env
+                                                 di-builder di-scope location-map))
+               (elem-type-spec element-type)
+               (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
+               (mangled-struct-name (mangle-template-struct-name (cl:first cell-spec)
+                                                                  (cl:rest cell-spec))))
+          (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
+          (ensure-struct-llvm-type mangled-struct-name) ; ensure the LLVM type is registered
+          (let ()
+            (log:info "semantic-aref: Using ExtractValue to access Cell Record members.")
+            (let* ((parent-val  (llvm-build-extract-value builder cell-val 0 "parent_val"))
+                   (base-ptr    (llvm-build-extract-value builder parent-val 0 "base_ptr"))
+                   (cell-offset (llvm-build-extract-value builder cell-val 1 "cell_offset"))
+                   (elem-size   (llvm-size-of elem-llvm-type))
+                   (index-i64   (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
+                   (index-bytes (llvm-build-mul builder index-i64 elem-size "index_bytes"))
+                   (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
+              (cffi:with-foreign-object (indices :pointer 1)
+                (setf (cffi:mem-aref indices :pointer 0) total-offset)
+                (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2
+                                      builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8"))
+                       (ptr-as       (llvm-get-pointer-address-space
+                                      (llvm-type-of final-ptr-i8)))
+                       (target-ptr   (llvm-build-bit-cast
+                                      builder final-ptr-i8
+                                      (llvm-pointer-type elem-llvm-type ptr-as) "target_ptr"))
+                       (loaded-val   (llvm-build-load2
+                                      builder elem-llvm-type target-ptr "val")))
+                  (values loaded-val nil target-ptr)))))))
 
-                   ;; Calculate Element Size
-                   (let* ((elem-size (llvm-size-of elem-llvm-type))
-                          ;; Extend Index to i64 (assume s64 for now)
-                          (index-i64 (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
-                          ;; Index Bytes = Index * Size
-                          (index-bytes (llvm-build-mul builder index-i64 elem-size "index_bytes"))
-                          ;; Total Offset = CellOffset + IndexBytes
-                          (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
+       (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)"
+                 array-type cell-spec))))))
 
-                     ;; Final Pointer = GEP(BasePtr, TotalOffset)
-                     (cffi:with-foreign-object (indices :pointer 1)
-                                               (setf (cffi:mem-aref indices :pointer 0) total-offset)
-                                               (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8")))
-
-                                                 ;; Cast to Element and Load
-                                                 (let* ((ptr-as (llvm-get-pointer-address-space (llvm-type-of final-ptr-i8)))
-                                                        (target-ptr (llvm-build-bit-cast builder final-ptr-i8 (llvm-pointer-type elem-llvm-type ptr-as) "target_ptr"))
-                                                        (loaded-val (llvm-build-load2 builder elem-llvm-type target-ptr "val")))
-
-                                                   ;; Return loaded val, nil (loc), AND pointer (for set!)
-                                                   (values loaded-val nil target-ptr)))))))))))
-
-       (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)" array-type cell-spec))))))
 
 (defmethod generate-node-ir ((node semantic-sizeof) builder module var-env di-builder di-scope location-map)
   "Generates IR for a sizeof(T) expression. Returns an i64 constant."

@@ -454,11 +454,42 @@
         (make-semantic-literal :value-type 'int :value 1 :source-location location)
         (make-semantic-literal :value-type 'int :value 0 :source-location location))))
 
+
+
+(defun analyze-length-tilde-expression (expr env context location)
+  "Analyzes (length~ arr) — returns the compile-time array length N as a ulong literal.
+   The argument must be a variable or expression whose type resolves to (array T N).
+   Signals a crisp-compiler-error if the argument is not an array type."
+  (unless (= (cl:length expr) 2)
+    (error 'crisp-compiler-error
+           :message "length~ expects exactly 1 argument: (length~ arr)"
+           :source-location location))
+  (let* ((arg-node  (analyze-expression (cl:second expr) env context location))
+         (arg-type  (let ((raw (semantic-node-type arg-node)))
+                      ;; Unwrap single-element list from function call return types
+                      (resolve-type-alias
+                       (if (and (listp raw) (= (cl:length raw) 1) (listp (cl:first raw)))
+                           (cl:first raw)
+                           raw)))))
+    (unless (%array-type-p arg-type)
+      (error 'crisp-compiler-error
+             :message (format nil "length~~ requires an (array T N) type, got ~a" arg-type)
+             :source-location location))
+    (let* ((n-raw (cl:third arg-type))
+           ;; n-raw may be a symbol like |5| after unmangle; coerce to integer
+           (n (etypecase n-raw
+                (integer n-raw)
+                (symbol  (parse-integer (symbol-name n-raw))))))
+      (log:info "length~~: type=~a -> N=~a" arg-type n)
+      (make-semantic-literal :value-type 'ulong
+                             :value (coerce n '(unsigned-byte 64))
+                             :source-location location))))
+
 (defun register-control-analyzers ()
+  "Registers all control flow expression analyzers, including length~ for arrays."
   (def-expression-analyzer function analyze-function-literal)
   (def-expression-analyzer common-lisp:function analyze-function-literal)
   (def-expression-analyzer funcall analyze-funcall-expression)
-
   (def-expression-analyzer let analyze-let-expression)
   (def-expression-analyzer common-lisp:let analyze-let-expression)
   (def-expression-analyzer let* analyze-let-expression)
@@ -467,7 +498,6 @@
   (def-expression-analyzer sizeof analyze-sizeof-expression)
   (def-expression-analyzer compiler-no-op analyze-compiler-no-op)
   (def-expression-analyzer is-set? analyze-is-set-expression)
-
   (def-expression-analyzer if analyze-if-expression)
   (def-expression-analyzer when analyze-when-expression)
   (def-expression-analyzer common-lisp:when analyze-when-expression)
@@ -477,11 +507,15 @@
   (def-expression-analyzer explicit-return analyze-return-expression)
   (def-expression-analyzer semantic-return analyze-return-expression)
   (def-expression-analyzer quote analyze-quote)
-
   (def-expression-analyzer if+ analyze-static-if-expression)
   (def-expression-analyzer when+ analyze-static-when-expression)
   (def-expression-analyzer unless+ analyze-static-unless-expression)
-
   (def-expression-analyzer def-function analyze-nested-def-function)
   (def-expression-analyzer template-instantiation analyze-template-instantiation)
-  (def-expression-analyzer common-lisp:eval-when analyze-eval-when))
+  (def-expression-analyzer common-lisp:eval-when analyze-eval-when)
+  ;; Phase 2: array length~ special form
+  ;; Register in both packages: source is read in :crisp-language, overlay runs in :crisp.compiler.
+  (let ((sym-cl (intern "LENGTH~" (find-package :crisp-language)))
+        (sym-cc (intern "LENGTH~" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-length-tilde-expression)
+    (setf (gethash sym-cc *expression-analyzers*) #'analyze-length-tilde-expression)))

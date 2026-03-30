@@ -1,0 +1,8 @@
+;; length~ on a kernel boundary array returns N as a compile-time ulong constant.
+;; Verifies: (length~ arr) resolves statically from the type spec.
+
+(def-type out-c (cell ulong :address-space :global :access :read-write))
+
+(def-kernel arr_length_k (arr &out c)
+    (declare forward-only #'((array long 4) &out out-c))
+    (set! (~ c) (length~ arr)))

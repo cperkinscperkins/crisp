@@ -870,9 +870,43 @@ in single-pass mode."
                       (setf (gethash (string-upcase (symbol-name fn-name)) *struct-mutating-functions*) t)))))))))))
 
 
+;;; src/analysis/core.lisp
+(defvar *boundary-array-params* nil
+  "Dynamic variable: list of uppercase param name strings that are (array T N)
+   params at the current kernel boundary. Non-nil only when compiling an
+   entry-point kernel. Nil in regular functions.")
+
+;;; src/analysis/core.lisp
+(defun %check-aref-boundary-mutation (aref-node location)
+  "Called when a semantic-aref is the target of a set!.
+   Error 01: If the array-node is a direct var-read in *boundary-array-params*, error.
+   Error 02: If the array-node is a call (accessor) whose first arg is a boundary struct, error."
+  (when (semantic-aref-p aref-node)
+    (let ((array-node (semantic-aref-array-node aref-node)))
+      ;; Error 01: direct kernel boundary array param
+      (when (and *boundary-array-params* (semantic-var-read-p array-node))
+        (let ((vname-str (string-upcase (symbol-name (semantic-var-read-name array-node)))))
+          (when (member vname-str *boundary-array-params* :test #'string=)
+            (error 'crisp-compiler-error
+                   :message (format nil "Cannot write to array parameter '~(~a~)': (array T N) parameters at kernel boundary are immutable"
+                                    vname-str)
+                   :source-location location))))
+      ;; Error 02: array extracted from a boundary struct param
+      (when (and *boundary-struct-params* (semantic-call-p array-node))
+        (dolist (arg (semantic-call-args array-node))
+          (when (semantic-var-read-p arg)
+            (let ((vname-str (string-upcase (symbol-name (semantic-var-read-name arg)))))
+              (when (member vname-str *boundary-struct-params* :test #'string=)
+                (error 'crisp-compiler-error
+                       :message (format nil "Cannot write to array member of boundary struct '~(~a~)': struct parameters at kernel boundary are immutable"
+                                        vname-str)
+                       :source-location location)))))))))
+
+;;; src/analysis/core.lisp
+;;; Redefine internal-def-function to also populate *boundary-array-params*.
 (defun internal-def-function (name params declarations body location)
   "Wrapper around internal-compile-function. Detects kernel entry-points and
-   binds *boundary-struct-params* to enforce struct immutability at the boundary."
+   binds *boundary-struct-params* and *boundary-array-params* to enforce immutability."
   (log:info "Analyzing function ~s" name)
 
   (when *differentiate-p*
@@ -889,16 +923,24 @@ in single-pass mode."
     (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
            (is-entry-p (loop for d in declarations
                              thereis (and (listp d)
-                                          (symbolp (first d))
-                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+                                          (symbolp (cl:first d))
+                                          (string-equal (symbol-name (cl:first d)) "ENTRY-POINT"))))
            (*boundary-struct-params*
              (if is-entry-p
                  (loop for param in explicit-env
                        when (%boundary-struct-type-p (parameter-def-type param))
                        collect (string-upcase (symbol-name (parameter-def-name param))))
-                 *boundary-struct-params*)))
+                 *boundary-struct-params*))
+           (*boundary-array-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%array-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-array-params*)))
       (when (and is-entry-p *boundary-struct-params*)
             (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
+      (when (and is-entry-p *boundary-array-params*)
+            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
       (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
 
 

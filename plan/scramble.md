@@ -486,6 +486,8 @@ TECHNICAL DEBT AND OVERSIGHTS
         maybe just x~, y~, z~ and w~.  
         or (~ v <index>)
 
+- [ ] AutoDiff fix: Redesign so gradient cells are always cell float regardless of primal type, and generate zero backward kernels for integer inputs. This is the "mathematically correct" approach but requires more work.
+
 Miscelleny
 ==========
 - [x] multi-file support
@@ -496,11 +498,10 @@ Miscelleny
 
 Tensors Vectors and Matrices
 ============================
-- [ ] (array T N)
-- [ ] ~~virtual vectors ( def-rec-vec ).~~  
-- - [ ] rename and update docs
-- - [ ] can ONLY be a member of def-record? like brand?
-- - [ ] test and support
+- [x] (array T N)
+- - [x] rename and update docs
+- - [x] can ONLY be a member of def-record? like brand?
+- - [x] test and support
 - [ ] tensors and vectors and matrices
 
 

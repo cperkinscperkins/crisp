@@ -10,79 +10,79 @@
 
 (defun get-std140-base-alignment (type-spec)
   "Returns the base alignment (N) for a given type according to std140 rules.
-   For scalars, N is the size of the scalar.
-   For vectors, it is 2N or 4N.
-   For arrays/structs, it is rounded up to vec4 alignment (16).
-   Resolves both type aliases and derived types to their physical base."
-  ;; Resolve type aliases first, then derived types via DAG
+   Extended to handle (array T N): arrays align to 16 bytes (vec4) per std140."
   (cl:let* ((alias-resolved (resolve-type-alias type-spec))
             (resolved-type (get-type-base alias-resolved)))
     (cl:cond
+      ;; (array T N) -> 16-byte alignment per std140 array rules
+      ((%array-type-p type-spec) 16)
+      ((%array-type-p alias-resolved) 16)
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
       ((or (eq resolved-type 'char) (eq resolved-type 'uchar)) 1)
-      ((or (eq resolved-type 'short) (eq resolved-type 'ushort) (eq resolved-type 'half) (eq resolved-type 'bfloat16)) 2)
-      ;; TODO: Handle vectors here (will need vector support first)
-      ((or (eq resolved-type 'bool)) 4) ;; booleans are 4 bytes in std140
-      ((eq type-spec 'c-pointer) 8) ;; c-pointer is 8 bytes
-      ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
-      ;; Cells are pointers (8 bytes) - Check mangled name
+      ((or (eq resolved-type 'short) (eq resolved-type 'ushort)
+           (eq resolved-type 'half) (eq resolved-type 'bfloat16)) 2)
+      ((or (eq resolved-type 'bool)) 4)
+      ((eq type-spec 'c-pointer) 8)
+      ((and (consp type-spec) (eq (cl:first type-spec) 'c-pointer)) 8)
       ((and (symbolp type-spec)
-            (> (length (symbol-name type-spec)) 5)
-            (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
+            (> (cl:length (symbol-name type-spec)) 5)
+            (string-equal (cl:subseq (symbol-name type-spec) 0 5) "CELL_"))
        8)
-      ;; Structs align to 16 bytes (vec4)
       ((gethash type-spec *crisp-structs*) 16)
-      ;; Parameterized Structs (e.g. (POINT INT))
       ((and (consp type-spec) (valid-type-p type-spec))
-       (cl:let ((base (first type-spec)))
+       (cl:let ((base (cl:first type-spec)))
          (cl:cond
-           ;; Cells are pointers (8 bytes aligned to 8)
            ((string-equal (symbol-name base) "CELL") 8)
            (t
-            (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+            (cl:let ((mangled (mangle-template-struct-name (cl:first type-spec) (cl:rest type-spec))))
               (if (gethash mangled *crisp-structs*)
                   16
                   (error "Valid type ~a but struct def not found after check alignment." type-spec)))))))
-      (t
-       (error "Unknown type for alignment: ~a" type-spec)))))
+      (t (error "Unknown type for alignment: ~a" type-spec)))))
 
-;; src/structs.lisp
+;;; src/structs.lisp
 (defun get-std140-size (type-spec)
-  "Returns the size (in bytes) of a type. Does not include padding for alignment context.
-   Resolves both type aliases and derived types to their physical base."
-  ;; Resolve type aliases first, then derived types via DAG
+  "Returns the size (in bytes) of a type.
+   Extended to handle (array T N): size is N * element-size, rounded up to 16-byte stride per std140."
   (cl:let* ((alias-resolved (resolve-type-alias type-spec))
             (resolved-type (get-type-base alias-resolved)))
     (cl:cond
+      ;; (array T N) -> N * ceil(elem-size, 16) per std140 array element stride
+      ((%array-type-p type-spec)
+       (cl:let* ((elem-type (cl:second type-spec))
+                 (n         (cl:third type-spec))
+                 (elem-size (get-std140-size elem-type))
+                 ;; std140: each array element is padded to vec4 (16-byte) stride
+                 (stride    (+ elem-size (calculate-std140-padding elem-size 16))))
+         (* n stride)))
+      ((%array-type-p alias-resolved)
+       (get-std140-size alias-resolved))
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
       ((or (eq resolved-type 'char) (eq resolved-type 'uchar)) 1)
-      ((or (eq resolved-type 'short) (eq resolved-type 'ushort) (eq resolved-type 'half) (eq resolved-type 'bfloat16)) 2)
+      ((or (eq resolved-type 'short) (eq resolved-type 'ushort)
+           (eq resolved-type 'half) (eq resolved-type 'bfloat16)) 2)
       ((eq resolved-type 'bool) 4)
-      ((eq resolved-type 'c-pointer) 8) ;; c-pointer is 8 bytes
-      ((and (consp type-spec) (eq (first type-spec) 'c-pointer)) 8)
-      ;; Cells are pointers (8 bytes) - Check mangled name
+      ((eq resolved-type 'c-pointer) 8)
+      ((and (consp type-spec) (eq (cl:first type-spec) 'c-pointer)) 8)
       ((and (symbolp type-spec)
-            (> (length (symbol-name type-spec)) 5)
-            (string-equal (subseq (symbol-name type-spec) 0 5) "CELL_"))
+            (> (cl:length (symbol-name type-spec)) 5)
+            (string-equal (cl:subseq (symbol-name type-spec) 0 5) "CELL_"))
        8)
-      ;; Structs
       ((gethash type-spec *crisp-structs*)
        (crisp-struct-definition-total-size (gethash type-spec *crisp-structs*)))
-      ;; Parameterized Structs
       ((and (consp type-spec) (valid-type-p type-spec))
-       (cl:let ((base (first type-spec)))
+       (cl:let ((base (cl:first type-spec)))
          (cl:cond
            ((string-equal (symbol-name base) "CELL") 8)
            (t
-            (cl:let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
-              (cl:let ((struct-info (gethash mangled *crisp-structs*)))
-                (if struct-info
-                    (crisp-struct-definition-total-size struct-info)
-                    (error "Valid type ~a but struct def not found after check size." type-spec))))))))
-      (t
-       (error "Unknown type for size: ~a" type-spec)))))
+            (cl:let* ((mangled (mangle-template-struct-name (cl:first type-spec) (cl:rest type-spec)))
+                      (struct-info (gethash mangled *crisp-structs*)))
+              (if struct-info
+                  (crisp-struct-definition-total-size struct-info)
+                  (error "Valid type ~a but struct def not found for size." type-spec)))))))
+      (t (error "Unknown type for size: ~a" type-spec)))))
 
 (defun calculate-std140-padding (current-offset alignment)
   "Calculates padding needed to reach the next alignment boundary."
@@ -270,10 +270,27 @@
                              *crisp-structs*))))
     (or def-direct def-alt)))
 
+
+
+
 (defun register-struct-definition (name members &optional (category :struct))
-  "Registers a struct or record definition in the global registry."
-  (cl:let ((name (if (consp name)
-                     (crisp.compiler::mangle-template-struct-name (first name) (rest name))
+  "Registers a struct or record definition in the global registry.
+   Extended: for records, validates that no (array T N) member has N > 16."
+  ;; Cap check: virtual arrays in records are limited to N <= 16
+  (cl:when (eq category :record)
+    (dolist (m members)
+      (cl:let ((type (cl:if (and (consp m) (>= (cl:length m) 2)) (cl:second m) nil)))
+        (cl:when (and type (%array-type-p type))
+          (let* ((count-raw (cl:third type))
+                 (count (etypecase count-raw
+                          (integer count-raw)
+                          (symbol  (parse-integer (symbol-name count-raw))))))
+            (cl:when (> count 16)
+              (error 'crisp-compiler-error
+                     :message (format nil "Record virtual array '~a' exceeds maximum size: N=~a > 16. Use def-struct or a cell for large arrays."
+                                      (cl:first m) count))))))))
+  (cl:let ((name (cl:if (consp name)
+                     (mangle-template-struct-name (cl:first name) (cl:rest name))
                      name)))
     (handler-case
         (multiple-value-bind (padded-members total-size)
@@ -291,8 +308,6 @@
                :padded-members padded-members
                :field-indices indices
                :total-size total-size))
-
-            ;; Register as a valid Crisp type for type checking
             (setf (gethash name *crisp-types*)
               (make-crisp-type
                :name name

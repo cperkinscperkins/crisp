@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-29T00:56:17.562671Z
+Generated on 2026-03-30T06:21:29.932870Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -117,7 +117,17 @@ Generated on 2026-03-29T00:56:17.562671Z
 
 
 ---
+### DEFUN `ANALYZE-LENGTH-TILDE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (length~ arr) — returns the compile-time array length N as a ulong literal.  >    The argument must be a variable or expression whose type resolves to (array T N).  >    Signals a crisp-compiler-error if the argument is not an array type.
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
+
+  > Registers all control flow expression analyzers, including length~ for arrays.
+
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\core.lisp`
@@ -356,10 +366,23 @@ Generated on 2026-03-29T00:56:17.562671Z
 
 
 ---
+### DEFVAR `*BOUNDARY-ARRAY-PARAMS*`
+
+  > Dynamic variable: list of uppercase param name strings that are (array T N)  >    params at the current kernel boundary. Non-nil only when compiling an  >    entry-point kernel. Nil in regular functions.
+
+
+---
+### DEFUN `%CHECK-AREF-BOUNDARY-MUTATION`
+- **Args**: `(AREF-NODE LOCATION)`
+
+  > Called when a semantic-aref is the target of a set!.  >    Error 01: If the array-node is a direct var-read in *boundary-array-params*, error.  >    Error 02: If the array-node is a call (accessor) whose first arg is a boundary struct, error.
+
+
+---
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params* to enforce struct immutability at the boundary.
+  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params* and *boundary-array-params* to enforce immutability.
 
 
 ---
@@ -551,7 +574,7 @@ Generated on 2026-03-29T00:56:17.562671Z
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
 - **Args**: `(TYPE)`
 
-  > Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.  >    FIX: Only return element type for known array-like types (cell, vector, matrix, tensor, ptr, array),  >    not for arbitrary parameterized struct types like (fake-cell int ...).
+  > Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.  >    Handles single-element list wrapping produced by function-call return types,  >    e.g. ((array float 4)) is unwrapped to (array float 4) before dispatch.
 
 
 ---
@@ -593,14 +616,14 @@ Generated on 2026-03-29T00:56:17.562671Z
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a cell dereference expression (~ cell-var [index]).  >    For real cell types with an active value-t brand and a known target-sym,  >    returns a per-instance gensym type instead of the raw element type, so that  >    arithmetic across different cell variables is blocked by resolve-dominance  >    when --differentiate is active.  >   >    Brand tracking is ONLY applied for :read-write cells.  :read-only and  >    :write-only cells skip brand tracking (their owner struct name does not  >    contain 'READ-WRITE'), preserving the behaviour of pre-branding kernels  >    that use read-only cells for constants and non-differentiated inputs.  >   >    Passes elem-type to resolve-brand-type as optional BASE-TYPE so that  >    parameterised brands (value-t appearing with multiple element types in the  >    same compilation) still produce gensyms that are substitutable for the  >    concrete element type in return-type checks.
+  > Analyzes a cell dereference expression (~ cell-var [index]).  >    Brand-aware typing applies only for scalar element types (not compound types like  >    (array T N)), preventing brand gensyms from masking compound type structure.
 
 
 ---
 ### DEFUN `ANALYZE-SET!-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a (set! target value) expression.  >    Enforces struct immutability at kernel boundary via *boundary-struct-params*.
+  > Analyzes a (set! target value) expression.  >    Enforces struct and array immutability at kernel boundary.
 
 
 ---
@@ -1292,7 +1315,7 @@ Generated on 2026-03-29T00:56:17.562671Z
 ### DEFUN `PARSE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Parses a single type specifier, handling basic types, parameterized types,  >    function types like #'(int => int), and brand type applications like (token-t s).  >    Extended: when a type alias resolves to a raw function type, parses it to :function-type.
+  > Parses a single type specifier, handling basic types, parameterized types,  >    function types like #'(int => int), and brand type applications like (token-t s).  >    Extended: (array T N) is returned as-is (not mangled) before the generic path.
 
 
 ---
@@ -2800,14 +2823,14 @@ Generated on 2026-03-29T00:56:17.562671Z
 ### DEFUN `GET-STD140-BASE-ALIGNMENT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns the base alignment (N) for a given type according to std140 rules.  >    For scalars, N is the size of the scalar.  >    For vectors, it is 2N or 4N.  >    For arrays/structs, it is rounded up to vec4 alignment (16).  >    Resolves both type aliases and derived types to their physical base.
+  > Returns the base alignment (N) for a given type according to std140 rules.  >    Extended to handle (array T N): arrays align to 16 bytes (vec4) per std140.
 
 
 ---
 ### DEFUN `GET-STD140-SIZE`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns the size (in bytes) of a type. Does not include padding for alignment context.  >    Resolves both type aliases and derived types to their physical base.
+  > Returns the size (in bytes) of a type.  >    Extended to handle (array T N): size is N * element-size, rounded up to 16-byte stride per std140.
 
 
 ---
@@ -2862,7 +2885,7 @@ Generated on 2026-03-29T00:56:17.562671Z
 ### DEFUN `REGISTER-STRUCT-DEFINITION`
 - **Args**: `(NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))`
 
-  > Registers a struct or record definition in the global registry.
+  > Registers a struct or record definition in the global registry.  >    Extended: for records, validates that no (array T N) member has N > 16.
 
 
 ---
@@ -2966,7 +2989,7 @@ Generated on 2026-03-29T00:56:17.562671Z
 ---
 ### DEFUN `INITIALIZE-TEMPLATES`
 
-  > Initializes the template system and hooks into the compiler.
+  > Initializes the template system and hooks into the compiler.  >    Extended to register ARRAY as a built-in arity-2 form for unmangle support.
 
 
 ---
@@ -3499,7 +3522,7 @@ Generated on 2026-03-29T00:56:17.562671Z
 ### DEFUN `CANONICALIZE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Canonicalizes type specifiers.
+  > Canonicalizes type specifiers.  >    Extended: (array T N) is returned as-is before the template path, preventing  >    mangle to ARRAY_LONG_5 via the get-template-arity=2 path.
 
 
 ---
@@ -3552,7 +3575,7 @@ Generated on 2026-03-29T00:56:17.562671Z
 ### DEFUN `VALID-PARAMETERIZED-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Checks if type-spec is a valid parameterized type (cell, templates, etc).
+  > Checks if type-spec is a valid parameterized type (cell, templates, array, etc).  >    Extended to recognise (array T N), reject nested arrays, and accept symbol counts  >    (e.g. the symbol |5| produced by unmangle-template-struct-name).
 
 
 ---
@@ -3581,10 +3604,17 @@ Generated on 2026-03-29T00:56:17.562671Z
 - **Args**: `(NAME)`
 
 ---
+### DEFUN `%ARRAY-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC is a list form whose head is the symbol ARRAY.  >    Used throughout the array implementation to identify (array T N) type specs.
+
+
+---
 ### DEFUN `RESOLVE-TYPE-TO-LLVM`
 - **Args**: `(TYPE-SPEC)`
 
-  > Resolves a Crisp type specifier to an LLVM type reference.
+  > Resolves a Crisp type specifier to an LLVM type reference.  >    Extended to handle (array T N) → LLVM [N x T_llvm].
 
 
 ---

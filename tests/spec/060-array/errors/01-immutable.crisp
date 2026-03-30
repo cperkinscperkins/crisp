@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "immutable"
+
+;; An (array T N) passed directly at the kernel boundary is read-only.
+;; Writing to it must be a compiler error.
+
+(def-kernel arr_immutable_k (arr)
+    (declare (type arr (array long 4)))
+    (set! (~ arr 0) 99))

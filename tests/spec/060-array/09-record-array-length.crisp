@@ -1,0 +1,9 @@
+;; length~ on a virtual array member of a def-record.
+;; Returns N as a compile-time ulong constant.
+
+(def-record stats-block
+  (counts (array int 4)))
+
+(def-function counts-length (b)
+    (declare #'(stats-block => ulong))
+    (length~ (counts~ b)))

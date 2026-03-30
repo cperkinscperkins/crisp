@@ -1,0 +1,10 @@
+;; def-record with an (array int 4) member - runtime (variable) index access.
+;; The compiler cannot resolve statically, so it emits a switch chain over
+;; the 4 SROA'd scalars. N must be <= 16 (the cap for virtual arrays).
+
+(def-record stats-block
+  (counts (array int 4)))
+
+(def-function nth-count (b idx)
+    (declare #'(stats-block int => int))
+    (~ (counts~ b) idx))

@@ -1,25 +1,29 @@
 ;;; src/analysis/structs.lisp
 (in-package :crisp.compiler)
-
+ 
 
 (defun get-array-element-type (type)
   "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.
-   FIX: Only return element type for known array-like types (cell, vector, matrix, tensor, ptr, array),
-   not for arbitrary parameterized struct types like (fake-cell int ...)."
-  (let ((type (resolve-type-alias type)))
+   Handles single-element list wrapping produced by function-call return types,
+   e.g. ((array float 4)) is unwrapped to (array float 4) before dispatch."
+  ;; Unwrap single-element list of lists (function return type wrapping)
+  (let* ((type (if (and (listp type) (= (cl:length type) 1) (listp (cl:first type)))
+                   (cl:first type)
+                   type))
+         (type (resolve-type-alias type)))
     (cond
      ((listp type)
-       ;; Only treat as array-like if the base is a known array/cell type
-       (let ((base (first type)))
+       (let ((base (cl:first type)))
          (if (and (symbolp base)
-                  (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR" "PTR" "ARRAY" "POINTER") :test #'string-equal))
-             (second type)
+                  (member (symbol-name base)
+                          '("CELL" "VECTOR" "MATRIX" "TENSOR" "PTR" "ARRAY" "POINTER")
+                          :test #'string-equal))
+             (cl:second type)
              nil)))
      ((symbolp type)
-       ;; Check if it is a Mangled Cell
        (let ((unmangled (unmangle-template-struct-name type)))
-         (if (and (consp unmangled) (eq (first unmangled) 'cell))
-             (second unmangled)
+         (if (and (consp unmangled) (eq (cl:first unmangled) 'cell))
+             (cl:second unmangled)
              nil)))
      (t nil))))
 
@@ -230,27 +234,14 @@
 
 (defun analyze-aref-expression (expr env context location)
   "Analyzes a cell dereference expression (~ cell-var [index]).
-   For real cell types with an active value-t brand and a known target-sym,
-   returns a per-instance gensym type instead of the raw element type, so that
-   arithmetic across different cell variables is blocked by resolve-dominance
-   when --differentiate is active.
-
-   Brand tracking is ONLY applied for :read-write cells.  :read-only and
-   :write-only cells skip brand tracking (their owner struct name does not
-   contain 'READ-WRITE'), preserving the behaviour of pre-branding kernels
-   that use read-only cells for constants and non-differentiated inputs.
-
-   Passes elem-type to resolve-brand-type as optional BASE-TYPE so that
-   parameterised brands (value-t appearing with multiple element types in the
-   same compilation) still produce gensyms that are substitutable for the
-   concrete element type in return-type checks."
-  (let* ((op (first expr))
-         (target-sym (if (symbolp (second expr)) (second expr) nil))
-         (array-node (analyze-expression (second expr) env context (append location '(1))))
-         (index-expr (third expr))
+   Brand-aware typing applies only for scalar element types (not compound types like
+   (array T N)), preventing brand gensyms from masking compound type structure."
+  (let* ((op (cl:first expr))
+         (target-sym (if (symbolp (cl:second expr)) (cl:second expr) nil))
+         (array-node (analyze-expression (cl:second expr) env context (append location '(1))))
+         (index-expr (cl:third expr))
          (index-node (if index-expr
                          (analyze-expression index-expr env context (append location '(2)))
-                         ;; Default to index 0 if not provided (e.g. `(~ ptr)`)
                          (make-semantic-literal :value-type 'int :value 0 :source-location location)))
          (elem-type (get-array-element-type (semantic-node-type array-node))))
 
@@ -269,19 +260,22 @@
                             (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
                             (and (symbolp elem-type) (string-equal (symbol-name elem-type) "T"))
                             (and (consp elem-type)
-                                 (let ((head (first elem-type)))
+                                 (let ((head (cl:first elem-type)))
                                    (or (eq head 'void) (eq head 'T)
                                        (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
            (when is-void
                  (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
 
          ;; Brand-aware type resolution for --differentiate mode.
-         ;; Only applies to :read-write cell types.  The owner struct name encodes
-         ;; the access mode (e.g., CELL_INT_GLOBAL_READ-WRITE vs READ-ONLY).
-         ;; Read-only / write-only cells fall through to plain elem-type.
+         ;; Only applies to :read-write cell types with SCALAR element types.
+         ;; Compound element types (e.g. (array T N)) are excluded: resolve-brand-type
+         ;; returns an opaque gensym symbol that get-array-element-type cannot handle,
+         ;; causing the outer (~ temp index) to fail with bare-symbol ARRAY type.
          (let* ((cell-type (semantic-node-type array-node))
                 (brand-def (and target-sym
                                 (not (eq *analysis-access-mode* :write))
+                                ;; Only brand scalars, not compound types like (array T N)
+                                (not (consp elem-type))
                                 (find-brand-for-owner 'value-t cell-type)))
                 ;; Check that the owning cell struct is :read-write (not :read-only/:write-only)
                 (is-rw-cell (and brand-def
@@ -307,11 +301,9 @@
 
 
 
-
-
 (defun analyze-set!-expression (expr env context location)
   "Analyzes a (set! target value) expression.
-   Enforces struct immutability at kernel boundary via *boundary-struct-params*."
+   Enforces struct and array immutability at kernel boundary."
   (let* ((target-form (second expr))
          (value-form  (third expr))
          (value-node  (analyze-expression value-form env context (append location '(2)))))
@@ -336,8 +328,8 @@
           :source-location location)))
 
      ;; Case 2: Function call / struct accessor
-     ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
-       (let* ((op           (first target-form))
+     ((and (listp target-form) (>= (length target-form) 1) (symbolp (cl:first target-form)))
+       (let* ((op           (cl:first target-form))
               (op-args      (rest target-form))
               (arg-nodes    (loop for arg in op-args
                                   for i from 1
@@ -384,19 +376,20 @@
              :source-location location))
 
           ;; Sub-case 2b: Expression analyzer — only if result is an assignable lvalue.
-          ;; Device-vector component write (semantic-extract-value) and cell deref
-          ;; (semantic-aref) are assignable.  Struct accessor fallbacks return
-          ;; semantic-call which is NOT assignable — fall through to 2c in that case.
           ((gethash op *expression-analyzers*)
             (let ((target-node
                    (let ((*analysis-access-mode* :write))
                      (analyze-expression target-form env context (append location '(1))))))
               (if (or (semantic-extract-value-p target-node)
                       (semantic-aref-p target-node))
-                  (make-semantic-set!
-                   :target-node target-node
-                   :value-node value-node
-                   :source-location location)
+                  (progn
+                    ;; Array boundary immutability check (errors 01 and 02)
+                    (when (semantic-aref-p target-node)
+                      (%check-aref-boundary-mutation target-node location))
+                    (make-semantic-set!
+                     :target-node target-node
+                     :value-node value-node
+                     :source-location location))
                   ;; Not an assignable lvalue — fall through to Sub-case 2c.
                   (let* ((op-name (symbol-name op))
                          (is-accessor
@@ -411,13 +404,12 @@
                              op (length arg-nodes)))
                     (let* ((clean-name  (cl:string-trim "~" op-name))
                            (member-sym  (intern clean-name (symbol-package op)))
-                           (struct-node (first arg-nodes))
+                           (struct-node (cl:first arg-nodes))
                            (struct-type (semantic-node-type struct-node)))
                       (unless (or (semantic-var-read-p struct-node)
                                   (semantic-aref-p struct-node))
                         (error "Cannot set member of non-variable/non-reference struct form: ~a"
                                (second target-form)))
-                      ;; Immutability check
                       (%check-struct-boundary-mutation struct-node env context location)
                       (let ((update-node
                              (make-semantic-struct-member-update
@@ -446,13 +438,12 @@
                        op (length arg-nodes)))
               (let* ((clean-name  (cl:string-trim "~" op-name))
                      (member-sym  (intern clean-name (symbol-package op)))
-                     (struct-node (first arg-nodes))
+                     (struct-node (cl:first arg-nodes))
                      (struct-type (semantic-node-type struct-node)))
                 (unless (or (semantic-var-read-p struct-node)
                             (semantic-aref-p struct-node))
                   (error "Cannot set member of non-variable/non-reference struct form: ~a"
                          (second target-form)))
-                ;; Immutability check
                 (%check-struct-boundary-mutation struct-node env context location)
                 (let ((update-node
                        (make-semantic-struct-member-update

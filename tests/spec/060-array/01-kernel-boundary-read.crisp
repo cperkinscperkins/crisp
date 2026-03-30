@@ -1,0 +1,9 @@
+;; Array at kernel boundary - basic read via ~
+;; Kernel takes (array long 4) param, sums first and last elements.
+;; Verifies: (array T N) as kernel param type, (~ arr i) with constant index.
+
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+(def-kernel arr_boundary_read_k (arr &out c)
+    (declare forward-only #'((array long 4) &out out-c))
+    (set! (~ c) (+ (~ arr 0) (~ arr 3))))

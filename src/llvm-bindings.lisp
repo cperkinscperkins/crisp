@@ -685,3 +685,11 @@
   (vec-val  :pointer)
   (index    :pointer)   ; must be an i32 LLVM value, e.g. (llvm-const-int (llvm-int32-type) N nil)
   (name     :string))
+
+
+;;; Array type support for (array T N)
+(defcfun ("LLVMArrayType" llvm-array-type) :pointer
+  "Create a fixed-size array type with COUNT elements of ELEMENT-TYPE.
+   Corresponds to LLVM's [COUNT x ELEMENT-TYPE]."
+  (element-type :pointer)
+  (count :unsigned-int))

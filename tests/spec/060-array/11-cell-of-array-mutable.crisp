@@ -1,0 +1,11 @@
+;; A cell whose element type is (array long 5).
+;; (~ c) dereferences the cell to get the array, then (~ ... 1) indexes into it.
+;; The cell is mutable — writing to an element via double-dereference must be allowed.
+;; This is NOT a boundary immutability case: the array is behind a cell pointer.
+;; forward-only: this kernel has no &out and is not differentiable.
+
+(def-type arr-c (cell (array long 5) :address-space :global :access :read-write))
+
+(def-kernel cell_of_array (c)
+    (declare forward-only #'(arr-c) )
+    (set! (~ (~ c) 1) (as-long 14)))

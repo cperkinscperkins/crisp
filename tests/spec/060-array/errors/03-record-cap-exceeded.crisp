@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "exceeds"
+
+;; Virtual arrays in def-record are capped at N <= 16.
+;; An (array int 17) member must be a compiler error, directing the user
+;; to use def-struct or a cell instead.
+
+(def-record big-block
+  (values (array int 17)))

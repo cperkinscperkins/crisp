@@ -134,12 +134,24 @@
          name type arg (type-of arg)))))
 
 
+
+
 (defun canonicalize-type-specifier (spec)
-  "Canonicalizes type specifiers."
+  "Canonicalizes type specifiers.
+   Extended: (array T N) is returned as-is before the template path, preventing
+   mangle to ARRAY_LONG_5 via the get-template-arity=2 path."
+
+  ;; Early exit for (array T N): never mangle, preserve as list
+  (when (and (consp spec) (%array-type-p spec))
+    (return-from canonicalize-type-specifier spec))
 
   ;; First, apply storage handle expansion
   (cl:when (consp spec)
     (setf spec (expand-storage-handle-type-specifier spec)))
+
+  ;; After expansion, check again (in case alias expanded to array)
+  (when (and (consp spec) (%array-type-p spec))
+    (return-from canonicalize-type-specifier spec))
 
   (cl:let ((base (if (consp spec) (cl:first spec) spec))
            (args (if (consp spec) (rest spec) nil)))
@@ -150,30 +162,22 @@
          (cl:if alias-def
                 (cl:let ((params (car alias-def))
                          (type-spec (cdr alias-def)))
-                  ;; Instantiate the alias
                   (cl:if params
                          (cl:let* ((arity (length params))
                                    (required-args (subseq args 0 (min (length args) arity)))
                                    (rest-args (subseq args (length required-args)))
                                    (substitutions (pairlis params required-args)))
-                           ;; Apply substitution to the base spec
                            (cl:let ((expanded-base (sublis substitutions type-spec)))
-                             ;; Append any extra args (overrides) to the result if it's a list
                              (cl:if (and rest-args (consp expanded-base))
                                     (canonicalize-type-specifier (append expanded-base rest-args))
                                     (canonicalize-type-specifier expanded-base))))
-                         ;; No params? Just return the aliased type + args??
                          (cl:if args
                                 (canonicalize-type-specifier (append (cl:if (consp type-spec) type-spec (list type-spec)) args))
-
-                                ;; FIX: Use resolve-type-alias cycle detection here!
                                 (cl:let ((resolved (resolve-type-alias base)))
                                   (cl:if (equal resolved base)
-                                         ;; Cycle detected (A->A), return base as canonical
                                          (progn
                                           (log:warn "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base." base)
                                           (list base))
-                                         ;; Recurse safely
                                          (canonicalize-type-specifier resolved))))))
 
                 ;; 2. Standard Templates (With Validation)
@@ -181,8 +185,6 @@
                           (raw-params (and template-data (template-data-parameters template-data))))
                   (cl:if raw-params
                          (cl:let* ((parsed-params (mapcar #'parse-template-parameter-spec raw-params))
-                                   ;; FIX: Strip keyword labels when args has more items than params
-                                   ;; e.g. (INT :address-space :GLOBAL :access :READ-WRITE) => (INT :GLOBAL :READ-WRITE)
                                    (clean-args (extract-positional-from-keyword-args args (length parsed-params)))
                                    (full-args (cl:loop for (p-name p-type p-default) in parsed-params
                                               for i from 0
@@ -364,33 +366,51 @@ Extended to also accept raw (function ...) forms from the Crisp reader
     (or (gethash mangled-name *crisp-structs*)
         (%instantiate-template-if-needed base-type template-args mangled-name))))
 
+
+
+
 (defun valid-parameterized-type-p (type-spec)
-  "Checks if type-spec is a valid parameterized type (cell, templates, etc)."
+  "Checks if type-spec is a valid parameterized type (cell, templates, array, etc).
+   Extended to recognise (array T N), reject nested arrays, and accept symbol counts
+   (e.g. the symbol |5| produced by unmangle-template-struct-name)."
   (cl:when (consp type-spec)
     (cl:let* ((expanded (canonicalize-type-specifier type-spec))
               (base-type (cl:first expanded))
-              (params (rest expanded)))
+              (params (cl:rest expanded)))
       (cl:cond
-        ;; Base type must be a symbol
         ((not (symbolp base-type)) nil)
-
-        ;; Exclude special forms (FUNCTION, QUOTE, etc.)
         ((excluded-template-base-type-p base-type) nil)
 
-        ;; Handle valid struct/type with optional keyword properties
-        ;; e.g., (INT) or (INT :BITS 32) are valid
-        ;; but (INT INT) is NOT valid
+        ;; (array T N) — compile-time fixed array type
+        ;; count may be an integer (from source) or a symbol like |5| (from unmangle)
+        ((%array-type-p expanded)
+         (cl:let* ((elem-type (cl:first params))
+                   (count-raw (cl:second params))
+                   (count (cl:cond
+                            ((integerp count-raw) count-raw)
+                            ((and (symbolp count-raw)
+                                  (ignore-errors (parse-integer (symbol-name count-raw)))))
+                            (t nil))))
+           ;; Nesting is illegal
+           (cl:when (%array-type-p elem-type)
+             (error 'crisp-compiler-error
+                    :message (format nil "Array type cannot be nested: ~s is illegal. Use def-struct or a cell instead."
+                                     type-spec)))
+           ;; Validate: exactly 2 args, valid non-array element type, positive integer count
+           (and (= (cl:length params) 2)
+                (valid-basic-type-p elem-type)
+                count
+                (> count 0))))
+
         ((and (or (gethash base-type *crisp-structs*)
                   (gethash base-type *crisp-types*))
-              (or (null params) ;; (INT) wrapper
-                  (keywordp (first params)))) ;; (INT :BITS 32) properties
-                                             t)
+              (or (null params)
+                  (keywordp (cl:first params))))
+         t)
 
-        ;; Standard template instantiation
         ((symbolp base-type)
          (%validate-template-instantiation base-type params))
 
-        ;; Default: invalid
         (t nil)))))
 
 (defun valid-type-p (type-spec)
@@ -457,16 +477,36 @@ Extended to also accept raw (function ...) forms from the Crisp reader
                  *template-registry*)
         found)))
 
+
+
+(defun %array-type-p (type-spec)
+  "Returns T if TYPE-SPEC is a list form whose head is the symbol ARRAY.
+   Used throughout the array implementation to identify (array T N) type specs."
+  (and (consp type-spec)
+       (symbolp (cl:first type-spec))
+       (string-equal (symbol-name (cl:first type-spec)) "ARRAY")))
+
 (defun resolve-type-to-llvm (type-spec)
-  "Resolves a Crisp type specifier to an LLVM type reference."
+  "Resolves a Crisp type specifier to an LLVM type reference.
+   Extended to handle (array T N) → LLVM [N x T_llvm]."
   (cl:let ((*resolve-depth* (1+ *resolve-depth*)))
     (cl:when (> *resolve-depth* 50)
       (cl:error "Infinite recursion detected in resolve-type-to-llvm for ~s" type-spec))
 
     (cl:cond
+      ;; (array T N) → [N x T_llvm]
+      ((%array-type-p type-spec)
+       (cl:let* ((elem-type (cl:second type-spec))
+                 (count-raw (cl:third type-spec))
+                 ;; count may be a symbol like |5| after unmangle; coerce to integer
+                 (count (etypecase count-raw
+                          (integer count-raw)
+                          (symbol  (parse-integer (symbol-name count-raw))))))
+         (log:info "resolve-type-to-llvm: (array ~a ~a) -> [~a x ...]" elem-type count count)
+         ;; llvm-array-type not yet exported from package.lisp — use :: until patched
+         (crisp.llvm-bindings::llvm-array-type (resolve-type-to-llvm elem-type) count)))
+
       ;; Derived Type - resolve to base type (MUST come before *crisp-types* check)
-      ;; Only match if it's ACTUALLY a derived type (has an original-type), not a base type node
-      ;; Handle package mismatches by trying both current package and CRISP-LANGUAGE
       ((cl:and (cl:symbolp type-spec)
          (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
                    (node-alt (cl:when (not node-direct)
@@ -509,30 +549,24 @@ Extended to also accept raw (function ...) forms from the Crisp reader
       ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-enums*))
        (llvm-int32-type))
 
-      ;; Keyword/Symbol/Quote (map to i32) - Handle Symbol and List forms
+      ;; Keyword/Symbol/Quote (map to i32)
       ((cl:or (cl:member type-spec '(keyword symbol quote))
          (cl:and (cl:consp type-spec) (cl:member (cl:first type-spec) '(keyword symbol quote))))
        (llvm-int32-type))
 
       ;; Parameterized Structs (On-Demand Instantiation) OR Mangled Symbols
-      ;; We handle both (CELL ...) and CELL_INT_... here to support on-demand logic.
       ((cl:or (cl:and (cl:consp type-spec)
                 (valid-type-p type-spec)
                 (find-template-robust (cl:first type-spec)))
          (cl:and (cl:symbolp type-spec)
            (cl:let ((parts (unmangle-template-struct-name type-spec)))
              (cl:and parts (cl:consp parts) (find-template-robust (cl:first parts))))))
-
-       ;; FIX: Ensure we use the CANONICALIZED specifier to instantiate/resolve
-       ;; This leverages existing logic in expand-storage-handle-type-specifier
-       ;; to clean up keywords and defaults.
        (cl:let* ((canonical (canonicalize-type-specifier type-spec))
                  (is-cons (cl:consp canonical))
                  (unmangled (cl:if is-cons canonical (unmangle-template-struct-name canonical)))
                  (base (cl:first unmangled))
                  (raw-args (cl:rest unmangled))
                  (mangled (mangle-template-struct-name base raw-args)))
-
          (cl:unless (find-struct-definition-by-name mangled)
            (cl:let ((crisp.compiler::*defer-struct-validation* nil))
              (ensure-template-instantiation base raw-args
@@ -545,11 +579,8 @@ Extended to also accept raw (function ...) forms from the Crisp reader
                                                                        *current-di-builder*
                                                                        *current-di-compile-unit*
                                                                        *current-location-map*))))))
-         ;; Verify
          (cl:unless (find-struct-definition-by-name mangled)
            (cl:error "Type Resolution: FAILED to instantiate struct ~a" mangled))
-
-         ;; Recurse using the MANGLED name
          (resolve-type-to-llvm mangled)))
 
       ;; Generic List Wrapper

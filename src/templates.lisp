@@ -386,23 +386,28 @@
                  t)
                 nil)))))
 
+
 (defun initialize-templates ()
-  "Initializes the template system and hooks into the compiler."
-  (clrhash *instantiated-templates*) ;; Reset cache
-  (clrhash *template-registry*) ;; Reset registry
+  "Initializes the template system and hooks into the compiler.
+   Extended to register ARRAY as a built-in arity-2 form for unmangle support."
+  (clrhash *instantiated-templates*)
+  (clrhash *template-registry*)
   (setf crisp.compiler::*template-instantiator-fn* #'ensure-template-instantiation)
   (setf crisp.compiler::*template-arity-lookup-fn*
     (lambda (name)
-      (let ((tmpls (gethash name *template-registry*)))
-        (unless tmpls
-          ;; Robust lookup: try to find by string name in registry keys
-          (maphash (lambda (k v)
-                     (when (string-equal (symbol-name k) (symbol-name name))
-                           (setf tmpls v)))
-                   *template-registry*))
-        (when tmpls
-              (length (template-data-parameters (first tmpls)))))))
-  (log:info "Template system initialized."))
+      ;; Built-in: ARRAY always has arity 2 (element-type count)
+      (if (and (symbolp name) (string-equal (symbol-name name) "ARRAY"))
+          2
+          ;; Normal template registry lookup
+          (let ((tmpls (gethash name *template-registry*)))
+            (unless tmpls
+              (maphash (lambda (k v)
+                         (when (string-equal (symbol-name k) (symbol-name name))
+                               (setf tmpls v)))
+                       *template-registry*))
+            (when tmpls
+                  (length (template-data-parameters (first tmpls))))))))
+  (log:info "Template system initialized (with ARRAY arity-2 unmangle support)."))
 
 ;;; ----------------------------------------------------------------------------
 

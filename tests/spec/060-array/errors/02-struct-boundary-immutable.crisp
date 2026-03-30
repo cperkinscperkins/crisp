@@ -1,0 +1,11 @@
+;; CHECK-FAIL: "immutable"
+
+;; A def-struct at the kernel boundary is immutable — including its array members.
+;; Writing to an array element of a boundary struct must be a compiler error.
+
+(def-struct data-block
+  (values (array float 4)))
+
+(def-kernel struct_arr_immutable_k (b)
+    (declare (type b data-block))
+    (set! (~ (values~ b) 0) 0.0))

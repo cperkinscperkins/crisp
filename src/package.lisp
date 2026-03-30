@@ -45,6 +45,8 @@
    #:llvm-struct-create-named
    #:llvm-struct-set-body
    #:llvm-get-type-by-name
+   #:llvm-array-type
+
 
    ;; Functions
    #:llvm-add-function

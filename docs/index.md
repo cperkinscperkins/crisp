@@ -37,7 +37,7 @@
 - [Struct Types](chapters/08_crisp_types/10_struct_types.md)
 - [def-setter](chapters/08_crisp_types/11_def_setter.md)
 - [def-record](chapters/08_crisp_types/12_def_record.md)
-- [`def-rec-vec`](chapters/08_crisp_types/13_def_rec_vec.md)
+- [Array Type](chapters/08_crisp_types/13_array_type.md)
 - [Incomplete Types](chapters/08_crisp_types/14_incomplete_types.md)
 - [Template Types](chapters/08_crisp_types/15_template_types.md)
 - [def-constraint](chapters/08_crisp_types/16_def_constraint.md)

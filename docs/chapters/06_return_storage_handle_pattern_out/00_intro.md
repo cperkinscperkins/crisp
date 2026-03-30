@@ -65,6 +65,7 @@ All subsequent parameters in the list are treated as output parameters and are s
 to the write-only contract within the function's scope. Following  `&out` there can be `&optional` and then `&key` paramters, these are NOT considered to be `&out` parameters.
 Note that these advanced signature constructs are order sensitive. The order is `&out => &optional => &key` and it is a compile error to order them otherwise.
 
-
+`&out` parameters can only be Storage Handles (`cell`, `vector`, `matrix` or `tensor`). 
+Any other type for an `&out` parameter is a compilation error.
 
 
