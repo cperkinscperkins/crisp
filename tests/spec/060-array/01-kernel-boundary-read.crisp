@@ -5,5 +5,5 @@
 (def-type out-c (cell long :address-space :global :access :read-write))
 
 (def-kernel arr_boundary_read_k (arr &out c)
-    (declare #'((array long 4) &out out-c))
+    (declare forward-only #'((array long 4) &out out-c))
     (set! (~ c) (+ (~ arr 0) (~ arr 3))))

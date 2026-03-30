@@ -446,6 +446,78 @@
                  array-type cell-spec))))))
 
 ;;; src/analysis/structs.lisp
+;;; Redefine analyze-aref-expression to guard brand-aware typing from compound elem types.
+;;; When elem-type is a list (e.g. (array long 5)), resolve-brand-type must NOT be called:
+;;; brand gensyms are opaque symbols, get-array-element-type returns NIL for them, causing
+;;; the outer (~ %ANF-T 1) to fall through to analyze-function-call with bare type ARRAY.
+(defun analyze-aref-expression (expr env context location)
+  "Analyzes a cell dereference expression (~ cell-var [index]).
+   Brand-aware typing applies only for scalar element types (not compound types like
+   (array T N)), preventing brand gensyms from masking compound type structure."
+  (let* ((op (cl:first expr))
+         (target-sym (if (symbolp (cl:second expr)) (cl:second expr) nil))
+         (array-node (analyze-expression (cl:second expr) env context (append location '(1))))
+         (index-expr (cl:third expr))
+         (index-node (if index-expr
+                         (analyze-expression index-expr env context (append location '(2)))
+                         (make-semantic-literal :value-type 'int :value 0 :source-location location)))
+         (elem-type (get-array-element-type (semantic-node-type array-node))))
+
+    ;; Check for invalid READ access on &out parameters
+    (when (and target-sym (not (eq *analysis-access-mode* :write)))
+          (let ((binding (find-variable-in-env target-sym env)))
+            (when (and binding (eq (parameter-def-kind binding) :out))
+                  (error 'crisp-illegal-access-error
+                    :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." target-sym)
+                    :source-location location))))
+
+    (if elem-type
+        (progn
+         ;; Check for VOID element type
+         (let ((is-void (or (eq elem-type 'void) (eq elem-type 'T)
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
+                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "T"))
+                            (and (consp elem-type)
+                                 (let ((head (cl:first elem-type)))
+                                   (or (eq head 'void) (eq head 'T)
+                                       (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
+           (when is-void
+                 (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
+
+         ;; Brand-aware type resolution for --differentiate mode.
+         ;; Only applies to :read-write cell types with SCALAR element types.
+         ;; Compound element types (e.g. (array T N)) are excluded: resolve-brand-type
+         ;; returns an opaque gensym symbol that get-array-element-type cannot handle,
+         ;; causing the outer (~ temp index) to fail with bare-symbol ARRAY type.
+         (let* ((cell-type (semantic-node-type array-node))
+                (brand-def (and target-sym
+                                (not (eq *analysis-access-mode* :write))
+                                ;; Only brand scalars, not compound types like (array T N)
+                                (not (consp elem-type))
+                                (find-brand-for-owner 'value-t cell-type)))
+                ;; Check that the owning cell struct is :read-write (not :read-only/:write-only)
+                (is-rw-cell (and brand-def
+                                 (let ((owner (brand-definition-owner-struct brand-def)))
+                                   (and (symbolp owner)
+                                        (search "READ-WRITE" (symbol-name owner))))))
+                (resolved-type (if (and is-rw-cell (brand-active-p brand-def))
+                                   (progn
+                                     (log:info "AREF: brand-aware read (~a) -> resolve-brand-type value-t ~a [elem: ~a]"
+                                               cell-type target-sym elem-type)
+                                     (resolve-brand-type 'value-t target-sym elem-type))
+                                   elem-type)))
+           (make-semantic-aref :type resolved-type
+                               :array-node array-node
+                               :index-node index-node
+                               :source-location location)))
+        ;; Fallback: If not an array/pointer, and op is ~, try as overloadable function call
+        (let ((op-name (symbol-name op)))
+          (if (or (string= op-name "~") (string= op-name "~REF~"))
+              (analyze-function-call op expr env context location)
+              (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+
+
+;;; src/analysis/structs.lisp
 ;;; Redefinition: handle single-element list wrapping from function-call return types.
 ;;; e.g. get-array-element-type of ((array float 4)) must return float, not nil.
 (defun get-array-element-type (type)
@@ -779,6 +851,57 @@
 
         (t nil)))))
 
+;;; src/types/validation.lisp
+;;; Final valid-parameterized-type-p redef: accept symbol counts from unmangle.
+;;; When an (array T N) type is reconstructed from a mangled name like
+;;; CELL_ARRAY_LONG_5_GLOBAL_READ-WRITE, the count comes back as the symbol |5|
+;;; (not the integer 5). The integerp check at line 840 above rejects that,
+;;; causing valid-type-p to return NIL for (array long |5|), which in turn causes
+;;; get-single-value-type to strip the type to the bare symbol ARRAY.
+(defun valid-parameterized-type-p (type-spec)
+  "Checks if type-spec is a valid parameterized type (cell, templates, array, etc).
+   Extended to recognise (array T N), reject nested arrays, and accept symbol counts
+   (e.g. the symbol |5| produced by unmangle-template-struct-name)."
+  (cl:when (consp type-spec)
+    (cl:let* ((expanded (canonicalize-type-specifier type-spec))
+              (base-type (cl:first expanded))
+              (params (cl:rest expanded)))
+      (cl:cond
+        ((not (symbolp base-type)) nil)
+        ((excluded-template-base-type-p base-type) nil)
+
+        ;; (array T N) — compile-time fixed array type
+        ;; count may be an integer (from source) or a symbol like |5| (from unmangle)
+        ((%array-type-p expanded)
+         (cl:let* ((elem-type (cl:first params))
+                   (count-raw (cl:second params))
+                   (count (cl:cond
+                            ((integerp count-raw) count-raw)
+                            ((and (symbolp count-raw)
+                                  (ignore-errors (parse-integer (symbol-name count-raw)))))
+                            (t nil))))
+           ;; Nesting is illegal
+           (cl:when (%array-type-p elem-type)
+             (error 'crisp-compiler-error
+                    :message (format nil "Array type cannot be nested: ~s is illegal. Use def-struct or a cell instead."
+                                     type-spec)))
+           ;; Validate: exactly 2 args, valid non-array element type, positive integer count
+           (and (= (cl:length params) 2)
+                (valid-basic-type-p elem-type)
+                count
+                (> count 0))))
+
+        ((and (or (gethash base-type *crisp-structs*)
+                  (gethash base-type *crisp-types*))
+              (or (null params)
+                  (keywordp (cl:first params))))
+         t)
+
+        ((symbolp base-type)
+         (%validate-template-instantiation base-type params))
+
+        (t nil)))))
+
 ;;; src/structs.lisp
 ;;; Redefine register-struct-definition to add cap check for record virtual arrays.
 ;;; N > 16 in a def-record member array signals a crisp-compiler-error with "exceeds".
@@ -956,4 +1079,75 @@
    (t
      (log:error "PARSE: Unknown type spec: ~s" spec)
      (error 'crisp-unknown-type-error :type-name spec))))
+
+;;; src/types/validation.lisp
+;;; Redefine canonicalize-type-specifier to early-return for (array T N).
+;;; Without this, get-template-arity 'array = 2 causes the generic template
+;;; path to mangle (array long 5) to ARRAY_LONG_5, making valid-type-p return NIL
+;;; for array types. This breaks get-single-value-type which then strips
+;;; (array long 5) to the bare symbol ARRAY when binding ANF temps.
+(defun canonicalize-type-specifier (spec)
+  "Canonicalizes type specifiers.
+   Extended: (array T N) is returned as-is before the template path, preventing
+   mangle to ARRAY_LONG_5 via the get-template-arity=2 path."
+
+  ;; Early exit for (array T N): never mangle, preserve as list
+  (when (and (consp spec) (%array-type-p spec))
+    (return-from canonicalize-type-specifier spec))
+
+  ;; First, apply storage handle expansion
+  (cl:when (consp spec)
+    (setf spec (expand-storage-handle-type-specifier spec)))
+
+  ;; After expansion, check again (in case alias expanded to array)
+  (when (and (consp spec) (%array-type-p spec))
+    (return-from canonicalize-type-specifier spec))
+
+  (cl:let ((base (if (consp spec) (cl:first spec) spec))
+           (args (if (consp spec) (rest spec) nil)))
+    (cl:cond
+      ((symbolp base)
+       ;; 1. Check Template Aliases (def-type)
+       (cl:let ((alias-def (gethash base *crisp-template-aliases*)))
+         (cl:if alias-def
+                (cl:let ((params (car alias-def))
+                         (type-spec (cdr alias-def)))
+                  (cl:if params
+                         (cl:let* ((arity (length params))
+                                   (required-args (subseq args 0 (min (length args) arity)))
+                                   (rest-args (subseq args (length required-args)))
+                                   (substitutions (pairlis params required-args)))
+                           (cl:let ((expanded-base (sublis substitutions type-spec)))
+                             (cl:if (and rest-args (consp expanded-base))
+                                    (canonicalize-type-specifier (append expanded-base rest-args))
+                                    (canonicalize-type-specifier expanded-base))))
+                         (cl:if args
+                                (canonicalize-type-specifier (append (cl:if (consp type-spec) type-spec (list type-spec)) args))
+                                (cl:let ((resolved (resolve-type-alias base)))
+                                  (cl:if (equal resolved base)
+                                         (progn
+                                          (log:warn "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base." base)
+                                          (list base))
+                                         (canonicalize-type-specifier resolved))))))
+
+                ;; 2. Standard Templates (With Validation)
+                (cl:let* ((template-data (first (gethash base *template-registry*)))
+                          (raw-params (and template-data (template-data-parameters template-data))))
+                  (cl:if raw-params
+                         (cl:let* ((parsed-params (mapcar #'parse-template-parameter-spec raw-params))
+                                   (clean-args (extract-positional-from-keyword-args args (length parsed-params)))
+                                   (full-args (cl:loop for (p-name p-type p-default) in parsed-params
+                                              for i from 0
+                                              for arg = (if (< i (length clean-args))
+                                                            (nth i clean-args)
+                                                            (or p-default
+                                                                (error "Missing required type argument for template ~a: ~a (index ~d)" base p-name i)))
+                                              do (validate-template-arg arg p-type p-name)
+                                              collect arg)))
+                           (cons base full-args))
+
+                         ;; Not a template, return as is (normalized to list)
+                         (cl:if (consp spec) spec (list spec)))))))
+      ((consp spec) spec)
+      (t (list spec)))))
 

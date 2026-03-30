@@ -8,6 +8,6 @@
   (counts (array int 4)))
 
 (def-kernel stats_mutable_k (b &out c)
-    (declare #'(stats-block &out out-c))
+    (declare forward-only #'(stats-block &out out-c))
     (set! (~ (counts~ b) 0) 42)
     (set! (~ c) (~ (counts~ b) 0)))

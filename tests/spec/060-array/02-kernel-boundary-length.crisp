@@ -4,5 +4,5 @@
 (def-type out-c (cell ulong :address-space :global :access :read-write))
 
 (def-kernel arr_length_k (arr &out c)
-    (declare #'((array long 4) &out out-c))
+    (declare forward-only #'((array long 4) &out out-c))
     (set! (~ c) (length~ arr)))
