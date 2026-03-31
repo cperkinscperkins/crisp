@@ -1,0 +1,17 @@
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 3
+;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
+
+;; Cell whose element type is (array long 4).
+;; Host allocates 4 * sizeof(long) bytes, initialized iota-style (c[i]=i).
+;; Kernel reads index 0 and index 3 via double-dereference and sums them into out.
+;; Sum = 0 + 3 = 3. Exercises cell branch when cell-base-type returns a list, not a symbol.
+;; NOTE: Write-back through cell-of-array is a known compiler bug (store goes to local alloca,
+;;       not back to global USM pointer). Using read-only access as a workaround.
+
+(def-type arr-c (cell (array long 4) :address-space :global :access :read-write))
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+(def-kernel cell_arr_hoist_k (c &out out)
+    (declare forward-only #'(arr-c &out out-c))
+    (set! (~ out) (+ (~ (~ c) 0) (~ (~ c) 3))))

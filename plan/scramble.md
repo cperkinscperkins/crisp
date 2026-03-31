@@ -502,6 +502,7 @@ Tensors Vectors and Matrices
 - - [x] rename and update docs
 - - [x] can ONLY be a member of def-record? like brand?
 - - [x] test and support
+- - [ ] HOIST tests
 - [ ] tensors and vectors and matrices
 
 

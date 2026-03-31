@@ -1,0 +1,15 @@
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: 3
+;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
+
+;; def-struct with an (array long 4) member, passed directly at kernel boundary.
+;; Host initializes array elements iota-style (values[i]=i); kernel sums first and last.
+;; Exercises C++ struct generation with array-typed fields and %struct-emit-fields.
+
+(def-struct data-arr (values (array long 4)))
+
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+(def-kernel struct_arr_hoist_k (s &out c)
+    (declare forward-only #'(data-arr &out out-c))
+    (set! (~ c) (+ (~ (values~ s) 0) (~ (values~ s) 3))))
