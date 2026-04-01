@@ -161,7 +161,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     Note: This could in principle be tested on NVIDIA via PTX (--ir-target=spv not needed),
     e.g. using a Jupyter notebook with CUDA. A task for another day.
 
-[ ] 029 - Cell-of-array and cell-of-struct-with-array write-back is broken at the compiler level.
+[x] 029 - Cell-of-array and cell-of-struct-with-array write-back is broken at the compiler level.
     Affected tests: 060-array/17-hoist-cell-of-array (redesigned as read-only to work around),
                     060-array/18-hoist-cell-of-struct-with-array (compile-only).
 
