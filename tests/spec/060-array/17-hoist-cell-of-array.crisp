@@ -1,0 +1,16 @@
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: 0 42 2 3
+;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
+
+;; Cell whose element type is (array long 4).
+;; Host allocates 4 * sizeof(long) bytes, initialized iota-style (c[i]=i).
+;; Kernel writes 42 to index 1 via double-dereference: (set! (~ (~ c) 1) 42L).
+;; Hoist prints all 4 elements: 0 42 2 3.
+;; Exercises cell branch when cell-base-type returns a list, not a symbol.
+;; Write-back fixed by bug 029: store now goes directly to addrspace(1), not a local alloca.
+
+(def-type arr-c (cell (array long 4) :address-space :global :access :read-write))
+
+(def-kernel cell_arr_hoist_k (c)
+    (declare forward-only #'(arr-c))
+    (set! (~ (~ c) 1) 42L))

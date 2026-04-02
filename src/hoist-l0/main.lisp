@@ -76,10 +76,26 @@
 
 ;; --- field initialization emitter ---
 
+(defun %array-type-p (type)
+  "Returns T if TYPE is an (array T N) form."
+  (and (consp type)
+       (symbolp (first type))
+       (string-equal (symbol-name (first type)) "ARRAY")))
+
+(defun %array-element-type (array-type)
+  "Returns the element type T from an (array T N) form."
+  (second array-type))
+
+(defun %array-size (array-type)
+  "Returns the compile-time size N from an (array T N) form."
+  (third array-type))
+
 (defun %struct-emit-fields (stream var-path members aliases)
   "Recursively emit C++ field assignments for a struct variable at VAR-PATH.
-   MEMBERS is the member list from the (def-struct NAME ...) form: each member
-   is (FIELD-NAME TYPE).  Nested structs are recursed into."
+   MEMBERS is the member list from the (def-struct NAME ...) form.
+   Array-typed fields are iota-initialized: field[i] = (T)i.
+   Scalar fields use a type-appropriate constant (1 / 1.0f / 1.0).
+   Nested structs are recursed into."
   (dolist (member members)
     (let* ((field-name     (first member))
            (field-type-raw (second member))
@@ -87,18 +103,25 @@
            (field-path     (format nil "~a.~a" var-path field-name-cpp))
            (field-type     (resolve-type-alias field-type-raw aliases)))
       (cond
-        ;; Nested struct — recurse
-        ((struct-type-p-l0 field-type)
-         (let* ((nested-def     (%find-struct-def-l0 field-type))
-                (nested-members (cddr nested-def)))
-           (%struct-emit-fields stream field-path nested-members aliases)))
-        ;; Scalar field — use type-appropriate default
-        (t
-         (let* ((cpp-type (crisp-type-to-cpp-type field-type))
-                (init-val (cond ((string= cpp-type "float")  "1.0f")
-                                ((string= cpp-type "double") "1.0")
-                                (t "1"))))
-           (format stream "    ~a = ~a;~%" field-path init-val)))))))
+       ;; Array field — iota initialization: field[i] = (T)i
+       ((%array-type-p field-type)
+        (let* ((elem-type (%array-element-type field-type))
+               (arr-size  (%array-size field-type))
+               (elem-str  (crisp-type-to-cpp-type elem-type)))
+          (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
+                  arr-size field-path elem-str)))
+       ;; Nested struct — recurse
+       ((struct-type-p-l0 field-type)
+        (let* ((nested-def     (%find-struct-def-l0 field-type))
+               (nested-members (cddr nested-def)))
+          (%struct-emit-fields stream field-path nested-members aliases)))
+       ;; Scalar field — type-appropriate constant
+       (t
+        (let* ((cpp-type (crisp-type-to-cpp-type field-type))
+               (init-val (cond ((string= cpp-type "float")  "1.0f")
+                               ((string= cpp-type "double") "1.0")
+                               (t "1"))))
+          (format stream "    ~a = ~a;~%" field-path init-val)))))))
 
 (defun generate-l0-launcher (metacrisp-path)
   "Generate Level Zero C++ launcher code from metacrisp file.
@@ -179,31 +202,59 @@
   (format stream "#include <cstdint>~%~%"))
 
 
+
+
 (defun generate-cpp-structs (stream structs)
   "Generate C++ struct definitions from metadata.
-   operator<< prints field values space-separated (no field names, no braces)
-   so HOIST-EXPECT substring checks like 'BUFFER c: 15' work correctly."
+   For (array T N) member types: emits 'T name[N]' for the field declaration
+   and a loop in operator<< to print all elements space-separated.
+   operator<< prints values space-separated (no field names, no braces)
+   so HOIST-EXPECT substring checks work correctly."
   (when structs
     (format stream "// Struct Definitions~%")
     (dolist (struct-def structs)
-      (let* ((struct-name (second struct-def))
+      (let* ((struct-name     (second struct-def))
              (struct-name-str (substitute #\_ #\- (string-downcase (symbol-name struct-name))))
-             (members (cddr struct-def)))
+             (members         (cddr struct-def)))
+
+        ;; Struct body
         (format stream "struct alignas(16) ~a {~%" struct-name-str)
         (dolist (member members)
-          (let* ((member-name (first member))
-                 (member-type (second member))
-                 (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name))))
-                 (member-type-str (substitute #\_ #\- (string-downcase (symbol-name member-type)))))
-            (format stream "    ~a ~a;~%" member-type-str member-name-str)))
+          (let* ((member-name     (first member))
+                 (member-type     (second member))
+                 (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
+            (if (%array-type-p member-type)
+                ;; Array field: T name[N]
+                (let* ((elem-type (%array-element-type member-type))
+                       (arr-size  (%array-size member-type))
+                       (elem-str  (crisp-type-to-cpp-type elem-type)))
+                  (format stream "    ~a ~a[~a];~%" elem-str member-name-str arr-size))
+                ;; Scalar/nested-struct field
+                (let ((member-type-str (substitute #\_ #\- (string-downcase (symbol-name member-type)))))
+                  (format stream "    ~a ~a;~%" member-type-str member-name-str)))))
+
+        ;; operator<<
         (format stream "    friend std::ostream& operator<<(std::ostream& os, const ~a& obj) {~%" struct-name-str)
         (let ((first-member t))
           (dolist (member members)
-            (let ((member-name-str (substitute #\_ #\- (string-downcase (symbol-name (first member))))))
-              (unless first-member
-                (format stream "        os << \" \";~%"))
-              (setf first-member nil)
-              (format stream "        os << obj.~a;~%" member-name-str))))
+            (let* ((member-name     (first member))
+                   (member-type     (second member))
+                   (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
+              (if (%array-type-p member-type)
+                  ;; Array field: loop over elements, space-separated
+                  (let ((arr-size (%array-size member-type)))
+                    (unless first-member
+                      (format stream "        os << \" \";~%"))
+                    (format stream "        for (int _i = 0; _i < ~a; _i++) {~%" arr-size)
+                    (format stream "            if (_i > 0) os << \" \";~%")
+                    (format stream "            os << obj.~a[_i];~%" member-name-str)
+                    (format stream "        }~%"))
+                  ;; Scalar field
+                  (progn
+                    (unless first-member
+                      (format stream "        os << \" \";~%"))
+                    (format stream "        os << obj.~a;~%" member-name-str)))
+              (setf first-member nil))))
         (format stream "        return os;~%")
         (format stream "    }~%")
         (format stream "};~%~%")))))
@@ -455,48 +506,72 @@
   (and (not (cell-type-p type))
        (not (null (find-record-def type records)))))
 
+
+
+
 (defun %record-field-args (stream members var-path arg-index records aliases)
   "Recursively emit field initialization and zeKernelSetArgumentValue calls
-   for all scalar leaves of a record, following nested records.
+   for all leaf fields of a record, following nested records.
+   Array-typed members are iota-initialized and passed as a single by-value arg
+   (matching the physical signature which keeps (array T N) as one slot).
    Returns the updated arg-index after consuming all fields."
   (let ((idx arg-index))
     (dolist (member members)
-      (let* ((field-sym (first member))
-             (field-type-raw (second member))
-             (field-type (resolve-type-alias field-type-raw aliases))
-             (field-name-cpp (format-cpp-identifier field-sym))
-             (field-path (format nil "~a.~a" var-path field-name-cpp)))
+      (let* ((field-sym       (first member))
+             (field-type-raw  (second member))
+             (field-type      (resolve-type-alias field-type-raw aliases))
+             (field-name-cpp  (format-cpp-identifier field-sym))
+             (field-path      (format nil "~a.~a" var-path field-name-cpp)))
         (cond
-          ;; Nested record — recurse into its members
-          ((record-type-p field-type records)
-           (let* ((nested-def (find-record-def field-type records))
-                  (nested-members (cddr nested-def)))
-             (setf idx (%record-field-args stream nested-members field-path idx records aliases))))
-          ;; Scalar leaf — emit initialization and kernel arg
-          (t
-           (let* ((cpp-type (crisp-type-to-cpp-type field-type))
-                  (init-val (cond ((string= cpp-type "float")  "1.0f")
-                                  ((string= cpp-type "double") "1.0")
-                                  (t "1"))))
-             (format stream "    ~a = ~a;~%" field-path init-val)
-             (format stream "    // Arg ~d: ~a~%" idx field-path)
-             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a);~%"
-                     idx cpp-type field-path)
-             (incf idx))))))
+         ;; Array member — iota init, single by-value zeKernelSetArgumentValue
+         ((%array-type-p field-type)
+          (let* ((elem-type (%array-element-type field-type))
+                 (arr-size  (%array-size field-type))
+                 (elem-str  (crisp-type-to-cpp-type elem-type)))
+            (format stream "    // Iota-init array member ~a~%" field-path)
+            (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
+                    arr-size field-path elem-str)
+            (format stream "    // Arg ~d: ~a (array ~a[~a] by value)~%"
+                    idx field-path elem-str arr-size)
+            (format stream "    zeKernelSetArgumentValue(kernel, ~d, ~a * sizeof(~a), ~a);~%"
+                    idx arr-size elem-str field-path)
+            (incf idx)))
+         ;; Nested record — recurse into its members
+         ((record-type-p field-type records)
+          (let* ((nested-def     (find-record-def field-type records))
+                 (nested-members (cddr nested-def)))
+            (setf idx (%record-field-args stream nested-members field-path idx records aliases))))
+         ;; Scalar leaf — type-appropriate init, individual arg
+         (t
+          (let* ((cpp-type (crisp-type-to-cpp-type field-type))
+                 (init-val (cond ((string= cpp-type "float")  "1.0f")
+                                 ((string= cpp-type "double") "1.0")
+                                 (t "1"))))
+            (format stream "    ~a = ~a;~%" field-path init-val)
+            (format stream "    // Arg ~d: ~a~%" idx field-path)
+            (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a);~%"
+                    idx cpp-type field-path)
+            (incf idx))))))
     idx))
 
 
 
-;; src/hoist-l0/main.lisp
+
+
+
 (defun generate-kernel-arguments-with-usm (stream declared-sig aliases records context-var device-var)
   "Generate kernel argument setup code with USM allocation for cells.
-   Handles cell (3 args: ptr, size, offset), def-struct (1 arg: aggregate),
-   def-record (exploded scalar args), and plain scalar parameters."
+   Handles:
+     cell           — 3 args (ptr, byte-size, offset); cell-of-(array T N) uses N-element USM
+     def-struct     — 1 arg (aggregate by value, sizeof struct)
+     def-record     — exploded scalar args; array members are single by-value args
+     (array T N)    — 1 arg, passed by value (iota-initialized T[N])
+     scalar/dvec    — 1 arg"
   (format stream "    // Set up kernel arguments~%")
   (format stream "    ze_device_mem_alloc_desc_t deviceDesc = { ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC };~%")
   (format stream "    ze_host_mem_alloc_desc_t hostDesc = { ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC };~%~%")
 
-  (let ((arg-index 0)
+  (let ((arg-index  0)
         (allocations '()))
 
     (dolist (param declared-sig)
@@ -511,17 +586,24 @@
 
          ;; ---- cell parameters (3 kernel args: ptr, byte-size, offset) ----
          ((cell-type-p param-type)
-          (let* ((base-type     (cell-base-type param-type))
-                 (base-type-str (string-downcase (symbol-name base-type)))
+          (let* ((base-type      (cell-base-type param-type))
+                 (is-array-cell  (%array-type-p base-type))
+                 ;; Use crisp-type-to-cpp-type for both cases: fixes hyphens and long→int64_t
+                 (base-type-str  (if is-array-cell
+                                     (crisp-type-to-cpp-type (%array-element-type base-type))
+                                     (crisp-type-to-cpp-type base-type)))
+                 (elem-count     (if is-array-cell (%array-size base-type) 1))
                  (param-name-cpp (substitute #\_ #\- param-name))
-                 (size-var  (format nil "~a_size" param-name-cpp))
-                 (ptr-var   (format nil "~a_ptr" param-name-cpp)))
+                 (size-var       (format nil "~a_size" param-name-cpp))
+                 (ptr-var        (format nil "~a_ptr"  param-name-cpp)))
 
             (if is-local
                 ;; --- LOCAL MEMORY ---
                 (progn
                  (format stream "~%    // Configure LOCAL memory for ~a~%" param-name)
-                 (format stream "    size_t ~a = 1;  // Cell is a single scalar~%" size-var)
+                 (format stream "    size_t ~a = ~a;  // ~a~%"
+                   size-var elem-count
+                   (if is-array-cell "Array cell: N elements" "Cell is a single scalar"))
                  (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
                  (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
                  (format stream "    // Arg ~d: Local Pointer (Size=~a)~%" arg-index size-var)
@@ -537,7 +619,9 @@
                 ;; --- GLOBAL MEMORY (USM) ---
                 (progn
                  (format stream "~%    // Allocate USM memory for ~a~%" param-name)
-                 (format stream "    size_t ~a = 1;  // Cell is a single scalar~%" size-var)
+                 (format stream "    size_t ~a = ~a;  // ~a~%"
+                   size-var elem-count
+                   (if is-array-cell "Array cell: N elements" "Cell is a single scalar"))
                  (format stream "    ~a* ~a = nullptr;~%" base-type-str ptr-var)
                  (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
                    context-var)
@@ -550,12 +634,12 @@
                  (format stream "    }~%")
 
                  (format stream "    // Initialize data~%")
-                 (format stream "    memset(~a, 0, ~a * sizeof(~a));~%" ptr-var size-var base-type-str)
-
-                 (when (or (eq param-dir :in) (eq param-dir :read-write))
-                       (format stream "    for (size_t i = 0; i < ~a; i++) {~%" size-var)
-                       (format stream "        // Dangerous for structs if index exceeds member bounds, but fine for now~%")
-                       (format stream "    }~%"))
+                 (if is-array-cell
+                     ;; Iota initialization for array cells: ptr[i] = (T)i
+                     (format stream "    for (size_t _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
+                       size-var ptr-var base-type-str)
+                     ;; Original initialization for scalar cells
+                     (format stream "    memset(~a, 0, ~a * sizeof(~a));~%" ptr-var size-var base-type-str))
 
                  (format stream "    // Arg ~d: Base Pointer~%" arg-index)
                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
@@ -569,20 +653,20 @@
                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_offset);~%~%"
                    (+ arg-index 2) param-name-cpp)
 
-                 (push (list :name param-name
-                             :ptr ptr-var
+                 (push (list :name     param-name
+                             :ptr      ptr-var
                              :size-var size-var
                              :direction param-dir
-                             :access (getf param :access))
+                             :access   (getf param :access))
                        allocations)))
 
             (incf arg-index 3)))
 
          ;; ---- def-struct parameters (1 kernel arg: aggregate by value) ----
          ((struct-type-p-l0 param-type)
-          (let* ((base-type     (%struct-base-type param-type))
-                 (resolved-base (resolve-type-alias base-type aliases))
-                 (struct-def    (%find-struct-def-l0 resolved-base))
+          (let* ((base-type      (%struct-base-type param-type))
+                 (resolved-base  (resolve-type-alias base-type aliases))
+                 (struct-def     (%find-struct-def-l0 resolved-base))
                  (struct-members (cddr struct-def))
                  (param-name-cpp (format-cpp-identifier param-name))
                  (var-name       (format nil "~a_val" param-name-cpp))
@@ -595,7 +679,7 @@
               arg-index struct-type-str var-name)
             (incf arg-index)))
 
-         ;; ---- def-record parameters (exploded to individual scalar args) ----
+         ;; ---- def-record parameters (exploded to scalar args) ----
          ((record-type-p param-type records)
           (let* ((base-type    (record-base-type param-type))
                  (record-def   (find-record-def param-type records))
@@ -608,9 +692,26 @@
             (setf arg-index (%record-field-args stream record-members var-name arg-index records aliases))
             (format stream "~%")))
 
+         ;; ---- (array T N) direct parameters (1 arg, by value, iota-initialized) ----
+         ((%array-type-p param-type)
+          (let* ((elem-type      (%array-element-type param-type))
+                 (arr-size       (%array-size param-type))
+                 (elem-type-str  (crisp-type-to-cpp-type elem-type))
+                 (param-name-cpp (format-cpp-identifier param-name))
+                 (arr-var        (format nil "~a_arg" param-name-cpp)))
+            (format stream "~%    // Array argument: ~a (~a ~a[~a])~%"
+                    param-name elem-type-str param-name-cpp arr-size)
+            (format stream "    ~a ~a[~a];~%" elem-type-str arr-var arr-size)
+            (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
+                    arr-size arr-var elem-type-str)
+            (format stream "    // Arg ~d: ~a~%" arg-index param-name)
+            (format stream "    zeKernelSetArgumentValue(kernel, ~d, ~a * sizeof(~a), ~a);~%~%"
+                    arg-index arr-size elem-type-str arr-var)
+            (incf arg-index)))
+
          ;; ---- scalar parameters ----
          ((symbolp param-type)
-          (let* ((type-str (string-downcase (symbol-name param-type))))
+          (let* ((type-str (crisp-type-to-cpp-type param-type)))
             (multiple-value-bind (dvec-base dvec-width) (%dvec-parse param-type)
               (if dvec-base
                   ;; Device vector: aggregate init {N, N+1, ...}

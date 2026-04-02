@@ -1,22 +1,41 @@
 (in-package :crisp.hoist)
 
+
+
 (defun crisp-type-to-cpp-type (crisp-type)
-  "Convert a Crisp type to C++ type string."
+  "Convert a Crisp type to a C++ type string.
+   Uses string-equal for package-agnostic symbol comparison so that
+   symbols interned in any package (e.g. :crisp.hoist.l0 during metacrisp
+   parsing) are handled correctly.
+   Maps long→int64_t, ulong→uint64_t (64-bit on all platforms).
+   Fallback: hyphens converted to underscores (safe for C++ identifiers).
+   For (array T N): resolves element type."
   (cond
-   ((symbolp crisp-type)
-     (case crisp-type
-       (int "int")
-       (uint "unsigned int")
-       (long "long")
-       (ulong "unsigned long")
-       (float "float")
-       (double "double")
-       (voidp "void*")
-       (t (string-downcase (symbol-name crisp-type)))))
-   ((consp crisp-type)
-     ;; Handle complex types like (cell int ...)
+    ((null crisp-type) "void")
+    ((symbolp crisp-type)
+     (let ((name (symbol-name crisp-type)))
+       (cond
+         ((string-equal name "INT")    "int")
+         ((string-equal name "UINT")   "unsigned int")
+         ((string-equal name "LONG")   "int64_t")
+         ((string-equal name "ULONG")  "uint64_t")
+         ((string-equal name "FLOAT")  "float")
+         ((string-equal name "DOUBLE") "double")
+         ((string-equal name "CHAR")   "char")
+         ((string-equal name "UCHAR")  "unsigned char")
+         ((string-equal name "SHORT")  "short")
+         ((string-equal name "USHORT") "unsigned short")
+         ((string-equal name "BOOL")   "bool")
+         ((string-equal name "VOIDP")  "void*")
+         (t (substitute #\_ #\- (string-downcase name))))))
+    ;; (array T N) — resolve to element C++ type
+    ((and (consp crisp-type)
+          (symbolp (first crisp-type))
+          (string-equal (symbol-name (first crisp-type)) "ARRAY"))
+     (crisp-type-to-cpp-type (second crisp-type)))
+    ((consp crisp-type)
      (format nil "/* TODO: ~a */" crisp-type))
-   (t (format nil "/* UNKNOWN: ~a */" crisp-type))))
+    (t (format nil "/* UNKNOWN: ~a */" crisp-type))))
 
 (defun format-cpp-identifier (lisp-symbol)
   "Convert Lisp symbol to C++-safe identifier."

@@ -1283,12 +1283,40 @@
 
 
 
+
+
+;;; =========================================================
+;;; Fix (bug 029): cell-of-array and cell-of-struct-with-array write-back
+;;;
+;;; src/codegen.lisp — generate-node-ir (semantic-aref)
+;;;
+;;; Root cause: in the (array T N) branch, when array-node is a nested expression
+;;; (e.g. (~ c) for a cell-of-array), the old code called generate-node-ir and
+;;; captured only the primary return value (the loaded array aggregate). It then
+;;; checked whether that value was a pointer type — but it never is, because
+;;; generate-node-ir for a cell aref returns the LOADED VALUE as primary, with
+;;; the addrspace(1) pointer as the THIRD return value.
+;;;
+;;; So the old code always fell into the "spill to local alloca" branch, and any
+;;; subsequent store went to that local copy, never back to GPU memory.
+;;;
+;;; Fix: use multiple-value-bind to capture all three returns from the inner
+;;; generate-node-ir call. If the third return (sub-ptr) is non-nil, use it
+;;; directly as arr-ptr — it is already the correct addrspace(1) pointer into
+;;; the cell's USM allocation. Only fall back to the pointer-value check or
+;;; the alloca spill if sub-ptr is nil.
+;;; =========================================================
+
+;; src/codegen.lisp
 (defmethod generate-node-ir ((node semantic-aref) builder module var-env di-builder di-scope location-map)
   "Generates IR for array/cell access (aref / ~).
    Case 1: CELL parameterized type  — existing behaviour unchanged.
    Case 2: (array T N) fixed-size array — GEP into the alloca (or pointer).
      For a simple var-read of type (array T N), the alloca is fetched directly
      from var-env so we never load the aggregate value before GEP-ing into it.
+     For a nested aref (e.g. cell-of-array), the inner generate-node-ir returns
+     the addrspace(1) pointer as its third value — use that directly so that
+     stores go back to GPU memory (fixes bug 029).
      Returns (loaded-elem, nil, elem-ptr) so that set! can store through the pointer."
   (let* ((array-node   (semantic-aref-array-node node))
          (index-node   (semantic-aref-index-node node))
@@ -1325,13 +1353,14 @@
                (elem-llvm-type    (crisp-type-to-llvm-type elem-type-spec module))
                (arr-llvm-type     (crisp.llvm-bindings::llvm-array-type elem-llvm-type count))
                ;; Get the array pointer.
-               ;; For a direct var-read, grab the alloca from var-env so we avoid
-               ;; loading the aggregate value (which is useless for GEP).
-               ;; For a nested expression that returns a pointer (e.g. cell-of-array),
-               ;; use that pointer directly.
-               ;; For a nested expression that returns an aggregate value (e.g. struct member
-               ;; extraction via extractvalue), alloca a temp slot, store the value, and
-               ;; use the slot pointer for GEP.
+               ;; For a direct var-read, grab the alloca from var-env — no load needed.
+               ;; For a nested expression, call generate-node-ir with multiple-value-bind:
+               ;;   - If the third return (sub-ptr) is non-nil, it is already an addrspace(1)
+               ;;     pointer (e.g. from a cell-of-array deref) — use it directly.
+               ;;     This is the bug 029 fix: the old code ignored sub-ptr and fell into
+               ;;     the alloca spill branch, so stores never reached GPU memory.
+               ;;   - If sub-val is a pointer type (bare pointer expression), use it.
+               ;;   - Otherwise spill the aggregate value to a local alloca for GEP.
                (arr-ptr
                 (if (semantic-var-read-p array-node)
                     (let ((alloca (gethash (semantic-var-read-name array-node) var-env)))
@@ -1339,15 +1368,23 @@
                         (error "array aref: variable ~a not found in var-env"
                                (semantic-var-read-name array-node)))
                       alloca)
-                    (let ((sub-val (generate-node-ir array-node builder module var-env
-                                                     di-builder di-scope location-map)))
-                      (if (llvm-type-kind-is-pointer? (llvm-type-of sub-val))
-                          ;; Already a pointer (e.g. cell-of-array returns ptr)
-                          sub-val
-                          ;; Aggregate value (e.g. struct member) — spill to a temp alloca
-                          (let ((slot (llvm-build-alloca builder arr-llvm-type "arr_tmp")))
-                            (llvm-build-store builder sub-val slot)
-                            slot)))))
+                    (multiple-value-bind (sub-val _loc sub-ptr)
+                        (generate-node-ir array-node builder module var-env
+                                          di-builder di-scope location-map)
+                      (declare (ignore _loc))
+                      (cond
+                       ;; Inner node returned a direct pointer (e.g. cell-of-array) — use it.
+                       (sub-ptr
+                        (log:info "array-aref: using sub-ptr from inner aref (bug 029 path)")
+                        sub-ptr)
+                       ;; sub-val is already a pointer type (bare pointer expression)
+                       ((llvm-type-kind-is-pointer? (llvm-type-of sub-val))
+                        sub-val)
+                       ;; Aggregate value (e.g. struct member accessor) — spill to temp alloca
+                       (t
+                        (let ((slot (llvm-build-alloca builder arr-llvm-type "arr_tmp")))
+                          (llvm-build-store builder sub-val slot)
+                          slot))))))
                ;; Extend index to i64 for GEP
                (idx-i64 (llvm-build-sext builder index-val (llvm-int64-type) "arr_idx")))
 
@@ -1364,7 +1401,7 @@
                    (loaded   (llvm-build-load2 builder elem-llvm-type elem-ptr "arr_elem")))
               (values loaded nil elem-ptr)))))
 
-       ;; Case 1: CELL parameterized type — original behaviour
+       ;; Case 1: CELL parameterized type — original behaviour unchanged
        ((and (listp cell-spec) (eq (cl:first cell-spec) 'cell))
         (let* ((cell-val       (generate-node-ir array-node builder module var-env
                                                  di-builder di-scope location-map))
@@ -1373,7 +1410,7 @@
                (mangled-struct-name (mangle-template-struct-name (cl:first cell-spec)
                                                                   (cl:rest cell-spec))))
           (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
-          (ensure-struct-llvm-type mangled-struct-name) ; ensure the LLVM type is registered
+          (ensure-struct-llvm-type mangled-struct-name)
           (let ()
             (log:info "semantic-aref: Using ExtractValue to access Cell Record members.")
             (let* ((parent-val  (llvm-build-extract-value builder cell-val 0 "parent_val"))
@@ -1398,6 +1435,7 @@
 
        (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)"
                  array-type cell-spec))))))
+
 
 
 (defmethod generate-node-ir ((node semantic-sizeof) builder module var-env di-builder di-scope location-map)

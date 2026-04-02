@@ -134,3 +134,43 @@ These tests are currently failing to even compile.
 
 [ ] 027 - memory leak in spec runner.  The psec runner has an unwind-protect and if there are LOTS of errors then they
 backup leading to a freeze. It exhausts memory during teardown ( LLVM objects bypass their cleanup handler on the error path).
+
+[ ] 028 - IGC (Intel Graphics Compiler) miscompiles functions with array return types.
+    Affected tests: 060-array/15-hoist-struct-with-array, 060-array/18-hoist-cell-of-struct-with-array
+    (both marked validate-l0-compile-only as a result).
+
+    Symptom: zeModuleCreate succeeds (SPIR-V is accepted). Kernel executes without error.
+    But any function that returns a TypeArray (e.g. values__data_arr returning [4 x i64])
+    produces all-zero values at runtime. Functions returning scalars or structs work correctly.
+
+    Root cause stack:
+      - Crisp generates accessor helpers like `values__data_arr(%DATA-ARR) -> [4 x i64]`
+        using LLVM `extractvalue` + `ret [4 x i64]`. Correct LLVM-IR.
+      - llvm-spirv translates this to a SPIR-V function with TypeArray return type.
+        Legal per the SPIR-V spec; zeModuleCreate accepts it.
+      - IGC JITs this to GPU machine code incorrectly. Array return values are silently zero.
+
+    Reproducers: tests/spec/060-array/15-hoist-struct-with-array.ll
+                 tests/spec/060-array/15-hoist-struct-with-array.spv
+    These are the minimal reproduce cases to send to Intel with a bug report.
+
+    Workaround: The Crisp compiler needs to inline array element access (use GEP on a local
+    alloca) rather than generating array-returning accessor functions. When that is done,
+    these two tests can become validate-l0-host-run.
+
+    Note: This could in principle be tested on NVIDIA via PTX (--ir-target=spv not needed),
+    e.g. using a Jupyter notebook with CUDA. A task for another day.
+
+[x] 029 - Cell-of-array and cell-of-struct-with-array write-back is broken at the compiler level.
+    Affected tests: 060-array/17-hoist-cell-of-array (redesigned as read-only to work around),
+                    060-array/18-hoist-cell-of-struct-with-array (compile-only).
+
+    Symptom: (set! (~ (~ c) N) val) where c is a cell-of-array, or
+             (set! (~ (values~ (~ c)) N) val) where c is a cell-of-struct-with-array,
+             stores to a local alloca instead of back to the global USM pointer.
+             The write never reaches GPU memory.
+
+    Root cause: The cell dereference (~ c) loads the array/struct by value into a local temp.
+    The subsequent element write targets that local copy, not the original addrspace(1) pointer.
+    A proper fix requires a store-back through the original pointer after the element mutation,
+    similar to how a C++ reference or pointer-based write would work.

@@ -1,0 +1,15 @@
+;; TEST-HOIST[L0] : validate-l0-compile-only
+;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
+
+;; Direct (array long 4) at kernel boundary.
+;; Array elements initialized iota-style (arr[i]=i) by host; kernel sums first and last.
+;; Array is immutable at kernel boundary (by design), but host can initialize it.
+;; NOTE: validate-l0-compile-only because L0 rejects bare [4 x i64] as a SPIR-V
+;;       kernel entry point parameter (only structs/scalars/pointers are valid in OpenCL SPIR-V).
+;;       The generated C++ host code is correct; this is a compiler-level SPIR-V issue.
+
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+(def-kernel arr_at_boundary_hoist_k (arr &out c)
+    (declare forward-only #'((array long 4) &out out-c))
+    (set! (~ c) (+ (~ arr 0) (~ arr 3))))

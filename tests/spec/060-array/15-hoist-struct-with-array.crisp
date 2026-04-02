@@ -1,0 +1,23 @@
+;; TEST-HOIST[L0] : validate-l0-compile-only
+;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
+
+;; def-struct with an (array long 4) member, passed directly at kernel boundary.
+;; Host initializes array elements iota-style (values[i]=i); kernel sums first and last.
+;; Exercises C++ struct generation with array-typed fields and %struct-emit-fields.
+;;
+;; NOTE: validate-l0-compile-only due to IGC (Intel Graphics Compiler) bug (Crisp bug 028).
+;; LLVM-IR and SPIR-V are correct; zeModuleCreate succeeds. But IGC silently miscompiles
+;; functions that return array types (TypeArray in SPIR-V). The accessor values__data_arr
+;; returns [4 x i64]; the JIT-compiled kernel reads all elements as 0.
+;; The generated C++ host code is correct (iota init, sizeof(data_arr)==32).
+;; See also: test 18 (cell-of-struct-with-array) has the same root cause.
+;; A fix requires the Crisp compiler to inline array element access instead of generating
+;; array-returning accessor helpers. Report: .ll + .spv reproducers → see plan/bugs.md #028.
+
+(def-struct data-arr (values (array long 4)))
+
+(def-type out-c (cell long :address-space :global :access :read-write))
+
+(def-kernel struct_arr_hoist_k (s &out c)
+    (declare forward-only #'(data-arr &out out-c))
+    (set! (~ c) (+ (~ (values~ s) 0) (~ (values~ s) 3))))

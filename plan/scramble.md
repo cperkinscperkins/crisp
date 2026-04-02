@@ -488,6 +488,8 @@ TECHNICAL DEBT AND OVERSIGHTS
 
 - [ ] AutoDiff fix: Redesign so gradient cells are always cell float regardless of primal type, and generate zero backward kernels for integer inputs. This is the "mathematically correct" approach but requires more work.
 
+- [ ] crisp-compile.exe as a release?
+
 Miscelleny
 ==========
 - [x] multi-file support
@@ -502,6 +504,7 @@ Tensors Vectors and Matrices
 - - [x] rename and update docs
 - - [x] can ONLY be a member of def-record? like brand?
 - - [x] test and support
+- - [ ] HOIST tests
 - [ ] tensors and vectors and matrices
 
 

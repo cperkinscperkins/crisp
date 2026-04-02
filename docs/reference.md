@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-03-30T06:21:29.932870Z
+Generated on 2026-04-02T02:36:31.990615Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1384,10 +1384,31 @@ Generated on 2026-03-30T06:21:29.932870Z
 
 
 ---
+### DEFUN `%ARRAY-TYPE-P`
+- **Args**: `(TYPE)`
+
+  > Returns T if TYPE is an (array T N) form.
+
+
+---
+### DEFUN `%ARRAY-ELEMENT-TYPE`
+- **Args**: `(ARRAY-TYPE)`
+
+  > Returns the element type T from an (array T N) form.
+
+
+---
+### DEFUN `%ARRAY-SIZE`
+- **Args**: `(ARRAY-TYPE)`
+
+  > Returns the compile-time size N from an (array T N) form.
+
+
+---
 ### DEFUN `%STRUCT-EMIT-FIELDS`
 - **Args**: `(STREAM VAR-PATH MEMBERS ALIASES)`
 
-  > Recursively emit C++ field assignments for a struct variable at VAR-PATH.  >    MEMBERS is the member list from the (def-struct NAME ...) form: each member  >    is (FIELD-NAME TYPE).  Nested structs are recursed into.
+  > Recursively emit C++ field assignments for a struct variable at VAR-PATH.  >    MEMBERS is the member list from the (def-struct NAME ...) form.  >    Array-typed fields are iota-initialized: field[i] = (T)i.  >    Scalar fields use a type-appropriate constant (1 / 1.0f / 1.0).  >    Nested structs are recursed into.
 
 
 ---
@@ -1415,7 +1436,7 @@ Generated on 2026-03-30T06:21:29.932870Z
 ### DEFUN `GENERATE-CPP-STRUCTS`
 - **Args**: `(STREAM STRUCTS)`
 
-  > Generate C++ struct definitions from metadata.  >    operator<< prints field values space-separated (no field names, no braces)  >    so HOIST-EXPECT substring checks like 'BUFFER c: 15' work correctly.
+  > Generate C++ struct definitions from metadata.  >    For (array T N) member types: emits 'T name[N]' for the field declaration  >    and a loop in operator<< to print all elements space-separated.  >    operator<< prints values space-separated (no field names, no braces)  >    so HOIST-EXPECT substring checks work correctly.
 
 
 ---
@@ -1492,14 +1513,14 @@ Generated on 2026-03-30T06:21:29.932870Z
 ### DEFUN `%RECORD-FIELD-ARGS`
 - **Args**: `(STREAM MEMBERS VAR-PATH ARG-INDEX RECORDS ALIASES)`
 
-  > Recursively emit field initialization and zeKernelSetArgumentValue calls  >    for all scalar leaves of a record, following nested records.  >    Returns the updated arg-index after consuming all fields.
+  > Recursively emit field initialization and zeKernelSetArgumentValue calls  >    for all leaf fields of a record, following nested records.  >    Array-typed members are iota-initialized and passed as a single by-value arg  >    (matching the physical signature which keeps (array T N) as one slot).  >    Returns the updated arg-index after consuming all fields.
 
 
 ---
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR)`
 
-  > Generate kernel argument setup code with USM allocation for cells.  >    Handles cell (3 args: ptr, size, offset), def-struct (1 arg: aggregate),  >    def-record (exploded scalar args), and plain scalar parameters.
+  > Generate kernel argument setup code with USM allocation for cells.  >    Handles:  >      cell           — 3 args (ptr, byte-size, offset); cell-of-(array T N) uses N-element USM  >      def-struct     — 1 arg (aggregate by value, sizeof struct)  >      def-record     — exploded scalar args; array members are single by-value args  >      (array T N)    — 1 arg, passed by value (iota-initialized T[N])  >      scalar/dvec    — 1 arg
 
 
 ---
@@ -1510,7 +1531,7 @@ Generated on 2026-03-30T06:21:29.932870Z
 ### DEFUN `CRISP-TYPE-TO-CPP-TYPE`
 - **Args**: `(CRISP-TYPE)`
 
-  > Convert a Crisp type to C++ type string.
+  > Convert a Crisp type to a C++ type string.  >    Uses string-equal for package-agnostic symbol comparison so that  >    symbols interned in any package (e.g. :crisp.hoist.l0 during metacrisp  >    parsing) are handled correctly.  >    Maps long→int64_t, ulong→uint64_t (64-bit on all platforms).  >    Fallback: hyphens converted to underscores (safe for C++ identifiers).  >    For (array T N): resolves element type.
 
 
 ---
