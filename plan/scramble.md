@@ -531,6 +531,7 @@ QUESTIONS
 
 LANGUAGE CHANGES
 - [ ] PGAS / SHMEM!!
+- [ ] rework Quantized and Microfloats. 
 - [x] lose declare local/global. Too complex
 - [x] instead use (make-single-result T :global) . Might want to consider renaming 'single-result'
 - [x] How to initialize the single-result? It has to be done by hoisting code for :global.

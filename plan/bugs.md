@@ -135,7 +135,7 @@ These tests are currently failing to even compile.
 [ ] 027 - memory leak in spec runner.  The psec runner has an unwind-protect and if there are LOTS of errors then they
 backup leading to a freeze. It exhausts memory during teardown ( LLVM objects bypass their cleanup handler on the error path).
 
-[ ] 028 - IGC (Intel Graphics Compiler) miscompiles functions with array return types.
+[/] 028 - IGC (Intel Graphics Compiler) miscompiles functions with array return types.
     Affected tests: 060-array/15-hoist-struct-with-array, 060-array/18-hoist-cell-of-struct-with-array
     (both marked validate-l0-compile-only as a result).
 
@@ -153,13 +153,44 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     Reproducers: tests/spec/060-array/15-hoist-struct-with-array.ll
                  tests/spec/060-array/15-hoist-struct-with-array.spv
     These are the minimal reproduce cases to send to Intel with a bug report.
+    Bug reported to Intel: 2026-04-01.
 
-    Workaround: The Crisp compiler needs to inline array element access (use GEP on a local
-    alloca) rather than generating array-returning accessor functions. When that is done,
-    these two tests can become validate-l0-host-run.
+    Compiler workaround (Part 1, 2026-04-01, overlays/crisp-compiler-overlay.lisp):
+      When (~ (accessor~ s) idx) is compiled and the accessor returns (array T N), the
+      codegen now emits a two-level GEP directly into the struct's alloca instead of
+      calling the accessor function:
+        Before: call [4 x i64] @values__data_arr(%DATA-ARR %s4) + spill + GEP
+        After:  getelementptr %DATA-ARR, ptr %s, 0, field-idx (no function call)
+      Implemented via %try-inline-struct-array-field-ptr + redef of generate-node-ir
+      (semantic-aref). See also: tests/spec/061-place-semantics/DESIGN.md for the
+      broader architectural direction this workaround points toward.
+
+    Compiler workaround (Part 2, 2026-04-01, overlays/crisp-compiler-overlay.lisp):
+      Before calling llvm-spirv, %remove-dead-array-returning-functions scans the module
+      for functions with array return types that have no uses (confirmed via LLVMGetFirstUse),
+      and deletes them with LLVMDeleteFunction. compile-to-spirv is redefined in the overlay
+      to call this before writing the .temp.ll file. For test 15, both values__data_arr and
+      _values__data_arr are found, confirmed no-uses (Part 1 removed all call sites), and
+      deleted. The SPIR-V module fed to IGC contains only the kernel function.
+
+    Hardware validation (2026-04-02): BUFFER c reads back 0. Part 2 confirmed working
+    (values__data_arr and _values__data_arr deleted from SPIR-V module), but the bug is
+    broader than TypeArray return types alone. IGC also miscompiles a struct kernel parameter
+    whose fields include a TypeArray — i.e. %DATA-ARR = { [4 x i64] } passed by value. The
+    struct arrives in the kernel as all-zeros regardless of what the host set. This is a second
+    facet of the same IGC bug. LLVM-IR, SPIR-V, and host code are all correct.
+
+    Decision: test 15 remains validate-l0-compile-only indefinitely. Crisp will not alter its
+    struct-at-kernel-boundary semantics to work around an IGC JIT bug. The feature is primarily
+    targeted at def-record (which uses scalar/register layout), not def-struct with array fields.
+    The Intel bug report (filed 2026-04-01) should include this second reproducer.
+
+    Test 18 (cell-of-struct-with-array) also affected by bug 029 (write-back), so it
+    remains validate-l0-compile-only regardless of this fix.
 
     Note: This could in principle be tested on NVIDIA via PTX (--ir-target=spv not needed),
     e.g. using a Jupyter notebook with CUDA. A task for another day.
+    Follow Up: It _WAS_ tested and the PTX works.
 
 [x] 029 - Cell-of-array and cell-of-struct-with-array write-back is broken at the compiler level.
     Affected tests: 060-array/17-hoist-cell-of-array (redesigned as read-only to work around),

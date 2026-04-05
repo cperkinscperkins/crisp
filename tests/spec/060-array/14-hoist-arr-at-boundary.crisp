@@ -1,6 +1,11 @@
 ;; TEST-HOIST[L0] : validate-l0-compile-only
 ;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
 
+;; This test will never work with L0.  It will not support the fixed array 
+;; directly at the kernel boundary. It MUST be wrapped in a struct ( see test 15 ).
+;; In theory, though, this should work with PTX.  When we have a CUDA hoisting option
+;; we can test it there.
+
 ;; Direct (array long 4) at kernel boundary.
 ;; Array elements initialized iota-style (arr[i]=i) by host; kernel sums first and last.
 ;; Array is immutable at kernel boundary (by design), but host can initialize it.

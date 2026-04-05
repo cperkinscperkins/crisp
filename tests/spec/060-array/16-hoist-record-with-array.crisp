@@ -1,11 +1,10 @@
-;; TEST-HOIST[L0] : validate-l0-compile-only
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: 3
 ;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
 
 ;; def-record with an (array int 4) member, at kernel boundary.
-;; The physical signature treats the array member as a single arg (not SROA'd to 4 scalars).
-;; NOTE: validate-l0-compile-only because L0 rejects bare [4 x i32] as a SPIR-V
-;;       kernel entry point parameter (only structs/scalars/pointers are valid in OpenCL SPIR-V).
-;;       The generated C++ host code is correct; this is a compiler-level SPIR-V issue.
+;; The array field is SROA'd to 4 individual i32 scalar parameters — valid OpenCL/SPIR-V.
+;; Host initializes counts[i]=i (iota); kernel computes counts[0]+counts[3] = 0+3 = 3.
 
 (def-record data-rec (counts (array int 4)))
 
