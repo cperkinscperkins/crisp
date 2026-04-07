@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-02T02:36:31.990615Z
+Generated on 2026-04-07T02:02:12.906548Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -895,6 +895,21 @@ Generated on 2026-04-02T02:36:31.990615Z
 
 
 ---
+### DEFUN `%LOOKUP-FIELD-PHYSICAL-INDEX`
+- **Args**: `(STRUCT-DEF FIELD-NAME-STR)`
+
+  > Returns the physical (LLVM struct) index of a field identified by  >    FIELD-NAME-STR, using string-equal so package differences don't matter.  >    Returns NIL if not found.
+
+
+---
+### DEFUN `%TRY-INLINE-STRUCT-ARRAY-FIELD-PTR`
+- **Args**: `(ARRAY-NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE
+              LOCATION-MAP)`
+
+  > Workaround for IGC bug 028 + fix for bug 029 (place semantics).  >   >    If ARRAY-NODE is a call to a struct field accessor (name ends with ~)  >    whose return type is (array T N), emits a GEP directly into the struct's  >    memory to produce a pointer to the array field — completely bypassing the  >    accessor function call.  >   >    Bug 029 fix: if the struct arg is not a simple var-read (e.g. it is a  >    cell dereference like (~ c)), call generate-node-ir with multiple-value-bind  >    to capture the third return value (the addrspace(1) global pointer).  >    Use that pointer directly rather than spilling the loaded struct value to a  >    local alloca, so that subsequent element stores write back to GPU memory.  >   >    Returns the GEP pointer (ptr to [N x T]) if the pattern is recognized, or  >    NIL otherwise so the caller can fall through to the normal path.
+
+
+---
 ### DEFUN `GENERATE-LLVM-IR`
 - **Args**: `(SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
               LOCATION-MAP)`
@@ -1066,21 +1081,21 @@ Generated on 2026-04-02T02:36:31.990615Z
 ### DEFUN `GET-EXPANDED-TYPES`
 - **Args**: `(TYPE-SPEC MODULE)`
 
-  > Returns a list of LLVM types for a given Crisp type spec.  >    For 'cell', returns (ptr i64 i64). For 'storage', returns (ptr i64).  >    For records, explodes recursively. For others, returns (type).  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).  >    If *target-backend* is :spirv or :ptx, upgrades pointers to Global Address Space (1).
+  > Returns a list of LLVM types for a given Crisp type spec.  >    For cell/storage, returns exploded ptr+i64 types. For records, explodes recursively.  >    For (array T N), explodes to N copies of T's expanded types (SROA for record fields).  >    For others, returns (type).  >    If *target-backend* is :spirv or :ptx, upgrades pointers to Global Address Space (1).
 
 
 ---
 ### DEFUN `EXPLODE-VALUE`
 - **Args**: `(BUILDER AGG-VAL TYPE-SPEC)`
 
-  > Extracts components from an aggregate value if necessary.  >    Returns a list of LLVM values.  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
+  > Extracts components from an aggregate value if necessary. Returns a list of LLVM values.  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).  >    For (array T N) fields: extracts N individual element values (SROA).
 
 
 ---
 ### DEFUN `IMPLODE-VALUE`
 - **Args**: `(BUILDER COMPONENTS TYPE-SPEC MODULE)`
 
-  > Combines components into an aggregate value if necessary.  >    Returns a single LLVM value.  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
+  > Combines components into an aggregate value if necessary. Returns a single LLVM value.  >    Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).  >    For (array T N) fields: assembles N scalar components into an array value (SROA).
 
 
 ---
@@ -1152,7 +1167,14 @@ Generated on 2026-04-02T02:36:31.990615Z
 ### DEFUN `COMPILE-TO-SPIRV`
 - **Args**: `(MODULE OUTPUT-PATH &KEY DEBUG-P)`
 
-  > Compiles an LLVM Module to SPIR-V using the external toolchain.
+  > Compiles an LLVM Module to SPIR-V using the external toolchain.  >    Runs %remove-dead-array-returning-functions before translation to  >    prevent IGC from miscompiling dead TypeArray-returning functions  >    (bug 028 workaround Part 2).
+
+
+---
+### DEFUN `%REMOVE-DEAD-ARRAY-RETURNING-FUNCTIONS`
+- **Args**: `(MODULE)`
+
+  > Scans MODULE for functions whose return type is an LLVM array type  >    ([N x T]) and that have no uses (no callers in this module).  >    Deletes each such function.  >   >    This is Part 2 of the IGC bug 028 workaround.  >    Returns the number of functions deleted.
 
 
 ---
@@ -1513,7 +1535,7 @@ Generated on 2026-04-02T02:36:31.990615Z
 ### DEFUN `%RECORD-FIELD-ARGS`
 - **Args**: `(STREAM MEMBERS VAR-PATH ARG-INDEX RECORDS ALIASES)`
 
-  > Recursively emit field initialization and zeKernelSetArgumentValue calls  >    for all leaf fields of a record, following nested records.  >    Array-typed members are iota-initialized and passed as a single by-value arg  >    (matching the physical signature which keeps (array T N) as one slot).  >    Returns the updated arg-index after consuming all fields.
+  > Recursively emit field initialization and zeKernelSetArgumentValue calls  >    for all leaf fields of a record, following nested records.  >    Array-typed members are SROA'd: iota-initialized and passed as N  >    individual scalar args (one per element), matching the compiler's  >    physical signature which explodes (array T N) to N scalar slots.  >    Returns the updated arg-index after consuming all fields.
 
 
 ---
