@@ -105,30 +105,33 @@
 
 
 
+
+;;;; ============================================================
+;;;; def-record SROA for (array T N) fields at kernel boundary.
+;;;; An array field in a record must be exploded to N individual
+;;;; scalar parameters rather than passed as a bare [N x T] type
+;;;; (which is invalid at an OpenCL/SPIR-V kernel entry point).
+;;;; ============================================================
+
+;; src/codegen/abi.lisp
 (defun get-expanded-types (type-spec module)
   "Returns a list of LLVM types for a given Crisp type spec.
-   For 'cell', returns (ptr i64 i64). For 'storage', returns (ptr i64).
-   For records, explodes recursively. For others, returns (type).
-   Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
+   For cell/storage, returns exploded ptr+i64 types. For records, explodes recursively.
+   For (array T N), explodes to N copies of T's expanded types (SROA for record fields).
+   For others, returns (type).
    If *target-backend* is :spirv or :ptx, upgrades pointers to Global Address Space (1)."
-  (let* (;; Detect non-storage record list form: (V-POINT :EARNESTNESS 3.0) -> V-POINT
-         (record-base (%record-base-from-list-form type-spec))
+  (let* ((record-base (%record-base-from-list-form type-spec))
          (is-storage-list (and (consp type-spec)
                                (symbolp (first type-spec))
                                (member (symbol-name (first type-spec)) '("CELL" "STORAGE" "VECTOR" "MATRIX" "TENSOR")
                                        :test #'string-equal)))
          (lookup-spec (cond
-                        (record-base record-base)             ;; NEW: strip to base for record list forms
+                        (record-base record-base)
                         (is-storage-list
-                         (progn
-                          (log:debug "GET-EXPANDED-TYPES: Storage handle list form detected: ~s" type-spec)
-                          (let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
-                            (log:debug "  Mangled to: ~s (package: ~a)" mangled (package-name (symbol-package mangled)))
-                            mangled)))
+                         (let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
+                           mangled))
                         (t type-spec)))
-         ;; Ensure type is instantiated/registered
          (ignored (ignore-errors (resolve-type-to-llvm lookup-spec)))
-         ;; Type lookup: for the new record-base case, also try crisp-language package
          (type-rec (or (gethash lookup-spec *crisp-types*)
                        (when (and record-base (symbolp lookup-spec))
                          (let ((alt (intern (symbol-name lookup-spec) (find-package :crisp-language))))
@@ -157,10 +160,18 @@
                  (let* ((members (crisp-struct-definition-members struct-def))
                         (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members)))
                    (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members))))
+              ;; Case 1.5: (array T N) field — explode to N individual T values (SROA)
+              ((%array-type-p lookup-spec)
+               (let* ((elem-type (cl:second lookup-spec))
+                      (count-raw (cl:third lookup-spec))
+                      (count (etypecase count-raw
+                               (integer count-raw)
+                               (symbol (parse-integer (symbol-name count-raw))))))
+                 (log:info "get-expanded-types: SROA array ~a -> ~a x ~a" lookup-spec count elem-type)
+                 (loop repeat count append (get-expanded-types elem-type module))))
               ;; Case 2: Standard Type (Struct/Scalar) -> Return as is
               (t (list (crisp-type-to-llvm-type actual-key module)))))))
 
-    ;; Post-Processing: Apply Address Spaces for GPU Backends
     (if (and (or (eq *target-backend* :spirv) (eq *target-backend* :ptx))
              (is-global-storage-handle-p type-spec))
         (mapcar (lambda (ty)
@@ -171,12 +182,10 @@
                 expanded)
         expanded)))
 
-
-
 (defun explode-value (builder agg-val type-spec)
-  "Extracts components from an aggregate value if necessary.
-   Returns a list of LLVM values.
-   Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0)."
+  "Extracts components from an aggregate value if necessary. Returns a list of LLVM values.
+   Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
+   For (array T N) fields: extracts N individual element values (SROA)."
   (let* ((record-base (%record-base-from-list-form type-spec))
          (lookup-spec (if record-base
                           record-base
@@ -187,7 +196,6 @@
                               (mangle-template-struct-name (first type-spec) (rest type-spec))
                               type-spec)))
          (type-rec (or (gethash lookup-spec *crisp-types*)
-                       ;; For record-base case, try crisp-language
                        (when record-base
                          (gethash (intern (symbol-name lookup-spec) (find-package :crisp-language))
                                   *crisp-types*)))))
@@ -203,14 +211,20 @@
                          (extracted (llvm-build-extract-value builder agg-val i (format nil "~a_val" (first m)))))
                     (setf values (append values (explode-value builder extracted member-type)))))
          values))
+      ;; (array T N): extract each element individually (SROA for record fields)
+      ((%array-type-p lookup-spec)
+       (let* ((count-raw (cl:third lookup-spec))
+              (count (etypecase count-raw
+                       (integer count-raw)
+                       (symbol (parse-integer (symbol-name count-raw))))))
+         (loop for i from 0 below count
+               collect (llvm-build-extract-value builder agg-val i (format nil "arr_elem_~a" i)))))
       (t (list agg-val)))))
 
-
-
 (defun implode-value (builder components type-spec module)
-  "Combines components into an aggregate value if necessary.
-   Returns a single LLVM value.
-   Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0)."
+  "Combines components into an aggregate value if necessary. Returns a single LLVM value.
+   Handles list-form parameterised record types like (V-POINT :EARNESTNESS 3.0).
+   For (array T N) fields: assembles N scalar components into an array value (SROA)."
   (let* ((record-base (%record-base-from-list-form type-spec))
          (lookup-spec (if record-base
                           record-base
@@ -221,7 +235,6 @@
                               (mangle-template-struct-name (first type-spec) (rest type-spec))
                               type-spec)))
          (type-rec (or (gethash lookup-spec *crisp-types*)
-                       ;; For record-base case, try crisp-language
                        (when record-base
                          (gethash (intern (symbol-name lookup-spec) (find-package :crisp-language))
                                   *crisp-types*)))))
@@ -241,6 +254,23 @@
                     (setf agg (llvm-build-insert-value builder agg member-val i (format nil "~a_ins" (first m))))
                     (setf current-components (subseq current-components consumed-count))))
          agg))
+      ;; (array T N): assemble N scalar components back into an array value (SROA)
+      ((%array-type-p lookup-spec)
+       (let* ((elem-type (cl:second lookup-spec))
+              (count-raw (cl:third lookup-spec))
+              (count (etypecase count-raw
+                       (integer count-raw)
+                       (symbol (parse-integer (symbol-name count-raw)))))
+              (arr-llvm-type (crisp-type-to-llvm-type lookup-spec module))
+              (result (llvm-get-undef arr-llvm-type))
+              (current-components components))
+         (loop for i from 0 below count
+               do (let* ((elem-val (implode-value builder current-components elem-type module))
+                         (consumed (length (get-expanded-types elem-type module))))
+                    (setf result (llvm-build-insert-value builder result elem-val i
+                                                         (format nil "arr_build_~a" i)))
+                    (setf current-components (subseq current-components consumed))))
+         result))
       (t (first components)))))
 
 (defun extract-primary-value (builder value type-spec)

@@ -249,13 +249,22 @@ Returns (values addr-space-int access-qual-string type-name-string)."
 
           (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
 
+
+
 (defun compile-to-spirv (module output-path &key debug-p)
-  "Compiles an LLVM Module to SPIR-V using the external toolchain."
+  "Compiles an LLVM Module to SPIR-V using the external toolchain.
+   Runs %remove-dead-array-returning-functions before translation to
+   prevent IGC from miscompiling dead TypeArray-returning functions
+   (bug 028 workaround Part 2)."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
          (name (pathname-name output-path))
          (ll-file (merge-pathnames (format nil "~a.temp.ll" name) base-path))
          (bc-file (merge-pathnames (format nil "~a.temp.bc" name) base-path))
          (spv-file output-path))
+
+    ;; Bug 028 Part 2: remove dead array-returning functions before SPIR-V
+    ;; so IGC never sees a TypeArray return type, even in dead code.
+    (%remove-dead-array-returning-functions module)
 
     ;; Set target triple for SPIR-V before writing IR
     (llvm-set-target module "spir64-unknown-unknown")
@@ -279,14 +288,50 @@ Returns (values addr-space-int access-qual-string type-name-string)."
        (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
        :log-prefix "[SPIR-V] "))
 
-    ;; Cleanup temps (only if NOT debugging, ideally, but let's keep it simple for now)
-    ;; Actually, if debug-p is true, maybe we should KEEP them?
-    ;; For verify step, keeping them is handy.
     (unless debug-p
       (when (probe-file ll-file) (delete-file ll-file))
       (when (probe-file bc-file) (delete-file bc-file)))
 
     (log:info "Generated SPIR-V: ~a" spv-file)))
+
+
+;;;; ============================================================
+;;;; Bug 028 Part 2 — diagnostic redef: verbose logging to confirm
+;;;; %remove-dead-array-returning-functions is called and what it sees.
+;;;; Remove once confirmed working.
+;;;; ============================================================
+
+;; src/compiler.lisp
+(defun %remove-dead-array-returning-functions (module)
+  "Scans MODULE for functions whose return type is an LLVM array type
+   ([N x T]) and that have no uses (no callers in this module).
+   Deletes each such function.
+
+   This is Part 2 of the IGC bug 028 workaround.
+   Returns the number of functions deleted."
+  (log:info "028-cleanup: starting scan of module for dead array-returning functions")
+  (let ((to-delete '())
+        (fn-count 0)
+        (fn (crisp.llvm-bindings::llvm-get-first-function module)))
+    (loop while (and fn (not (cffi:null-pointer-p fn))) do
+      (incf fn-count)
+      (let* ((fn-name  (crisp.llvm-bindings::llvm-get-value-name fn))
+             (fn-type  (crisp.llvm-bindings::llvm-global-get-value-type fn))
+             (ret-type (crisp.llvm-bindings::llvm-get-return-type fn-type))
+             (is-arr   (crisp.llvm-bindings::llvm-type-kind-is-array? ret-type))
+             (no-uses  (cffi:null-pointer-p (crisp.llvm-bindings::llvm-get-first-use fn))))
+        (log:info "028-cleanup: fn=~a is-array-ret=~a no-uses=~a" fn-name is-arr no-uses)
+        (when (and is-arr no-uses)
+          (log:info "028-cleanup: queuing dead array-returning fn ~a for deletion" fn-name)
+          (push fn to-delete)))
+      (setf fn (crisp.llvm-bindings::llvm-get-next-function fn)))
+    (log:info "028-cleanup: scanned ~a function(s), queued ~a for deletion" fn-count (cl:length to-delete))
+    (dolist (fn to-delete)
+      (crisp.llvm-bindings::llvm-delete-function fn))
+    (let ((n (cl:length to-delete)))
+      (when (> n 0)
+        (log:info "028-cleanup: deleted ~a dead array-returning function(s)" n))
+      n)))
 
 (defun compile-to-ptx (module output-path &key (compute-capability "sm_50") debug-p)
   "Compiles an LLVM Module to PTX using llc.

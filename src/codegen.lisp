@@ -239,6 +239,112 @@
                                 (llvm-build-ret builder last-val))))))
         (when last-loc (llvm-instruction-set-debug-loc ret-inst last-loc))))))
 
+
+(defun %lookup-field-physical-index (struct-def field-name-str)
+  "Returns the physical (LLVM struct) index of a field identified by
+   FIELD-NAME-STR, using string-equal so package differences don't matter.
+   Returns NIL if not found."
+  (let ((result nil))
+    (maphash (lambda (k v)
+               (when (string-equal (symbol-name k) field-name-str)
+                 (setf result v)))
+             (crisp-struct-definition-field-indices struct-def))
+    result))
+
+;;;; ============================================================
+;;;; Bug 029 fix: %try-inline-struct-array-field-ptr — use the
+;;;; addrspace(1) global pointer returned by the inner generate-node-ir
+;;;; call (e.g. a cell dereference) instead of spilling to a local alloca.
+;;;;
+;;;; When arg-node is (~ c) where c is a cell, generate-node-ir returns:
+;;;;   (values loaded-struct nil global-ptr)
+;;;; The global-ptr is the addrspace(1) pointer into GPU memory.
+;;;; The old code ignored it and spilled the loaded value to a local alloca,
+;;;; causing the subsequent element store to write to local memory only.
+;;;; The fix: if generate-node-ir returns a non-nil third value (the ptr),
+;;;; use it directly as struct-ptr for the two-level GEP.
+;;;; This ensures (set! (~ (values~ (~ c)) 2) 42) stores through the
+;;;; global pointer and reaches GPU memory (fixes bug 029).
+;;;; See: tests/spec/061-place-semantics/DESIGN.md
+;;;; ============================================================
+
+;; src/codegen.lisp
+(defun %try-inline-struct-array-field-ptr
+    (array-node builder module var-env di-builder di-scope location-map)
+  "Workaround for IGC bug 028 + fix for bug 029 (place semantics).
+
+   If ARRAY-NODE is a call to a struct field accessor (name ends with ~)
+   whose return type is (array T N), emits a GEP directly into the struct's
+   memory to produce a pointer to the array field — completely bypassing the
+   accessor function call.
+
+   Bug 029 fix: if the struct arg is not a simple var-read (e.g. it is a
+   cell dereference like (~ c)), call generate-node-ir with multiple-value-bind
+   to capture the third return value (the addrspace(1) global pointer).
+   Use that pointer directly rather than spilling the loaded struct value to a
+   local alloca, so that subsequent element stores write back to GPU memory.
+
+   Returns the GEP pointer (ptr to [N x T]) if the pattern is recognized, or
+   NIL otherwise so the caller can fall through to the normal path."
+  (when (and (semantic-call-p array-node)
+             (= (cl:length (semantic-call-args array-node)) 1))
+    (let* ((call-type (semantic-call-type array-node))
+           ;; Unwrap single-element list return types: ((array T N)) -> (array T N)
+           (raw-type  (if (and (listp call-type)
+                               (= (cl:length call-type) 1)
+                               (listp (cl:first call-type)))
+                          (cl:first call-type)
+                          call-type)))
+      (when (%array-type-p (resolve-type-alias raw-type))
+        (let* ((call-name    (semantic-call-name array-node))
+               (name-str     (symbol-name call-name)))
+          ;; Only intercept accessor calls (name ends with ~)
+          (when (and (> (cl:length name-str) 1)
+                     (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
+            (let* ((field-name-str  (subseq name-str 0 (1- (cl:length name-str))))
+                   (arg-node        (cl:first (semantic-call-args array-node)))
+                   (struct-type-sym (semantic-node-type arg-node))
+                   (struct-def      (when (symbolp struct-type-sym)
+                                      (lookup-struct-definition struct-type-sym))))
+              (when struct-def
+                (let ((physical-index (%lookup-field-physical-index struct-def field-name-str)))
+                  (when physical-index
+                    (log:info "028-fix: inlining struct accessor ~a (field '~a' idx=~a) to avoid array-returning fn"
+                              call-name field-name-str physical-index)
+                    (let* ((struct-llvm-type (ensure-struct-llvm-type struct-type-sym))
+                           ;; Obtain a pointer to the struct in the function frame.
+                           ;; If the arg is a simple var-read its alloca is already in var-env.
+                           ;; Otherwise generate the struct value; if the inner node returns a
+                           ;; global pointer (e.g. from a cell deref), use that directly (bug 029
+                           ;; place-semantics fix).  Fall back to spilling to a local alloca only
+                           ;; if no global pointer is available.
+                           (struct-ptr
+                             (if (semantic-var-read-p arg-node)
+                                 (let ((alloca (gethash (semantic-var-read-name arg-node) var-env)))
+                                   (log:info "028-fix: using alloca for var ~a" (semantic-var-read-name arg-node))
+                                   alloca)
+                                 (multiple-value-bind (sv _loc global-ptr)
+                                     (generate-node-ir arg-node builder module var-env
+                                                       di-builder di-scope location-map)
+                                   (declare (ignore _loc))
+                                   (if (and global-ptr (not (cffi:null-pointer-p global-ptr)))
+                                       (progn
+                                         (log:info "029-fix: cell-of-struct accessor: using global ptr directly (place-semantics write-back fix)")
+                                         global-ptr)
+                                       (let ((spill (llvm-build-alloca builder struct-llvm-type "struct_spill")))
+                                         (log:info "028-fix: spilling struct value to local alloca (no global ptr)")
+                                         (llvm-build-store builder sv spill)
+                                         spill))))))
+                      ;; Two-level GEP: struct_ptr[0].physical_index -> ptr to [N x T]
+                      (cffi:with-foreign-object (gep-indices :pointer 2)
+                        (setf (cffi:mem-aref gep-indices :pointer 0)
+                              (llvm-const-int (llvm-int32-type) 0 nil))
+                        (setf (cffi:mem-aref gep-indices :pointer 1)
+                              (llvm-const-int (llvm-int32-type) physical-index nil))
+                        (llvm-build-in-bounds-gep2
+                         builder struct-llvm-type struct-ptr gep-indices 2 "arr_field_ptr")))))))))))))
+
+
 (defun generate-llvm-ir (semantic-function module builder di-builder di-compile-unit location-map)
   "Top-level function to generate LLVM IR for a given semantic function."
   (log:warn "GENERATE-LLVM-IR: ~a Params: ~a Ret: ~a"
@@ -1307,13 +1413,17 @@
 ;;; the alloca spill if sub-ptr is nil.
 ;;; =========================================================
 
-;; src/codegen.lisp
+               
+
 (defmethod generate-node-ir ((node semantic-aref) builder module var-env di-builder di-scope location-map)
   "Generates IR for array/cell access (aref / ~).
    Case 1: CELL parameterized type  — existing behaviour unchanged.
    Case 2: (array T N) fixed-size array — GEP into the alloca (or pointer).
-     For a simple var-read of type (array T N), the alloca is fetched directly
+     For a direct var-read of type (array T N), the alloca is fetched directly
      from var-env so we never load the aggregate value before GEP-ing into it.
+     For a struct accessor call returning (array T N), %try-inline-struct-array-field-ptr
+     GEPs directly into the struct's alloca — no array-returning function call emitted
+     (workaround for IGC bug 028, see tests/spec/061-place-semantics/DESIGN.md).
      For a nested aref (e.g. cell-of-array), the inner generate-node-ir returns
      the addrspace(1) pointer as its third value — use that directly so that
      stores go back to GPU memory (fixes bug 029).
@@ -1353,38 +1463,40 @@
                (elem-llvm-type    (crisp-type-to-llvm-type elem-type-spec module))
                (arr-llvm-type     (crisp.llvm-bindings::llvm-array-type elem-llvm-type count))
                ;; Get the array pointer.
-               ;; For a direct var-read, grab the alloca from var-env — no load needed.
-               ;; For a nested expression, call generate-node-ir with multiple-value-bind:
-               ;;   - If the third return (sub-ptr) is non-nil, it is already an addrspace(1)
-               ;;     pointer (e.g. from a cell-of-array deref) — use it directly.
-               ;;     This is the bug 029 fix: the old code ignored sub-ptr and fell into
-               ;;     the alloca spill branch, so stores never reached GPU memory.
-               ;;   - If sub-val is a pointer type (bare pointer expression), use it.
-               ;;   - Otherwise spill the aggregate value to a local alloca for GEP.
+               ;; New (bug 028): if array-node is a struct accessor call returning an array
+               ;;   type, GEP directly into the struct's alloca — no function call emitted.
+               ;; Existing: for a direct var-read, grab the alloca from var-env.
+               ;; Existing: for a nested aref returning a pointer (bug 029 path), use it.
+               ;; Existing: for any other aggregate value, spill to a temp alloca.
                (arr-ptr
-                (if (semantic-var-read-p array-node)
-                    (let ((alloca (gethash (semantic-var-read-name array-node) var-env)))
-                      (unless alloca
-                        (error "array aref: variable ~a not found in var-env"
-                               (semantic-var-read-name array-node)))
-                      alloca)
-                    (multiple-value-bind (sub-val _loc sub-ptr)
-                        (generate-node-ir array-node builder module var-env
-                                          di-builder di-scope location-map)
-                      (declare (ignore _loc))
-                      (cond
-                       ;; Inner node returned a direct pointer (e.g. cell-of-array) — use it.
-                       (sub-ptr
-                        (log:info "array-aref: using sub-ptr from inner aref (bug 029 path)")
-                        sub-ptr)
-                       ;; sub-val is already a pointer type (bare pointer expression)
-                       ((llvm-type-kind-is-pointer? (llvm-type-of sub-val))
-                        sub-val)
-                       ;; Aggregate value (e.g. struct member accessor) — spill to temp alloca
-                       (t
-                        (let ((slot (llvm-build-alloca builder arr-llvm-type "arr_tmp")))
-                          (llvm-build-store builder sub-val slot)
-                          slot))))))
+                (let ((inline-ptr (%try-inline-struct-array-field-ptr
+                                   array-node builder module var-env
+                                   di-builder di-scope location-map)))
+                  (if inline-ptr
+                      inline-ptr
+                      (if (semantic-var-read-p array-node)
+                          (let ((alloca (gethash (semantic-var-read-name array-node) var-env)))
+                            (unless alloca
+                              (error "array aref: variable ~a not found in var-env"
+                                     (semantic-var-read-name array-node)))
+                            alloca)
+                          (multiple-value-bind (sub-val _loc sub-ptr)
+                              (generate-node-ir array-node builder module var-env
+                                                di-builder di-scope location-map)
+                            (declare (ignore _loc))
+                            (cond
+                             ;; Inner node returned a direct pointer (e.g. cell-of-array) — use it.
+                             (sub-ptr
+                              (log:info "array-aref: using sub-ptr from inner aref (bug 029 path)")
+                              sub-ptr)
+                             ;; sub-val is already a pointer type (bare pointer expression)
+                             ((llvm-type-kind-is-pointer? (llvm-type-of sub-val))
+                              sub-val)
+                             ;; Aggregate value — spill to temp alloca
+                             (t
+                              (let ((slot (llvm-build-alloca builder arr-llvm-type "arr_tmp")))
+                                (llvm-build-store builder sub-val slot)
+                                slot))))))))
                ;; Extend index to i64 for GEP
                (idx-i64 (llvm-build-sext builder index-val (llvm-int64-type) "arr_idx")))
 

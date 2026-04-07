@@ -508,12 +508,12 @@
 
 
 
-
 (defun %record-field-args (stream members var-path arg-index records aliases)
   "Recursively emit field initialization and zeKernelSetArgumentValue calls
    for all leaf fields of a record, following nested records.
-   Array-typed members are iota-initialized and passed as a single by-value arg
-   (matching the physical signature which keeps (array T N) as one slot).
+   Array-typed members are SROA'd: iota-initialized and passed as N
+   individual scalar args (one per element), matching the compiler's
+   physical signature which explodes (array T N) to N scalar slots.
    Returns the updated arg-index after consuming all fields."
   (let ((idx arg-index))
     (dolist (member members)
@@ -523,19 +523,20 @@
              (field-name-cpp  (format-cpp-identifier field-sym))
              (field-path      (format nil "~a.~a" var-path field-name-cpp)))
         (cond
-         ;; Array member — iota init, single by-value zeKernelSetArgumentValue
+         ;; Array member — SROA: iota-init, then N individual zeKernelSetArgumentValue calls
          ((%array-type-p field-type)
           (let* ((elem-type (%array-element-type field-type))
                  (arr-size  (%array-size field-type))
                  (elem-str  (crisp-type-to-cpp-type elem-type)))
-            (format stream "    // Iota-init array member ~a~%" field-path)
+            (format stream "    // Iota-init array member ~a (~a elements, SROA'd to ~a scalar args)~%"
+                    field-path arr-size arr-size)
             (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
                     arr-size field-path elem-str)
-            (format stream "    // Arg ~d: ~a (array ~a[~a] by value)~%"
-                    idx field-path elem-str arr-size)
-            (format stream "    zeKernelSetArgumentValue(kernel, ~d, ~a * sizeof(~a), ~a);~%"
-                    idx arr-size elem-str field-path)
-            (incf idx)))
+            (loop for i from 0 below arr-size do
+              (format stream "    // Arg ~d: ~a[~d]~%" idx field-path i)
+              (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a[~d]);~%"
+                      idx elem-str field-path i)
+              (incf idx))))
          ;; Nested record — recurse into its members
          ((record-type-p field-type records)
           (let* ((nested-def     (find-record-def field-type records))
