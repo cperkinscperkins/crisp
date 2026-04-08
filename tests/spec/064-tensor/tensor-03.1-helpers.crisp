@@ -1,0 +1,6 @@
+;; bytes~ is NOT a passthrough .  It returns the number of bytes required to record the tensor in
+;; the storage.  ie (sizeof T) 
+
+(def-function test-tensor-bytes (t1)
+    (declare #'((tensor long 3) => ulong))
+ (bytes~ t1))

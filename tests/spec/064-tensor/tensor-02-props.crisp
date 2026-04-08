@@ -1,22 +1,25 @@
 ;; All Storage Handles, including cell, support the properties: offset, parent, element-type
 
+
+;; For tensors, offset~ is a virtual fixed array, length N.
+;; for cell it's just a ulong. 
 (def-function test-tensor-offset (t1)
     (declare #'((tensor long 4) => ulong))
-  (offset~ t1)) ;; is this byte offset? or offset of longs? What is it for cell?
+  (~ (offset~ t1) 0)) ;; offset is a virtual fixed array, length N.
 
 (def-function test-tensor-parent (t1)
     (declare #'((tensor long 3) => ulong))
  (byte-size~ (parent~ t1)))
 
 (def-function test-element-type (t1)
-    (declare #'((tensor long) => ulong))
+    (declare #'((tensor long 1) => ulong))
  (c-t-assert (type-equal (element-type~ t1) 'long) "best be long, little doggie")
- (offset~ t1))
+ (~ (offset~ t1) 0))
 
 (with-template-type (T)
     (def-function test-templated-tensor-offset (t1)
-        (declare #'((tensor T) => ulong))
-      (+ (offset~ c) (byte-size~ (parent~ t1)))))
+        (declare #'((tensor T 2) => ulong))
+      (+ (~ (offset~ c) 0) (byte-size~ (parent~ t1)))))
 
 (gen-test-templated-tensor-offset float)
 
@@ -24,25 +27,33 @@
 ;; Tensor Specific Properties : num-dims, length, strides, extents
 
 (def-function test-tensor-arity (t1 t2)
-    (declare #'((tensor long 4) tensor => ulong ulong))
+    (declare #'((tensor long 4) (tensor float 6) => ulong ulong))
   (return (num-dims~ t1) (num-dims~ t2)))
 
 ;; length is number of elements, not byte size. 
 ;; for tensors is H x W x D x .... N
-;; though it is probably just stored.
 (def-function test-tensor-length (t1 t2)
-        (declare #'((tensor long 4) tensor => ulong ulong))
+        (declare #'((tensor long 4) (tensor float 6) => ulong ulong))
   (return (length~ t1) (length~ t2))) 
 
 ;; getting trickier
-(def-type stride-vec (tensor ulong 1 :global :read-write))
 
+;; does the virtual fixed-array have a length~ accessor?
+;; strides are ulong or long?
 (def-function test-tensor-strides (t1 t2)
-    (declare #'((tensor long 4) tensor => stride-vec stride-vec))
-  (return (strides~ t1) (strides~ t2)))
+    (declare #'((tensor long 4) (tensor float 3) => ulong ulong))
+  (return (length~ (strides~ t1)) (~ (strides~ t2) 2)))
 
-(def-type extent-vec (tensor ulong 1 :global :read-write))
+;; "(array T N)" declares the fixed array type.
+;; but how to declare the VIRTUAL fixed array type?
+(def-function test-tensor-strides-2 (t1 t2)
+    (declare #'((tensor long 2) (tensor float 5) => (array ulong 2) (array ulong 5)))
+  (return  (strides~ t1) (strides~ t2)))
 
 (def-function test-tensor-extents (t1 t2)
-    (declare #'((tensor long 4) tensor => extent-vec extent-vec))
+    (declare #'((tensor long 4) (tensor long 1) => ulong ulong))
+  (return (length~ (extents~ t1)) (~ (extents~ t2) 0)))
+
+(def-function test-tensor-extents-2 (t1 t2)
+    (declare #'((tensor long 4) (tensor long 1) => (array ulong 4) (array ulong 1)))
   (return (extents~ t1) (extents~ t2)))

@@ -1,12 +1,15 @@
-;; The simplest variants of tensor, used as arguments.
+;; tensor, like the cell Storage Hnadle,  is a parameterized type. 
+;; It's type declaration uses &key for :address-space and :access
+;; The minimal type declaration has element type and arity.
 
-(def-function test-tensor-as-arg (t1 t2 t3 t4)
-    (declare #'(tensor (tensor) (tensor int) (tensor int 4) => nil))
+
+(def-function test-tensor-as-arg (t1 )
+    (declare #'((tensor int 4) => nil))
     (return))
 
 (with-template-type (T)
-    (def-function test-templated-tensor-as-arg (t1 t2)
-        (declare #'((tensor T) (tensor T 4) => nil))
+    (def-function test-templated-tensor-as-arg (t1)
+        (declare #'((tensor T 4) => nil))
         (return)))
 
 (with-template-type (T N)
@@ -16,4 +19,4 @@
 
 (gen-test-templated-tensor-as-arg float)
 
-(gen-test-templated-arity-tensor-as-arg long)
+(gen-test-templated-arity-tensor-as-arg long 5)

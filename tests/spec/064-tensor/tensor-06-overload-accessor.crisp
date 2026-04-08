@@ -1,0 +1,17 @@
+;; overloading ~ on tensor is a bad idea.
+;; use def-derived-type to derive a custom type
+;; and overload ~ for that type instead. BUT
+;; bad idea or not, we need to support and test.
+
+(def-function ~ (m y x)
+    (declare #'((tensor float 2) ulong ulong => float))
+    (+ 10F (~ref~ m y x)))
+
+;; great to check that this compiles and all.
+;; but stunts like this probably need to be a unit test
+;; so we can vet the IR.
+(def-function test-overloaded-accessor (m y x)
+    (declare #'((tensor float 2) ulong ulong => float))
+    (~ m y x))
+
+;; see cell-06-overload-accessor test "danger ahead" section

@@ -1,0 +1,11 @@
+;; storage handle type definitions.
+
+;; type constructors
+
+;; simplest: (tensor <type> <arity>) 
+(def-function compare-parent (A B)
+    (declare #'((tensor int 3) (tensor int 3) => int))
+    ;; (equal (parent~ A) (parent~ B)) ;; do we have equal? Do we want it?  Would = work?
+    ;; alternately
+    (= (byte-size~ (parent~ A)) (byte-size~ (parent~ B))))
+
