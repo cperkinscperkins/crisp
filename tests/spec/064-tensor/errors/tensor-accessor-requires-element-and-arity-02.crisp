@@ -1,4 +1,5 @@
 
+;; CHECK-FAIL: "Invalid incomplete type specifier"
 ;; requires element
 (def-function test-tensor-accessor (t x)
     (declare #'((tensor) => long))

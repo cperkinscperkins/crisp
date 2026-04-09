@@ -219,8 +219,10 @@
    #:def-enumeration
    #:address-space
    #:access
+   #:align
    #:is-address-space?
    #:is-access?
+   #:is-align?
 
    ;; Global Compiler State
    #:*types*
@@ -249,6 +251,7 @@
 
    ;; Built-in Types
    #:cell
+   #:tensor
    #:storage
    #:type
    #:make-scratch-cell
@@ -267,6 +270,8 @@
    #:address~ #:byte-size~ #:address-space~ #:access~
    #:parent~ #:offset~ #:element-type~
    #:bytes~ #:sizeof
+   ;; Tensor accessors
+   #:num-dims~ #:length~ #:strides~ #:extents~
 
    ;; All cast/conversion operators
    #:to-char #:as-char
@@ -363,14 +368,17 @@
                 #:address-space
                 #:is-set?
                 #:access
+                #:align
                 #:is-address-space?
                 #:is-access?
+                #:is-align?
                 #:|=>|
                 #:c-t-assert #:c-t-output
 
                 ;; All Crisp types
                 #:char #:short #:int #:long
                 #:cell
+                #:tensor
                 #:storage #:c-pointer #:voidp
                 #:uchar #:ushort #:uint #:ulong
                 #:half #:bfloat16 #:float #:double
@@ -379,6 +387,8 @@
                 #:address~ #:byte-size~ #:address-space~ #:access~
                 #:parent~ #:offset~ #:element-type~
                 #:bytes~ #:sizeof
+                ;; Tensor accessors
+                #:num-dims~ #:length~ #:strides~ #:extents~
 
                 ;; All cast/conversion operators
                 #:to-char #:as-char
@@ -491,13 +501,17 @@
    #:cell #:voidp
    #:parent~ #:offset~ #:element-type~
    #:bytes~ #:sizeof
+   ;; Tensor accessors
+   #:num-dims~ #:length~ #:strides~ #:extents~
 
    ;; Enumerations
    #:def-enumeration
    #:address-space
    #:access
+   #:align
    #:is-address-space?
    #:is-access?
+   #:is-align?
 
    ;; Compiler/Codegen
    #:emit-llvm

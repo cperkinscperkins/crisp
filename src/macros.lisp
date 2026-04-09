@@ -905,10 +905,17 @@
                             `(def-function ,accessor-name ((obj ,name))
                                            (declare (function ((,name) => ,type)))
                                            (declare (crisp-system-generated))
-                                           (return ,(cl:let ((v (%ct-resolve-value value)))
-                                                      (if (or (numberp v) (stringp v) (eq v t) (eq v nil))
-                                                          v
-                                                          `',v)))))
+                                           (return ,(cl:let* ((v (%ct-resolve-value value))
+                                                              ;; Cast integer literals to numeric c-t types
+                                                              ;; to avoid int vs ulong/uint/long etc. mismatch.
+                                                              (cast-fn (cl:when (cl:and (cl:integerp v)
+                                                                                        (cl:member type '(ulong uint ushort uchar long short char)))
+                                                                         (cl:intern (cl:format nil "TO-~a" type) pkg))))
+                                                       (cl:if cast-fn
+                                                              `(,cast-fn ,v)
+                                                              (if (or (numberp v) (stringp v) (eq v t) (eq v nil))
+                                                                  v
+                                                                  `',v))))))
                         (let ((idx runtime-index))
                           (incf runtime-index)
                           `(def-function ,accessor-name ((obj ,name))

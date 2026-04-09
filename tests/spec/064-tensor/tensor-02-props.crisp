@@ -19,7 +19,7 @@
 (with-template-type (T)
     (def-function test-templated-tensor-offset (t1)
         (declare #'((tensor T 2) => ulong))
-      (+ (~ (offset~ c) 0) (byte-size~ (parent~ t1)))))
+      (+ (~ (offset~ t1) 0) (byte-size~ (parent~ t1)))))
 
 (gen-test-templated-tensor-offset float)
 
