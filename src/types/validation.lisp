@@ -43,67 +43,107 @@
       type-spec))
 
 
+
 (defun expand-storage-handle-type-specifier (spec)
-  "Expands legacy/shorthand storage handle specs (cell, vector, etc) into their canonical struct form.
-   e.g. (cell int) -> (cell int :global :read-write)
-   e.g. (cell int :address-space :local) -> (cell int :local :read-write)
-   
-   ROBUSTNESS FIX (Regression Analysis):
-   - Explicitly extracts known keys (:address-space, :access) and IGNORES others (like :direction).
-   - Normalizes address-space symbols (GLOBAL) to keywords (:GLOBAL) to prevent type errors.
-   - Ensures output is always a clean positional list for template instantiation."
+  "Expands storage handle type specs into canonical positional forms.
+   Cell/vector/matrix → (base elem addr access)         [4-tuple, :global :read-write].
+   Tensor             → (tensor elem N addr access align) [6-tuple, :global :read-write :compact].
+   Tensor missing N → crisp-incomplete-type-error.
+   Address-space / access / align bare symbols normalised to keywords."
   (log:info "EXPAND-STORAGE-HANDLE: ~s" spec)
   (cl:cond
     ((null spec) nil)
     ((symbolp spec) spec)
     ((consp spec)
-     (cl:let ((base (first spec)))
-       (if (and (symbolp base) (member (symbol-name base) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
-           (if (null (rest spec))
-               ;; Disallow bare (cell)
-               (error 'crisp-incomplete-type-error :type-spec spec)
+     (cl:let ((base (cl:first spec)))
+       (cl:if (and (symbolp base)
+                (member (symbol-name base)
+                        '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+           (progn
+             (cl:when (null (rest spec))
+               (error 'crisp-incomplete-type-error :type-spec spec))
 
-               (cl:let* ((args (rest spec))
-                         (element-type (first args))
-                         (rest-args (rest args)))
+             (cl:let* ((args         (rest spec))
+                       (element-type (cl:first args))
+                       (rest-args    (rest args)))
 
-                 (if (null rest-args)
-                     ;; Case: (CELL INT) -> Defaults
-                     (list base element-type :global :read-write)
+               (cl:cond
+                ;; ── TENSOR: second positional arg is the arity N ─────────────
+                ((string-equal (symbol-name base) "TENSOR")
+                 (cl:let* (;; N present when next arg is NOT a keyword/nil
+                            (n-arg       (and rest-args
+                                              (not (keywordp (cl:first rest-args)))
+                                              (cl:first rest-args)))
+                            (rest-after-n (if n-arg (rest rest-args) rest-args))
+                            (addr :global)
+                            (acc  :read-write)
+                            (aln  :compact)
+                            (remaining rest-after-n))
+                   (cl:unless n-arg
+                     (error 'crisp-incomplete-type-error :type-spec spec))
+                   (cl:loop while remaining do
+                     (cl:let ((item (pop remaining)))
+                       (cl:cond
+                         ((cl:member (string item) '("GLOBAL" "LOCAL" "PRIVATE"
+                                                     "CONSTANT" "GENERIC")
+                                     :test #'string-equal)
+                          (setf addr (intern (string-upcase (string item)) :keyword)))
+                         ((cl:member (string item) '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
+                                                     "READABLE" "WRITEABLE")
+                                     :test #'string-equal)
+                          (setf acc (intern (string-upcase (string item)) :keyword)))
+                         ((cl:member (string item) '("STD140" "COMPACT")
+                                     :test #'string-equal)
+                          (setf aln (intern (string-upcase (string item)) :keyword)))
+                         ((string-equal (string item) "ADDRESS-SPACE")
+                          (cl:unless remaining
+                            (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+                          (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+                         ((string-equal (string item) "ACCESS")
+                          (cl:unless remaining
+                            (error "Missing value for :ACCESS in ~s" spec))
+                          (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
+                         ((string-equal (string item) "ALIGN")
+                          (cl:unless remaining
+                            (error "Missing value for :ALIGN in ~s" spec))
+                          (setf aln (intern (string-upcase (string (pop remaining))) :keyword)))
+                         ((string-equal (string item) "DIRECTION")
+                          (cl:when remaining (pop remaining)))
+                         (t
+                          (error "Invalid type option: ~s in tensor spec ~s" item spec)))))
+                   (list base element-type n-arg addr acc aln)))
 
-                     ;; Robust Parsing Logic
+                ;; ── CELL / VECTOR / MATRIX: original 4-tuple logic ───────────
+                (t
+                 (cl:if (null rest-args)
+                     (cl:list base element-type :global :read-write)
                      (cl:let ((addr :global)
-                              (acc :read-write)
+                              (acc  :read-write)
                               (remaining rest-args))
                        (cl:loop while remaining do
                          (cl:let ((item (pop remaining)))
                            (cl:cond
-                             ;; 1. Address Space Flags/Keywords
-                             ((cl:member (string item) '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC") :test #'string-equal)
+                             ((cl:member (string item) '("GLOBAL" "LOCAL" "PRIVATE"
+                                                         "CONSTANT" "GENERIC")
+                                         :test #'string-equal)
                               (setf addr (intern (string-upcase (string item)) :keyword)))
-
-                             ;; 2. Access Flags/Keywords
-                             ((cl:member (string item) '("READ-WRITE" "READ-ONLY" "WRITE-ONLY" "READABLE" "WRITEABLE") :test #'string-equal)
+                             ((cl:member (string item) '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
+                                                         "READABLE" "WRITEABLE")
+                                         :test #'string-equal)
                               (setf acc (intern (string-upcase (string item)) :keyword)))
-
-                             ;; 3. Explicit Keys
                              ((string-equal (string item) "ADDRESS-SPACE")
-                              (cl:unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+                              (cl:unless remaining
+                                (error "Missing value for :ADDRESS-SPACE in ~s" spec))
                               (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
                              ((string-equal (string item) "ACCESS")
-                              (cl:unless remaining (error "Missing value for :ACCESS in ~s" spec))
+                              (cl:unless remaining
+                                (error "Missing value for :ACCESS in ~s" spec))
                               (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
-
-                             ;; 4. Ignored Keys (Legacy compatibility if needed)
                              ((string-equal (string item) "DIRECTION")
                               (cl:when remaining (pop remaining)))
-
-                             ;; 5. Unknown Keys -> Error
                              (t
                               (error "Invalid type option: ~s in spec ~s" item spec)))))
-
-                       ;; Return canonical positional form
-                       (list base element-type addr acc)))))
+                       (cl:list base element-type addr acc)))))))
            spec)))
     (t spec)))
 
@@ -202,23 +242,40 @@
       (t (list spec)))))
 
 
+
+
+(defun %type-atom-equal-p (a b)
+  "Package-agnostic atom comparison for type specs.
+   Symbols compared by name (string-equal); others compared by equal."
+  (or (equal a b)
+      (and (symbolp a) (symbolp b)
+           (string-equal (symbol-name a) (symbol-name b)))))
+
+(defun %type-spec-equal-p (t1 t2)
+  "Recursive package-agnostic comparison of type spec trees.
+   Used in types-equivalent-p for the cons-vs-cons case."
+  (cl:cond
+    ((and (null t1) (null t2)) t)
+    ((or (null t1) (null t2)) nil)
+    ((and (consp t1) (consp t2))
+     (and (%type-spec-equal-p (car t1) (car t2))
+          (%type-spec-equal-p (cdr t1) (cdr t2))))
+    (t (%type-atom-equal-p t1 t2))))
+
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, with alias resolution and template handling.
    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels
-   before mangling comparison. This supports def-type aliases for any template type."
-  ;; Resolve aliases FIRST, then run all other checks on resolved types
+   before mangling comparison. This supports def-type aliases for any template type.
+   FIX2: Use %type-spec-equal-p (package-agnostic) for cons-vs-cons case."
   (cl:let ((t1 (resolve-type-alias t1))
            (t2 (resolve-type-alias t2)))
     (cl:cond
       ((or (equal t1 t2)
            (and (symbolp t1) (symbolp t2) (string-equal (symbol-name t1) (symbol-name t2))))
        t)
-      ;; Treat VOID and NIL as equivalent return types
       ((or (and (symbolp t1) (string-equal t1 "VOID") (null t2))
            (and (null t1) (symbolp t2) (string-equal t2 "VOID")))
        t)
-      ;; Handle parameterized struct (POINT FLOAT) vs mangled name POINT_FLOAT
-      ;; FIX: Always canonicalize, not just for CELL - handles keyword label stripping
       ((and (consp t1) (symbolp t2))
        (let* ((expanded (canonicalize-type-specifier t1))
               (base-type (cl:first expanded))
@@ -248,20 +305,17 @@
              nil)))
       ((and (symbolp t1) (consp t2))
        (types-equivalent-p t2 t1))
-      ;; Parameterized struct vs parameterized struct
-      ;; FIX: Always canonicalize both sides
+      ;; Parameterized struct vs parameterized struct — use package-agnostic comparison
       ((and (cl:consp t1) (cl:consp t2))
        (cl:let ((e1 (canonicalize-type-specifier t1))
                 (e2 (canonicalize-type-specifier t2)))
-         (cl:equal e1 e2)))
-      ;; Keyword vs Enum
+         (%type-spec-equal-p e1 e2)))
       ((and (or (member t1 '(keyword :keyword symbol common-lisp:symbol))
                 (and (symbolp t1) (member (symbol-name t1) '("KEYWORD" "SYMBOL") :test #'string-equal)))
             (gethash t2 *crisp-enums*)) t)
       ((and (or (member t2 '(keyword :keyword symbol common-lisp:symbol))
                 (and (symbolp t2) (member (symbol-name t2) '("KEYWORD" "SYMBOL") :test #'string-equal)))
             (gethash t1 *crisp-enums*)) t)
-      ;; Handle mismatched wrapping (e.g. (INT) vs INT)
       ((and (consp t1) (= (length t1) 1) (valid-type-p (cl:first t1)) (types-equivalent-p (cl:first t1) t2)) t)
       ((and (consp t2) (= (length t2) 1) (valid-type-p (cl:first t2)) (types-equivalent-p t1 (cl:first t2))) t)
       (t nil))))

@@ -456,34 +456,51 @@
 
 
 
+
 (defun analyze-length-tilde-expression (expr env context location)
-  "Analyzes (length~ arr) — returns the compile-time array length N as a ulong literal.
-   The argument must be a variable or expression whose type resolves to (array T N).
-   Signals a crisp-compiler-error if the argument is not an array type."
+  "Analyzes (length~ arr).
+   For (array T N): returns compile-time constant N as ulong literal.
+   For tensor types: dispatches to the runtime length~ accessor function.
+   Signals crisp-compiler-error if argument is neither array nor tensor."
   (unless (= (cl:length expr) 2)
     (error 'crisp-compiler-error
            :message "length~ expects exactly 1 argument: (length~ arr)"
            :source-location location))
-  (let* ((arg-node  (analyze-expression (cl:second expr) env context location))
-         (arg-type  (let ((raw (semantic-node-type arg-node)))
-                      ;; Unwrap single-element list from function call return types
-                      (resolve-type-alias
-                       (if (and (listp raw) (= (cl:length raw) 1) (listp (cl:first raw)))
-                           (cl:first raw)
-                           raw)))))
-    (unless (%array-type-p arg-type)
+  (let* ((arg-node (analyze-expression (cl:second expr) env context location))
+         (raw-type (semantic-node-type arg-node))
+         (arg-type (resolve-type-alias
+                    (if (and (listp raw-type) (= (cl:length raw-type) 1) (listp (cl:first raw-type)))
+                        (cl:first raw-type)
+                        raw-type)))
+         ;; Check if this is a tensor type (mangled symbol or canonical list starting with TENSOR)
+         (is-tensor (let ((resolved (resolve-type-alias arg-type)))
+                      (or (and (symbolp resolved)
+                               (let* ((parts (unmangle-template-struct-name resolved))
+                                      (base (cl:first parts)))
+                                 (and base (string-equal (symbol-name base) "TENSOR"))))
+                          (and (listp resolved)
+                               (symbolp (cl:first resolved))
+                               (string-equal (symbol-name (cl:first resolved)) "TENSOR"))))))
+    (cond
+     ;; Tensor: delegate to the runtime length~ accessor in the function table
+     (is-tensor
+      (log:info "length~~: tensor type ~a → delegating to runtime accessor" arg-type)
+      (analyze-function-call 'length~ expr env context location))
+     ;; Array: compile-time constant
+     ((%array-type-p arg-type)
+      (let* ((n-raw (cl:third arg-type))
+             (n (etypecase n-raw
+                  (integer n-raw)
+                  (symbol  (parse-integer (symbol-name n-raw))))))
+        (log:info "length~~: array type ~a -> N=~a" arg-type n)
+        (make-semantic-literal :value-type 'ulong
+                               :value (coerce n '(unsigned-byte 64))
+                               :source-location location)))
+     ;; Neither: error
+     (t
       (error 'crisp-compiler-error
-             :message (format nil "length~~ requires an (array T N) type, got ~a" arg-type)
-             :source-location location))
-    (let* ((n-raw (cl:third arg-type))
-           ;; n-raw may be a symbol like |5| after unmangle; coerce to integer
-           (n (etypecase n-raw
-                (integer n-raw)
-                (symbol  (parse-integer (symbol-name n-raw))))))
-      (log:info "length~~: type=~a -> N=~a" arg-type n)
-      (make-semantic-literal :value-type 'ulong
-                             :value (coerce n '(unsigned-byte 64))
-                             :source-location location))))
+             :message (format nil "length~~ requires an (array T N) or tensor type, got ~a" arg-type)
+             :source-location location)))))
 
 (defun register-control-analyzers ()
   "Registers all control flow expression analyzers, including length~ for arrays."

@@ -71,22 +71,31 @@
             (reconstruct-n-args remaining-after-one (1- n) package)
           (cl:values (cl:cons (cl:first one-arg-list) rest-args) remaining-after-rest)))))
 
+
+
 (cl:defun reconstruct-template-args (tokens package)
   "Recursively groups tokens into lists based on template arity.
    tokens: list of strings.
    package: the fallback package for interning.
-   Returns: (values property-list remaining-tokens)"
+   Returns: (values property-list remaining-tokens)
+   FIX: numeric token strings are parsed as integers before interning as symbols."
   (cl:if (cl:null tokens)
       (cl:values nil nil)
       (cl:let* ((token-str (cl:first tokens))
                 ;; Handle keywords specially
                 (token-sym (cl:if (cl:char= (cl:char token-str 0) #\:)
                                (cl:intern (cl:subseq token-str 1) :keyword)
-                               ;; Try to find in package, otherwise intern
-                               (cl:let ((existing (cl:find-symbol token-str package)))
-                                 (cl:if existing existing (cl:intern token-str package)))))
-                (arity (cl:and *template-arity-lookup-fn*
-                            (cl:funcall *template-arity-lookup-fn* token-sym))))
+                               ;; Try parse as integer first, then find/intern as symbol
+                               (cl:multiple-value-bind (n end)
+                                   (cl:parse-integer token-str :junk-allowed t)
+                                 (cl:if (cl:and n (cl:= end (cl:length token-str)))
+                                        n  ; it's a numeric token — return the integer
+                                        (cl:let ((existing (cl:find-symbol token-str package)))
+                                          (cl:if existing existing
+                                                 (cl:intern token-str package)))))))
+                (arity (cl:and (cl:not (cl:integerp token-sym))
+                               *template-arity-lookup-fn*
+                               (cl:funcall *template-arity-lookup-fn* token-sym))))
 
         (cl:if (cl:and arity (cl:> arity 0))
             ;; It's a template! Consume 'arity' args.

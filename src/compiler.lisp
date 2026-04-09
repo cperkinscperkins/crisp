@@ -366,17 +366,15 @@ Returns (values addr-space-int access-qual-string type-name-string)."
     (log:info "Generated PTX: ~a" ptx-file)))
 
 
+
 (defun register-builtins ()
-  "Registers built-in types and structs like 'storage' and 'cell' using def-struct
-   semantics.  Cell carries the value-t brand for --differentiate mode."
-  (log:info "Registering built-in structs...")
+  "Registers built-in types: storage, cell, and tensor def-record templates.
+   Cell and tensor carry the value-t brand for --differentiate mode.
+   Tensor: N-dimensional strided view; offset/strides/extents are virtual
+   fixed arrays of length N (SROA to N ulong registers each at boundaries)."
+  (log:info "Registering built-in structs (storage, cell, tensor)...")
 
   ;; Clear brand-specific state that is NOT cleared by initialize-compiler.
-  ;; initialize-compiler clears *brand-definitions* but not the extra tables
-  ;; introduced in the overlay.  Without this, the in-process test runner leaks
-  ;; state from one test into the next (e.g., *parameterized-brand-names* from
-  ;; test 01-fake-cell persists into test 02-fake-cell-value-t-no-compose,
-  ;; causing value-t to be treated as parameterized when it isn't in isolation).
   (when (boundp '*parameterized-brand-names*) (clrhash *parameterized-brand-names*))
   (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
   (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
@@ -384,36 +382,60 @@ Returns (values addr-space-int access-qual-string type-name-string)."
 
   ;; STORAGE: parameterized by address space only.
   (eval '(with-template-type ((Addr address-space :global))
-                             (def-record storage
-                                         (address (c-pointer :address-space Addr))
-                                         (byte-size ulong)
-                                         (address-space address-space :c-t Addr)
-                                         (access access :c-t :read-write))))
+           (def-record storage
+             (address (c-pointer :address-space Addr))
+             (byte-size ulong)
+             (address-space address-space :c-t Addr)
+             (access access :c-t :read-write))))
 
   ;; CELL: opaque handle to a storage slice.
-  ;;   value-t To -- brands element reads so different cell vars produce distinct types
-  ;;   when --differentiate is active.  Only :read-write cells activate brand tracking;
-  ;;   :read-only/:write-only cells have the brand registered but analyze-aref-expression
-  ;;   skips instance differentiation for them (see Fix C).
-  ;;
-  ;; NOTE: index-t intentionally REMOVED from real cell to avoid package-symbol conflict
-  ;;   with fake-cell's index-t brand (CRISP.COMPILER::ULONG vs CRISP-LANGUAGE::ULONG).
+  ;;   value-t brand enables --differentiate provenance tracking.
+  ;;   NOTE: index-t intentionally omitted (package-symbol conflict avoidance with fake-cell).
   (eval '(with-template-type ((To T) (Addr address-space :global) (Acc access :read-write))
-                             (def-record cell
-                                         (brand value-t To :subst :descendant :enforce :diff)
-                                         (parent (storage Addr))
-                                         (offset ulong)
-                                         (element-type type-spec :c-t To)
-                                         (address-space address-space :c-t Addr)
-                                         (access access :c-t Acc))))
+           (def-record cell
+             (brand value-t To :subst :descendant :enforce :diff)
+             (parent (storage Addr))
+             (offset ulong)
+             (element-type type-spec :c-t To)
+             (address-space address-space :c-t Addr)
+             (access access :c-t Acc))))
 
-  ;; bytes~ helper: compile-time sizeof for cell element type.
+  ;; bytes~ helper for cell.
   (register-template 'bytes~ '(To (Addr address-space :global) (Acc access :read-write)) nil
-                     '(def-function bytes~ (c)
-                                    (declare (function ((cell To Addr Acc) => ulong)))
-                                    (declare (crisp-system-generated))
-                                    (return (sizeof To)))
-                     '((cell To Addr Acc) => ulong))
+    '(def-function bytes~ (c)
+       (declare (function ((cell To Addr Acc) => ulong)))
+       (declare (crisp-system-generated))
+       (return (sizeof To)))
+    '((cell To Addr Acc) => ulong))
+
+  ;; TENSOR: N-dimensional strided view over a storage handle.
+  ;;   offset, strides, extents: virtual fixed arrays of length N.
+  ;;   length: product of extents, stored as a field for O(1) (length~ t).
+  ;;   value-t brand follows the same pattern as cell.
+  (eval '(with-template-type ((To T) (N integer 1) (Addr address-space :global)
+                               (Acc access :read-write) (Aln align :compact))
+           (def-record tensor
+             (brand value-t To :subst :descendant :enforce :diff)
+             (parent  (storage Addr))
+             (offset (array ulong N))
+             (strides (array ulong N))
+             (extents (array ulong N))
+             (length  ulong)
+             (element-type  type-spec     :c-t To)
+             (num-dims      ulong         :c-t N)
+             (address-space address-space :c-t Addr)
+             (access        access        :c-t Acc)
+             (align         align         :c-t Aln))))
+
+  ;; bytes~ helper for tensor.
+  (register-template 'bytes~
+    '(To (N integer 1) (Addr address-space :global)
+      (Acc access :read-write) (Aln align :compact)) nil
+    '(def-function bytes~ (t1)
+       (declare (function ((tensor To N Addr Acc Aln) => ulong)))
+       (declare (crisp-system-generated))
+       (return (sizeof To)))
+    '((tensor To N Addr Acc Aln) => ulong))
 
   (log:info "Built-in structs registered."))
 
