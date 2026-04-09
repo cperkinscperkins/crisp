@@ -3,28 +3,31 @@
  
 
 (defun get-array-element-type (type)
-  "Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.
-   Handles single-element list wrapping produced by function-call return types,
-   e.g. ((array float 4)) is unwrapped to (array float 4) before dispatch."
-  ;; Unwrap single-element list of lists (function return type wrapping)
+  "Determines the element type of an array, pointer, cell, or tensor type.
+   Returns NIL if unknown.
+   Handles single-element list wrapping, e.g. ((array float 4)) → (array float 4)."
   (let* ((type (if (and (listp type) (= (cl:length type) 1) (listp (cl:first type)))
                    (cl:first type)
                    type))
          (type (resolve-type-alias type)))
     (cond
      ((listp type)
-       (let ((base (cl:first type)))
-         (if (and (symbolp base)
-                  (member (symbol-name base)
-                          '("CELL" "VECTOR" "MATRIX" "TENSOR" "PTR" "ARRAY" "POINTER")
-                          :test #'string-equal))
-             (cl:second type)
-             nil)))
+      (let ((base (cl:first type)))
+        (if (and (symbolp base)
+                 (member (symbol-name base)
+                         '("CELL" "VECTOR" "MATRIX" "TENSOR" "PTR" "ARRAY" "POINTER")
+                         :test #'string-equal))
+            (cl:second type)
+            nil)))
      ((symbolp type)
-       (let ((unmangled (unmangle-template-struct-name type)))
-         (if (and (consp unmangled) (eq (cl:first unmangled) 'cell))
-             (cl:second unmangled)
-             nil)))
+      (let ((unmangled (unmangle-template-struct-name type)))
+        (if (and (consp unmangled)
+                 (symbolp (cl:first unmangled))
+                 (member (symbol-name (cl:first unmangled))
+                         '("CELL" "TENSOR" "VECTOR" "MATRIX")
+                         :test #'string-equal))
+            (cl:second unmangled)
+            nil)))
      (t nil))))
 
 (defun get-struct-member-index (struct-type-name member-name)
@@ -232,72 +235,150 @@
          :source-location location)))))
 
 
-(defun analyze-aref-expression (expr env context location)
-  "Analyzes a cell dereference expression (~ cell-var [index]).
-   Brand-aware typing applies only for scalar element types (not compound types like
-   (array T N)), preventing brand gensyms from masking compound type structure."
-  (let* ((op (cl:first expr))
-         (target-sym (if (symbolp (cl:second expr)) (cl:second expr) nil))
-         (array-node (analyze-expression (cl:second expr) env context (append location '(1))))
-         (index-expr (cl:third expr))
-         (index-node (if index-expr
-                         (analyze-expression index-expr env context (append location '(2)))
-                         (make-semantic-literal :value-type 'int :value 0 :source-location location)))
-         (elem-type (get-array-element-type (semantic-node-type array-node))))
 
-    ;; Check for invalid READ access on &out parameters
+(defun %tensor-type-p (type)
+  "Returns T if TYPE denotes a tensor (list or mangled-symbol form)."
+  (cond
+    ((and (listp type) (symbolp (cl:first type)))
+     (string-equal (symbol-name (cl:first type)) "TENSOR"))
+    ((symbolp type)
+     (let ((name (symbol-name type)))
+       (and (>= (cl:length name) 7)
+            (string-equal (subseq name 0 7) "TENSOR_"))))
+    (t nil)))
+
+(defun %get-tensor-arity (type)
+  "Returns the compile-time arity N of TYPE as an integer, or NIL.
+   Handles list form (tensor elem N ...) and mangled-symbol form."
+  (labels ((coerce-n (raw)
+             (etypecase raw
+               (integer raw)
+               (symbol  (ignore-errors (parse-integer (symbol-name raw) :junk-allowed nil)))
+               (t nil))))
+    (cond
+      ((and (listp type) (symbolp (cl:first type))
+            (string-equal (symbol-name (cl:first type)) "TENSOR"))
+       (coerce-n (cl:third type)))
+      ((symbolp type)
+       (let ((unmangled (unmangle-template-struct-name type)))
+         (when (and (consp unmangled) (symbolp (cl:first unmangled))
+                    (string-equal (symbol-name (cl:first unmangled)) "TENSOR"))
+           (coerce-n (cl:third unmangled)))))
+      (t nil))))
+
+(defun %build-tensor-flat-index-form (target-sym index-forms)
+  "Builds a Crisp expression computing the flat element index for a tensor access.
+   flat = Σ_k( (~ (offset~ target) k) + index_k * (~ (strides~ target) k) )
+   for k in 0..(N-1).  Returns a Crisp form ready for analyze-expression.
+   All arithmetic is ulong: each index is wrapped in (to-ulong ...) to ensure
+   consistent types when the caller passes bare integer literals (int by default)."
+  (labels ((coerce-index (idx-form)
+             ;; Wrap in to-ulong so literal 0/1/... (int) becomes ulong for arithmetic
+             `(to-ulong ,idx-form))
+           (dim-term (k)
+             `(+ (~ (offset~ ,target-sym) ,k)
+                 (* ,(coerce-index (cl:nth k index-forms)) (~ (strides~ ,target-sym) ,k)))))
+    (if (= (cl:length index-forms) 1)
+        (dim-term 0)
+        (reduce (lambda (acc k) `(+ ,acc ,(dim-term k)))
+                (loop for k from 1 below (cl:length index-forms) collect k)
+                :initial-value (dim-term 0)))))
+
+
+(defun analyze-aref-expression (expr env context location)
+  "Analyzes (~ target [index...]) or (~ref~ ...) expressions.
+   Cell/array path: single index, brand-aware type resolution (unchanged).
+   Tensor path: N index forms from (cddr expr) are desugared to a flat element
+   index (sum of offsets[k] + index_k * strides[k]) via recursive analysis,
+   then a semantic-aref is returned with the tensor node and flat-index node."
+  (let* ((op          (cl:first expr))
+         (target-sym  (if (symbolp (cl:second expr)) (cl:second expr) nil))
+         (array-node  (analyze-expression (cl:second expr) env context (append location '(1))))
+         (index-expr  (cl:third expr))
+         (index-node  (if index-expr
+                          (analyze-expression index-expr env context (append location '(2)))
+                          (make-semantic-literal :value-type 'int :value 0
+                                                 :source-location location)))
+         (array-type  (semantic-node-type array-node))
+         (elem-type   (get-array-element-type array-type)))
+
+    ;; Guard: no read from &out parameters
     (when (and target-sym (not (eq *analysis-access-mode* :write)))
-          (let ((binding (find-variable-in-env target-sym env)))
-            (when (and binding (eq (parameter-def-kind binding) :out))
-                  (error 'crisp-illegal-access-error
-                    :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only." target-sym)
-                    :source-location location))))
+      (let ((binding (find-variable-in-env target-sym env)))
+        (when (and binding (eq (parameter-def-kind binding) :out))
+          (error 'crisp-illegal-access-error
+            :message (format nil "Cannot read from Output Parameter '~a'. Output parameters are write-only."
+                             target-sym)
+            :source-location location))))
 
     (if elem-type
         (progn
-         ;; Check for VOID element type
-         (let ((is-void (or (eq elem-type 'void) (eq elem-type 'T)
-                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "VOID"))
-                            (and (symbolp elem-type) (string-equal (symbol-name elem-type) "T"))
-                            (and (consp elem-type)
-                                 (let ((head (cl:first elem-type)))
-                                   (or (eq head 'void) (eq head 'T)
-                                       (and (symbolp head) (string-equal (symbol-name head) "VOID"))))))))
-           (when is-void
-                 (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
+          ;; Guard: void element type
+          (let ((is-void (or (eq elem-type 'void) (eq elem-type 'T)
+                             (and (symbolp elem-type)
+                                  (string-equal (symbol-name elem-type) "VOID"))
+                             (and (symbolp elem-type)
+                                  (string-equal (symbol-name elem-type) "T"))
+                             (and (consp elem-type)
+                                  (let ((head (cl:first elem-type)))
+                                    (or (eq head 'void) (eq head 'T)
+                                        (and (symbolp head)
+                                             (string-equal (symbol-name head) "VOID"))))))))
+            (when is-void
+              (error "Cannot dereference a Cell of type VOID. Specify an element type (e.g. (cell int)) or avoid using the dereference operator (~~).")))
 
-         ;; Brand-aware type resolution for --differentiate mode.
-         ;; Only applies to :read-write cell types with SCALAR element types.
-         ;; Compound element types (e.g. (array T N)) are excluded: resolve-brand-type
-         ;; returns an opaque gensym symbol that get-array-element-type cannot handle,
-         ;; causing the outer (~ temp index) to fail with bare-symbol ARRAY type.
-         (let* ((cell-type (semantic-node-type array-node))
-                (brand-def (and target-sym
-                                (not (eq *analysis-access-mode* :write))
-                                ;; Only brand scalars, not compound types like (array T N)
-                                (not (consp elem-type))
-                                (find-brand-for-owner 'value-t cell-type)))
-                ;; Check that the owning cell struct is :read-write (not :read-only/:write-only)
-                (is-rw-cell (and brand-def
-                                 (let ((owner (brand-definition-owner-struct brand-def)))
-                                   (and (symbolp owner)
-                                        (search "READ-WRITE" (symbol-name owner))))))
-                (resolved-type (if (and is-rw-cell (brand-active-p brand-def))
-                                   (progn
-                                     (log:info "AREF: brand-aware read (~a) -> resolve-brand-type value-t ~a [elem: ~a]"
-                                               cell-type target-sym elem-type)
-                                     (resolve-brand-type 'value-t target-sym elem-type))
-                                   elem-type)))
-           (make-semantic-aref :type resolved-type
-                               :array-node array-node
-                               :index-node index-node
-                               :source-location location)))
-        ;; Fallback: If not an array/pointer, and op is ~, try as overloadable function call
+          (let ((tensor-n (%get-tensor-arity array-type)))
+            (if (and tensor-n target-sym)
+
+                ;; ── Tensor path: desugar N indices to flat element index ──────
+                (let* ((index-forms (cddr expr)))
+                  (unless (= (cl:length index-forms) tensor-n)
+                    (error "Tensor ~a requires ~a index~:p (arity ~a), got ~a."
+                           target-sym tensor-n tensor-n (cl:length index-forms)))
+                  (let* ((flat-form     (%build-tensor-flat-index-form target-sym index-forms))
+                         (flat-node     (analyze-expression flat-form env context location))
+                         ;; Brand-aware type resolution (same pattern as cell)
+                         (brand-def     (and (not (eq *analysis-access-mode* :write))
+                                             (not (consp elem-type))
+                                             (find-brand-for-owner 'value-t array-type)))
+                         (is-rw         (and brand-def
+                                             (let ((owner (brand-definition-owner-struct brand-def)))
+                                               (and (symbolp owner)
+                                                    (search "READ-WRITE" (symbol-name owner))))))
+                         (resolved-type (if (and is-rw (brand-active-p brand-def))
+                                            (resolve-brand-type 'value-t target-sym elem-type)
+                                            elem-type)))
+                    (make-semantic-aref :type resolved-type
+                                        :array-node array-node
+                                        :index-node flat-node
+                                        :source-location location)))
+
+                ;; ── Cell / array path: single index, brand-aware (unchanged) ──
+                (let* ((cell-type    array-type)
+                       (brand-def    (and target-sym
+                                          (not (eq *analysis-access-mode* :write))
+                                          (not (consp elem-type))
+                                          (find-brand-for-owner 'value-t cell-type)))
+                       (is-rw-cell   (and brand-def
+                                          (let ((owner (brand-definition-owner-struct brand-def)))
+                                            (and (symbolp owner)
+                                                 (search "READ-WRITE" (symbol-name owner))))))
+                       (resolved-type (if (and is-rw-cell (brand-active-p brand-def))
+                                          (progn
+                                            (log:info "AREF: brand-aware read (~a) -> resolve-brand-type value-t ~a [elem: ~a]"
+                                                      cell-type target-sym elem-type)
+                                            (resolve-brand-type 'value-t target-sym elem-type))
+                                          elem-type)))
+                  (make-semantic-aref :type resolved-type
+                                      :array-node array-node
+                                      :index-node index-node
+                                      :source-location location)))))
+
+        ;; Fallback: not a known array/cell/tensor type → try as overloadable call
         (let ((op-name (symbol-name op)))
           (if (or (string= op-name "~") (string= op-name "~REF~"))
               (analyze-function-call op expr env context location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
-
 
 
 

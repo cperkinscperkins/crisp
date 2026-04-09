@@ -1,0 +1,36 @@
+
+;; double 
+(with-template-type (T U)
+    (def-function compare-parent (A B)
+        (declare #'((tensor T 2) (tensor U 2) => int))
+        ;; (equal (parent~ A) (parent~ B)) ;; do we have equal? Do we want it?  Would = work?
+        ;; alternately
+        (= (byte-size~ (parent~ A)) (byte-size~ (parent~ B)))))
+
+
+
+
+
+;; top level
+(gen-compare-parent long float)
+(def-function compare-parent-tensors-01 (t1 t2)
+    (declare #'((tensor long 2) (tensor float 2) => int))
+    (compare-parent t1 t2))
+
+;; nested
+(def-function compare-parent-tensors-02 (t1 t2)
+    (declare #'((tensor float 2) (tensor long 2) => int))
+    (gen-compare-parent float long)
+    (compare-parent t1 t2))
+
+;; inferred (if possible)
+;; if this is not possible, just leave a note and comment out this last
+;; test function. don't delete it.
+
+#|
+(def-function compare-parent-tensors-03 (t1 t2)
+    (declare #'((tensor uint 2) (tensor double 2) => int))
+    (compare-parent t1 t2))
+|#
+  
+    

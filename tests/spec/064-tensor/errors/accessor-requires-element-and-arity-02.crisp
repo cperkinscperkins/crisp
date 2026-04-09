@@ -1,5 +1,0 @@
-
-;; requires element
-(def-function test-tensor-accessor (t x)
-    (declare #'((tensor :num-dims 1) => long))
-    (~ t x))

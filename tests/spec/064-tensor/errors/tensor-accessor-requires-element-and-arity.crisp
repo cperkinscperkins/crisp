@@ -1,4 +1,5 @@
 
+;; CHECK-FAIL: "Invalid incomplete type specifier"
 ;; missing arity
 (def-function test-tensor-accessor (t x)
     (declare #'((tensor long) => long))

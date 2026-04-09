@@ -78,3 +78,5 @@
                  :read-write
                  :readable
                  :writeable)
+
+(def-enumeration align :std140 :compact)

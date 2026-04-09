@@ -496,6 +496,7 @@ Miscelleny
 - [ ] TEST-FILES[ 01-basic.crisp 11-app.crisp]  
 - [ ] ieee / fast accuracy support
 - [ ] is-uniform? and if*/when* variants
+- [ ] what is going on with validation.lisp? why does everything need cl:cond  
 
 
 Tensors Vectors and Matrices
@@ -506,6 +507,18 @@ Tensors Vectors and Matrices
 - - [x] test and support
 - - [ ] HOIST tests
 - [ ] tensors and vectors and matrices
+- - [x] initial tests based off cell
+- - [ ] tensors at kernel boundary
+- - [ ] hoisting
+- - [ ] scratch tensors
+- - [ ] "view" manipulation - changing offset, make-xxxx etc
+- - [ ] vector and vector helpers
+- - [ ] matrix and matrix helpers
+- - [ ] scratch vectors
+- - [ ] scratch matrix
+- - [ ] tile?
+- - [ ] double check branding
+- - [ ] differentiate support!!
 
 
 Preperatory

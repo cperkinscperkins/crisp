@@ -1,5 +1,5 @@
 (def-function test-tensor-passthrough-address-space (t1)
-    (declare #'((tensor long) => address-space)) 
+    (declare #'((tensor long 2) => address-space)) 
 
     (address-space~ t1))
 

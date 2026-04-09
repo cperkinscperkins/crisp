@@ -1,0 +1,30 @@
+(with-template-type (T)
+    (def-struct point (x T) (y T)))
+
+;; Helper to test setting member of dereferenced cell of templated struct
+(with-template-type (T)
+    (def-function test-tensor-of-struct (tp v)
+        (declare #'((tensor (point T) 1 :address-space :global :access :read-write) T => nil))
+        (set! (x~ (~ tp 1)) v)))
+
+(def-function test-explicit (tp v)
+    (declare #'((tensor (point int) 1 :address-space :global :access :read-write) int => nil))
+    ;; Explicitly instantiate everything
+    (gen-point int) 
+    (gen-test-tensor-of-struct int)
+    
+    ;; Call the generic function
+    (test-tensor-of-struct tp v)
+    
+    ;; Test manual set! logic too
+    (set! (y~ (~ tp 1)) v))
+
+#|
+;; supposedly the cell version of this fails.
+(def-function test-implicit (p v)
+    (declare #'((tensor (point long) 1 :address-space :global :access :read-write) long => nil))
+    ;; Implicitly instantiate via usage
+    (test-tensor-of-struct p v)
+    (set! (y~ (~ p 1)) v))
+
+|#
