@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-07T02:02:12.906548Z
+Generated on 2026-04-09T06:57:28.740824Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -120,7 +120,7 @@ Generated on 2026-04-07T02:02:12.906548Z
 ### DEFUN `ANALYZE-LENGTH-TILDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (length~ arr) — returns the compile-time array length N as a ulong literal.  >    The argument must be a variable or expression whose type resolves to (array T N).  >    Signals a crisp-compiler-error if the argument is not an array type.
+  > Analyzes (length~ arr).  >    For (array T N): returns compile-time constant N as ulong literal.  >    For tensor types: dispatches to the runtime length~ accessor function.  >    Signals crisp-compiler-error if argument is neither array nor tensor.
 
 
 ---
@@ -574,7 +574,7 @@ Generated on 2026-04-07T02:02:12.906548Z
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
 - **Args**: `(TYPE)`
 
-  > Determines the element type of an array, pointer, or cell type. Returns NIL if unknown.  >    Handles single-element list wrapping produced by function-call return types,  >    e.g. ((array float 4)) is unwrapped to (array float 4) before dispatch.
+  > Determines the element type of an array, pointer, cell, or tensor type.  >    Returns NIL if unknown.  >    Handles single-element list wrapping, e.g. ((array float 4)) → (array float 4).
 
 
 ---
@@ -613,10 +613,31 @@ Generated on 2026-04-07T02:02:12.906548Z
 
 
 ---
+### DEFUN `%TENSOR-TYPE-P`
+- **Args**: `(TYPE)`
+
+  > Returns T if TYPE denotes a tensor (list or mangled-symbol form).
+
+
+---
+### DEFUN `%GET-TENSOR-ARITY`
+- **Args**: `(TYPE)`
+
+  > Returns the compile-time arity N of TYPE as an integer, or NIL.  >    Handles list form (tensor elem N ...) and mangled-symbol form.
+
+
+---
+### DEFUN `%BUILD-TENSOR-FLAT-INDEX-FORM`
+- **Args**: `(TARGET-SYM INDEX-FORMS)`
+
+  > Builds a Crisp expression computing the flat element index for a tensor access.  >    flat = Σ_k( (~ (offset~ target) k) + index_k * (~ (strides~ target) k) )  >    for k in 0..(N-1).  Returns a Crisp form ready for analyze-expression.  >    All arithmetic is ulong: each index is wrapped in (to-ulong ...) to ensure  >    consistent types when the caller passes bare integer literals (int by default).
+
+
+---
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a cell dereference expression (~ cell-var [index]).  >    Brand-aware typing applies only for scalar element types (not compound types like  >    (array T N)), preventing brand gensyms from masking compound type structure.
+  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Cell/array path: single index, brand-aware type resolution (unchanged).  >    Tensor path: N index forms from (cddr expr) are desugared to a flat element  >    index (sum of offsets[k] + index_k * strides[k]) via recursive analysis,  >    then a semantic-aref is returned with the tensor node and flat-index node.
 
 
 ---
@@ -1187,7 +1208,7 @@ Generated on 2026-04-07T02:02:12.906548Z
 ---
 ### DEFUN `REGISTER-BUILTINS`
 
-  > Registers built-in types and structs like 'storage' and 'cell' using def-struct  >    semantics.  Cell carries the value-t brand for --differentiate mode.
+  > Registers built-in types: storage, cell, and tensor def-record templates.  >    Cell and tensor carry the value-t brand for --differentiate mode.  >    Tensor: N-dimensional strided view; offset/strides/extents are virtual  >    fixed arrays of length N (SROA to N ulong registers each at boundaries).
 
 
 ---
@@ -2117,7 +2138,7 @@ Generated on 2026-04-07T02:02:12.906548Z
 ### DEFUN `RECONSTRUCT-TEMPLATE-ARGS`
 - **Args**: `(TOKENS PACKAGE)`
 
-  > Recursively groups tokens into lists based on template arity.  >    tokens: list of strings.  >    package: the fallback package for interning.  >    Returns: (values property-list remaining-tokens)
+  > Recursively groups tokens into lists based on template arity.  >    tokens: list of strings.  >    package: the fallback package for interning.  >    Returns: (values property-list remaining-tokens)  >    FIX: numeric token strings are parsed as integers before interning as symbols.
 
 
 ---
@@ -3547,7 +3568,7 @@ Generated on 2026-04-07T02:02:12.906548Z
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Expands legacy/shorthand storage handle specs (cell, vector, etc) into their canonical struct form.  >    e.g. (cell int) -> (cell int :global :read-write)  >    e.g. (cell int :address-space :local) -> (cell int :local :read-write)  >      >    ROBUSTNESS FIX (Regression Analysis):  >    - Explicitly extracts known keys (:address-space, :access) and IGNORES others (like :direction).  >    - Normalizes address-space symbols (GLOBAL) to keywords (:GLOBAL) to prevent type errors.  >    - Ensures output is always a clean positional list for template instantiation.
+  > Expands storage handle type specs into canonical positional forms.  >    Cell/vector/matrix → (base elem addr access)         [4-tuple, :global :read-write].  >    Tensor             → (tensor elem N addr access align) [6-tuple, :global :read-write :compact].  >    Tensor missing N → crisp-incomplete-type-error.  >    Address-space / access / align bare symbols normalised to keywords.
 
 
 ---
@@ -3569,10 +3590,24 @@ Generated on 2026-04-07T02:02:12.906548Z
 
 
 ---
+### DEFUN `%TYPE-ATOM-EQUAL-P`
+- **Args**: `(A B)`
+
+  > Package-agnostic atom comparison for type specs.  >    Symbols compared by name (string-equal); others compared by equal.
+
+
+---
+### DEFUN `%TYPE-SPEC-EQUAL-P`
+- **Args**: `(T1 T2)`
+
+  > Recursive package-agnostic comparison of type spec trees.  >    Used in types-equivalent-p for the cons-vs-cons case.
+
+
+---
 ### DEFUN `TYPES-EQUIVALENT-P`
 - **Args**: `(T1 T2)`
 
-  > Checks if two types are equivalent, with alias resolution and template handling.  >    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels  >    before mangling comparison. This supports def-type aliases for any template type.
+  > Checks if two types are equivalent, with alias resolution and template handling.  >    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels  >    before mangling comparison. This supports def-type aliases for any template type.  >    FIX2: Use %type-spec-equal-p (package-agnostic) for cons-vs-cons case.
 
 
 ---

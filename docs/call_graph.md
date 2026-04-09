@@ -505,16 +505,21 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%PARSE-CT-LITERAL VALUE)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
+- (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp
+
 - (ADDRESS-SPACE-VALUE K)  enums.lisp
 - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp [See above]
 
 - (ANALYZE-AREF-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (GET-ARRAY-ELEMENT-TYPE TYPE)  analysis/structs.lisp
 - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
-- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp
+- - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - (%BUILD-TENSOR-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
 - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
 - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
 - - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)  types/brand.lisp [See above]
@@ -587,6 +592,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
 - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [RECURSION]
+- - - - (%TYPE-SPEC-EQUAL-P T1 T2)  types/validation.lisp
+- - - - - (%TYPE-SPEC-EQUAL-P T1 T2)  types/validation.lisp [RECURSION]
+- - - - - (%TYPE-ATOM-EQUAL-P A B)  types/validation.lisp
 - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp [See above]
 - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
@@ -599,6 +607,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 
 - (ANALYZE-LET-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
