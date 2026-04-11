@@ -1010,6 +1010,26 @@ the `&out` specifier and possibly other safety checks.
 ```
 
 
+`marshall-tensor` — N-dimensional strided view, keyword form
+
+```
+(marshall-tensor type byte-size ptr
+  :offsets (o0 o1 ... oN-1)
+  :strides (s0 s1 ... sN-1)
+  :extents (e0 e1 ... eN-1)
+  :length  len)
+```
+- type — fully-specified tensor type alias, e.g. `(tensor float 3 :address-space :global :access :read-write :align :compact)`. Also accepts an expanded vector or matrix alias (since both desugar to tensor).
+- `byte-size` — `ulong` total byte size of the backing buffer
+- `ptr` — raw pointer (`voidp`)
+- `:offsets (o0 ... oN-1)` — list of exactly `N` `ulong` offsets, one per dimension
+- `:strides (s0 ... sN-1)` — list of exactly `N` `ulong` strides, one per dimension
+- `:extents (e0 ... eN-1)` — list of exactly `N` `ulong` extents (sizes), one per dimension
+- `:length len` — `ulong` total element count (product of extents, pre-computed by the host)
+
+All four keywords are required. The macro validates at compile time that each sublist contains exactly N elements matching the tensor arity declared in type. Errors are signalled for missing keywords or wrong sublist lengths.
+
+
 ### Implementation Notes
 "vector" and "storage" at the kernel boundary is just a collection of registers from the call interface.
 `marshall-vector` is just a macro that associates them.

@@ -206,6 +206,7 @@
    #:def-kernel-exact
    #:marshall-cell
    #:marshall-tensor
+   #:%marshall-tensor
    #:marshall-vector
    #:marshall-matrix
    #:%make-ct-array

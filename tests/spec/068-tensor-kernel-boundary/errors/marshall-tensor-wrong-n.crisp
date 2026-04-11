@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "marshall-tensor :offsets list length"
+;; :offsets sublist has 2 elements but type has N=3.
+(def-type vol-t (tensor float 3 :address-space :global :access :read-write :align :compact))
+
+(def-kernel-exact bad_tensor (byte-size ptr o0 o1 s0 s1 s2 e0 e1 e2 length val)
+    (declare #'(ulong voidp ulong ulong ulong ulong ulong ulong ulong ulong ulong float))
+    (let ((vol (marshall-tensor vol-t byte-size ptr
+                  :offsets (o0 o1)
+                  :strides (s0 s1 s2)
+                  :extents (e0 e1 e2)
+                  :length  length)))
+        (set! (~ vol 0 0 0) val)))

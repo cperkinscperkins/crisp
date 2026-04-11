@@ -509,8 +509,8 @@ Tensors Vectors and Matrices
 - [ ] tensors and vectors and matrices
 - - [x] initial tests based off cell
 - - [x] introduce vector and matrix
-- - [ ] tensors at kernel boundary
-- - - [ ] marshall-tensor N    (macro or template or something else?)
+- - [x] tensors at kernel boundary
+- - - [x] marshall-tensor N    (macro or template or something else?)
 - - [ ] is :align :std140 / :compact being handled correctly? Unit test
 - - [ ] hoisting
 - - [ ] scratch tensors / matrix / vector
