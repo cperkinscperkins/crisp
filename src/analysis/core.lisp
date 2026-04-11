@@ -1171,6 +1171,7 @@ in single-pass mode."
     (semantic-extract-value (semantic-extract-value-type node))
     (semantic-insert-value (semantic-insert-value-type node))
     (semantic-struct-construction (semantic-struct-construction-type node))
+    (semantic-ct-array (semantic-ct-array-type node))
     (semantic-progn (semantic-progn-type node))
     (semantic-struct-member-update (semantic-struct-member-update-type node))
     (semantic-sizeof (semantic-sizeof-type node))))
@@ -1207,6 +1208,7 @@ in single-pass mode."
     (semantic-extract-value (semantic-extract-value-source-location node))
     (semantic-insert-value (semantic-insert-value-source-location node))
     (semantic-struct-construction (semantic-struct-construction-source-location node))
+    (semantic-ct-array (semantic-ct-array-source-location node))
     (semantic-progn (semantic-progn-source-location node))
     (semantic-struct-member-update (semantic-struct-member-update-source-location node))))
 

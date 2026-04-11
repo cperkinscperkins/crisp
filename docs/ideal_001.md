@@ -972,6 +972,12 @@ The recommended practice is to use marshalling functionss immediately within a `
 to create standard Crisp views, and then call some some inner function. That inner function will let you leverage
 the `&out` specifier and possibly other safety checks. 
 
+#### Marshall Functions
+- `marshall-cell`
+- `marshall-vector`
+- `marshall-matrix`
+- `marshall-tensor`
+
 
 ### Implementation Notes
 "vector" and "storage" at the kernel boundary is just a collection of registers from the call interface.

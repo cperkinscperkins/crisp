@@ -361,6 +361,44 @@
                          (push 'ulong exploded-types)
                          (push 'ulong exploded-types)
                          (push `(,p (marshall-cell ,type ,size-sym ,ptr-sym ,off-sym)) reassembly-bindings)))
+                     ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+                      ;; Tensor (also covers vector/matrix after sugar expansion).
+                      ;; N-dimensional: explode to (2 + 3N + 1) scalars.
+                      ;; Order: p_PTR, p_BYTE_SIZE, p_OFFSET_0..N-1, p_STRIDE_0..N-1, p_EXTENT_0..N-1, p_LENGTH
+                      (let* ((n   (if (integerp (third canonical)) (third canonical)
+                                      (parse-integer (symbol-name (third canonical)))))
+                             (as  (fourth canonical))
+                             (p-name (symbol-name p))
+                             (pkg    (symbol-package p))
+                             (ptr-sym    (intern (format nil "~a_PTR"       p-name) pkg))
+                             (size-sym   (intern (format nil "~a_BYTE_SIZE" p-name) pkg))
+                             (off-syms   (loop for k from 0 below n
+                                               collect (intern (format nil "~a_OFFSET_~a" p-name k) pkg)))
+                             (str-syms   (loop for k from 0 below n
+                                               collect (intern (format nil "~a_STRIDE_~a" p-name k) pkg)))
+                             (ext-syms   (loop for k from 0 below n
+                                               collect (intern (format nil "~a_EXTENT_~a" p-name k) pkg)))
+                             (len-sym    (intern (format nil "~a_LENGTH"    p-name) pkg)))
+                        ;; Push params (reversed; will be reversed again at end)
+                        (push len-sym exploded-params)
+                        (dolist (s (reverse ext-syms)) (push s exploded-params))
+                        (dolist (s (reverse str-syms)) (push s exploded-params))
+                        (dolist (s (reverse off-syms)) (push s exploded-params))
+                        (push size-sym exploded-params)
+                        (push ptr-sym  exploded-params)
+                        ;; Push types (reversed)
+                        (push 'ulong exploded-types)           ; length
+                        (dotimes (_ n) (push 'ulong exploded-types)) ; extents
+                        (dotimes (_ n) (push 'ulong exploded-types)) ; strides
+                        (dotimes (_ n) (push 'ulong exploded-types)) ; offsets
+                        (push 'ulong exploded-types)           ; byte-size
+                        (if (and (boundp '*target-backend*) (member *target-backend* '(:ptx :cuda)))
+                            (push 'ulong exploded-types)
+                            (push `(c-pointer :address-space ,as) exploded-types)) ; ptr
+                        ;; Reassembly
+                        (push `(,p (marshall-tensor ,type ,size-sym ,ptr-sym
+                                     ,@off-syms ,@str-syms ,@ext-syms ,len-sym))
+                              reassembly-bindings)))
                      (t (error "Unsupported storage handle: ~a" base))))
                   (progn
                    (push p exploded-params)
@@ -1157,6 +1195,76 @@
                       :offset ,offset)))
       (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
       result)))
+
+
+(defmacro marshall-tensor (type-alias byte-size ptr &rest flat-args)
+  "Assembles a tensor struct from flat scalar kernel arguments.
+   Form: (marshall-tensor type byte-size ptr off0..N-1 str0..N-1 ext0..N-1 length)
+   type-alias must be a fully-specified tensor (or expanded vector/matrix) type.
+   flat-args must contain exactly 3N+1 values: N offsets, N strides, N extents, 1 length."
+  (let* ((canonical (canonicalize-type-specifier type-alias))
+         (base      (first canonical))
+         (params    (rest canonical)))
+    (unless (and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+      (error "marshall-tensor: type must be a tensor type, got ~a" type-alias))
+    (let* ((n    (if (integerp (third canonical)) (third canonical)
+                     (parse-integer (symbol-name (third canonical)))))
+           (as   (fourth canonical))
+           (expected (+ (* 3 n) 1)))
+      (unless (= (length flat-args) expected)
+        (error "marshall-tensor: expected ~a flat args (3*N+1 for N=~a) but got ~a" expected n (length flat-args)))
+      (let* ((off-args  (subseq flat-args 0 n))
+             (str-args  (subseq flat-args n (* 2 n)))
+             (ext-args  (subseq flat-args (* 2 n) (* 3 n)))
+             (len-arg   (nth (* 3 n) flat-args))
+             (mangled   (mangle-template-struct-name base params))
+             (ctor      (intern (format nil "MAKE-~a" mangled) (symbol-package base)))
+             (storage-base   (find-symbol "STORAGE" (symbol-package base)))
+             (storage-params (list as))
+             (stor-mangled   (mangle-template-struct-name storage-base storage-params))
+             (stor-ctor      (intern (format nil "MAKE-~a" stor-mangled) (symbol-package base))))
+        ;; Ensure templates are instantiated so constructors are available
+        (eval (instantiate-template base params))
+        (eval (instantiate-template storage-base storage-params))
+        (log:debug "MARSHALL-TENSOR: type=~a mangled=~a ctor=~a N=~a" type-alias mangled ctor n)
+        `(,ctor
+          :parent (,stor-ctor
+                   :address  (as (c-pointer :address-space ,as) ,ptr)
+                   :byte-size ,byte-size)
+          :offset  (%make-ct-array ulong ,@off-args)
+          :strides (%make-ct-array ulong ,@str-args)
+          :extents (%make-ct-array ulong ,@ext-args)
+          :length  ,len-arg)))))
+
+
+(defmacro marshall-vector (type-alias byte-size ptr off_0 str_0 ext_0 length)
+  "Assembles a vector (tensor N=1) from 6 flat scalar args.
+   type-alias must be a fully-specified vector or tensor N=1 type.
+   Delegates to marshall-tensor after validating N=1."
+  (let* ((canonical (canonicalize-type-specifier type-alias))
+         (base      (first canonical))
+         (n         (if (integerp (third canonical)) (third canonical)
+                        (parse-integer (symbol-name (third canonical))))))
+    (unless (and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+      (error "marshall-vector: type must be a vector/tensor type, got ~a" type-alias))
+    (unless (= n 1)
+      (error "marshall-vector requires a vector (N=1) type, got N=~a. Use marshall-matrix for N=2 or marshall-tensor for general N." n))
+    `(marshall-tensor ,type-alias ,byte-size ,ptr ,off_0 ,str_0 ,ext_0 ,length)))
+
+
+(defmacro marshall-matrix (type-alias byte-size ptr off_0 off_1 str_0 str_1 ext_0 ext_1 length)
+  "Assembles a matrix (tensor N=2) from 9 flat scalar args.
+   type-alias must be a fully-specified matrix or tensor N=2 type.
+   Delegates to marshall-tensor after validating N=2."
+  (let* ((canonical (canonicalize-type-specifier type-alias))
+         (base      (first canonical))
+         (n         (if (integerp (third canonical)) (third canonical)
+                        (parse-integer (symbol-name (third canonical))))))
+    (unless (and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+      (error "marshall-matrix: type must be a matrix/tensor type, got ~a" type-alias))
+    (unless (= n 2)
+      (error "marshall-matrix requires a matrix (N=2) type, got N=~a. Use marshall-vector for N=1 or marshall-tensor for general N." n))
+    `(marshall-tensor ,type-alias ,byte-size ,ptr ,off_0 ,off_1 ,str_0 ,str_1 ,ext_0 ,ext_1 ,length)))
 
 
 (defmacro set-derived (ancestor-type descendant-type)

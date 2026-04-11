@@ -613,11 +613,35 @@
                              :value nil ; No real value yet
                              :source-location location))))
 
+(defun analyze-%make-ct-array (expr env context location)
+  "Analyzes (%make-ct-array elem-type val0 val1 ... valN-1).
+   elem-type is taken as a literal type symbol (not evaluated).
+   Returns a semantic-ct-array node of type (array elem-type N).
+   Used internally by marshall-tensor to assemble offset/strides/extents fields."
+  (let* ((elem-type (second expr))
+         (val-exprs (cddr expr))
+         (n (length val-exprs)))
+    (unless (> n 0)
+      (error "%make-ct-array requires at least one value argument"))
+    (let* ((val-nodes (loop for v in val-exprs
+                            for i from 0
+                            collect (analyze-expression v env context (append location (list i)))))
+           (array-type (list 'array elem-type n)))
+      (dolist (vn val-nodes)
+        (let ((vt (semantic-node-type vn)))
+          (unless (types-equivalent-p vt elem-type)
+            (error "%make-ct-array: expected element type ~a but got ~a" elem-type vt))))
+      (make-semantic-ct-array
+       :type array-type
+       :val-nodes val-nodes
+       :source-location location))))
+
 (defun register-struct-analyzers ()
   (def-expression-analyzer %construct-struct analyze-struct-construction)
   (def-expression-analyzer %extract-struct-member analyze-extract-struct-member-expression)
   (def-expression-analyzer %insert-struct-member analyze-insert-struct-member-expression)
   (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
+  (def-expression-analyzer %make-ct-array analyze-%make-ct-array)
 
   (def-expression-analyzer aref analyze-aref-expression)
   (def-expression-analyzer ~ref~ analyze-aref-expression)
