@@ -379,22 +379,26 @@
                              (ext-syms   (loop for k from 0 below n
                                                collect (intern (format nil "~a_EXTENT_~a" p-name k) pkg)))
                              (len-sym    (intern (format nil "~a_LENGTH"    p-name) pkg)))
-                        ;; Push params (reversed; will be reversed again at end)
-                        (push len-sym exploded-params)
-                        (dolist (s (reverse ext-syms)) (push s exploded-params))
-                        (dolist (s (reverse str-syms)) (push s exploded-params))
-                        (dolist (s (reverse off-syms)) (push s exploded-params))
-                        (push size-sym exploded-params)
+                        ;; Push params in reverse of desired ABI order.
+                        ;; Each push prepends; the outer (reverse ...) flips back.
+                        ;; Desired final ABI: PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1, EXT_0..N-1, LENGTH
+                        ;; Push order (reversed by outer reverse):
+                        ;;   ptr, size, off_0..N-1, str_0..N-1, ext_0..N-1, len
                         (push ptr-sym  exploded-params)
-                        ;; Push types (reversed)
-                        (push 'ulong exploded-types)           ; length
-                        (dotimes (_ n) (push 'ulong exploded-types)) ; extents
-                        (dotimes (_ n) (push 'ulong exploded-types)) ; strides
-                        (dotimes (_ n) (push 'ulong exploded-types)) ; offsets
-                        (push 'ulong exploded-types)           ; byte-size
+                        (push size-sym exploded-params)
+                        (dolist (s off-syms) (push s exploded-params))
+                        (dolist (s str-syms) (push s exploded-params))
+                        (dolist (s ext-syms) (push s exploded-params))
+                        (push len-sym  exploded-params)
+                        ;; Push types in matching order
                         (if (and (boundp '*target-backend*) (member *target-backend* '(:ptx :cuda)))
                             (push 'ulong exploded-types)
                             (push `(c-pointer :address-space ,as) exploded-types)) ; ptr
+                        (push 'ulong exploded-types)           ; byte-size
+                        (dotimes (_ n) (push 'ulong exploded-types)) ; offsets 0..N-1
+                        (dotimes (_ n) (push 'ulong exploded-types)) ; strides 0..N-1
+                        (dotimes (_ n) (push 'ulong exploded-types)) ; extents 0..N-1
+                        (push 'ulong exploded-types)           ; length
                         ;; Reassembly
                         (push `(,p (%marshall-tensor ,type ,size-sym ,ptr-sym
                                      ,@off-syms ,@str-syms ,@ext-syms ,len-sym))

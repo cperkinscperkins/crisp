@@ -1,0 +1,18 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-HOIST[L0]: validate-l0-compile-only
+
+;; Validates that a kernel with a vector parameter hoists to compilable C++.
+;; The generated C++ should allocate USM for the vector and set 7 kernel args:
+;;   arg 0: val (long scalar)
+;;   arg 1: v_ptr (pointer)
+;;   arg 2: v_byte_size
+;;   arg 3: v_off0 (offset dim 0)
+;;   arg 4: v_str0 (stride dim 0)
+;;   arg 5: v_ext0 (extent dim 0)
+;;   arg 6: v_length
+
+(def-type out-vec-t (vector long :address-space :global :access :read-write :align :compact))
+
+(def-kernel vec_set_first (val &out v)
+    (declare #'(long out-vec-t => nil))
+  (set! (~ v 0) val))

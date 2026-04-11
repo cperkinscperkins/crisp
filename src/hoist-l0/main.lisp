@@ -217,47 +217,56 @@
              (struct-name-str (substitute #\_ #\- (string-downcase (symbol-name struct-name))))
              (members         (cddr struct-def)))
 
-        ;; Struct body
-        (format stream "struct alignas(16) ~a {~%" struct-name-str)
-        (dolist (member members)
-          (let* ((member-name     (first member))
-                 (member-type     (second member))
-                 (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
-            (if (%array-type-p member-type)
-                ;; Array field: T name[N]
-                (let* ((elem-type (%array-element-type member-type))
-                       (arr-size  (%array-size member-type))
-                       (elem-str  (crisp-type-to-cpp-type elem-type)))
-                  (format stream "    ~a ~a[~a];~%" elem-str member-name-str arr-size))
-                ;; Scalar/nested-struct field
-                (let ((member-type-str (substitute #\_ #\- (string-downcase (symbol-name member-type)))))
-                  (format stream "    ~a ~a;~%" member-type-str member-name-str)))))
+        ;; Skip internal tensor/storage records — not needed in host C++ code.
+        ;; They are def-record entries that exist only for the compiler's ABI bookkeeping.
+        (unless (or (search "TENSOR_" (symbol-name struct-name) :test #'char-equal)
+                    (search "STORAGE_" (symbol-name struct-name) :test #'char-equal))
 
-        ;; operator<<
-        (format stream "    friend std::ostream& operator<<(std::ostream& os, const ~a& obj) {~%" struct-name-str)
-        (let ((first-member t))
+          ;; Struct body
+          (format stream "struct alignas(16) ~a {~%" struct-name-str)
           (dolist (member members)
             (let* ((member-name     (first member))
                    (member-type     (second member))
                    (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
               (if (%array-type-p member-type)
-                  ;; Array field: loop over elements, space-separated
-                  (let ((arr-size (%array-size member-type)))
-                    (unless first-member
-                      (format stream "        os << \" \";~%"))
-                    (format stream "        for (int _i = 0; _i < ~a; _i++) {~%" arr-size)
-                    (format stream "            if (_i > 0) os << \" \";~%")
-                    (format stream "            os << obj.~a[_i];~%" member-name-str)
-                    (format stream "        }~%"))
-                  ;; Scalar field
-                  (progn
-                    (unless first-member
-                      (format stream "        os << \" \";~%"))
-                    (format stream "        os << obj.~a;~%" member-name-str)))
-              (setf first-member nil))))
-        (format stream "        return os;~%")
-        (format stream "    }~%")
-        (format stream "};~%~%")))))
+                  ;; Array field: T name[N]
+                  (let* ((elem-type (%array-element-type member-type))
+                         (arr-size  (%array-size member-type))
+                         (elem-str  (crisp-type-to-cpp-type elem-type)))
+                    (format stream "    ~a ~a[~a];~%" elem-str member-name-str arr-size))
+                  ;; Scalar/nested-struct field (type may be a list like (STORAGE GLOBAL))
+                  (let ((member-type-str
+                          (if (symbolp member-type)
+                              (substitute #\_ #\- (string-downcase (symbol-name member-type)))
+                              ;; Nested record/struct: use the first element's name
+                              (substitute #\_ #\- (string-downcase (symbol-name (first member-type)))))))
+                    (format stream "    ~a ~a;~%" member-type-str member-name-str)))))
+
+          ;; operator<<
+          (format stream "    friend std::ostream& operator<<(std::ostream& os, const ~a& obj) {~%" struct-name-str)
+          (let ((first-member t))
+            (dolist (member members)
+              (let* ((member-name     (first member))
+                     (member-type     (second member))
+                     (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
+                (if (%array-type-p member-type)
+                    ;; Array field: loop over elements, space-separated
+                    (let ((arr-size (%array-size member-type)))
+                      (unless first-member
+                        (format stream "        os << \" \";~%"))
+                      (format stream "        for (int _i = 0; _i < ~a; _i++) {~%" arr-size)
+                      (format stream "            if (_i > 0) os << \" \";~%")
+                      (format stream "            os << obj.~a[_i];~%" member-name-str)
+                      (format stream "        }~%"))
+                    ;; Scalar/nested-struct field
+                    (progn
+                      (unless first-member
+                        (format stream "        os << \" \";~%"))
+                      (format stream "        os << obj.~a;~%" member-name-str)))
+                (setf first-member nil))))
+          (format stream "        return os;~%")
+          (format stream "    }~%")
+          (format stream "};~%~%"))))))
 
 (defun generate-cpp-typedefs (stream aliases)
   "Generate C++ typedef declarations from type aliases"

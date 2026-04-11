@@ -1,0 +1,14 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER v: 42 1 2 3
+
+;; Round-trip test: kernel sets element 0 of a vector to val.
+;; The harness initialises v[i] = i (iota), so v = [0,1,2,3].
+;; val is arg 0, so the harness assigns val = 0+42 = 42.
+;; After the kernel, v[0] = 42: v = [42,1,2,3].
+
+(def-type vec-t (vector long :address-space :global :access :read-write :align :compact))
+
+(def-kernel vec_set_idx0 (val &out v)
+    (declare #'(long vec-t => nil))
+  (set! (~ v 0) val))

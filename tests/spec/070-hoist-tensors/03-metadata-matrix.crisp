@@ -1,0 +1,13 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-WITH[--metadata]: crisp.compiler::validate-070-03-matrix-metadata
+
+;; Validates the .metacrisp for a matrix (N=2) kernel parameter:
+;;   :physical-signature — 9 slots: val(0), ptr(1), byte_size(2), off0(3), off1(4),
+;;                          str0(5), str1(6), ext0(7), ext1(8), len(9) — actually 10 slots
+;;   :declared-signature — v :rank 2 :align :compact :range (0 9)
+
+(def-type out-mat-t (matrix float :address-space :global :access :read-write :align :compact))
+
+(def-kernel mat_set_elem (v val)
+    (declare #'(out-mat-t float => nil))
+  (set! (~ v 0 0) val))

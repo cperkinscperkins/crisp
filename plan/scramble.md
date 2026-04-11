@@ -513,6 +513,8 @@ Tensors Vectors and Matrices
 - - - [x] marshall-tensor N    (macro or template or something else?)
 - - [ ] is :align :std140 / :compact being handled correctly? Unit test
 - - [ ] hoisting
+- - [ ] test offsets, strides really SET by hoisting code (instead of always jsut 0). for both align
+        would we need some sort of .cpp fixture?
 - - [ ] scratch tensors / matrix / vector
 - - [ ] "view" manipulation - changing offset, make-xxxx etc
 - - [ ] double check branding
