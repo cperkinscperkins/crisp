@@ -508,17 +508,18 @@ Tensors Vectors and Matrices
 - - [ ] HOIST tests
 - [ ] tensors and vectors and matrices
 - - [x] initial tests based off cell
+- - [ ] introduce vector and matrix
 - - [ ] tensors at kernel boundary
 - - [ ] hoisting
-- - [ ] scratch tensors
+- - [ ] scratch tensors / matrix / vector
 - - [ ] "view" manipulation - changing offset, make-xxxx etc
-- - [ ] vector and vector helpers
-- - [ ] matrix and matrix helpers
-- - [ ] scratch vectors
-- - [ ] scratch matrix
-- - [ ] tile?
 - - [ ] double check branding
 - - [ ] differentiate support!!
+- - [ ] vector helpers
+- - [ ] matrix helpers
+- - [ ] tile?
+
+
 
 
 Preperatory
@@ -532,6 +533,25 @@ Grid vs Thread Context
 
 Grid Stride
 ===========
+
+PGAS / SHMem, UALink, and Asyc Operations
+=========================================
+- [ ] Update Design Doc
+- - PGAS has three levels: Complete Compile Time Topology, Compile Time Shape and Runtime Extent, Runtime Topology
+- - :address-space :pgas   is new address space.
+- - may have to subclass Storage Handles so type system can do enforcement. Not sure.
+- - For Complete Compile Time Topology, almost all access stays the same because the compiler
+     can detect local vs. "remote" PE ops and lower accordingly. 
+- - For Mix Topology, we need to insert (if PE-is-local <store> <put>) and possible barrierrs.
+- - for runtime only, the user will need to mostly use <put> operations, barriers, etc.
+- [ ] Async
+ - - right now our async operations focus on local=>global and global=>local  "requests"
+ - - with tokens and (await someToken &optinal otherTokens...)
+ - - But we might need to expand that to PGAS/SHMem.  Maybe rename?
+ - [ ] pipelining macros for advanced async
+ - - the N-fold symmetry of PGAS can benefit from pipelining 2, 3, 4+ async operations
+     provide some defmacro for this and show users how to set up their own. Makes the whole
+     shebang MUCH simpler (and safer).
 
 
 QUESTIONS
