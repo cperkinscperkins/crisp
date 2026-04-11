@@ -1,0 +1,36 @@
+;; vector type constructor keyword args.
+;; (vector T) defaults to :global :read-write :compact — same as tensor.
+;;
+;; IMPORTANT: bare address-space/access values are NOT valid.
+;; The key must always be present:
+;;   (vector int :address-space :local)   -- valid
+;;   (vector int :access :read-only)      -- valid
+;;   (vector int :local)                  -- NOT valid (causes incomplete-type havoc)
+
+(def-function test-vector-local (v)
+    (declare #'((vector int :address-space :local) => nil))
+    (return))
+
+(def-function test-vector-read-only (v)
+    (declare #'((vector float :access :read-only) => nil))
+    (return))
+
+(def-function test-vector-local-read-only (v)
+    (declare #'((vector float :address-space :local :access :read-only) => nil))
+    (return))
+
+;; address-space pass-through works on vector just as on tensor
+(def-function test-vector-passthrough-address-space (v)
+    (declare #'((vector long) => address-space))
+    (address-space~ v))
+
+(def-function test-vector-passthrough-access (v)
+    (declare #'((vector long) => access))
+    (access~ v))
+
+(with-template-type (T)
+    (def-function test-vector-template-keyword (v)
+        (declare #'((vector T :access :read-only) => ulong))
+      (length~ v)))
+
+(gen-test-vector-template-keyword double)

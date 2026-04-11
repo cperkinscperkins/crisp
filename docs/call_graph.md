@@ -42,6 +42,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp
 - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp
+- - - - - - - - - - - - - (%BARE-STORAGE-HANDLE-VALUE-ERROR ITEM SPEC)  types/validation.lisp
 - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [RECURSION]
 - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - (EXTRACT-POSITIONAL-FROM-KEYWORD-ARGS ARGS NUM-PARAMS)  types/validation.lisp
@@ -393,6 +394,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp [RECURSION]
 - - - (COMPILE-TO-SPIRV MODULE OUTPUT-PATH &KEY DEBUG-P)  compiler.lisp
 - - - - (%REMOVE-DEAD-ARRAY-RETURNING-FUNCTIONS MODULE)  compiler.lisp
+- - - - - (LLVM-TYPE-KIND-IS-ARRAY? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
 - - - - (INJECT-SPIR-KERNEL-METADATA IR-TEXT)  compiler.lisp
 - - - - - (FIND-SPIR-KERNELS IR-TEXT)  compiler.lisp
 - - - - - (EXTRACT-KERNEL-PARAMS IR-TEXT FUNC-START FUNC-END)  compiler.lisp

@@ -1,0 +1,24 @@
+;; 2D element access: (~ m row col)
+;; matrix requires exactly two indices (N=2 is compile-time known).
+
+(def-function test-matrix-accessor (m row col)
+    (declare #'((matrix long) ulong ulong => long))
+    (~ m row col))
+
+(def-function test-matrix-accessor-write (m row col val)
+    (declare #'((matrix long) ulong ulong long => nil))
+    (set! (~ m row col) val))
+
+(with-template-type (T)
+    (def-function test-templated-matrix-accessor (m row col)
+        (declare #'((matrix T) ulong ulong => T))
+        (~ m row col)))
+
+(gen-test-templated-matrix-accessor float)
+
+(with-template-type (T)
+    (def-function test-templated-matrix-accessor-write (m row col val)
+        (declare #'((matrix T) ulong ulong T => nil))
+        (set! (~ m row col) val)))
+
+(gen-test-templated-matrix-accessor-write double)

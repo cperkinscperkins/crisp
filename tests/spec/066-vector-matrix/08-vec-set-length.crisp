@@ -1,0 +1,18 @@
+;; (set! (length~ v) n) is valid for vector (N=1).
+;; The design doc states: length CAN be set for vector, but NOT for matrix
+;; or higher-arity tensors.
+;;
+;; The affirmative case (vector) should compile cleanly.
+;; The negative case (matrix set-length) is in errors/ and requires a
+;; compile-time check on N in analyze-set!-expression.
+
+(def-function test-vector-set-length (v n)
+    (declare #'((vector long) ulong => nil))
+  (set! (length~ v) n))
+
+(with-template-type (T)
+    (def-function test-templated-vector-set-length (v n)
+        (declare #'((vector T) ulong => nil))
+      (set! (length~ v) n)))
+
+(gen-test-templated-vector-set-length float)

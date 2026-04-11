@@ -1,0 +1,44 @@
+;; vector properties.
+;; num-dims~ is always 1 (compile-time constant).
+;; offset~, strides~, extents~ are virtual fixed arrays of length 1.
+
+(def-function test-vector-num-dims (v)
+    (declare #'((vector long) => ulong))
+  (num-dims~ v))
+
+(def-function test-vector-length (v)
+    (declare #'((vector long) => ulong))
+  (length~ v))
+
+(def-function test-vector-offset (v)
+    (declare #'((vector long) => ulong))
+  (~ (offset~ v) 0))
+
+(def-function test-vector-strides (v)
+    (declare #'((vector long) => ulong))
+  (~ (strides~ v) 0))
+
+(def-function test-vector-extents (v)
+    (declare #'((vector float) => ulong))
+  (~ (extents~ v) 0))
+
+(def-function test-vector-element-type (v)
+    (declare #'((vector long) => ulong))
+  (c-t-assert (type-equal (element-type~ v) 'long) "element-type must be long")
+  (length~ v))
+
+;; strides~ and extents~ return (array ulong 1)
+(def-function test-vector-strides-return-type (v)
+    (declare #'((vector long) => (array ulong 1)))
+  (strides~ v))
+
+(def-function test-vector-extents-return-type (v)
+    (declare #'((vector long) => (array ulong 1)))
+  (extents~ v))
+
+(with-template-type (T)
+    (def-function test-vector-templated-props (v)
+        (declare #'((vector T) => ulong ulong))
+      (return (num-dims~ v) (length~ v))))
+
+(gen-test-vector-templated-props float)

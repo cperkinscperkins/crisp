@@ -1,0 +1,24 @@
+;; 1D element access: (~ v index)
+;; vector requires exactly one index (N=1 is compile-time known).
+
+(def-function test-vector-accessor (v i)
+    (declare #'((vector long) ulong => long))
+    (~ v i))
+
+(def-function test-vector-accessor-write (v i val)
+    (declare #'((vector long) ulong long => nil))
+    (set! (~ v i) val))
+
+(with-template-type (T)
+    (def-function test-templated-vector-accessor (v i)
+        (declare #'((vector T) ulong => T))
+        (~ v i)))
+
+(gen-test-templated-vector-accessor float)
+
+(with-template-type (T)
+    (def-function test-templated-vector-accessor-write (v i val)
+        (declare #'((vector T) ulong T => nil))
+        (set! (~ v i) val)))
+
+(gen-test-templated-vector-accessor-write double)
