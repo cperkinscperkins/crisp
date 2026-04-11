@@ -481,6 +481,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - (INSTANTIATE-TEMPLATE NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)  templates.lisp [See above]
+- - - (%MARSHALL-TENSOR TYPE-ALIAS BYTE-SIZE PTR &REST FLAT-ARGS)  macros.lisp
+- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - (INSTANTIATE-TEMPLATE NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)  templates.lisp [See above]
 - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
 - - (GENERATE-BACKWARD-WALK FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)  autodiff.lisp
 - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp
@@ -511,6 +515,21 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ADDRESS-SPACE-VALUE K)  enums.lisp
 - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp [See above]
+
+- (ANALYZE-%MAKE-CT-ARRAY EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (EXCLUDED-TEMPLATE-BASE-TYPE-P BASE-TYPE)  types/validation.lisp [See above]
+- - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
+- - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [RECURSION]
+- - - (%TYPE-SPEC-EQUAL-P T1 T2)  types/validation.lisp
+- - - - (%TYPE-SPEC-EQUAL-P T1 T2)  types/validation.lisp [RECURSION]
+- - - - (%TYPE-ATOM-EQUAL-P A B)  types/validation.lisp
+- - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 
 - (ANALYZE-AREF-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -587,17 +606,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp
-- - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp
-- - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - (EXCLUDED-TEMPLATE-BASE-TYPE-P BASE-TYPE)  types/validation.lisp [See above]
-- - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
-- - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [RECURSION]
-- - - - (%TYPE-SPEC-EQUAL-P T1 T2)  types/validation.lisp
-- - - - - (%TYPE-SPEC-EQUAL-P T1 T2)  types/validation.lisp [RECURSION]
-- - - - - (%TYPE-ATOM-EQUAL-P A B)  types/validation.lisp
-- - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [See above]
 - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp [See above]
 - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
@@ -831,6 +840,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (MANGLE-PARAM-TYPE-NAME TYPE)  mangling.lisp
 
 - (MANGLE-TYPE-SPEC TYPE-SPEC)  mangling.lisp
+
+- (MARSHALL-MATRIX TYPE-ALIAS BYTE-SIZE PTR OFF_0 OFF_1 STR_0 STR_1 EXT_0 EXT_1 LENGTH)  macros.lisp
+- - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - (%MARSHALL-TENSOR TYPE-ALIAS BYTE-SIZE PTR &REST FLAT-ARGS)  macros.lisp [See above]
+
+- (MARSHALL-TENSOR TYPE-ALIAS BYTE-SIZE PTR &REST KWARGS)  macros.lisp
+- - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - (%MARSHALL-TENSOR TYPE-ALIAS BYTE-SIZE PTR &REST FLAT-ARGS)  macros.lisp [See above]
+
+- (MARSHALL-VECTOR TYPE-ALIAS BYTE-SIZE PTR OFF_0 STR_0 EXT_0 LENGTH)  macros.lisp
+- - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - (%MARSHALL-TENSOR TYPE-ALIAS BYTE-SIZE PTR &REST FLAT-ARGS)  macros.lisp [See above]
 
 - (PARSE-STRUCT-MEMBER-SPEC SPEC)  structs.lisp
 

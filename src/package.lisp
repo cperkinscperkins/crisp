@@ -205,6 +205,11 @@
    #:def-kernel
    #:def-kernel-exact
    #:marshall-cell
+   #:marshall-tensor
+   #:%marshall-tensor
+   #:marshall-vector
+   #:marshall-matrix
+   #:%make-ct-array
    #:def-type ;; <--- NEW
    #:with-template-type ;; <--- NEW
 
@@ -348,6 +353,10 @@
                 #:def-kernel
                 #:def-kernel-exact
                 #:marshall-cell
+                #:marshall-tensor
+                #:marshall-vector
+                #:marshall-matrix
+                #:%make-ct-array
                 #:when #:unless #:if+ #:when+ #:unless+
                 #:def-struct
                 #:def-derived-type
@@ -474,6 +483,10 @@
    ;; Our custom laungage symbols
    #:def-kernel #:def-kernel-exact #:def-function #:def-grid-function
    #:marshall-cell
+   #:marshall-tensor
+   #:marshall-vector
+   #:marshall-matrix
+   #:%make-ct-array
    #:def-orchestration #:def-qint #:def-microfloat-block
    #:def-type ;; <--- NEW
    #:with-template-type ;; <--- NEW

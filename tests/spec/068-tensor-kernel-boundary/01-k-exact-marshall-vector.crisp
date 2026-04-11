@@ -1,0 +1,13 @@
+;; def-kernel-exact with marshall-vector.
+;; The user declares all scalar args explicitly and assembles the vector
+;; using marshall-vector. Analogous to the existing marshall-cell pattern.
+;;
+;; marshall-vector signature:
+;;   (marshall-vector type byte-size ptr offset-0 stride-0 extent-0 length)
+
+(def-type long-vec-t (vector long :address-space :global :access :read-write :align :std140))
+
+(def-kernel-exact vec_set_first (byte-size ptr offset_0 stride_0 extent_0 length val)
+    (declare #'(ulong voidp ulong ulong ulong ulong long))
+    (let ((v (marshall-vector long-vec-t byte-size ptr offset_0 stride_0 extent_0 length)))
+        (set! (~ v 0) val)))

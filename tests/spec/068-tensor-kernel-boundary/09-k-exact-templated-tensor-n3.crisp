@@ -1,0 +1,17 @@
+;; Templated def-kernel-exact with keyword-form marshall-tensor for N=3.
+
+(with-template-type (T)
+    (def-type vol-t (tensor T 3 :address-space :global :access :read-write :align :compact))
+
+    (def-kernel-exact vol_fill
+        (byte-size ptr o0 o1 o2 s0 s1 s2 e0 e1 e2 length val)
+        (declare #'(ulong voidp ulong ulong ulong ulong ulong ulong ulong ulong ulong ulong T))
+        (let ((vol (marshall-tensor (vol-t T) byte-size ptr
+                      :offsets (o0 o1 o2)
+                      :strides (s0 s1 s2)
+                      :extents (e0 e1 e2)
+                      :length  length)))
+            (set! (~ vol 0 0 0) val))))
+
+(gen-vol_fill float "vol_fill_float")
+(gen-vol_fill long  "vol_fill_long")

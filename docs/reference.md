@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-11T04:32:13.515523Z
+Generated on 2026-04-11T18:01:53.593713Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -659,6 +659,13 @@ Generated on 2026-04-11T04:32:13.515523Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a (make-scratch-cell ...) expression.  >  This marks the current function as an originator in BOTH analysis modes.
+
+
+---
+### DEFUN `ANALYZE-%MAKE-CT-ARRAY`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (%make-ct-array elem-type val0 val1 ... valN-1).  >    elem-type is taken as a literal type symbol (not evaluated).  >    Returns a semantic-ct-array node of type (array elem-type N).  >    Used internally by marshall-tensor to assemble offset/strides/extents fields.
 
 
 ---
@@ -2041,6 +2048,35 @@ Generated on 2026-04-11T04:32:13.515523Z
 
 
 ---
+### DEFMACRO `%MARSHALL-TENSOR`
+- **Args**: `(TYPE-ALIAS BYTE-SIZE PTR &REST FLAT-ARGS)`
+
+  > Internal workhorse: assembles a tensor struct from flat positional scalar args.  >    Form: (%marshall-tensor type byte-size ptr off0..N-1 str0..N-1 ext0..N-1 length)  >    flat-args must contain exactly 3N+1 values: N offsets, N strides, N extents, 1 length.  >    Used by %explode-kernel-args, marshall-vector, marshall-matrix, and marshall-tensor.
+
+
+---
+### DEFMACRO `MARSHALL-TENSOR`
+- **Args**: `(TYPE-ALIAS BYTE-SIZE PTR &REST KWARGS)`
+
+  > Assembles a tensor struct from keyword-grouped scalar args.  >   >    Form:  >      (marshall-tensor type byte-size ptr  >        :offsets (o0 o1 ... oN-1)  >        :strides (s0 s1 ... sN-1)  >        :extents (e0 e1 ... eN-1)  >        :length  len)  >   >    type-alias must be a fully-specified tensor (or expanded vector/matrix) type.  >    Each sublist must contain exactly N elements matching the tensor arity.  >    All four keywords are required.
+
+
+---
+### DEFMACRO `MARSHALL-VECTOR`
+- **Args**: `(TYPE-ALIAS BYTE-SIZE PTR OFF_0 STR_0 EXT_0 LENGTH)`
+
+  > Assembles a vector (tensor N=1) from 6 flat scalar args.  >    type-alias must be a fully-specified vector or tensor N=1 type.  >    Delegates to %marshall-tensor after validating N=1.
+
+
+---
+### DEFMACRO `MARSHALL-MATRIX`
+- **Args**: `(TYPE-ALIAS BYTE-SIZE PTR OFF_0 OFF_1 STR_0 STR_1 EXT_0 EXT_1
+              LENGTH)`
+
+  > Assembles a matrix (tensor N=2) from 9 flat scalar args.  >    type-alias must be a fully-specified matrix or tensor N=2 type.  >    Delegates to %marshall-tensor after validating N=2.
+
+
+---
 ### DEFMACRO `SET-DERIVED`
 - **Args**: `(ANCESTOR-TYPE DESCENDANT-TYPE)`
 
@@ -2848,6 +2884,12 @@ Generated on 2026-04-11T04:32:13.515523Z
 ### DEFSTRUCT `SEMANTIC-STRUCT-CONSTRUCTION`
 
   > Represents constructing a struct instance e.g. (%construct-struct 'point ...).
+
+
+---
+### DEFSTRUCT `SEMANTIC-CT-ARRAY`
+
+  > Represents construction of a (array T N) value from N scalar T values.  >    Used by marshall-tensor to assemble offset/strides/extents array fields.
 
 
 ---

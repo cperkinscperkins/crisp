@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "marshall-vector requires a vector (N=1) type"
+;; Passing a matrix (N=2) type to marshall-vector is an error.
+;; Use marshall-matrix for N=2 types.
+(def-type float-mat-t (matrix float :address-space :global :access :read-write :align :std140))
+
+(def-kernel-exact bad_marshall (byte-size ptr off_0 str_0 ext_0 length val)
+    (declare #'(ulong voidp ulong ulong ulong ulong float))
+    (let ((v (marshall-vector float-mat-t byte-size ptr off_0 str_0 ext_0 length)))
+        (set! (~ v 0) val)))

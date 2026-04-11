@@ -229,6 +229,13 @@
   args ; List of semantic nodes for the field values (in definition order)
   source-location)
 
+(defstruct semantic-ct-array
+  "Represents construction of a (array T N) value from N scalar T values.
+   Used by marshall-tensor to assemble offset/strides/extents array fields."
+  type          ; The array type spec, e.g., (array ulong 1)
+  val-nodes     ; List of N semantic nodes, each of type T
+  source-location)
+
 (defstruct semantic-progn
   "Represents a (progn ...) expression."
   type ; The return type (of the last expression)

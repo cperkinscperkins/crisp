@@ -1212,6 +1212,22 @@
             (values handle nil))
           (values agg-val nil)))))
 
+(defmethod generate-node-ir ((node semantic-ct-array) builder module var-env
+                              di-builder di-scope location-map)
+  "Generates IR for constructing a (array T N) value from N scalar T values.
+   Emits a chain of insertvalue operations into an undef array of the appropriate LLVM type."
+  (let* ((array-type (semantic-ct-array-type node))
+         (val-nodes  (semantic-ct-array-val-nodes node))
+         (llvm-type  (crisp-type-to-llvm-type array-type module))
+         (result     (llvm-get-undef llvm-type)))
+    (log:debug "CT-ARRAY codegen: type=~s, N=~a, llvm-type=~a" array-type (length val-nodes) (llvm-print-type-to-string llvm-type))
+    (loop for vn in val-nodes
+          for i from 0
+          do (let ((val (generate-node-ir vn builder module var-env di-builder di-scope location-map)))
+               (setf result (llvm-build-insert-value builder result val i
+                                                     (format nil "arr_ins_~d" i)))))
+    (values result nil)))
+
 
 
 (defmethod generate-node-ir ((node semantic-extract-value) builder module var-env
