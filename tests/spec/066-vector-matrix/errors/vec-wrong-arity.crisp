@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "Invalid incomplete type specifier"
+;; CHECK-FAIL: "Invalid type option 3 in vector spec"
 ;; vector takes no arity argument. Use (tensor T N) for arity > 2.
 (def-function test-vector-wrong-arity (v)
     (declare #'((vector int 3) => nil))

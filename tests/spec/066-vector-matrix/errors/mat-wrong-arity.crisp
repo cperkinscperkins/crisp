@@ -1,4 +1,4 @@
-;; CHECK-FAIL: "Invalid incomplete type specifier"
+;; CHECK-FAIL: "Invalid type option 5 in matrix spec"
 ;; matrix takes no arity argument. Use (tensor T N) for arity > 2.
 (def-function test-matrix-wrong-arity (m)
     (declare #'((matrix int 5) => nil))
