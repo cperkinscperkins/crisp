@@ -44,12 +44,39 @@
 
 
 
+
+(defun %bare-storage-handle-value-error (item spec)
+  "Raises an intelligent error when a bare address-space/access/align value
+   is found in a storage handle type spec, suggesting the correct key-value form."
+  (cl:cond
+    ((cl:member (cl:string item)
+                '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
+                :test #'string-equal)
+     (error "Bare keyword ~s in type spec ~s. Did you mean ':address-space ~(~a~)'?"
+            item spec item))
+    ((cl:member (cl:string item)
+                '("READ-WRITE" "READ-ONLY" "WRITE-ONLY" "READABLE" "WRITEABLE")
+                :test #'string-equal)
+     (error "Bare keyword ~s in type spec ~s. Did you mean ':access ~(~a~)'?"
+            item spec item))
+    ((cl:member (cl:string item)
+                '("STD140" "COMPACT")
+                :test #'string-equal)
+     (error "Bare keyword ~s in type spec ~s. Did you mean ':align ~(~a~)'?"
+            item spec item))
+    (t
+     (error "Unknown keyword ~s in type spec ~s." item spec))))
+
 (defun expand-storage-handle-type-specifier (spec)
   "Expands storage handle type specs into canonical positional forms.
-   Cell/vector/matrix → (base elem addr access)         [4-tuple, :global :read-write].
-   Tensor             → (tensor elem N addr access align) [6-tuple, :global :read-write :compact].
+   Cell        → (cell  elem addr access)               [4-tuple, defaults :global :read-write].
+   Vector      → (tensor elem 1 addr access align)      [6-tuple, sugar for tensor N=1].
+   Matrix      → (tensor elem 2 addr access align)      [6-tuple, sugar for tensor N=2].
+   Tensor      → (tensor elem N addr access align)      [6-tuple, defaults :global :read-write :compact].
+   Vector/matrix with extra positional arg → error.
    Tensor missing N → crisp-incomplete-type-error.
-   Address-space / access / align bare symbols normalised to keywords."
+   Bare address-space/access/align values → intelligent 'did you mean :key value?' error.
+   Address-space / access / align MUST use key-value form: :address-space :local etc."
   (log:info "EXPAND-STORAGE-HANDLE: ~s" spec)
   (cl:cond
     ((null spec) nil)
@@ -57,8 +84,8 @@
     ((consp spec)
      (cl:let ((base (cl:first spec)))
        (cl:if (and (symbolp base)
-                (member (symbol-name base)
-                        '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+                   (member (symbol-name base)
+                           '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
            (progn
              (cl:when (null (rest spec))
                (error 'crisp-incomplete-type-error :type-spec spec))
@@ -68,84 +95,161 @@
                        (rest-args    (rest args)))
 
                (cl:cond
-                ;; ── TENSOR: second positional arg is the arity N ─────────────
+
+                ;; ── VECTOR: syntactic sugar for (tensor T 1 ...) ─────────────
+                ((string-equal (symbol-name base) "VECTOR")
+                 (cl:let* ((addr      :global)
+                           (acc       :read-write)
+                           (aln       :compact)
+                           (remaining rest-args))
+                   ;; Extra positional arg after element-type is an error.
+                   (cl:when (and remaining
+                                 (not (keywordp (cl:first remaining))))
+                     (error "Invalid type option ~s in vector spec ~s. Vector takes no arity argument; use (tensor ~s N) for N > 2."
+                            (cl:first remaining) spec element-type))
+                   (cl:loop while remaining do
+                     (cl:let ((item (pop remaining)))
+                       (cl:cond
+                         ((string-equal (cl:string item) "ADDRESS-SPACE")
+                          (cl:unless remaining
+                            (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+                          (setf addr (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                         ((string-equal (cl:string item) "ACCESS")
+                          (cl:unless remaining
+                            (error "Missing value for :ACCESS in ~s" spec))
+                          (setf acc (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                         ((string-equal (cl:string item) "ALIGN")
+                          (cl:unless remaining
+                            (error "Missing value for :ALIGN in ~s" spec))
+                          (setf aln (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                         ((string-equal (cl:string item) "DIRECTION")
+                          (cl:when remaining (pop remaining)))
+                         (t
+                          (%bare-storage-handle-value-error item spec)))))
+                   (cl:list (find-symbol "TENSOR" :crisp.compiler)
+                            element-type 1 addr acc aln)))
+
+                ;; ── MATRIX: syntactic sugar for (tensor T 2 ...) ─────────────
+                ((string-equal (symbol-name base) "MATRIX")
+                 (cl:let* ((addr      :global)
+                           (acc       :read-write)
+                           (aln       :compact)
+                           (remaining rest-args))
+                   ;; Extra positional arg after element-type is an error.
+                   (cl:when (and remaining
+                                 (not (keywordp (cl:first remaining))))
+                     (error "Invalid type option ~s in matrix spec ~s. Matrix takes no arity argument; use (tensor ~s N) for arbitrary arity."
+                            (cl:first remaining) spec element-type))
+                   (cl:loop while remaining do
+                     (cl:let ((item (pop remaining)))
+                       (cl:cond
+                         ((string-equal (cl:string item) "ADDRESS-SPACE")
+                          (cl:unless remaining
+                            (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+                          (setf addr (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                         ((string-equal (cl:string item) "ACCESS")
+                          (cl:unless remaining
+                            (error "Missing value for :ACCESS in ~s" spec))
+                          (setf acc (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                         ((string-equal (cl:string item) "ALIGN")
+                          (cl:unless remaining
+                            (error "Missing value for :ALIGN in ~s" spec))
+                          (setf aln (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                         ((string-equal (cl:string item) "DIRECTION")
+                          (cl:when remaining (pop remaining)))
+                         (t
+                          (%bare-storage-handle-value-error item spec)))))
+                   (cl:list (find-symbol "TENSOR" :crisp.compiler)
+                            element-type 2 addr acc aln)))
+
+                ;; ── TENSOR: bare-value matching retained for idempotency ──────
+                ;; The canonical expanded form (tensor T N :global :read-write :compact)
+                ;; uses bare positional keywords.  expand-storage-handle-type-specifier
+                ;; is called multiple times on the same spec, so the tensor branch
+                ;; must accept both key-value pairs (:address-space :local) AND bare
+                ;; keyword values (:global, :read-write, :compact).
+                ;; Vector and matrix are only ever user-written (once expanded they
+                ;; become tensor), so they can enforce strict key-required form.
                 ((string-equal (symbol-name base) "TENSOR")
-                 (cl:let* (;; N present when next arg is NOT a keyword/nil
-                            (n-arg       (and rest-args
+                 (cl:let* ((n-arg        (and rest-args
                                               (not (keywordp (cl:first rest-args)))
                                               (cl:first rest-args)))
-                            (rest-after-n (if n-arg (rest rest-args) rest-args))
-                            (addr :global)
-                            (acc  :read-write)
-                            (aln  :compact)
-                            (remaining rest-after-n))
+                           (rest-after-n (if n-arg (rest rest-args) rest-args))
+                           (addr         :global)
+                           (acc          :read-write)
+                           (aln          :compact)
+                           (remaining    rest-after-n))
                    (cl:unless n-arg
                      (error 'crisp-incomplete-type-error :type-spec spec))
                    (cl:loop while remaining do
                      (cl:let ((item (pop remaining)))
                        (cl:cond
-                         ((cl:member (string item) '("GLOBAL" "LOCAL" "PRIVATE"
-                                                     "CONSTANT" "GENERIC")
+                         ;; bare address-space values (canonical form idempotency)
+                         ((cl:member (cl:string item)
+                                     '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
                                      :test #'string-equal)
-                          (setf addr (intern (string-upcase (string item)) :keyword)))
-                         ((cl:member (string item) '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
-                                                     "READABLE" "WRITEABLE")
+                          (setf addr (intern (string-upcase (cl:string item)) :keyword)))
+                         ;; bare access values
+                         ((cl:member (cl:string item)
+                                     '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
+                                       "READABLE" "WRITEABLE")
                                      :test #'string-equal)
-                          (setf acc (intern (string-upcase (string item)) :keyword)))
-                         ((cl:member (string item) '("STD140" "COMPACT")
+                          (setf acc (intern (string-upcase (cl:string item)) :keyword)))
+                         ;; bare align values
+                         ((cl:member (cl:string item) '("STD140" "COMPACT")
                                      :test #'string-equal)
-                          (setf aln (intern (string-upcase (string item)) :keyword)))
-                         ((string-equal (string item) "ADDRESS-SPACE")
+                          (setf aln (intern (string-upcase (cl:string item)) :keyword)))
+                         ((string-equal (cl:string item) "ADDRESS-SPACE")
                           (cl:unless remaining
                             (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                          (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
-                         ((string-equal (string item) "ACCESS")
+                          (setf addr (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                         ((string-equal (cl:string item) "ACCESS")
                           (cl:unless remaining
                             (error "Missing value for :ACCESS in ~s" spec))
-                          (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
-                         ((string-equal (string item) "ALIGN")
+                          (setf acc (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                         ((string-equal (cl:string item) "ALIGN")
                           (cl:unless remaining
                             (error "Missing value for :ALIGN in ~s" spec))
-                          (setf aln (intern (string-upcase (string (pop remaining))) :keyword)))
-                         ((string-equal (string item) "DIRECTION")
+                          (setf aln (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                         ((string-equal (cl:string item) "DIRECTION")
                           (cl:when remaining (pop remaining)))
                          (t
                           (error "Invalid type option: ~s in tensor spec ~s" item spec)))))
                    (list base element-type n-arg addr acc aln)))
 
-                ;; ── CELL / VECTOR / MATRIX: original 4-tuple logic ───────────
+                ;; ── CELL: original 4-tuple logic, unchanged ──────────────────
                 (t
                  (cl:if (null rest-args)
                      (cl:list base element-type :global :read-write)
-                     (cl:let ((addr :global)
-                              (acc  :read-write)
+                     (cl:let ((addr      :global)
+                              (acc       :read-write)
                               (remaining rest-args))
                        (cl:loop while remaining do
                          (cl:let ((item (pop remaining)))
                            (cl:cond
-                             ((cl:member (string item) '("GLOBAL" "LOCAL" "PRIVATE"
-                                                         "CONSTANT" "GENERIC")
+                             ((cl:member (cl:string item)
+                                         '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
                                          :test #'string-equal)
-                              (setf addr (intern (string-upcase (string item)) :keyword)))
-                             ((cl:member (string item) '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
-                                                         "READABLE" "WRITEABLE")
+                              (setf addr (intern (string-upcase (cl:string item)) :keyword)))
+                             ((cl:member (cl:string item)
+                                         '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
+                                           "READABLE" "WRITEABLE")
                                          :test #'string-equal)
-                              (setf acc (intern (string-upcase (string item)) :keyword)))
-                             ((string-equal (string item) "ADDRESS-SPACE")
+                              (setf acc (intern (string-upcase (cl:string item)) :keyword)))
+                             ((string-equal (cl:string item) "ADDRESS-SPACE")
                               (cl:unless remaining
                                 (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                              (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
-                             ((string-equal (string item) "ACCESS")
+                              (setf addr (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                             ((string-equal (cl:string item) "ACCESS")
                               (cl:unless remaining
                                 (error "Missing value for :ACCESS in ~s" spec))
-                              (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
-                             ((string-equal (string item) "DIRECTION")
+                              (setf acc (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                             ((string-equal (cl:string item) "DIRECTION")
                               (cl:when remaining (pop remaining)))
                              (t
                               (error "Invalid type option: ~s in spec ~s" item spec)))))
                        (cl:list base element-type addr acc)))))))
-           spec)))
-    (t spec)))
+           spec)))))
 
 
 ;; Helper: Parse Template Param Spec

@@ -508,7 +508,7 @@ Tensors Vectors and Matrices
 - - [ ] HOIST tests
 - [ ] tensors and vectors and matrices
 - - [x] initial tests based off cell
-- - [ ] introduce vector and matrix
+- - [x] introduce vector and matrix
 - - [ ] tensors at kernel boundary
 - - [ ] hoisting
 - - [ ] scratch tensors / matrix / vector
