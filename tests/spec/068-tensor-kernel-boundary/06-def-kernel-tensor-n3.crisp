@@ -1,3 +1,5 @@
+;; SKIP-WITH[--differentiate]: "support for --differentiate and tensors is future work"
+
 ;; def-kernel with a tensor N=3 parameter.
 ;; Auto-SROA expands to 12 scalar components:
 ;; (ptr, byte-size, offset_0..2, stride_0..2, extent_0..2, length).

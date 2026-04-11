@@ -1,3 +1,5 @@
+;; SKIP-WITH[--differentiate]: "support for --differentiate and tensors is future work"
+
 ;; Templated def-kernel with a vector parameter.
 ;; gen- requires a third arg (the C-style kernel name string).
 

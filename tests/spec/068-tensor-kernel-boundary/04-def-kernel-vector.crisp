@@ -1,3 +1,6 @@
+;; SKIP-WITH[--differentiate]: "support for --differentiate and tensors is future work"
+
+
 ;; def-kernel with a vector parameter.
 ;; The compiler auto-SROA-expands the vector to its 6 scalar components
 ;; (ptr, byte-size, offset_0, stride_0, extent_0, length) and generates

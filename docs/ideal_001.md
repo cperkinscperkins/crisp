@@ -973,10 +973,41 @@ to create standard Crisp views, and then call some some inner function. That inn
 the `&out` specifier and possibly other safety checks. 
 
 #### Marshall Functions
-- `marshall-cell`
-- `marshall-vector`
-- `marshall-matrix`
-- `marshall-tensor`
+
+`marshall-cell` — 1D opaque handle (no stride/extent)
+
+
+`(marshall-cell type byte-size ptr offset)`
+- `type` — fully-specified cell type alias, e.g. `(cell long :address-space :global :access :read-write)`
+- `byte-size` — `ulong` total byte size of the backing buffer
+- `ptr` — raw pointer (`voidp`)
+- `offset` — `ulong` element offset into the buffer
+
+
+`marshall-vector` — 1D strided view (tensor N=1)
+
+
+`(marshall-vector type byte-size ptr offset_0 stride_0 extent_0 length)`
+- `type` — fully-specified `vector` (or tensor N=1) type alias
+- `byte-size` — `ulong`
+- `ptr` — raw pointer (`voidp`)
+- `offset_0` — `ulong` offset along dimension 0
+- `stride_0` — `ulong` stride along dimension 0
+- `extent_0` — `ulong` extent (size) along dimension 0
+- `length` — `ulong` total number of elements (product of extents)
+
+
+`marshall-matrix` — 2D strided view (tensor N=2)
+
+`(marshall-matrix type byte-size ptr off_0 off_1 str_0 str_1 ext_0 ext_1 length)`
+- `type` — fully-specified `matrix` (or tensor N=2) type alias
+- `byte-size` — `ulong`
+- `ptr` — raw pointer (`voidp`)
+- `off_0`, `off_1` — `ulong` offsets along dimensions 0 and 1
+- `str_0`, `str_1` — `ulong` strides along dimensions 0 and 1
+- `ext_0`, `ext_1` — `ulong` extents along dimensions 0 and 1
+- `length` — `ulong` total element count
+```
 
 
 ### Implementation Notes

@@ -1,3 +1,5 @@
+;; SKIP-WITH[--differentiate]: "support for --differentiate and tensors is future work"
+
 ;; def-kernel with a matrix parameter.
 ;; Auto-SROA expands to 9 scalar components:
 ;; (ptr, byte-size, offset_0, offset_1, stride_0, stride_1, extent_0, extent_1, length).
