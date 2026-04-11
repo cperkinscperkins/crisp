@@ -1,0 +1,10 @@
+;; def-kernel with a vector parameter.
+;; The compiler auto-SROA-expands the vector to its 6 scalar components
+;; (ptr, byte-size, offset_0, stride_0, extent_0, length) and generates
+;; the marshall-vector call internally.
+
+(def-type out-vec-t (vector long :address-space :global :access :read-write :align :compact))
+
+(def-kernel vec_set_first (val &out v)
+    (declare #'(long &out out-vec-t ))
+    (set! (~ v 0) val))

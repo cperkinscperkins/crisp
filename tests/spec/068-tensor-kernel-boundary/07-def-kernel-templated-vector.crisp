@@ -1,0 +1,13 @@
+;; Templated def-kernel with a vector parameter.
+;; gen- requires a third arg (the C-style kernel name string).
+
+(with-template-type (T)
+    (def-type in-vec-t  (vector T :address-space :global :access :read-only  :align :std140))
+    (def-type out-vec-t (vector T :address-space :global :access :read-write :align :std140))
+
+    (def-kernel vec_copy (in &out out)
+        (declare #'((in-vec-t T) &out (out-vec-t T)))
+        (set! (~ out 0) (~ in 0))))
+
+(gen-vec_copy long  "vec_copy_long")
+(gen-vec_copy float "vec_copy_float")

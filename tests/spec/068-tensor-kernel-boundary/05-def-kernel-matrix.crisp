@@ -1,0 +1,9 @@
+;; def-kernel with a matrix parameter.
+;; Auto-SROA expands to 9 scalar components:
+;; (ptr, byte-size, offset_0, offset_1, stride_0, stride_1, extent_0, extent_1, length).
+
+(def-type out-mat-t (matrix float :address-space :global :access :read-write :align :compact))
+
+(def-kernel mat_set_origin (val &out m)
+    (declare #'(float &out out-mat-t))
+    (set! (~ m 0 0) val))

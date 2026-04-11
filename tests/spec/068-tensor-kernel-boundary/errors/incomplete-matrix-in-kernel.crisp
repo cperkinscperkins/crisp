@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "incomplete storage handle type"
+;; (matrix int) is missing :address-space and :access.
+;; Valid at def-function boundaries (typically not needed),
+;; but kernels require all compile-time properties to be explicit.
+(def-kernel bad_kernel (m)
+    (declare #'((matrix int) => nil))
+    (return))

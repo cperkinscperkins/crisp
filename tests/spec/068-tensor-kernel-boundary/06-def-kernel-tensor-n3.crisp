@@ -1,0 +1,10 @@
+;; def-kernel with a tensor N=3 parameter.
+;; Auto-SROA expands to 12 scalar components:
+;; (ptr, byte-size, offset_0..2, stride_0..2, extent_0..2, length).
+;; This exercises the general-N path in %explode-kernel-params.
+
+(def-type vol-t (tensor float 3 :address-space :global :access :read-write))
+
+(def-kernel vol_set_origin (val &out vol)
+    (declare #'(float &out vol-t))
+    (set! (~ vol 0 0 0) val))

@@ -1,0 +1,6 @@
+- def-kernel-exact with tensor, vector, matrix and marshall.  Some serious SROA here.
+- above templated
+- def-kernel with tensor, vector, matrix
+- above templated
+- errors - incomplete types not allowed at def-kernel
+- error - def-kernel-exact does NOT take any storage handle. 

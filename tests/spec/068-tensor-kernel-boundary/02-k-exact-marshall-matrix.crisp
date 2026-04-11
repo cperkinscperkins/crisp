@@ -1,0 +1,29 @@
+;; def-kernel-exact with marshall-matrix.
+;; matrix (N=2): 9 scalar args after type (byte-size, ptr,
+;;   offset_0, offset_1, stride_0, stride_1, extent_0, extent_1, length).
+;;
+;; marshall-matrix signature:
+;;   (marshall-matrix type byte-size ptr
+;;                    offset-0 offset-1
+;;                    stride-0 stride-1
+;;                    extent-0 extent-1
+;;                    length)
+
+(def-type float-mat-t (matrix float :address-space :global :access :read-write :align :std140))
+
+(def-kernel-exact mat_set_origin (byte-size ptr
+                                  off_0 off_1
+                                  str_0 str_1
+                                  ext_0 ext_1
+                                  length val)
+    (declare #'(ulong voidp
+                ulong ulong
+                ulong ulong
+                ulong ulong
+                ulong float))
+    (let ((m (marshall-matrix float-mat-t byte-size ptr
+                              off_0 off_1
+                              str_0 str_1
+                              ext_0 ext_1
+                              length)))
+        (set! (~ m 0 0) val)))
