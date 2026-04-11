@@ -1,0 +1,21 @@
+;; vector is a parameterized Storage Handle type.
+;; (vector T) is syntactic sugar for (tensor T 1).
+;; The minimal declaration requires only the element type.
+
+(def-function test-vector-as-arg (v)
+    (declare #'((vector int) => nil))
+    (return))
+
+(with-template-type (T)
+    (def-function test-templated-vector-as-arg (v)
+        (declare #'((vector T) => nil))
+        (return)))
+
+(gen-test-templated-vector-as-arg float)
+
+(with-template-type (T N)
+    (def-function test-vector-among-mixed-args (v t1 s)
+        (declare #'((vector T) (tensor T N) ulong => nil))
+        (return)))
+
+(gen-test-vector-among-mixed-args long 3)

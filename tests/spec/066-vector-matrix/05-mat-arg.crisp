@@ -1,0 +1,21 @@
+;; matrix is a parameterized Storage Handle type.
+;; (matrix T) is syntactic sugar for (tensor T 2).
+
+(def-function test-matrix-as-arg (m)
+    (declare #'((matrix int) => nil))
+    (return))
+
+(with-template-type (T)
+    (def-function test-templated-matrix-as-arg (m)
+        (declare #'((matrix T) => nil))
+        (return)))
+
+(gen-test-templated-matrix-as-arg float)
+
+;; vector and matrix can appear together in the same signature
+(with-template-type (T)
+    (def-function test-matrix-and-vector-args (m v)
+        (declare #'((matrix T) (vector T) => nil))
+        (return)))
+
+(gen-test-matrix-and-vector-args long)

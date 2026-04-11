@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-09T06:57:28.740824Z
+Generated on 2026-04-11T04:32:13.515523Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1785,6 +1785,13 @@ Generated on 2026-04-09T06:57:28.740824Z
 ### DEFCONSTANT `+LLVM-REAL-UNE+`
 
 ---
+### DEFUN `LLVM-TYPE-KIND-IS-ARRAY?`
+- **Args**: `(TY)`
+
+  > Returns T if TY is an LLVM array type ([N x T]).
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\macros.lisp`
 
 ### DEFMACRO `LET`
@@ -1876,7 +1883,7 @@ Generated on 2026-04-09T06:57:28.740824Z
 ### DEFUN `%INCOMPLETE-STORAGE-HANDLE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if the type-spec is a storage handle but is missing explicit required keys (address-space, access).
+  > Returns T if the type-spec is a storage handle but is missing explicit required keys  >    (address-space, access). Handles both the cell 4-tuple and tensor 6-tuple canonical forms.  >    A fully-expanded tensor spec (tensor elem N addr acc aln) — 5 args after head — is complete.
 
 
 ---
@@ -3565,10 +3572,17 @@ Generated on 2026-04-09T06:57:28.740824Z
 
 
 ---
+### DEFUN `%BARE-STORAGE-HANDLE-VALUE-ERROR`
+- **Args**: `(ITEM SPEC)`
+
+  > Raises an intelligent error when a bare address-space/access/align value  >    is found in a storage handle type spec, suggesting the correct key-value form.
+
+
+---
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Expands storage handle type specs into canonical positional forms.  >    Cell/vector/matrix → (base elem addr access)         [4-tuple, :global :read-write].  >    Tensor             → (tensor elem N addr access align) [6-tuple, :global :read-write :compact].  >    Tensor missing N → crisp-incomplete-type-error.  >    Address-space / access / align bare symbols normalised to keywords.
+  > Expands storage handle type specs into canonical positional forms.  >    Cell        → (cell  elem addr access)               [4-tuple, defaults :global :read-write].  >    Vector      → (tensor elem 1 addr access align)      [6-tuple, sugar for tensor N=1].  >    Matrix      → (tensor elem 2 addr access align)      [6-tuple, sugar for tensor N=2].  >    Tensor      → (tensor elem N addr access align)      [6-tuple, defaults :global :read-write :compact].  >    Vector/matrix with extra positional arg → error.  >    Tensor missing N → crisp-incomplete-type-error.  >    Bare address-space/access/align values → intelligent 'did you mean :key value?' error.  >    Address-space / access / align MUST use key-value form: :address-space :local etc.
 
 
 ---

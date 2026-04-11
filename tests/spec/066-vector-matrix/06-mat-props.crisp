@@ -1,0 +1,35 @@
+;; matrix properties.
+;; num-dims~ is always 2 (compile-time constant).
+;; strides~ and extents~ are virtual fixed arrays of length 2.
+
+(def-function test-matrix-num-dims (m)
+    (declare #'((matrix long) => ulong))
+  (num-dims~ m))
+
+(def-function test-matrix-length (m)
+    (declare #'((matrix long) => ulong))
+  (length~ m))
+
+;; strides~ is (array ulong 2); index with 0 or 1
+(def-function test-matrix-strides (m1 m2)
+    (declare #'((matrix long) (matrix float) => ulong ulong))
+  (return (length~ (strides~ m1)) (~ (strides~ m2) 1)))
+
+;; extents~ is (array ulong 2)
+(def-function test-matrix-extents (m1 m2)
+    (declare #'((matrix long) (matrix long) => ulong ulong))
+  (return (length~ (extents~ m1)) (~ (extents~ m2) 1)))
+
+;; return type of strides~/extents~ is (array ulong 2)
+(def-function test-matrix-strides-return-type (m)
+    (declare #'((matrix long) => (array ulong 2)))
+  (strides~ m))
+
+(def-function test-matrix-extents-return-type (m)
+    (declare #'((matrix long) => (array ulong 2)))
+  (extents~ m))
+
+(def-function test-matrix-element-type (m)
+    (declare #'((matrix long) => ulong))
+  (c-t-assert (type-equal (element-type~ m) 'long) "element-type must be long")
+  (length~ m))
