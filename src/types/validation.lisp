@@ -121,7 +121,10 @@
                          ((string-equal (cl:string item) "ALIGN")
                           (cl:unless remaining
                             (error "Missing value for :ALIGN in ~s" spec))
-                          (setf aln (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                          (cl:let ((v (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                            (cl:unless (cl:member v '(:compact :strided))
+                              (error "Invalid :align value ~s in ~s. Expected :compact or :strided." v spec))
+                            (setf aln v)))
                          ((string-equal (cl:string item) "DIRECTION")
                           (cl:when remaining (pop remaining)))
                          (t
@@ -154,7 +157,10 @@
                          ((string-equal (cl:string item) "ALIGN")
                           (cl:unless remaining
                             (error "Missing value for :ALIGN in ~s" spec))
-                          (setf aln (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                          (cl:let ((v (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                            (cl:unless (cl:member v '(:compact :strided))
+                              (error "Invalid :align value ~s in ~s. Expected :compact or :strided." v spec))
+                            (setf aln v)))
                          ((string-equal (cl:string item) "DIRECTION")
                           (cl:when remaining (pop remaining)))
                          (t
@@ -195,8 +201,8 @@
                                        "READABLE" "WRITEABLE")
                                      :test #'string-equal)
                           (setf acc (intern (string-upcase (cl:string item)) :keyword)))
-                         ;; bare align values
-                         ((cl:member (cl:string item) '("STD140" "COMPACT")
+                         ;; bare align values (canonical form idempotency)
+                         ((cl:member (cl:string item) '("COMPACT" "STRIDED")
                                      :test #'string-equal)
                           (setf aln (intern (string-upcase (cl:string item)) :keyword)))
                          ((string-equal (cl:string item) "ADDRESS-SPACE")
@@ -210,7 +216,10 @@
                          ((string-equal (cl:string item) "ALIGN")
                           (cl:unless remaining
                             (error "Missing value for :ALIGN in ~s" spec))
-                          (setf aln (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                          (cl:let ((v (intern (string-upcase (cl:string (pop remaining))) :keyword)))
+                            (cl:unless (cl:member v '(:compact :strided))
+                              (error "Invalid :align value ~s in ~s. Expected :compact or :strided." v spec))
+                            (setf aln v)))
                          ((string-equal (cl:string item) "DIRECTION")
                           (cl:when remaining (pop remaining)))
                          (t

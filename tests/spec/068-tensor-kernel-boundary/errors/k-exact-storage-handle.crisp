@@ -1,7 +1,7 @@
 ;; CHECK-FAIL: "cannot be a storage handle type"
 ;; def-kernel-exact does not accept storage handles directly —
 ;; the user must declare raw scalar args and call marshall-vector / marshall-matrix.
-(def-type out-v (vector long :address-space :global :access :read-write :align :std140))
+(def-type out-v (vector long :address-space :global :access :read-write :align :compact))
 
 (def-kernel-exact bad_exact (v)
     (declare #'(out-v))

@@ -39,11 +39,11 @@ Major Features of the Crisp language and tools
 
 - Flexible Data Layouts:  Crisp provides distinct types and specialized accessors for both "Array of Structs" (`vector`) and "Struct of Arrays" (`soa-vector`).  This gives developers the tools to choose the most performant memory layout for their algorithm without sacrificing type safety or readability.
 
-- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:std140`) and GPU-native iteration patterns (`loop-vector-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
+- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:strided`) and GPU-native iteration patterns (`loop-vector-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
 
 - Compile-Time Verification:  Special variants of control-flow forms (`if*`, `dotimes+`) and declarations (`uniform`, `constexpr`) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
 
-- Strict Memory Layout Standard:  All Crisp structs adhere to the std140 memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
+- Strict Memory Layout Standard:  All Crisp structs adhere to a strict "scalar" memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
 
 - Pragmatic Error Handling:  A simple maybe type is integrated into the language.  This provides a lightweight, compiler-assisted mechanism for handling potential failures in a way that minimizes control-flow divergence, a major performance killer on GPUs.
 
@@ -1110,9 +1110,12 @@ cannot use the C interop for data exchange with host. Marshalling would be requi
 
 ### layout and alignment 
 
-Crisp structs follow the `std140` layout rules used by the OpenGL and Vulkan graphic APIS.
+Crisp structs follow a strict "scalar" layout.
+- Basci scalar types are aligned to a multiple of their own size ( a 1-byte `char` aligns to 1, a 4-byte `float` aligns to 4, an 8-byte `double` aligns to 8).
+-  A struct's overall alignment is equal to the alignment of its most strictly aligned member.  If a struct contains a `char` and a `float`, the struct's alignment is 4.
+- Padding: Members are placed at the lowest available offset that satisfies their alignment. The total size of the struct is padded at the end to be a multiple of its overall alignment.
+- Storage Handles - (ie `(vector someStruct)` ) The stride of a storage handle is exactly the size of the struct. Zero extra padding between elements.
 
-https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#interfaces-resources-layout
 
 
 ### type constraints: is-XXXX?
@@ -1322,7 +1325,7 @@ In the future, Crisp may handle this automatically.
 def-record
 ----------
 
-`def-record` is very simlar to `def-struct`. Records "pun" as structs. The crucial difference is that while structs result in contiguous memory (:std140 aligned), records are not contiguous in memory.  Records are just a collection of register, of memory addresses. They act as virtualized structures.
+`def-record` is very simlar to `def-struct`. Records "pun" as structs. The crucial difference is that while structs result in contiguous memory (though aligned and padded), records are not contiguous in memory.  Records are just a collection of register, of memory addresses. They act as virtualized structures.
 
 `def-record` undergirds the Crisp "implicit" argument passing - how the many and sundry pieces of data required for a `tensor` get bound into one virtual variable passed from function to function. 
 
@@ -1403,11 +1406,11 @@ Like for `vector` the simple `~` accessor is available for dereferencing.
 Arrays can be direct kernel parameters. But if they are appear directly on the kernel boundary,
 they are read only, immutable.
 
-Arrays always use `:std140` alignment. `:compact` is not available. 
+Arrays always use :compact alignment.
 
 Arrays can be elements of a struct, and can ALSO be in a record, but if used in a
 `def-record` they are automatically virtualized like the other `def-record` members 
-( which means the `:std140` alignment will not apply).
+
 
 ### `~`
 Like vectors, arrays support `~` for refer-by-index semantics. This can be used for both
