@@ -82,7 +82,7 @@
 
         ;; tensor / vector / matrix params have two extra keys:
         ;;   :rank  N       — number of dimensions (1 for vector, 2 for matrix, N for tensor)
-        ;;   :align :compact | :std140
+        ;;   :align :compact | :strided
         ;;                  — stride layout strategy
         ;; The :range spans all 3N+3 physical slots:
         ;;   PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1, EXT_0..N-1, LENGTH
