@@ -28,10 +28,12 @@ struct Points {
 
 
 
-### Alignment
+### Alignment & Layout
+Crisp supports two alignment schemes for `soa-vector`: `:compact` and `:strided`.
 
-Crisp supports two alignments schemes for `soa-vector`: `:std140` and `:compact`.  Note that these
-alignments are applied to the inner vectors.  The outer `struct` is always `:std140`.
+`:compact` means the `soa-vector` is a primary allocation. The base pointer is 16-byte aligned. The internal arrays are perfectly contiguous and concatenated back-to-back. The compiler will only insert padding between the arrays if required to satisfy the natural alignment of the next element type.
+
+`:strided` means the `soa-vector` is a view or a slice. The internal arrays are no longer guaranteed to be perfectly contiguous, and accesses will rely on dynamic strides.
 
 ### Base Properties
 
@@ -39,7 +41,7 @@ A `soa-vector` has these properties:
 
 | Property     | Type         | Description      |
 |--------------|--------------|------------------|
-| align        | align        | one of `:std140` or `:compact`. This is for the inner vectors.|
+| align        | align        | one of `:strided` or `:compact`. This dictates the layout of the inner vectors. |
 | length       | ulong        | the number of elements in the `soa-vector`. Its bytes cannot be greater than its parent `storage` |
 | parent       | storage      | address of"parent storage |
 | offset       | ulong        | offset into parent. |
@@ -53,7 +55,7 @@ Example
 ```
 (def-struct point (x long) (y long))
 
-(let ((sv      (make-soa-vector point :address-space :local :access :read-write :align :std140 :length 20))
+(let ((sv      (make-soa-vector point :address-space :local :access :read-write :align :compact :length 20))
       (y       (y~ sv 9))
       (x-vec   (x~ sv)))
     ...)
@@ -67,8 +69,7 @@ Owning to memory coalesence, when the index is a thread id from parallel threads
 
 #### `XXXX~` without index
 
-Whereas constrastingly, in the example above `(x~ sv)` returns the ENTIRE VECTOR of X from the `soa-vector`.
- `x-vec` would be `(vector long :length 20)`.  
+In contrast, `(x~ sv)` returns the ENTIRE VECTOR of X as a standard vector Storage Handle. The returned vector inherits the alignment of the `soa-vector`. If `sv` is `:compact`, `x-vec` will be `(vector long :compact :length 20)`, allowing for ultra-fast vectorized loads. If `sv` is `:strided`, the resulting vector will also be `:strided`. 
 
 Its primary purpose is to pass a single, contiguous stream of data to another high-performance primitive, like `reduce-vec`
 
@@ -84,8 +85,7 @@ creation of a new structure to hold the value.
 ### Helper Functions
 
 Like `vector`, `soa-vector`  supports `element-type` and `bytes` helpers.
-`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding. But remember, the `soa-vector` is a view into some `storage`. Use `(byte-size~ (parent~ someSoaVec))` to get the
-full storage bytes.
+`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its tightly-packed component arrays, plus any inter-array alignment padding required by the C ABI. Remember, the `soa-vector` is a view into some storage. Use `(byte-size~ (parent~ someSoaVec))` to get the full storage bytes.
 
 ### Member Data Rules
 

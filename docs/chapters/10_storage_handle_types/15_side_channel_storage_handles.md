@@ -51,7 +51,7 @@ which allows you to state its intended size and purpose.
 
 The `make-scratch-XXXX` routines create "scratch" side-channel memory Storage Handles. 
 
-Scratch memory defaults to `:local` address space,  `:read-write` access and `:std140` alignment, 
+Scratch memory defaults to `:local` address space,  `:read-write` access and `:compact` alignment, 
 but the defaults can be overridden by either using the `&key` arguments to the `make-scratch-XXXX` function
 or by using the second creation function of the pair that uses a Storage Handle type argument.
 
@@ -214,8 +214,8 @@ In the example below, this function, if called by a kernel, would cause two addi
 be hoisted, plus a pointer to a unsigned long array.  
 
 ```
-(def-type float-vec (vector float :align :std140 :address-space :global :access :read-only))
-(def-type ulong-vec (vector ulong :align :std140 :address-space :global :access :writeable))
+(def-type float-vec (vector float :align :compact :address-space :global :access :read-only))
+(def-type ulong-vec (vector ulong :align :compact :address-space :global :access :writeable))
 
 ;; -- calc-final-result --
 (def-grid-function calc-final-result (x y &out A)

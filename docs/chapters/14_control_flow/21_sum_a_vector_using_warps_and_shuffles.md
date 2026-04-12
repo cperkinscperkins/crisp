@@ -26,11 +26,11 @@ This version of vector summing is likely faster than the last one.
 (def-constant +warp-size+:ulong 32)
 
 ;; the source vector can be any size. 
-(def-type source-vec (in-vec long :std140))    
+(def-type source-vec (in-vec long :compact))    
 
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups
-(def-type result-vec (vector long :align :std140 :address-space :global :access :writeable :size (get-num-groups)))  
+(def-type result-vec (vector long :align :compact :address-space :global :access :writeable :size (get-num-groups)))  
 
 ;; -- calculate-this-thread-sum --
 (def-function calculate-this-thread-sum (A)

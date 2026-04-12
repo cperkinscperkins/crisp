@@ -38,7 +38,7 @@ Possible Implementation
    ;; 1D
   (def-grid-function quantize-to-XXXX (input-vec &out output-mfb-vec 
                               &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (count MFB)))))
-    (declare #((in-vec F A) &out (out-vec MFB :std140)))
+    (declare #((in-vec F A) &out (out-vec MFB :compact)))
     (r-t-assert-0 (= (length~ input-vec) (* (count MFB) (length~ output-mfb-vec)))
                   "lengths don't match")
     (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
@@ -60,7 +60,7 @@ Possible Implementation
     ;; 2D
     (def-grid-function quantize-to-XXXX (input-tv &out output-mfb-tv 
                               &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (num-cols MFB)))))
-      (declare #((tensor 3 (in-vec F A)) &out (tensor 3 (out-vec MFB :std140))))
+      (declare #((tensor 3 (in-vec F A)) &out (tensor 3 (out-vec MFB :compact))))
       (r-t-assert-0 (= (num-cols input-tv) (* (num-cols MFB) (num-rows MFB))) "confusing")
       (r-t-assert-0 (= (num-planes input-tv) (num-planes output-mfb-tv)) "number of planes not matching")
       (r-t-assert-0 (= (num-rows intput-tv) (num-rows output-mfb-tv)) "number of rows should match")
@@ -93,7 +93,7 @@ Possible Implementation
     (type-is MFB #'is-microfloat-block?))
 
   (def-grid-function dequantize-from-XXXX (input-mfb-vec &out output-vec)
-    (declare #((in-vec MFB :std140) &out (out-vec F A)))
+    (declare #((in-vec MFB :compact) &out (out-vec F A)))
     (r-t-assert-0 (= (length~ output-vec) (* (count MFB) (length~ input-mfb-vec)))
                   "lengths don't match")
 

@@ -48,7 +48,7 @@ Example
 `(get-signature function-identifier)` => <Signature>`
 
 ```
-(get-signature #'int_vector_sum) =>  `((vector int :align :std140  :address-space :global :access :readable) &out (vector int :align :std140  :address-space :global :access :write-only))
+(get-signature #'int_vector_sum) =>  `((vector int :align :compact  :address-space :global :access :readable) &out (vector int :align :compact  :address-space :global :access :write-only))
 ```
 
 

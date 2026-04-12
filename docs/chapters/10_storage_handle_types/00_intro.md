@@ -22,14 +22,18 @@ as a cursor to a section of the `storage`.
 
 ### Alignment
 
-Crisp supports two different alignment schemes for Storage Handles: `:std140` and `:compact`.
+Crisp supports two different alignment schemes for Storage Handles: `:strided` and `:compact`.
 
-`:std140` always aligns on the 16 byte boundary. The full description of this standard 
-can be found here: https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#interfaces-resources-layout
+`:compact` alignment is contiguous with no gaps between data members. For a `vector` that would be compatible with `std::vector<T> .data()`.  `:compact` alignment also means that the underlying `storage` parent pointer is aligned to a 16 byte address boundary. When alignment is `:compact` the access operations (`~`) ignore the the `stride` elements of the storage handle and offsets are calculated directly and performantly.
 
-`:compact` alignment is contiguous with no gaps between data members. For a `vector` that would be compatible with `std::vector<T> .data()`
+ `:strided` alignment means that the Storage Handle uses its `stride` values when determining offsets 
+ during access operations. `:strided` Storage Hanles are often the result of transpose and slicing
+ operations. This increases the reuse potential of Storage Handles and means less data copying
+ is required.   
 
-Note that while `:compact` is generally easier to interoperate, `:std140` is more performant on GPUs.
-
-Also note that Crisp structs are ALWAYS `:std140`, putting them in a Storage Handle does not change that. 
+ If a storage handle type function arg is declared as `:compact` it will not accept a `:strided` storage handle value.  Crisp developers can choose different strategies to help deal with alignment when declaring storage handle types. 
+ - use templates.  `(with-template-type (T A) ...) ` where `A` is the alignment. Then you will have a "fast" `:compact` version of your function and a more flexible `:strided`.
+ - use incomplete types.  Just skip the `:align` keyword when declaring a storage handle type. The 
+ compiler will then allow any type of storage handle to be used as an argument to that function. But, note, that it will default to the slightly slower `:strided` behavior.
+ - be exact. Just specify the alignment you expect/desire. For users who aren't using transpose or slicing operations, this is simplest.
 

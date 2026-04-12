@@ -13,11 +13,11 @@
 
 - Flexible Data Layouts:  Crisp provides distinct types and specialized accessors for both "Array of Structs" (`vector`) and "Struct of Arrays" (`soa-vector`).  This gives developers the tools to choose the most performant memory layout for their algorithm without sacrificing type safety or readability.
 
-- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:std140`) and GPU-native iteration patterns (`loop-vector-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
+- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:strided`) and GPU-native iteration patterns (`loop-vector-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
 
 - Compile-Time Verification:  Special variants of control-flow forms (`if*`, `dotimes+`) and declarations (`uniform`, `constexpr`) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
 
-- Strict Memory Layout Standard:  All Crisp structs adhere to the std140 memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
+- Strict Memory Layout Standard:  All Crisp structs adhere to a strict "scalar" memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
 
 - Pragmatic Error Handling:  A simple maybe type is integrated into the language.  This provides a lightweight, compiler-assisted mechanism for handling potential failures in a way that minimizes control-flow divergence, a major performance killer on GPUs.
 

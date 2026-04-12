@@ -5,7 +5,7 @@ Storage Handles are completely typed by
 - type of their element
 - `address-space` (which is one of `:global` `:local` `:private` `:constant`)
 - `access` (which is one of `:read-only` `:write-only` `:read-write` `:writable` `:readable`)
-- `align` (one of `:std140` or `:compact`)  NOTE: `align` is not needed by the `cell` type.
+- `align` (one of `:strided` or `:compact`)  NOTE: `align` is not needed by the `cell` type.
 
 The `tensor` type also requires the number of dimensions to be known at compile time.
 
@@ -84,10 +84,10 @@ But note that the last two are not available in the hoisting example code for lo
 ```
 ;; -- count --
 (def-function count (v)
-    (declare (return-type ulong) (type v (vector long :align :std140 :address-space :global :access :read-only)))
+    (declare (return-type ulong) (type v (vector long :align :compact :address-space :global :access :read-only)))
  ...)
 
  ;; vectors can be compile-time fixed size
-(vector float :align :std140 :address-space :local :access :read-write :extent (100))
+(vector float :align :compact :address-space :local :access :read-write :extent (100))
 ```
 
