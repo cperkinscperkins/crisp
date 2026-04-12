@@ -3527,7 +3527,7 @@ These member appearing in both Ancestor and Descendant don't have to have the sa
 MUST have the strict same type. ( ie no swapping floats for ints or unsigned for signed)
 
 
-As mentioned, the two structs must have compatible shape WHEN FLATTENED (and accounting for `std140` alignment). This is most easily demonstrated with an example.  Below `set-derived` is used twice and both uses are perfectly valid.
+As mentioned, the two structs must have compatible shape WHEN FLATTENED . This is most easily demonstrated with an example.  Below `set-derived` is used twice and both uses are perfectly valid.
 
 ```
 (def-struct point (x int) (y int))
@@ -3538,7 +3538,7 @@ As mentioned, the two structs must have compatible shape WHEN FLATTENED (and acc
 (set-derived point vertex-nest) ;; alternately, we could have done (set-derived vertex-flat vertex-nest)
 ```
 
-Shape compatibility is evaluated on the flattened struct layouts: nested structs are recursively expanded to their scalar members. For each data member in the ancestor, the corresponding member in the descendant must have both the same type and the same byte offset (as determined by std140 alignment). Struct-level trailing padding is not part of the comparison.
+Shape compatibility is evaluated on the flattened struct layouts: nested structs are recursively expanded to their scalar members. For each data member in the ancestor, the corresponding member in the descendant must have both the same type and the same byte offset . Struct-level trailing padding is not part of the comparison.
 
 
 ### Branded Types
@@ -3612,8 +3612,7 @@ and can't be extended like this.
 
 They CAN be extended by nesting them in a def-record. Will update.
 
-I'm also removing the std140 comment, because the rules for set-derived are stricter
-and this shouldn't be a concern. 
+
 
 ### Extending Views
 
@@ -3629,9 +3628,6 @@ If you want to extend a type like `vector` with your own type that has extra dat
 
 ```
 
-### std140
-
-All Crisp structs are aligned with the `std140` layout and alignment practice. Keep this in mind when using `set-derived` and type casting, as things might not work like you'd expect in a language like C.
 
 -->
 
@@ -7404,7 +7400,6 @@ host_data = np.array(np.random.rand(1024), dtype=np.float32)
 data_size = host_data.nbytes
 
 # 3. Create GPU buffers
-# (Assuming the runtime handles marshalling to std140 if needed)
 buffer = crisp_runtime.create_buffer(host_data)
 
 # --- Launch Kernel 1 ---
@@ -12298,7 +12293,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
       ANSWER: no extending. a. Make two types:  struct-A { int }  struct-B {int, float}  
                             b. (set-derived struct-A-type struct-B-type :subst :pass-orig) 
 
-[X] C interop with structs/vectors : std140 
+[X] C interop with structs/vectors 
 
 [x] LAMBDA REVISIT - uniform lambdas OK?  
 
@@ -12343,7 +12338,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     statically typed.  Having it slip through the cracks seems weird, and dangerous.
 
 [x] REVISIT / CLEAN UP MEMORY / SUMMARYIZE and COMPARE .  a) make-vector with compile-time known size: fully supported.  
-      b) various "scratch" local/global . c) :compact vs :std140 , d) def-constant-vec/use 
+      b) various "scratch" local/global . d) def-constant-vec/use 
       e) communicate with hoisting, derive-from f) side-channels g) #( 1 2 3)  
       h) (declare (shared someVar) (uniform otherVar))   "shared" could be "local" or "slm" ?  This declare is for let clauses
          difference between "shared" and "uniform"

@@ -5,11 +5,6 @@
 
 (in-package :crisp.compiler)
 
-;; Std140 Layout (GPU Alignment)
-;; =============================
-
-
-
 
 (defun %struct-native-alignment (struct-name)
   "Returns the native scalar alignment of a struct: the maximum alignment of
@@ -22,11 +17,11 @@
                                 members)))
     (cl:if runtime-members
            (apply #'cl:max
-                  (mapcar (lambda (m) (get-std140-base-alignment (second m)))
+                  (mapcar (lambda (m) (get-native-base-alignment (second m)))
                           runtime-members))
            4))) ; default 4-byte alignment for empty structs
 
-(defun get-std140-base-alignment (type-spec)
+(defun get-native-base-alignment (type-spec)
   "Returns the base alignment (in bytes) for TYPE-SPEC under native scalar rules.
    Scalars: natural size.  Arrays: element alignment.  Structs: max member alignment."
   (cl:let* ((alias-resolved (resolve-type-alias type-spec))
@@ -34,9 +29,9 @@
     (cl:cond
       ;; (array T N) -> element alignment (compact, not vec4)
       ((%array-type-p type-spec)
-       (get-std140-base-alignment (cl:second type-spec)))
+       (get-native-base-alignment (cl:second type-spec)))
       ((%array-type-p alias-resolved)
-       (get-std140-base-alignment (cl:second alias-resolved)))
+       (get-native-base-alignment (cl:second alias-resolved)))
       ;; scalars — natural size (unchanged)
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
@@ -68,21 +63,21 @@
 
 
 
-(defun get-std140-size (type-spec)
+(defun get-native-size (type-spec)
   "Returns the size (in bytes) of TYPE-SPEC under native scalar rules.
    Arrays: N * elem-size (compact, no per-element 16-byte padding).
    Structs: total-size as recorded (compact layout).  Scalars: natural size."
   (cl:let* ((alias-resolved (resolve-type-alias type-spec))
              (resolved-type (get-type-base alias-resolved)))
     (cl:cond
-      ;; (array T N) -> N * elem-size, no per-element std140 stride
+      ;; (array T N) -> N * elem-size, 
       ((%array-type-p type-spec)
        (cl:let* ((elem-type (cl:second type-spec))
                  (n         (cl:third type-spec))
-                 (elem-size (get-std140-size elem-type)))
+                 (elem-size (get-native-size elem-type)))
          (* n elem-size)))
       ((%array-type-p alias-resolved)
-       (get-std140-size alias-resolved))
+       (get-native-size alias-resolved))
       ;; scalars (unchanged)
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
@@ -112,7 +107,7 @@
                          type-spec)))))))
       (t (error "Unknown type for size: ~a" type-spec)))))
 
-(defun calculate-std140-padding (current-offset alignment)
+(defun calculate-native-padding (current-offset alignment)
   "Calculates padding needed to reach the next alignment boundary."
   (cl:let ((remainder (mod current-offset alignment)))
     (if (zerop remainder)
@@ -121,7 +116,7 @@
 
 
 
-(defun compute-std140-layout (members)
+(defun compute-native-layout (members)
   "Computes native scalar layout for a struct.
    Members are placed at their natural alignment boundaries (same as before).
    Total struct size is padded to the struct's overall alignment, which equals
@@ -136,9 +131,9 @@
     (dolist (member runtime-members)
       (cl:let* ((name      (first member))
                 (type      (second member))
-                (alignment (get-std140-base-alignment type))
-                (size      (get-std140-size type))
-                (padding   (calculate-std140-padding current-offset alignment)))
+                (alignment (get-native-base-alignment type))
+                (size      (get-native-size type))
+                (padding   (calculate-native-padding current-offset alignment)))
         (declare (ignore name))
 
         ;; Track overall struct alignment
@@ -175,7 +170,7 @@
         (incf current-offset size)))
 
     ;; Trailing padding to max-member-alignment (native scalar rule)
-    (cl:let ((final-padding (calculate-std140-padding current-offset max-alignment)))
+    (cl:let ((final-padding (calculate-native-padding current-offset max-alignment)))
       (cl:when (> final-padding 0)
         (cl:let ((pad-remaining final-padding)
                  (pad-idx 0)
@@ -284,7 +279,7 @@
             (expanded-members '()))
     (dolist (member runtime-members)
       (cl:let* ((type (second member))
-                (size (get-std140-size type))) ;; Calls new version
+                (size (get-native-size type))) ;; Calls new version
         (push member expanded-members)
         (incf current-offset size)))
 
@@ -334,7 +329,7 @@
         (multiple-value-bind (padded-members total-size)
             (if (eq category :record)
                 (compute-record-layout members)
-                (compute-std140-layout members))
+                (compute-native-layout members))
           (cl:let ((indices (make-hash-table :test #'eq)))
             (loop for m in padded-members
                   for i from 0

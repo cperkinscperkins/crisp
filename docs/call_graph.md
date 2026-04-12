@@ -367,23 +367,23 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - (COMPUTE-RECORD-LAYOUT MEMBERS)  structs.lisp
-- - - - - - - (GET-STD140-SIZE TYPE-SPEC)  structs.lisp
+- - - - - - - (GET-native-SIZE TYPE-SPEC)  structs.lisp
 - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (GET-STD140-SIZE TYPE-SPEC)  structs.lisp [RECURSION]
-- - - - - - - - (CALCULATE-STD140-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp
+- - - - - - - - (GET-native-SIZE TYPE-SPEC)  structs.lisp [RECURSION]
+- - - - - - - - (CALCULATE-native-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp
 - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - (COMPUTE-STD140-LAYOUT MEMBERS)  structs.lisp
-- - - - - - - (GET-STD140-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp
+- - - - - - (COMPUTE-native-LAYOUT MEMBERS)  structs.lisp
+- - - - - - - (GET-native-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp
 - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - (GET-STD140-SIZE TYPE-SPEC)  structs.lisp [See above]
-- - - - - - - (CALCULATE-STD140-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp [See above]
+- - - - - - - (GET-native-SIZE TYPE-SPEC)  structs.lisp [See above]
+- - - - - - - (CALCULATE-native-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp [See above]
 - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
 - - - - (PROPAGATE-IMPLICIT-ARGUMENTS)  analysis/core.lisp
 - - - - (COMPILE-FORMS-PASS FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
@@ -872,7 +872,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - (VALIDATE-SET-DERIVED-SHAPE ANCESTOR-STRUCT DESCENDANT-STRUCT ANCESTOR-NAME DESCENDANT-NAME)  types/hierarchy.lisp
 - - - - (FLATTEN-STRUCT-DATA-MEMBERS STRUCT-DEF)  types/hierarchy.lisp
-- - - - - (GET-STD140-SIZE TYPE-SPEC)  structs.lisp [See above]
+- - - - - (GET-native-SIZE TYPE-SPEC)  structs.lisp [See above]
 - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - (FLATTEN-STRUCT-DATA-MEMBERS STRUCT-DEF)  types/hierarchy.lisp [RECURSION]
 - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]

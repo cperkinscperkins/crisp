@@ -50,11 +50,11 @@
                (true (search "define i32 @use_point_test_point_ir(%TEST-POINT-IR %0)" ir :test #'char-equal)
                      "Structs should be passed by value in this simple case?")))
 
-(define-test (crisp-compiler struct-std140-mixed)
+(define-test (crisp-compiler struct-native-mixed)
              "Verifies native scalar layout for Mixed struct (char, int)."
              (let ((members '((a char) (b int))))
                ;; Use the internal function directly to verify the padding logic
-               (multiple-value-bind (padded size) (crisp.compiler::compute-std140-layout members)
+               (multiple-value-bind (padded size) (crisp.compiler::compute-native-layout members)
                  ;; Native scalar: size padded to max-member-alignment (4), not 16.
                  ;; char(1) + 3-pad + int(4) = 8, already a multiple of 4.
                  (is = 8 size "Total size should be 8 bytes (no trailing 16-byte pad)")
@@ -72,14 +72,14 @@
                  ;; 3. b (int)
                  (is eq 'b (first (fourth padded))))))
 
-(define-test (crisp-compiler struct-std140-stress-test)
+(define-test (crisp-compiler struct-native-stress-test)
              "Verifies complex padding scenarios to ensure no crashes on 'odd' sizes."
 
              ;; Case 1: Char (1) -> Double (8).
              ;; Offset 1. Need alignment 8. Padding: 7 bytes.
              ;; char + 7-pad + double = 16. max_align=8, 16%8=0 -> no trailing pad.
              (multiple-value-bind (padded size)
-                 (crisp.compiler::compute-std140-layout '((a char) (b double)))
+                 (crisp.compiler::compute-native-layout '((a char) (b double)))
                (is = 16 size) ;; 1 + 7 + 8 = 16. Already a multiple of 8.
                (is eq 'a (first (first padded)))
                (true padded)
@@ -90,7 +90,7 @@
              ;; char + 3-pad + 4(inner) = 8. max_align=4, 8%4=0 -> no trailing pad.
              (eval '(def-struct Inner (x float))) ;; Size 4 (native scalar: just the float)
              (multiple-value-bind (padded size)
-                 (crisp.compiler::compute-std140-layout '((a char) (b Inner)))
+                 (crisp.compiler::compute-native-layout '((a char) (b Inner)))
                (is = 8 size) ;; 1 + 3(pad) + 4(inner) = 8.
                (true padded)))
 

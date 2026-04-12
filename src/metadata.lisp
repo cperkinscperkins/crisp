@@ -259,7 +259,7 @@
 
 ;;; -----------------------------------------------------------------------
 ;;; def-struct c-t members are compile-time constants, NOT part of the
-;;; struct memory layout (compute-std140-layout already excludes them).
+;;; struct memory layout (compute-native-layout already excludes them).
 ;;; The metacrisp :structs section must reflect the actual runtime layout
 ;;; so the C++ hoist generates the correct sizeof() and field assignments.
 ;;; -----------------------------------------------------------------------

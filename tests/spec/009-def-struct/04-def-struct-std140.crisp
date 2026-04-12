@@ -1,6 +1,6 @@
 
 ;; tests/def-struct-std140.crisp
-;; Validates std140 padding insertion and constructors.
+;; Validates insertion and constructors.
 
 (def-struct Mixed
   (a char)

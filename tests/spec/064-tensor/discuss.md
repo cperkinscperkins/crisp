@@ -62,7 +62,7 @@ Canonical (internal) type specifier is a 6-tuple:
 
 ### Six overlay changes
 
-**1. align enumeration** (def-enumeration align :std140 :compact)
+**1. align enumeration** (def-enumeration align :strided :compact)
    - Goes in the overlay (calls the already-defined def-enumeration macro)
 
 **2. register-builtins redefinition**

@@ -60,7 +60,7 @@
      (error "Bare keyword ~s in type spec ~s. Did you mean ':access ~(~a~)'?"
             item spec item))
     ((cl:member (cl:string item)
-                '("STD140" "COMPACT")
+                '("STRIDED" "COMPACT")
                 :test #'string-equal)
      (error "Bare keyword ~s in type spec ~s. Did you mean ':align ~(~a~)'?"
             item spec item))
