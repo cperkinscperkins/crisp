@@ -18,7 +18,7 @@ for output parrameters.  Crisp has prepared pairs of `def-type` aliases to make 
 Example:
 ```
 (def-kernel my_kernel (A B &out C)
-  (declare #'((in-vec float :std140) (in-vec float :std140) (out-vec float :std140)))
+  (declare #'((in-vec float :compact) (in-vec float :compact) (out-vec float :compact)))
   ...)
 ```
 

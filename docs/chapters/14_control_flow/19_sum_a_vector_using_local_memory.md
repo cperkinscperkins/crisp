@@ -43,7 +43,7 @@ going to agree on a convention that the local_work_size is 64.
 ```
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups.
-(def-type result-vec (vector long :align :std140 :address-space :global :access :writeable :size (get-num-groups)) 
+(def-type result-vec (vector long :align :compact :address-space :global :access :writeable :size (get-num-groups)) 
 
 ;; -- sum_vector_first_stage --
 (def-kernel sum_vector_first_stage (A &out Res)

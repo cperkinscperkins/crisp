@@ -1,7 +1,7 @@
 ## def-record
 
 
-`def-record` is very simlar to `def-struct`. Records "pun" as structs. The crucial difference is that while structs result in contiguous memory (:std140 aligned), records are not contiguous in memory.  Records are just a collection of register, of memory addresses. They act as virtualized structures.
+`def-record` is very simlar to `def-struct`. Records "pun" as structs. The crucial difference is that while structs result in contiguous memory (though aligned and padded), records are not contiguous in memory.  Records are just a collection of register, of memory addresses. They act as virtualized structures.
 
 `def-record` undergirds the Crisp "implicit" argument passing - how the many and sundry pieces of data required for a `tensor` get bound into one virtual variable passed from function to function. 
 

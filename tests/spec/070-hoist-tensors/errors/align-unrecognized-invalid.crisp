@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "Invalid :align value"
+;; Only :compact and :strided are valid :align options.
+(def-type bad-tensor-t (tensor float 2 :address-space :global :access :read-write :align :asdfjkl))
+
+(def-kernel bad_align_unrecognized (v)
+    (declare #'(bad-tensor-t => nil))
+  (set! (~ v 0 0) 1.0))

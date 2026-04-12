@@ -238,7 +238,7 @@ Lastly, a custom type constraint function can be defined with `def-constraint` (
 
 #### `type-is` vs. `value-is`
 
-The with-template-type form can be used to create generics that are parameterized by types (e.g., T which could be `int` or `float`) or by compile-time values (e.g., A which could be `:std140` or `:compact`). Crisp provides two corresponding constraint checks:
+The with-template-type form can be used to create generics that are parameterized by types (e.g., T which could be `int` or `float`) or by compile-time values (e.g., A which could be `:strided` or `:compact`). Crisp provides two corresponding constraint checks:
 
 - `type-is` is used to constrain a template type parameter. It expects a type parameter and a predicate that operates on types.
 `(type-is T #'is-numeric?)`

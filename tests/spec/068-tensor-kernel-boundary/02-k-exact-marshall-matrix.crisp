@@ -9,7 +9,7 @@
 ;;                    extent-0 extent-1
 ;;                    length)
 
-(def-type float-mat-t (matrix float :address-space :global :access :read-write :align :std140))
+(def-type float-mat-t (matrix float :address-space :global :access :read-write :align :compact))
 
 (def-kernel-exact mat_set_origin (byte-size ptr
                                   off_0 off_1

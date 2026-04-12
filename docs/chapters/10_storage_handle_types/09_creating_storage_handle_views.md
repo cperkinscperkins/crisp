@@ -54,7 +54,6 @@ new `vector` will have its size calculated automatically (byte size of the origi
 If the source byte size is not a multiple of the new element size, the result is truncated.
 But the other types (`tensor` and `matrix`) need to have their extents provided.
 
-The returned Storage Handle inherits the address-space, access permissions, and layout (`:compact` or `:std140`) from the source.
 
 For the 2D `matrix`, one of the declarations supports a `:major` key which can be `:row` or `:col`.
 Alternately, the `:strides` key can set the strides. Setting the strides directly is how to get "row major" vs "col major" (versus "plane major" etc) tensor in higher dimensions. 
@@ -62,9 +61,9 @@ Alternately, the `:strides` key can set the strides. Setting the strides directl
 There are some restrictions. They are enforced at compile time:
 
 - if the original and new element types don't match, then the source element type cannot be a struct type
-- if the original and new element types don't match, then the the new type also cannot be a struct type
-- if the underlying source has `:std140` layout, then reinterpretation between
-  types requires that both have the same base alignment requirement under `std140`. 
+- If the original and new element types don't match, the source Storage Handle must have a `:compact` layout. Reinterpreting element types on `:strided` views is mathematically undefined and will trigger a compile-time error. 
+
+The returned Storage Handle inherits the address-space and access permissions from the source. It also inherits the alignmnet (`:compact` or `:strided`), with one exception: if the `:strides` key is explicitly provided during the reinterpretation, the resulting handle is automatically typed as `:strided`.
 
 The runtime will assert that the number of source bytes is sufficient for the new requirements, but this
 assertion requires compiler flags (like `--runtime-checks`). 
@@ -73,7 +72,7 @@ assertion requires compiler flags (like `--runtime-checks`).
 
 
 ```
-(def-type vec-floats-t (vector float :align :std140 :address-space :local :access :read-write ))
+(def-type vec-floats-t (vector float :align :compact :address-space :local :access :read-write ))
 (def-type vec-ints-t (literal-vector int))
 
 ;; -- do_things --

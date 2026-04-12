@@ -79,4 +79,4 @@
                  :readable
                  :writeable)
 
-(def-enumeration align :std140 :compact)
+(def-enumeration align :compact :strided)

@@ -1,0 +1,14 @@
+
+;; tests/spec/009-def-struct/04-def-struct-mixed-types.crisp
+;; Compile smoke-test: def-struct with mixed types (char, int) and constructor.
+;; Native scalar layout: { i8, i8-pad, i16-pad, i32 } = 8 bytes.
+;; TODO: add IR validator to verify padded layout (see technical debt tracker).
+
+(def-struct Mixed
+  (a char)
+  (b int))
+
+(def-function test-mixed-constructor ()
+   (declare #'(=> int))
+  (let ((m (make-Mixed :a (as-char 65) :b 123)))
+    (return 7)))

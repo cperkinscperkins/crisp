@@ -82,7 +82,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
       ANSWER: no extending. a. Make two types:  struct-A { int }  struct-B {int, float}  
                             b. (set-derived struct-A-type struct-B-type :subst :pass-orig) 
 
-[X] C interop with structs/vectors : std140 
+[X] C interop with structs/vectors 
 
 [x] LAMBDA REVISIT - uniform lambdas OK?  
 
@@ -127,7 +127,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     statically typed.  Having it slip through the cracks seems weird, and dangerous.
 
 [x] REVISIT / CLEAN UP MEMORY / SUMMARYIZE and COMPARE .  a) make-vector with compile-time known size: fully supported.  
-      b) various "scratch" local/global . c) :compact vs :std140 , d) def-constant-vec/use 
+      b) various "scratch" local/global . d) def-constant-vec/use 
       e) communicate with hoisting, derive-from f) side-channels g) #( 1 2 3)  
       h) (declare (shared someVar) (uniform otherVar))   "shared" could be "local" or "slm" ?  This declare is for let clauses
          difference between "shared" and "uniform"

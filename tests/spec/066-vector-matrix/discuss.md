@@ -43,7 +43,7 @@ fallthrough.  Both branches:
     The bare→key mapping for the suggestion:
       "GLOBAL"/"LOCAL"/"PRIVATE"/"CONSTANT"/"GENERIC"  → :address-space
       "READ-WRITE"/"READ-ONLY"/"WRITE-ONLY"            → :access
-      "STD140"/"COMPACT"                               → :align
+      "STRIDED"/"COMPACT"                               → :align
   - NOTE: the existing tensor expansion path also has a bare-value matching
     branch (lines ~87-97 in validation.lisp). That branch should be replaced
     with the same intelligent error at the same time, for consistency.

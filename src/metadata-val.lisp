@@ -1194,7 +1194,7 @@ Returns the form or NIL."
 ;;; Validator: 056/03-struct-with-ct-meta
 ;;; Tests that a struct with a :c-t field appears correctly in :structs.
 ;;; c-t fields are compile-time constants (not in the runtime layout), so
-;;; they must be excluded from the :structs section (same as compute-std140-layout
+;;; they must be excluded from the :structs section (same as compute-native-layout
 ;;; excludes them).  Only the 2 runtime members (x, y) should appear.
 ;;; The parameterized type (point :earnestness 3.0) still appears in declared-sig.
 

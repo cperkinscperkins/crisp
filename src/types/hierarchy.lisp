@@ -598,7 +598,7 @@
         (cl:cond
           ;; Skip padding fields but count their size
           (is-padding
-           (incf current-offset (get-std140-size member-type)))
+           (incf current-offset (get-native-size member-type)))
 
           ;; Nested struct -> recurse
           ((cl:let* ((base (get-type-base member-type))
@@ -617,7 +617,7 @@
           ;; Scalar data member
           (t
            (push (list member-type current-offset) result)
-           (incf current-offset (get-std140-size member-type))))))
+           (incf current-offset (get-native-size member-type))))))
     (nreverse result)))
 
 
@@ -653,6 +653,6 @@
                           idx ancestor-name a-resolved descendant-name d-resolved)))
                ;; Byte offsets must match
                (cl:unless (= a-offset d-offset)
-                 (error "set-derived: layout mismatch at member index ~a. Ancestor ~a has offset ~a but descendant ~a has offset ~a (std140 alignment difference)."
+                 (error "set-derived: layout mismatch at member index ~a. Ancestor ~a has offset ~a but descendant ~a has offset ~a."
                         idx ancestor-name a-offset descendant-name d-offset))))))
 

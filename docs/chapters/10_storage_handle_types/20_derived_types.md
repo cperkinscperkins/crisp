@@ -204,7 +204,7 @@ These member appearing in both Ancestor and Descendant don't have to have the sa
 MUST have the strict same type. ( ie no swapping floats for ints or unsigned for signed)
 
 
-As mentioned, the two structs must have compatible shape WHEN FLATTENED (and accounting for `std140` alignment). This is most easily demonstrated with an example.  Below `set-derived` is used twice and both uses are perfectly valid.
+As mentioned, the two structs must have compatible shape WHEN FLATTENED . This is most easily demonstrated with an example.  Below `set-derived` is used twice and both uses are perfectly valid.
 
 ```
 (def-struct point (x int) (y int))
@@ -215,7 +215,7 @@ As mentioned, the two structs must have compatible shape WHEN FLATTENED (and acc
 (set-derived point vertex-nest) ;; alternately, we could have done (set-derived vertex-flat vertex-nest)
 ```
 
-Shape compatibility is evaluated on the flattened struct layouts: nested structs are recursively expanded to their scalar members. For each data member in the ancestor, the corresponding member in the descendant must have both the same type and the same byte offset (as determined by std140 alignment). Struct-level trailing padding is not part of the comparison.
+Shape compatibility is evaluated on the flattened struct layouts: nested structs are recursively expanded to their scalar members. For each data member in the ancestor, the corresponding member in the descendant must have both the same type and the same byte offset . Struct-level trailing padding is not part of the comparison.
 
 
 ### Branded Types
@@ -289,8 +289,7 @@ and can't be extended like this.
 
 They CAN be extended by nesting them in a def-record. Will update.
 
-I'm also removing the std140 comment, because the rules for set-derived are stricter
-and this shouldn't be a concern. 
+
 
 ### Extending Views
 
@@ -306,9 +305,6 @@ If you want to extend a type like `vector` with your own type that has extra dat
 
 ```
 
-### std140
-
-All Crisp structs are aligned with the `std140` layout and alignment practice. Keep this in mind when using `set-derived` and type casting, as things might not work like you'd expect in a language like C.
 
 -->
 

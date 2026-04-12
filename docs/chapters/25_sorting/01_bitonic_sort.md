@@ -13,11 +13,11 @@ In the second stage, you hoist a `bitonic_merge_pass` kernel repeatedly until th
 
 #### generate the kernels
 ```
-;; generate kernel that sorts in place a vector of floats using :std140 alignment
-(gen-bitonic_sort_workgroup_in_place float :std140 "stage_one_kernel")
+;; generate kernel that sorts in place a vector of floats using :compact alignment
+(gen-bitonic_sort_workgroup_in_place float :compact "stage_one_kernel")
 
 ;; generate the merge kernel
-(gen-bintonic_merge_pass float :std140 "stage_two_kernel")
+(gen-bintonic_merge_pass float :compact "stage_two_kernel")
 ```
 
 #### load and enqueue the first kernel
@@ -39,7 +39,6 @@ host_data = np.array(np.random.rand(1024), dtype=np.float32)
 data_size = host_data.nbytes
 
 # 3. Create GPU buffers
-# (Assuming the runtime handles marshalling to std140 if needed)
 buffer = crisp_runtime.create_buffer(host_data)
 
 # --- Launch Kernel 1 ---
@@ -228,7 +227,7 @@ on each subsequent call.
 
 ```
    ;; generate the kernel we need
-   (gen-bintonic_merge_pass ulong :std140 "my_bintonic_merge_pass_kernel")
+   (gen-bintonic_merge_pass ulong :compact "my_bintonic_merge_pass_kernel")
 ```
 
 

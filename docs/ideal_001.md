@@ -39,11 +39,11 @@ Major Features of the Crisp language and tools
 
 - Flexible Data Layouts:  Crisp provides distinct types and specialized accessors for both "Array of Structs" (`vector`) and "Struct of Arrays" (`soa-vector`).  This gives developers the tools to choose the most performant memory layout for their algorithm without sacrificing type safety or readability.
 
-- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:std140`) and GPU-native iteration patterns (`loop-vector-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
+- Optimized Memory Access: Crisp provides explicit control over data layouts (`:aos`, `:soa`, `:compact`, `:strided`) and GPU-native iteration patterns (`loop-vector-stride`, `load-tile`). These features are designed to enable and encourage coalesced memory access, allowing kernels to achieve maximum memory bandwidth, a key factor for high performance on GPUs. The opt-in `check-coalesce` static analysis further helps developers verify these critical access patterns.
 
 - Compile-Time Verification:  Special variants of control-flow forms (`if*`, `dotimes+`) and declarations (`uniform`, `constexpr`) allow programmers to assert their performance expectations.  The compiler verifies these assertions, catching unintended performance bugs (like warp divergence or non-constant loop bounds) at compile time.
 
-- Strict Memory Layout Standard:  All Crisp structs adhere to the std140 memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
+- Strict Memory Layout Standard:  All Crisp structs adhere to a strict "scalar" memory layout standard.  This guarantees a predictable and performant memory layout, ensuring seamless and correct data interoperability between the host (C++/Python) and the device.
 
 - Pragmatic Error Handling:  A simple maybe type is integrated into the language.  This provides a lightweight, compiler-assisted mechanism for handling potential failures in a way that minimizes control-flow divergence, a major performance killer on GPUs.
 
@@ -1110,9 +1110,12 @@ cannot use the C interop for data exchange with host. Marshalling would be requi
 
 ### layout and alignment 
 
-Crisp structs follow the `std140` layout rules used by the OpenGL and Vulkan graphic APIS.
+Crisp structs follow a strict "scalar" layout.
+- Basci scalar types are aligned to a multiple of their own size ( a 1-byte `char` aligns to 1, a 4-byte `float` aligns to 4, an 8-byte `double` aligns to 8).
+-  A struct's overall alignment is equal to the alignment of its most strictly aligned member.  If a struct contains a `char` and a `float`, the struct's alignment is 4.
+- Padding: Members are placed at the lowest available offset that satisfies their alignment. The total size of the struct is padded at the end to be a multiple of its overall alignment.
+- Storage Handles - (ie `(vector someStruct)` ) The stride of a storage handle is exactly the size of the struct. Zero extra padding between elements.
 
-https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#interfaces-resources-layout
 
 
 ### type constraints: is-XXXX?
@@ -1322,7 +1325,7 @@ In the future, Crisp may handle this automatically.
 def-record
 ----------
 
-`def-record` is very simlar to `def-struct`. Records "pun" as structs. The crucial difference is that while structs result in contiguous memory (:std140 aligned), records are not contiguous in memory.  Records are just a collection of register, of memory addresses. They act as virtualized structures.
+`def-record` is very simlar to `def-struct`. Records "pun" as structs. The crucial difference is that while structs result in contiguous memory (though aligned and padded), records are not contiguous in memory.  Records are just a collection of register, of memory addresses. They act as virtualized structures.
 
 `def-record` undergirds the Crisp "implicit" argument passing - how the many and sundry pieces of data required for a `tensor` get bound into one virtual variable passed from function to function. 
 
@@ -1403,11 +1406,11 @@ Like for `vector` the simple `~` accessor is available for dereferencing.
 Arrays can be direct kernel parameters. But if they are appear directly on the kernel boundary,
 they are read only, immutable.
 
-Arrays always use `:std140` alignment. `:compact` is not available. 
+Arrays always use :compact alignment.
 
 Arrays can be elements of a struct, and can ALSO be in a record, but if used in a
 `def-record` they are automatically virtualized like the other `def-record` members 
-( which means the `:std140` alignment will not apply).
+
 
 ### `~`
 Like vectors, arrays support `~` for refer-by-index semantics. This can be used for both
@@ -1734,7 +1737,7 @@ Lastly, a custom type constraint function can be defined with `def-constraint` (
 
 #### `type-is` vs. `value-is`
 
-The with-template-type form can be used to create generics that are parameterized by types (e.g., T which could be `int` or `float`) or by compile-time values (e.g., A which could be `:std140` or `:compact`). Crisp provides two corresponding constraint checks:
+The with-template-type form can be used to create generics that are parameterized by types (e.g., T which could be `int` or `float`) or by compile-time values (e.g., A which could be `:strided` or `:compact`). Crisp provides two corresponding constraint checks:
 
 - `type-is` is used to constrain a template type parameter. It expects a type parameter and a predicate that operates on types.
 `(type-is T #'is-numeric?)`
@@ -1919,16 +1922,20 @@ as a cursor to a section of the `storage`.
 
 ### Alignment
 
-Crisp supports two different alignment schemes for Storage Handles: `:std140` and `:compact`.
+Crisp supports two different alignment schemes for Storage Handles: `:strided` and `:compact`.
 
-`:std140` always aligns on the 16 byte boundary. The full description of this standard 
-can be found here: https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#interfaces-resources-layout
+`:compact` alignment is contiguous with no gaps between data members. For a `vector` that would be compatible with `std::vector<T> .data()`.  `:compact` alignment also means that the underlying `storage` parent pointer is aligned to a 16 byte address boundary. When alignment is `:compact` the access operations (`~`) ignore the the `stride` elements of the storage handle and offsets are calculated directly and performantly.
 
-`:compact` alignment is contiguous with no gaps between data members. For a `vector` that would be compatible with `std::vector<T> .data()`
+ `:strided` alignment means that the Storage Handle uses its `stride` values when determining offsets 
+ during access operations. `:strided` Storage Hanles are often the result of transpose and slicing
+ operations. This increases the reuse potential of Storage Handles and means less data copying
+ is required.   
 
-Note that while `:compact` is generally easier to interoperate, `:std140` is more performant on GPUs.
-
-Also note that Crisp structs are ALWAYS `:std140`, putting them in a Storage Handle does not change that. 
+ If a storage handle type function arg is declared as `:compact` it will not accept a `:strided` storage handle value.  Crisp developers can choose different strategies to help deal with alignment when declaring storage handle types. 
+ - use templates.  `(with-template-type (T A) ...) ` where `A` is the alignment. Then you will have a "fast" `:compact` version of your function and a more flexible `:strided`.
+ - use incomplete types.  Just skip the `:align` keyword when declaring a storage handle type. The 
+ compiler will then allow any type of storage handle to be used as an argument to that function. But, note, that it will default to the slightly slower `:strided` behavior.
+ - be exact. Just specify the alignment you expect/desire. For users who aren't using transpose or slicing operations, this is simplest.
 
 Storage Properties
 ------------------
@@ -1997,7 +2004,7 @@ Every `tensor` has these runtime properties:
 | num-dims~ | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
 | strides~  | stride-type |  `def-rec-vec` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
 | extents~  | extents-type | `def-rec-vec` the lenght of `num-dims` that tracks the extent of that particular dimension |
-| align~   | align-enum | `:std140` or `:compact`. This is a immmutable compile-time property. |
+| align~   | align-enum | `:strided` or `:compact`. This is a immmutable compile-time property. |
 
 Each of those properties can be accessed by the `XXXX~` function.
 e.g. `(length~ someTensor)` , `(parent~ someTensor)`
@@ -2130,7 +2137,7 @@ Storage Handles are completely typed by
 - type of their element
 - `address-space` (which is one of `:global` `:local` `:private` `:constant`)
 - `access` (which is one of `:read-only` `:write-only` `:read-write` `:writable` `:readable`)
-- `align` (one of `:std140` or `:compact`)  NOTE: `align` is not needed by the `cell` type.
+- `align` (one of `:strided` or `:compact`)  NOTE: `align` is not needed by the `cell` type.
 
 The `tensor` type also requires the number of dimensions to be known at compile time.
 
@@ -2209,11 +2216,11 @@ But note that the last two are not available in the hoisting example code for lo
 ```
 ;; -- count --
 (def-function count (v)
-    (declare (return-type ulong) (type v (vector long :align :std140 :address-space :global :access :read-only)))
+    (declare (return-type ulong) (type v (vector long :align :compact :address-space :global :access :read-only)))
  ...)
 
  ;; vectors can be compile-time fixed size
-(vector float :align :std140 :address-space :local :access :read-write :extent (100))
+(vector float :align :compact :address-space :local :access :read-write :extent (100))
 ```
 
 Storage Handle Arguments for Kernels
@@ -2225,8 +2232,8 @@ The number of dimensions is (obviously) implicit for the `cell`, `vector` and `m
 
 
 ```
-(def-type data-from-host-t (vector float :align :std140 :address-space :global :access :read-only ))
-(def-type result-from-kernel-t (vector float :align :std140 :address-space :global :access :write-only ))
+(def-type data-from-host-t (vector float :align :compact :address-space :global :access :read-only ))
+(def-type result-from-kernel-t (vector float :align :compact :address-space :global :access :write-only ))
 
 ;; -- my_kernel --
 (def-kernel my_kernel (in &out out)
@@ -2290,7 +2297,6 @@ new `vector` will have its size calculated automatically (byte size of the origi
 If the source byte size is not a multiple of the new element size, the result is truncated.
 But the other types (`tensor` and `matrix`) need to have their extents provided.
 
-The returned Storage Handle inherits the address-space, access permissions, and layout (`:compact` or `:std140`) from the source.
 
 For the 2D `matrix`, one of the declarations supports a `:major` key which can be `:row` or `:col`.
 Alternately, the `:strides` key can set the strides. Setting the strides directly is how to get "row major" vs "col major" (versus "plane major" etc) tensor in higher dimensions. 
@@ -2298,9 +2304,9 @@ Alternately, the `:strides` key can set the strides. Setting the strides directl
 There are some restrictions. They are enforced at compile time:
 
 - if the original and new element types don't match, then the source element type cannot be a struct type
-- if the original and new element types don't match, then the the new type also cannot be a struct type
-- if the underlying source has `:std140` layout, then reinterpretation between
-  types requires that both have the same base alignment requirement under `std140`. 
+- If the original and new element types don't match, the source Storage Handle must have a `:compact` layout. Reinterpreting element types on `:strided` views is mathematically undefined and will trigger a compile-time error. 
+
+The returned Storage Handle inherits the address-space and access permissions from the source. It also inherits the alignmnet (`:compact` or `:strided`), with one exception: if the `:strides` key is explicitly provided during the reinterpretation, the resulting handle is automatically typed as `:strided`.
 
 The runtime will assert that the number of source bytes is sufficient for the new requirements, but this
 assertion requires compiler flags (like `--runtime-checks`). 
@@ -2309,7 +2315,7 @@ assertion requires compiler flags (like `--runtime-checks`).
 
 
 ```
-(def-type vec-floats-t (vector float :align :std140 :address-space :local :access :read-write ))
+(def-type vec-floats-t (vector float :align :compact :address-space :local :access :read-write ))
 (def-type vec-ints-t (literal-vector int))
 
 ;; -- do_things --
@@ -2344,7 +2350,7 @@ for output parrameters.  Crisp has prepared pairs of `def-type` aliases to make 
 Example:
 ```
 (def-kernel my_kernel (A B &out C)
-  (declare #'((in-vec float :std140) (in-vec float :std140) (out-vec float :std140)))
+  (declare #'((in-vec float :compact) (in-vec float :compact) (out-vec float :compact)))
   ...)
 ```
 
@@ -2386,10 +2392,12 @@ struct Points {
 
 
 
-### Alignment
+### Alignment & Layout
+Crisp supports two alignment schemes for `soa-vector`: `:compact` and `:strided`.
 
-Crisp supports two alignments schemes for `soa-vector`: `:std140` and `:compact`.  Note that these
-alignments are applied to the inner vectors.  The outer `struct` is always `:std140`.
+`:compact` means the `soa-vector` is a primary allocation. The base pointer is 16-byte aligned. The internal arrays are perfectly contiguous and concatenated back-to-back. The compiler will only insert padding between the arrays if required to satisfy the natural alignment of the next element type.
+
+`:strided` means the `soa-vector` is a view or a slice. The internal arrays are no longer guaranteed to be perfectly contiguous, and accesses will rely on dynamic strides.
 
 ### Base Properties
 
@@ -2397,7 +2405,7 @@ A `soa-vector` has these properties:
 
 | Property     | Type         | Description      |
 |--------------|--------------|------------------|
-| align        | align        | one of `:std140` or `:compact`. This is for the inner vectors.|
+| align        | align        | one of `:strided` or `:compact`. This dictates the layout of the inner vectors. |
 | length       | ulong        | the number of elements in the `soa-vector`. Its bytes cannot be greater than its parent `storage` |
 | parent       | storage      | address of"parent storage |
 | offset       | ulong        | offset into parent. |
@@ -2411,7 +2419,7 @@ Example
 ```
 (def-struct point (x long) (y long))
 
-(let ((sv      (make-soa-vector point :address-space :local :access :read-write :align :std140 :length 20))
+(let ((sv      (make-soa-vector point :address-space :local :access :read-write :align :compact :length 20))
       (y       (y~ sv 9))
       (x-vec   (x~ sv)))
     ...)
@@ -2425,8 +2433,7 @@ Owning to memory coalesence, when the index is a thread id from parallel threads
 
 #### `XXXX~` without index
 
-Whereas constrastingly, in the example above `(x~ sv)` returns the ENTIRE VECTOR of X from the `soa-vector`.
- `x-vec` would be `(vector long :length 20)`.  
+In contrast, `(x~ sv)` returns the ENTIRE VECTOR of X as a standard vector Storage Handle. The returned vector inherits the alignment of the `soa-vector`. If `sv` is `:compact`, `x-vec` will be `(vector long :compact :length 20)`, allowing for ultra-fast vectorized loads. If `sv` is `:strided`, the resulting vector will also be `:strided`. 
 
 Its primary purpose is to pass a single, contiguous stream of data to another high-performance primitive, like `reduce-vec`
 
@@ -2442,8 +2449,7 @@ creation of a new structure to hold the value.
 ### Helper Functions
 
 Like `vector`, `soa-vector`  supports `element-type` and `bytes` helpers.
-`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding. But remember, the `soa-vector` is a view into some `storage`. Use `(byte-size~ (parent~ someSoaVec))` to get the
-full storage bytes.
+`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its tightly-packed component arrays, plus any inter-array alignment padding required by the C ABI. Remember, the `soa-vector` is a view into some storage. Use `(byte-size~ (parent~ someSoaVec))` to get the full storage bytes.
 
 ### Member Data Rules
 
@@ -2730,7 +2736,7 @@ which allows you to state its intended size and purpose.
 
 The `make-scratch-XXXX` routines create "scratch" side-channel memory Storage Handles. 
 
-Scratch memory defaults to `:local` address space,  `:read-write` access and `:std140` alignment, 
+Scratch memory defaults to `:local` address space,  `:read-write` access and `:compact` alignment, 
 but the defaults can be overridden by either using the `&key` arguments to the `make-scratch-XXXX` function
 or by using the second creation function of the pair that uses a Storage Handle type argument.
 
@@ -2893,8 +2899,8 @@ In the example below, this function, if called by a kernel, would cause two addi
 be hoisted, plus a pointer to a unsigned long array.  
 
 ```
-(def-type float-vec (vector float :align :std140 :address-space :global :access :read-only))
-(def-type ulong-vec (vector ulong :align :std140 :address-space :global :access :writeable))
+(def-type float-vec (vector float :align :compact :address-space :global :access :read-only))
+(def-type ulong-vec (vector ulong :align :compact :address-space :global :access :writeable))
 
 ;; -- calc-final-result --
 (def-grid-function calc-final-result (x y &out A)
@@ -3521,7 +3527,7 @@ These member appearing in both Ancestor and Descendant don't have to have the sa
 MUST have the strict same type. ( ie no swapping floats for ints or unsigned for signed)
 
 
-As mentioned, the two structs must have compatible shape WHEN FLATTENED (and accounting for `std140` alignment). This is most easily demonstrated with an example.  Below `set-derived` is used twice and both uses are perfectly valid.
+As mentioned, the two structs must have compatible shape WHEN FLATTENED . This is most easily demonstrated with an example.  Below `set-derived` is used twice and both uses are perfectly valid.
 
 ```
 (def-struct point (x int) (y int))
@@ -3532,7 +3538,7 @@ As mentioned, the two structs must have compatible shape WHEN FLATTENED (and acc
 (set-derived point vertex-nest) ;; alternately, we could have done (set-derived vertex-flat vertex-nest)
 ```
 
-Shape compatibility is evaluated on the flattened struct layouts: nested structs are recursively expanded to their scalar members. For each data member in the ancestor, the corresponding member in the descendant must have both the same type and the same byte offset (as determined by std140 alignment). Struct-level trailing padding is not part of the comparison.
+Shape compatibility is evaluated on the flattened struct layouts: nested structs are recursively expanded to their scalar members. For each data member in the ancestor, the corresponding member in the descendant must have both the same type and the same byte offset . Struct-level trailing padding is not part of the comparison.
 
 
 ### Branded Types
@@ -3606,8 +3612,7 @@ and can't be extended like this.
 
 They CAN be extended by nesting them in a def-record. Will update.
 
-I'm also removing the std140 comment, because the rules for set-derived are stricter
-and this shouldn't be a concern. 
+
 
 ### Extending Views
 
@@ -3623,9 +3628,6 @@ If you want to extend a type like `vector` with your own type that has extra dat
 
 ```
 
-### std140
-
-All Crisp structs are aligned with the `std140` layout and alignment practice. Keep this in mind when using `set-derived` and type casting, as things might not work like you'd expect in a language like C.
 
 -->
 
@@ -5384,7 +5386,7 @@ going to agree on a convention that the local_work_size is 64.
 ```
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups.
-(def-type result-vec (vector long :align :std140 :address-space :global :access :writeable :size (get-num-groups)) 
+(def-type result-vec (vector long :align :compact :address-space :global :access :writeable :size (get-num-groups)) 
 
 ;; -- sum_vector_first_stage --
 (def-kernel sum_vector_first_stage (A &out Res)
@@ -5545,11 +5547,11 @@ This version of vector summing is likely faster than the last one.
 (def-constant +warp-size+:ulong 32)
 
 ;; the source vector can be any size. 
-(def-type source-vec (in-vec long :std140))    
+(def-type source-vec (in-vec long :compact))    
 
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups
-(def-type result-vec (vector long :align :std140 :address-space :global :access :writeable :size (get-num-groups)))  
+(def-type result-vec (vector long :align :compact :address-space :global :access :writeable :size (get-num-groups)))  
 
 ;; -- calculate-this-thread-sum --
 (def-function calculate-this-thread-sum (A)
@@ -7107,8 +7109,8 @@ Word Count With Exclusive Scan
 -->
 
 ```
-(def-type text-t (vector uchar :address-space :global :access :readable :align :std140))
-(def-type index-t (vector ulong :address-space :global :access :writeable :align :std140))
+(def-type text-t (vector uchar :address-space :global :access :readable :align :compact))
+(def-type index-t (vector ulong :address-space :global :access :writeable :align :compact))
 
 ;; -- word_count --
 (def-kernel word_count (corpus word &out result counter)
@@ -7301,7 +7303,7 @@ But the count in `count-vec` is correct regardless.
     (declare #((vector T :address-space :global :access :readable :align A) ; Input data vector
                (predicate-type T) ; Predicate function #(T => bool)
                &out (vector ulong :address-space :global :access :writeable :align A) ; Output index vector
-               &out (vector ulong :address-space :global :access :writeable :align :std140 :length 1) ; Output count vector
+               &out (vector ulong :address-space :global :access :writeable :align :compact :length 1) ; Output count vector
                => nil)
              ;; Declare optional local memory buffers for the scan algorithm
              &optional (local-flags (make-scratch-vector uint :match-workgroup-size))
@@ -7372,11 +7374,11 @@ In the second stage, you hoist a `bitonic_merge_pass` kernel repeatedly until th
 
 #### generate the kernels
 ```
-;; generate kernel that sorts in place a vector of floats using :std140 alignment
-(gen-bitonic_sort_workgroup_in_place float :std140 "stage_one_kernel")
+;; generate kernel that sorts in place a vector of floats using :compact alignment
+(gen-bitonic_sort_workgroup_in_place float :compact "stage_one_kernel")
 
 ;; generate the merge kernel
-(gen-bintonic_merge_pass float :std140 "stage_two_kernel")
+(gen-bintonic_merge_pass float :compact "stage_two_kernel")
 ```
 
 #### load and enqueue the first kernel
@@ -7398,7 +7400,6 @@ host_data = np.array(np.random.rand(1024), dtype=np.float32)
 data_size = host_data.nbytes
 
 # 3. Create GPU buffers
-# (Assuming the runtime handles marshalling to std140 if needed)
 buffer = crisp_runtime.create_buffer(host_data)
 
 # --- Launch Kernel 1 ---
@@ -7587,7 +7588,7 @@ on each subsequent call.
 
 ```
    ;; generate the kernel we need
-   (gen-bintonic_merge_pass ulong :std140 "my_bintonic_merge_pass_kernel")
+   (gen-bintonic_merge_pass ulong :compact "my_bintonic_merge_pass_kernel")
 ```
 
 
@@ -9300,7 +9301,7 @@ Possible Implementation
    ;; 1D
   (def-grid-function quantize-to-XXXX (input-vec &out output-mfb-vec 
                               &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (count MFB)))))
-    (declare #((in-vec F A) &out (out-vec MFB :std140)))
+    (declare #((in-vec F A) &out (out-vec MFB :compact)))
     (r-t-assert-0 (= (length~ input-vec) (* (count MFB) (length~ output-mfb-vec)))
                   "lengths don't match")
     (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
@@ -9322,7 +9323,7 @@ Possible Implementation
     ;; 2D
     (def-grid-function quantize-to-XXXX (input-tv &out output-mfb-tv 
                               &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (num-cols MFB)))))
-      (declare #((tensor 3 (in-vec F A)) &out (tensor 3 (out-vec MFB :std140))))
+      (declare #((tensor 3 (in-vec F A)) &out (tensor 3 (out-vec MFB :compact))))
       (r-t-assert-0 (= (num-cols input-tv) (* (num-cols MFB) (num-rows MFB))) "confusing")
       (r-t-assert-0 (= (num-planes input-tv) (num-planes output-mfb-tv)) "number of planes not matching")
       (r-t-assert-0 (= (num-rows intput-tv) (num-rows output-mfb-tv)) "number of rows should match")
@@ -9355,7 +9356,7 @@ Possible Implementation
     (type-is MFB #'is-microfloat-block?))
 
   (def-grid-function dequantize-from-XXXX (input-mfb-vec &out output-vec)
-    (declare #((in-vec MFB :std140) &out (out-vec F A)))
+    (declare #((in-vec MFB :compact) &out (out-vec F A)))
     (r-t-assert-0 (= (length~ output-vec) (* (count MFB) (length~ input-mfb-vec)))
                   "lengths don't match")
 
@@ -10437,7 +10438,7 @@ Example
 `(get-signature function-identifier)` => <Signature>`
 
 ```
-(get-signature #'int_vector_sum) =>  `((vector int :align :std140  :address-space :global :access :readable) &out (vector int :align :std140  :address-space :global :access :write-only))
+(get-signature #'int_vector_sum) =>  `((vector int :align :compact  :address-space :global :access :readable) &out (vector int :align :compact  :address-space :global :access :write-only))
 ```
 
 
@@ -12292,7 +12293,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
       ANSWER: no extending. a. Make two types:  struct-A { int }  struct-B {int, float}  
                             b. (set-derived struct-A-type struct-B-type :subst :pass-orig) 
 
-[X] C interop with structs/vectors : std140 
+[X] C interop with structs/vectors 
 
 [x] LAMBDA REVISIT - uniform lambdas OK?  
 
@@ -12337,7 +12338,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     statically typed.  Having it slip through the cracks seems weird, and dangerous.
 
 [x] REVISIT / CLEAN UP MEMORY / SUMMARYIZE and COMPARE .  a) make-vector with compile-time known size: fully supported.  
-      b) various "scratch" local/global . c) :compact vs :std140 , d) def-constant-vec/use 
+      b) various "scratch" local/global . d) def-constant-vec/use 
       e) communicate with hoisting, derive-from f) side-channels g) #( 1 2 3)  
       h) (declare (shared someVar) (uniform otherVar))   "shared" could be "local" or "slm" ?  This declare is for let clauses
          difference between "shared" and "uniform"

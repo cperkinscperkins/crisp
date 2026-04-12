@@ -1,5 +1,5 @@
 
-;; CHECK-FAIL: "set-derived: ancestor VERTEX has 3 data members but descendant POINT has only 2. The descendant must have at least as many"
+;; CHECK-FAIL: "set-derived: ancestor VERTEX (size 12 bytes) is larger than descendant POINT (size 8 bytes). The ancestor must be smaller or equal."
 
 (def-struct point (x int) (y int))
 

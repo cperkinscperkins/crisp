@@ -20,11 +20,11 @@ Like for `vector` the simple `~` accessor is available for dereferencing.
 Arrays can be direct kernel parameters. But if they are appear directly on the kernel boundary,
 they are read only, immutable.
 
-Arrays always use `:std140` alignment. `:compact` is not available. 
+Arrays always use :compact alignment.
 
 Arrays can be elements of a struct, and can ALSO be in a record, but if used in a
 `def-record` they are automatically virtualized like the other `def-record` members 
-( which means the `:std140` alignment will not apply).
+
 
 ### `~`
 Like vectors, arrays support `~` for refer-by-index semantics. This can be used for both

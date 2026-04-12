@@ -1,7 +1,7 @@
 
 Crisp has structs and records, it also has Storage Handles like vector, matrix, tensor.  It also has "device vectors" which are those float2, double4 things.    But it doesn't have a compile-time-known general array, and I'm thinking to add it to the language.
 
-(array T N) => this would be the type declaration. Both T and N must be known at compile time, these are always std140 aligned arrays.  
+(array T N) => this would be the type declaration. Both T and N must be known at compile time.  
 
 Array has (~ someArr someIdx) type of access . Including (set! (~ someArr someIdx) someVal)
 
@@ -35,7 +35,7 @@ Here is how the design holds up and the specific architectural hurdle you will h
 
 ### 1. Arrays at the Kernel Boundary & in `def-struct`
 This part of your design is bulletproof. 
-Passing `(array T N)` directly at the boundary mapping to immutable constant memory is exactly how it should work, mirroring standard GPU ABI behavior for by-value array passing. Inside a `def-struct`, it maps trivially to a contiguous block of `std140` memory that the compiler can natively access via LLVM's `getelementptr` (GEP) instruction.
+Passing `(array T N)` directly at the boundary mapping to immutable constant memory is exactly how it should work, mirroring standard GPU ABI behavior for by-value array passing. Inside a `def-struct`, it maps trivially to a contiguous block of memory that the compiler can natively access via LLVM's `getelementptr` (GEP) instruction.
 
 ### 2. The `def-record` Trap: Registers Don't Have Addresses
 When you SROA-explode `(array int 5)` inside a `def-record`, the compiler generates 5 independent scalar SSA variables (e.g., `%arr_0`, `%arr_1` ... `%arr_4`). They live in hardware registers, not memory.
@@ -99,11 +99,9 @@ Like for `vector` the simple `~` accessor is available for dereferencing.
 Arrays can be direct kernel parameters. But if they are appear directly on the kernel boundary,
 they are read only, immutable.
 
-Arrays always use `:std140` alignment. `:compact` is not available. 
 
 Arrays can be elements of a struct, and can ALSO be in a record, but if used in a
 `def-record` they are automatically virtualized like the other `def-record` members 
-( which means the `:std140` alignment will not apply).
 
 ### `~`
 Like vectors, arrays support `~` for refer-by-index semantics. This can be used for both

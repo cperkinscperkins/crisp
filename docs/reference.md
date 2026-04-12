@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-12T18:01:55.163268Z
+Generated on 2026-04-12T21:12:44.098321Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1581,13 +1581,6 @@ Generated on 2026-04-12T18:01:55.163268Z
 
 
 ---
-### DEFUN `%TENSOR-STD140-EXTENTS-STRIDES`
-- **Args**: `(N DIM-EXTENT ELEM-STR)`
-
-  > Returns (values extents strides) for a std140 N-dim tensor.  >    Each innermost element is padded to a vec4 boundary.  >    ELEM-STR is the C++ element type string used to determine the padding unit:  >      double / int64_t / uint64_t -> padding-unit = 2 (2 × 8 bytes = 16 bytes)  >      all others (float, int, ...)  -> padding-unit = 4 (4 × 4 bytes = 16 bytes)
-
-
----
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR)`
 
@@ -2968,31 +2961,38 @@ Generated on 2026-04-12T18:01:55.163268Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\structs.lisp`
 
-### DEFUN `GET-STD140-BASE-ALIGNMENT`
-- **Args**: `(TYPE-SPEC)`
+### DEFUN `%STRUCT-NATIVE-ALIGNMENT`
+- **Args**: `(STRUCT-NAME)`
 
-  > Returns the base alignment (N) for a given type according to std140 rules.  >    Extended to handle (array T N): arrays align to 16 bytes (vec4) per std140.
-
-
----
-### DEFUN `GET-STD140-SIZE`
-- **Args**: `(TYPE-SPEC)`
-
-  > Returns the size (in bytes) of a type.  >    Extended to handle (array T N): size is N * element-size, rounded up to 16-byte stride per std140.
+  > Returns the native scalar alignment of a struct: the maximum alignment of  >    all its runtime members (recursively resolved).  This is the struct's  >    own alignment requirement under native scalar layout rules.
 
 
 ---
-### DEFUN `CALCULATE-STD140-PADDING`
+### DEFUN `GET-NATIVE-BASE-ALIGNMENT`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns the base alignment (in bytes) for TYPE-SPEC under native scalar rules.  >    Scalars: natural size.  Arrays: element alignment.  Structs: max member alignment.
+
+
+---
+### DEFUN `GET-NATIVE-SIZE`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns the size (in bytes) of TYPE-SPEC under native scalar rules.  >    Arrays: N * elem-size (compact, no per-element 16-byte padding).  >    Structs: total-size as recorded (compact layout).  Scalars: natural size.
+
+
+---
+### DEFUN `CALCULATE-NATIVE-PADDING`
 - **Args**: `(CURRENT-OFFSET ALIGNMENT)`
 
   > Calculates padding needed to reach the next alignment boundary.
 
 
 ---
-### DEFUN `COMPUTE-STD140-LAYOUT`
+### DEFUN `COMPUTE-NATIVE-LAYOUT`
 - **Args**: `(MEMBERS)`
 
-  > Takes a list of (name type) members.  >   Returns a list of:  >     - Expanded members with `_pad` fields inserted.  >     - Total struct size (padded to 16 bytes).  >     >   Returns (values expanded-members total-size)
+  > Computes native scalar layout for a struct.  >    Members are placed at their natural alignment boundaries (same as before).  >    Total struct size is padded to the struct's overall alignment, which equals  >    the maximum alignment of any member — NOT to 16.  >    Returns (values expanded-members total-size).
 
 
 ---
