@@ -464,7 +464,8 @@ TECHNICAL DEBT AND OVERSIGHTS
 ;;            even know those scalar args 'were together'. 
 
 - [ ] scratch cells as OPTIONAL/KEY args.  TEST 
-- [ ] r-t-assert and --runtime-checks NEED TESTING     
+- [ ] r-t-assert and --runtime-checks NEED TESTING  
+- [ ] 009-def-struct/04-def-struct-mixed-types.crisp needs a validator!! (or to become a unit test?)   
 - [ ] for errors involving the return type, make sure the error message
       very clearly states what return type the compiler thinks it is (if any).
 - [ ] audit errors: some are NOT showing the location.
@@ -512,7 +513,10 @@ Tensors Vectors and Matrices
 - - [x] tensors at kernel boundary
 - - - [x] marshall-tensor N    (macro or template or something else?)
 - - [ ] is :align :strided / :compact being handled correctly? Unit test
-- - [ ] hoisting
+- - [x] hoisting
+- - [ ] OPTIMIZATION: vector can compile-time optimize ~ to NOT use stride and dispatch simply based
+      off :align :compact. This would ignore stride. But when :align :strided OR when the type is
+      incomplete and no alignment provided, we'd have to use the stride. 
 - - [ ] test offsets, strides really SET by hoisting code (instead of always jsut 0). for both align
         would we need some sort of .cpp fixture?
 - - [ ] scratch tensors / matrix / vector
@@ -526,12 +530,11 @@ Tensors Vectors and Matrices
 
 EMERGENCY REORG
 ===============
-- [ ] jettison std140.  
+- [x] jettison std140.  
 - [ ] curse the day we first heard its name.  June 2 will forever more be struck from the Crisp calendar. June 1 goes right to June 3. 
-- [ ] see align-revisit.md doc
-- [ ] don't forget fixed arrays.
-- [ ] in theory, vector can compile-time optimize ~ to NOT use stride and dispatch simply based
-      off :align. This would ignore stride. :align (:compact :strided)
+- [x] see align-revisit.md doc
+- [x] don't forget fixed arrays.
+
 
 
 
