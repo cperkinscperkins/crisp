@@ -1737,7 +1737,7 @@ Lastly, a custom type constraint function can be defined with `def-constraint` (
 
 #### `type-is` vs. `value-is`
 
-The with-template-type form can be used to create generics that are parameterized by types (e.g., T which could be `int` or `float`) or by compile-time values (e.g., A which could be `:std140` or `:compact`). Crisp provides two corresponding constraint checks:
+The with-template-type form can be used to create generics that are parameterized by types (e.g., T which could be `int` or `float`) or by compile-time values (e.g., A which could be `:strided` or `:compact`). Crisp provides two corresponding constraint checks:
 
 - `type-is` is used to constrain a template type parameter. It expects a type parameter and a predicate that operates on types.
 `(type-is T #'is-numeric?)`
@@ -1922,16 +1922,20 @@ as a cursor to a section of the `storage`.
 
 ### Alignment
 
-Crisp supports two different alignment schemes for Storage Handles: `:std140` and `:compact`.
+Crisp supports two different alignment schemes for Storage Handles: `:strided` and `:compact`.
 
-`:std140` always aligns on the 16 byte boundary. The full description of this standard 
-can be found here: https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#interfaces-resources-layout
+`:compact` alignment is contiguous with no gaps between data members. For a `vector` that would be compatible with `std::vector<T> .data()`.  `:compact` alignment also means that the underlying `storage` parent pointer is aligned to a 16 byte address boundary. When alignment is `:compact` the access operations (`~`) ignore the the `stride` elements of the storage handle and offsets are calculated directly and performantly.
 
-`:compact` alignment is contiguous with no gaps between data members. For a `vector` that would be compatible with `std::vector<T> .data()`
+ `:strided` alignment means that the Storage Handle uses its `stride` values when determining offsets 
+ during access operations. `:strided` Storage Hanles are often the result of transpose and slicing
+ operations. This increases the reuse potential of Storage Handles and means less data copying
+ is required.   
 
-Note that while `:compact` is generally easier to interoperate, `:std140` is more performant on GPUs.
-
-Also note that Crisp structs are ALWAYS `:std140`, putting them in a Storage Handle does not change that. 
+ If a storage handle type function arg is declared as `:compact` it will not accept a `:strided` storage handle value.  Crisp developers can choose different strategies to help deal with alignment when declaring storage handle types. 
+ - use templates.  `(with-template-type (T A) ...) ` where `A` is the alignment. Then you will have a "fast" `:compact` version of your function and a more flexible `:strided`.
+ - use incomplete types.  Just skip the `:align` keyword when declaring a storage handle type. The 
+ compiler will then allow any type of storage handle to be used as an argument to that function. But, note, that it will default to the slightly slower `:strided` behavior.
+ - be exact. Just specify the alignment you expect/desire. For users who aren't using transpose or slicing operations, this is simplest.
 
 Storage Properties
 ------------------
@@ -2000,7 +2004,7 @@ Every `tensor` has these runtime properties:
 | num-dims~ | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
 | strides~  | stride-type |  `def-rec-vec` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
 | extents~  | extents-type | `def-rec-vec` the lenght of `num-dims` that tracks the extent of that particular dimension |
-| align~   | align-enum | `:std140` or `:compact`. This is a immmutable compile-time property. |
+| align~   | align-enum | `:strided` or `:compact`. This is a immmutable compile-time property. |
 
 Each of those properties can be accessed by the `XXXX~` function.
 e.g. `(length~ someTensor)` , `(parent~ someTensor)`
@@ -2133,7 +2137,7 @@ Storage Handles are completely typed by
 - type of their element
 - `address-space` (which is one of `:global` `:local` `:private` `:constant`)
 - `access` (which is one of `:read-only` `:write-only` `:read-write` `:writable` `:readable`)
-- `align` (one of `:std140` or `:compact`)  NOTE: `align` is not needed by the `cell` type.
+- `align` (one of `:strided` or `:compact`)  NOTE: `align` is not needed by the `cell` type.
 
 The `tensor` type also requires the number of dimensions to be known at compile time.
 
@@ -2212,11 +2216,11 @@ But note that the last two are not available in the hoisting example code for lo
 ```
 ;; -- count --
 (def-function count (v)
-    (declare (return-type ulong) (type v (vector long :align :std140 :address-space :global :access :read-only)))
+    (declare (return-type ulong) (type v (vector long :align :compact :address-space :global :access :read-only)))
  ...)
 
  ;; vectors can be compile-time fixed size
-(vector float :align :std140 :address-space :local :access :read-write :extent (100))
+(vector float :align :compact :address-space :local :access :read-write :extent (100))
 ```
 
 Storage Handle Arguments for Kernels
@@ -2228,8 +2232,8 @@ The number of dimensions is (obviously) implicit for the `cell`, `vector` and `m
 
 
 ```
-(def-type data-from-host-t (vector float :align :std140 :address-space :global :access :read-only ))
-(def-type result-from-kernel-t (vector float :align :std140 :address-space :global :access :write-only ))
+(def-type data-from-host-t (vector float :align :compact :address-space :global :access :read-only ))
+(def-type result-from-kernel-t (vector float :align :compact :address-space :global :access :write-only ))
 
 ;; -- my_kernel --
 (def-kernel my_kernel (in &out out)
@@ -2293,7 +2297,6 @@ new `vector` will have its size calculated automatically (byte size of the origi
 If the source byte size is not a multiple of the new element size, the result is truncated.
 But the other types (`tensor` and `matrix`) need to have their extents provided.
 
-The returned Storage Handle inherits the address-space, access permissions, and layout (`:compact` or `:std140`) from the source.
 
 For the 2D `matrix`, one of the declarations supports a `:major` key which can be `:row` or `:col`.
 Alternately, the `:strides` key can set the strides. Setting the strides directly is how to get "row major" vs "col major" (versus "plane major" etc) tensor in higher dimensions. 
@@ -2301,9 +2304,9 @@ Alternately, the `:strides` key can set the strides. Setting the strides directl
 There are some restrictions. They are enforced at compile time:
 
 - if the original and new element types don't match, then the source element type cannot be a struct type
-- if the original and new element types don't match, then the the new type also cannot be a struct type
-- if the underlying source has `:std140` layout, then reinterpretation between
-  types requires that both have the same base alignment requirement under `std140`. 
+- If the original and new element types don't match, the source Storage Handle must have a `:compact` layout. Reinterpreting element types on `:strided` views is mathematically undefined and will trigger a compile-time error. 
+
+The returned Storage Handle inherits the address-space and access permissions from the source. It also inherits the alignmnet (`:compact` or `:strided`), with one exception: if the `:strides` key is explicitly provided during the reinterpretation, the resulting handle is automatically typed as `:strided`.
 
 The runtime will assert that the number of source bytes is sufficient for the new requirements, but this
 assertion requires compiler flags (like `--runtime-checks`). 
@@ -2312,7 +2315,7 @@ assertion requires compiler flags (like `--runtime-checks`).
 
 
 ```
-(def-type vec-floats-t (vector float :align :std140 :address-space :local :access :read-write ))
+(def-type vec-floats-t (vector float :align :compact :address-space :local :access :read-write ))
 (def-type vec-ints-t (literal-vector int))
 
 ;; -- do_things --
@@ -2347,7 +2350,7 @@ for output parrameters.  Crisp has prepared pairs of `def-type` aliases to make 
 Example:
 ```
 (def-kernel my_kernel (A B &out C)
-  (declare #'((in-vec float :std140) (in-vec float :std140) (out-vec float :std140)))
+  (declare #'((in-vec float :compact) (in-vec float :compact) (out-vec float :compact)))
   ...)
 ```
 
@@ -2389,10 +2392,12 @@ struct Points {
 
 
 
-### Alignment
+### Alignment & Layout
+Crisp supports two alignment schemes for `soa-vector`: `:compact` and `:strided`.
 
-Crisp supports two alignments schemes for `soa-vector`: `:std140` and `:compact`.  Note that these
-alignments are applied to the inner vectors.  The outer `struct` is always `:std140`.
+`:compact` means the `soa-vector` is a primary allocation. The base pointer is 16-byte aligned. The internal arrays are perfectly contiguous and concatenated back-to-back. The compiler will only insert padding between the arrays if required to satisfy the natural alignment of the next element type.
+
+`:strided` means the `soa-vector` is a view or a slice. The internal arrays are no longer guaranteed to be perfectly contiguous, and accesses will rely on dynamic strides.
 
 ### Base Properties
 
@@ -2400,7 +2405,7 @@ A `soa-vector` has these properties:
 
 | Property     | Type         | Description      |
 |--------------|--------------|------------------|
-| align        | align        | one of `:std140` or `:compact`. This is for the inner vectors.|
+| align        | align        | one of `:strided` or `:compact`. This dictates the layout of the inner vectors. |
 | length       | ulong        | the number of elements in the `soa-vector`. Its bytes cannot be greater than its parent `storage` |
 | parent       | storage      | address of"parent storage |
 | offset       | ulong        | offset into parent. |
@@ -2414,7 +2419,7 @@ Example
 ```
 (def-struct point (x long) (y long))
 
-(let ((sv      (make-soa-vector point :address-space :local :access :read-write :align :std140 :length 20))
+(let ((sv      (make-soa-vector point :address-space :local :access :read-write :align :compact :length 20))
       (y       (y~ sv 9))
       (x-vec   (x~ sv)))
     ...)
@@ -2428,8 +2433,7 @@ Owning to memory coalesence, when the index is a thread id from parallel threads
 
 #### `XXXX~` without index
 
-Whereas constrastingly, in the example above `(x~ sv)` returns the ENTIRE VECTOR of X from the `soa-vector`.
- `x-vec` would be `(vector long :length 20)`.  
+In contrast, `(x~ sv)` returns the ENTIRE VECTOR of X as a standard vector Storage Handle. The returned vector inherits the alignment of the `soa-vector`. If `sv` is `:compact`, `x-vec` will be `(vector long :compact :length 20)`, allowing for ultra-fast vectorized loads. If `sv` is `:strided`, the resulting vector will also be `:strided`. 
 
 Its primary purpose is to pass a single, contiguous stream of data to another high-performance primitive, like `reduce-vec`
 
@@ -2445,8 +2449,7 @@ creation of a new structure to hold the value.
 ### Helper Functions
 
 Like `vector`, `soa-vector`  supports `element-type` and `bytes` helpers.
-`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its component arrays, including any padding. But remember, the `soa-vector` is a view into some `storage`. Use `(byte-size~ (parent~ someSoaVec))` to get the
-full storage bytes.
+`(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its tightly-packed component arrays, plus any inter-array alignment padding required by the C ABI. Remember, the `soa-vector` is a view into some storage. Use `(byte-size~ (parent~ someSoaVec))` to get the full storage bytes.
 
 ### Member Data Rules
 
@@ -2733,7 +2736,7 @@ which allows you to state its intended size and purpose.
 
 The `make-scratch-XXXX` routines create "scratch" side-channel memory Storage Handles. 
 
-Scratch memory defaults to `:local` address space,  `:read-write` access and `:std140` alignment, 
+Scratch memory defaults to `:local` address space,  `:read-write` access and `:compact` alignment, 
 but the defaults can be overridden by either using the `&key` arguments to the `make-scratch-XXXX` function
 or by using the second creation function of the pair that uses a Storage Handle type argument.
 
@@ -2896,8 +2899,8 @@ In the example below, this function, if called by a kernel, would cause two addi
 be hoisted, plus a pointer to a unsigned long array.  
 
 ```
-(def-type float-vec (vector float :align :std140 :address-space :global :access :read-only))
-(def-type ulong-vec (vector ulong :align :std140 :address-space :global :access :writeable))
+(def-type float-vec (vector float :align :compact :address-space :global :access :read-only))
+(def-type ulong-vec (vector ulong :align :compact :address-space :global :access :writeable))
 
 ;; -- calc-final-result --
 (def-grid-function calc-final-result (x y &out A)
@@ -5387,7 +5390,7 @@ going to agree on a convention that the local_work_size is 64.
 ```
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups.
-(def-type result-vec (vector long :align :std140 :address-space :global :access :writeable :size (get-num-groups)) 
+(def-type result-vec (vector long :align :compact :address-space :global :access :writeable :size (get-num-groups)) 
 
 ;; -- sum_vector_first_stage --
 (def-kernel sum_vector_first_stage (A &out Res)
@@ -5548,11 +5551,11 @@ This version of vector summing is likely faster than the last one.
 (def-constant +warp-size+:ulong 32)
 
 ;; the source vector can be any size. 
-(def-type source-vec (in-vec long :std140))    
+(def-type source-vec (in-vec long :compact))    
 
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups
-(def-type result-vec (vector long :align :std140 :address-space :global :access :writeable :size (get-num-groups)))  
+(def-type result-vec (vector long :align :compact :address-space :global :access :writeable :size (get-num-groups)))  
 
 ;; -- calculate-this-thread-sum --
 (def-function calculate-this-thread-sum (A)
@@ -7110,8 +7113,8 @@ Word Count With Exclusive Scan
 -->
 
 ```
-(def-type text-t (vector uchar :address-space :global :access :readable :align :std140))
-(def-type index-t (vector ulong :address-space :global :access :writeable :align :std140))
+(def-type text-t (vector uchar :address-space :global :access :readable :align :compact))
+(def-type index-t (vector ulong :address-space :global :access :writeable :align :compact))
 
 ;; -- word_count --
 (def-kernel word_count (corpus word &out result counter)
@@ -7304,7 +7307,7 @@ But the count in `count-vec` is correct regardless.
     (declare #((vector T :address-space :global :access :readable :align A) ; Input data vector
                (predicate-type T) ; Predicate function #(T => bool)
                &out (vector ulong :address-space :global :access :writeable :align A) ; Output index vector
-               &out (vector ulong :address-space :global :access :writeable :align :std140 :length 1) ; Output count vector
+               &out (vector ulong :address-space :global :access :writeable :align :compact :length 1) ; Output count vector
                => nil)
              ;; Declare optional local memory buffers for the scan algorithm
              &optional (local-flags (make-scratch-vector uint :match-workgroup-size))
@@ -7375,11 +7378,11 @@ In the second stage, you hoist a `bitonic_merge_pass` kernel repeatedly until th
 
 #### generate the kernels
 ```
-;; generate kernel that sorts in place a vector of floats using :std140 alignment
-(gen-bitonic_sort_workgroup_in_place float :std140 "stage_one_kernel")
+;; generate kernel that sorts in place a vector of floats using :compact alignment
+(gen-bitonic_sort_workgroup_in_place float :compact "stage_one_kernel")
 
 ;; generate the merge kernel
-(gen-bintonic_merge_pass float :std140 "stage_two_kernel")
+(gen-bintonic_merge_pass float :compact "stage_two_kernel")
 ```
 
 #### load and enqueue the first kernel
@@ -7590,7 +7593,7 @@ on each subsequent call.
 
 ```
    ;; generate the kernel we need
-   (gen-bintonic_merge_pass ulong :std140 "my_bintonic_merge_pass_kernel")
+   (gen-bintonic_merge_pass ulong :compact "my_bintonic_merge_pass_kernel")
 ```
 
 
@@ -9303,7 +9306,7 @@ Possible Implementation
    ;; 1D
   (def-grid-function quantize-to-XXXX (input-vec &out output-mfb-vec 
                               &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (count MFB)))))
-    (declare #((in-vec F A) &out (out-vec MFB :std140)))
+    (declare #((in-vec F A) &out (out-vec MFB :compact)))
     (r-t-assert-0 (= (length~ input-vec) (* (count MFB) (length~ output-mfb-vec)))
                   "lengths don't match")
     (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
@@ -9325,7 +9328,7 @@ Possible Implementation
     ;; 2D
     (def-grid-function quantize-to-XXXX (input-tv &out output-mfb-tv 
                               &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (num-cols MFB)))))
-      (declare #((tensor 3 (in-vec F A)) &out (tensor 3 (out-vec MFB :std140))))
+      (declare #((tensor 3 (in-vec F A)) &out (tensor 3 (out-vec MFB :compact))))
       (r-t-assert-0 (= (num-cols input-tv) (* (num-cols MFB) (num-rows MFB))) "confusing")
       (r-t-assert-0 (= (num-planes input-tv) (num-planes output-mfb-tv)) "number of planes not matching")
       (r-t-assert-0 (= (num-rows intput-tv) (num-rows output-mfb-tv)) "number of rows should match")
@@ -9358,7 +9361,7 @@ Possible Implementation
     (type-is MFB #'is-microfloat-block?))
 
   (def-grid-function dequantize-from-XXXX (input-mfb-vec &out output-vec)
-    (declare #((in-vec MFB :std140) &out (out-vec F A)))
+    (declare #((in-vec MFB :compact) &out (out-vec F A)))
     (r-t-assert-0 (= (length~ output-vec) (* (count MFB) (length~ input-mfb-vec)))
                   "lengths don't match")
 
@@ -10440,7 +10443,7 @@ Example
 `(get-signature function-identifier)` => <Signature>`
 
 ```
-(get-signature #'int_vector_sum) =>  `((vector int :align :std140  :address-space :global :access :readable) &out (vector int :align :std140  :address-space :global :access :write-only))
+(get-signature #'int_vector_sum) =>  `((vector int :align :compact  :address-space :global :access :readable) &out (vector int :align :compact  :address-space :global :access :write-only))
 ```
 
 

@@ -222,7 +222,7 @@
         (unless (or (search "TENSOR_" (symbol-name struct-name) :test #'char-equal)
                     (search "STORAGE_" (symbol-name struct-name) :test #'char-equal))
 
-          ;; Struct body
+          ;; Struct body: native scalar layout — no alignas needed, C++ natural alignment matches.
           (format stream "struct ~a {~%" struct-name-str)
           (dolist (member members)
             (let* ((member-name     (first member))
