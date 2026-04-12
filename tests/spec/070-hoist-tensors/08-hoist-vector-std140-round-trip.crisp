@@ -1,0 +1,15 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER v: 42
+
+;; Round-trip test: std140 vector. Element 0 is set to val.
+;; With std140 stride=4, element 0 is at byte offset 0 (stride*0*sizeof(float)=0).
+;; The harness uses val = arg_index+42 = 0+42 = 42.
+;; BUFFER v prints element 0 only (size-var for std140 = 16, but element 0 = 42).
+;; We just check that 42 appears at the start of the buffer output.
+
+(def-type std-vec-t (vector float :address-space :global :access :read-write :align :std140))
+
+(def-kernel vec_set_first_std140 (val &out v)
+    (declare #'(float std-vec-t => nil))
+  (set! (~ v 0) val))

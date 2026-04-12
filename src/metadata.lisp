@@ -180,6 +180,9 @@
    ;; Nil/empty
    ((null type-spec) nil)
 
+   ;; Keyword: preserve as-is (e.g. :global, :read-write, :compact)
+   ((keywordp type-spec) type-spec)
+
    ;; Symbol: strip package, return just name as unqualified symbol
    ((symbolp type-spec)
      (intern (symbol-name type-spec) :crisp-language))
@@ -210,9 +213,9 @@
     (setf aliases (sort aliases #'string< :key #'symbol-name))
     (dolist (alias aliases)
       (let ((target (gethash alias *crisp-type-aliases*)))
-        (format stream "  (def-type ~a ~a)~%"
-          (strip-package-qualifiers alias)
-          (strip-package-qualifiers target)))))
+        (format stream "  (def-type ~a " (strip-package-qualifiers alias))
+        (print-without-packages target stream)
+        (format stream ")~%"))))
   (format stream "  )~%~%"))
 
 
@@ -376,6 +379,12 @@
        (cond
         ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
           3)
+        ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+          ;; 2 (ptr + byte-size) + 3N (offsets, strides, extents) + 1 (length) = 3N+3
+          (let ((n (if (integerp (third canonical))
+                       (third canonical)
+                       (parse-integer (symbol-name (third canonical))))))
+            (+ 3 (* 3 n))))
         (t 1))))
    ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
         (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
@@ -421,6 +430,23 @@
                   (incf current-index)
                   (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
                   (incf current-index))
+                ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+                  ;; ABI: PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1, EXT_0..N-1, LENGTH
+                  (let* ((n (if (integerp (third canonical))
+                                (third canonical)
+                                (parse-integer (symbol-name (third canonical)))))
+                         (as (let ((found (member :address-space canonical)))
+                               (if found (second found) :global)))
+                         (ptr-type (strip-package-qualifiers `(c-pointer :address-space ,as))))
+                    (push (list current-index ptr-type) physical-args) (incf current-index)
+                    (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index)
+                    (dotimes (_ n)
+                      (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index))
+                    (dotimes (_ n)
+                      (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index))
+                    (dotimes (_ n)
+                      (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index))
+                    (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index)))
                 (t
                   (push (list current-index (strip-package-qualifiers type)) physical-args)
                   (incf current-index)))))
@@ -500,6 +526,7 @@
                     (let* ((canonical (canonicalize-type-specifier type))
                            (base (if (consp canonical) (first canonical) canonical))
                            (is-cell (and (symbolp base) (string-equal (symbol-name base) "CELL")))
+                           (is-tensor (and (symbolp base) (string-equal (symbol-name base) "TENSOR")))
                            (as (if (and (consp canonical) is-cell (>= (length canonical) 3))
                                    (nth 2 canonical)
                                    (if (consp canonical)
@@ -512,7 +539,15 @@
                                         (let ((found (member :access canonical)))
                                           (if found (second found) :read-write))
                                         :read-write))))
-                      (setf entry (append entry (list :address-space as :access acc)))))
+                      (setf entry (append entry (list :address-space as :access acc)))
+                      (when is-tensor
+                        (let* ((n (if (integerp (third canonical))
+                                      (third canonical)
+                                      (parse-integer (symbol-name (third canonical)))))
+                               ;; Canonical tensor form is positional: (tensor T N addr acc aln)
+                               ;; :align is at index 5, not a key-value pair.
+                               (alg (or (nth 5 canonical) :compact)))
+                          (setf entry (append entry (list :rank n :align alg)))))))
 
               (setf entry (append entry (list :range (list start end))))
               (push entry declared-args)

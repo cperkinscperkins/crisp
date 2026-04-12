@@ -513,6 +513,8 @@ Tensors Vectors and Matrices
 - - - [x] marshall-tensor N    (macro or template or something else?)
 - - [ ] is :align :std140 / :compact being handled correctly? Unit test
 - - [ ] hoisting
+- - [ ] test offsets, strides really SET by hoisting code (instead of always jsut 0). for both align
+        would we need some sort of .cpp fixture?
 - - [ ] scratch tensors / matrix / vector
 - - [ ] "view" manipulation - changing offset, make-xxxx etc
 - - [ ] double check branding
@@ -520,6 +522,15 @@ Tensors Vectors and Matrices
 - - [ ] vector helpers
 - - [ ] matrix helpers
 - - [ ] tile?
+
+
+EMERGENCY REORG
+===============
+- [ ] jettison std140.  
+- [ ] curse the day we first heard its name.  June 2 will forever more be struck from the Crisp calendar. June 1 goes right to June 3. 
+- [ ] see align-revisit.md doc
+- [ ] in theory, vector can compile-time optimize ~ to NOT use stride and dispatch simply based
+      off :align. This would ignore stride. :align (:compact :strided)
 
 
 

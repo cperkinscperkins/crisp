@@ -421,6 +421,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - (SERIALIZE-ALIASES STREAM ALIASES-HASH)  metadata.lisp
 - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
+- - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp
 - - - - (SERIALIZE-STRUCTS STREAM STRUCTS-HASH)  metadata.lisp
 - - - - - (%SERIALIZE-RECORDS STREAM STRUCTS-HASH)  metadata.lisp
 - - - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp
@@ -456,7 +457,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp
 - - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp [See above]
 - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
-- - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp
+- - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp [See above]
 - - - (INVOKE-HOISTER HOIST-ID METACRISP-FILE) :CRISP.MAIN  main.lisp
 - - - - (GET-HOISTER-BINARY-PATH HOIST-ID) :CRISP.MAIN  main.lisp
 
@@ -895,6 +896,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-06-NESTED-STRUCTS METADATA-PATH)  metadata.lisp
 - - (VALIDATE-STRUCT-PRESENCE METADATA-PATH EXPECTED-STRUCTS &KEY (UNEXPECTED-STRUCTS
                                                                    NIL))  metadata.lisp [See above]
+
+- (VALIDATE-070-01-VECTOR-METADATA META-PATH)  metadata-val.lisp
+
+- (VALIDATE-070-03-MATRIX-METADATA META-PATH)  metadata-val.lisp
 
 - (VALIDATE-10-BASICS-META PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL

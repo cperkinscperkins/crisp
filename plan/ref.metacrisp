@@ -74,11 +74,26 @@
 
         ;; if the cell declarations end up repeating address-space and access, that's fine. 
 
-        (:declared-signature 
+        (:declared-signature
         ;; simple scalar
-        (:name v 
-         :type double 
+        (:name v
+         :type double
          :range (3 3))
+
+        ;; tensor / vector / matrix params have two extra keys:
+        ;;   :rank  N       — number of dimensions (1 for vector, 2 for matrix, N for tensor)
+        ;;   :align :compact | :std140
+        ;;                  — stride layout strategy
+        ;; The :range spans all 3N+3 physical slots:
+        ;;   PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1, EXT_0..N-1, LENGTH
+        ;; Example — a vector (N=1) starting at slot 1:
+        ;;   (:name v :type out-vec-t :direction :out
+        ;;    :address-space :global :access :read-write
+        ;;    :rank 1 :align :compact :range (1 6))
+        ;; Example — a matrix (N=2) starting at slot 0:
+        ;;   (:name m :type mat-t :direction :out
+        ;;    :address-space :global :access :read-write
+        ;;    :rank 2 :align :compact :range (0 8))
 
         ;; cell
         (:name in 

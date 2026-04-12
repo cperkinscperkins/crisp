@@ -1,0 +1,11 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-HOIST[L0]: validate-l0-compile-only
+
+;; Validates that a kernel with a matrix (N=2) parameter hoists to compilable C++.
+;; The generated C++ sets 10 kernel args: val(0) + 9 tensor slots for v.
+
+(def-type out-mat-t (matrix float :address-space :global :access :read-write :align :compact))
+
+(def-kernel mat_set_elem (v val)
+    (declare #'(out-mat-t float => nil))
+  (set! (~ v 0 0) val))

@@ -1,0 +1,13 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-WITH[--metadata]: crisp.compiler::validate-070-01-vector-metadata
+
+;; Validates the .metacrisp output for a kernel with a vector parameter:
+;;   :physical-signature — 7 slots: val(0), ptr(1), byte_size(2), off(3), str(4), ext(5), len(6)
+;;   :declared-signature — val :range (0 0), v :range (1 6) :rank 1 :align :compact
+;;   :aliases            — OUT-VEC-T with keyword form (:address-space :global ...)
+
+(def-type out-vec-t (vector long :address-space :global :access :read-write :align :compact))
+
+(def-kernel vec_set_first (val &out v)
+    (declare #'(long out-vec-t => nil))
+  (set! (~ v 0) val))

@@ -217,47 +217,56 @@
              (struct-name-str (substitute #\_ #\- (string-downcase (symbol-name struct-name))))
              (members         (cddr struct-def)))
 
-        ;; Struct body
-        (format stream "struct alignas(16) ~a {~%" struct-name-str)
-        (dolist (member members)
-          (let* ((member-name     (first member))
-                 (member-type     (second member))
-                 (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
-            (if (%array-type-p member-type)
-                ;; Array field: T name[N]
-                (let* ((elem-type (%array-element-type member-type))
-                       (arr-size  (%array-size member-type))
-                       (elem-str  (crisp-type-to-cpp-type elem-type)))
-                  (format stream "    ~a ~a[~a];~%" elem-str member-name-str arr-size))
-                ;; Scalar/nested-struct field
-                (let ((member-type-str (substitute #\_ #\- (string-downcase (symbol-name member-type)))))
-                  (format stream "    ~a ~a;~%" member-type-str member-name-str)))))
+        ;; Skip internal tensor/storage records — not needed in host C++ code.
+        ;; They are def-record entries that exist only for the compiler's ABI bookkeeping.
+        (unless (or (search "TENSOR_" (symbol-name struct-name) :test #'char-equal)
+                    (search "STORAGE_" (symbol-name struct-name) :test #'char-equal))
 
-        ;; operator<<
-        (format stream "    friend std::ostream& operator<<(std::ostream& os, const ~a& obj) {~%" struct-name-str)
-        (let ((first-member t))
+          ;; Struct body
+          (format stream "struct alignas(16) ~a {~%" struct-name-str)
           (dolist (member members)
             (let* ((member-name     (first member))
                    (member-type     (second member))
                    (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
               (if (%array-type-p member-type)
-                  ;; Array field: loop over elements, space-separated
-                  (let ((arr-size (%array-size member-type)))
-                    (unless first-member
-                      (format stream "        os << \" \";~%"))
-                    (format stream "        for (int _i = 0; _i < ~a; _i++) {~%" arr-size)
-                    (format stream "            if (_i > 0) os << \" \";~%")
-                    (format stream "            os << obj.~a[_i];~%" member-name-str)
-                    (format stream "        }~%"))
-                  ;; Scalar field
-                  (progn
-                    (unless first-member
-                      (format stream "        os << \" \";~%"))
-                    (format stream "        os << obj.~a;~%" member-name-str)))
-              (setf first-member nil))))
-        (format stream "        return os;~%")
-        (format stream "    }~%")
-        (format stream "};~%~%")))))
+                  ;; Array field: T name[N]
+                  (let* ((elem-type (%array-element-type member-type))
+                         (arr-size  (%array-size member-type))
+                         (elem-str  (crisp-type-to-cpp-type elem-type)))
+                    (format stream "    ~a ~a[~a];~%" elem-str member-name-str arr-size))
+                  ;; Scalar/nested-struct field (type may be a list like (STORAGE GLOBAL))
+                  (let ((member-type-str
+                          (if (symbolp member-type)
+                              (substitute #\_ #\- (string-downcase (symbol-name member-type)))
+                              ;; Nested record/struct: use the first element's name
+                              (substitute #\_ #\- (string-downcase (symbol-name (first member-type)))))))
+                    (format stream "    ~a ~a;~%" member-type-str member-name-str)))))
+
+          ;; operator<<
+          (format stream "    friend std::ostream& operator<<(std::ostream& os, const ~a& obj) {~%" struct-name-str)
+          (let ((first-member t))
+            (dolist (member members)
+              (let* ((member-name     (first member))
+                     (member-type     (second member))
+                     (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
+                (if (%array-type-p member-type)
+                    ;; Array field: loop over elements, space-separated
+                    (let ((arr-size (%array-size member-type)))
+                      (unless first-member
+                        (format stream "        os << \" \";~%"))
+                      (format stream "        for (int _i = 0; _i < ~a; _i++) {~%" arr-size)
+                      (format stream "            if (_i > 0) os << \" \";~%")
+                      (format stream "            os << obj.~a[_i];~%" member-name-str)
+                      (format stream "        }~%"))
+                    ;; Scalar/nested-struct field
+                    (progn
+                      (unless first-member
+                        (format stream "        os << \" \";~%"))
+                      (format stream "        os << obj.~a;~%" member-name-str)))
+                (setf first-member nil))))
+          (format stream "        return os;~%")
+          (format stream "    }~%")
+          (format stream "};~%~%"))))))
 
 (defun generate-cpp-typedefs (stream aliases)
   "Generate C++ typedef declarations from type aliases"
@@ -559,11 +568,77 @@
 
 
 
+;;; -----------------------------------------------------------------------
+;;; Tensor support for L0 hoist
+;;; src/hoist-l0/main.lisp
+;;;
+;;; Tensor (and vector/matrix sugar) parameters are exploded to 3N+3 scalar
+;;; args at the ABI level:  PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1,
+;;; EXT_0..N-1, LENGTH.
+;;;
+;;; The hoist harness:
+;;;   1. Allocates USM for the element storage.
+;;;   2. Initialises it (iota for :out, zeros for :in, both otherwise).
+;;;   3. Emits zeKernelSetArgumentValue calls in ABI order.
+;;;   4. Pushes an allocation record so copyback printing works.
+;;;
+;;; Layout strategy (test harness): EXTENT=4 per dim.
+;;;
+;;; :compact — tight row-major, strides in elements, innermost=1:
+;;;   N=1: extents=[4],     strides=[1],      length=4
+;;;   N=2: extents=[4,4],   strides=[4,1],    length=16
+;;;   N=3: extents=[4,4,4], strides=[16,4,1], length=64
+;;;
+;;; :std140  — each innermost element padded to vec4 (4 elements = 16 bytes
+;;;            for float/int, or 2 elements for double/int64):
+;;;   N=1: extents=[4],     strides=[4],       length=16
+;;;   N=2: extents=[4,4],   strides=[16,4],    length=64
+;;;   N=3: extents=[4,4,4], strides=[64,16,4], length=256
+;;;
+;;; In both cases total USM elements = stride_0 * extent_0.
+;;; The kernel uses runtime strides, so the same compiled .spv works for both;
+;;; only the host-side stride values differ.
+;;; -----------------------------------------------------------------------
+
+(defun tensor-type-p (param-type)
+  "Returns T if PARAM-TYPE is a tensor/vector/matrix type specifier."
+  (and (consp param-type)
+       (symbolp (first param-type))
+       (member (symbol-name (first param-type))
+               '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal)))
+
+(defun %tensor-compact-extents-strides (n dim-extent)
+  "Returns (values extents strides) for a compact N-dim tensor.
+   Strides are in elements; innermost stride = 1."
+  (let* ((extents (make-list n :initial-element dim-extent))
+         (strides (make-list n :initial-element 1)))
+    (loop for k from (- n 2) downto 0 do
+      (setf (nth k strides) (* (nth (1+ k) strides) dim-extent)))
+    (values extents strides)))
+
+(defun %tensor-std140-extents-strides (n dim-extent elem-str)
+  "Returns (values extents strides) for a std140 N-dim tensor.
+   Each innermost element is padded to a vec4 boundary.
+   ELEM-STR is the C++ element type string used to determine the padding unit:
+     double / int64_t / uint64_t -> padding-unit = 2 (2 × 8 bytes = 16 bytes)
+     all others (float, int, ...)  -> padding-unit = 4 (4 × 4 bytes = 16 bytes)"
+  (let* ((padding-unit (if (or (string-equal elem-str "double")
+                               (string-equal elem-str "int64_t")
+                               (string-equal elem-str "uint64_t"))
+                           2
+                           4))
+         (extents (make-list n :initial-element dim-extent))
+         ;; innermost stride = padding-unit (vec4 boundary)
+         (strides (make-list n :initial-element padding-unit)))
+    (loop for k from (- n 2) downto 0 do
+      (setf (nth k strides) (* (nth (1+ k) strides) dim-extent)))
+    (values extents strides)))
 
 (defun generate-kernel-arguments-with-usm (stream declared-sig aliases records context-var device-var)
-  "Generate kernel argument setup code with USM allocation for cells.
+  "Generate kernel argument setup code with USM allocation for cells/tensors.
    Handles:
      cell           — 3 args (ptr, byte-size, offset); cell-of-(array T N) uses N-element USM
+     tensor/vector/matrix — 3N+3 args (ptr, byte-size, off×N, str×N, ext×N, length)
      def-struct     — 1 arg (aggregate by value, sizeof struct)
      def-record     — exploded scalar args; array members are single by-value args
      (array T N)    — 1 arg, passed by value (iota-initialized T[N])
@@ -662,6 +737,97 @@
                        allocations)))
 
             (incf arg-index 3)))
+
+         ;; ---- tensor/vector/matrix parameters (3N+3 kernel args) ----
+         ((tensor-type-p param-type)
+          (let* ((rank        (or (getf param :rank) 1))
+                 (elem-type   (second param-type))
+                 (align       (getf param :align))
+                 (elem-str    (crisp-type-to-cpp-type elem-type))
+                 (dim-extent  4)  ; test harness: 4 elements per dimension
+                 (param-name-cpp (substitute #\_ #\- param-name))
+                 (ptr-var     (format nil "~a_ptr" param-name-cpp))
+                 (size-var    (format nil "~a_len" param-name-cpp)))
+
+            (let ((is-std140 (member align '(:std140 std140) :test
+                                            (lambda (a b) (string-equal (string a) (string b))))))
+            (multiple-value-bind (extents strides)
+                (if is-std140
+                    (%tensor-std140-extents-strides rank dim-extent elem-str)
+                    (%tensor-compact-extents-strides rank dim-extent))
+              (let* (;; total USM elements = stride_0 * extent_0 (works for both layouts)
+                     (total-elems (* (first strides) (first extents)))
+                     (offsets     (make-list rank :initial-element 0))
+                     (elem-bytes  (if (or (string-equal elem-str "double")
+                                         (string-equal elem-str "int64_t")
+                                         (string-equal elem-str "uint64_t")) 8 4))
+                     (byte-size   (* total-elems elem-bytes))
+                     (layout-str  (if is-std140 "std140" "compact")))
+
+                (format stream "~%    // Tensor argument: ~a (rank=~d, ~a, ~d elements, ~a)~%"
+                        param-name rank elem-str total-elems layout-str)
+
+                ;; Allocate USM
+                (format stream "    ~a* ~a = nullptr;~%" elem-str ptr-var)
+                (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
+                        context-var)
+                (format stream "        ~d * sizeof(~a), 1, ~a, (void**)&~a);~%"
+                        total-elems elem-str device-var ptr-var)
+                (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+                (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
+                        param-name)
+                (format stream "        return 1;~%")
+                (format stream "    }~%")
+                ;; Initialize: iota
+                (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)_i;~%"
+                        total-elems ptr-var elem-str)
+
+                ;; ABI order: PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1, EXT_0..N-1, LENGTH
+                (format stream "    // Arg ~d: ~a PTR~%" arg-index param-name)
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
+                        arg-index ptr-var)
+                (incf arg-index)
+
+                (format stream "    // Arg ~d: ~a BYTE_SIZE = ~d~%" arg-index param-name byte-size)
+                (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp byte-size)
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_byte_size);~%"
+                        arg-index param-name-cpp)
+                (incf arg-index)
+
+                (loop for k from 0 below rank do
+                  (format stream "    // Arg ~d: ~a OFFSET_~d = ~d~%" arg-index param-name k (nth k offsets))
+                  (format stream "    uint64_t ~a_off~d = ~dULL;~%" param-name-cpp k (nth k offsets))
+                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%"
+                          arg-index param-name-cpp k)
+                  (incf arg-index))
+
+                (loop for k from 0 below rank do
+                  (format stream "    // Arg ~d: ~a STRIDE_~d = ~d~%" arg-index param-name k (nth k strides))
+                  (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%"
+                          arg-index param-name-cpp k)
+                  (incf arg-index))
+
+                (loop for k from 0 below rank do
+                  (format stream "    // Arg ~d: ~a EXTENT_~d = ~d~%" arg-index param-name k (nth k extents))
+                  (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+                  (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%"
+                          arg-index param-name-cpp k)
+                  (incf arg-index))
+
+                (format stream "    // Arg ~d: ~a LENGTH = ~d~%" arg-index param-name total-elems)
+                (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp total-elems)
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_length);~%~%"
+                        arg-index param-name-cpp)
+                (incf arg-index)
+
+                ;; Push to allocations for copyback
+                (push (list :name      param-name
+                            :ptr       ptr-var
+                            :size-var  (format nil "~d" total-elems)
+                            :direction param-dir
+                            :access    (getf param :access))
+                      allocations))))))
 
          ;; ---- def-struct parameters (1 kernel arg: aggregate by value) ----
          ((struct-type-p-l0 param-type)

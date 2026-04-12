@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-11T18:01:53.593713Z
+Generated on 2026-04-12T18:01:55.163268Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1567,10 +1567,31 @@ Generated on 2026-04-11T18:01:53.593713Z
 
 
 ---
+### DEFUN `TENSOR-TYPE-P`
+- **Args**: `(PARAM-TYPE)`
+
+  > Returns T if PARAM-TYPE is a tensor/vector/matrix type specifier.
+
+
+---
+### DEFUN `%TENSOR-COMPACT-EXTENTS-STRIDES`
+- **Args**: `(N DIM-EXTENT)`
+
+  > Returns (values extents strides) for a compact N-dim tensor.  >    Strides are in elements; innermost stride = 1.
+
+
+---
+### DEFUN `%TENSOR-STD140-EXTENTS-STRIDES`
+- **Args**: `(N DIM-EXTENT ELEM-STR)`
+
+  > Returns (values extents strides) for a std140 N-dim tensor.  >    Each innermost element is padded to a vec4 boundary.  >    ELEM-STR is the C++ element type string used to determine the padding unit:  >      double / int64_t / uint64_t -> padding-unit = 2 (2 × 8 bytes = 16 bytes)  >      all others (float, int, ...)  -> padding-unit = 4 (4 × 4 bytes = 16 bytes)
+
+
+---
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR)`
 
-  > Generate kernel argument setup code with USM allocation for cells.  >    Handles:  >      cell           — 3 args (ptr, byte-size, offset); cell-of-(array T N) uses N-element USM  >      def-struct     — 1 arg (aggregate by value, sizeof struct)  >      def-record     — exploded scalar args; array members are single by-value args  >      (array T N)    — 1 arg, passed by value (iota-initialized T[N])  >      scalar/dvec    — 1 arg
+  > Generate kernel argument setup code with USM allocation for cells/tensors.  >    Handles:  >      cell           — 3 args (ptr, byte-size, offset); cell-of-(array T N) uses N-element USM  >      tensor/vector/matrix — 3N+3 args (ptr, byte-size, off×N, str×N, ext×N, length)  >      def-struct     — 1 arg (aggregate by value, sizeof struct)  >      def-record     — exploded scalar args; array members are single by-value args  >      (array T N)    — 1 arg, passed by value (iota-initialized T[N])  >      scalar/dvec    — 1 arg
 
 
 ---
@@ -2575,6 +2596,20 @@ Generated on 2026-04-11T18:01:53.593713Z
 - **Args**: `(METADATA-PATH)`
 
   > Validates 056/09-branded-struct-elide: branded def-struct at kernel boundary.  >    Checks that the :structs section shows the base type (ulong) for branded  >    fields (not token-t), no brand declarations appear, and the kernel is present.
+
+
+---
+### DEFUN `VALIDATE-070-03-MATRIX-METADATA`
+- **Args**: `(META-PATH)`
+
+  > Validates .metacrisp for test 03-metadata-matrix.  >    Matrix (N=2): 3*2+3=9 slots for v (indices 0-8), then val at index 9.  >    :physical-signature — 10 entries  >    :declared-signature — v :rank 2 :align :compact :range (0 8); val :range (9 9)
+
+
+---
+### DEFUN `VALIDATE-070-01-VECTOR-METADATA`
+- **Args**: `(META-PATH)`
+
+  > Validates .metacrisp for test 01-metadata-vector.  >    Checks:  >      - physical-signature: (0 LONG) (1 (C-POINTER...)) (2 ULONG) x 5 = 7 slots  >      - declared-signature: val :range (0 0), v :range (1 6) :rank 1 :align :compact  >      - aliases: OUT-VEC-T with keyword-form type spec
 
 
 ---

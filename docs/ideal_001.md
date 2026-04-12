@@ -1027,7 +1027,7 @@ the `&out` specifier and possibly other safety checks.
 - `:extents (e0 ... eN-1)` — list of exactly `N` `ulong` extents (sizes), one per dimension
 - `:length len` — `ulong` total element count (product of extents, pre-computed by the host)
 
-All four keywords are required. The macro validates at compile time that each sublist contains exactly N elements matching the tensor arity declared in type. Errors are signalled for missing keywords or wrong sublist lengths.
+All four keywords are required. Each list must be of length N. The macro validates at compile time that each sublist contains exactly N elements matching the tensor arity declared in type. Errors are signalled for missing keywords or wrong sublist lengths.
 
 
 ### Implementation Notes
