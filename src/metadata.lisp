@@ -544,8 +544,9 @@
                         (let* ((n (if (integerp (third canonical))
                                       (third canonical)
                                       (parse-integer (symbol-name (third canonical)))))
-                               (alg (let ((found (member :align canonical)))
-                                      (if found (second found) :compact))))
+                               ;; Canonical tensor form is positional: (tensor T N addr acc aln)
+                               ;; :align is at index 5, not a key-value pair.
+                               (alg (or (nth 5 canonical) :compact)))
                           (setf entry (append entry (list :rank n :align alg)))))))
 
               (setf entry (append entry (list :range (list start end))))

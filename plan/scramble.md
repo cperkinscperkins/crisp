@@ -524,6 +524,15 @@ Tensors Vectors and Matrices
 - - [ ] tile?
 
 
+EMERGENCY REORG
+===============
+- [ ] jettison std140.  
+- [ ] curse the day we first heard its name.  June 2 will forever more be struck from the Crisp calendar. June 1 goes right to June 3. 
+- [ ] see align-revisit.md doc
+- [ ] in theory, vector can compile-time optimize ~ to NOT use stride and dispatch simply based
+      off :align. This would ignore stride. :align (:compact :strided)
+
+
 
 
 Preperatory

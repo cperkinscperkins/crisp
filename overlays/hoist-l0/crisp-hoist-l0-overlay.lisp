@@ -17,10 +17,22 @@
 ;;;   3. Emits zeKernelSetArgumentValue calls in ABI order.
 ;;;   4. Pushes an allocation record so copyback printing works.
 ;;;
-;;; Layout strategy (test harness): compact row-major, EXTENT=4 per dim.
-;;;   N=1: extents=[4],       strides=[1],    offsets=[0],     length=4
-;;;   N=2: extents=[4,4],     strides=[4,1],  offsets=[0,0],   length=16
-;;;   N=3: extents=[4,4,4],   strides=[16,4,1], offsets=[0,0,0], length=64
+;;; Layout strategy (test harness): EXTENT=4 per dim.
+;;;
+;;; :compact — tight row-major, strides in elements, innermost=1:
+;;;   N=1: extents=[4],     strides=[1],      length=4
+;;;   N=2: extents=[4,4],   strides=[4,1],    length=16
+;;;   N=3: extents=[4,4,4], strides=[16,4,1], length=64
+;;;
+;;; :std140  — each innermost element padded to vec4 (4 elements = 16 bytes
+;;;            for float/int, or 2 elements for double/int64):
+;;;   N=1: extents=[4],     strides=[4],       length=16
+;;;   N=2: extents=[4,4],   strides=[16,4],    length=64
+;;;   N=3: extents=[4,4,4], strides=[64,16,4], length=256
+;;;
+;;; In both cases total USM elements = stride_0 * extent_0.
+;;; The kernel uses runtime strides, so the same compiled .spv works for both;
+;;; only the host-side stride values differ.
 ;;; -----------------------------------------------------------------------
 
 (defun tensor-type-p (param-type)
@@ -32,11 +44,27 @@
 
 (defun %tensor-compact-extents-strides (n dim-extent)
   "Returns (values extents strides) for a compact N-dim tensor.
-   Each dimension has extent DIM-EXTENT.
-   strides are in elements (innermost = 1)."
+   Strides are in elements; innermost stride = 1."
   (let* ((extents (make-list n :initial-element dim-extent))
          (strides (make-list n :initial-element 1)))
-    ;; stride_k = product of extents_{k+1..N-1}
+    (loop for k from (- n 2) downto 0 do
+      (setf (nth k strides) (* (nth (1+ k) strides) dim-extent)))
+    (values extents strides)))
+
+(defun %tensor-std140-extents-strides (n dim-extent elem-str)
+  "Returns (values extents strides) for a std140 N-dim tensor.
+   Each innermost element is padded to a vec4 boundary.
+   ELEM-STR is the C++ element type string used to determine the padding unit:
+     double / int64_t / uint64_t -> padding-unit = 2 (2 × 8 bytes = 16 bytes)
+     all others (float, int, ...)  -> padding-unit = 4 (4 × 4 bytes = 16 bytes)"
+  (let* ((padding-unit (if (or (string-equal elem-str "double")
+                               (string-equal elem-str "int64_t")
+                               (string-equal elem-str "uint64_t"))
+                           2
+                           4))
+         (extents (make-list n :initial-element dim-extent))
+         ;; innermost stride = padding-unit (vec4 boundary)
+         (strides (make-list n :initial-element padding-unit)))
     (loop for k from (- n 2) downto 0 do
       (setf (nth k strides) (* (nth (1+ k) strides) dim-extent)))
     (values extents strides)))
@@ -159,18 +187,23 @@
                  (ptr-var     (format nil "~a_ptr" param-name-cpp))
                  (size-var    (format nil "~a_len" param-name-cpp)))
 
+            (let ((is-std140 (member align '(:std140 std140) :test
+                                            (lambda (a b) (string-equal (string a) (string b))))))
             (multiple-value-bind (extents strides)
-                (%tensor-compact-extents-strides rank dim-extent)
-              (let* ((total-elems (reduce #'* extents))
+                (if is-std140
+                    (%tensor-std140-extents-strides rank dim-extent elem-str)
+                    (%tensor-compact-extents-strides rank dim-extent))
+              (let* (;; total USM elements = stride_0 * extent_0 (works for both layouts)
+                     (total-elems (* (first strides) (first extents)))
                      (offsets     (make-list rank :initial-element 0))
-                     (byte-size   (* total-elems (if (string-equal elem-str "float") 4
-                                                     (if (string-equal elem-str "double") 8
-                                                         (if (or (string-equal elem-str "int64_t")
-                                                                 (string-equal elem-str "uint64_t")) 8 4))))))
-                (declare (ignore align))
+                     (elem-bytes  (if (or (string-equal elem-str "double")
+                                         (string-equal elem-str "int64_t")
+                                         (string-equal elem-str "uint64_t")) 8 4))
+                     (byte-size   (* total-elems elem-bytes))
+                     (layout-str  (if is-std140 "std140" "compact")))
 
-                (format stream "~%    // Tensor argument: ~a (rank=~d, ~a, ~d elements, compact)~%"
-                        param-name rank elem-str total-elems)
+                (format stream "~%    // Tensor argument: ~a (rank=~d, ~a, ~d elements, ~a)~%"
+                        param-name rank elem-str total-elems layout-str)
 
                 ;; Allocate USM
                 (format stream "    ~a* ~a = nullptr;~%" elem-str ptr-var)
@@ -232,7 +265,7 @@
                             :size-var  (format nil "~d" total-elems)
                             :direction param-dir
                             :access    (getf param :access))
-                      allocations)))))
+                      allocations))))))
 
          ;; ---- def-struct parameters (1 kernel arg: aggregate by value) ----
          ((struct-type-p-l0 param-type)
