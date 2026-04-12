@@ -8,15 +8,36 @@
 ;; Std140 Layout (GPU Alignment)
 ;; =============================
 
+
+
+
+(defun %struct-native-alignment (struct-name)
+  "Returns the native scalar alignment of a struct: the maximum alignment of
+   all its runtime members (recursively resolved).  This is the struct's
+   own alignment requirement under native scalar layout rules."
+  (cl:let* ((def (find-struct-definition-by-name struct-name))
+             (members (cl:when def (crisp-struct-definition-members def)))
+             (runtime-members (remove-if
+                                (lambda (m) (and (consp m) (eq (third m) :c-t)))
+                                members)))
+    (cl:if runtime-members
+           (apply #'cl:max
+                  (mapcar (lambda (m) (get-std140-base-alignment (second m)))
+                          runtime-members))
+           4))) ; default 4-byte alignment for empty structs
+
 (defun get-std140-base-alignment (type-spec)
-  "Returns the base alignment (N) for a given type according to std140 rules.
-   Extended to handle (array T N): arrays align to 16 bytes (vec4) per std140."
+  "Returns the base alignment (in bytes) for TYPE-SPEC under native scalar rules.
+   Scalars: natural size.  Arrays: element alignment.  Structs: max member alignment."
   (cl:let* ((alias-resolved (resolve-type-alias type-spec))
-            (resolved-type (get-type-base alias-resolved)))
+             (resolved-type (get-type-base alias-resolved)))
     (cl:cond
-      ;; (array T N) -> 16-byte alignment per std140 array rules
-      ((%array-type-p type-spec) 16)
-      ((%array-type-p alias-resolved) 16)
+      ;; (array T N) -> element alignment (compact, not vec4)
+      ((%array-type-p type-spec)
+       (get-std140-base-alignment (cl:second type-spec)))
+      ((%array-type-p alias-resolved)
+       (get-std140-base-alignment (cl:second alias-resolved)))
+      ;; scalars — natural size (unchanged)
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
       ((or (eq resolved-type 'char) (eq resolved-type 'uchar)) 1)
@@ -29,35 +50,40 @@
             (> (cl:length (symbol-name type-spec)) 5)
             (string-equal (cl:subseq (symbol-name type-spec) 0 5) "CELL_"))
        8)
-      ((gethash type-spec *crisp-structs*) 16)
+      ;; structs — max member alignment (native scalar rule, not 16)
+      ((gethash type-spec *crisp-structs*)
+       (%struct-native-alignment type-spec))
       ((and (consp type-spec) (valid-type-p type-spec))
        (cl:let ((base (cl:first type-spec)))
          (cl:cond
            ((string-equal (symbol-name base) "CELL") 8)
            (t
-            (cl:let ((mangled (mangle-template-struct-name (cl:first type-spec) (cl:rest type-spec))))
+            (cl:let ((mangled (mangle-template-struct-name
+                                (cl:first type-spec) (cl:rest type-spec))))
               (if (gethash mangled *crisp-structs*)
-                  16
-                  (error "Valid type ~a but struct def not found after check alignment." type-spec)))))))
+                  (%struct-native-alignment mangled)
+                  (error "Valid type ~a but struct def not found for alignment."
+                         type-spec)))))))
       (t (error "Unknown type for alignment: ~a" type-spec)))))
 
-;;; src/structs.lisp
+
+
 (defun get-std140-size (type-spec)
-  "Returns the size (in bytes) of a type.
-   Extended to handle (array T N): size is N * element-size, rounded up to 16-byte stride per std140."
+  "Returns the size (in bytes) of TYPE-SPEC under native scalar rules.
+   Arrays: N * elem-size (compact, no per-element 16-byte padding).
+   Structs: total-size as recorded (compact layout).  Scalars: natural size."
   (cl:let* ((alias-resolved (resolve-type-alias type-spec))
-            (resolved-type (get-type-base alias-resolved)))
+             (resolved-type (get-type-base alias-resolved)))
     (cl:cond
-      ;; (array T N) -> N * ceil(elem-size, 16) per std140 array element stride
+      ;; (array T N) -> N * elem-size, no per-element std140 stride
       ((%array-type-p type-spec)
        (cl:let* ((elem-type (cl:second type-spec))
                  (n         (cl:third type-spec))
-                 (elem-size (get-std140-size elem-type))
-                 ;; std140: each array element is padded to vec4 (16-byte) stride
-                 (stride    (+ elem-size (calculate-std140-padding elem-size 16))))
-         (* n stride)))
+                 (elem-size (get-std140-size elem-type)))
+         (* n elem-size)))
       ((%array-type-p alias-resolved)
        (get-std140-size alias-resolved))
+      ;; scalars (unchanged)
       ((or (eq resolved-type 'float) (eq resolved-type 'int) (eq resolved-type 'uint)) 4)
       ((or (eq resolved-type 'double) (eq resolved-type 'long) (eq resolved-type 'ulong)) 8)
       ((or (eq resolved-type 'char) (eq resolved-type 'uchar)) 1)
@@ -77,11 +103,13 @@
          (cl:cond
            ((string-equal (symbol-name base) "CELL") 8)
            (t
-            (cl:let* ((mangled (mangle-template-struct-name (cl:first type-spec) (cl:rest type-spec)))
-                      (struct-info (gethash mangled *crisp-structs*)))
+            (cl:let* ((mangled (mangle-template-struct-name
+                                 (cl:first type-spec) (cl:rest type-spec)))
+                       (struct-info (gethash mangled *crisp-structs*)))
               (if struct-info
                   (crisp-struct-definition-total-size struct-info)
-                  (error "Valid type ~a but struct def not found for size." type-spec)))))))
+                  (error "Valid type ~a but struct def not found for size."
+                         type-spec)))))))
       (t (error "Unknown type for size: ~a" type-spec)))))
 
 (defun calculate-std140-padding (current-offset alignment)
@@ -92,73 +120,83 @@
         (- alignment remainder))))
 
 
+
 (defun compute-std140-layout (members)
-  "Takes a list of (name type) members.
-  Returns a list of:
-    - Expanded members with `_pad` fields inserted.
-    - Total struct size (padded to 16 bytes).
-  
-  Returns (values expanded-members total-size)"
-  ;; Filter out compile-time properties (marked with :c-t)
-  (cl:let* ((runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t))) members))
-            (current-offset 0)
-            (expanded-members '()))
+  "Computes native scalar layout for a struct.
+   Members are placed at their natural alignment boundaries (same as before).
+   Total struct size is padded to the struct's overall alignment, which equals
+   the maximum alignment of any member — NOT to 16.
+   Returns (values expanded-members total-size)."
+  (cl:let* ((runtime-members (remove-if
+                               (lambda (m) (and (consp m) (eq (third m) :c-t)))
+                               members))
+             (current-offset 0)
+             (max-alignment  1)
+             (expanded-members '()))
     (dolist (member runtime-members)
-      (cl:let* ((name (first member))
-                (type (second member))
-                (alignment (get-std140-base-alignment type)) ;; Calls new version
-                (size (get-std140-size type)) ;; Calls new version
-                (padding (calculate-std140-padding current-offset alignment)))
+      (cl:let* ((name      (first member))
+                (type      (second member))
+                (alignment (get-std140-base-alignment type))
+                (size      (get-std140-size type))
+                (padding   (calculate-std140-padding current-offset alignment)))
         (declare (ignore name))
 
-        ;; Insert padding if needed
+        ;; Track overall struct alignment
+        (cl:when (> alignment max-alignment)
+          (setf max-alignment alignment))
+
+        ;; Insert inter-member padding if needed
         (cl:when (> padding 0)
           (cl:let ((pad-remaining padding)
                    (pad-idx 0)
                    (pad-current-offset current-offset))
             (loop while (> pad-remaining 0) do
-                    (cl:let* ((pad-member
-                               (cl:cond
-                                 ;; Only use larger types if we are aligned for them!
-                                 ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
-                                 ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
-                                 ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
-                                 (t (list 'char 1))))
-                              (pad-type (first pad-member))
-                              (pad-size (second pad-member))
-                              (pad-name (intern (format nil "_PAD_~a_~a" current-offset pad-idx))))
-
-                      (push (list pad-name pad-type) expanded-members)
-                      (decf pad-remaining pad-size)
-                      (incf pad-current-offset pad-size)
-                      (incf pad-idx))))
+              (cl:let* ((pad-member
+                          (cl:cond
+                            ((and (>= pad-remaining 8)
+                                  (zerop (mod pad-current-offset 8))) (list 'double 8))
+                            ((and (>= pad-remaining 4)
+                                  (zerop (mod pad-current-offset 4))) (list 'int 4))
+                            ((and (>= pad-remaining 2)
+                                  (zerop (mod pad-current-offset 2))) (list 'short 2))
+                            (t (list 'char 1))))
+                         (pad-type (first pad-member))
+                         (pad-size (second pad-member))
+                         (pad-name (intern (format nil "_PAD_~a_~a"
+                                                   current-offset pad-idx))))
+                (push (list pad-name pad-type) expanded-members)
+                (decf pad-remaining pad-size)
+                (incf pad-current-offset pad-size)
+                (incf pad-idx))))
           (incf current-offset padding))
 
-        ;; Add the actual member
+        ;; Add the member itself
         (push member expanded-members)
         (incf current-offset size)))
 
-    ;; Final structure padding to multiple of 16 (vec4 alignment)
-    (cl:let ((final-padding (calculate-std140-padding current-offset 16)))
+    ;; Trailing padding to max-member-alignment (native scalar rule)
+    (cl:let ((final-padding (calculate-std140-padding current-offset max-alignment)))
       (cl:when (> final-padding 0)
         (cl:let ((pad-remaining final-padding)
                  (pad-idx 0)
                  (pad-current-offset current-offset))
           (loop while (> pad-remaining 0) do
-                  (cl:let* ((pad-member
-                             (cl:cond
-                               ((and (>= pad-remaining 8) (zerop (mod pad-current-offset 8))) (list 'double 8))
-                               ((and (>= pad-remaining 4) (zerop (mod pad-current-offset 4))) (list 'int 4))
-                               ((and (>= pad-remaining 2) (zerop (mod pad-current-offset 2))) (list 'short 2))
-                               (t (list 'char 1))))
-                            (pad-type (first pad-member))
-                            (pad-size (second pad-member))
-                            (pad-name (intern (format nil "_PAD_EA_~a" pad-idx))))
-
-                    (push (list pad-name pad-type) expanded-members)
-                    (decf pad-remaining pad-size)
-                    (incf pad-current-offset pad-size)
-                    (incf pad-idx)))))
+            (cl:let* ((pad-member
+                        (cl:cond
+                          ((and (>= pad-remaining 8)
+                                (zerop (mod pad-current-offset 8))) (list 'double 8))
+                          ((and (>= pad-remaining 4)
+                                (zerop (mod pad-current-offset 4))) (list 'int 4))
+                          ((and (>= pad-remaining 2)
+                                (zerop (mod pad-current-offset 2))) (list 'short 2))
+                          (t (list 'char 1))))
+                       (pad-type (first pad-member))
+                       (pad-size (second pad-member))
+                       (pad-name (intern (format nil "_PAD_EA_~a" pad-idx))))
+              (push (list pad-name pad-type) expanded-members)
+              (decf pad-remaining pad-size)
+              (incf pad-current-offset pad-size)
+              (incf pad-idx)))))
       (incf current-offset final-padding))
 
     (values (nreverse expanded-members) current-offset)))
