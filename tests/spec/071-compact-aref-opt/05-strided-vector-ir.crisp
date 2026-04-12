@@ -1,0 +1,18 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-071-05-strided-vector-ir
+
+;; Regression guard: verifies that a :strided vector GET still uses the stride multiply.
+;; For :strided alignment, the flat-index formula reads stride[0] at runtime:
+;;   flat = offset[0] + i * stride[0]
+;; This MUST produce a "mul i64" in the kernel IR.
+;; If this test fails after the compact optimization is implemented, it means
+;; the optimizer is incorrectly applying the compact path to :strided tensors.
+;; The validator checks:
+;;   - "mul i64" IS present in the kernel function body.
+
+(def-type sv-t (vector long :address-space :global :access :read-write :align :strided))
+
+(def-kernel strided_vec_get (i v)
+    (declare #'(long sv-t => nil))
+  (let ((x (~ v i)))
+    (set! (~ v 0) x)))

@@ -1,0 +1,18 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-071-03-compact-matrix-get-ir
+
+;; Verifies that a compact matrix GET with runtime indices uses Horner's method.
+;; After the optimization:
+;;   flat = (row * extent[1] + col) + offset_total
+;; This requires exactly ONE mul i64 (row * extent[1]).
+;; No stride array reads.  Two extent reads (offset[0], extent[1]).
+;; The validator checks:
+;;   - Exactly one "mul i64" in the kernel function body (the Horner multiply).
+;;   - No load from the strides array field (field index 2 of the tensor struct).
+
+(def-type cm-t (matrix float :address-space :global :access :read-write :align :compact))
+
+(def-kernel compact_mat_get (row col m)
+    (declare #'(long long cm-t => nil))
+  (let ((x (~ m row col)))
+    (set! (~ m 0 0) x)))

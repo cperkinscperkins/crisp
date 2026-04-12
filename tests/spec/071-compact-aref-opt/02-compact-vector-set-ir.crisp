@@ -1,0 +1,15 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-071-02-compact-vector-set-ir
+
+;; Verifies that a compact vector SET with a runtime index produces no stride multiply.
+;; After the optimization, flat-index = offset[0] + i  (no stride read, no mul i64).
+;; Tests the write (set!) path specifically; test 01 covers the read path.
+;; The validator checks:
+;;   - No "mul i64" instruction in the kernel function body.
+;;   - An "add i64" IS present (offset + index).
+
+(def-type cv-t (vector long :address-space :global :access :read-write :align :compact))
+
+(def-kernel compact_vec_set (i val v)
+    (declare #'(long long cv-t => nil))
+  (set! (~ v i) val))

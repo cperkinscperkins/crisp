@@ -1,0 +1,19 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER v: 0 43 2 3
+
+;; End-to-end correctness for :strided vector GET and SET.
+;; Identical logic to 04-compact-vector-round-trip but with :align :strided.
+;; The harness initialises v as iota: v = [0, 1, 2, 3].
+;; val is arg 0, so the harness assigns val = 0 + 42 = 42.
+;; Kernel reads v[1] = 1 (GET), adds val=42 (result=43), writes to v[1] (SET).
+;; Expected result: v = [0, 43, 2, 3].
+;; Both :compact and :strided must produce correct results;
+;; only the generated IR differs between them.
+
+(def-type sv-t (vector long :address-space :global :access :read-write :align :strided))
+
+(def-kernel strided_vec_get_set (val &out v)
+    (declare #'(long sv-t => nil))
+  (let ((x (~ v 1)))
+    (set! (~ v 1) (+ x val))))
