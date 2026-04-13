@@ -221,7 +221,7 @@ functions (B3), and mutation errors (B4)."
                              (n-fp (getf info :n-float-params))
                              (pkg  (symbol-package (car result-vars)))
                              (t-adjs (mapcar #'local-adj result-vars)))
-                    (emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg)))))
+                    (%emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg #'emit #'local-adj "BW")))))
 
             ;; ---- B4: Mutation of kernel input cell ----------------
             ((and (consp form) (eq (car form) 'set!))
