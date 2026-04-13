@@ -6,6 +6,113 @@
 (in-package :crisp.compiler)
 
 
+
+(defun %emit-sub-fn-backward (fn args bkwd-fn t-adj-forms n-fp pkg emit-fn local-adj-fn &optional (sym-prefix "BW"))
+  (declare (ignore fn))
+  (cl:let* ((deltas (cl:loop for i from 0 below n-fp
+                             collect (intern (format nil "%~A_D~a" sym-prefix i) pkg)))
+            (accum-forms
+             (cl:loop for arg in args
+                      for i from 0 below n-fp
+                      when (symbolp arg)
+                      collect `(set! ,(funcall local-adj-fn arg)
+                                     (+ ,(funcall local-adj-fn arg) ,(nth i deltas))))))
+    (when accum-forms
+      (funcall emit-fn `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+                          (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adj-forms))))
+                            ,@accum-forms))))))
+
+(defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn &key hof-handler-fn (error-on-unknown t))
+  (cl:flet ((local-adj (x) (funcall local-adj-fn x))
+            (emit (x) (funcall emit-fn x)))
+    (cond
+      ;; Primitive: +
+      ((and (consp expr) (eq (car expr) '+))
+        (cl:let ((a (cadr expr)) (b (caddr expr)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
+      ;; Primitive: -
+      ((and (consp expr) (eq (car expr) '-))
+        (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
+      ;; Primitive: *
+      ((and (consp expr) (eq (car expr) '*))
+        (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
+      ;; Primitive: /
+      ((and (consp expr) (eq (car expr) '/))
+        (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
+      ;; Primitive: sin
+      ((and (consp expr) (eq (car expr) 'sin))
+        (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (cl:let* ((a-adj (local-adj a))
+                      (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
+              (setf (gethash cos-a adjoint-map) cos-a)
+              (emit `(set! ,cos-a (cos ,a)))
+              (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
+      ;; Primitive: cos
+      ((and (consp expr) (eq (car expr) 'cos))
+        (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (cl:let* ((a-adj (local-adj a))
+                      (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
+              (setf (gethash sin-a adjoint-map) sin-a)
+              (emit `(set! ,sin-a (sin ,a)))
+              (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
+      ;; Cell read: ~
+      ((and (consp expr) (eq (car expr) '~))
+        (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
+      ;; Differentiable sub-function call
+      ((and (consp expr)
+            (symbolp (car expr))
+            (gethash (car expr) *differentiable-functions*))
+        (cl:let* ((fn   (car expr))
+                   (args (cdr expr))
+                   (info (gethash fn *differentiable-functions*)))
+          (if (getf info :hof)
+              (if hof-handler-fn
+                  (funcall hof-handler-fn fn args v)
+                  (error "HOF handler required for sub-function ~A but not provided" fn))
+              (%emit-sub-fn-backward fn args
+                                    (getf info :bkwd-name)
+                                    (list (local-adj v))
+                                    (getf info :n-float-params)
+                                    (symbol-package v)
+                                    emit-fn local-adj-fn
+                                    (if (symbolp v) (symbol-name v) "BW")))))
+      ;; Struct accessor (name ends in ~): treat like identity.
+      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
+            (cl:let ((fname (symbol-name (car expr))))
+              (and (> (length fname) 1)
+                   (cl:char= (cl:char fname (1- (length fname))) #\~))))
+        (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
+      ;; Comparison/boolean ops: skip
+      ((and (consp expr) (symbolp (car expr))
+            (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
+       nil)
+      ;; If form: skip
+      ((and (consp expr) (symbolp (car expr))
+            (string= (symbol-name (car expr)) "IF"))
+       nil)
+      ;; System/integer-conversion functions: skip silently
+      ((and (consp expr) (symbolp (car expr))
+            (%backward-skip-fn-p (car expr)))
+       nil)
+      ;; Unknown user function
+      ((and (consp expr) (symbolp (car expr)))
+       (when error-on-unknown
+         (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
+      ;; Other
+      (t nil))))
+
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types)
   "Walks a flattened ANF body backwards to accumulate adjoints.
 Returns a backward ANF body (a let form).
@@ -24,20 +131,7 @@ functions (B3), and mutation errors (B4)."
              (emit (form)
                (push form backward-forms))
              ;; Emit _GRAD call + adjoint accumulation for a normal sub-function.
-             (emit-sub-fn-backward (fn args bkwd-fn t-adj-forms n-fp pkg)
-               (declare (ignore fn))
-               (cl:let* ((deltas (cl:loop for i from 0 below n-fp
-                                          collect (intern (format nil "%BW_D~a" i) pkg)))
-                         (accum-forms
-                          (cl:loop for arg in args
-                                   for i from 0 below n-fp
-                                   when (symbolp arg)
-                                   collect `(set! ,(local-adj arg)
-                                                  (+ ,(local-adj arg) ,(nth i deltas))))))
-                 (when accum-forms
-                   (emit `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
-                            (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adj-forms))))
-                              ,@accum-forms))))))
+
 
              ;; HOF inline backward: substitute concrete fn, remove funcall,
              ;; ANF-transform the concrete body, process backwards using
@@ -94,66 +188,9 @@ functions (B3), and mutation errors (B4)."
                        (when (and (consp hf-form) (= (length hf-form) 2) (symbolp (car hf-form)))
                          (cl:let ((hv    (car hf-form))
                                   (hexpr (cadr hf-form)))
-                           (cond
-                             ;; +
-                             ((and (consp hexpr) (eq (car hexpr) '+))
-                              (cl:let ((a (cadr hexpr)) (b (caddr hexpr)))
-                                (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj hv)))))
-                                (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj hv)))))))
-                             ;; -
-                             ((and (consp hexpr) (eq (car hexpr) '-))
-                              (cl:let* ((a (cadr hexpr)) (b (caddr hexpr)) (v-adj (local-adj hv)))
-                                (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
-                                (when b (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj))))))))
-                             ;; *
-                             ((and (consp hexpr) (eq (car hexpr) '*))
-                              (cl:let* ((a (cadr hexpr)) (b (caddr hexpr)) (v-adj (local-adj hv)))
-                                (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
-                                (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
-                             ;; /
-                             ((and (consp hexpr) (eq (car hexpr) '/))
-                              (cl:let* ((a (cadr hexpr)) (b (caddr hexpr)) (v-adj (local-adj hv)))
-                                (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
-                                (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
-                             ;; sin
-                             ((and (consp hexpr) (eq (car hexpr) 'sin))
-                              (cl:let* ((a (cadr hexpr)) (v-adj (local-adj hv)))
-                                (when (symbolp a)
-                                  (cl:let* ((a-adj (local-adj a))
-                                            (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
-                                    (setf (gethash cos-a adjoint-map) cos-a)
-                                    (emit `(set! ,cos-a (cos ,a)))
-                                    (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
-                             ;; cos
-                             ((and (consp hexpr) (eq (car hexpr) 'cos))
-                              (cl:let* ((a (cadr hexpr)) (v-adj (local-adj hv)))
-                                (when (symbolp a)
-                                  (cl:let* ((a-adj (local-adj a))
-                                            (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
-                                    (setf (gethash sin-a adjoint-map) sin-a)
-                                    (emit `(set! ,sin-a (sin ,a)))
-                                    (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
-                             ;; ~ cell read
-                             ((and (consp hexpr) (eq (car hexpr) '~))
-                              (cl:let* ((a (cadr hexpr)) (v-adj (local-adj hv)))
-                                (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
-                             ;; Nested known differentiable sub-function
-                             ((and (consp hexpr)
-                                   (symbolp (car hexpr))
-                                   (gethash (car hexpr) *differentiable-functions*))
-                              (cl:let* ((nfn   (car hexpr))
-                                        (nargs (cdr hexpr))
-                                        (ninfo (gethash nfn *differentiable-functions*)))
-                                (if (getf ninfo :hof)
-                                    (hof-inline-backward nfn nargs hv)
-                                    (emit-sub-fn-backward nfn nargs
-                                                          (getf ninfo :bkwd-name)
-                                                          (list (local-adj hv))
-                                                          (getf ninfo :n-float-params)
-                                                          (symbol-package hv)))))
-                             ;; Unknown → error
-                             (t (error "HOF inline backward: unsupported op ~A in inlined body of ~A"
-                                       (if (consp hexpr) (car hexpr) hexpr) fn))))))))))
+                           (%handle-single-value-backward hv hexpr adjoint-map #'emit #'local-adj
+                                                          :hof-handler-fn #'hof-inline-backward
+                                                          :error-on-unknown t))))))))
 
              ) ; end labels binding list
 
@@ -164,90 +201,9 @@ functions (B3), and mutation errors (B4)."
             ((and (listp form) (= (length form) 2) (symbolp (car form)))
               (cl:let ((v    (car form))
                        (expr (cadr form)))
-                (cond
-                  ;; Primitive: +
-                  ((and (consp expr) (eq (car expr) '+))
-                    (cl:let ((a (cadr expr)) (b (caddr expr)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
-                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
-                  ;; Primitive: -
-                  ((and (consp expr) (eq (car expr) '-))
-                    (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
-                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
-                  ;; Primitive: *
-                  ((and (consp expr) (eq (car expr) '*))
-                    (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
-                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
-                  ;; Primitive: /
-                  ((and (consp expr) (eq (car expr) '/))
-                    (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
-                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
-                  ;; Primitive: sin
-                  ((and (consp expr) (eq (car expr) 'sin))
-                    (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-                      (when (symbolp a)
-                        (cl:let* ((a-adj (local-adj a))
-                                  (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
-                          (setf (gethash cos-a adjoint-map) cos-a)
-                          (emit `(set! ,cos-a (cos ,a)))
-                          (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
-                  ;; Primitive: cos
-                  ((and (consp expr) (eq (car expr) 'cos))
-                    (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-                      (when (symbolp a)
-                        (cl:let* ((a-adj (local-adj a))
-                                  (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
-                          (setf (gethash sin-a adjoint-map) sin-a)
-                          (emit `(set! ,sin-a (sin ,a)))
-                          (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
-                  ;; Cell read: ~
-                  ((and (consp expr) (eq (car expr) '~))
-                    (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
-                  ;; B1: Known differentiable sub-function call
-                  ((and (consp expr)
-                        (symbolp (car expr))
-                        (gethash (car expr) *differentiable-functions*))
-                    (cl:let* ((fn   (car expr))
-                               (args (cdr expr))
-                               (info (gethash fn *differentiable-functions*)))
-                      (if (getf info :hof)
-                          ;; HOF: inline backward differentiation
-                          (hof-inline-backward fn args v)
-                          ;; Normal: call _GRAD companion
-                          (emit-sub-fn-backward fn args
-                                                (getf info :bkwd-name)
-                                                (list (local-adj v))
-                                                (getf info :n-float-params)
-                                                (symbol-package v)))))
-                  ;; B2.5: Struct accessor (name ends in ~): treat like identity.
-                  ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
-                        (cl:let ((fname (symbol-name (car expr))))
-                          (and (> (length fname) 1)
-                               (cl:char= (cl:char fname (1- (length fname))) #\~))))
-                    (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-                      (when (symbolp a)
-                        (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
-                  ;; Comparison/boolean ops: skip (no float adjoint contribution)
-                  ((and (consp expr) (symbolp (car expr))
-                        (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
-                   nil)
-                  ;; If form: skip (branching — no adjoint through condition)
-                  ((and (consp expr) (symbolp (car expr))
-                        (string= (symbol-name (car expr)) "IF"))
-                   nil)
-                  ;; System/integer-conversion functions: skip silently (no float adjoint).
-                  ((and (consp expr) (symbolp (car expr))
-                        (%backward-skip-fn-p (car expr)))
-                   nil)
-                  ;; B3: Unknown user function -> error (should be registered or forward-only).
-                  ((and (consp expr) (symbolp (car expr)))
-                   (error "~A: function ~A is not differentiable. Mark the kernel 'forward-only' if differentiation is not needed." (car form) (car expr)))
-                  ;; Other compound expr: skip
-                  (t nil))))
+                (%handle-single-value-backward v expr adjoint-map #'emit #'local-adj
+                                               :hof-handler-fn #'hof-inline-backward
+                                               :error-on-unknown t)))
 
             ;; ---- Multi-value binding: (v0 v1 ... expr) -----------
             ((and (listp form) (>= (length form) 3)
@@ -732,108 +688,8 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
             ((and (listp form) (= (length form) 2) (symbolp (car form)))
               (cl:let ((v    (car form))
                        (expr (cadr form)))
-                (cond
-                  ;; + : a_adj += v_adj, b_adj += v_adj
-                  ((and (consp expr) (eq (car expr) '+))
-                    (cl:let ((a (cadr expr))
-                             (b (caddr expr)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
-                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
-                  ;; - : a_adj += v_adj, b_adj += -v_adj
-                  ((and (consp expr) (eq (car expr) '-))
-                    (cl:let* ((a     (cadr expr))
-                              (b     (caddr expr))
-                              (v-adj (local-adj v)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
-                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
-                  ;; * : a_adj += b * v_adj, b_adj += a * v_adj
-                  ((and (consp expr) (eq (car expr) '*))
-                    (cl:let* ((a     (cadr expr))
-                              (b     (caddr expr))
-                              (v-adj (local-adj v)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
-                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
-                  ;; / : a_adj += (1/b)*v_adj, b_adj += (-a/b^2)*v_adj
-                  ((and (consp expr) (eq (car expr) '/))
-                    (cl:let* ((a     (cadr expr))
-                              (b     (caddr expr))
-                              (v-adj (local-adj v)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
-                      (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
-                  ;; sin : a_adj += cos(a) * v_adj
-                  ((and (consp expr) (eq (car expr) 'sin))
-                    (cl:let* ((a     (cadr expr))
-                              (v-adj (local-adj v)))
-                      (when (symbolp a)
-                        (cl:let* ((a-adj (local-adj a))
-                                  (cos-a (intern (format nil "~a_COS" (symbol-name a))
-                                                 (symbol-package a))))
-                          (setf (gethash cos-a adjoint-map) cos-a)
-                          (emit `(set! ,cos-a (cos ,a)))
-                          (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
-                  ;; cos : a_adj += -sin(a) * v_adj
-                  ((and (consp expr) (eq (car expr) 'cos))
-                    (cl:let* ((a     (cadr expr))
-                              (v-adj (local-adj v)))
-                      (when (symbolp a)
-                        (cl:let* ((a-adj (local-adj a))
-                                  (sin-a (intern (format nil "~a_SIN" (symbol-name a))
-                                                 (symbol-package a))))
-                          (setf (gethash sin-a adjoint-map) sin-a)
-                          (emit `(set! ,sin-a (sin ,a)))
-                          (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
-                  ;; ~ (cell read): a_adj += v_adj  (identity through cell deref)
-                  ((and (consp expr) (eq (car expr) '~))
-                    (cl:let* ((a     (cadr expr))
-                              (v-adj (local-adj v)))
-                      (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
-                  ;; Known differentiable sub-function call — single return value
-                  ((and (consp expr)
-                        (symbolp (car expr))
-                        (gethash (car expr) *differentiable-functions*))
-                    (cl:let* ((fn      (car expr))
-                              (args    (cdr expr))
-                              (info    (gethash fn *differentiable-functions*))
-                              (bkwd-fn (getf info :bkwd-name))
-                              (n-fp    (getf info :n-float-params))
-                              (pkg     (symbol-package fn))
-                              (deltas  (cl:loop for i from 0 below n-fp
-                                                collect (intern (format nil "%~a_D~a" (symbol-name v) i) pkg)))
-                              (v-adj   (local-adj v))
-                              (accum-forms
-                               (cl:loop for arg in args
-                                        for i from 0 below n-fp
-                                        when (symbolp arg)
-                                        collect `(set! ,(local-adj arg) (+ ,(local-adj arg) ,(nth i deltas))))))
-                      (when accum-forms
-                        (emit `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
-                                 (let (,(append deltas (list `(,bkwd-fn ,@args ,v-adj))))
-                                   ,@accum-forms))))))
-                  ;; B2.5: Struct accessor (name ends in ~): treat like identity.
-                  ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
-                        (cl:let ((fname (symbol-name (car expr))))
-                          (and (> (length fname) 1)
-                               (cl:char= (cl:char fname (1- (length fname))) #\~))))
-                    (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-                      (when (symbolp a)
-                        (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
-                  ;; Comparison/boolean ops: skip (no float adjoint contribution)
-                  ((and (consp expr) (symbolp (car expr))
-                        (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
-                   nil)
-                  ;; If form: skip (branching -- no adjoint through condition)
-                  ((and (consp expr) (symbolp (car expr))
-                        (string= (symbol-name (car expr)) "IF"))
-                   nil)
-                  ;; System/integer-conversion functions: skip silently (no float adjoint).
-                  ((and (consp expr) (symbolp (car expr))
-                        (%backward-skip-fn-p (car expr)))
-                   nil)
-                  ;; B3: Unknown user function -> error (should be registered or forward-only).
-                  ((and (consp expr) (symbolp (car expr)))
-                   (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr)))
-                  ;; Everything else: skip silently
-                  (t nil))))
+                (%handle-single-value-backward v expr adjoint-map #'emit #'local-adj
+                                               :error-on-unknown t)))
 
             ;; ---- Multi-value binding: (v0 v1 ... expr) -----------
             ((and (listp form) (>= (length form) 3)
@@ -850,20 +706,8 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
                              (bkwd-fn (getf info :bkwd-name))
                              (n-fp    (getf info :n-float-params))
                              (n-ret   (getf info :n-return))
-                             (pkg     (symbol-package fn))
-                             (deltas  (cl:loop for i from 0 below n-fp
-                                               collect (intern (format nil "%MV_D~a" i) pkg)))
-                             (t-adjs  (mapcar #'local-adj result-vars))
-                             (accum-forms
-                              (cl:loop for arg in args
-                                       for i from 0 below n-fp
-                                       when (symbolp arg)
-                                       collect `(set! ,(local-adj arg)
-                                                      (+ ,(local-adj arg) ,(nth i deltas))))))
-                    (when accum-forms
-                      (emit `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
-                               (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adjs))))
-                                 ,@accum-forms))))))))
+                             (pkg     (symbol-package fn)))
+                        (%emit-sub-fn-backward fn args bkwd-fn (mapcar #'local-adj result-vars) n-fp pkg #'emit #'local-adj "MV")))))
 
             ;; ---- (return ...) or plain symbol: skip ---------------
             (t nil))))
