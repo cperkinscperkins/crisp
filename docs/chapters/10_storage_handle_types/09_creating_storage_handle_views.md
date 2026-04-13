@@ -61,9 +61,9 @@ Alternately, the `:strides` key can set the strides. Setting the strides directl
 There are some restrictions. They are enforced at compile time:
 
 - if the original and new element types don't match, then the source element type cannot be a struct type
-- If the original and new element types don't match, the source Storage Handle must have a `:compact` layout. Reinterpreting element types on `:strided` views is mathematically undefined and will trigger a compile-time error. 
+- If the original and new element types don't match, the source Storage Handle must have a `:compact` or `:compact-offset` layout. Reinterpreting element types on `:strided` views is mathematically undefined and will trigger a compile-time error. 
 
-The returned Storage Handle inherits the address-space and access permissions from the source. It also inherits the alignmnet (`:compact` or `:strided`), with one exception: if the `:strides` key is explicitly provided during the reinterpretation, the resulting handle is automatically typed as `:strided`.
+The returned Storage Handle inherits the address-space and access permissions from the source. It also inherits the alignmnet (`:compact`, `:compact-offset` or `:strided`), with one exception: if the `:strides` key is explicitly provided during the reinterpretation, the resulting handle is automatically typed as `:strided`.
 
 The runtime will assert that the number of source bytes is sufficient for the new requirements, but this
 assertion requires compiler flags (like `--runtime-checks`). 

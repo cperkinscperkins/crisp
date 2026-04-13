@@ -284,19 +284,21 @@
                 (loop for k from 1 below (cl:length index-forms) collect k)
                 :initial-value (dim-term 0)))))
 
+          
 
 (defun %get-tensor-align (type)
   "Extracts the :align keyword from a tensor type specifier.
    TYPE may be a list form (tensor elem N addr access align) or a
    mangled symbol TENSOR_ELEM_N_ADDR_ACCESS_ALIGN.
-   Returns :compact, :strided, or NIL (unknown / template variable)."
+   Returns :compact, :compact-offset, :strided, or NIL (unknown / template)."
   (labels ((coerce-aln (raw)
-             ;; List form has keyword (:compact/:strided); mangled form has bare symbol
              (cond
-               ((eq raw :compact)  :compact)
-               ((eq raw :strided)  :strided)
-               ((and (symbolp raw) (string-equal (symbol-name raw) "COMPACT"))  :compact)
-               ((and (symbolp raw) (string-equal (symbol-name raw) "STRIDED"))  :strided)
+               ((eq raw :compact)         :compact)
+               ((eq raw :compact-offset)  :compact-offset)
+               ((eq raw :strided)         :strided)
+               ((and (symbolp raw) (string-equal (symbol-name raw) "COMPACT"))         :compact)
+               ((and (symbolp raw) (string-equal (symbol-name raw) "COMPACT-OFFSET"))  :compact-offset)
+               ((and (symbolp raw) (string-equal (symbol-name raw) "STRIDED"))         :strided)
                (t nil))))
     (cond
       ((and (listp type) (symbolp (cl:first type))
@@ -309,41 +311,50 @@
            (coerce-aln (cl:sixth unmangled)))))
       (t nil))))
 
+
 (defun %build-tensor-compact-flat-index-form (target-sym index-forms)
-  "Builds the compact flat-index Crisp form for a :compact tensor access.
-   N=1 (vector): flat = offset[0] + i_0              (no stride read, no multiply)
-   N>=2 (matrix/tensor): Horner's method using extents:
-     flat = (...((i_0 * ext[1] + i_1) * ext[2] + i_2)...) + sum(offsets)
-   Returns a Crisp form ready for analyze-expression."
+  "Builds the :compact flat-index form — Horner on extents only, NO offset reads.
+   :compact guarantees all offsets are zero at the kernel boundary, so we skip them.
+   N=1: flat = i_0
+   N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1})"
   (let ((n (cl:length index-forms)))
     (if (= n 1)
-        ;; Vector: offset[0] + i_0
+        ;; Vector: just the index, cast to ulong
+        `(to-ulong ,(cl:first index-forms))
+        ;; Matrix / tensor: Horner only, no offset
+        (cl:let ((acc `(to-ulong ,(cl:first index-forms))))
+          (loop for k from 1 below n
+                do (setf acc `(+ (* ,acc (~ (extents~ ,target-sym) ,k))
+                                 (to-ulong ,(cl:nth k index-forms)))))
+          acc))))
+
+
+
+
+(defun %build-tensor-compact-offset-flat-index-form (target-sym index-forms)
+  "Builds the :compact-offset flat-index form — Horner on extents plus offset sum.
+   Strides are ignored (compact layout), but per-dimension offsets are read.
+   N=1: flat = offset[0] + i_0
+   N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1}) + sum(offset[k])"
+  (let ((n (cl:length index-forms)))
+    (if (= n 1)
         `(+ (~ (offset~ ,target-sym) 0)
             (to-ulong ,(cl:first index-forms)))
-        ;; Matrix / tensor: Horner on extents, then add all offsets
-        (let* (;; Horner accumulator: start with i_0, multiply-add for each remaining dim.
-               ;; Uses do-loop + setf so each iteration definitely applies the step.
-               ;; (for acc = INIT then STEP would leave INIT in `finally` for N=2.)
-               (horner
-                (cl:let ((acc `(to-ulong ,(cl:first index-forms))))
-                  (loop for k from 1 below n
-                        do (setf acc `(+ (* ,acc (~ (extents~ ,target-sym) ,k))
-                                         (to-ulong ,(cl:nth k index-forms)))))
-                  acc))
-               ;; Sum of all per-dimension offsets
-               (offset-sum
-                (reduce (lambda (a b) `(+ ,a ,b))
-                        (loop for k from 0 below n
-                              collect `(~ (offset~ ,target-sym) ,k)))))
+        (cl:let ((horner `(to-ulong ,(cl:first index-forms)))
+                 (offset-sum (reduce (lambda (a b) `(+ ,a ,b))
+                                     (loop for k from 0 below n
+                                           collect `(~ (offset~ ,target-sym) ,k)))))
+          (loop for k from 1 below n
+                do (setf horner `(+ (* ,horner (~ (extents~ ,target-sym) ,k))
+                                    (to-ulong ,(cl:nth k index-forms)))))
           `(+ ,horner ,offset-sum)))))
 
 (defun analyze-aref-expression (expr env context location)
   "Analyzes (~ target [index...]) or (~ref~ ...) expressions.
-   Cell/array path: single index, brand-aware type resolution (unchanged).
-   Tensor path: N index forms from (cddr expr) are desugared to a flat element
-   index.  When the tensor's :align is :compact (fully resolved at compile time),
-   %build-tensor-compact-flat-index-form is used (no stride reads, Horner method).
-   Otherwise %build-tensor-flat-index-form (strided path) is used."
+   Tensor path dispatches on resolved :align:
+     :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)
+     :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)
+     :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)"
   (let* ((op          (cl:first expr))
          (target-sym  (if (symbolp (cl:second expr)) (cl:second expr) nil))
          (array-node  (analyze-expression (cl:second expr) env context (append location '(1))))
@@ -389,15 +400,17 @@
                     (error "Tensor ~a requires ~a index~:p (arity ~a), got ~a."
                            target-sym tensor-n tensor-n (cl:length index-forms)))
                   (let* ((align      (%get-tensor-align array-type))
-                         (flat-form  (if (eq align :compact)
-                                         (progn
-                                           (log:debug "AREF compact path: ~a (N=~a)" target-sym tensor-n)
-                                           (%build-tensor-compact-flat-index-form target-sym index-forms))
-                                         (progn
-                                           (log:debug "AREF strided path: ~a (align=~s)" target-sym align)
-                                           (%build-tensor-flat-index-form target-sym index-forms))))
+                         (flat-form  (cond
+                                       ((eq align :compact)
+                                        (log:debug "AREF compact path (no offset): ~a (N=~a)" target-sym tensor-n)
+                                        (%build-tensor-compact-flat-index-form target-sym index-forms))
+                                       ((eq align :compact-offset)
+                                        (log:debug "AREF compact-offset path: ~a (N=~a)" target-sym tensor-n)
+                                        (%build-tensor-compact-offset-flat-index-form target-sym index-forms))
+                                       (t
+                                        (log:debug "AREF strided path: ~a (align=~s)" target-sym align)
+                                        (%build-tensor-flat-index-form target-sym index-forms))))
                          (flat-node  (analyze-expression flat-form env context location))
-                         ;; Brand-aware type resolution (same pattern as cell)
                          (brand-def  (and (not (eq *analysis-access-mode* :write))
                                           (not (consp elem-type))
                                           (find-brand-for-owner 'value-t array-type)))
@@ -439,7 +452,6 @@
           (if (or (string= op-name "~") (string= op-name "~REF~"))
               (analyze-function-call op expr env context location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
-
 
 
 

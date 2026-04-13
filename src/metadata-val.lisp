@@ -1530,11 +1530,10 @@ Returns the form or NIL."
         (setf pos (1+ m))))))
 
 (defun validate-071-01-compact-vector-get-ir (ir-path)
-  "Validates compact vector GET IR: no stride multiply, add present.
+  "Validates compact vector GET IR: no stride multiply, no offset load.
    Checks:
      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.
-       Byte-offset multiplies (mul i64 ..., ptrtoint(...)) are allowed.
-     - 'add i64' IS present (offset + index addition)"
+     - No load from offset field (field index 1)  — :compact skips offsets entirely."
   (unless (probe-file ir-path)
     (log:error "validate-071-01: IR file not found: ~a" ir-path)
     (return-from validate-071-01-compact-vector-get-ir nil))
@@ -1546,15 +1545,15 @@ Returns the form or NIL."
     (and
      (or (not (%071-has-stride-mul body))
          (progn (log:error "validate-071-01: compact vector GET must not contain a stride mul i64") nil))
-     (or (search "add i64" body)
-         (progn (log:error "validate-071-01: compact vector GET must contain add i64") nil))
+     (or (not (%072-has-offset-load body))
+         (progn (log:error "validate-071-01: compact vector GET must not load from offset field") nil))
      (progn (log:info "validate-071-01: PASS") t))))
 
 (defun validate-071-02-compact-vector-set-ir (ir-path)
-  "Validates compact vector SET IR: no stride multiply, add present.
+  "Validates compact vector SET IR: no stride multiply, no offset load.
    Checks:
      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.
-     - 'add i64' IS present"
+     - No load from offset field — :compact skips offsets entirely."
   (unless (probe-file ir-path)
     (log:error "validate-071-02: IR file not found: ~a" ir-path)
     (return-from validate-071-02-compact-vector-set-ir nil))
@@ -1566,8 +1565,8 @@ Returns the form or NIL."
     (and
      (or (not (%071-has-stride-mul body))
          (progn (log:error "validate-071-02: compact vector SET must not contain a stride mul i64") nil))
-     (or (search "add i64" body)
-         (progn (log:error "validate-071-02: compact vector SET must contain add i64") nil))
+     (or (not (%072-has-offset-load body))
+         (progn (log:error "validate-071-02: compact vector SET must not load from offset field") nil))
      (progn (log:info "validate-071-02: PASS") t))))
 
 (defun validate-071-03-compact-matrix-get-ir (ir-path)
@@ -1610,3 +1609,70 @@ Returns the form or NIL."
      (or (%071-has-stride-mul body)
          (progn (log:error "validate-071-05: strided vector GET must contain a stride mul i64") nil))
      (progn (log:info "validate-071-05: PASS") t))))
+
+;;; ── 072-compact-offset-aref validators ───────────────────────────────────
+
+(defun %072-has-offset-load (body)
+  "Returns T if BODY contains a load from the tensor offset field (struct field index 1).
+   The GEP pattern is 'i32 0, i32 1' (field 0=parent, 1=offsets, 2=strides, 3=extents)."
+  (not (null (search ", i32 0, i32 1" body))))
+
+(defun validate-072-01-compact-offset-vector-get-ir (ir-path)
+  "Validates :compact-offset vector GET IR:
+     - No stride mul (compact strides)
+     - Offset field IS loaded (non-zero offset supported)
+     - add i64 present"
+  (unless (probe-file ir-path)
+    (log:error "validate-072-01: IR file not found: ~a" ir-path)
+    (return-from validate-072-01-compact-offset-vector-get-ir nil))
+  (let* ((ir   (uiop:read-file-string ir-path))
+         (body (%071-kernel-body ir "compact_offset_vec_get")))
+    (unless body
+      (log:error "validate-072-01: kernel compact_offset_vec_get not found in IR")
+      (return-from validate-072-01-compact-offset-vector-get-ir nil))
+    (and
+     (or (not (%071-has-stride-mul body))
+         (progn (log:error "validate-072-01: compact-offset vector GET must not have stride mul") nil))
+     (or (%072-has-offset-load body)
+         (progn (log:error "validate-072-01: compact-offset vector GET must load from offset field") nil))
+     (or (search "add i64" body)
+         (progn (log:error "validate-072-01: compact-offset vector GET must contain add i64") nil))
+     (progn (log:info "validate-072-01: PASS") t))))
+
+(defun validate-072-02-compact-offset-vector-set-ir (ir-path)
+  "Validates :compact-offset vector SET IR:
+     - No stride mul
+     - Offset field IS loaded"
+  (unless (probe-file ir-path)
+    (log:error "validate-072-02: IR file not found: ~a" ir-path)
+    (return-from validate-072-02-compact-offset-vector-set-ir nil))
+  (let* ((ir   (uiop:read-file-string ir-path))
+         (body (%071-kernel-body ir "compact_offset_vec_set")))
+    (unless body
+      (log:error "validate-072-02: kernel compact_offset_vec_set not found in IR")
+      (return-from validate-072-02-compact-offset-vector-set-ir nil))
+    (and
+     (or (not (%071-has-stride-mul body))
+         (progn (log:error "validate-072-02: compact-offset vector SET must not have stride mul") nil))
+     (or (%072-has-offset-load body)
+         (progn (log:error "validate-072-02: compact-offset vector SET must load from offset field") nil))
+     (progn (log:info "validate-072-02: PASS") t))))
+
+(defun validate-072-04-compact-no-offset-ir (ir-path)
+  "Validates :compact vector GET IR (strengthened regression):
+     - No stride mul
+     - No offset field load  ← new check vs 071"
+  (unless (probe-file ir-path)
+    (log:error "validate-072-04: IR file not found: ~a" ir-path)
+    (return-from validate-072-04-compact-no-offset-ir nil))
+  (let* ((ir   (uiop:read-file-string ir-path))
+         (body (%071-kernel-body ir "compact_vec_get_no_offset")))
+    (unless body
+      (log:error "validate-072-04: kernel compact_vec_get_no_offset not found in IR")
+      (return-from validate-072-04-compact-no-offset-ir nil))
+    (and
+     (or (not (%071-has-stride-mul body))
+         (progn (log:error "validate-072-04: compact vector GET must not have stride mul") nil))
+     (or (not (%072-has-offset-load body))
+         (progn (log:error "validate-072-04: compact vector GET must not load from offset field") nil))
+     (progn (log:info "validate-072-04: PASS") t))))

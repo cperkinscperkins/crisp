@@ -13,7 +13,7 @@ Every `tensor` has these runtime properties:
 | num-dims~ | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
 | strides~  | stride-type |  `def-rec-vec` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
 | extents~  | extents-type | `def-rec-vec` the lenght of `num-dims` that tracks the extent of that particular dimension |
-| align~   | align-enum | `:strided` or `:compact`. This is a immmutable compile-time property. |
+| align~   | align-enum | `:strided` or `:compact` or `:compact-offset`. This is an immmutable compile-time property. |
 
 Each of those properties can be accessed by the `XXXX~` function.
 e.g. `(length~ someTensor)` , `(parent~ someTensor)`

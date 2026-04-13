@@ -1,0 +1,16 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-072-01-compact-offset-vector-get-ir
+
+;; Verifies that a :compact-offset vector GET with a runtime index:
+;;   - Reads the offset field (field index 1 of the tensor struct)
+;;   - Does NOT read the stride field (no stride multiply)
+;;   - Uses add i64 for offset + index
+;; This distinguishes :compact-offset from :compact (which skips the offset read)
+;; and from :strided (which also reads strides).
+
+(def-type cov-t (vector long :address-space :global :access :read-write :align :compact-offset))
+
+(def-kernel compact_offset_vec_get (i v)
+    (declare #'(long cov-t => nil))
+  (let ((x (~ v i)))
+    (set! (~ v 0) x)))

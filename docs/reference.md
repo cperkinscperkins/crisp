@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-13T01:51:35.402905Z
+Generated on 2026-04-13T03:36:43.906707Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -637,21 +637,28 @@ Generated on 2026-04-13T01:51:35.402905Z
 ### DEFUN `%GET-TENSOR-ALIGN`
 - **Args**: `(TYPE)`
 
-  > Extracts the :align keyword from a tensor type specifier.  >    TYPE may be a list form (tensor elem N addr access align) or a  >    mangled symbol TENSOR_ELEM_N_ADDR_ACCESS_ALIGN.  >    Returns :compact, :strided, or NIL (unknown / template variable).
+  > Extracts the :align keyword from a tensor type specifier.  >    TYPE may be a list form (tensor elem N addr access align) or a  >    mangled symbol TENSOR_ELEM_N_ADDR_ACCESS_ALIGN.  >    Returns :compact, :compact-offset, :strided, or NIL (unknown / template).
 
 
 ---
 ### DEFUN `%BUILD-TENSOR-COMPACT-FLAT-INDEX-FORM`
 - **Args**: `(TARGET-SYM INDEX-FORMS)`
 
-  > Builds the compact flat-index Crisp form for a :compact tensor access.  >    N=1 (vector): flat = offset[0] + i_0              (no stride read, no multiply)  >    N>=2 (matrix/tensor): Horner's method using extents:  >      flat = (...((i_0 * ext[1] + i_1) * ext[2] + i_2)...) + sum(offsets)  >    Returns a Crisp form ready for analyze-expression.
+  > Builds the :compact flat-index form — Horner on extents only, NO offset reads.  >    :compact guarantees all offsets are zero at the kernel boundary, so we skip them.  >    N=1: flat = i_0  >    N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1})
+
+
+---
+### DEFUN `%BUILD-TENSOR-COMPACT-OFFSET-FLAT-INDEX-FORM`
+- **Args**: `(TARGET-SYM INDEX-FORMS)`
+
+  > Builds the :compact-offset flat-index form — Horner on extents plus offset sum.  >    Strides are ignored (compact layout), but per-dimension offsets are read.  >    N=1: flat = offset[0] + i_0  >    N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1}) + sum(offset[k])
 
 
 ---
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Cell/array path: single index, brand-aware type resolution (unchanged).  >    Tensor path: N index forms from (cddr expr) are desugared to a flat element  >    index.  When the tensor's :align is :compact (fully resolved at compile time),  >    %build-tensor-compact-flat-index-form is used (no stride reads, Horner method).  >    Otherwise %build-tensor-flat-index-form (strided path) is used.
+  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Tensor path dispatches on resolved :align:  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)
 
 
 ---
@@ -2637,14 +2644,14 @@ Generated on 2026-04-13T01:51:35.402905Z
 ### DEFUN `VALIDATE-071-01-COMPACT-VECTOR-GET-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates compact vector GET IR: no stride multiply, add present.  >    Checks:  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.  >        Byte-offset multiplies (mul i64 ..., ptrtoint(...)) are allowed.  >      - 'add i64' IS present (offset + index addition)
+  > Validates compact vector GET IR: no stride multiply, no offset load.  >    Checks:  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.  >      - No load from offset field (field index 1)  — :compact skips offsets entirely.
 
 
 ---
 ### DEFUN `VALIDATE-071-02-COMPACT-VECTOR-SET-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates compact vector SET IR: no stride multiply, add present.  >    Checks:  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.  >      - 'add i64' IS present
+  > Validates compact vector SET IR: no stride multiply, no offset load.  >    Checks:  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.  >      - No load from offset field — :compact skips offsets entirely.
 
 
 ---
@@ -2659,6 +2666,34 @@ Generated on 2026-04-13T01:51:35.402905Z
 - **Args**: `(IR-PATH)`
 
   > Validates strided vector GET IR: stride multiply must be present.  >    Checks:  >      - A 'mul i64 %reg, %reg' (stride multiply) IS present in the kernel body.  >        This confirms the compact optimization is NOT applied to :strided tensors.
+
+
+---
+### DEFUN `%072-HAS-OFFSET-LOAD`
+- **Args**: `(BODY)`
+
+  > Returns T if BODY contains a load from the tensor offset field (struct field index 1).  >    The GEP pattern is 'i32 0, i32 1' (field 0=parent, 1=offsets, 2=strides, 3=extents).
+
+
+---
+### DEFUN `VALIDATE-072-01-COMPACT-OFFSET-VECTOR-GET-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates :compact-offset vector GET IR:  >      - No stride mul (compact strides)  >      - Offset field IS loaded (non-zero offset supported)  >      - add i64 present
+
+
+---
+### DEFUN `VALIDATE-072-02-COMPACT-OFFSET-VECTOR-SET-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates :compact-offset vector SET IR:  >      - No stride mul  >      - Offset field IS loaded
+
+
+---
+### DEFUN `VALIDATE-072-04-COMPACT-NO-OFFSET-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates :compact vector GET IR (strengthened regression):  >      - No stride mul  >      - No offset field load  ← new check vs 071
 
 
 ---

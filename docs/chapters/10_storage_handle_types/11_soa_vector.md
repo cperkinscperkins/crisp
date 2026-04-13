@@ -29,9 +29,11 @@ struct Points {
 
 
 ### Alignment & Layout
-Crisp supports two alignment schemes for `soa-vector`: `:compact` and `:strided`.
+Crisp supports three alignment schemes for `soa-vector`: `:compact`, `:compact-offset` and `:strided`.
 
 `:compact` means the `soa-vector` is a primary allocation. The base pointer is 16-byte aligned. The internal arrays are perfectly contiguous and concatenated back-to-back. The compiler will only insert padding between the arrays if required to satisfy the natural alignment of the next element type.
+
+`:compact-offset` would be a subview into a larger `:compact` view.
 
 `:strided` means the `soa-vector` is a view or a slice. The internal arrays are no longer guaranteed to be perfectly contiguous, and accesses will rely on dynamic strides.
 

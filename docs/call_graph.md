@@ -547,6 +547,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%GET-TENSOR-ALIGN TYPE)  analysis/structs.lisp
 - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
 - - (%BUILD-TENSOR-COMPACT-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
+- - (%BUILD-TENSOR-COMPACT-OFFSET-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
 - - (%BUILD-TENSOR-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
 - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
 - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
@@ -910,10 +911,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-071-01-COMPACT-VECTOR-GET-IR IR-PATH)  metadata-val.lisp
 - - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp
 - - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp
+- - (%072-HAS-OFFSET-LOAD BODY)  metadata-val.lisp
 
 - (VALIDATE-071-02-COMPACT-VECTOR-SET-IR IR-PATH)  metadata-val.lisp
 - - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
 - - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp [See above]
+- - (%072-HAS-OFFSET-LOAD BODY)  metadata-val.lisp [See above]
 
 - (VALIDATE-071-03-COMPACT-MATRIX-GET-IR IR-PATH)  metadata-val.lisp
 - - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
@@ -922,6 +925,21 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-071-05-STRIDED-VECTOR-IR IR-PATH)  metadata-val.lisp
 - - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
 - - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp [See above]
+
+- (VALIDATE-072-01-COMPACT-OFFSET-VECTOR-GET-IR IR-PATH)  metadata-val.lisp
+- - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
+- - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp [See above]
+- - (%072-HAS-OFFSET-LOAD BODY)  metadata-val.lisp [See above]
+
+- (VALIDATE-072-02-COMPACT-OFFSET-VECTOR-SET-IR IR-PATH)  metadata-val.lisp
+- - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
+- - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp [See above]
+- - (%072-HAS-OFFSET-LOAD BODY)  metadata-val.lisp [See above]
+
+- (VALIDATE-072-04-COMPACT-NO-OFFSET-IR IR-PATH)  metadata-val.lisp
+- - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
+- - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp [See above]
+- - (%072-HAS-OFFSET-LOAD BODY)  metadata-val.lisp [See above]
 
 - (VALIDATE-10-BASICS-META PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL

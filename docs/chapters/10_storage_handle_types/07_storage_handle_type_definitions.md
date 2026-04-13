@@ -5,7 +5,7 @@ Storage Handles are completely typed by
 - type of their element
 - `address-space` (which is one of `:global` `:local` `:private` `:constant`)
 - `access` (which is one of `:read-only` `:write-only` `:read-write` `:writable` `:readable`)
-- `align` (one of `:strided` or `:compact`)  NOTE: `align` is not needed by the `cell` type.
+- `align` (one of `:strided` or `:compact` or `:compact-offset`)  NOTE: `align` is not needed by the `cell` type.
 
 The `tensor` type also requires the number of dimensions to be known at compile time.
 
