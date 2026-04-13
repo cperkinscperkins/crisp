@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-12T21:12:44.098321Z
+Generated on 2026-04-13T01:51:35.402905Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -634,10 +634,24 @@ Generated on 2026-04-12T21:12:44.098321Z
 
 
 ---
+### DEFUN `%GET-TENSOR-ALIGN`
+- **Args**: `(TYPE)`
+
+  > Extracts the :align keyword from a tensor type specifier.  >    TYPE may be a list form (tensor elem N addr access align) or a  >    mangled symbol TENSOR_ELEM_N_ADDR_ACCESS_ALIGN.  >    Returns :compact, :strided, or NIL (unknown / template variable).
+
+
+---
+### DEFUN `%BUILD-TENSOR-COMPACT-FLAT-INDEX-FORM`
+- **Args**: `(TARGET-SYM INDEX-FORMS)`
+
+  > Builds the compact flat-index Crisp form for a :compact tensor access.  >    N=1 (vector): flat = offset[0] + i_0              (no stride read, no multiply)  >    N>=2 (matrix/tensor): Horner's method using extents:  >      flat = (...((i_0 * ext[1] + i_1) * ext[2] + i_2)...) + sum(offsets)  >    Returns a Crisp form ready for analyze-expression.
+
+
+---
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Cell/array path: single index, brand-aware type resolution (unchanged).  >    Tensor path: N index forms from (cddr expr) are desugared to a flat element  >    index (sum of offsets[k] + index_k * strides[k]) via recursive analysis,  >    then a semantic-aref is returned with the tensor node and flat-index node.
+  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Cell/array path: single index, brand-aware type resolution (unchanged).  >    Tensor path: N index forms from (cddr expr) are desugared to a flat element  >    index.  When the tensor's :align is :compact (fully resolved at compile time),  >    %build-tensor-compact-flat-index-form is used (no stride reads, Horner method).  >    Otherwise %build-tensor-flat-index-form (strided path) is used.
 
 
 ---
@@ -2603,6 +2617,48 @@ Generated on 2026-04-12T21:12:44.098321Z
 - **Args**: `(META-PATH)`
 
   > Validates .metacrisp for test 01-metadata-vector.  >    Checks:  >      - physical-signature: (0 LONG) (1 (C-POINTER...)) (2 ULONG) x 5 = 7 slots  >      - declared-signature: val :range (0 0), v :range (1 6) :rank 1 :align :compact  >      - aliases: OUT-VEC-T with keyword-form type spec
+
+
+---
+### DEFUN `%071-KERNEL-BODY`
+- **Args**: `(IR FUNCTION-NAME)`
+
+  > Extracts the body of the named LLVM kernel function from IR string.  >    Searches for 'define ... @function-name' using a prefix match so that  >    mangled names like compact_mat_get_tensor_float_2_... are found by  >    searching for '@compact_mat_get'.  >    Returns the function body substring, or NIL if not found.
+
+
+---
+### DEFUN `%071-HAS-STRIDE-MUL`
+- **Args**: `(BODY)`
+
+  > Returns T if BODY contains a stride multiply: a 'mul i64' instruction  >    whose second operand is a register (not a ptrtoint sizeof constant).  >    Byte-offset multiplies (mul i64 %reg, ptrtoint(...)) are excluded.
+
+
+---
+### DEFUN `VALIDATE-071-01-COMPACT-VECTOR-GET-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates compact vector GET IR: no stride multiply, add present.  >    Checks:  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.  >        Byte-offset multiplies (mul i64 ..., ptrtoint(...)) are allowed.  >      - 'add i64' IS present (offset + index addition)
+
+
+---
+### DEFUN `VALIDATE-071-02-COMPACT-VECTOR-SET-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates compact vector SET IR: no stride multiply, add present.  >    Checks:  >      - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.  >      - 'add i64' IS present
+
+
+---
+### DEFUN `VALIDATE-071-03-COMPACT-MATRIX-GET-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates compact matrix GET IR: exactly one mul i64 (Horner), no stride load.  >    Checks:  >      - Exactly one 'mul i64' in the kernel body  (i_0 * ext[1])  >      - No load from the strides array field (struct field index 2)
+
+
+---
+### DEFUN `VALIDATE-071-05-STRIDED-VECTOR-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates strided vector GET IR: stride multiply must be present.  >    Checks:  >      - A 'mul i64 %reg, %reg' (stride multiply) IS present in the kernel body.  >        This confirms the compact optimization is NOT applied to :strided tensors.
 
 
 ---

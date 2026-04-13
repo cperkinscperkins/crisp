@@ -1,0 +1,17 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER v: 0 43 2 3
+
+;; End-to-end correctness for compact vector GET and SET.
+;; The harness initialises v as iota: v = [0, 1, 2, 3].
+;; val is arg 0, so the harness assigns val = 0 + 42 = 42.
+;; Kernel reads v[1] = 1 (GET), adds val=42 (result=43), writes to v[1] (SET).
+;; Expected result: v = [0, 43, 2, 3].
+;; This test exercises both the read and write paths of the compact optimization.
+
+(def-type cv-t (vector long :address-space :global :access :read-write :align :compact))
+
+(def-kernel compact_vec_get_set (val &out v)
+    (declare #'(long cv-t => nil))
+  (let ((x (~ v 1)))
+    (set! (~ v 1) (+ x val))))

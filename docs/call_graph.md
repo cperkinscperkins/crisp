@@ -544,6 +544,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp
 - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - (%GET-TENSOR-ALIGN TYPE)  analysis/structs.lisp
+- - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - (%BUILD-TENSOR-COMPACT-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
 - - (%BUILD-TENSOR-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
 - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
 - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
@@ -903,6 +906,22 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-070-01-VECTOR-METADATA META-PATH)  metadata-val.lisp
 
 - (VALIDATE-070-03-MATRIX-METADATA META-PATH)  metadata-val.lisp
+
+- (VALIDATE-071-01-COMPACT-VECTOR-GET-IR IR-PATH)  metadata-val.lisp
+- - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp
+- - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp
+
+- (VALIDATE-071-02-COMPACT-VECTOR-SET-IR IR-PATH)  metadata-val.lisp
+- - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
+- - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp [See above]
+
+- (VALIDATE-071-03-COMPACT-MATRIX-GET-IR IR-PATH)  metadata-val.lisp
+- - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
+- - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp [See above]
+
+- (VALIDATE-071-05-STRIDED-VECTOR-IR IR-PATH)  metadata-val.lisp
+- - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
+- - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp [See above]
 
 - (VALIDATE-10-BASICS-META PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL

@@ -30,6 +30,9 @@ For template usage, see the subequent section.
 | `constexpr`   | `(constexpr someVar)`       | Yes | Yes | delares that some param or variable must be compile time calculable. Compiler will error if it is not |
 | `to-uniform`  | `(to-uniform someVar)`      | No  | Yes | tells the compiler to MAKE the newly defined variable uniform across the entire workgroup. This is non-trivial. See [to-uniform](#to-uniform-) |
 | `forward-only` | see [Auto-Differentiation](#auto-differentiation-ad)| Yes | No | tells the compiler that this function is forward-only and should not be differentiated. Will not be compiled when the `-differentiate` flag is used. |
+| `max-registers` | `(max-registers 64)`        | Yes | No | An opt-in static analysis usually elected at the kernel level. Compiler will analyze the number of registers a kernel requires and emit a compiler error if it exceeds. |
+|`warn-max-registers` | `(warn-max-registers 64)` | Yes | No | An opt-in static analysis usually elected at the kernel level. Compiler will analyze the number of registers a kernel requires and emit a compiler warning if it exceeds. It will also name which kernel args might be candidates for `no-sroa`  |
+| `no-sroa` | `(no-sroa someVar)` |             | Yes | No | The variable named (typicall a Storage Handle) will not be automatically expanded into its SROA components at the kernel boundary, but is instead brought over as a single constant memory struct. This can lower register usage, but is only available for storage handles that do NOT use mutable strides or offsets. | 
 
 
 <!--

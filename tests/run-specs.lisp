@@ -732,8 +732,10 @@
          nil)))))
 
 ;; LLVM IR Runner Functions
+
 (defun compile-crisp-file-to-llvmir (filepath)
-  "Compiles a .crisp file to .ll and returns the output path if successful."
+  "Compiles a .crisp file to .ll and returns the output path if successful.
+   Reads source in :crisp-language package to match compile-crisp-file-to-spirv."
   (let* ((base-name (if *compile-differentiate* (format nil "~a_grad" (pathname-name filepath)) (pathname-name filepath)))
          (out-path (make-pathname :name base-name :type "ll" :defaults filepath))
          (*standard-output* (make-broadcast-stream)))
@@ -744,7 +746,10 @@
                   (crisp.compiler:initialize-compiler :log-level cl-user::*log-level*
                                                       :differentiate *compile-differentiate*)
                   (with-open-file (stream filepath)
-                    (let ((*package* (find-package :crisp.compiler)))
+                    ;; NOTE: use :crisp-language (not :crisp.compiler) so that
+                    ;; Crisp forms like (return ...) are read as crisp-language::return,
+                    ;; not as a CL function call.
+                    (let ((*package* (find-package :crisp-language)))
                       (loop for form = (read stream nil :eof)
                             until (eq form :eof)
                             collect form))))))

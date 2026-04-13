@@ -285,12 +285,65 @@
                 :initial-value (dim-term 0)))))
 
 
+(defun %get-tensor-align (type)
+  "Extracts the :align keyword from a tensor type specifier.
+   TYPE may be a list form (tensor elem N addr access align) or a
+   mangled symbol TENSOR_ELEM_N_ADDR_ACCESS_ALIGN.
+   Returns :compact, :strided, or NIL (unknown / template variable)."
+  (labels ((coerce-aln (raw)
+             ;; List form has keyword (:compact/:strided); mangled form has bare symbol
+             (cond
+               ((eq raw :compact)  :compact)
+               ((eq raw :strided)  :strided)
+               ((and (symbolp raw) (string-equal (symbol-name raw) "COMPACT"))  :compact)
+               ((and (symbolp raw) (string-equal (symbol-name raw) "STRIDED"))  :strided)
+               (t nil))))
+    (cond
+      ((and (listp type) (symbolp (cl:first type))
+            (string-equal (symbol-name (cl:first type)) "TENSOR"))
+       (coerce-aln (cl:sixth type)))
+      ((symbolp type)
+       (let ((unmangled (unmangle-template-struct-name type)))
+         (when (and (consp unmangled) (symbolp (cl:first unmangled))
+                    (string-equal (symbol-name (cl:first unmangled)) "TENSOR"))
+           (coerce-aln (cl:sixth unmangled)))))
+      (t nil))))
+
+(defun %build-tensor-compact-flat-index-form (target-sym index-forms)
+  "Builds the compact flat-index Crisp form for a :compact tensor access.
+   N=1 (vector): flat = offset[0] + i_0              (no stride read, no multiply)
+   N>=2 (matrix/tensor): Horner's method using extents:
+     flat = (...((i_0 * ext[1] + i_1) * ext[2] + i_2)...) + sum(offsets)
+   Returns a Crisp form ready for analyze-expression."
+  (let ((n (cl:length index-forms)))
+    (if (= n 1)
+        ;; Vector: offset[0] + i_0
+        `(+ (~ (offset~ ,target-sym) 0)
+            (to-ulong ,(cl:first index-forms)))
+        ;; Matrix / tensor: Horner on extents, then add all offsets
+        (let* (;; Horner accumulator: start with i_0, multiply-add for each remaining dim.
+               ;; Uses do-loop + setf so each iteration definitely applies the step.
+               ;; (for acc = INIT then STEP would leave INIT in `finally` for N=2.)
+               (horner
+                (cl:let ((acc `(to-ulong ,(cl:first index-forms))))
+                  (loop for k from 1 below n
+                        do (setf acc `(+ (* ,acc (~ (extents~ ,target-sym) ,k))
+                                         (to-ulong ,(cl:nth k index-forms)))))
+                  acc))
+               ;; Sum of all per-dimension offsets
+               (offset-sum
+                (reduce (lambda (a b) `(+ ,a ,b))
+                        (loop for k from 0 below n
+                              collect `(~ (offset~ ,target-sym) ,k)))))
+          `(+ ,horner ,offset-sum)))))
+
 (defun analyze-aref-expression (expr env context location)
   "Analyzes (~ target [index...]) or (~ref~ ...) expressions.
    Cell/array path: single index, brand-aware type resolution (unchanged).
    Tensor path: N index forms from (cddr expr) are desugared to a flat element
-   index (sum of offsets[k] + index_k * strides[k]) via recursive analysis,
-   then a semantic-aref is returned with the tensor node and flat-index node."
+   index.  When the tensor's :align is :compact (fully resolved at compile time),
+   %build-tensor-compact-flat-index-form is used (no stride reads, Horner method).
+   Otherwise %build-tensor-flat-index-form (strided path) is used."
   (let* ((op          (cl:first expr))
          (target-sym  (if (symbolp (cl:second expr)) (cl:second expr) nil))
          (array-node  (analyze-expression (cl:second expr) env context (append location '(1))))
@@ -330,21 +383,28 @@
           (let ((tensor-n (%get-tensor-arity array-type)))
             (if (and tensor-n target-sym)
 
-                ;; ── Tensor path: desugar N indices to flat element index ──────
+                ;; ── Tensor path ──────────────────────────────────────────────
                 (let* ((index-forms (cddr expr)))
                   (unless (= (cl:length index-forms) tensor-n)
                     (error "Tensor ~a requires ~a index~:p (arity ~a), got ~a."
                            target-sym tensor-n tensor-n (cl:length index-forms)))
-                  (let* ((flat-form     (%build-tensor-flat-index-form target-sym index-forms))
-                         (flat-node     (analyze-expression flat-form env context location))
+                  (let* ((align      (%get-tensor-align array-type))
+                         (flat-form  (if (eq align :compact)
+                                         (progn
+                                           (log:debug "AREF compact path: ~a (N=~a)" target-sym tensor-n)
+                                           (%build-tensor-compact-flat-index-form target-sym index-forms))
+                                         (progn
+                                           (log:debug "AREF strided path: ~a (align=~s)" target-sym align)
+                                           (%build-tensor-flat-index-form target-sym index-forms))))
+                         (flat-node  (analyze-expression flat-form env context location))
                          ;; Brand-aware type resolution (same pattern as cell)
-                         (brand-def     (and (not (eq *analysis-access-mode* :write))
-                                             (not (consp elem-type))
-                                             (find-brand-for-owner 'value-t array-type)))
-                         (is-rw         (and brand-def
-                                             (let ((owner (brand-definition-owner-struct brand-def)))
-                                               (and (symbolp owner)
-                                                    (search "READ-WRITE" (symbol-name owner))))))
+                         (brand-def  (and (not (eq *analysis-access-mode* :write))
+                                          (not (consp elem-type))
+                                          (find-brand-for-owner 'value-t array-type)))
+                         (is-rw      (and brand-def
+                                          (let ((owner (brand-definition-owner-struct brand-def)))
+                                            (and (symbolp owner)
+                                                 (search "READ-WRITE" (symbol-name owner))))))
                          (resolved-type (if (and is-rw (brand-active-p brand-def))
                                             (resolve-brand-type 'value-t target-sym elem-type)
                                             elem-type)))
@@ -379,6 +439,7 @@
           (if (or (string= op-name "~") (string= op-name "~REF~"))
               (analyze-function-call op expr env context location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+
 
 
 
