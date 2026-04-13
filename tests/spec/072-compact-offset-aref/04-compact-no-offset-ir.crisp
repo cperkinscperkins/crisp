@@ -1,0 +1,14 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-072-04-compact-no-offset-ir
+
+;; Regression guard: verifies that :compact vector GET still skips BOTH the
+;; stride read AND the offset read after the :compact-offset tier was introduced.
+;; The 071 validator only checked for absence of stride mul; this test additionally
+;; checks that the offset field (field index 1 of the tensor struct) is not loaded.
+
+(def-type cv-t (vector long :address-space :global :access :read-write :align :compact))
+
+(def-kernel compact_vec_get_no_offset (i v)
+    (declare #'(long cv-t => nil))
+  (let ((x (~ v i)))
+    (set! (~ v 0) x)))

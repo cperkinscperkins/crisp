@@ -79,4 +79,4 @@
                  :readable
                  :writeable)
 
-(def-enumeration align :compact :strided)
+(def-enumeration align :compact :compact-offset :strided)

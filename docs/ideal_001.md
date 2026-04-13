@@ -1922,17 +1922,19 @@ as a cursor to a section of the `storage`.
 
 ### Alignment
 
-Crisp supports two different alignment schemes for Storage Handles: `:strided` and `:compact`.
+Crisp supports three different alignment schemes for Storage Handles:  `:compact`, `:compact-offset`, and `:strided`
 
-`:compact` alignment is contiguous with no gaps between data members. For a `vector` that would be compatible with `std::vector<T> .data()`.  `:compact` alignment also means that the underlying `storage` parent pointer is aligned to a 16 byte address boundary. When alignment is `:compact` the access operations (`~`) ignore the the `stride` elements of the storage handle and offsets are calculated directly and performantly.
+`:compact` alignment is contiguous with no gaps between data members. For a `vector` that would be compatible with `std::vector<T> .data()`.  `:compact` alignment also means that the underlying `storage` parent pointer is aligned to a 16 byte address boundary. Lastly, `:compact` storage handles are not offset. When alignment is `:compact` the access operations (`~`) ignore both the `stride` and `offset` elements of the storage handle and the element dereferences are calculated directly and performantly.
 
- `:strided` alignment means that the Storage Handle uses its `stride` values when determining offsets 
- during access operations. `:strided` Storage Hanles are often the result of transpose and slicing
- operations. This increases the reuse potential of Storage Handles and means less data copying
+`:compact-offset` alignment is like `:compact` above except the `offset` elements of the storage handle
+are used, they are not ignored.  This means there is an additional calculation that has to occur when
+referencing.
+
+ `:strided` alignment means that the Storage Handle uses its `stride` values when determining reference locations  during access operations. `:strided` Storage Hanles are often the result of transpose and slicing operations. This increases the reuse potential of Storage Handles and means less data copying
  is required.   
 
- If a storage handle type function arg is declared as `:compact` it will not accept a `:strided` storage handle value.  Crisp developers can choose different strategies to help deal with alignment when declaring storage handle types. 
- - use templates.  `(with-template-type (T A) ...) ` where `A` is the alignment. Then you will have a "fast" `:compact` version of your function and a more flexible `:strided`.
+ If a storage handle type function arg is declared as `:compact` it will not accept a `:strided` or `:compact-offset` storage handle value.  Crisp developers can choose different strategies to help deal with alignment when declaring storage handle types. 
+ - use templates.  `(with-template-type (T A) ...) ` where `A` is the alignment. Then you will have a "fast" `:compact` or `:compact-offset` version of your function and a more flexible `:strided`.
  - use incomplete types.  Just skip the `:align` keyword when declaring a storage handle type. The 
  compiler will then allow any type of storage handle to be used as an argument to that function. But, note, that it will default to the slightly slower `:strided` behavior.
  - be exact. Just specify the alignment you expect/desire. For users who aren't using transpose or slicing operations, this is simplest.
@@ -2004,7 +2006,7 @@ Every `tensor` has these runtime properties:
 | num-dims~ | ulong       | number of dimensions of the tensor.  This is an immutable compile time property of the tensor |
 | strides~  | stride-type |  `def-rec-vec` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
 | extents~  | extents-type | `def-rec-vec` the lenght of `num-dims` that tracks the extent of that particular dimension |
-| align~   | align-enum | `:strided` or `:compact`. This is a immmutable compile-time property. |
+| align~   | align-enum | `:strided` or `:compact` or `:compact-offset`. This is an immmutable compile-time property. |
 
 Each of those properties can be accessed by the `XXXX~` function.
 e.g. `(length~ someTensor)` , `(parent~ someTensor)`
@@ -2137,7 +2139,7 @@ Storage Handles are completely typed by
 - type of their element
 - `address-space` (which is one of `:global` `:local` `:private` `:constant`)
 - `access` (which is one of `:read-only` `:write-only` `:read-write` `:writable` `:readable`)
-- `align` (one of `:strided` or `:compact`)  NOTE: `align` is not needed by the `cell` type.
+- `align` (one of `:strided` or `:compact` or `:compact-offset`)  NOTE: `align` is not needed by the `cell` type.
 
 The `tensor` type also requires the number of dimensions to be known at compile time.
 
@@ -2304,9 +2306,9 @@ Alternately, the `:strides` key can set the strides. Setting the strides directl
 There are some restrictions. They are enforced at compile time:
 
 - if the original and new element types don't match, then the source element type cannot be a struct type
-- If the original and new element types don't match, the source Storage Handle must have a `:compact` layout. Reinterpreting element types on `:strided` views is mathematically undefined and will trigger a compile-time error. 
+- If the original and new element types don't match, the source Storage Handle must have a `:compact` or `:compact-offset` layout. Reinterpreting element types on `:strided` views is mathematically undefined and will trigger a compile-time error. 
 
-The returned Storage Handle inherits the address-space and access permissions from the source. It also inherits the alignmnet (`:compact` or `:strided`), with one exception: if the `:strides` key is explicitly provided during the reinterpretation, the resulting handle is automatically typed as `:strided`.
+The returned Storage Handle inherits the address-space and access permissions from the source. It also inherits the alignmnet (`:compact`, `:compact-offset` or `:strided`), with one exception: if the `:strides` key is explicitly provided during the reinterpretation, the resulting handle is automatically typed as `:strided`.
 
 The runtime will assert that the number of source bytes is sufficient for the new requirements, but this
 assertion requires compiler flags (like `--runtime-checks`). 
@@ -2393,9 +2395,11 @@ struct Points {
 
 
 ### Alignment & Layout
-Crisp supports two alignment schemes for `soa-vector`: `:compact` and `:strided`.
+Crisp supports three alignment schemes for `soa-vector`: `:compact`, `:compact-offset` and `:strided`.
 
 `:compact` means the `soa-vector` is a primary allocation. The base pointer is 16-byte aligned. The internal arrays are perfectly contiguous and concatenated back-to-back. The compiler will only insert padding between the arrays if required to satisfy the natural alignment of the next element type.
+
+`:compact-offset` would be a subview into a larger `:compact` view.
 
 `:strided` means the `soa-vector` is a view or a slice. The internal arrays are no longer guaranteed to be perfectly contiguous, and accesses will rely on dynamic strides.
 

@@ -1,0 +1,21 @@
+;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER v: 0 43 2 3
+
+;; End-to-end correctness for :compact-offset vector GET and SET.
+;; The harness initialises v as iota: v = [0, 1, 2, 3].
+;; val is arg 0, so the harness assigns val = 0 + 42 = 42.
+;; Kernel reads v[1] = 1 (GET), adds val=42 (result=43), writes to v[1] (SET).
+;; Expected result: v = [0, 43, 2, 3].
+;;
+;; Note: the hoist harness always passes offset=0, so the :compact-offset offset
+;; read will add zero — the result is still correct and identical to the :compact
+;; round-trip in 071/04.  The IR tests (01/02) verify that the offset read IS
+;; present; this test verifies correctness when offset=0.
+
+(def-type cov-t (vector long :address-space :global :access :read-write :align :compact-offset))
+
+(def-kernel compact_offset_vec_get_set (val &out v)
+    (declare #'(long cov-t => nil))
+  (let ((x (~ v 1)))
+    (set! (~ v 1) (+ x val))))
