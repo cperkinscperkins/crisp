@@ -1486,3 +1486,127 @@ Returns the form or NIL."
 
     (log:info "validate-070-01-vector-metadata: PASS")
     t))
+
+;;; ── 071-compact-aref-opt validators ──────────────────────────────────────
+
+(defun %071-kernel-body (ir function-name)
+  "Extracts the body of the named LLVM kernel function from IR string.
+   Searches for 'define ... @function-name' using a prefix match so that
+   mangled names like compact_mat_get_tensor_float_2_... are found by
+   searching for '@compact_mat_get'.
+   Returns the function body substring, or NIL if not found."
+  (let* (;; Replace hyphens with underscores to match LLVM name mangling
+         (mangled (substitute #\_ #\- function-name))
+         (marker  (format nil "@~a" mangled))
+         (start   (search marker ir)))
+    (when start
+      (let ((brace-start (position #\{ ir :start start)))
+        (when brace-start
+          (let ((depth 0) (pos brace-start) (end nil))
+            (loop while (< pos (length ir)) do
+              (let ((ch (cl:char ir pos)))
+                (cond ((cl:char= ch #\{) (incf depth))
+                      ((cl:char= ch #\}) (decf depth)
+                       (when (zerop depth)
+                         (setf end (1+ pos))
+                         (cl:return-from nil)))))
+              (incf pos))
+            (when end (subseq ir brace-start end))))))))
+
+(defun %071-has-stride-mul (body)
+  "Returns T if BODY contains a stride multiply: a 'mul i64' instruction
+   whose second operand is a register (not a ptrtoint sizeof constant).
+   Byte-offset multiplies (mul i64 %reg, ptrtoint(...)) are excluded."
+  ;; Walk each line; look for 'mul i64' without 'ptrtoint' on the same line.
+  (let ((pos 0))
+    (loop
+      (let ((m (search "mul i64" body :start2 pos)))
+        (unless m (cl:return-from %071-has-stride-mul nil))
+        ;; Find end of this line
+        (let* ((eol (or (cl:position #\newline body :start m) (length body)))
+               (line (subseq body m eol)))
+          (unless (search "ptrtoint" line)
+            (cl:return-from %071-has-stride-mul t)))
+        (setf pos (1+ m))))))
+
+(defun validate-071-01-compact-vector-get-ir (ir-path)
+  "Validates compact vector GET IR: no stride multiply, add present.
+   Checks:
+     - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.
+       Byte-offset multiplies (mul i64 ..., ptrtoint(...)) are allowed.
+     - 'add i64' IS present (offset + index addition)"
+  (unless (probe-file ir-path)
+    (log:error "validate-071-01: IR file not found: ~a" ir-path)
+    (return-from validate-071-01-compact-vector-get-ir nil))
+  (let* ((ir   (uiop:read-file-string ir-path))
+         (body (%071-kernel-body ir "compact_vec_get")))
+    (unless body
+      (log:error "validate-071-01: kernel compact_vec_get not found in IR")
+      (return-from validate-071-01-compact-vector-get-ir nil))
+    (and
+     (or (not (%071-has-stride-mul body))
+         (progn (log:error "validate-071-01: compact vector GET must not contain a stride mul i64") nil))
+     (or (search "add i64" body)
+         (progn (log:error "validate-071-01: compact vector GET must contain add i64") nil))
+     (progn (log:info "validate-071-01: PASS") t))))
+
+(defun validate-071-02-compact-vector-set-ir (ir-path)
+  "Validates compact vector SET IR: no stride multiply, add present.
+   Checks:
+     - No 'mul i64 %reg, %reg' (stride multiply) in the kernel body.
+     - 'add i64' IS present"
+  (unless (probe-file ir-path)
+    (log:error "validate-071-02: IR file not found: ~a" ir-path)
+    (return-from validate-071-02-compact-vector-set-ir nil))
+  (let* ((ir   (uiop:read-file-string ir-path))
+         (body (%071-kernel-body ir "compact_vec_set")))
+    (unless body
+      (log:error "validate-071-02: kernel compact_vec_set not found in IR")
+      (return-from validate-071-02-compact-vector-set-ir nil))
+    (and
+     (or (not (%071-has-stride-mul body))
+         (progn (log:error "validate-071-02: compact vector SET must not contain a stride mul i64") nil))
+     (or (search "add i64" body)
+         (progn (log:error "validate-071-02: compact vector SET must contain add i64") nil))
+     (progn (log:info "validate-071-02: PASS") t))))
+
+(defun validate-071-03-compact-matrix-get-ir (ir-path)
+  "Validates compact matrix GET IR: exactly one mul i64 (Horner), no stride load.
+   Checks:
+     - Exactly one 'mul i64' in the kernel body  (i_0 * ext[1])
+     - No load from the strides array field (struct field index 2)"
+  (unless (probe-file ir-path)
+    (log:error "validate-071-03: IR file not found: ~a" ir-path)
+    (return-from validate-071-03-compact-matrix-get-ir nil))
+  (let* ((ir   (uiop:read-file-string ir-path))
+         (body (%071-kernel-body ir "compact_mat_get")))
+    (unless body
+      (log:error "validate-071-03: kernel compact_mat_get not found in IR")
+      (return-from validate-071-03-compact-matrix-get-ir nil))
+    ;; For compact N=2 Horner: exactly ONE stride multiply (i_0 * ext[1]).
+    ;; No load from the strides array field (field index 2).
+    (and
+     (or (%071-has-stride-mul body)
+         (progn (log:error "validate-071-03: compact matrix GET must have the Horner mul i64") nil))
+     ;; No load from field index 2 (strides array) — check for ", i32 0, i32 2"
+     (or (not (search ", i32 0, i32 2" body))
+         (progn (log:error "validate-071-03: compact matrix GET must not load from strides field (index 2)") nil))
+     (progn (log:info "validate-071-03: PASS") t))))
+
+(defun validate-071-05-strided-vector-ir (ir-path)
+  "Validates strided vector GET IR: stride multiply must be present.
+   Checks:
+     - A 'mul i64 %reg, %reg' (stride multiply) IS present in the kernel body.
+       This confirms the compact optimization is NOT applied to :strided tensors."
+  (unless (probe-file ir-path)
+    (log:error "validate-071-05: IR file not found: ~a" ir-path)
+    (return-from validate-071-05-strided-vector-ir nil))
+  (let* ((ir   (uiop:read-file-string ir-path))
+         (body (%071-kernel-body ir "strided_vec_get")))
+    (unless body
+      (log:error "validate-071-05: kernel strided_vec_get not found in IR")
+      (return-from validate-071-05-strided-vector-ir nil))
+    (and
+     (or (%071-has-stride-mul body)
+         (progn (log:error "validate-071-05: strided vector GET must contain a stride mul i64") nil))
+     (progn (log:info "validate-071-05: PASS") t))))

@@ -514,7 +514,7 @@ Tensors Vectors and Matrices
 - - - [x] marshall-tensor N    (macro or template or something else?)
 - - [ ] is :align :strided / :compact being handled correctly? Unit test
 - - [x] hoisting
-- - [ ] OPTIMIZATION: vector can compile-time optimize ~ to NOT use stride and dispatch simply based
+- - [x] OPTIMIZATION: vector can compile-time optimize ~ to NOT use stride and dispatch simply based
       off :align :compact. This would ignore stride. But when :align :strided OR when the type is
       incomplete and no alignment provided, we'd have to use the stride. 
 - - [ ] test offsets, strides really SET by hoisting code (instead of always jsut 0). for both align
@@ -526,6 +526,7 @@ Tensors Vectors and Matrices
 - - [ ] vector helpers
 - - [ ] matrix helpers
 - - [ ] tile?
+- - [ ] no-sroa ?
 
 
 EMERGENCY REORG

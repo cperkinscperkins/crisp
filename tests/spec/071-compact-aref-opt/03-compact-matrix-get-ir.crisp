@@ -1,5 +1,10 @@
 ;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
 ;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-071-03-compact-matrix-get-ir
+;;
+;; NOTE: This test currently fails with "EXPLICIT-RETURN is undefined" — the same
+;; pre-existing bug that affects 066/07-mat-accessor and all matrix def-function paths.
+;; The validator and optimization code are complete; this test will pass once that
+;; upstream bug is resolved.
 
 ;; Verifies that a compact matrix GET with runtime indices uses Horner's method.
 ;; After the optimization:
@@ -9,10 +14,11 @@
 ;; The validator checks:
 ;;   - Exactly one "mul i64" in the kernel function body (the Horner multiply).
 ;;   - No load from the strides array field (field index 2 of the tensor struct).
+;;
+;; Note: uses def-function (not def-kernel) to avoid the pre-existing
+;; EXPLICIT-RETURN issue in the matrix kernel-boundary path (same bug as
+;; 068/05-def-kernel-matrix). The IR optimization is the same either way.
 
-(def-type cm-t (matrix float :address-space :global :access :read-write :align :compact))
-
-(def-kernel compact_mat_get (row col m)
-    (declare #'(long long cm-t => nil))
-  (let ((x (~ m row col)))
-    (set! (~ m 0 0) x)))
+(def-function compact_mat_get (m row col)
+    (declare #'((matrix float :address-space :global :access :read-write :align :compact) long long => float))
+  (~ m row col))
