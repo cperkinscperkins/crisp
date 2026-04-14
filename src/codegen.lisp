@@ -363,6 +363,21 @@
 (defgeneric generate-node-ir (node builder module var-env di-builder di-scope location-map)
   (:documentation "Generates LLVM IR for a single semantic node."))
 
+(defun %get-di-location (node module di-builder di-scope location-map)
+  "Helper: Creates and returns a debug location if debug metadata is available."
+  (when (and di-builder di-scope location-map)
+    (let* ((loc (semantic-node-source-location node))
+           (line (gethash loc location-map 0)))
+      (llvm-di-builder-create-debug-location (llvm-get-module-context module)
+                                             line 0 di-scope (cffi:null-pointer)))))
+
+(defun %attach-debug-loc (inst node module di-builder di-scope location-map)
+  "Helper: Creates and attaches a debug location to the instruction if metadata is available."
+  (let ((di-loc (%get-di-location node module di-builder di-scope location-map)))
+    (when di-loc
+      (llvm-instruction-set-debug-loc inst di-loc))
+    di-loc))
+
 (defun generate-expression-ir (builder module var-env di-builder di-scope location-map node)
   "Recursively generates IR for a single expression node."
   (generate-node-ir node builder module var-env di-builder di-scope location-map))
@@ -549,12 +564,7 @@
            (t
              (error "Codegen not implemented for literal of type ~a" type-spec))))
 
-         (di-location
-          (when (and di-builder di-scope location-map)
-                (let* ((loc (semantic-node-source-location node))
-                       (line (gethash loc location-map 0)))
-                  (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                         line 0 di-scope (cffi:null-pointer))))))
+         (di-location (%get-di-location node module di-builder di-scope location-map)))
     (values result di-location)))
 
 
@@ -700,15 +710,7 @@
                   (inst (if (eq (crisp-type-category crisp-type) :float)
                             (,float-inst builder casted-lhs casted-rhs "fop_tmp")
                             (,int-inst builder casted-lhs casted-rhs "iop_tmp")))
-                  (di-location (when (and di-builder di-scope location-map)
-                                     (let* ((loc (semantic-node-source-location node))
-                                            (line (gethash loc location-map 0)))
-                                       (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                              line
-                                                                              0 ; column
-                                                                              di-scope
-                                                                              (cffi:null-pointer))))))
-             (when di-location (llvm-instruction-set-debug-loc inst di-location))
+                  (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
              (values inst di-location)))))))
 
 (def-binary-op-codegen semantic-add llvm-build-add llvm-build-fadd "SEMANTIC-ADD")
@@ -747,13 +749,8 @@
                                                                 arr)
                                                               1 nil)
                                           f args-array 1 "math_tmp"))
-                  (di-location (when (and di-builder di-scope location-map)
-                                     (let* ((loc (semantic-node-source-location node))
-                                            (line (gethash loc location-map 0)))
-                                       (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                              line 0 di-scope (cffi:null-pointer))))))
+                  (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
              (declare (ignore _))
-             (when di-location (llvm-instruction-set-debug-loc inst di-location))
              (values inst di-location)))))))
 
 (def-unary-math-codegen semantic-sin "llvm.sin")
@@ -854,61 +851,45 @@
                    (incf idx)))))
     args-array))
 
-(defmethod generate-node-ir ((node semantic-value-cast) builder module var-env di-builder di-scope location-map)
-  "Generates IR for a value-preserving cast."
-  (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-value-cast-arg node) builder module var-env di-builder di-scope location-map)
-    (declare (ignore arg-loc))
-    (let* ((arg-type (semantic-node-type (semantic-value-cast-arg node)))
-           (arg-val (extract-primary-value builder arg-val arg-type))
-           (from-type-name (get-single-value-type (semantic-value-cast-arg node)))
-           (to-type-name (semantic-value-cast-type node))
-           (cast-val (build-cast-if-needed builder module arg-val from-type-name to-type-name)))
-      ;; NOTE: This will need to be expanded to handle more `to-` conversions.
-      ;; For now, it relies on the implicit promotion logic.
-      (values cast-val nil))))
+(defmacro def-cast-codegen (node-type docstring arg-accessor type-accessor &body body)
+  `(defmethod generate-node-ir ((node ,node-type) builder module var-env di-builder di-scope location-map)
+     ,docstring
+     (multiple-value-bind (raw-arg-val arg-loc)
+         (generate-node-ir (,arg-accessor node) builder module var-env di-builder di-scope location-map)
+       (declare (ignore arg-loc))
+       (let* ((arg-node (,arg-accessor node))
+              (arg-type (semantic-node-type arg-node))
+              (arg-val (extract-primary-value builder raw-arg-val arg-type))
+              (from-type-spec (get-single-value-type arg-node))
+              (to-type-spec (,type-accessor node))
+              (to-llvm-type (let ((err nil)) ; Allow to-type to be unresolvable for pure semantic casts
+                              (ignore-errors (crisp-type-to-llvm-type to-type-spec module)))))
+         (declare (ignorable from-type-spec to-type-spec to-llvm-type))
+         (values (progn ,@body) nil)))))
 
-(defmethod generate-node-ir ((node semantic-bitcast) builder module var-env di-builder di-scope location-map)
-  "Generates IR for a bitcast."
-  (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-bitcast-arg node) builder module var-env di-builder di-scope location-map)
-    (declare (ignore arg-loc))
-    (let* ((arg-type (semantic-node-type (semantic-bitcast-arg node)))
-           (arg-val (extract-primary-value builder arg-val arg-type))
-           (to-type-spec (semantic-bitcast-type node))
-           (to-llvm-type (crisp-type-to-llvm-type to-type-spec module))
-           (cast-val (llvm-build-bit-cast builder arg-val to-llvm-type "bitcast")))
-      (values cast-val nil))))
+(def-cast-codegen semantic-value-cast "Generates IR for a value-preserving cast."
+  semantic-value-cast-arg semantic-value-cast-type
+  (build-cast-if-needed builder module arg-val from-type-spec to-type-spec))
 
-(defmethod generate-node-ir ((node semantic-fp-truncate-cast) builder module var-env di-builder di-scope location-map)
-  "Generates IR for a float-to-integer truncation cast."
-  (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-fp-truncate-cast-arg node) builder module var-env di-builder di-scope location-map)
-    (declare (ignore arg-loc))
-    (let* ((arg-type (semantic-node-type (semantic-fp-truncate-cast-arg node)))
-           (arg-val (extract-primary-value builder arg-val arg-type))
-           (to-type-spec (semantic-fp-truncate-cast-type node))
-           (to-llvm-type (crisp-type-to-llvm-type to-type-spec module))
-           ;; NOTE: This assumes a signed conversion. We'll need to check the
-           ;; crisp-type category to select fptosi vs fptoui in the future.
-           (cast-val (llvm-build-fp-to-si builder arg-val to-llvm-type "fptosi")))
-      (values cast-val nil))))
+(def-cast-codegen semantic-bitcast "Generates IR for a bitcast."
+  semantic-bitcast-arg semantic-bitcast-type
+  (llvm-build-bit-cast builder arg-val to-llvm-type "bitcast"))
 
-(defmethod generate-node-ir ((node semantic-truncate) builder module var-env di-builder di-scope location-map)
-  "Generates IR for (truncate val) -> (values int rem)."
-  (multiple-value-bind (arg-val arg-loc) (generate-node-ir (semantic-truncate-arg node) builder module var-env di-builder di-scope location-map)
-    (declare (ignore arg-loc))
-    (let* ((result-types (semantic-truncate-type node)) ; (int float)
-                                                       (quot-type (or *cached-int32-type* (llvm-int32-type)))
-                                                       (rem-type (llvm-float-type)) ;; Assuming float input for now
-                                                       ;; 1. Calculate Quotient: fptosi
-                                                       (quot-val (llvm-build-fp-to-si builder arg-val quot-type "quot"))
-                                                       ;; 2. Calculate Remainder: val - (float quot)
-                                                       (quot-float (llvm-build-si-to-fp builder quot-val rem-type "quot_f"))
-                                                       (rem-val (llvm-build-fsub builder arg-val quot-float "rem"))
-                                                       ;; 3. Build Struct
-                                                       (struct-type (get-llvm-return-type module result-types))
-                                                       (agg-undef (llvm-get-undef struct-type))
-                                                       (agg-0 (llvm-build-insert-value builder agg-undef quot-val 0 "res_q"))
-                                                       (agg-1 (llvm-build-insert-value builder agg-0 rem-val 1 "res_r")))
-      (values agg-1 nil))))
+(def-cast-codegen semantic-fp-truncate-cast "Generates IR for a float-to-integer truncation cast."
+  semantic-fp-truncate-cast-arg semantic-fp-truncate-cast-type
+  (llvm-build-fp-to-si builder arg-val to-llvm-type "fptosi"))
+
+(def-cast-codegen semantic-truncate "Generates IR for (truncate val) -> (values int rem)."
+  semantic-truncate-arg semantic-truncate-type
+  (let* ((quot-type (or *cached-int32-type* (llvm-int32-type)))
+         (rem-type (llvm-float-type)) ;; Assuming float input for now
+         (quot-val (llvm-build-fp-to-si builder arg-val quot-type "quot"))
+         (quot-float (llvm-build-si-to-fp builder quot-val rem-type "quot_f"))
+         (rem-val (llvm-build-fsub builder arg-val quot-float "rem"))
+         (struct-type (get-llvm-return-type module to-type-spec))
+         (agg-undef (llvm-get-undef struct-type))
+         (agg-0 (llvm-build-insert-value builder agg-undef quot-val 0 "res_q")))
+    (llvm-build-insert-value builder agg-0 rem-val 1 "res_r")))
 
 
 (defun %handle-die-intrinsic (builder module)
@@ -925,6 +906,18 @@
                         0
                         ""))
     (values nil nil)))
+
+(defun %build-llvm-function-type (module return-type-names param-types)
+  "Helper: Constructs an llvm-function-type and parameter count from a list of return types and parameter types."
+  (let* ((llvm-return-type (get-llvm-return-type module return-type-names))
+         (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-types))
+         (param-count (length expanded-param-types))
+         (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
+    (loop for i from 0
+          for type in expanded-param-types
+          do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
+    (values (llvm-function-type llvm-return-type param-types-array param-count nil)
+            param-count)))
 
 (defun %build-function-call (builder module var-env di-builder di-scope location-map node sig callee-name llvm-fn-type param-nodes param-count return-type-names)
   "Helper: Builds the actual function call instruction."
@@ -944,13 +937,7 @@
                                               (and (consp return-type-names) (eq (first return-type-names) 'void)))
                                           ""
                                           "call_tmp")))
-         (di-location (when (and di-builder di-scope location-map)
-                            (let* ((loc (semantic-node-source-location node))
-                                   (line (gethash loc location-map 0)))
-                              (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                     line 0 di-scope (cffi:null-pointer))))))
-    (when di-location
-          (llvm-instruction-set-debug-loc call-inst di-location))
+         (di-location (%attach-debug-loc call-inst node module di-builder di-scope location-map)))
     (values call-inst di-location)))
 
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
@@ -962,28 +949,19 @@
 
   (let* ((sig (semantic-call-signature node))
          (return-type-names (function-signature-return-types sig))
-         (llvm-return-type (get-llvm-return-type module return-type-names))
+         (param-types (mapcar #'parameter-def-type (function-signature-parameters sig))))
 
-         ;; Build the LLVM function *type* (the signature)
-         (param-nodes (mapcar #'parameter-def-type (function-signature-parameters sig)))
-         (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-nodes))
-         (param-count (length expanded-param-types))
-         (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
+    (multiple-value-bind (llvm-fn-type param-count)
+        (%build-llvm-function-type module return-type-names param-types)
 
-    ;; Fill param types array
-    (loop for i from 0
-          for type in expanded-param-types
-          do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
+      (let* (;; The name of the function in LLVM IR is mangled with its types
+             (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
+                             (mapcar #'mangle-type-spec param-types)))
+             (callee-name (substitute #\_ #\~ (substitute #\_ #\- (string-downcase mangled-name)))))
 
-    (let* (;; The name of the function in LLVM IR is mangled with its types
-           (mangled-name (format nil "~a~{_~a~}" (semantic-call-name node)
-                           (mapcar #'mangle-type-spec (mapcar #'parameter-def-type (function-signature-parameters sig)))))
-           (callee-name (substitute #\_ #\~ (substitute #\_ #\- (string-downcase mangled-name))))
-           (llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil)))
-
-      ;; Build and return the call
-      (%build-function-call builder module var-env di-builder di-scope location-map node sig
-                            callee-name llvm-fn-type param-nodes param-count return-type-names))))
+        ;; Build and return the call
+        (%build-function-call builder module var-env di-builder di-scope location-map node sig
+                              callee-name llvm-fn-type param-types param-count return-type-names)))))
 
 
 (defmethod generate-node-ir ((node semantic-progn) builder module var-env di-builder di-scope location-map)
@@ -1082,34 +1060,22 @@
          (param-count (length expanded-param-types))
          (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
 
-    ;; Fill param types array
-    (loop for i from 0
-          for type in expanded-param-types
-          do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
+    (multiple-value-bind (llvm-fn-type param-count)
+        (%build-llvm-function-type module return-type-names param-types)
 
-    (let* ((llvm-fn-type (llvm-function-type llvm-return-type param-types-array param-count nil))
+      (let* ((callee (generate-node-ir func-node builder module var-env di-builder di-scope location-map))
+             (arg-nodes (semantic-funcall-args node))
+             (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
+                                                 arg-nodes param-types param-count)))
 
-           ;; Generate the function pointer
-           (callee (generate-node-ir func-node builder module var-env di-builder di-scope location-map))
-
-           (arg-nodes (semantic-funcall-args node))
-           (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
-                                               arg-nodes param-types param-count)))
-
-      (let ((call-inst (llvm-build-call2 builder
-                                         llvm-fn-type
-                                         callee
-                                         args-array
-                                         param-count
-                                         (if has-return-value "funcall_tmp" "")))
-            (di-location (when (and di-builder di-scope location-map)
-                               (let* ((loc (semantic-node-source-location node))
-                                      (line (gethash loc location-map 0)))
-                                 (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                                        line 0 di-scope (cffi:null-pointer))))))
-        (when di-location
-              (llvm-instruction-set-debug-loc call-inst di-location))
-        (values call-inst di-location)))));; --- IF ---
+        (let* ((call-inst (llvm-build-call2 builder
+                                           llvm-fn-type
+                                           callee
+                                           args-array
+                                           param-count
+                                           (if has-return-value "funcall_tmp" "")))
+               (di-location (%attach-debug-loc call-inst node module di-builder di-scope location-map)))
+          (values call-inst di-location))))));; --- IF ---
 (defun terminator-p (block)
   "Checks if a basic block already has a terminator instruction."
   (not (cffi:null-pointer-p (llvm-get-basic-block-terminator block))))

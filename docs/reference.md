@@ -1,8 +1,8 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-13T03:36:43.906707Z
+Generated on 2026-04-14T03:44:08.045559Z
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
 ### DEFUN `ENSURE-BRANCH-COMPATIBILITY`
 - **Args**: `(THEN-NODE ELSE-NODE LOCATION)`
@@ -130,7 +130,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\core.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\analysis\core.lisp`
 
 ### DEFVAR `*ANALYSIS-ACCESS-MODE*`
 
@@ -450,6 +450,35 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
+### DEFUN `%EXTRACT-FN-BODY-AND-DECLARATIONS`
+- **Args**: `(BODY-AND-LOC)`
+
+  > Helper: Splits the body-and-loc of a function into declare-forms, flat declarations, and the actual fn-body.
+
+
+---
+### DEFUN `%DETECT-HOF-PARAM-VIA-FUNCALL`
+- **Args**: `(PARAMS FN-BODY)`
+
+  > Helper: Scans parameters for one that is funcall'd in the body.  >    Returns (values fn-param-idx fn-param-sym float-param-syms).
+
+
+---
+### DEFUN `%REGISTER-HOF-ENTRY`
+- **Args**: `(NAME TYPE-DESC PARAMS FN-PARAM-IDX FN-PARAM-SYM FLOAT-PARAM-SYMS
+              CLEAN-BODY N-FLOAT-PARAMS N-RETURN)`
+
+  > Helper: Registers a HOF in *differentiable-hof-store* and *differentiable-functions*.
+
+
+---
+### DEFUN `%REGISTER-STANDARD-DIFFERENTIABLE-ENTRY`
+- **Args**: `(NAME TYPE-DESC N-FLOAT-PARAMS N-RETURN &KEY OPTIMISTIC-P)`
+
+  > Helper: Registers a non-HOF function in *differentiable-functions*.
+
+
+---
 ### DEFUN `%PRE-REGISTER-DIFFERENTIABLE-FNS`
 - **Args**: `(FORMS)`
 
@@ -491,7 +520,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\ops.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\analysis\ops.lisp`
 
 ### DEFMACRO `DEF-BINARY-OP-ANALYZER`
 - **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
@@ -569,7 +598,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 ### DEFUN `REGISTER-OPS-ANALYZERS`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\structs.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\analysis\structs.lisp`
 
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
 - **Args**: `(TYPE)`
@@ -693,7 +722,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 ### DEFUN `REGISTER-STRUCT-ANALYZERS`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\anf-transform.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\anf-transform.lisp`
 
 ### DEFVAR `*ANF-COUNTER*`
 
@@ -757,8 +786,18 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\autodiff.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\autodiff.lisp`
 
+### DEFUN `%EMIT-SUB-FN-BACKWARD`
+- **Args**: `(FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN
+              &OPTIONAL (SYM-PREFIX BW))`
+
+---
+### DEFUN `%HANDLE-SINGLE-VALUE-BACKWARD`
+- **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
+              (ERROR-ON-UNKNOWN T))`
+
+---
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)`
 
@@ -882,7 +921,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\codegen.lisp`
 
 ### DEFUN `GET-OR-CREATE-DI-TYPE`
 - **Args**: `(CRISP-TYPE DI-BUILDER DI-TYPE-CACHE)`
@@ -971,6 +1010,20 @@ Generated on 2026-04-13T03:36:43.906707Z
 - **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
 
 ---
+### DEFUN `%GET-DI-LOCATION`
+- **Args**: `(NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Helper: Creates and returns a debug location if debug metadata is available.
+
+
+---
+### DEFUN `%ATTACH-DEBUG-LOC`
+- **Args**: `(INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Helper: Creates and attaches a debug location to the instruction if metadata is available.
+
+
+---
 ### DEFUN `GENERATE-EXPRESSION-IR`
 - **Args**: `(BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)`
 
@@ -1052,10 +1105,21 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
+### DEFMACRO `DEF-CAST-CODEGEN`
+- **Args**: `(NODE-TYPE DOCSTRING ARG-ACCESSOR TYPE-ACCESSOR &BODY BODY)`
+
+---
 ### DEFUN `%HANDLE-DIE-INTRINSIC`
 - **Args**: `(BUILDER MODULE)`
 
   > Helper: Handles the compiler intrinsic DIE (llvm.trap).
+
+
+---
+### DEFUN `%BUILD-LLVM-FUNCTION-TYPE`
+- **Args**: `(MODULE RETURN-TYPE-NAMES PARAM-TYPES)`
+
+  > Helper: Constructs an llvm-function-type and parameter count from a list of return types and parameter types.
 
 
 ---
@@ -1091,7 +1155,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
 
@@ -1162,7 +1226,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\compiler.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\compiler.lisp`
 
 ### DEFUN `RUN-TOOL-COMMAND`
 - **Args**: `(ARGS &KEY (LOG-PREFIX ))`
@@ -1253,7 +1317,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\enums.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\enums.lisp`
 
 ### DEFMACRO `DEF-ENUMERATION`
 - **Args**: `(NAME &REST SPECS)`
@@ -1273,7 +1337,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\environment.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\environment.lisp`
 
 ### DEFUN `PARSE-FUNCTION-DECLARATIONS`
 - **Args**: `(PARAMS DECLARATIONS)`
@@ -1418,9 +1482,9 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\errors.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\errors.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\main.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\main.lisp`
 
 ### DEFUN `MAIN`
 
@@ -1609,9 +1673,9 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\codegen-base.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\codegen-base.lisp`
 
 ### DEFUN `CRISP-TYPE-TO-CPP-TYPE`
 - **Args**: `(CRISP-TYPE)`
@@ -1680,7 +1744,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\common.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\common.lisp`
 
 ### DEFUN `PARSE-METACRISP-FILE`
 - **Args**: `(FILEPATH)`
@@ -1717,9 +1781,9 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\llvm-bindings.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\llvm-bindings.lisp`
 
 ### DEFCONSTANT `+LLVM-VOID-TYPE-KIND+`
 
@@ -1834,7 +1898,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\macros.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\macros.lisp`
 
 ### DEFMACRO `LET`
 - **Args**: `(BINDINGS &BODY BODY)`
@@ -1955,6 +2019,15 @@ Generated on 2026-04-13T03:36:43.906707Z
 
   > Helper: Enforces kernel requirements when Auto-Differentiation is enabled.  >    Returns T if the kernel should be differentiated, NIL if it is forward-only.
 
+
+---
+### DEFUN `%SPLIT-KERNEL-INPUTS-OUTPUTS`
+- **Args**: `(PARAMS SIGNATURE-TYPES)`
+
+---
+### DEFUN `%COMPUTE-BACKWARD-KERNEL-PARAMS`
+- **Args**: `(FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT
+              REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)`
 
 ---
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
@@ -2126,7 +2199,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\main.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\main.lisp`
 
 ### DEFUN `PRINT-COMPILER-ERROR`
 - **Args**: `(C FILENAME)`
@@ -2177,7 +2250,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\mangling.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\mangling.lisp`
 
 ### DEFVAR `*TEMPLATE-ARITY-LOOKUP-FN*`
 
@@ -2245,7 +2318,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\metadata-val.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\metadata-val.lisp`
 
 ### DEFUN `VALIDATE-KERNEL-METADATA`
 - **Args**: `(METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL TARGETS-P))`
@@ -2697,7 +2770,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\metadata.lisp`
 
 ### DEFVAR `*EMIT-METADATA*`
 
@@ -2824,9 +2897,9 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\parameters.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\parameters.lisp`
 
 ### DEFSTRUCT `PARAMETER-DEF`
 
@@ -2834,9 +2907,9 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\reader.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\reader.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\semantic.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\semantic.lisp`
 
 ### DEFSTRUCT `CRISP-TYPE`
 
@@ -3024,7 +3097,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\session.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\session.lisp`
 
 ### DEFSTRUCT `COMPILER-SESSION`
 
@@ -3050,7 +3123,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\structs.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\structs.lisp`
 
 ### DEFUN `%STRUCT-NATIVE-ALIGNMENT`
 - **Args**: `(STRUCT-NAME)`
@@ -3148,7 +3221,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\templates.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\templates.lisp`
 
 ### DEFSTRUCT `TEMPLATE-DATA`
 
@@ -3306,7 +3379,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\type-checker.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\type-checker.lisp`
 
 ### DEFUN `GET-PROMOTED-TYPE`
 - **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
@@ -3336,7 +3409,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\brand.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\brand.lisp`
 
 ### DEFVAR `*BRAND-INSTANCE-CACHE*`
 
@@ -3439,12 +3512,12 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\definitions.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\definitions.lisp`
 
 ### DEFSTRUCT `ENUMERATION-DEF`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\hierarchy.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\hierarchy.lisp`
 
 ### DEFSTRUCT `TYPE-NODE`
 
@@ -3562,7 +3635,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\registry.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\registry.lisp`
 
 ### DEFVAR `*GENERIC-FUNCTIONS*`
 
@@ -3724,7 +3797,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\validation.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\validation.lisp`
 
 ### DEFUN `EXCLUDED-TEMPLATE-BASE-TYPE-P`
 - **Args**: `(BASE-TYPE)`
@@ -3892,7 +3965,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\utils.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\utils.lisp`
 
 ### DEFMACRO `LET-D`
 - **Args**: `(BINDINGS &BODY BODY)`
