@@ -1,0 +1,29 @@
+;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; TEST-EXPECT: PASS
+;; (IR validator to be added during implementation —
+;;  matrix is (tensor T 2), so scratch matrix should expand to
+;;  9 implicit args: ptr + bytesize + offset[0,1] + strides[0,1]
+;;                   + extents[0,1] + length
+;;    = 2 + 2 + 2 + 2 + 1 = 9)
+
+;; Exercises make-scratch-matrix, the N=2 syntactic sugar for
+;; (make-scratch-tensor T 2 ...).  Calling tree matches test 02/03.
+
+(def-type scratch-float-mat (matrix float :address-space :local :access :read-write :align :compact))
+
+(def-function fun-D (mat row col)
+    (declare #'(scratch-float-mat ulong ulong => float))
+  (~ mat row col))
+
+(def-function fun-C (row col)
+    (declare #'(ulong ulong => float))
+  (let ((mat (make-scratch-matrix float :match-warp-tile)))
+    (fun-D mat row col)))
+
+(def-function fun-B (row col)
+    (declare #'(ulong ulong => float))
+  (fun-C row col))
+
+(def-kernel kernel_A (row col)
+    (declare #'(ulong ulong))
+  (fun-B row col))
