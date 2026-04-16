@@ -1,0 +1,41 @@
+;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; TEST-WITH[--metadata]: crisp.compiler::validate-075-03-scratch-matrix-implicit-meta
+;;
+;; Validates the .metacrisp output for a kernel that carries a scratch matrix
+;; (N=2, syntactic sugar for tensor T 2) through an implicit side channel.
+;;
+;; Expected metacrisp for kernel_a:
+;;   :physical-signature — 11 fully-exploded scalars:
+;;     (0 (C-POINTER :ADDRESS-SPACE :LOCAL))   ; scratch ptr
+;;     (1 ULONG)                               ; byte-size
+;;     (2 ULONG) (3 ULONG)                     ; offset[0..1]
+;;     (4 ULONG) (5 ULONG)                     ; strides[0..1]
+;;     (6 ULONG) (7 ULONG)                     ; extents[0..1]
+;;     (8 ULONG)                               ; length
+;;     (9 ULONG) (10 ULONG)                    ; explicit row, col (ulong)
+;;
+;;   :implicit-params — one entry with:
+;;     :type      (tensor float 2 :address-space :local :access :read-write :align :compact)
+;;     :size-expr :match-warp-tile
+;;     :range     (0 8)   ; 9 physical slots (3*2+3 = 9)
+;;
+;;   :declared-signature — row at range (9 9), col at range (10 10)
+
+(def-type sc-mat-float (matrix float :address-space :local :access :read-write :align :compact))
+
+(def-function fun-d-mat-meta (mat row col)
+    (declare #'(sc-mat-float ulong ulong => float))
+  (~ mat row col))
+
+(def-function fun-c-mat-meta (row col)
+    (declare #'(ulong ulong => float))
+  (let ((mat (make-scratch-matrix float :match-warp-tile)))
+    (fun-d-mat-meta mat row col)))
+
+(def-function fun-b-mat-meta (row col)
+    (declare #'(ulong ulong => float))
+  (fun-c-mat-meta row col))
+
+(def-kernel kernel_a (row col)
+    (declare #'(ulong ulong))
+  (fun-b-mat-meta row col))

@@ -533,3 +533,471 @@
                 (resolve-type-to-llvm
                  (canonicalize-type-specifier (cl:gethash alias-match *crisp-type-aliases*)))
                 (cl:error "Cannot resolve type to LLVM: ~a" type-spec)))))))
+
+
+;;; =========================================================
+;;; Fix 1: mangle-type-spec — handle integer arity in canonical tensor list
+;;; =========================================================
+;;
+;; Appended to: src/mangling.lisp
+;;
+;; (tensor int 1 :local :read-write :compact) contains an integer arity.
+;; mangle-type-spec must stringify integers instead of erroring.
+;; src/mangling.lisp:155
+
+(cl:defun mangle-type-spec (type-spec)
+  "Creates a string representation of a type spec for name mangling.
+   Extended to handle integers (e.g. tensor arity N in canonical list form)."
+  (log:debug "mangle-type-spec: ~s (type-of: ~a)" type-spec (cl:type-of type-spec))
+  (cl:cond
+   ((cl:symbolp  type-spec) (cl:string-downcase (cl:symbol-name type-spec)))
+   ((cl:integerp type-spec) (cl:format nil "~a" type-spec))
+   ((cl:listp    type-spec) (cl:format nil "~{~a~^_~}" (cl:mapcar #'mangle-type-spec type-spec)))
+   (cl:t (cl:error "Cannot mangle unknown type specifier: ~a" type-spec))))
+
+
+;;; =========================================================
+;;; Fix 2: *implicit-scratch-size-expr-map* — side table for size expressions
+;;; =========================================================
+;;
+;; Stores the user-supplied sizeExpression for each scratch tensor implicit param.
+;; Key: param-name symbol (e.g. SV_FROM_FUN-C_1).  Value: the raw size-expr form.
+;; Kept separate from *implicit-arg-map* to avoid touching analyze-function-call.
+
+(defvar *implicit-scratch-size-expr-map* (make-hash-table)
+  "Maps implicit scratch tensor param-name → size-expr form as written by the user
+   (e.g. :match-warp-tile, 1, 4).  Used by generate-implicit-signature for metadata.")
+
+
+;;; =========================================================
+;;; Fix 3: wrap-initialize-compiler — clear the new side table
+;;; =========================================================
+;;
+;; Rather than redefining initialize-compiler (which has a complex body
+;; already maintained in src/compiler.lisp), we wrap it via an :around
+;; method approach — impossible for plain defun.  Instead, store the
+;; original function and install a wrapper.
+;;
+;; We define a helper that register-builtins calls, hooking into the
+;; existing flow without duplicating the full initialize-compiler body.
+;;
+;; The simplest correct approach: redefine initialize-compiler with the
+;; FULL correct signature and body, including the new map clear.
+;; src/compiler.lisp:449
+
+(defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil))
+  "Initializes the compiler state.
+   Extended to also clear *implicit-scratch-size-expr-map* for scratch tensor support."
+  (setf *runtime-checks-enabled* runtime-checks)
+  (setf *differentiate-p* differentiate)
+  (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
+  (if (eq log-level :off)
+      (log:config :off)
+      (log:config :sane :stream *error-output* log-level))
+
+  (initialize-crisp-types)
+  (initialize-crisp-types)
+  (initialize-type-hierarchy)
+  (clrhash *function-table*)
+  (clrhash *crisp-structs*)
+  (clrhash *crisp-type-aliases*)
+  (clrhash *crisp-template-aliases*)
+  (clrhash *generic-functions*)
+  (clrhash *kernel-declared-signatures*)
+  (when (boundp '*record-definitions*) (clrhash *record-definitions*))
+
+  (setf *compiled-kernels* nil)
+
+  (clrhash *differentiable-functions*)
+  (clrhash *differentiable-hof-store*)
+
+  (initialize-expression-analyzers)
+  (clrhash *implicit-arg-map*)
+  (initialize-advisements)
+
+  (setf (gethash 'die *function-table*)
+        (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
+
+  (setf (symbol-function 'truncate) #'cl:truncate)
+  (setf (symbol-function 'floor) #'cl:floor)
+  (setf (symbol-function 'ceil) #'cl:ceiling)
+  (setf (symbol-function 'round) #'cl:round)
+
+  (if (fboundp 'initialize-templates)
+      (funcall 'initialize-templates)
+      (log:warn "Template system not loaded/initialized."))
+
+  (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+  (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+
+  (when (boundp '*partial-template-instantiations*)
+        (loop for template-name being the hash-keys of *partial-template-instantiations*
+              do (let ((dispatch-sym (intern (format nil "MAKE-~a%DISPATCH" template-name)
+                                             (symbol-package template-name))))
+                   (when (macro-function dispatch-sym)
+                         (fmakunbound dispatch-sym))))
+        (clrhash *partial-template-instantiations*))
+
+  (when (boundp '*struct-mutating-functions*)
+        (clrhash *struct-mutating-functions*))
+
+  ;; NEW: clear scratch tensor size-expr side table
+  (clrhash *implicit-scratch-size-expr-map*)
+
+  (register-builtins)
+
+  (log:info "Compiler initialized. differentiate=~a" differentiate))
+
+
+;;; =========================================================
+;;; Fix 4: %extract-scratch-size-expr — pull sizeExpression from args
+;;; =========================================================
+;;
+;; Returns the raw size-expr form as the user wrote it.
+;; For make-scratch-vector/matrix: size-expr = second positional arg.
+;; For make-scratch-tensor form 1 (elem N size-expr): size-expr = third arg.
+;; For make-scratch-tensor form 2 (alias size-expr):  size-expr = second arg.
+
+(defun %extract-scratch-size-expr (op args)
+  "Extracts the user-supplied size expression from make-scratch-* args."
+  (case op
+    ((make-scratch-vector make-scratch-matrix)
+     ;; (make-scratch-vector elem-or-alias size-expr &key ...)
+     (second args))
+    (make-scratch-tensor
+     (let* ((arg1 (first args))
+            (arg2 (second args))
+            ;; Form 1 if arg2 is an integer and arg1 is not a tensor alias
+            (is-tensor-alias (and (symbolp arg1)
+                                  (let ((resolved (resolve-type-alias arg1)))
+                                    (and (consp resolved)
+                                         (member (symbol-name (first resolved))
+                                                 '("TENSOR" "VECTOR" "MATRIX")
+                                                 :test #'string-equal)))))
+            (form-1-p (and (integerp arg2) (not is-tensor-alias))))
+       (if form-1-p
+           (third args)    ; (make-scratch-tensor elem N size-expr ...)
+           (second args)))) ; (make-scratch-tensor alias size-expr ...)
+    (t nil)))
+
+
+;;; =========================================================
+;;; Fix 5: %register-scratch-tensor-implicit — store canonical list + size-expr
+;;; =========================================================
+;;
+;; Appended to: src/analysis/structs.lisp
+;;
+;; CHANGED: stores canonical LIST (not mangled symbol) in *implicit-arg-map*.
+;; This makes %storage-handle-type-p recognize it as a tensor, enabling correct
+;; physical-signature explosion and correct :type in metadata.
+;; Also stores the size-expr in *implicit-scratch-size-expr-map*.
+
+(defun %register-scratch-tensor-implicit (op args)
+  "Shared logic for scan-operator methods on make-scratch-{vector,matrix,tensor}.
+   Marks the current function as an originator and records the canonical-list type
+   in *implicit-arg-map* and the size-expr in *implicit-scratch-size-expr-map*."
+  (setf *scan-is-originator* t)
+  (when args
+    (let ((canonical-spec (%scratch-tensor-canonical-spec op args)))
+      (when canonical-spec
+        (let* ((binding-name (or (compiler-context-current-binding-name *compiler-context*)
+                                 '__storage))
+               (fn-name (compiler-context-scanning-function-name *compiler-context*))
+               (counter (incf *scratch-cell-counter*))
+               (unique-name-str (format nil "~a_FROM_~a_~d" binding-name fn-name counter))
+               (unique-name (intern unique-name-str (symbol-package binding-name)))
+               (size-expr (%extract-scratch-size-expr op args)))
+
+          (log:info "Pass 1: ~a ~a -> implicit: ~a (type: ~a, size-expr: ~a)"
+                    op binding-name unique-name canonical-spec size-expr)
+
+          (push (cons unique-name canonical-spec) (gethash fn-name *implicit-arg-map*))
+          (when size-expr
+            (setf (gethash unique-name *implicit-scratch-size-expr-map*) size-expr)))))))
+
+
+;;; =========================================================
+;;; Fix 6: analyze-scratch-tensor-expression — store canonical list + size-expr
+;;; =========================================================
+;;
+;; Appended to: src/analysis/structs.lisp
+;;
+;; CHANGED: stores canonical LIST (not mangled symbol) for the same reasons as Fix 5.
+
+(defun analyze-scratch-tensor-expression (expr env context location)
+  "Analyzes a (make-scratch-{vector,matrix,tensor} ...) expression.
+   Stores canonical-list type in *implicit-arg-map* and size-expr in
+   *implicit-scratch-size-expr-map*."
+  (declare (ignore env))
+  (let* ((op (first expr))
+         (args (rest expr)))
+
+    (unless args
+      (error "Malformed ~a form: expected at least a type argument." op))
+
+    (let ((canonical-spec (%scratch-tensor-canonical-spec op args)))
+      (unless canonical-spec
+        (error "Could not resolve type spec for ~a form: ~a" op expr))
+
+      ;; Register in *implicit-arg-map* if not already there (single-pass or two-pass pass 2).
+      (let* ((fn-name (compiler-context-current-compiling-function context))
+             (implicit-name (or (compiler-context-current-binding-name context) '__storage))
+             (existing (gethash fn-name *implicit-arg-map*))
+             (size-expr (%extract-scratch-size-expr op args)))
+        (if existing
+            (log:warn "Structs: implicit-arg-map already has entries for ~a: ~a (adding ~a)"
+                      fn-name existing implicit-name)
+            (progn
+              (log:warn "Structs: Detected ~a in ~a (implicit name: ~a, type: ~a, size-expr: ~a)"
+                        op fn-name implicit-name canonical-spec size-expr)
+              (setf (gethash fn-name *implicit-arg-map*)
+                    (list (cons implicit-name canonical-spec)))
+              (when size-expr
+                (setf (gethash implicit-name *implicit-scratch-size-expr-map*) size-expr)))))
+
+      (unless (valid-parameterized-type-p canonical-spec)
+        (error "Failed to instantiate template for ~a (from ~a)" canonical-spec expr))
+
+      (log:debug "analyze-scratch-tensor-expression: ~a -> ~a" op canonical-spec)
+
+      (make-semantic-literal :value-type canonical-spec
+                             :value nil
+                             :source-location location))))
+
+
+;;; =========================================================
+;;; Fix 7: generate-implicit-signature — TENSOR addr-space/access + :size-expr
+;;; =========================================================
+;;
+;; Appended to: src/metadata.lisp
+;;
+;; Extended to:
+;;   - Extract :address-space and :access from TENSOR canonical lists
+;;     (the original code only handled CELL).
+;;   - Include :size-expr in the output entry, looked up from
+;;     *implicit-scratch-size-expr-map*.
+
+(defun generate-implicit-signature (sig declared-params)
+  "Generates the :implicit-params plist for metadata serialization.
+   Handles CELL canonical lists (positional addr-space/access) and
+   TENSOR canonical lists (keyword addr-space/access), and includes
+   :size-expr from *implicit-scratch-size-expr-map*."
+  (declare (ignore declared-params))
+  (let ((implicit-args nil)
+        (phys-index 0)
+        (implicit-params (function-signature-implicit-parameters sig)))
+
+    (dolist (param-def implicit-params)
+      (let* ((name (parameter-def-name param-def))
+             (type (parameter-def-type param-def))
+             (width (get-physical-width type))
+             (start phys-index)
+             (end (+ phys-index width -1))
+             (type-head (when (consp type) (symbol-name (first type))))
+             ;; Extract address-space: CELL uses positional (nth 2), TENSOR uses keyword
+             (address-space
+              (cond
+                ((and (consp type) (string-equal type-head "CELL") (>= (length type) 3))
+                 (nth 2 type))
+                ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                           :test #'string-equal))
+                 (or (second (member :address-space type)) :local))
+                (t :local)))
+             ;; Extract access: CELL uses positional (nth 3), TENSOR uses keyword
+             (access
+              (cond
+                ((and (consp type) (string-equal type-head "CELL") (>= (length type) 4))
+                 (nth 3 type))
+                ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                           :test #'string-equal))
+                 (or (second (member :access type)) :read-write))
+                (t :read-write)))
+             ;; Look up size-expr from side table (nil for non-tensor implicit params)
+             (size-expr (gethash name *implicit-scratch-size-expr-map*)))
+        (let ((entry (list :name (string-downcase (symbol-name name))
+                           :type (strip-package-qualifiers type)
+                           :size-expr size-expr
+                           :address-space address-space
+                           :access access
+                           :range (list start end))))
+          (push entry implicit-args))
+        (incf phys-index width)))
+    (nreverse implicit-args)))
+
+
+;;; =========================================================
+;;; Fix: %try-inline-struct-array-field-ptr — handle canonical list types
+;;; =========================================================
+;;
+;; Appended to: src/codegen.lisp
+;;
+;; The `%try-inline-struct-array-field-ptr` function checks `(symbolp struct-type-sym)`
+;; to determine if it can bypass the accessor function call with a direct GEP.
+;; This check fails when the argument type is a canonical tensor list
+;; `(tensor int 2 :local :read-write :compact)` instead of the mangled symbol
+;; `TENSOR_INT_2_LOCAL_READ-WRITE_COMPACT`.
+;;
+;; This happens for scratch tensors created via make-scratch-matrix/vector/tensor —
+;; their binding type is the canonical list (not the mangled symbol). As a result,
+;; `extents~(mat)` falls through to a function call that is only DECLARED but never
+;; DEFINED in the module, causing ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED.
+;;
+;; Fix: before the (symbolp struct-type-sym) check, resolve canonical TENSOR/VECTOR/MATRIX
+;; list types to their mangled symbol form.
+
+(defun %try-inline-struct-array-field-ptr
+    (array-node builder module var-env di-builder di-scope location-map)
+  "Bypass for array-returning struct field accessors (e.g. extents~, strides~).
+   Extended to resolve canonical tensor list types to mangled symbols so that
+   scratch tensors (with list type) get the same GEP treatment as named tensors.
+
+   Returns a GEP pointer to the array field, or NIL if the pattern is not matched."
+  (when (and (semantic-call-p array-node)
+             (= (cl:length (semantic-call-args array-node)) 1))
+    (let* ((call-type (semantic-call-type array-node))
+           (raw-type  (if (and (listp call-type)
+                               (= (cl:length call-type) 1)
+                               (listp (cl:first call-type)))
+                          (cl:first call-type)
+                          call-type)))
+      (when (%array-type-p (resolve-type-alias raw-type))
+        (let* ((call-name    (semantic-call-name array-node))
+               (name-str     (symbol-name call-name)))
+          (when (and (> (cl:length name-str) 1)
+                     (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
+            (let* ((field-name-str  (subseq name-str 0 (1- (cl:length name-str))))
+                   (arg-node        (cl:first (semantic-call-args array-node)))
+                   (raw-type-sym    (semantic-node-type arg-node))
+                   ;; NEW: resolve canonical TENSOR/VECTOR/MATRIX list to mangled symbol
+                   (struct-type-sym
+                    (if (and (consp raw-type-sym)
+                             (symbolp (cl:first raw-type-sym))
+                             (member (symbol-name (cl:first raw-type-sym))
+                                     '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal))
+                        (intern (mangle-template-struct-name
+                                 (cl:first raw-type-sym) (cl:rest raw-type-sym))
+                                (symbol-package (cl:first raw-type-sym)))
+                        raw-type-sym))
+                   (struct-def      (when (symbolp struct-type-sym)
+                                      (lookup-struct-definition struct-type-sym))))
+              (when struct-def
+                (let ((physical-index (%lookup-field-physical-index struct-def field-name-str)))
+                  (when physical-index
+                    (log:info "028-fix: inlining struct accessor ~a (field '~a' idx=~a) to avoid array-returning fn"
+                              call-name field-name-str physical-index)
+                    (let* ((struct-llvm-type (ensure-struct-llvm-type struct-type-sym))
+                           (struct-ptr
+                             (if (semantic-var-read-p arg-node)
+                                 (let ((alloca (gethash (semantic-var-read-name arg-node) var-env)))
+                                   (log:info "028-fix: using alloca for var ~a" (semantic-var-read-name arg-node))
+                                   alloca)
+                                 (multiple-value-bind (sv _loc global-ptr)
+                                     (generate-node-ir arg-node builder module var-env
+                                                       di-builder di-scope location-map)
+                                   (declare (ignore _loc))
+                                   (if (and global-ptr (not (cffi:null-pointer-p global-ptr)))
+                                       (progn
+                                         (log:info "029-fix: cell-of-struct accessor: using global ptr directly")
+                                         global-ptr)
+                                       (let ((spill (llvm-build-alloca builder struct-llvm-type "struct_spill")))
+                                         (log:info "028-fix: spilling struct value to local alloca")
+                                         (llvm-build-store builder sv spill)
+                                         spill))))))
+                      (cffi:with-foreign-object (gep-indices :pointer 2)
+                        (setf (cffi:mem-aref gep-indices :pointer 0)
+                              (llvm-const-int (llvm-int32-type) 0 nil))
+                        (setf (cffi:mem-aref gep-indices :pointer 1)
+                              (llvm-const-int (llvm-int32-type) physical-index nil))
+                        (llvm-build-in-bounds-gep2
+                         builder struct-llvm-type struct-ptr gep-indices 2 "arr_field_ptr")))))))))))))
+
+;;; Fix (v2): %try-inline-struct-array-field-ptr — also resolve type aliases
+;;;
+;; Appended to: src/codegen.lisp
+;;
+;; The prior fix (above) resolved canonical TENSOR/VECTOR/MATRIX list types.
+;; But when a scratch tensor parameter has a def-type alias (e.g. sc-int-mat),
+;; semantic-node-type returns the alias symbol (SC-INT-MAT), not the canonical list.
+;; We must resolve the alias and expand the storage-handle spec to get the
+;; canonical (tensor ...) form before mangling.
+;;
+;; Fix: call resolve-type-alias + expand-storage-handle-type-specifier on
+;; raw-type-sym before deciding whether to mangle.
+
+(defun %try-inline-struct-array-field-ptr
+    (array-node builder module var-env di-builder di-scope location-map)
+  "Bypass for array-returning struct field accessors (e.g. extents~, strides~).
+   Resolves type aliases and canonical list types to mangled symbols so that
+   scratch tensors (with def-type alias or with list type) get the same GEP
+   treatment as named tensors.
+
+   Returns a GEP pointer to the array field, or NIL if the pattern is not matched."
+  (when (and (semantic-call-p array-node)
+             (= (cl:length (semantic-call-args array-node)) 1))
+    (let* ((call-type (semantic-call-type array-node))
+           (raw-type  (if (and (listp call-type)
+                               (= (cl:length call-type) 1)
+                               (listp (cl:first call-type)))
+                          (cl:first call-type)
+                          call-type)))
+      (when (%array-type-p (resolve-type-alias raw-type))
+        (let* ((call-name    (semantic-call-name array-node))
+               (name-str     (symbol-name call-name)))
+          (when (and (> (cl:length name-str) 1)
+                     (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
+            (let* ((field-name-str  (subseq name-str 0 (1- (cl:length name-str))))
+                   (arg-node        (cl:first (semantic-call-args array-node)))
+                   (raw-type-sym    (semantic-node-type arg-node))
+                   ;; NEW v2: resolve alias then expand storage handle spec,
+                   ;; then mangle if it's a tensor/vector/matrix family.
+                   (struct-type-sym
+                    (cl:let* (;; 1. Resolve type alias (e.g. SC-INT-MAT -> (matrix int ...))
+                              (resolved-alias (resolve-type-alias raw-type-sym))
+                              ;; 2. Expand storage handle (e.g. (matrix ...) -> (tensor ... 2 ...))
+                              (expanded (if (consp resolved-alias)
+                                            (expand-storage-handle-type-specifier resolved-alias)
+                                            resolved-alias))
+                              ;; 3. Check for tensor-family canonical head
+                              (head (when (consp expanded) (cl:first expanded))))
+                      (if (and head
+                               (symbolp head)
+                               (cl:member (symbol-name head)
+                                          '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal))
+                          ;; Mangle to symbol (result interned in same pkg as head)
+                          (mangle-template-struct-name head (cl:rest expanded))
+                          ;; Otherwise keep original (already-mangled symbol or non-tensor type)
+                          raw-type-sym)))
+                   (struct-def      (when (symbolp struct-type-sym)
+                                      (lookup-struct-definition struct-type-sym))))
+              (when struct-def
+                (let ((physical-index (%lookup-field-physical-index struct-def field-name-str)))
+                  (when physical-index
+                    (log:info "028-fix v2: inlining struct accessor ~a (field '~a' idx=~a, resolved from ~a)"
+                              call-name field-name-str physical-index raw-type-sym)
+                    (let* ((struct-llvm-type (ensure-struct-llvm-type struct-type-sym))
+                           (struct-ptr
+                             (if (semantic-var-read-p arg-node)
+                                 (let ((alloca (gethash (semantic-var-read-name arg-node) var-env)))
+                                   (log:info "028-fix v2: using alloca for var ~a" (semantic-var-read-name arg-node))
+                                   alloca)
+                                 (multiple-value-bind (sv _loc global-ptr)
+                                     (generate-node-ir arg-node builder module var-env
+                                                       di-builder di-scope location-map)
+                                   (declare (ignore _loc))
+                                   (if (and global-ptr (not (cffi:null-pointer-p global-ptr)))
+                                       (progn
+                                         (log:info "029-fix v2: cell-of-struct accessor: using global ptr directly")
+                                         global-ptr)
+                                       (let ((spill (llvm-build-alloca builder struct-llvm-type "struct_spill")))
+                                         (log:info "028-fix v2: spilling struct value to local alloca")
+                                         (llvm-build-store builder sv spill)
+                                         spill))))))
+                      (cffi:with-foreign-object (gep-indices :pointer 2)
+                        (setf (cffi:mem-aref gep-indices :pointer 0)
+                              (llvm-const-int (llvm-int32-type) 0 nil))
+                        (setf (cffi:mem-aref gep-indices :pointer 1)
+                              (llvm-const-int (llvm-int32-type) physical-index nil))
+                        (llvm-build-in-bounds-gep2
+                         builder struct-llvm-type struct-ptr gep-indices 2 "arr_field_ptr")))))))))))))

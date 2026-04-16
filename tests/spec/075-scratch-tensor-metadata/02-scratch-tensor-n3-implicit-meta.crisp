@@ -1,0 +1,47 @@
+;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; TEST-WITH[--metadata]: crisp.compiler::validate-075-02-scratch-tensor-n3-implicit-meta
+;;
+;; Validates the .metacrisp output for a kernel that carries a scratch tensor
+;; (N=3) through an implicit side channel.
+;;
+;; Expected metacrisp for kernel_a:
+;;   :physical-signature — 13 fully-exploded scalars:
+;;     (0  (C-POINTER :ADDRESS-SPACE :LOCAL))  ; scratch ptr
+;;     (1  ULONG)                              ; byte-size
+;;     (2  ULONG) (3  ULONG) (4  ULONG)       ; offset[0..2]
+;;     (5  ULONG) (6  ULONG) (7  ULONG)       ; strides[0..2]
+;;     (8  ULONG) (9  ULONG) (10 ULONG)       ; extents[0..2]
+;;     (11 ULONG)                              ; length
+;;     (12 INT)                                ; explicit n
+;;
+;;   :implicit-params — one entry with:
+;;     :type      (tensor float 3 :address-space :local :access :read-write :align :compact)
+;;     :size-expr :match-warp-tile
+;;     :range     (0 11)   ; 12 physical slots (3*3+3 = 12)
+;;
+;;   :declared-signature — explicit n at range (12 12)
+;;
+;; Mirror of 074-03 but exercising the metadata path specifically.
+
+(def-type sc-t3-float (tensor float 3 :address-space :local :access :read-write :align :compact))
+
+(def-function fun-e-t3-meta (t3 n)
+    (declare #'(sc-t3-float int => float))
+  (+ (to-float n) (~ t3 0 0 0)))
+
+(def-function fun-d-t3-meta (t3 n)
+    (declare #'(sc-t3-float int => float))
+  (+ 1.0 (fun-e-t3-meta t3 n)))
+
+(def-function fun-c-t3-meta (n)
+    (declare #'(int => float))
+  (let ((t3 (make-scratch-tensor float 3 :match-warp-tile)))
+    (fun-d-t3-meta t3 n)))
+
+(def-function fun-b-t3-meta (n)
+    (declare #'(int => float))
+  (fun-c-t3-meta n))
+
+(def-kernel kernel_a (n)
+    (declare #'(int))
+  (fun-b-t3-meta n))
