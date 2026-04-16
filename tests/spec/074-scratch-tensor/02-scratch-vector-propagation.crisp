@@ -1,9 +1,8 @@
 ;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
 ;; TEST-EXPECT: PASS
-;; (IR validator to be added during implementation —
-;;  should verify that kernel_A's physical signature has 6 implicit
-;;  scratch-vector args (ptr addrspace(3), i64 x5) before the
-;;  explicit user arg.)
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-074-02-scratch-vector-propagation-ir
+;; Verifies kernel_A's physical signature has 6 implicit scratch-vector args
+;; (ptr addrspace(3) + 5 x i64) before the explicit user arg (i32) = 7 total.
 
 ;; Calling tree as described in scratch-tensor.md:
 ;;

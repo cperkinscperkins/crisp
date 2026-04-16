@@ -1676,3 +1676,108 @@ Returns the form or NIL."
      (or (not (%072-has-offset-load body))
          (progn (log:error "validate-072-04: compact vector GET must not load from offset field") nil))
      (progn (log:info "validate-072-04: PASS") t))))
+
+;;; =========================================================
+;;; 074-scratch-tensor validators
+;;; =========================================================
+
+(defun %074-count-kernel-params (ir kernel-name)
+  "Returns the parameter count of the named kernel from the IR string,
+   or NIL if the kernel is not found.
+   Handles nested parens in type names like addrspace(3) by counting
+   only top-level commas."
+  (let* ((search (format nil "define void @~a(" kernel-name))
+         (pos (search search ir)))
+    (unless pos (return-from %074-count-kernel-params nil))
+    ;; pos points to 'd' of 'define', find the opening '(' of the param list
+    (let ((open-pos (+ pos (1- (length search)))))
+      ;; Scan forward counting depth; collect top-level commas
+      (let ((depth 0)
+            (top-comma-count 0)
+            (has-params nil))
+        (block scan
+          (loop for i from open-pos below (length ir)
+                for ch = (cl:char ir i)
+                do (cond
+                     ((char= ch #\()
+                      (incf depth)
+                      (when (= depth 1) (setf has-params t)))
+                     ((char= ch #\))
+                      (decf depth)
+                      (when (= depth 0)
+                        (return-from scan (if has-params
+                                             (1+ top-comma-count)
+                                             0))))
+                     ((and (char= ch #\,) (= depth 1))
+                      (incf top-comma-count))))
+          nil)))))
+
+(defun %074-has-local-ptr-param (define-line)
+  "Returns T if the define line contains a ptr addrspace(3) parameter."
+  (search "ptr addrspace(3)" define-line))
+
+(defun validate-074-02-scratch-vector-propagation-ir (ir-path)
+  "Validates scratch vector propagation IR:
+     - kernel_a has 7 params: ptr addrspace(3) + 5 x i64 (implicit tensor N=1)
+       + i32 (explicit n)
+     - fun_c has the same expanded signature (is a carrier)"
+  (unless (probe-file ir-path)
+    (log:error "validate-074-02: IR file not found: ~a" ir-path)
+    (return-from validate-074-02-scratch-vector-propagation-ir nil))
+  (let* ((ir (uiop:read-file-string ir-path))
+         (ka-count (%074-count-kernel-params ir "kernel_a")))
+    (unless ka-count
+      (log:error "validate-074-02: kernel_a not found in IR")
+      (return-from validate-074-02-scratch-vector-propagation-ir nil))
+    (and
+     (or (= ka-count 7)
+         (progn (log:error "validate-074-02: kernel_a expected 7 params, got ~a" ka-count) nil))
+     (or (search "ptr addrspace(3)" ir)
+         (progn (log:error "validate-074-02: expected local (addrspace 3) scratch pointer") nil))
+     (or (search "fun_c_tensor_int_1_local_read_write_compact_int" ir)
+         (progn (log:error "validate-074-02: carrier fun_c not found with expanded implicit signature") nil))
+     (progn (log:info "validate-074-02: PASS") t))))
+
+(defun validate-074-03-scratch-tensor-propagation-ir (ir-path)
+  "Validates scratch tensor (N=3) propagation IR:
+     - kernel_a has 13 params: ptr addrspace(3) + 11 x i64 (implicit tensor N=3)
+       + i32 (explicit n)
+     - fun_c has the same expanded signature"
+  (unless (probe-file ir-path)
+    (log:error "validate-074-03: IR file not found: ~a" ir-path)
+    (return-from validate-074-03-scratch-tensor-propagation-ir nil))
+  (let* ((ir (uiop:read-file-string ir-path))
+         (ka-count (%074-count-kernel-params ir "kernel_a")))
+    (unless ka-count
+      (log:error "validate-074-03: kernel_a not found in IR")
+      (return-from validate-074-03-scratch-tensor-propagation-ir nil))
+    (and
+     (or (= ka-count 13)
+         (progn (log:error "validate-074-03: kernel_a expected 13 params, got ~a" ka-count) nil))
+     (or (search "TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT" ir)
+         (progn (log:error "validate-074-03: expected TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT type in IR") nil))
+     (or (search "fun_c_tensor_float_3_local_read_write_compact_int" ir)
+         (progn (log:error "validate-074-03: carrier fun_c not found with expanded implicit signature") nil))
+     (progn (log:info "validate-074-03: PASS") t))))
+
+(defun validate-074-04-scratch-matrix-propagation-ir (ir-path)
+  "Validates scratch matrix (N=2) propagation IR:
+     - kernel_a has 11 params: ptr addrspace(3) + 8 x i64 (implicit tensor N=2)
+       + 2 x i64 (explicit row col as ulong)
+     - fun_c has the same expanded signature"
+  (unless (probe-file ir-path)
+    (log:error "validate-074-04: IR file not found: ~a" ir-path)
+    (return-from validate-074-04-scratch-matrix-propagation-ir nil))
+  (let* ((ir (uiop:read-file-string ir-path))
+         (ka-count (%074-count-kernel-params ir "kernel_a")))
+    (unless ka-count
+      (log:error "validate-074-04: kernel_a not found in IR")
+      (return-from validate-074-04-scratch-matrix-propagation-ir nil))
+    (and
+     (or (= ka-count 11)
+         (progn (log:error "validate-074-04: kernel_a expected 11 params, got ~a" ka-count) nil))
+     (or (search "TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT" ir)
+         (progn (log:error "validate-074-04: expected TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT type in IR") nil))
+     (or (search "fun_c_tensor_float_2_local_read_write_compact_ulong_ulong" ir)
+         (progn (log:error "validate-074-04: carrier fun_c not found with expanded implicit signature") nil))
+     (progn (log:info "validate-074-04: PASS") t))))

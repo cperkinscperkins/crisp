@@ -1,10 +1,9 @@
 ;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
 ;; TEST-EXPECT: PASS
-;; (IR validator to be added during implementation —
-;;  matrix is (tensor T 2), so scratch matrix should expand to
-;;  9 implicit args: ptr + bytesize + offset[0,1] + strides[0,1]
-;;                   + extents[0,1] + length
-;;    = 2 + 2 + 2 + 2 + 1 = 9)
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-074-04-scratch-matrix-propagation-ir
+;; matrix is (tensor T 2), kernel_A implicit: ptr addrspace(3) + 8 x i64
+;; (storage ptr+bytesize, offset[0,1], strides[0,1], extents[0,1], length)
+;; plus 2 explicit ulong args = 11 total params
 
 ;; Exercises make-scratch-matrix, the N=2 syntactic sugar for
 ;; (make-scratch-tensor T 2 ...).  Calling tree matches test 02/03.

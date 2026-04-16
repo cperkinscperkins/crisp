@@ -1,14 +1,13 @@
 ;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
 ;; TEST-EXPECT: PASS
-;; (IR validator to be added during implementation —
-;;  should verify that kernel_A's physical signature has 12 implicit
-;;  scratch-tensor args (ptr addrspace(3) + i64 x11) for N=3:
-;;    storage: ptr + bytesize (2)
-;;    offset[0..2]:  3 x i64
-;;    strides[0..2]: 3 x i64
-;;    extents[0..2]: 3 x i64
-;;    length:        1 x i64
-;;    = 2 + 3 + 3 + 3 + 1 = 12)
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-074-03-scratch-tensor-propagation-ir
+;; Verifies kernel_A's physical signature for N=3 scratch tensor:
+;;   storage: ptr addrspace(3) + bytesize (2)
+;;   offset[0..2]:  3 x i64
+;;   strides[0..2]: 3 x i64
+;;   extents[0..2]: 3 x i64
+;;   length:        1 x i64
+;;   = ptr + 11 x i64 + i32 = 13 total params
 
 ;; Calling tree mirrors 02-scratch-vector-propagation but
 ;; uses a general 3-dimensional tensor.
