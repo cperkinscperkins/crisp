@@ -826,6 +826,73 @@
         (incf phys-index width)))
     (nreverse implicit-args)))
 
+;;; Fix: generate-implicit-signature — use positional nth for tensor address-space/access
+;;;
+;; Appended to: src/metadata.lisp
+;;
+;; The prior redef used (second (member :address-space type)) to extract address-space
+;; from tensor canonical types.  But the canonical 6-tuple (tensor elem N addr access align)
+;; is POSITIONAL — addr is at index 3, access at index 4, NOT keyword-value pairs.
+;; (member :address-space '(tensor int 1 :global :read-write :compact)) => NIL.
+;; For :local tensors this bug was masked by the (or nil :local) fallback giving the right
+;; answer accidentally.  For :global tensors it emits :address-space :local incorrectly,
+;; which causes the hoist generator to use the nullptr/local-memory branch instead of USM.
+;;
+;; Fix: use (nth 3 type) for addr-space and (nth 4 type) for access on tensor types.
+
+(defun generate-implicit-signature (sig declared-params)
+  "Generates the :implicit-params plist for metadata serialization.
+   Handles CELL canonical lists (positional addr-space/access at idx 2/3) and
+   TENSOR/VECTOR/MATRIX canonical lists (positional addr-space/access at idx 3/4),
+   and includes :size-expr from *implicit-scratch-size-expr-map*."
+  (declare (ignore declared-params))
+  (let ((implicit-args nil)
+        (phys-index 0)
+        (implicit-params (function-signature-implicit-parameters sig)))
+
+    (dolist (param-def implicit-params)
+      (let* ((name (parameter-def-name param-def))
+             (type (parameter-def-type param-def))
+             (width (get-physical-width type))
+             (start phys-index)
+             (end (+ phys-index width -1))
+             (type-head (when (consp type) (symbol-name (cl:first type))))
+             ;; Extract address-space:
+             ;;   CELL positional: (cell elem ADDR access) — addr at index 2
+             ;;   TENSOR positional: (tensor elem N ADDR access align) — addr at index 3
+             (address-space
+              (cond
+                ((and (consp type) (string-equal type-head "CELL") (>= (cl:length type) 3))
+                 (cl:nth 2 type))
+                ((and (consp type) (cl:member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                             :test #'string-equal)
+                      (>= (cl:length type) 4))
+                 (cl:nth 3 type))   ; positional 6-tuple: index 3 is addr
+                (t :local)))
+             ;; Extract access:
+             ;;   CELL positional: (cell elem addr ACCESS) — access at index 3
+             ;;   TENSOR positional: (tensor elem N addr ACCESS align) — access at index 4
+             (access
+              (cond
+                ((and (consp type) (string-equal type-head "CELL") (>= (cl:length type) 4))
+                 (cl:nth 3 type))
+                ((and (consp type) (cl:member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                             :test #'string-equal)
+                      (>= (cl:length type) 5))
+                 (cl:nth 4 type))   ; positional 6-tuple: index 4 is access
+                (t :read-write)))
+             ;; Look up size-expr from side table (nil for non-tensor implicit params)
+             (size-expr (gethash name *implicit-scratch-size-expr-map*)))
+        (let ((entry (list :name (string-downcase (symbol-name name))
+                           :type (strip-package-qualifiers type)
+                           :size-expr size-expr
+                           :address-space address-space
+                           :access access
+                           :range (list start end))))
+          (push entry implicit-args))
+        (incf phys-index width)))
+    (nreverse implicit-args)))
+
 
 ;;; =========================================================
 ;;; Fix: %try-inline-struct-array-field-ptr — handle canonical list types
