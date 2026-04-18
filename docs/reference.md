@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-13T03:36:43.906707Z
+Generated on 2026-04-18T03:10:08.985859Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -690,7 +690,38 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
+### DEFUN `%EXTRACT-SCRATCH-SIZE-EXPR`
+- **Args**: `(OP ARGS)`
+
+  > Extracts the user-supplied size expression from make-scratch-* args.
+
+
+---
+### DEFUN `%SCRATCH-TENSOR-CANONICAL-SPEC`
+- **Args**: `(OP ARGS)`
+
+  > Resolves the type arguments of a make-scratch-{vector,matrix,tensor} form  >    to a canonical (tensor elem N addr access align) spec.  >   >    OP is the operator symbol.  ARGS is the rest of the form (everything after  >    the operator).  Returns the canonical spec or NIL if resolution fails.  >   >    Dual-syntax disambiguation for make-scratch-tensor:  >      - If the second positional arg (after the first type-ish arg) is an integer  >        AND the first arg is NOT a registered tensor/vector/matrix type alias,  >        we treat it as Form 1: (elem-type N sizeExpr ...).  >      - Otherwise Form 2: (tensor-type sizeExpr ...).
+
+
+---
+### DEFUN `%REGISTER-SCRATCH-TENSOR-IMPLICIT`
+- **Args**: `(OP ARGS)`
+
+  > Shared logic for scan-operator methods on make-scratch-{vector,matrix,tensor}.  >    Marks the current function as an originator and records the canonical-list type  >    in *implicit-arg-map* and the size-expr in *implicit-scratch-size-expr-map*.
+
+
+---
+### DEFUN `ANALYZE-SCRATCH-TENSOR-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes a (make-scratch-{vector,matrix,tensor} ...) expression.  >    Stores canonical-list type in *implicit-arg-map* and size-expr in  >    *implicit-scratch-size-expr-map*.
+
+
+---
 ### DEFUN `REGISTER-STRUCT-ANALYZERS`
+
+  > Registers all struct/storage-handle expression analyzers.  >    Redefines the original to add make-scratch-{vector,matrix,tensor}.
+
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\anf-transform.lisp`
@@ -955,7 +986,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 - **Args**: `(ARRAY-NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE
               LOCATION-MAP)`
 
-  > Workaround for IGC bug 028 + fix for bug 029 (place semantics).  >   >    If ARRAY-NODE is a call to a struct field accessor (name ends with ~)  >    whose return type is (array T N), emits a GEP directly into the struct's  >    memory to produce a pointer to the array field — completely bypassing the  >    accessor function call.  >   >    Bug 029 fix: if the struct arg is not a simple var-read (e.g. it is a  >    cell dereference like (~ c)), call generate-node-ir with multiple-value-bind  >    to capture the third return value (the addrspace(1) global pointer).  >    Use that pointer directly rather than spilling the loaded struct value to a  >    local alloca, so that subsequent element stores write back to GPU memory.  >   >    Returns the GEP pointer (ptr to [N x T]) if the pattern is recognized, or  >    NIL otherwise so the caller can fall through to the normal path.
+  > Bypass for array-returning struct field accessors (e.g. extents~, strides~).  >    Resolves type aliases and canonical list types to mangled symbols so that  >    scratch tensors (with def-type alias or with list type) get the same GEP  >    treatment as named tensors.  >   >    Returns a GEP pointer to the array field, or NIL if the pattern is not matched.
 
 
 ---
@@ -1010,6 +1041,13 @@ Generated on 2026-04-13T03:36:43.906707Z
 - **Args**: `(BUILDER VALUE LLVM-TYPE CRISP-TYPE)`
 
   > Helper: Generates IR for scalar (int/float) literals.
+
+
+---
+### DEFUN `%GENERATE-TENSOR-SCRATCH-LITERAL-IR`
+- **Args**: `(BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)`
+
+  > Generates IR for a scratch tensor/vector/matrix literal.  >   >    Unlike scratch cells, scratch tensors use Option B (full SROA): the host  >    passes every field of the tensor record individually (ptr, bytesize, each  >    offset, stride, extent, and length).  The SROA/reconstruction machinery  >    in internal-compile-function therefore delivers a fully-assembled tensor  >    record value into var-env under the unique implicit-arg name.  >   >    All we need to do here is:  >      1. Reconstruct the deterministic unique name (same counter + ordering as Pass 1).  >      2. Look up the tensor alloca in var-env.  >      3. Load and return the tensor value.
 
 
 ---
@@ -1246,10 +1284,16 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
+### DEFVAR `*IMPLICIT-SCRATCH-SIZE-EXPR-MAP*`
+
+  > Maps implicit scratch tensor param-name → size-expr form as written by the user  >    (e.g. :match-warp-tile, 1, 4).  Used by generate-implicit-signature for metadata.
+
+
+---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
 
-  > A master initialization function for the Crisp compiler.  > This should be called by any entry point into the system (REPL, executable, CI).  > Extended to clear *struct-mutating-functions* between compilations.
+  > Initializes the compiler state.  >    Extended to also clear *implicit-scratch-size-expr-map* for scratch tensor support.
 
 
 ---
@@ -1365,7 +1409,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 ### DEFUN `INJECT-IMPLICIT-ARGUMENTS`
 - **Args**: `(NAME EXPLICIT-ENV)`
 
-  > Injects implicit arguments into the environment if the function is a carrier.
+  > Injects implicit arguments into the environment for carrier functions.  >    Types in *implicit-arg-map* are already in the correct form:  >    mangled symbols for tensors (no integers to mangle-type-spec),  >    canonical lists for cells (preserved for hoist metadata).
 
 
 ---
@@ -1605,7 +1649,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR)`
 
-  > Generate kernel argument setup code with USM allocation for cells/tensors.  >    Handles:  >      cell           — 3 args (ptr, byte-size, offset); cell-of-(array T N) uses N-element USM  >      tensor/vector/matrix — 3N+3 args (ptr, byte-size, off×N, str×N, ext×N, length)  >      def-struct     — 1 arg (aggregate by value, sizeof struct)  >      def-record     — exploded scalar args; array members are single by-value args  >      (array T N)    — 1 arg, passed by value (iota-initialized T[N])  >      scalar/dvec    — 1 arg
+  > Generate kernel argument setup code with USM allocation for cells/tensors.  >    Handles:  >      cell                   — 3 args (ptr, byte-size, offset)  >      local scratch tensor   — 3N+3 args; ptr as nullptr local alloc (NEW)  >      tensor/vector/matrix   — 3N+3 args; USM allocation  >      def-struct             — 1 arg (aggregate by value, sizeof struct)  >      def-record             — exploded scalar args  >      (array T N)            — 1 arg, passed by value (iota-initialized T[N])  >      scalar/dvec            — 1 arg
 
 
 ---
@@ -2241,7 +2285,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 ### DEFUN `MANGLE-TYPE-SPEC`
 - **Args**: `(TYPE-SPEC)`
 
-  > Creates a string representation of a type spec for name mangling.
+  > Creates a string representation of a type spec for name mangling.  >    Extended to handle integers (e.g. tensor arity N in canonical list form).
 
 
 ---
@@ -2697,6 +2741,77 @@ Generated on 2026-04-13T03:36:43.906707Z
 
 
 ---
+### DEFUN `%074-COUNT-KERNEL-PARAMS`
+- **Args**: `(IR KERNEL-NAME)`
+
+  > Returns the parameter count of the named kernel from the IR string,  >    or NIL if the kernel is not found.  >    Handles nested parens in type names like addrspace(3) by counting  >    only top-level commas.
+
+
+---
+### DEFUN `%074-HAS-LOCAL-PTR-PARAM`
+- **Args**: `(DEFINE-LINE)`
+
+  > Returns T if the define line contains a ptr addrspace(3) parameter.
+
+
+---
+### DEFUN `VALIDATE-074-02-SCRATCH-VECTOR-PROPAGATION-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates scratch vector propagation IR:  >      - kernel_a has 7 params: ptr addrspace(3) + 5 x i64 (implicit tensor N=1)  >        + i32 (explicit n)  >      - fun_c has the same expanded signature (is a carrier)
+
+
+---
+### DEFUN `VALIDATE-074-03-SCRATCH-TENSOR-PROPAGATION-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates scratch tensor (N=3) propagation IR:  >      - kernel_a has 13 params: ptr addrspace(3) + 11 x i64 (implicit tensor N=3)  >        + i32 (explicit n)  >      - fun_c has the same expanded signature
+
+
+---
+### DEFUN `VALIDATE-074-04-SCRATCH-MATRIX-PROPAGATION-IR`
+- **Args**: `(IR-PATH)`
+
+  > Validates scratch matrix (N=2) propagation IR:  >      - kernel_a has 11 params: ptr addrspace(3) + 8 x i64 (implicit tensor N=2)  >        + 2 x i64 (explicit row col as ulong)  >      - fun_c has the same expanded signature
+
+
+---
+### DEFUN `%075-FIND-KERNEL`
+- **Args**: `(METACRISP-PATH KERNEL-NAME)`
+
+  > Reads a metacrisp file and returns the plist for the named kernel, or NIL.
+
+
+---
+### DEFUN `%075-VALIDATE-TENSOR-IMPLICIT`
+- **Args**: `(TAG K-DEF EXPECTED-TYPE-HEAD EXPECTED-N EXPECTED-SLOTS
+              EXPECTED-ADDR-SPACE EXPECTED-SIZE-EXPR)`
+
+  > Shared checker for 075-0x validators.  >    Verifies:  >      - exactly one implicit param  >      - :type is a cons whose first element is TENSOR with the correct N and :address-space  >      - :size-expr is present and equals EXPECTED-SIZE-EXPR  >      - :range spans exactly EXPECTED-SLOTS physical slots starting at 0  >      - :physical-signature has EXPECTED-SLOTS entries for the implicit range,  >        first entry (C-POINTER ...), remaining entries ULONG
+
+
+---
+### DEFUN `VALIDATE-075-01-SCRATCH-VECTOR-IMPLICIT-META`
+- **Args**: `(META-PATH)`
+
+  > Validates scratch vector (N=1) metacrisp:  >      - implicit :type is (TENSOR INT 1 :ADDRESS-SPACE :LOCAL ...) canonical list  >      - physical-signature has 6 exploded scalar entries for the implicit range  >      - :range is (0 5)
+
+
+---
+### DEFUN `VALIDATE-075-02-SCRATCH-TENSOR-N3-IMPLICIT-META`
+- **Args**: `(META-PATH)`
+
+  > Validates scratch tensor (N=3) metacrisp:  >      - implicit :type is (TENSOR FLOAT 3 :ADDRESS-SPACE :LOCAL ...) canonical list  >      - physical-signature has 12 exploded scalar entries for the implicit range  >      - :range is (0 11)
+
+
+---
+### DEFUN `VALIDATE-075-03-SCRATCH-MATRIX-IMPLICIT-META`
+- **Args**: `(META-PATH)`
+
+  > Validates scratch matrix (N=2) metacrisp:  >      - implicit :type is (TENSOR FLOAT 2 :ADDRESS-SPACE :LOCAL ...) canonical list  >      - physical-signature has 9 exploded scalar entries for the implicit range  >      - :range is (0 8)
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
 
 ### DEFVAR `*EMIT-METADATA*`
@@ -2804,6 +2919,9 @@ Generated on 2026-04-13T03:36:43.906707Z
 ---
 ### DEFUN `GENERATE-IMPLICIT-SIGNATURE`
 - **Args**: `(SIG DECLARED-PARAMS)`
+
+  > Generates the :implicit-params plist for metadata serialization.  >    Handles CELL canonical lists (positional addr-space/access at idx 2/3) and  >    TENSOR/VECTOR/MATRIX canonical lists (positional addr-space/access at idx 3/4),  >    and includes :size-expr from *implicit-scratch-size-expr-map*.
+
 
 ---
 ### DEFUN `SERIALIZE-KERNELS`
@@ -3874,7 +3992,7 @@ Generated on 2026-04-13T03:36:43.906707Z
 ### DEFUN `RESOLVE-TYPE-TO-LLVM`
 - **Args**: `(TYPE-SPEC)`
 
-  > Resolves a Crisp type specifier to an LLVM type reference.  >    Extended to handle (array T N) → LLVM [N x T_llvm].
+  > Resolves a Crisp type specifier to an LLVM type reference.  >    Extended to handle (array T N) → LLVM [N x T_llvm].  >    Extended to normalize VECTOR/MATRIX sugar to TENSOR before dispatch,  >    and to canonicalize type alias values before recursing.
 
 
 ---
