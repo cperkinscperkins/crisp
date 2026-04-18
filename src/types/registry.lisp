@@ -38,7 +38,7 @@ This supports overloading templates by arity or other factors.")
 (defvar *instantiated-templates* (make-hash-table :test 'equal)
         "Tracks which specializations have already been generated.")
 
-(defvar *side-channel-originators* '(make-scratch-cell)
+(defvar *side-channel-originators* '(make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor)
         "A list of function names that trigger the implicit side-channel argument passing mechanism.")
 
 (defvar *originator-functions* nil

@@ -268,28 +268,19 @@
 ;;;; See: tests/spec/061-place-semantics/DESIGN.md
 ;;;; ============================================================
 
-;; src/codegen.lisp
+
+
 (defun %try-inline-struct-array-field-ptr
     (array-node builder module var-env di-builder di-scope location-map)
-  "Workaround for IGC bug 028 + fix for bug 029 (place semantics).
+  "Bypass for array-returning struct field accessors (e.g. extents~, strides~).
+   Resolves type aliases and canonical list types to mangled symbols so that
+   scratch tensors (with def-type alias or with list type) get the same GEP
+   treatment as named tensors.
 
-   If ARRAY-NODE is a call to a struct field accessor (name ends with ~)
-   whose return type is (array T N), emits a GEP directly into the struct's
-   memory to produce a pointer to the array field — completely bypassing the
-   accessor function call.
-
-   Bug 029 fix: if the struct arg is not a simple var-read (e.g. it is a
-   cell dereference like (~ c)), call generate-node-ir with multiple-value-bind
-   to capture the third return value (the addrspace(1) global pointer).
-   Use that pointer directly rather than spilling the loaded struct value to a
-   local alloca, so that subsequent element stores write back to GPU memory.
-
-   Returns the GEP pointer (ptr to [N x T]) if the pattern is recognized, or
-   NIL otherwise so the caller can fall through to the normal path."
+   Returns a GEP pointer to the array field, or NIL if the pattern is not matched."
   (when (and (semantic-call-p array-node)
              (= (cl:length (semantic-call-args array-node)) 1))
     (let* ((call-type (semantic-call-type array-node))
-           ;; Unwrap single-element list return types: ((array T N)) -> (array T N)
            (raw-type  (if (and (listp call-type)
                                (= (cl:length call-type) 1)
                                (listp (cl:first call-type)))
@@ -298,30 +289,42 @@
       (when (%array-type-p (resolve-type-alias raw-type))
         (let* ((call-name    (semantic-call-name array-node))
                (name-str     (symbol-name call-name)))
-          ;; Only intercept accessor calls (name ends with ~)
           (when (and (> (cl:length name-str) 1)
                      (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
             (let* ((field-name-str  (subseq name-str 0 (1- (cl:length name-str))))
                    (arg-node        (cl:first (semantic-call-args array-node)))
-                   (struct-type-sym (semantic-node-type arg-node))
+                   (raw-type-sym    (semantic-node-type arg-node))
+                   ;; NEW v2: resolve alias then expand storage handle spec,
+                   ;; then mangle if it's a tensor/vector/matrix family.
+                   (struct-type-sym
+                    (cl:let* (;; 1. Resolve type alias (e.g. SC-INT-MAT -> (matrix int ...))
+                              (resolved-alias (resolve-type-alias raw-type-sym))
+                              ;; 2. Expand storage handle (e.g. (matrix ...) -> (tensor ... 2 ...))
+                              (expanded (if (consp resolved-alias)
+                                            (expand-storage-handle-type-specifier resolved-alias)
+                                            resolved-alias))
+                              ;; 3. Check for tensor-family canonical head
+                              (head (when (consp expanded) (cl:first expanded))))
+                      (if (and head
+                               (symbolp head)
+                               (cl:member (symbol-name head)
+                                          '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal))
+                          ;; Mangle to symbol (result interned in same pkg as head)
+                          (mangle-template-struct-name head (cl:rest expanded))
+                          ;; Otherwise keep original (already-mangled symbol or non-tensor type)
+                          raw-type-sym)))
                    (struct-def      (when (symbolp struct-type-sym)
                                       (lookup-struct-definition struct-type-sym))))
               (when struct-def
                 (let ((physical-index (%lookup-field-physical-index struct-def field-name-str)))
                   (when physical-index
-                    (log:info "028-fix: inlining struct accessor ~a (field '~a' idx=~a) to avoid array-returning fn"
-                              call-name field-name-str physical-index)
+                    (log:info "028-fix v2: inlining struct accessor ~a (field '~a' idx=~a, resolved from ~a)"
+                              call-name field-name-str physical-index raw-type-sym)
                     (let* ((struct-llvm-type (ensure-struct-llvm-type struct-type-sym))
-                           ;; Obtain a pointer to the struct in the function frame.
-                           ;; If the arg is a simple var-read its alloca is already in var-env.
-                           ;; Otherwise generate the struct value; if the inner node returns a
-                           ;; global pointer (e.g. from a cell deref), use that directly (bug 029
-                           ;; place-semantics fix).  Fall back to spilling to a local alloca only
-                           ;; if no global pointer is available.
                            (struct-ptr
                              (if (semantic-var-read-p arg-node)
                                  (let ((alloca (gethash (semantic-var-read-name arg-node) var-env)))
-                                   (log:info "028-fix: using alloca for var ~a" (semantic-var-read-name arg-node))
+                                   (log:info "028-fix v2: using alloca for var ~a" (semantic-var-read-name arg-node))
                                    alloca)
                                  (multiple-value-bind (sv _loc global-ptr)
                                      (generate-node-ir arg-node builder module var-env
@@ -329,13 +332,12 @@
                                    (declare (ignore _loc))
                                    (if (and global-ptr (not (cffi:null-pointer-p global-ptr)))
                                        (progn
-                                         (log:info "029-fix: cell-of-struct accessor: using global ptr directly (place-semantics write-back fix)")
+                                         (log:info "029-fix v2: cell-of-struct accessor: using global ptr directly")
                                          global-ptr)
                                        (let ((spill (llvm-build-alloca builder struct-llvm-type "struct_spill")))
-                                         (log:info "028-fix: spilling struct value to local alloca (no global ptr)")
+                                         (log:info "028-fix v2: spilling struct value to local alloca")
                                          (llvm-build-store builder sv spill)
                                          spill))))))
-                      ;; Two-level GEP: struct_ptr[0].physical_index -> ptr to [N x T]
                       (cffi:with-foreign-object (gep-indices :pointer 2)
                         (setf (cffi:mem-aref gep-indices :pointer 0)
                               (llvm-const-int (llvm-int32-type) 0 nil))
@@ -498,8 +500,51 @@
    (t
      (error "Codegen for literal of unknown type category: ~a" (crisp-type-name crisp-type)))))
 
-(defmethod generate-node-ir ((node semantic-literal) builder module var-env di-builder di-scope location-map)
-  "Generates IR for a literal value."
+
+
+(defun %generate-tensor-scratch-literal-ir (builder module var-env type-spec value)
+  "Generates IR for a scratch tensor/vector/matrix literal.
+
+   Unlike scratch cells, scratch tensors use Option B (full SROA): the host
+   passes every field of the tensor record individually (ptr, bytesize, each
+   offset, stride, extent, and length).  The SROA/reconstruction machinery
+   in internal-compile-function therefore delivers a fully-assembled tensor
+   record value into var-env under the unique implicit-arg name.
+
+   All we need to do here is:
+     1. Reconstruct the deterministic unique name (same counter + ordering as Pass 1).
+     2. Look up the tensor alloca in var-env.
+     3. Load and return the tensor value."
+  (declare (ignore value))
+  (let* ((context *compiler-context*)
+         (binding-name (or (compiler-context-current-binding-name context) '__storage))
+         (fn-name (and context (compiler-context-current-compiling-function context)))
+         (counter (incf *scratch-cell-counter*))
+         (unique-name-str (format nil "~a_FROM_~a_~d" binding-name fn-name counter))
+         (unique-name (intern unique-name-str (symbol-package binding-name)))
+         (tensor-alloca (gethash unique-name var-env)))
+
+    (log:info "Pass 2: scratch tensor ~a -> implicit: ~a (found? ~a)"
+              binding-name unique-name (not (null tensor-alloca)))
+
+    (unless tensor-alloca
+      (error "Missing implicit argument ~a for ~a. var-env keys: ~s"
+             unique-name type-spec (alexandria:hash-table-keys var-env)))
+
+    ;; The alloca holds the fully-assembled tensor record (all fields provided
+    ;; by the host via SROA expansion).  Load and return the value.
+    (let* ((mangled-name (mangle-template-struct-name (first type-spec) (rest type-spec)))
+           (tensor-struct-type (ensure-struct-llvm-type mangled-name))
+           (tensor-val (llvm-build-load2 builder tensor-struct-type tensor-alloca "scratch_tensor_val")))
+      tensor-val)))
+
+
+
+
+(defmethod generate-node-ir ((node semantic-literal) builder module var-env
+                             di-builder di-scope location-map)
+  "Generates IR for a literal value.
+   Extended to handle scratch tensor/vector/matrix literals."
   (let* ((type-spec (semantic-literal-value-type node))
          (value (semantic-literal-value node))
          (llvm-type (unless (member type-spec '(keyword symbol quote))
@@ -522,9 +567,13 @@
                 ((or (eq base-type 'keyword) (eq base-type 'symbol))
                   (%generate-keyword-literal-ir value))
 
-                ;; Cell literals
+                ;; Cell literals (scratch cell)
                 ((eq base-type 'cell)
                   (%generate-cell-literal-ir builder module var-env type-spec value))
+
+                ;; Tensor/vector/matrix scratch literals
+                ((string-equal (symbol-name base-type) "TENSOR")
+                  (%generate-tensor-scratch-literal-ir builder module var-env type-spec value))
 
                 (t
                   (error "Codegen not implemented for literal of type ~a" type-spec)))))
@@ -534,16 +583,16 @@
                 (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
              (let ((type-sym (if (consp type-spec) (first type-spec) type-spec)))
                (cond
-                ;; Enums or keywords
+                ;; Enums
                 ((or (gethash type-spec *crisp-enums*)
                      (member type-sym '(keyword symbol quote)))
                   (%generate-enum-literal-ir builder value llvm-type))
-
-                ;; Scalars (int/float)
+                ;; Scalars (int/float/etc.)
                 (t
                   (let ((crisp-type (gethash type-sym *crisp-types*)))
                     (unless crisp-type
-                      (error "Codegen: Literal type ~a not found in *crisp-types* or *crisp-enums*" type-spec))
+                      (error "Codegen: Literal type ~a not found in *crisp-types* or *crisp-enums*"
+                             type-spec))
                     (%generate-scalar-literal-ir builder value llvm-type crisp-type))))))
 
            (t
@@ -553,8 +602,8 @@
           (when (and di-builder di-scope location-map)
                 (let* ((loc (semantic-node-source-location node))
                        (line (gethash loc location-map 0)))
-                  (llvm-di-builder-create-debug-location (llvm-get-module-context module)
-                                                         line 0 di-scope (cffi:null-pointer))))))
+                  (llvm-di-builder-create-debug-location
+                   (llvm-get-module-context module) line 0 di-scope (cffi:null-pointer))))))
     (values result di-location)))
 
 

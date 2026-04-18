@@ -444,12 +444,18 @@ Returns (values addr-space-int access-qual-string type-name-string)."
   "Maps HOF function name to info plist for inline backward differentiation.")
 
 
+(defvar *implicit-scratch-size-expr-map* (make-hash-table)
+  "Maps implicit scratch tensor param-name → size-expr form as written by the user
+   (e.g. :match-warp-tile, 1, 4).  Used by generate-implicit-signature for metadata.")
+
+
 
   
+
+
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil))
-  "A master initialization function for the Crisp compiler.
-This should be called by any entry point into the system (REPL, executable, CI).
-Extended to clear *struct-mutating-functions* between compilations."
+  "Initializes the compiler state.
+   Extended to also clear *implicit-scratch-size-expr-map* for scratch tensor support."
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
@@ -471,7 +477,6 @@ Extended to clear *struct-mutating-functions* between compilations."
 
   (setf *compiled-kernels* nil)
 
-  ;; Feature 052: clear both registries on each compile.
   (clrhash *differentiable-functions*)
   (clrhash *differentiable-hof-store*)
 
@@ -480,40 +485,35 @@ Extended to clear *struct-mutating-functions* between compilations."
   (initialize-advisements)
 
   (setf (gethash 'die *function-table*)
-    (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
+        (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
 
   (setf (symbol-function 'truncate) #'cl:truncate)
   (setf (symbol-function 'floor) #'cl:floor)
   (setf (symbol-function 'ceil) #'cl:ceiling)
   (setf (symbol-function 'round) #'cl:round)
 
-  ;; Auto-initialize templates if available (runtime check)
   (if (fboundp 'initialize-templates)
       (funcall 'initialize-templates)
       (log:warn "Template system not loaded/initialized."))
 
-  ;; Reset brand definitions
   (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
-
-  ;; Reset brand instance cache and brand instance type tracking.
   (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
   (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
 
-  ;; Clear partial template instantiations and their CL dispatch macros.
   (when (boundp '*partial-template-instantiations*)
         (loop for template-name being the hash-keys of *partial-template-instantiations*
               do (let ((dispatch-sym (intern (format nil "MAKE-~a%DISPATCH" template-name)
                                              (symbol-package template-name))))
                    (when (macro-function dispatch-sym)
-                         (log:info "INITIALIZE-COMPILER: clearing stale CL dispatch macro ~a" dispatch-sym)
                          (fmakunbound dispatch-sym))))
         (clrhash *partial-template-instantiations*))
 
-  ;; Clear struct-mutating function registry (feature 056).
   (when (boundp '*struct-mutating-functions*)
         (clrhash *struct-mutating-functions*))
 
-  ;; Initialize built-in structs (storage) — includes cell, vector, matrix templates
+  ;; NEW: clear scratch tensor size-expr side table
+  (clrhash *implicit-scratch-size-expr-map*)
+
   (register-builtins)
 
   (log:info "Compiler initialized. differentiate=~a" differentiate))

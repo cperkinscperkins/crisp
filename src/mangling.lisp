@@ -149,13 +149,14 @@
   (cl:let ((suffix (cl:mapcar #'mangle-param-type-name param-types)))
     (cl:intern (cl:format nil "~a_~{~a~^_~}" base-name suffix) (cl:symbol-package base-name))))
 
-;;; From src/codegen.lisp
-;;; =====================
+
 
 (cl:defun mangle-type-spec (type-spec)
-  "Creates a string representation of a type spec for name mangling."
+  "Creates a string representation of a type spec for name mangling.
+   Extended to handle integers (e.g. tensor arity N in canonical list form)."
   (log:debug "mangle-type-spec: ~s (type-of: ~a)" type-spec (cl:type-of type-spec))
   (cl:cond
-   ((cl:symbolp type-spec) (cl:string-downcase (cl:symbol-name type-spec)))
-   ((cl:listp type-spec) (cl:format nil "~{~a~^_~}" (cl:mapcar #'mangle-type-spec type-spec)))
+   ((cl:symbolp  type-spec) (cl:string-downcase (cl:symbol-name type-spec)))
+   ((cl:integerp type-spec) (cl:format nil "~a" type-spec))
+   ((cl:listp    type-spec) (cl:format nil "~{~a~^_~}" (cl:mapcar #'mangle-type-spec type-spec)))
    (cl:t (cl:error "Cannot mangle unknown type specifier: ~a" type-spec))))

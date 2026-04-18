@@ -554,15 +554,17 @@
               (incf current-phys-index width)))))
     (nreverse declared-args)))
 
-;; ...
+
 
 (defun generate-implicit-signature (sig declared-params)
+  "Generates the :implicit-params plist for metadata serialization.
+   Handles CELL canonical lists (positional addr-space/access at idx 2/3) and
+   TENSOR/VECTOR/MATRIX canonical lists (positional addr-space/access at idx 3/4),
+   and includes :size-expr from *implicit-scratch-size-expr-map*."
   (declare (ignore declared-params))
   (let ((implicit-args nil)
         (phys-index 0)
         (implicit-params (function-signature-implicit-parameters sig)))
-
-    ;; Implicit params START at 0 now.
 
     (dolist (param-def implicit-params)
       (let* ((name (parameter-def-name param-def))
@@ -570,21 +572,36 @@
              (width (get-physical-width type))
              (start phys-index)
              (end (+ phys-index width -1))
-             ;; Parse cell types: (CELL inner-type address-space access)
-             (address-space (if (and (consp type)
-                                     (symbolp (first type))
-                                     (string-equal (symbol-name (first type)) "CELL")
-                                     (>= (length type) 3))
-                                (nth 2 type) ; Position 2 is address-space
-                                :local))
-             (access (if (and (consp type)
-                              (symbolp (first type))
-                              (string-equal (symbol-name (first type)) "CELL")
-                              (>= (length type) 4))
-                         (nth 3 type) ; Position 3 is access
-                         :read-write)))
+             (type-head (when (consp type) (symbol-name (cl:first type))))
+             ;; Extract address-space:
+             ;;   CELL positional: (cell elem ADDR access) — addr at index 2
+             ;;   TENSOR positional: (tensor elem N ADDR access align) — addr at index 3
+             (address-space
+              (cond
+                ((and (consp type) (string-equal type-head "CELL") (>= (cl:length type) 3))
+                 (cl:nth 2 type))
+                ((and (consp type) (cl:member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                             :test #'string-equal)
+                      (>= (cl:length type) 4))
+                 (cl:nth 3 type))   ; positional 6-tuple: index 3 is addr
+                (t :local)))
+             ;; Extract access:
+             ;;   CELL positional: (cell elem addr ACCESS) — access at index 3
+             ;;   TENSOR positional: (tensor elem N addr ACCESS align) — access at index 4
+             (access
+              (cond
+                ((and (consp type) (string-equal type-head "CELL") (>= (cl:length type) 4))
+                 (cl:nth 3 type))
+                ((and (consp type) (cl:member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                             :test #'string-equal)
+                      (>= (cl:length type) 5))
+                 (cl:nth 4 type))   ; positional 6-tuple: index 4 is access
+                (t :read-write)))
+             ;; Look up size-expr from side table (nil for non-tensor implicit params)
+             (size-expr (gethash name *implicit-scratch-size-expr-map*)))
         (let ((entry (list :name (string-downcase (symbol-name name))
                            :type (strip-package-qualifiers type)
+                           :size-expr size-expr
                            :address-space address-space
                            :access access
                            :range (list start end))))

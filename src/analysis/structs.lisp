@@ -709,11 +709,183 @@
        :val-nodes val-nodes
        :source-location location))))
 
+
+(defun %extract-scratch-size-expr (op args)
+  "Extracts the user-supplied size expression from make-scratch-* args."
+  (case op
+    ((make-scratch-vector make-scratch-matrix)
+     ;; (make-scratch-vector elem-or-alias size-expr &key ...)
+     (second args))
+    (make-scratch-tensor
+     (let* ((arg1 (first args))
+            (arg2 (second args))
+            ;; Form 1 if arg2 is an integer and arg1 is not a tensor alias
+            (is-tensor-alias (and (symbolp arg1)
+                                  (let ((resolved (resolve-type-alias arg1)))
+                                    (and (consp resolved)
+                                         (member (symbol-name (first resolved))
+                                                 '("TENSOR" "VECTOR" "MATRIX")
+                                                 :test #'string-equal)))))
+            (form-1-p (and (integerp arg2) (not is-tensor-alias))))
+       (if form-1-p
+           (third args)    ; (make-scratch-tensor elem N size-expr ...)
+           (second args)))) ; (make-scratch-tensor alias size-expr ...)
+    (t nil)))
+
+
+(defun %scratch-tensor-canonical-spec (op args)
+  "Resolves the type arguments of a make-scratch-{vector,matrix,tensor} form
+   to a canonical (tensor elem N addr access align) spec.
+
+   OP is the operator symbol.  ARGS is the rest of the form (everything after
+   the operator).  Returns the canonical spec or NIL if resolution fails.
+
+   Dual-syntax disambiguation for make-scratch-tensor:
+     - If the second positional arg (after the first type-ish arg) is an integer
+       AND the first arg is NOT a registered tensor/vector/matrix type alias,
+       we treat it as Form 1: (elem-type N sizeExpr ...).
+     - Otherwise Form 2: (tensor-type sizeExpr ...)."
+  (unless args
+    (return-from %scratch-tensor-canonical-spec nil))
+  (let* ((op-name (symbol-name op))
+         ;; Implicit N from the operator name for vector/matrix
+         (implicit-n (cond ((string-equal op-name "MAKE-SCRATCH-VECTOR") 1)
+                           ((string-equal op-name "MAKE-SCRATCH-MATRIX") 2)
+                           (t nil))) ; tensor: N from args
+         (arg1 (first args)))
+
+    (cond
+      ;; ── make-scratch-vector / make-scratch-matrix ─────────────────────────
+      ;; N is fixed by the operator; arg1 is elem-type or tensor-type alias.
+      (implicit-n
+       (let* ((is-tensor-alias
+               ;; A def-type alias is in *crisp-type-aliases* (not *crisp-types*),
+               ;; so we check resolve-type-alias directly — it returns the original
+               ;; spec list for aliases whose value is a storage-handle type.
+               (and (symbolp arg1)
+                    (let ((resolved (resolve-type-alias arg1)))
+                      (and (consp resolved)
+                           (member (symbol-name (first resolved))
+                                   '("TENSOR" "VECTOR" "MATRIX")
+                                   :test #'string-equal)))))
+              (raw-spec
+               (if is-tensor-alias
+                   ;; Form 2: use the alias directly
+                   (resolve-type-alias arg1)
+                   ;; Form 1: wrap bare element type
+                   (list 'tensor arg1 implicit-n))))
+         (expand-storage-handle-type-specifier
+          ;; Normalize: force address-space :local (scratch default) if not set
+          (if (and (consp raw-spec)
+                   (string-equal (symbol-name (first raw-spec)) "TENSOR")
+                   (= (length raw-spec) 3))   ; only elem + N, no addr/access/align yet
+              (append raw-spec '(:address-space :local :access :read-write :align :compact))
+              raw-spec))))
+
+      ;; ── make-scratch-tensor ───────────────────────────────────────────────
+      ;; Disambiguate Form 1 vs Form 2 by inspecting the second positional arg.
+      (t
+       (let* ((arg2 (second args))
+              ;; Form 1 if arg2 is an integer AND arg1 is not a tensor type alias
+              (is-tensor-alias
+               (and (symbolp arg1)
+                    (let ((resolved (resolve-type-alias arg1)))
+                      (and (consp resolved)
+                           (member (symbol-name (first resolved))
+                                   '("TENSOR" "VECTOR" "MATRIX")
+                                   :test #'string-equal)))))
+              (form-1-p (and (integerp arg2) (not is-tensor-alias)))
+              (raw-spec
+               (if form-1-p
+                   ;; Form 1: (make-scratch-tensor elem N sizeExpr ...)
+                   (list 'tensor arg1 arg2)
+                   ;; Form 2: (make-scratch-tensor tensor-type sizeExpr ...)
+                   (if is-tensor-alias
+                       (resolve-type-alias arg1)
+                       (list 'tensor arg1)))))     ; degenerate: will error at expand
+         (expand-storage-handle-type-specifier
+          (if (and (consp raw-spec)
+                   (string-equal (symbol-name (first raw-spec)) "TENSOR")
+                   (= (length raw-spec) 3))
+              (append raw-spec '(:address-space :local :access :read-write :align :compact))
+              raw-spec)))))))
+
+(defun %register-scratch-tensor-implicit (op args)
+  "Shared logic for scan-operator methods on make-scratch-{vector,matrix,tensor}.
+   Marks the current function as an originator and records the canonical-list type
+   in *implicit-arg-map* and the size-expr in *implicit-scratch-size-expr-map*."
+  (setf *scan-is-originator* t)
+  (when args
+    (let ((canonical-spec (%scratch-tensor-canonical-spec op args)))
+      (when canonical-spec
+        (let* ((binding-name (or (compiler-context-current-binding-name *compiler-context*)
+                                 '__storage))
+               (fn-name (compiler-context-scanning-function-name *compiler-context*))
+               (counter (incf *scratch-cell-counter*))
+               (unique-name-str (format nil "~a_FROM_~a_~d" binding-name fn-name counter))
+               (unique-name (intern unique-name-str (symbol-package binding-name)))
+               (size-expr (%extract-scratch-size-expr op args)))
+
+          (log:info "Pass 1: ~a ~a -> implicit: ~a (type: ~a, size-expr: ~a)"
+                    op binding-name unique-name canonical-spec size-expr)
+
+          (push (cons unique-name canonical-spec) (gethash fn-name *implicit-arg-map*))
+          (when size-expr
+            (setf (gethash unique-name *implicit-scratch-size-expr-map*) size-expr)))))))
+
+(defun analyze-scratch-tensor-expression (expr env context location)
+  "Analyzes a (make-scratch-{vector,matrix,tensor} ...) expression.
+   Stores canonical-list type in *implicit-arg-map* and size-expr in
+   *implicit-scratch-size-expr-map*."
+  (declare (ignore env))
+  (let* ((op (first expr))
+         (args (rest expr)))
+
+    (unless args
+      (error "Malformed ~a form: expected at least a type argument." op))
+
+    (let ((canonical-spec (%scratch-tensor-canonical-spec op args)))
+      (unless canonical-spec
+        (error "Could not resolve type spec for ~a form: ~a" op expr))
+
+      ;; Register in *implicit-arg-map* if not already there (single-pass or two-pass pass 2).
+      (let* ((fn-name (compiler-context-current-compiling-function context))
+             (implicit-name (or (compiler-context-current-binding-name context) '__storage))
+             (existing (gethash fn-name *implicit-arg-map*))
+             (size-expr (%extract-scratch-size-expr op args)))
+        (if existing
+            (log:warn "Structs: implicit-arg-map already has entries for ~a: ~a (adding ~a)"
+                      fn-name existing implicit-name)
+            (progn
+              (log:warn "Structs: Detected ~a in ~a (implicit name: ~a, type: ~a, size-expr: ~a)"
+                        op fn-name implicit-name canonical-spec size-expr)
+              (setf (gethash fn-name *implicit-arg-map*)
+                    (list (cons implicit-name canonical-spec)))
+              (when size-expr
+                (setf (gethash implicit-name *implicit-scratch-size-expr-map*) size-expr)))))
+
+      (unless (valid-parameterized-type-p canonical-spec)
+        (error "Failed to instantiate template for ~a (from ~a)" canonical-spec expr))
+
+      (log:debug "analyze-scratch-tensor-expression: ~a -> ~a" op canonical-spec)
+
+      (make-semantic-literal :value-type canonical-spec
+                             :value nil
+                             :source-location location))))
+
+
+
+
 (defun register-struct-analyzers ()
+  "Registers all struct/storage-handle expression analyzers.
+   Redefines the original to add make-scratch-{vector,matrix,tensor}."
   (def-expression-analyzer %construct-struct analyze-struct-construction)
   (def-expression-analyzer %extract-struct-member analyze-extract-struct-member-expression)
   (def-expression-analyzer %insert-struct-member analyze-insert-struct-member-expression)
   (def-expression-analyzer make-scratch-cell analyze-scratch-expression)
+  (def-expression-analyzer make-scratch-vector analyze-scratch-tensor-expression)
+  (def-expression-analyzer make-scratch-matrix analyze-scratch-tensor-expression)
+  (def-expression-analyzer make-scratch-tensor analyze-scratch-tensor-expression)
   (def-expression-analyzer %make-ct-array analyze-%make-ct-array)
 
   (def-expression-analyzer aref analyze-aref-expression)
@@ -721,3 +893,5 @@
   (def-expression-analyzer ~ analyze-aref-expression)
 
   (def-expression-analyzer set! analyze-set!-expression))
+
+
