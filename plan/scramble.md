@@ -519,7 +519,8 @@ Tensors Vectors and Matrices
       incomplete and no alignment provided, we'd have to use the stride. 
 - - [ ] test offsets, strides really SET by hoisting code (instead of always jsut 0). for both align
         would we need some sort of .cpp fixture?
-- - [ ] scratch tensors / matrix / vector
+- - [x] scratch tensors / matrix / vector
+- - [ ] scratch tensor sizeExpression - but we need strategy etc support first.
 - - [ ] "view" manipulation - changing offset, make-xxxx etc
 - - [ ] double check branding
 - - [ ] differentiate support!!
