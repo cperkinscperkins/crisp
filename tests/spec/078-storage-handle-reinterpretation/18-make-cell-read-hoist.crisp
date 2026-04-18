@@ -1,0 +1,17 @@
+;; SKIP-WITH[--differentiate]: "reinterpretation not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 3
+;;
+;; Basic end-to-end: make-cell with :offset, read through the view.
+;;
+;; Source: (vector int) -- hoist allocates 4 ints, iota [0, 1, 2, 3].
+;; make-cell with :offset 3 -> points at element 3 of the source.
+;; Read the cell -> expect 3.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(def-kernel kernel_a (v &out out)
+    (declare #'(int-vec-t &out out-t => nil))
+  (let ((c (make-cell v int :offset 3)))
+    (set! (~ out) (~ c))))

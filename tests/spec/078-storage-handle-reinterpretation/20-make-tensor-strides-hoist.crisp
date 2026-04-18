@@ -1,0 +1,23 @@
+;; SKIP-WITH[--differentiate]: "reinterpretation not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 1
+;;
+;; Verify that explicit :strides are stored and used correctly.
+;;
+;; Source: (vector int) -- hoist allocates 4 ints, iota [0, 1, 2, 3].
+;; Flat memory: [0, 1, 2, 3]
+;;
+;; make-tensor v int '(2 2) :strides '(1 2)
+;;   stride_dim0 = 1, stride_dim1 = 2  (col-major equivalent)
+;;   element [1, 0]: flat = 1*1 + 0*2 = 1  -> value 1
+;;
+;; Row-major (default) strides '(2 1) would give [1, 0]: flat = 1*2 + 0*1 = 2 -> value 2.
+;; Expected 1 proves the explicit strides were honoured.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(def-kernel kernel_a (v &out out)
+    (declare #'(int-vec-t &out out-t => nil))
+  (let ((t2 (make-tensor v int '(2 2) :strides '(1 2))))
+    (set! (~ out) (~ t2 1 0))))

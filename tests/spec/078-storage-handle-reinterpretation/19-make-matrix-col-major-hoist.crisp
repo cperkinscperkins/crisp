@@ -1,0 +1,23 @@
+;; SKIP-WITH[--differentiate]: "reinterpretation not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 2
+;;
+;; Verify col-major stride computation for make-matrix.
+;;
+;; Source: (vector int) -- hoist allocates 4 ints, iota [0, 1, 2, 3].
+;; Flat memory: [0, 1, 2, 3]
+;;
+;; make-matrix v int 2 2 :major :col  ->  2x2 col-major matrix
+;;   stride_row = 1, stride_col = 2  (height = 2 rows per column)
+;;   element [row=0, col=1]: flat = 0*1 + 1*2 = 2  -> value 2
+;;
+;; Row-major would give [row=0, col=1]: flat = 0*2 + 1*1 = 1 -> value 1.
+;; Expected 2 proves col-major layout was applied.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(def-kernel kernel_a (v &out out)
+    (declare #'(int-vec-t &out out-t => nil))
+  (let ((mat (make-matrix v int 2 2 :major :col)))
+    (set! (~ out) (~ mat 0 1))))

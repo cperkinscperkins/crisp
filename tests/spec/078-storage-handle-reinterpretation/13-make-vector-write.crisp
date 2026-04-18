@@ -1,0 +1,12 @@
+;; make-vector write: create a vector view then write through it.
+;; Source: :read-write compact int vector.
+;; Vector view, :length 4, :offset 0.
+;; Write 77 to view[2], then read it back through the view.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-vector-write (v)
+    (declare #'(int-vec-t => int))
+  (let ((view (make-vector v int :length 4)))
+    (set! (~ view 2) 77)
+    (~ view 2)))

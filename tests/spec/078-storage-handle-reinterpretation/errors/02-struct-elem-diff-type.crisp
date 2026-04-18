@@ -1,0 +1,15 @@
+;; CHECK-FAIL: "Cannot reinterpret a struct-element storage handle to a different element type"
+;;
+;; Restriction: if the original and new element types don't match,
+;; the source element type cannot be a struct type.
+
+(def-struct point-t
+  (x int)
+  (y int))
+
+(def-type struct-vec-t (vector point-t :align :compact :address-space :global :access :read-write))
+
+(def-function test-struct-elem-diff-type (v)
+    (declare #'(struct-vec-t => int))
+  (let ((view (make-vector v int :length 4)))
+    (~ view 0)))

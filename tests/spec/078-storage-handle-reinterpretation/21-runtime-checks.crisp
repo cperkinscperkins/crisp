@@ -1,0 +1,23 @@
+;; TEST-WITH[--runtime-checks] : validate-has-llvm-trap
+;;
+;; Verify that make-vector and make-cell emit runtime bounds assertions
+;; when --runtime-checks is active.
+;;
+;; Under --runtime-checks the compiler wraps each reinterpretation with:
+;;   (r-t-assert (>= (bytes~ source) required-bytes))
+;; which expands to (unless <test> (die)) -> llvm.trap in the IR.
+;;
+;; DEFAULT pass: compiles cleanly, no llvm.trap emitted (asserts elided).
+;; TEST-WITH pass: llvm.trap must appear in the IR.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-rt-check-make-vector (v)
+    (declare #'(int-vec-t => int))
+  (let ((view (make-vector v int :length 3)))
+    (~ view 0)))
+
+(def-function test-rt-check-make-cell (v)
+    (declare #'(int-vec-t => int))
+  (let ((c (make-cell v int :offset 2)))
+    (~ c)))

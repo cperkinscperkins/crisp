@@ -1,0 +1,20 @@
+;; SKIP-WITH[--differentiate]: "reinterpretation not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 8
+;;
+;; Validate that make-vector without :length computes length at runtime.
+;; Formula: floor(source_byte_size / sizeof(new_element))
+;;
+;; Source: (vector int) -- hoist allocates 4 ints, byte_size = 16.
+;; make-vector with new elem type short (2 bytes):
+;;   auto-length = 16 / 2 = 8
+;;
+;; We read length~ of the view and write it out as int.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(def-kernel kernel_a (v &out out)
+    (declare #'(int-vec-t &out out-t => nil))
+  (let ((view (make-vector v short)))
+    (set! (~ out) (to-int (length~ view)))))

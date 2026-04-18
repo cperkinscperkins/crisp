@@ -1,0 +1,12 @@
+;; make-tensor with explicit :strides.
+;; When :strides is provided, the result handle is :strided regardless of source.
+;; Source: compact int vector with >= 12 elements.
+;; View as 2x3x2 tensor with explicit strides (6 2 1): plane-stride=6, row-stride=2, col-stride=1.
+;; Access element [1, 1, 0]: flat index = 1*6 + 1*2 + 0*1 = 8.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-tensor-strides (v)
+    (declare #'(int-vec-t => int))
+  (let ((t3 (make-tensor v int '(2 3 2) :strides '(6 2 1))))
+    (~ t3 1 1 0)))

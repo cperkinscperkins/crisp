@@ -1,0 +1,12 @@
+;; make-vector without :length -- auto-computed at runtime.
+;; Result length = floor(source_byte_size / sizeof(new_elem)).
+;; Here source is compact float vector; view as int vector (same element size).
+;; Auto-length equals the source length.
+;; Access element [0] to verify the view is usable.
+
+(def-type float-vec-t (vector float :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-vector-auto-length (v)
+    (declare #'(float-vec-t => int))
+  (let ((view (make-vector v int)))
+    (~ view 0)))

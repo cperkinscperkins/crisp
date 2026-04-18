@@ -1,0 +1,13 @@
+;; make-tensor: 3-dimensional view of a flat vector.
+;; Source: compact int vector with >= 24 elements.
+;; View as tensor with extents (2, 3, 4): 2 planes of 3x4 matrices.
+;; Total elements: 2*3*4 = 24.
+;; Access element [1, 0, 2]: plane 1, row 0, col 2.
+;; Flat index (row-major): 1*(3*4) + 0*4 + 2 = 14.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-tensor-extents (v)
+    (declare #'(int-vec-t => int))
+  (let ((t3 (make-tensor v int '(2 3 4))))
+    (~ t3 1 0 2)))

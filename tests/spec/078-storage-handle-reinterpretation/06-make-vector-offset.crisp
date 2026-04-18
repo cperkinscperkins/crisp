@@ -1,0 +1,12 @@
+;; make-vector with both :offset and :length.
+;; Source: int vector of length >= 6.
+;; View: starting at element index 2, length 4.
+;;   view[0] = src[2], view[1] = src[3], etc.
+;; Read view[0] -- should correspond to src[2].
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-vector-offset (v)
+    (declare #'(int-vec-t => int))
+  (let ((view (make-vector v int :offset 2 :length 4)))
+    (~ view 0)))

@@ -1,0 +1,13 @@
+;; make-vector reinterpreting element type.
+;; Source: float vector (compact, 4 bytes/elem).
+;; View: int vector of same or computed length.
+;; Source must be :compact (not :strided) and non-struct.
+;; Explicit :length 3 to keep the view manageable.
+;; Access element [1].
+
+(def-type float-vec-t (vector float :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-vector-diff-elem (v)
+    (declare #'(float-vec-t => int))
+  (let ((view (make-vector v int :length 3)))
+    (~ view 1)))

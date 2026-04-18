@@ -1,0 +1,12 @@
+;; make-cell with :offset key.
+;; Source: (vector int :align :compact), view cell at element index 3.
+;; The cell view points to byte offset (3 * sizeof(int)) within the source.
+;; Read through the offset cell and return value.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-cell-t (cell int :address-space :global :access :read-write))
+
+(def-function test-make-cell-offset (v)
+    (declare #'(int-vec-t => int))
+  (let ((c (make-cell v int :offset 3)))
+    (~ c)))

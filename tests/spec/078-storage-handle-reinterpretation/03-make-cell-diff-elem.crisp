@@ -1,0 +1,13 @@
+;; make-cell with a different element type.
+;; Source: (vector float :align :compact), reinterpreted as cell<int>.
+;; Both float and int are 4 bytes -- same byte width, just different types.
+;; Source must be :compact (not :strided) and non-struct. Both conditions met.
+;; Inherited address-space and access from source.
+
+(def-type float-vec-t (vector float :align :compact :address-space :global :access :read-write))
+(def-type int-cell-t (cell int :address-space :global :access :read-write))
+
+(def-function test-make-cell-diff-elem (v)
+    (declare #'(float-vec-t => int))
+  (let ((c (make-cell v int)))
+    (~ c)))
