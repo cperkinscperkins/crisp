@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-18T03:10:08.985859Z
+Generated on 2026-04-18T03:25:37.963596Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -450,6 +450,35 @@ Generated on 2026-04-18T03:10:08.985859Z
 
 
 ---
+### DEFUN `%EXTRACT-FN-BODY-AND-DECLARATIONS`
+- **Args**: `(BODY-AND-LOC)`
+
+  > Helper: Splits the body-and-loc of a function into declare-forms, flat declarations, and the actual fn-body.
+
+
+---
+### DEFUN `%DETECT-HOF-PARAM-VIA-FUNCALL`
+- **Args**: `(PARAMS FN-BODY)`
+
+  > Helper: Scans parameters for one that is funcall'd in the body.  >    Returns (values fn-param-idx fn-param-sym float-param-syms).
+
+
+---
+### DEFUN `%REGISTER-HOF-ENTRY`
+- **Args**: `(NAME TYPE-DESC PARAMS FN-PARAM-IDX FN-PARAM-SYM FLOAT-PARAM-SYMS
+              CLEAN-BODY N-FLOAT-PARAMS N-RETURN)`
+
+  > Helper: Registers a HOF in *differentiable-hof-store* and *differentiable-functions*.
+
+
+---
+### DEFUN `%REGISTER-STANDARD-DIFFERENTIABLE-ENTRY`
+- **Args**: `(NAME TYPE-DESC N-FLOAT-PARAMS N-RETURN &KEY OPTIMISTIC-P)`
+
+  > Helper: Registers a non-HOF function in *differentiable-functions*.
+
+
+---
 ### DEFUN `%PRE-REGISTER-DIFFERENTIABLE-FNS`
 - **Args**: `(FORMS)`
 
@@ -790,6 +819,16 @@ Generated on 2026-04-18T03:10:08.985859Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\autodiff.lisp`
 
+### DEFUN `%EMIT-SUB-FN-BACKWARD`
+- **Args**: `(FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN
+              &OPTIONAL (SYM-PREFIX BW))`
+
+---
+### DEFUN `%HANDLE-SINGLE-VALUE-BACKWARD`
+- **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
+              (ERROR-ON-UNKNOWN T))`
+
+---
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)`
 
@@ -1002,6 +1041,20 @@ Generated on 2026-04-18T03:10:08.985859Z
 - **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
 
 ---
+### DEFUN `%GET-DI-LOCATION`
+- **Args**: `(NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Helper: Creates and returns a debug location if debug metadata is available.
+
+
+---
+### DEFUN `%ATTACH-DEBUG-LOC`
+- **Args**: `(INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Helper: Creates and attaches a debug location to the instruction if metadata is available.
+
+
+---
 ### DEFUN `GENERATE-EXPRESSION-IR`
 - **Args**: `(BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)`
 
@@ -1090,10 +1143,21 @@ Generated on 2026-04-18T03:10:08.985859Z
 
 
 ---
+### DEFMACRO `DEF-CAST-CODEGEN`
+- **Args**: `(NODE-TYPE DOCSTRING ARG-ACCESSOR TYPE-ACCESSOR &BODY BODY)`
+
+---
 ### DEFUN `%HANDLE-DIE-INTRINSIC`
 - **Args**: `(BUILDER MODULE)`
 
   > Helper: Handles the compiler intrinsic DIE (llvm.trap).
+
+
+---
+### DEFUN `%BUILD-LLVM-FUNCTION-TYPE`
+- **Args**: `(MODULE RETURN-TYPE-NAMES PARAM-TYPES)`
+
+  > Helper: Constructs an llvm-function-type and parameter count from a list of return types and parameter types.
 
 
 ---
@@ -1999,6 +2063,15 @@ Generated on 2026-04-18T03:10:08.985859Z
 
   > Helper: Enforces kernel requirements when Auto-Differentiation is enabled.  >    Returns T if the kernel should be differentiated, NIL if it is forward-only.
 
+
+---
+### DEFUN `%SPLIT-KERNEL-INPUTS-OUTPUTS`
+- **Args**: `(PARAMS SIGNATURE-TYPES)`
+
+---
+### DEFUN `%COMPUTE-BACKWARD-KERNEL-PARAMS`
+- **Args**: `(FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT
+              REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)`
 
 ---
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`

@@ -1331,6 +1331,60 @@ in single-pass mode."
 
 
 
+(defun %extract-fn-body-and-declarations (body-and-loc)
+  "Helper: Splits the body-and-loc of a function into declare-forms, flat declarations, and the actual fn-body."
+  (let* ((declare-forms (loop for f in body-and-loc
+                              while (and (listp f)
+                                         (symbolp (first f))
+                                         (string-equal (symbol-name (first f)) "DECLARE"))
+                              collect f))
+         (declarations (loop for f in declare-forms append (rest f)))
+         (fn-body (nthcdr (length declare-forms) body-and-loc)))
+    (values declare-forms declarations fn-body)))
+
+(defun %detect-hof-param-via-funcall (params fn-body)
+  "Helper: Scans parameters for one that is funcall'd in the body.
+   Returns (values fn-param-idx fn-param-sym float-param-syms)."
+  (let (fn-param-idx fn-param-sym)
+    (loop for p in params
+          for i from 0
+          do (when (%tree-has-funcall-p fn-body p)
+               (setf fn-param-idx i)
+               (setf fn-param-sym p)
+               (cl:return)))
+    (let ((float-param-syms (when fn-param-idx
+                              (loop for p in params
+                                    for i from 0
+                                    unless (= i fn-param-idx)
+                                    collect p))))
+      (values fn-param-idx fn-param-sym float-param-syms))))
+
+(defun %register-hof-entry (name type-desc params fn-param-idx fn-param-sym float-param-syms clean-body n-float-params n-return)
+  "Helper: Registers a HOF in *differentiable-hof-store* and *differentiable-functions*."
+  (log:info "AUTODIFF: Pre-registering HOF ~a ~a (fn-param=~a idx=~a)" type-desc name fn-param-sym fn-param-idx)
+  (setf (gethash name *differentiable-hof-store*)
+        (list :param-syms       params
+              :fn-param-idx     fn-param-idx
+              :fn-param-sym     fn-param-sym
+              :float-param-syms float-param-syms
+              :body-forms       clean-body))
+  (setf (gethash name *differentiable-functions*)
+        (list :hof t
+              :n-float-params n-float-params
+              :n-return n-return)))
+
+(defun %register-standard-differentiable-entry (name type-desc n-float-params n-return &key optimistic-p)
+  "Helper: Registers a non-HOF function in *differentiable-functions*."
+  (let* ((pkg (symbol-package name))
+         (bkwd-name (intern (format nil "~A_GRAD" (symbol-name name)) pkg)))
+    (if optimistic-p
+        (log:info "AUTODIFF: Pre-registering non-HOF ~a ~a (n-params=~a, optimistic)" type-desc name n-float-params)
+        (log:info "AUTODIFF: Pre-registering ~a ~a -> ~a (n-fp=~a n-ret=~a)" type-desc name bkwd-name n-float-params n-return))
+    (setf (gethash name *differentiable-functions*)
+          (list :bkwd-name bkwd-name
+                :n-float-params n-float-params
+                :n-return n-return))))
+
 (defun %pre-register-differentiable-fns (forms)
   "When *differentiate-p* is T, walk FORMS for def-function forms and
 pre-register them in *differentiable-functions* (and *differentiable-hof-store*
@@ -1344,65 +1398,42 @@ that are not yet registered at pre-registration time."
         ((and (consp form) (eq (car form) 'def-function))
          (cl:let* ((name (second form))
                    (params (third form))
-                   (body-and-loc (cdddr form))
-                   (declare-forms (cl:loop for f in body-and-loc
-                                          while (and (listp f) (eq (car f) 'declare))
-                                          collect f))
-                   (declarations (cl:loop for f in declare-forms append (rest f)))
-                   (is-system (member '(crisp-system-generated) declarations :test #'equal)))
-           (unless (or is-system (%fn-name-is-grad-p name))
-             (handler-case
-               (multiple-value-bind (env return-types)
-                   (parse-function-declarations params declarations)
-                 (cl:let* ((float-param-entries
-                            (cl:loop for pd in env
-                                     when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                                               (%crisp-float-type-p (parameter-def-type pd)))
-                                     collect pd))
-                           (n-float-params (length float-param-entries))
-                           (return-types-nv (remove nil return-types))
-                           (n-return (length return-types-nv))
-                           (fn-param-entries
-                            (cl:loop for pd in env
-                                     for i from 0
-                                     when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                                               (%crisp-function-type-p (parameter-def-type pd)))
-                                     collect (cons i pd)))
-                           (is-hof (consp fn-param-entries)))
-                   (when (> n-float-params 0)
-                     (if is-hof
-                         (cl:let* ((fn-param-idx  (car (car fn-param-entries)))
-                                   (fn-param-sym  (parameter-def-name (cdr (car fn-param-entries))))
-                                   (float-param-syms (mapcar #'parameter-def-name float-param-entries))
-                                   (body-forms (cl:loop for f in body-and-loc
-                                                        unless (and (listp f) (eq (car f) 'declare))
-                                                        collect f))
-                                   (clean-body  (cl:loop for f in body-forms
-                                                         unless (and (atom f) (not (symbolp f)))
-                                                         collect f)))
-                           (log:info "AUTODIFF: Pre-registering HOF ~a (fn-param=~a idx=~a)"
-                                     name fn-param-sym fn-param-idx)
-                           (setf (gethash name *differentiable-hof-store*)
-                                 (list :param-syms       (cl:loop for pd in env
-                                                                  collect (parameter-def-name pd))
-                                       :fn-param-idx     fn-param-idx
-                                       :fn-param-sym     fn-param-sym
-                                       :float-param-syms float-param-syms
-                                       :body-forms       clean-body))
-                           (setf (gethash name *differentiable-functions*)
-                                 (list :hof t
-                                       :n-float-params n-float-params
-                                       :n-return n-return)))
-                         (cl:let* ((pkg (symbol-package name))
-                                   (bkwd-name (intern (format nil "~A_GRAD" (symbol-name name)) pkg)))
-                           (log:info "AUTODIFF: Pre-registering ~a -> ~a (n-fp=~a n-ret=~a)"
-                                     name bkwd-name n-float-params n-return)
-                           (setf (gethash name *differentiable-functions*)
-                                 (list :bkwd-name bkwd-name
-                                       :n-float-params n-float-params
-                                       :n-return n-return)))))))
-               (error (e)
-                 (log:debug "AUTODIFF: Skipping pre-registration of ~a -- type parse error: ~a" name e))))))
+                   (body-and-loc (cdddr form)))
+           (multiple-value-bind (declare-forms declarations fn-body)
+               (%extract-fn-body-and-declarations body-and-loc)
+             (declare (ignore declare-forms))
+             (cl:let ((is-system (member '(crisp-system-generated) declarations :test #'equal)))
+               (unless (or is-system (%fn-name-is-grad-p name))
+                 (handler-case
+                   (multiple-value-bind (env return-types)
+                       (parse-function-declarations params declarations)
+                     (cl:let* ((float-param-entries
+                                (cl:loop for pd in env
+                                         when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                                   (%crisp-float-type-p (parameter-def-type pd)))
+                                         collect pd))
+                               (n-float-params (length float-param-entries))
+                               (n-return (length (remove nil return-types)))
+                               (fn-param-entries
+                                (cl:loop for pd in env
+                                         for i from 0
+                                         when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                                   (%crisp-function-type-p (parameter-def-type pd)))
+                                         collect (cons i pd)))
+                               (is-hof (consp fn-param-entries)))
+                       (when (> n-float-params 0)
+                         (if is-hof
+                             (cl:let* ((fn-param-idx (car (car fn-param-entries)))
+                                       (fn-param-sym (parameter-def-name (cdr (car fn-param-entries))))
+                                       (float-param-syms (mapcar #'parameter-def-name float-param-entries))
+                                       (clean-body  (cl:loop for f in fn-body
+                                                             unless (and (atom f) (not (symbolp f)))
+                                                             collect f))
+                                       (param-syms (cl:loop for pd in env collect (parameter-def-name pd))))
+                               (%register-hof-entry name "definition" param-syms fn-param-idx fn-param-sym float-param-syms clean-body n-float-params n-return))
+                             (%register-standard-differentiable-entry name "definition" n-float-params n-return)))))
+                   (error (e)
+                     (log:debug "AUTODIFF: Skipping pre-registration of ~a -- type parse error: ~a" name e))))))))
 
         ;; progn: recurse
         ((and (consp form) (eq (car form) 'progn))
@@ -1416,60 +1447,22 @@ that are not yet registered at pre-registration time."
         ((and (consp form) (eq (car form) 'with-template-type))
          (cl:dolist (bform (cddr form))   ; skip 'with-template-type' and params list
            (when (and (consp bform) (eq (car bform) 'def-function))
-             (cl:let* ((name        (second bform))
-                       (params      (third bform))
-                       (body-and-loc (cdddr bform))
-                       (declare-forms (cl:loop for f in body-and-loc
-                                               while (and (listp f) (eq (cl:first f) 'declare))
-                                               collect f))
-                       (fn-body     (cl:nthcdr (length declare-forms) body-and-loc))
-                       fn-param-idx
-                       fn-param-sym)
-               ;; Detect HOF param by looking for (funcall <param> ...) in body
-               (cl:loop for p in params
-                        for i from 0
-                        do (when (%tree-has-funcall-p fn-body p)
-                             (setf fn-param-idx i)
-                             (setf fn-param-sym p)
-                             (cl:return)))
-               (cond
-                 ;; HOF template: register in hof-store (existing behavior)
-                 ((and fn-param-idx
-                       (not (gethash name *differentiable-functions*)))
-                  (log:info "AUTODIFF: Pre-registering HOF template ~a via with-template-type (fn-param=~a idx=~a)"
-                            name fn-param-sym fn-param-idx)
-                  (setf (gethash name *differentiable-hof-store*)
-                        (list :param-syms       params
-                              :fn-param-idx     fn-param-idx
-                              :fn-param-sym     fn-param-sym
-                              :float-param-syms (cl:loop for p in params
-                                                         for i from 0
-                                                         unless (= i fn-param-idx)
-                                                         collect p)
-                              :body-forms       fn-body))
-                  (setf (gethash name *differentiable-functions*)
-                        (list :hof t
-                              :n-float-params (1- (length params))
-                              :n-return 1)))
-                 ;; Non-HOF template: register optimistically.
-                 ;; Types are T placeholders so we cannot parse them; treat all
-                 ;; non-&OUT params as potentially float. Concrete instantiation
-                 ;; will overwrite this entry with accurate counts.
-                 ((not (gethash name *differentiable-functions*))
-                  (cl:let* ((n-params (cl:count-if
-                                       (lambda (p)
-                                         (not (string-equal (symbol-name p) "&OUT")))
-                                       params))
-                            (pkg      (symbol-package name))
-                            (bkwd-name (intern (format nil "~A_GRAD" (symbol-name name)) pkg)))
-                    (log:info "AUTODIFF: Pre-registering non-HOF template ~a via with-template-type (n-params=~a, optimistic)"
-                              name n-params)
-                    (setf (gethash name *differentiable-functions*)
-                          (list :bkwd-name      bkwd-name
-                                :n-float-params n-params
-                                :n-return       1)))))))))))))
-
-
+             (cl:let* ((name   (second bform))
+                       (params (third bform))
+                       (body-and-loc (cdddr bform)))
+               (multiple-value-bind (declare-forms declarations fn-body)
+                   (%extract-fn-body-and-declarations body-and-loc)
+                 (declare (ignore declare-forms declarations))
+                 (multiple-value-bind (fn-param-idx fn-param-sym float-param-syms)
+                     (%detect-hof-param-via-funcall params fn-body)
+                   (cond
+                     ;; HOF template: register in hof-store (existing behavior)
+                     ((and fn-param-idx (not (gethash name *differentiable-functions*)))
+                      (%register-hof-entry name "template via with-template-type" params fn-param-idx fn-param-sym float-param-syms fn-body (1- (length params)) 1))
+                     ;; Non-HOF template: register optimistically.
+                     ((not (gethash name *differentiable-functions*))
+                      (cl:let ((n-params (cl:count-if (lambda (p) (not (string-equal (symbol-name p) "&OUT"))) params)))
+                        (%register-standard-differentiable-entry name "template via with-template-type" n-params 1 :optimistic-p t))))))))))))))
 
 (defun %pre-register-hof-templates ()
   "When *differentiate-p* is T, scan *template-registry* for def-function templates
@@ -1484,42 +1477,17 @@ Must be called after walk-code-forms so *template-registry* is populated."
            ;; Only process def-function templates (not def-kernel, def-struct, etc.)
            (when (and (consp body)
                       (symbolp (cl:first body))
-                      (string= (symbol-name (cl:first body)) "DEF-FUNCTION"))
-             (cl:let* ((params      (cl:third body))
-                       (body-and-loc (cl:nthcdr 3 body))
-                       (declare-forms (cl:loop for f in body-and-loc
-                                               while (and (listp f)
-                                                          (symbolp (cl:first f))
-                                                          (string= (symbol-name (cl:first f)) "DECLARE"))
-                                               collect f))
-                       (fn-body     (cl:nthcdr (length declare-forms) body-and-loc))
-                       fn-param-idx
-                       fn-param-sym)
-               ;; Find which param appears as (funcall <param> ...) in the body
-               (cl:loop for p in params
-                        for i from 0
-                        do (when (%tree-has-funcall-p fn-body p)
-                             (setf fn-param-idx i)
-                             (setf fn-param-sym p)
-                             (cl:return)))
-               ;; If found and not already registered, pre-register as HOF
-               (when (and fn-param-idx
-                          (not (gethash name *differentiable-functions*)))
-                 (log:info "AUTODIFF: Pre-registering HOF template ~a (fn-param=~a idx=~a)"
-                           name fn-param-sym fn-param-idx)
-                 (setf (gethash name *differentiable-hof-store*)
-                       (list :param-syms       params
-                             :fn-param-idx     fn-param-idx
-                             :fn-param-sym     fn-param-sym
-                             :float-param-syms (cl:loop for p in params
-                                                        for i from 0
-                                                        unless (= i fn-param-idx)
-                                                        collect p)
-                             :body-forms       fn-body))
-                 (setf (gethash name *differentiable-functions*)
-                       (list :hof t
-                             :n-float-params (1- (length params))
-                             :n-return 1))))))))
+                      (string-equal (symbol-name (cl:first body)) "DEF-FUNCTION"))
+             (cl:let* ((params (cl:third body))
+                       (body-and-loc (cl:nthcdr 3 body)))
+               (multiple-value-bind (declare-forms declarations fn-body)
+                   (%extract-fn-body-and-declarations body-and-loc)
+                 (declare (ignore declare-forms declarations))
+                 (multiple-value-bind (fn-param-idx fn-param-sym float-param-syms)
+                     (%detect-hof-param-via-funcall params fn-body)
+                   ;; If found and not already registered, pre-register as HOF
+                   (when (and fn-param-idx (not (gethash name *differentiable-functions*)))
+                     (%register-hof-entry name "template" params fn-param-idx fn-param-sym float-param-syms fn-body (1- (length params)) 1)))))))))
      *template-registry*)))
 
 
