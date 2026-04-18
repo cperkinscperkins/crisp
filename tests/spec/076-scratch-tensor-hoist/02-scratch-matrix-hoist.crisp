@@ -1,0 +1,56 @@
+;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: 99
+;;
+;; Round-trip: verify that a scratch matrix (2D tensor) allocated by the hoist
+;; launcher can be written and read through the side channel.
+;;
+;; Computation:
+;;   fun-C allocates a 2x2 scratch matrix, writes 99 to [0,0].
+;;   fun-D reads [0,0] and writes it to out-c.
+;;   Result is 99.
+;;
+;; Call tree:
+;;   kernel_a(&out out-c)
+;;     => fun-B(&out out-c)            <-- carrier
+;;       => fun-C(&out out-c)          <-- originator (creates 2x2 scratch matrix)
+;;             mat = make-scratch-matrix int 2
+;;             (set! (~ mat 0 0) 99)
+;;             => fun-D(mat &out out-c)
+;;                  (set! (~ out-c) (~ mat 0 0))
+;;
+;; For the hoist launcher:
+;;   - implicit args 0..8: ptr (local), bytesize, offset[0,1]=0,
+;;     strides[0]=4, strides[1]=8, extents[0,1]=2, length=4
+;;   - arg 9: out-c (shared USM)
+;;
+;; The metacrisp :implicit-params entry will have:
+;;   :size-expr 2
+;; The hoist generator interprets this as 2 elements along each dimension:
+;;   bytesize  = 2 * 2 * sizeof(int) = 16 bytes
+;;   extent[0] = extent[1] = 2
+;;   stride[0] = sizeof(int) = 4          (innermost — row stride)
+;;   stride[1] = 2 * sizeof(int) = 8      (outermost — column stride)
+;;   offset[0] = offset[1] = 0
+;;   zeKernelSetArgumentValue(kernel, 0, 16, nullptr)   ; local memory
+
+(def-type out-c-mat-t (cell int :address-space :global :access :read-write))
+(def-type sc-int-mat (matrix int :address-space :local :access :read-write :align :compact))
+
+(def-function fun-D-mat-hoist (mat &out c)
+    (declare #'(sc-int-mat &out out-c-mat-t => nil))
+  (set! (~ c) (~ mat 0 0)))
+
+(def-function fun-C-mat-hoist (&out c)
+    (declare #'(&out out-c-mat-t => nil))
+  (let ((mat (make-scratch-matrix int 2)))
+    (set! (~ mat 0 0) 99)
+    (fun-D-mat-hoist mat c)))
+
+(def-function fun-B-mat-hoist (&out c)
+    (declare #'(&out out-c-mat-t => nil))
+  (fun-C-mat-hoist c))
+
+(def-kernel kernel_a (&out c)
+    (declare (type c out-c-mat-t))
+  (fun-B-mat-hoist c))

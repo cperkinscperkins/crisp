@@ -51,7 +51,7 @@
        (when (and (symbolp op)
                   (macro-function op)
                   (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes set! declare progn let
-                                         template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell as quote compiler-no-op))))
+                                         template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op))))
              (multiple-value-bind (expanded changed) (macroexpand-1 expr)
                (when changed
                      (return-from anf-normalize (anf-normalize expanded is-nested?)))))
@@ -154,6 +154,15 @@
                   (let ((temp (anf-fresh-temp)))
                     (values temp `((,temp ,anf-msc))))
                   (values anf-msc nil)))))
+        ;; make-scratch-vector/matrix/tensor: preserve all positional + keyword args verbatim.
+        ;; The sizeExpression and keyword args are opaque to ANF; only the operator + args
+        ;; need to survive intact for the analysis and codegen phases.
+        ((member op '(make-scratch-vector make-scratch-matrix make-scratch-tensor))
+          (let ((anf-form `(,op ,@(cdr expr))))
+            (if is-nested?
+                (let ((temp (anf-fresh-temp)))
+                  (values temp `((,temp ,anf-form))))
+                (values anf-form nil))))
         ((member op '(quote template-instantiation compiler-no-op def-function def-kernel def-kernel-exact eval-when))
           (if is-nested?
               (let ((temp (anf-fresh-temp)))

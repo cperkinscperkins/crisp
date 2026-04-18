@@ -1,0 +1,41 @@
+;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-074-02-scratch-vector-propagation-ir
+;; Verifies kernel_A's physical signature has 6 implicit scratch-vector args
+;; (ptr addrspace(3) + 5 x i64) before the explicit user arg (i32) = 7 total.
+
+;; Calling tree as described in scratch-tensor.md:
+;;
+;;   kernel_A(n)
+;;    => fun-B(n)
+;;      => fun-C(n)           <-- creates scratch vector here
+;;           sv = make-scratch-vector
+;;           => fun-D(sv n)
+;;             => fun-E(sv n)
+;;
+;; fun-C is the originator.  fun-B and kernel_A are carriers.
+;; fun-D and fun-E receive sv explicitly as a normal argument.
+
+(def-type scratch-int-vec (vector int :address-space :local :access :read-write :align :compact))
+
+(def-function fun-E (sv n)
+    (declare #'(scratch-int-vec int => int))
+  ;; read one element just to exercise the scratch vec
+  (+ n (~ sv 0)))
+
+(def-function fun-D (sv n)
+    (declare #'(scratch-int-vec int => int))
+  (+ 1 (fun-E sv n)))
+
+(def-function fun-C (n)
+    (declare #'(int => int))
+  (let ((sv (make-scratch-vector int :match-workgroup-size)))
+    (fun-D sv n)))
+
+(def-function fun-B (n)
+    (declare #'(int => int))
+  (fun-C n))
+
+(def-kernel kernel_A (n)
+    (declare #'(int))
+  (fun-B n))

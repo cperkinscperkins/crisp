@@ -1,0 +1,52 @@
+;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: 43
+;;
+;; Round-trip: verify that a scratch vector allocated by the hoist launcher
+;; can be written in one function and read in another through the side channel.
+;;
+;; Computation:
+;;   fun-C allocates a 1-element scratch vector, writes 42 to element 0.
+;;   fun-D reads element 0 and adds 1 -> 43.
+;;   Result is written to out-c.
+;;
+;; Call tree:
+;;   kernel_a(&out out-c)
+;;     => fun-B(&out out-c)            <-- carrier
+;;       => fun-C(&out out-c)          <-- originator (creates scratch vector)
+;;             sv = make-scratch-vector int 1
+;;             (set! (~ sv 0) 42)
+;;             => fun-D(sv &out out-c) <-- receives sv explicitly
+;;                  (set! (~ out-c) (+ (~ sv 0) 1))
+;;
+;; For the hoist launcher:
+;;   - implicit args 0..5: ptr (local addrspace), bytesize (4), offset[0]=0,
+;;     strides[0]=4, extents[0]=1, length=1
+;;   - arg 6: out-c (shared USM allocation, int)
+;;
+;; The metacrisp :implicit-params entry will have:
+;;   :size-expr 1
+;; The hoist generator uses this to emit the local allocation:
+;;   zeKernelSetArgumentValue(kernel, 0, 1 * sizeof(int), nullptr)   ; local memory
+;; with bytesize=4, offset[0]=0, stride[0]=4, extent[0]=1, length=1.
+
+(def-type out-c-t (cell int :address-space :global :access :read-write))
+(def-type sc-int-vec (vector int :address-space :local :access :read-write :align :compact))
+
+(def-function fun-D-sv-hoist (sv &out c)
+    (declare #'(sc-int-vec &out out-c-t => nil))
+  (set! (~ c) (+ (~ sv 0) 1)))
+
+(def-function fun-C-sv-hoist (&out c)
+    (declare #'(&out out-c-t => nil))
+  (let ((sv (make-scratch-vector int 1)))
+    (set! (~ sv 0) 42)
+    (fun-D-sv-hoist sv c)))
+
+(def-function fun-B-sv-hoist (&out c)
+    (declare #'(&out out-c-t => nil))
+  (fun-C-sv-hoist c))
+
+(def-kernel kernel_a (&out c)
+    (declare (type c out-c-t))
+  (fun-B-sv-hoist c))

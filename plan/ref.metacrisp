@@ -114,6 +114,8 @@
         ;; implicit params could be : debug logging vector, scratch Storage Handles, or
         ;; user defined 'implicit' params.  
         ;; the debug logging one is important to distinguish. 
+        ;; tensors (but not cell) will have :size-expr which could be a key or actual value.
+        ;; I added :size-expr here, though for a real cell it would not be present
         (:implicit-params
             (:name "sc"
              :msg  "please add an extra 10 bytes" 
@@ -122,6 +124,7 @@
              :address-space  :local 
              :access :read-write 
              :range (0 2)))
+             :size-expr :match-warp-tile
      )
      ;;
     (:name "rec_kernel"

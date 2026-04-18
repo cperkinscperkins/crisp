@@ -94,9 +94,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp
 - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp
+- - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp
 - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp
 - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp
@@ -113,7 +115,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp [RECURSION]
 - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp [RECURSION]
 - - - - - - - - - - - - - - (RECONSTRUCT-TEMPLATE-ARGS TOKENS PACKAGE)  mangling.lisp [RECURSION]
-- - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - - - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp
 - - - - - - - - - - - - - (%RESOLVE-TEMPLATE-NAME NAME)  templates.lisp
@@ -181,6 +182,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - (%GENERATE-TENSOR-SCRATCH-LITERAL-IR BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)  codegen.lisp
+- - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
 - - - - - - - - - - (%GENERATE-ENUM-LITERAL-IR BUILDER VALUE LLVM-TYPE)  codegen.lisp
 - - - - - - - - - - - (RESOLVE-KEYWORD-CONSTANT KW)  codegen.lisp [See above]
 - - - - - - - - - - (%GENERATE-SCALAR-LITERAL-IR BUILDER VALUE LLVM-TYPE CRISP-TYPE)  codegen.lisp
@@ -234,6 +238,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - - - - - - - - - - (%LOOKUP-FIELD-PHYSICAL-INDEX STRUCT-DEF FIELD-NAME-STR)  codegen.lisp
 - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
@@ -287,10 +293,16 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (WITH-PEEK-SCRATCH-COUNTER &BODY BODY)  macros.lisp
 - - - - - - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp
 - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp
-- - - - - - - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-CELL)) ARGS)  analysis/core.lisp
+- - - - - - - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp
 - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-CELL)) ARGS)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - (SCAN-OPERATOR (OP (EQL 'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - (%REGISTER-SCRATCH-TENSOR-IMPLICIT OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
 - - - - - - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
 - - - - - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
@@ -463,6 +475,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp [See above]
 - - - (INVOKE-HOISTER HOIST-ID METACRISP-FILE) :CRISP.MAIN  main.lisp
 - - - - (GET-HOISTER-BINARY-PATH HOIST-ID) :CRISP.MAIN  main.lisp
+
+- (%074-HAS-LOCAL-PTR-PARAM DEFINE-LINE)  metadata-val.lisp
 
 - (%CT-RESOLVE-VALUE VALUE)  macros.lisp
 
@@ -654,6 +668,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-SCRATCH-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - (VALID-PARAMETERIZED-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+
+- (ANALYZE-SCRATCH-TENSOR-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
+- - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp [See above]
+- - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp [See above]
 - - (VALID-PARAMETERIZED-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 
 - (ANALYZE-SET!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
@@ -940,6 +959,27 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp [See above]
 - - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp [See above]
 - - (%072-HAS-OFFSET-LOAD BODY)  metadata-val.lisp [See above]
+
+- (VALIDATE-074-02-SCRATCH-VECTOR-PROPAGATION-IR IR-PATH)  metadata-val.lisp
+- - (%074-COUNT-KERNEL-PARAMS IR KERNEL-NAME)  metadata-val.lisp
+
+- (VALIDATE-074-03-SCRATCH-TENSOR-PROPAGATION-IR IR-PATH)  metadata-val.lisp
+- - (%074-COUNT-KERNEL-PARAMS IR KERNEL-NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-074-04-SCRATCH-MATRIX-PROPAGATION-IR IR-PATH)  metadata-val.lisp
+- - (%074-COUNT-KERNEL-PARAMS IR KERNEL-NAME)  metadata-val.lisp [See above]
+
+- (VALIDATE-075-01-SCRATCH-VECTOR-IMPLICIT-META META-PATH)  metadata-val.lisp
+- - (%075-FIND-KERNEL METACRISP-PATH KERNEL-NAME)  metadata-val.lisp
+- - (%075-VALIDATE-TENSOR-IMPLICIT TAG K-DEF EXPECTED-TYPE-HEAD EXPECTED-N EXPECTED-SLOTS EXPECTED-ADDR-SPACE EXPECTED-SIZE-EXPR)  metadata-val.lisp
+
+- (VALIDATE-075-02-SCRATCH-TENSOR-N3-IMPLICIT-META META-PATH)  metadata-val.lisp
+- - (%075-FIND-KERNEL METACRISP-PATH KERNEL-NAME)  metadata-val.lisp [See above]
+- - (%075-VALIDATE-TENSOR-IMPLICIT TAG K-DEF EXPECTED-TYPE-HEAD EXPECTED-N EXPECTED-SLOTS EXPECTED-ADDR-SPACE EXPECTED-SIZE-EXPR)  metadata-val.lisp [See above]
+
+- (VALIDATE-075-03-SCRATCH-MATRIX-IMPLICIT-META META-PATH)  metadata-val.lisp
+- - (%075-FIND-KERNEL METACRISP-PATH KERNEL-NAME)  metadata-val.lisp [See above]
+- - (%075-VALIDATE-TENSOR-IMPLICIT TAG K-DEF EXPECTED-TYPE-HEAD EXPECTED-N EXPECTED-SLOTS EXPECTED-ADDR-SPACE EXPECTED-SIZE-EXPR)  metadata-val.lisp [See above]
 
 - (VALIDATE-10-BASICS-META PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL

@@ -112,3 +112,10 @@ codegen and the hoisting.  We 100% need to test some of these kernels on both be
 - Test case: `tests/spec/010-def-record/17-record-compare-struct.crisp`
 - Smoke test: `tests/spec/023-spirv/01-smoke.crisp`
 - Design docs: `docs/chapters/08_crisp_types/12_def_record.md`
+
+# (array T N)
+
+The fixed array declaration is normally for compile-time known contiguous data.
+
+BUT if the (array) declaration is inside a def-record it is a VIRTUAL array, and is SROA exploded just
+like any record var when being passed to functions or kernels.

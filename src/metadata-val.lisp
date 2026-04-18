@@ -1676,3 +1676,251 @@ Returns the form or NIL."
      (or (not (%072-has-offset-load body))
          (progn (log:error "validate-072-04: compact vector GET must not load from offset field") nil))
      (progn (log:info "validate-072-04: PASS") t))))
+
+;;; =========================================================
+;;; 074-scratch-tensor validators
+;;; =========================================================
+
+(defun %074-count-kernel-params (ir kernel-name)
+  "Returns the parameter count of the named kernel from the IR string,
+   or NIL if the kernel is not found.
+   Handles nested parens in type names like addrspace(3) by counting
+   only top-level commas."
+  (let* ((search (format nil "define void @~a(" kernel-name))
+         (pos (search search ir)))
+    (unless pos (return-from %074-count-kernel-params nil))
+    ;; pos points to 'd' of 'define', find the opening '(' of the param list
+    (let ((open-pos (+ pos (1- (length search)))))
+      ;; Scan forward counting depth; collect top-level commas
+      (let ((depth 0)
+            (top-comma-count 0)
+            (has-params nil))
+        (block scan
+          (loop for i from open-pos below (length ir)
+                for ch = (cl:char ir i)
+                do (cond
+                     ((char= ch #\()
+                      (incf depth)
+                      (when (= depth 1) (setf has-params t)))
+                     ((char= ch #\))
+                      (decf depth)
+                      (when (= depth 0)
+                        (return-from scan (if has-params
+                                             (1+ top-comma-count)
+                                             0))))
+                     ((and (char= ch #\,) (= depth 1))
+                      (incf top-comma-count))))
+          nil)))))
+
+(defun %074-has-local-ptr-param (define-line)
+  "Returns T if the define line contains a ptr addrspace(3) parameter."
+  (search "ptr addrspace(3)" define-line))
+
+(defun validate-074-02-scratch-vector-propagation-ir (ir-path)
+  "Validates scratch vector propagation IR:
+     - kernel_a has 7 params: ptr addrspace(3) + 5 x i64 (implicit tensor N=1)
+       + i32 (explicit n)
+     - fun_c has the same expanded signature (is a carrier)"
+  (unless (probe-file ir-path)
+    (log:error "validate-074-02: IR file not found: ~a" ir-path)
+    (return-from validate-074-02-scratch-vector-propagation-ir nil))
+  (let* ((ir (uiop:read-file-string ir-path))
+         (ka-count (%074-count-kernel-params ir "kernel_a")))
+    (unless ka-count
+      (log:error "validate-074-02: kernel_a not found in IR")
+      (return-from validate-074-02-scratch-vector-propagation-ir nil))
+    (and
+     (or (= ka-count 7)
+         (progn (log:error "validate-074-02: kernel_a expected 7 params, got ~a" ka-count) nil))
+     (or (search "ptr addrspace(3)" ir)
+         (progn (log:error "validate-074-02: expected local (addrspace 3) scratch pointer") nil))
+     (or (search "fun_c_tensor_int_1_local_read_write_compact_int" ir)
+         (progn (log:error "validate-074-02: carrier fun_c not found with expanded implicit signature") nil))
+     (progn (log:info "validate-074-02: PASS") t))))
+
+(defun validate-074-03-scratch-tensor-propagation-ir (ir-path)
+  "Validates scratch tensor (N=3) propagation IR:
+     - kernel_a has 13 params: ptr addrspace(3) + 11 x i64 (implicit tensor N=3)
+       + i32 (explicit n)
+     - fun_c has the same expanded signature"
+  (unless (probe-file ir-path)
+    (log:error "validate-074-03: IR file not found: ~a" ir-path)
+    (return-from validate-074-03-scratch-tensor-propagation-ir nil))
+  (let* ((ir (uiop:read-file-string ir-path))
+         (ka-count (%074-count-kernel-params ir "kernel_a")))
+    (unless ka-count
+      (log:error "validate-074-03: kernel_a not found in IR")
+      (return-from validate-074-03-scratch-tensor-propagation-ir nil))
+    (and
+     (or (= ka-count 13)
+         (progn (log:error "validate-074-03: kernel_a expected 13 params, got ~a" ka-count) nil))
+     (or (search "TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT" ir)
+         (progn (log:error "validate-074-03: expected TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT type in IR") nil))
+     (or (search "fun_c_tensor_float_3_local_read_write_compact_int" ir)
+         (progn (log:error "validate-074-03: carrier fun_c not found with expanded implicit signature") nil))
+     (progn (log:info "validate-074-03: PASS") t))))
+
+(defun validate-074-04-scratch-matrix-propagation-ir (ir-path)
+  "Validates scratch matrix (N=2) propagation IR:
+     - kernel_a has 11 params: ptr addrspace(3) + 8 x i64 (implicit tensor N=2)
+       + 2 x i64 (explicit row col as ulong)
+     - fun_c has the same expanded signature"
+  (unless (probe-file ir-path)
+    (log:error "validate-074-04: IR file not found: ~a" ir-path)
+    (return-from validate-074-04-scratch-matrix-propagation-ir nil))
+  (let* ((ir (uiop:read-file-string ir-path))
+         (ka-count (%074-count-kernel-params ir "kernel_a")))
+    (unless ka-count
+      (log:error "validate-074-04: kernel_a not found in IR")
+      (return-from validate-074-04-scratch-matrix-propagation-ir nil))
+    (and
+     (or (= ka-count 11)
+         (progn (log:error "validate-074-04: kernel_a expected 11 params, got ~a" ka-count) nil))
+     (or (search "TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT" ir)
+         (progn (log:error "validate-074-04: expected TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT type in IR") nil))
+     (or (search "fun_c_tensor_float_2_local_read_write_compact_ulong_ulong" ir)
+         (progn (log:error "validate-074-04: carrier fun_c not found with expanded implicit signature") nil))
+     (progn (log:info "validate-074-04: PASS") t))))
+
+;;; =========================================================
+;;; 075-scratch-tensor-metadata validators
+;;;
+;;; These validate that after the canonical-list fix:
+;;;   - :implicit-params :type is a canonical list (not a mangled symbol)
+;;;   - :physical-signature is fully exploded to individual ULONGs
+;;;   - :range covers the correct number of physical slots (3N+3)
+;;; =========================================================
+
+(defun %075-find-kernel (metacrisp-path kernel-name)
+  "Reads a metacrisp file and returns the plist for the named kernel, or NIL."
+  (unless (probe-file metacrisp-path)
+    (log:error "075: metacrisp file not found: ~a" metacrisp-path)
+    (return-from %075-find-kernel nil))
+  (let* ((content (uiop:read-file-forms metacrisp-path))
+         (kernels (find :kernels content :key #'car)))
+    (unless kernels
+      (log:error "075: no :kernels section in ~a" metacrisp-path)
+      (return-from %075-find-kernel nil))
+    (block find-k
+      (dolist (k (cdr kernels))
+        (when (string-equal (getf k :name) kernel-name)
+          (return-from find-k k)))
+      nil)))
+
+(defun %075-validate-tensor-implicit (tag k-def expected-type-head expected-n
+                                      expected-slots expected-addr-space
+                                      expected-size-expr)
+  "Shared checker for 075-0x validators.
+   Verifies:
+     - exactly one implicit param
+     - :type is a cons whose first element is TENSOR with the correct N and :address-space
+     - :size-expr is present and equals EXPECTED-SIZE-EXPR
+     - :range spans exactly EXPECTED-SLOTS physical slots starting at 0
+     - :physical-signature has EXPECTED-SLOTS entries for the implicit range,
+       first entry (C-POINTER ...), remaining entries ULONG"
+  (let ((implicit-sig (getf k-def :implicit-params))
+        (phys-sig (getf k-def :physical-signature)))
+
+    (unless (= (length implicit-sig) 1)
+      (log:error "~a: expected 1 implicit param, got ~a" tag (length implicit-sig))
+      (return-from %075-validate-tensor-implicit nil))
+
+    (let* ((entry (first implicit-sig))
+           (itype (getf entry :type))
+           (irange (getf entry :range))
+           (iaddr (getf entry :address-space)))
+
+      ;; :type must be a canonical list starting with TENSOR
+      (unless (and (consp itype)
+                   (symbolp (first itype))
+                   (string-equal (symbol-name (first itype)) "TENSOR"))
+        (log:error "~a: implicit :type must be (TENSOR ...) canonical list, got ~s" tag itype)
+        (return-from %075-validate-tensor-implicit nil))
+
+      ;; N must match
+      (let ((actual-n (third itype)))
+        (unless (and (integerp actual-n) (= actual-n expected-n))
+          (log:error "~a: implicit type has N=~a, expected N=~a" tag actual-n expected-n)
+          (return-from %075-validate-tensor-implicit nil)))
+
+      ;; :address-space must match
+      (unless (and iaddr (string-equal (symbol-name iaddr)
+                                       (symbol-name expected-addr-space)))
+        (log:error "~a: implicit :address-space is ~s, expected ~s" tag iaddr expected-addr-space)
+        (return-from %075-validate-tensor-implicit nil))
+
+      ;; :size-expr must be present and match
+      (let ((isize-expr (getf entry :size-expr)))
+        (unless isize-expr
+          (log:error "~a: implicit :size-expr is missing" tag)
+          (return-from %075-validate-tensor-implicit nil))
+        (unless (equal isize-expr expected-size-expr)
+          (log:error "~a: implicit :size-expr is ~s, expected ~s" tag isize-expr expected-size-expr)
+          (return-from %075-validate-tensor-implicit nil)))
+
+      ;; :range must be (0 <expected-slots - 1>)
+      (unless (and (listp irange)
+                   (= (length irange) 2)
+                   (= (first irange) 0)
+                   (= (second irange) (1- expected-slots)))
+        (log:error "~a: implicit :range is ~s, expected (0 ~a)" tag irange (1- expected-slots))
+        (return-from %075-validate-tensor-implicit nil))
+
+      ;; physical-signature: first EXPECTED-SLOTS entries cover the implicit range
+      ;; entry 0 must be (C-POINTER ...) or (C-POINTER :ADDRESS-SPACE :LOCAL)
+      ;; entries 1..(expected-slots-1) must all be ULONG
+      (unless (>= (length phys-sig) expected-slots)
+        (log:error "~a: physical-sig has ~a entries, need >= ~a" tag (length phys-sig) expected-slots)
+        (return-from %075-validate-tensor-implicit nil))
+
+      (let ((entry0-type (second (nth 0 phys-sig))))
+        (unless (and (consp entry0-type)
+                     (string-equal (symbol-name (first entry0-type)) "C-POINTER"))
+          (log:error "~a: phys-sig[0] must be (C-POINTER ...), got ~s" tag entry0-type)
+          (return-from %075-validate-tensor-implicit nil)))
+
+      (loop for i from 1 below expected-slots
+            for entry = (nth i phys-sig)
+            do (unless (and entry
+                            (symbolp (second entry))
+                            (string-equal (symbol-name (second entry)) "ULONG"))
+                 (log:error "~a: phys-sig[~a] must be ULONG, got ~s" tag i entry)
+                 (return-from %075-validate-tensor-implicit nil)))
+
+      t)))
+
+(defun validate-075-01-scratch-vector-implicit-meta (meta-path)
+  "Validates scratch vector (N=1) metacrisp:
+     - implicit :type is (TENSOR INT 1 :ADDRESS-SPACE :LOCAL ...) canonical list
+     - physical-signature has 6 exploded scalar entries for the implicit range
+     - :range is (0 5)"
+  (let ((k-def (%075-find-kernel meta-path "kernel_a")))
+    (unless k-def
+      (log:error "validate-075-01: kernel_a not found in ~a" meta-path)
+      (return-from validate-075-01-scratch-vector-implicit-meta nil))
+    (and (%075-validate-tensor-implicit "075-01" k-def 'tensor 1 6 :local :match-warp-tile)
+         (progn (log:info "validate-075-01: PASS") t))))
+
+(defun validate-075-02-scratch-tensor-n3-implicit-meta (meta-path)
+  "Validates scratch tensor (N=3) metacrisp:
+     - implicit :type is (TENSOR FLOAT 3 :ADDRESS-SPACE :LOCAL ...) canonical list
+     - physical-signature has 12 exploded scalar entries for the implicit range
+     - :range is (0 11)"
+  (let ((k-def (%075-find-kernel meta-path "kernel_a")))
+    (unless k-def
+      (log:error "validate-075-02: kernel_a not found in ~a" meta-path)
+      (return-from validate-075-02-scratch-tensor-n3-implicit-meta nil))
+    (and (%075-validate-tensor-implicit "075-02" k-def 'tensor 3 12 :local :match-warp-tile)
+         (progn (log:info "validate-075-02: PASS") t))))
+
+(defun validate-075-03-scratch-matrix-implicit-meta (meta-path)
+  "Validates scratch matrix (N=2) metacrisp:
+     - implicit :type is (TENSOR FLOAT 2 :ADDRESS-SPACE :LOCAL ...) canonical list
+     - physical-signature has 9 exploded scalar entries for the implicit range
+     - :range is (0 8)"
+  (let ((k-def (%075-find-kernel meta-path "kernel_a")))
+    (unless k-def
+      (log:error "validate-075-03: kernel_a not found in ~a" meta-path)
+      (return-from validate-075-03-scratch-matrix-implicit-meta nil))
+    (and (%075-validate-tensor-implicit "075-03" k-def 'tensor 2 9 :local :match-warp-tile)
+         (progn (log:info "validate-075-03: PASS") t))))

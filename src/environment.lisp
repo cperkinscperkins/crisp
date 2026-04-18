@@ -316,18 +316,23 @@
     (setf (gethash alias *function-table*)
       (append alias-sigs real-sigs))))
 
+
+
+
 (defun inject-implicit-arguments (name explicit-env)
-  "Injects implicit arguments into the environment if the function is a carrier."
+  "Injects implicit arguments into the environment for carrier functions.
+   Types in *implicit-arg-map* are already in the correct form:
+   mangled symbols for tensors (no integers to mangle-type-spec),
+   canonical lists for cells (preserved for hoist metadata)."
   (let* ((implicit-info (gethash name *implicit-arg-map*))
-         (implicit-env (when implicit-info
-                             ;; implicit-info is now: ((name . type) ...)
-                             (loop for (param-name . param-type) in implicit-info
-                                   collect (make-parameter-def
-                                            :name param-name
-                                            :type param-type
-                                            :kind :in)))))
-    (append implicit-env explicit-env)))
-                          
+         (implicit-env
+          (when implicit-info
+            (loop for (param-name . param-type) in implicit-info
+                  collect (make-parameter-def
+                           :name param-name
+                           :type param-type
+                           :kind :in)))))
+    (append implicit-env explicit-env)))                      
 
 (defun scan-for-carriers (name body)
   "Performs a single-pass look-ahead to detect if the function is a carrier.

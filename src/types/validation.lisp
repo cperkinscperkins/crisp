@@ -653,24 +653,38 @@ Extended to also accept raw (function ...) forms from the Crisp reader
        (symbolp (cl:first type-spec))
        (string-equal (symbol-name (cl:first type-spec)) "ARRAY")))
 
+
+
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference.
-   Extended to handle (array T N) → LLVM [N x T_llvm]."
+   Extended to handle (array T N) → LLVM [N x T_llvm].
+   Extended to normalize VECTOR/MATRIX sugar to TENSOR before dispatch,
+   and to canonicalize type alias values before recursing."
   (cl:let ((*resolve-depth* (1+ *resolve-depth*)))
     (cl:when (> *resolve-depth* 50)
       (cl:error "Infinite recursion detected in resolve-type-to-llvm for ~s" type-spec))
+
+    ;; ── Early-out: VECTOR/MATRIX sugar → TENSOR ──────────────────────────────
+    ;; VECTOR and MATRIX are not in *template-registry*, so the normal
+    ;; "Parameterized Structs" branch cannot handle them.  Expand to TENSOR first
+    ;; so the rest of the dispatch sees a canonical (tensor ...) form.
+    (cl:when (cl:and (cl:consp type-spec)
+                     (cl:symbolp (cl:first type-spec))
+                     (cl:member (cl:symbol-name (cl:first type-spec))
+                                '("VECTOR" "MATRIX") :test #'cl:string-equal))
+      (log:info "resolve-type-to-llvm: expanding ~a sugar to TENSOR" (cl:first type-spec))
+      (cl:return-from resolve-type-to-llvm
+        (resolve-type-to-llvm (expand-storage-handle-type-specifier type-spec))))
 
     (cl:cond
       ;; (array T N) → [N x T_llvm]
       ((%array-type-p type-spec)
        (cl:let* ((elem-type (cl:second type-spec))
                  (count-raw (cl:third type-spec))
-                 ;; count may be a symbol like |5| after unmangle; coerce to integer
                  (count (etypecase count-raw
                           (integer count-raw)
                           (symbol  (parse-integer (symbol-name count-raw))))))
          (log:info "resolve-type-to-llvm: (array ~a ~a) -> [~a x ...]" elem-type count count)
-         ;; llvm-array-type not yet exported from package.lisp — use :: until patched
          (crisp.llvm-bindings::llvm-array-type (resolve-type-to-llvm elem-type) count)))
 
       ;; Derived Type - resolve to base type (MUST come before *crisp-types* check)
@@ -697,9 +711,11 @@ Extended to also accept raw (function ...) forms from the Crisp reader
       ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-types*))
        (cl:funcall (crisp-type-llvm-type-fn (cl:gethash type-spec *crisp-types*))))
 
-      ;; Type Alias (Symbol)
+      ;; Type Alias (Symbol) — canonicalize alias value before recursing so that
+      ;; aliases pointing to (vector ...) / (matrix ...) are normalized to TENSOR.
       ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-type-aliases*))
-       (resolve-type-to-llvm (cl:gethash type-spec *crisp-type-aliases*)))
+       (resolve-type-to-llvm
+        (canonicalize-type-specifier (cl:gethash type-spec *crisp-type-aliases*))))
 
       ;; C-Pointer with properties: e.g. (c-pointer :address-space :global)
       ((cl:and (cl:consp type-spec) (cl:eq (cl:first type-spec) 'c-pointer))
@@ -759,7 +775,9 @@ Extended to also accept raw (function ...) forms from the Crisp reader
                                when (cl:string-equal (cl:symbol-name k) (cl:symbol-name type-spec))
                                return k)))
          (cl:if alias-match
-                (resolve-type-to-llvm (cl:gethash alias-match *crisp-type-aliases*))
+                ;; Canonicalize before recursing (same fix as Type Alias branch above)
+                (resolve-type-to-llvm
+                 (canonicalize-type-specifier (cl:gethash alias-match *crisp-type-aliases*)))
                 (cl:error "Cannot resolve type to LLVM: ~a" type-spec)))))))
 
 (defun incomplete-type-p (type-spec)

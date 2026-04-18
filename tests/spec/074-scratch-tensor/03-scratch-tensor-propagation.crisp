@@ -1,0 +1,44 @@
+;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-074-03-scratch-tensor-propagation-ir
+;; Verifies kernel_A's physical signature for N=3 scratch tensor:
+;;   storage: ptr addrspace(3) + bytesize (2)
+;;   offset[0..2]:  3 x i64
+;;   strides[0..2]: 3 x i64
+;;   extents[0..2]: 3 x i64
+;;   length:        1 x i64
+;;   = ptr + 11 x i64 + i32 = 13 total params
+
+;; Calling tree mirrors 02-scratch-vector-propagation but
+;; uses a general 3-dimensional tensor.
+;;
+;;   kernel_A(n)
+;;    => fun-B(n)
+;;      => fun-C(n)           <-- creates scratch tensor here
+;;           t3 = make-scratch-tensor float 3
+;;           => fun-D(t3 n)
+;;             => fun-E(t3 n)
+
+(def-type scratch-float-t3 (tensor float 3 :address-space :local :access :read-write :align :compact))
+
+(def-function fun-E (t3 n)
+    (declare #'(scratch-float-t3 int => float))
+  ;; minimal use: read element 0,0,0
+  (~ t3 0uc 0uc 0uc))
+
+(def-function fun-D (t3 n)
+    (declare #'(scratch-float-t3 int => float))
+  (fun-E t3 n))
+
+(def-function fun-C (n)
+    (declare #'(int => float))
+  (let ((t3 (make-scratch-tensor float 3 :match-workgroup-size)))
+    (fun-D t3 n)))
+
+(def-function fun-B (n)
+    (declare #'(int => float))
+  (fun-C n))
+
+(def-kernel kernel_A (n)
+    (declare #'(int))
+  (fun-B n))

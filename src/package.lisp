@@ -260,6 +260,9 @@
    #:storage
    #:type
    #:make-scratch-cell
+   #:make-scratch-vector
+   #:make-scratch-matrix
+   #:make-scratch-tensor
    #:|=>| ;; Correct arrow
 
    ;; New Unified Let
@@ -373,6 +376,9 @@
                 #:return-type
                 #:type
                 #:make-scratch-cell
+                #:make-scratch-vector
+                #:make-scratch-matrix
+                #:make-scratch-tensor
                 #:def-enumeration
                 #:address-space
                 #:is-set?
@@ -511,6 +517,9 @@
    #:vector #:matrix #:tensor
    ;; Storage Handle
    #:make-scratch-cell
+   #:make-scratch-vector
+   #:make-scratch-matrix
+   #:make-scratch-tensor
    #:cell #:voidp
    #:parent~ #:offset~ #:element-type~
    #:bytes~ #:sizeof

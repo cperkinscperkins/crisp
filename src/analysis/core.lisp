@@ -324,6 +324,23 @@
   ;; Continue scanning arguments
   (dolist (arg args) (scan-form arg)))
 
+
+
+(defmethod scan-operator ((op (eql 'make-scratch-vector)) args)
+  "Scans make-scratch-vector and registers the implicit tensor (N=1) arg."
+  (%register-scratch-tensor-implicit op args)
+  (dolist (arg args) (scan-form arg)))
+
+(defmethod scan-operator ((op (eql 'make-scratch-matrix)) args)
+  "Scans make-scratch-matrix and registers the implicit tensor (N=2) arg."
+  (%register-scratch-tensor-implicit op args)
+  (dolist (arg args) (scan-form arg)))
+
+(defmethod scan-operator ((op (eql 'make-scratch-tensor)) args)
+  "Scans make-scratch-tensor and registers the implicit tensor (N from args) arg."
+  (%register-scratch-tensor-implicit op args)
+  (dolist (arg args) (scan-form arg)))
+
 (defun shallow-analyze-body (forms)
   "Performs a shallow, recursive walk of a function's body.
   Returns two values:
@@ -376,37 +393,7 @@
       ;; Cleanup: clear current function (replaces pop of stack)
       (setf (compiler-context-current-compiling-function context) nil))))
 
-#|
-(defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
-  "Compiles a single def-function form. Handles optional parameters by generating overloaded variants."
-  ;; In single-pass mode, the signature won't be registered yet.
-  (unless (gethash (second form) *function-table*)
-    (register-function-signature form location))
 
-  (let* ((name (second form))
-         (params (third form))
-         (body-and-loc (cdddr form))
-         ;; Extract declarations manually to check for optional args
-         (declare-forms (loop for f in body-and-loc
-                              while (and (listp f) (eq (car f) 'declare))
-                              collect f)))
-
-    (multiple-value-bind (explicit-env return-types optional-idx defaults key-idx)
-        (parse-function-declarations params (loop for f in declare-forms append (rest f)))
-      (declare (ignore explicit-env return-types defaults))
-
-      (cond
-       ;; --- OPTIONAL/KEY PARAMETERS: Lazy Instantiation (Generic Template) ---
-       ;; We skip eager compilation here. The specific variants will be compiled
-       ;; on-demand by instantiate-generic-function when called.
-       ((or optional-idx key-idx)
-         (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name))
-
-       ;; --- STANDARD Compilation (No Optionals) ---
-       (t
-         (%compile-standard-function form location module builder di-builder di-compile-unit location-map))))))
-
-         |#
 
 ;;; Fix: compile-def-function — Option A: wrap backward companion compilation
 ;;; in handler-case. If the generated _GRAD def-function fails to compile
@@ -466,25 +453,7 @@ the _GRAD backward companion after the forward function."
   (loop for form in forms
         for i from 0
         do (visit-toplevel-form form (list i) visitor-fn)))
-#|
-(defun analyze-signatures-pass (forms)
-  "Pass 1: Iterates through forms to find and register function signatures."
-  (walk-code-forms forms
-                   (lambda (form location)
-                     (let* ((name (second form))
-                            (body (cdddr form)))
-                       ;; 1. Register the explicit signature.
-                       (register-function-signature form location)
-                       ;; 2. Perform shallow analysis for call graph and originators.
-                       ;; FIXED: Set the function name in context so scan-operator can access it
-                       (let ((*compiler-context* (make-compiler-context)))
-                         (setf (compiler-context-scanning-function-name *compiler-context*) name)
-                         (multiple-value-bind (is-originator callees)
-                             (shallow-analyze-body body)
-                           (when is-originator
-                                 (setf (gethash name *originator-functions*) t))
-                           (setf (gethash name *call-graph*) callees)))))))
-                           |#
+
 
 ;;; Updated analyze-signatures-pass — calls %pre-register-hof-templates after
 ;;; walk-code-forms so HOF templates in the template registry are registered.
