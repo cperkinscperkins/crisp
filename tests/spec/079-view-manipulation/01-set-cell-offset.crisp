@@ -1,0 +1,12 @@
+;; Set offset~ of a cell, then read through it.
+;; Source: compact int vector.  Create a cell at offset 0, then set offset to 2.
+;; Reading through the cell should now yield element [2] of the source.
+;; This is a regression test: cell offset~ set! is marked done in scramble.md.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-set-cell-offset (v)
+    (declare #'(int-vec-t => nil))
+  (let ((c (make-cell v int)))
+    (set! (offset~ c) 2)
+    (return)))

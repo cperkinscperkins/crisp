@@ -7,6 +7,9 @@
 
 (in-package :crisp.llvm-bindings)
 
-
+;; src/llvm-bindings.lisp
+(cffi:defcfun ("LLVMGetIntTypeWidth" llvm-get-int-type-width) :unsigned-int
+  "Returns the bit-width of an LLVM integer type (e.g. 32 for i32, 64 for i64)."
+  (int-ty :pointer))
 
 
