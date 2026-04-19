@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "Cannot reinterpret element type on a :strided storage handle"
+;;
+;; Restriction: if the original and new element types differ,
+;; the source Storage Handle must have :compact or :compact-offset layout.
+;; Reinterpreting element types on :strided views is mathematically undefined.
+
+(def-type strided-float-vec-t (vector float :align :strided :address-space :global :access :read-write))
+
+(def-function test-strided-diff-elem (v)
+    (declare #'(strided-float-vec-t => int))
+  (let ((view (make-vector v int :length 3)))
+    (~ view 0)))

@@ -875,10 +875,274 @@
 
 
 
+;;; ============================================================
+;;; 078-storage-handle-reinterpretation
+;;; make-cell / make-vector / make-matrix / make-tensor
+;;; ============================================================
+
+;;; ── helpers ─────────────────────────────────────────────────
+
+
+(defun %mv-source-head (canon)
+  "Return the head keyword (:cell or :tensor) from a canonical type, or NIL."
+  (when (consp canon)
+    (cl:let ((h (symbol-name (cl:first canon))))
+      (cond ((string-equal h "CELL")   :cell)
+            ((string-equal h "TENSOR") :tensor)
+            (t nil)))))
+
+(defun %mv-source-elem (canon)
+  "Return the element-type symbol from a canonical storage handle type."
+  (cl:second canon))
+
+(defun %mv-source-addr (canon)
+  "Return the address-space keyword from a canonical storage handle type."
+  (cond ((eq (%mv-source-head canon) :cell)   (cl:third canon))
+        ((eq (%mv-source-head canon) :tensor)  (cl:fourth canon))
+        (t :global)))
+
+(defun %mv-source-access (canon)
+  "Return the access keyword from a canonical storage handle type."
+  (cond ((eq (%mv-source-head canon) :cell)   (cl:fourth canon))
+        ((eq (%mv-source-head canon) :tensor)  (cl:fifth canon))
+        (t :read-write)))
+
+(defun %mv-source-align (canon)
+  "Return the :align keyword from a canonical storage handle type (tensors only)."
+  (when (eq (%mv-source-head canon) :tensor)
+    (cl:sixth canon)))
+
+(defun %mv-is-struct-elem (elem-type)
+  "Returns T if ELEM-TYPE is a registered def-struct type."
+  (cl:let ((ct (gethash elem-type *crisp-types*)))
+    (and ct (eq (crisp-type-category ct) :struct))))
+
+(defun %mv-parse-kwargs (kwarg-list)
+  "Parse a flat keyword-arg list like (:offset 2 :length 5 :major :row).
+   Returns a plist."
+  (cl:let ((result '()))
+    (cl:loop for (k v) on kwarg-list by #'cl:cddr
+             when (keywordp k) do (setf (cl:getf result k) v))
+    result))
+
+(defun %mv-eval-integer (form)
+  "Evaluate a compile-time integer form (bare integer or quoted integer).
+   Returns an integer or NIL."
+  (cond ((integerp form) form)
+        ((and (consp form) (eq (cl:first form) 'quote) (integerp (cl:second form)))
+         (cl:second form))
+        (t nil)))
+
+(defun %mv-eval-list (form)
+  "Evaluate a compile-time list form like '(2 3 4) or (2 3 4) for extents/strides.
+   Returns a list of integers or NIL."
+  (cond ((and (consp form) (eq (cl:first form) 'quote) (listp (cl:second form)))
+         (cl:second form))
+        ((and (consp form) (every #'integerp form))
+         form)
+        (t nil)))
+
+;;; ── compile-time restrictions ────────────────────────────────
+
+(defun %mv-check-restrictions (op src-canon new-elem location)
+  "Enforce compile-time restrictions for view constructors.
+   Signals a compiler-error on violation."
+  (cl:let* ((src-elem  (%mv-source-elem src-canon))
+             (same-elem (or (eq src-elem new-elem)
+                            (string-equal (symbol-name src-elem)
+                                          (symbol-name new-elem))))
+             (src-align (%mv-source-align src-canon)))
+    (unless same-elem
+      ;; Restriction 1: source element cannot be a struct type
+      (when (%mv-is-struct-elem src-elem)
+        (error "~a: Cannot reinterpret a struct-element storage handle to a different element type ~a (source element type ~a is a struct)" op new-elem src-elem))
+      ;; Restriction 2: source alignment cannot be :strided
+      (when (member src-align '(:strided strided) :test #'string-equal)
+        (error "~a: Cannot reinterpret element type on a :strided storage handle (source is ~a, new type is ~a). Reinterpreting :strided views is mathematically undefined." op src-elem new-elem)))))
+
+;;; ── result type computation ──────────────────────────────────
+
+(defun %mv-result-align (src-align explicit-strides-p col-major-p)
+  "Determine result alignment given source alignment and constructor options."
+  (if (or explicit-strides-p col-major-p)
+      :strided
+      (or src-align :compact)))
+
+(defun %mv-result-cell-type (new-elem addr access)
+  "Build canonical cell result type."
+  `(cell ,new-elem ,addr ,access))
+
+(defun %mv-result-tensor-type (new-elem rank addr access align)
+  "Build canonical tensor result type."
+  `(tensor ,new-elem ,rank ,addr ,access ,align))
+
+;;; ── compute strides list (compile-time) ──────────────────────
+
+(defun %mv-row-major-strides (extents)
+  "Compute row-major strides for given extents list.
+   Innermost stride = 1; stride[k] = product(extents[k+1..N-1])."
+  (cl:let* ((n (cl:length extents))
+             (strides (make-list n :initial-element 1)))
+    (cl:loop for k from (- n 2) downto 0
+             do (setf (cl:nth k strides)
+                      (* (cl:nth (1+ k) strides) (cl:nth (1+ k) extents))))
+    strides))
+
+(defun %mv-col-major-strides (extents)
+  "Compute col-major strides for a 2D matrix with extents [height width].
+   stride_row=1, stride_col=height."
+  (cl:let ((height (cl:first extents)))
+    (list 1 height)))
+
+;;; ── main analyzer ────────────────────────────────────────────
+
+(defun analyze-make-view-expression (expr env context location)
+  "Analyzes make-cell / make-vector / make-matrix / make-tensor view constructors.
+   These create a new Storage Handle struct that reinterprets existing storage.
+   No memory is allocated; the result is a new tensor/cell value derived from
+   the source's parent storage pointer.
+
+   Syntax:
+     (make-cell   src elem-type &key (offset 0))
+     (make-vector src elem-type &key length (offset 0))
+     (make-matrix src elem-type width height &key (major :row) (offset 0) strides)
+     (make-tensor src elem-type extents-list &key (offset 0) strides)
+
+   Returns a semantic-make-view node."
+  (cl:let* ((op       (cl:first expr))
+             (args     (cl:rest expr))
+             ;; --- source ---
+             (src-expr (cl:first args))
+             (src-node (analyze-expression src-expr env context (append location '(1))))
+             (src-type (semantic-node-type src-node))
+             (src-canon (%mv-resolve-src-type src-type)))
+
+    (unless src-canon
+      (error "~a: Cannot resolve source type ~a to a storage handle type" op src-type))
+    (unless (%mv-source-head src-canon)
+      (error "~a: Source type ~a is not a storage handle (cell/vector/matrix/tensor)" op src-type))
+
+    (cl:ecase op
+
+      ;; ── make-cell ────────────────────────────────────────────────────
+      (make-cell
+       (cl:let* ((new-elem  (cl:second args))
+                 (kwargs    (%mv-parse-kwargs (cl:nthcdr 2 args)))
+                 (offset    (or (%mv-eval-integer (cl:getf kwargs :offset)) 0))
+                 (addr      (%mv-source-addr src-canon))
+                 (access    (%mv-source-access src-canon)))
+         (%mv-check-restrictions op src-canon new-elem location)
+         (make-semantic-make-view
+          :type        (%mv-result-cell-type new-elem addr access)
+          :source-node src-node
+          :element-type new-elem
+          :rank        0
+          :offset      offset
+          :length      1
+          :extents     nil
+          :strides     nil
+          :major       :row
+          :source-location location)))
+
+      ;; ── make-vector ──────────────────────────────────────────────────
+      (make-vector
+       (cl:let* ((new-elem  (cl:second args))
+                 (kwargs    (%mv-parse-kwargs (cl:nthcdr 2 args)))
+                 (offset    (or (%mv-eval-integer (cl:getf kwargs :offset)) 0))
+                 (length    (%mv-eval-integer (cl:getf kwargs :length))) ; NIL = auto
+                 (addr      (%mv-source-addr src-canon))
+                 (access    (%mv-source-access src-canon))
+                 (src-align (%mv-source-align src-canon))
+                 (align     (%mv-result-align src-align nil nil)))
+         (%mv-check-restrictions op src-canon new-elem location)
+         (make-semantic-make-view
+          :type        (%mv-result-tensor-type new-elem 1 addr access align)
+          :source-node src-node
+          :element-type new-elem
+          :rank        1
+          :offset      offset
+          :length      length  ; NIL means auto-compute at runtime
+          :extents     (when length (list length))
+          :strides     nil
+          :major       :row
+          :source-location location)))
+
+      ;; ── make-matrix ──────────────────────────────────────────────────
+      (make-matrix
+       (cl:let* ((new-elem  (cl:second args))
+                 (width     (%mv-eval-integer (cl:third args)))
+                 (height    (%mv-eval-integer (cl:fourth args)))
+                 (kwargs    (%mv-parse-kwargs (cl:nthcdr 4 args)))
+                 (offset    (or (%mv-eval-integer (cl:getf kwargs :offset)) 0))
+                 (major-kw  (or (cl:getf kwargs :major) :row))
+                 (strides-form (cl:getf kwargs :strides))
+                 (strides   (%mv-eval-list strides-form))
+                 (explicit-strides-p (not (null strides)))
+                 (col-p     (cl:member major-kw '(:col col) :test #'string-equal))
+                 (extents   (list height width))
+                 (result-strides
+                  (cond (explicit-strides-p strides)
+                        (col-p (%mv-col-major-strides extents))
+                        (t     (%mv-row-major-strides extents))))
+                 (length    (* width height))
+                 (addr      (%mv-source-addr src-canon))
+                 (access    (%mv-source-access src-canon))
+                 (src-align (%mv-source-align src-canon))
+                 (align     (%mv-result-align src-align explicit-strides-p col-p)))
+         (unless (and width height)
+           (error "make-matrix: width and height must be compile-time integer literals"))
+         (%mv-check-restrictions op src-canon new-elem location)
+         (make-semantic-make-view
+          :type        (%mv-result-tensor-type new-elem 2 addr access align)
+          :source-node src-node
+          :element-type new-elem
+          :rank        2
+          :offset      offset
+          :length      length
+          :extents     extents
+          :strides     result-strides
+          :major       (if col-p :col :row)
+          :source-location location)))
+
+      ;; ── make-tensor ──────────────────────────────────────────────────
+      (make-tensor
+       (cl:let* ((new-elem     (cl:second args))
+                 (extents-form (cl:third args))
+                 (extents      (%mv-eval-list extents-form))
+                 (kwargs       (%mv-parse-kwargs (cl:nthcdr 3 args)))
+                 (offset       (or (%mv-eval-integer (cl:getf kwargs :offset)) 0))
+                 (strides-form (cl:getf kwargs :strides))
+                 (strides      (%mv-eval-list strides-form))
+                 (explicit-strides-p (not (null strides)))
+                 (rank         (when extents (cl:length extents)))
+                 (result-strides (if explicit-strides-p strides
+                                     (when extents (%mv-row-major-strides extents))))
+                 (length       (when extents (reduce #'* extents)))
+                 (addr         (%mv-source-addr src-canon))
+                 (access       (%mv-source-access src-canon))
+                 (src-align    (%mv-source-align src-canon))
+                 (align        (%mv-result-align src-align explicit-strides-p nil)))
+         (unless extents
+           (error "make-tensor: extents list must be a compile-time literal list like '(2 3 4)"))
+         (%mv-check-restrictions op src-canon new-elem location)
+         (make-semantic-make-view
+          :type        (%mv-result-tensor-type new-elem rank addr access align)
+          :source-node src-node
+          :element-type new-elem
+          :rank        rank
+          :offset      offset
+          :length      length
+          :extents     extents
+          :strides     result-strides
+          :major       :row
+          :source-location location))))))
+
+
+
 
 (defun register-struct-analyzers ()
   "Registers all struct/storage-handle expression analyzers.
-   Redefines the original to add make-scratch-{vector,matrix,tensor}."
+   Extends the original to add make-cell/vector/matrix/tensor view constructors."
   (def-expression-analyzer %construct-struct analyze-struct-construction)
   (def-expression-analyzer %extract-struct-member analyze-extract-struct-member-expression)
   (def-expression-analyzer %insert-struct-member analyze-insert-struct-member-expression)
@@ -892,6 +1156,12 @@
   (def-expression-analyzer ~ref~ analyze-aref-expression)
   (def-expression-analyzer ~ analyze-aref-expression)
 
-  (def-expression-analyzer set! analyze-set!-expression))
+  (def-expression-analyzer set! analyze-set!-expression)
+
+  ;; view constructors (078)
+  (def-expression-analyzer make-cell   analyze-make-view-expression)
+  (def-expression-analyzer make-vector analyze-make-view-expression)
+  (def-expression-analyzer make-matrix analyze-make-view-expression)
+  (def-expression-analyzer make-tensor analyze-make-view-expression))
 
 

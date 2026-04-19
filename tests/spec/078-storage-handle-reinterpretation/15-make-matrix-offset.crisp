@@ -1,0 +1,11 @@
+;; make-matrix with :offset.
+;; Source: compact int vector with >= 12 elements.
+;; Skip the first 3 elements via :offset 3, then view a 3x3 matrix.
+;; Access element [0, 0] -- corresponds to flat src[3].
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-matrix-offset (v)
+    (declare #'(int-vec-t => int))
+  (let ((mat (make-matrix v int 3 3 :offset 3)))
+    (~ mat 0 0)))

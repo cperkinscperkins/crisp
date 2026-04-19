@@ -1,0 +1,11 @@
+;; make-matrix: default :major :row (row-major).
+;; Source: compact int vector with >= 9 elements.
+;; View as 3x3 int matrix (row-major by default).
+;; Access element [1, 2] (row 1, col 2 => flat index 1*3+2 = 5).
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-matrix-row-major (v)
+    (declare #'(int-vec-t => int))
+  (let ((mat (make-matrix v int 3 3)))
+    (~ mat 1 2)))

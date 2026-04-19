@@ -83,6 +83,7 @@
    #:llvm-build-mul
    #:llvm-build-fmul
    #:llvm-build-sdiv
+   #:llvm-build-udiv
    #:llvm-build-fdiv
    #:llvm-build-icmp
    #:llvm-build-fcmp
@@ -263,6 +264,11 @@
    #:make-scratch-vector
    #:make-scratch-matrix
    #:make-scratch-tensor
+   ;; view constructors (078)
+   #:make-cell
+   #:make-vector
+   #:make-matrix
+   #:make-tensor
    #:|=>| ;; Correct arrow
 
    ;; New Unified Let
@@ -379,6 +385,11 @@
                 #:make-scratch-vector
                 #:make-scratch-matrix
                 #:make-scratch-tensor
+                ;; view constructors (078)
+                #:make-cell
+                #:make-vector
+                #:make-matrix
+                #:make-tensor
                 #:def-enumeration
                 #:address-space
                 #:is-set?
@@ -520,6 +531,11 @@
    #:make-scratch-vector
    #:make-scratch-matrix
    #:make-scratch-tensor
+   ;; view constructors (078)
+   #:make-cell
+   #:make-vector
+   #:make-matrix
+   #:make-tensor
    #:cell #:voidp
    #:parent~ #:offset~ #:element-type~
    #:bytes~ #:sizeof

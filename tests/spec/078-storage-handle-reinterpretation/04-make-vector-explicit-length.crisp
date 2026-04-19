@@ -1,0 +1,11 @@
+;; make-vector with explicit :length.
+;; Source: (vector int :align :compact) of length >= 5.
+;; Result: a vector<int> view of the first 5 elements.
+;; Access element [2] through the view.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-vector-explicit-length (v)
+    (declare #'(int-vec-t => int))
+  (let ((view (make-vector v int :length 5)))
+    (~ view 2)))

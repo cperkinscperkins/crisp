@@ -1658,3 +1658,155 @@
                (setf result
                      (llvm-build-insert-element builder result elem-ir idx-ir name))))
     (values result nil)))
+
+
+
+(defun %mv-build-const-i64-array (builder rank values)
+  "Build an LLVM [rank x i64] constant array from a list of integers.
+   If VALUES is shorter than rank, remaining slots are filled with 0."
+  (cl:let* ((i64      (llvm-int64-type))
+             (arr-type (llvm-array-type i64 rank))
+             (undef    (llvm-get-undef arr-type)))
+    (cl:loop for k from 0 below rank
+             with result = undef
+             for v = (or (cl:nth k values) 0)
+             do (setf result
+                      (llvm-build-insert-value builder result
+                                               (llvm-const-int i64 v nil)
+                                               k (format nil "arr_~d" k)))
+             finally (cl:return result))))
+
+(defun %mv-build-zero-i64-array (rank)
+  "Build a constant all-zero [rank x i64] array."
+  (llvm-const-null (llvm-array-type (llvm-int64-type) rank)))
+
+(defun %mv-bump-ptr (builder base-ptr offset-bytes addr-space)
+  "GEP base-ptr by offset-bytes (an i64 LLVM value).
+   Returns the new ptr in the same address space."
+  (cffi:with-foreign-object (indices :pointer 1)
+    (setf (cffi:mem-aref indices :pointer 0) offset-bytes)
+    (cl:let* ((ptr-i8 (llvm-build-in-bounds-gep2
+                       builder (llvm-int8-type) base-ptr indices 1 "mv_bumped_i8"))
+               (ptr-as (llvm-get-pointer-address-space (llvm-type-of ptr-i8))))
+      (declare (ignore addr-space ptr-as))
+      ptr-i8)))
+
+(defun %mv-build-storage (builder module addr-space src-parent new-ptr new-bytesize)
+  "Build a new STORAGE_{addr} struct value from ptr and bytesize."
+  (declare (ignore module))
+  (cl:let* ((storage-type (crisp-type-to-llvm-type `(storage ,addr-space) module))
+             (s0 (llvm-build-insert-value builder (llvm-get-undef storage-type)
+                                          new-ptr 0 "mv_storage_ptr"))
+             (s1 (llvm-build-insert-value builder s0 new-bytesize 1 "mv_storage_bs")))
+    (declare (ignore src-parent))
+    s1))
+
+(defmethod generate-node-ir ((node semantic-make-view)
+                              builder module var-env
+                              di-builder di-scope location-map)
+  "Generates IR for make-cell / make-vector / make-matrix / make-tensor.
+   Builds a new Storage Handle struct value that reinterprets existing storage.
+   No allocation occurs; the result is computed entirely from the source value."
+  (cl:let* ((result-type   (semantic-make-view-type node))
+             (src-node      (semantic-make-view-source-node node))
+             (elem-type-sym (semantic-make-view-element-type node))
+             (rank          (semantic-make-view-rank node))
+             (offset-elems  (or (semantic-make-view-offset node) 0))
+             (explicit-len  (semantic-make-view-length node))
+             (extents       (semantic-make-view-extents node))
+             (strides       (semantic-make-view-strides node))
+
+             ;; load source value
+             (src-val (generate-node-ir src-node builder module var-env
+                                        di-builder di-scope location-map))
+
+             ;; extract source parent storage: field 0 of any tensor/cell struct
+             (src-parent  (llvm-build-extract-value builder src-val 0 "mv_src_parent"))
+             (src-ptr     (llvm-build-extract-value builder src-parent 0 "mv_src_ptr"))
+             (src-bytesize (llvm-build-extract-value builder src-parent 1 "mv_src_bs"))
+
+             ;; element size
+             (elem-llvm-type (crisp-type-to-llvm-type elem-type-sym module))
+             (elem-size      (llvm-size-of elem-llvm-type))
+
+             ;; compute byte offset and new ptr/bytesize
+             (offset-bytes
+              (if (zerop offset-elems)
+                  (llvm-const-int (llvm-int64-type) 0 nil)
+                  (llvm-build-mul builder
+                                  (llvm-const-int (llvm-int64-type) offset-elems nil)
+                                  elem-size "mv_off_bytes")))
+             (new-ptr
+              (if (zerop offset-elems)
+                  src-ptr
+                  (%mv-bump-ptr builder src-ptr offset-bytes
+                                (%mv-source-addr (list (cl:first result-type) nil
+                                                       (cl:third result-type))))))
+             (new-bytesize
+              (if (zerop offset-elems)
+                  src-bytesize
+                  (llvm-build-sub builder src-bytesize offset-bytes "mv_new_bs")))
+
+             ;; address space from result type
+             (addr-space (cond ((string-equal (symbol-name (cl:first result-type)) "CELL")
+                                (cl:third result-type))
+                               (t (cl:fourth result-type))))
+
+             ;; new parent storage struct
+             (new-storage (%mv-build-storage builder module addr-space
+                                             src-parent new-ptr new-bytesize))
+
+             ;; result struct type
+             (mangled-name (mangle-template-struct-name (cl:first result-type)
+                                                        (cl:rest result-type)))
+             (result-struct-type (ensure-struct-llvm-type mangled-name))
+             (result-undef (llvm-get-undef result-struct-type)))
+
+    (log:info "make-view: op=~a rank=~d elem=~a mangled=~a offset=~d"
+              (cl:first result-type) rank elem-type-sym mangled-name offset-elems)
+
+    (cond
+
+     ;; ── cell (rank=0): { STORAGE, byte-offset-i64 } ──────────────────
+     ((= rank 0)
+      (cl:let* (;; For cell we keep original ptr, store offset in field 1
+                ;; (consistent with existing cell struct convention)
+                (orig-storage (%mv-build-storage builder module addr-space
+                                                 src-parent src-ptr src-bytesize))
+                (byte-offset-val
+                 (if (zerop offset-elems)
+                     (llvm-const-int (llvm-int64-type) 0 nil)
+                     (llvm-build-mul builder
+                                     (llvm-const-int (llvm-int64-type) offset-elems nil)
+                                     elem-size "mv_cell_off_bytes")))
+                (c0 (llvm-build-insert-value builder result-undef orig-storage 0 "mv_cell_parent"))
+                (c1 (llvm-build-insert-value builder c0 byte-offset-val 1 "mv_cell_offset")))
+        c1))
+
+     ;; ── tensor/vector/matrix (rank>=1) ────────────────────────────────
+     (t
+      (cl:let* (;; all offset dims = 0 (ptr was already bumped)
+                (zero-offsets (%mv-build-zero-i64-array rank))
+
+                ;; strides: explicit or row-major computed
+                (stride-vals (or strides (%mv-row-major-strides (or extents (make-list rank :initial-element 1)))))
+                (stride-arr  (%mv-build-const-i64-array builder rank stride-vals))
+
+                ;; extents
+                (extent-vals (or extents (make-list rank :initial-element 0)))
+                (extent-arr  (%mv-build-const-i64-array builder rank extent-vals))
+
+                ;; length: explicit constant or runtime udiv
+                (length-val
+                 (if explicit-len
+                     (llvm-const-int (llvm-int64-type) explicit-len nil)
+                     ;; auto-length: floor(new_bytesize / sizeof(elem))
+                     (llvm-build-udiv builder new-bytesize elem-size "mv_auto_len")))
+
+                ;; assemble tensor struct: { STORAGE, offsets, strides, extents, length }
+                (t0 (llvm-build-insert-value builder result-undef new-storage  0 "mv_t_parent"))
+                (t1 (llvm-build-insert-value builder t0 zero-offsets  1 "mv_t_offsets"))
+                (t2 (llvm-build-insert-value builder t1 stride-arr    2 "mv_t_strides"))
+                (t3 (llvm-build-insert-value builder t2 extent-arr    3 "mv_t_extents"))
+                (t4 (llvm-build-insert-value builder t3 length-val    4 "mv_t_length")))
+        t4)))))

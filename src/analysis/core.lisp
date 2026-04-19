@@ -1110,6 +1110,8 @@ in single-pass mode."
 ;; --- Helper to get the type from any node ---
 
 (defun semantic-node-type (node)
+  "Returns the Crisp type of a semantic node.
+   Extended to handle semantic-make-view (078)."
   (etypecase node
     (semantic-literal (semantic-literal-value-type node))
     (semantic-device-vec-literal (semantic-device-vec-literal-vec-type node))
@@ -1143,9 +1145,16 @@ in single-pass mode."
     (semantic-ct-array (semantic-ct-array-type node))
     (semantic-progn (semantic-progn-type node))
     (semantic-struct-member-update (semantic-struct-member-update-type node))
-    (semantic-sizeof (semantic-sizeof-type node))))
+    (semantic-sizeof (semantic-sizeof-type node))
+    ;; 078 view constructors
+    (semantic-make-view (semantic-make-view-type node))))
+
+
+
 
 (defun semantic-node-source-location (node)
+  "Returns the source location of a semantic node.
+   Extended to handle semantic-make-view (078)."
   (etypecase node
     (semantic-literal (semantic-literal-source-location node))
     (semantic-device-vec-literal (semantic-device-vec-literal-source-location node))
@@ -1179,7 +1188,9 @@ in single-pass mode."
     (semantic-struct-construction (semantic-struct-construction-source-location node))
     (semantic-ct-array (semantic-ct-array-source-location node))
     (semantic-progn (semantic-progn-source-location node))
-    (semantic-struct-member-update (semantic-struct-member-update-source-location node))))
+    (semantic-struct-member-update (semantic-struct-member-update-source-location node))
+    ;; 078 view constructors
+    (semantic-make-view (semantic-make-view-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)
@@ -1613,3 +1624,47 @@ Must be called after walk-code-forms so *template-registry* is populated."
          :aggregate-node arg-node
          :index          index
          :source-location location)))))
+
+
+(defun %mv-resolve-src-type (src-type)
+  "Resolve a source storage-handle type to a canonical list.
+   Handles type aliases, mangled symbols (e.g. TENSOR_INT_1_...),
+   (vector ...) / (matrix ...) sugar, and already-canonical lists.
+   Returns (CELL elem addr access) or (TENSOR elem N addr access align), or NIL."
+  (cl:labels ((fully-expand (x)
+                "Recursively resolve alias or unmangle, then expand sugar."
+                (cl:let* ((r  (resolve-type-alias x))
+                           (ex (cond
+                                 ;; Already a canonical list
+                                 ((consp r)
+                                  (cl:let ((h (symbol-name (cl:first r))))
+                                    (cond
+                                      ((string-equal h "CELL")   r)
+                                      ((string-equal h "TENSOR") r)
+                                      ((or (string-equal h "VECTOR")
+                                           (string-equal h "MATRIX"))
+                                       (expand-storage-handle-type-specifier r))
+                                      (t r))))
+                                 ;; Symbol: try unmangle first (for mangled names like
+                                 ;; TENSOR_INT_1_GLOBAL_READ-WRITE_COMPACT), then alias expand
+                                 ((symbolp r)
+                                  (cl:let* ((unmangled (unmangle-template-struct-name r))
+                                             ;; unmangle returns a list like (TENSOR INT 1 ...) or nil
+                                             (unm-head  (and (consp unmangled)
+                                                             (symbolp (cl:first unmangled))
+                                                             (symbol-name (cl:first unmangled)))))
+                                    (cond
+                                      ;; Successfully unmangled to a TENSOR or CELL form
+                                      ((and unm-head (string-equal unm-head "TENSOR"))
+                                       ;; reconstruct canonical 6-tuple from unmangled args
+                                       (expand-storage-handle-type-specifier unmangled))
+                                      ((and unm-head (string-equal unm-head "CELL"))
+                                       (expand-storage-handle-type-specifier unmangled))
+                                      ;; Not a mangled name — try normal expansion
+                                      (t
+                                       (cl:let ((e (expand-storage-handle-type-specifier r)))
+                                         (if (consp e) (fully-expand e) r))))))
+                                 (t r))))
+                  ex)))
+    (cl:let ((result (fully-expand src-type)))
+      (when (consp result) result))))

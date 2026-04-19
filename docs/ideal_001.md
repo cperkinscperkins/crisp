@@ -2324,7 +2324,7 @@ assertion requires compiler flags (like `--runtime-checks`).
 (def-kernel do_things (hundred-floats)
   (declare (type hundred-floats (vecl-floats-t 100)))
   (let ((some-ints #(0 1 2 3 4 5)) ;; <-- compiler will attempt to infer typ
-        (three-cell (make-cell some-ints 'int :offset 3))
+        (three-cell (make-cell some-ints int :offset 3))
         (ten-floats-view (make-vector hundred-floats float :length 10)))
     (declare (type some-ints vec-ints-t))
     ...))

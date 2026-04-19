@@ -1,0 +1,13 @@
+;; make-matrix with :major :col (column-major layout).
+;; Source: compact int vector with >= 9 elements.
+;; View as 3x3 int matrix, column-major.
+;; In column-major: element [row, col] is at flat index col*nrows + row.
+;; Access element [1, 2] (col 2, row 1 => flat index 2*3+1 = 7).
+;; The result handle is :strided (non-identity strides).
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-matrix-col-major (v)
+    (declare #'(int-vec-t => int))
+  (let ((mat (make-matrix v int 3 3 :major :col)))
+    (~ mat 1 2)))

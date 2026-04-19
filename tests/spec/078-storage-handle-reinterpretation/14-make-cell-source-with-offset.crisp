@@ -1,0 +1,12 @@
+;; make-cell where the source itself already has a non-zero offset.
+;; We create a vector view with :offset 2 first, then create a cell from that.
+;; The cell view should be offset relative to the sub-vector's base.
+;; This tests that offset chaining is handled correctly.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-cell-source-with-offset (v)
+    (declare #'(int-vec-t => int))
+  (let ((sub (make-vector v int :offset 2 :length 5)))
+    (let ((c (make-cell sub int :offset 1)))
+      (~ c))))

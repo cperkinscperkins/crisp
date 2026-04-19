@@ -1,0 +1,12 @@
+;; make-cell write: create a cell view then write through it.
+;; Source: :read-write compact int vector.
+;; Cell view at :offset 1.
+;; Write value 99 through the cell, then read it back.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-make-cell-write (v)
+    (declare #'(int-vec-t => int))
+  (let ((c (make-cell v int :offset 1)))
+    (set! (~ c) 99)
+    (~ c)))

@@ -375,11 +375,15 @@
           (%type-spec-equal-p (cdr t1) (cdr t2))))
     (t (%type-atom-equal-p t1 t2))))
 
+    
+
+
 (defun types-equivalent-p (t1 t2)
   "Checks if two types are equivalent, with alias resolution and template handling.
    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels
    before mangling comparison. This supports def-type aliases for any template type.
-   FIX2: Use %type-spec-equal-p (package-agnostic) for cons-vs-cons case."
+   FIX2: Use %type-spec-equal-p (package-agnostic) for cons-vs-cons case.
+   FIX3: Use compiler-session check instead of broken (boundp '*current-module*)."
   (cl:let ((t1 (resolve-type-alias t1))
            (t2 (resolve-type-alias t2)))
     (cl:cond
@@ -393,21 +397,30 @@
        (let* ((expanded (canonicalize-type-specifier t1))
               (base-type (cl:first expanded))
               (params (rest expanded)))
-         (if (and (symbolp base-type)
+         (cl:if (and (symbolp base-type)
                   (not (excluded-template-base-type-p base-type)))
              (progn
               (cl:when (gethash base-type *template-registry*)
                 (cl:let ((instantiated-form
                           (funcall *template-instantiator-fn* base-type params
                             (lambda (form location)
-                              (if (boundp '*current-module*)
-                                  (compile-toplevel-form form location
-                                                         *current-module*
-                                                         *current-builder*
-                                                         *current-di-builder*
-                                                         *current-di-compile-unit*
-                                                         *current-location-map*)
-                                  (eval form))))))
+                              (cl:let ((is-wrapper
+                                     (and (consp form)
+                                          (symbolp (car form))
+                                          (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+                                          (symbolp (second form))
+                                          (search "_WRAPPER" (symbol-name (second form))
+                                                  :test #'char-equal))))
+                                (cl:if (and (not is-wrapper)
+                                         *compiler-session*
+                                         (compiler-session-module *compiler-session*))
+                                    (compile-toplevel-form form location
+                                                           *current-module*
+                                                           *current-builder*
+                                                           *current-di-builder*
+                                                           *current-di-compile-unit*
+                                                           *current-location-map*)
+                                    (eval form)))))))
                   instantiated-form
                   t))
               (cl:let ((mangled (mangle-template-struct-name base-type params)))
@@ -432,6 +445,7 @@
       ((and (consp t1) (= (length t1) 1) (valid-type-p (cl:first t1)) (types-equivalent-p (cl:first t1) t2)) t)
       ((and (consp t2) (= (length t2) 1) (valid-type-p (cl:first t2)) (types-equivalent-p t1 (cl:first t2))) t)
       (t nil))))
+
 
 (defun get-template-arity (name)
   "Returns the arity (number of type parameters) for a registered template, or nil."
@@ -488,9 +502,13 @@ Extended to also accept raw (function ...) forms from the Crisp reader
       (and (consp type-spec) (eq (cl:first type-spec) 'common-lisp:function))))
 
 
+
 (defun %instantiate-template-if-needed (base-type template-args mangled-name)
   "Helper: Attempts to instantiate a template if not already instantiated.
-   Returns T if template exists/instantiated successfully, NIL otherwise."
+   Returns T if template exists/instantiated successfully, NIL otherwise.
+   FIX3: Use (and *compiler-session* (compiler-session-module *compiler-session*))
+   instead of (boundp '*current-module*) — the latter always returns NIL because
+   *current-module* is a define-symbol-macro, not a defvar special variable."
   (cl:let ((templates (or (gethash base-type *template-registry*)
                           (cl:let ((found nil))
                             (maphash (cl:lambda (k v)
@@ -515,14 +533,28 @@ Extended to also accept raw (function ...) forms from the Crisp reader
        (funcall *template-instantiator-fn* base-type template-args
          (lambda (form loc)
            (declare (ignore loc))
-           (if (and (boundp '*current-module*) *current-module*)
-               (compile-toplevel-form form nil
-                                      *current-module*
-                                      *current-builder*
-                                      *current-di-builder*
-                                      *current-di-compile-unit*
-                                      *current-location-map*)
-               (eval form))))
+           ;; Skip the constructor _WRAPPER function when compiling to IR.
+           ;; The wrapper has compile-time fields (e.g. type-spec) whose LLVM
+           ;; mapping is void — valid as return type but INVALID as a parameter.
+           ;; The wrapper is never called at GPU runtime, so it needs no IR body.
+           ;; We still eval it so the overload gets registered in *function-table*.
+           (cl:let ((is-wrapper
+                  (and (consp form)
+                       (symbolp (car form))
+                       (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+                       (symbolp (second form))
+                       (search "_WRAPPER" (symbol-name (second form))
+                               :test #'char-equal))))
+             (cl:if (and (not is-wrapper)
+                      *compiler-session*
+                      (compiler-session-module *compiler-session*))
+                 (compile-toplevel-form form nil
+                                        *current-module*
+                                        *current-builder*
+                                        *current-di-builder*
+                                        *current-di-compile-unit*
+                                        *current-location-map*)
+                 (eval form)))))
        ;; Return T if template was found and instantiated
        t))))
 

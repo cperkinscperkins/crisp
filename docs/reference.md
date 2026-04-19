@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-18T03:25:37.963596Z
+Generated on 2026-04-19T00:45:22.724023Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -410,9 +410,15 @@ Generated on 2026-04-18T03:25:37.963596Z
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
+  > Returns the Crisp type of a semantic node.  >    Extended to handle semantic-make-view (078).
+
+
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
+
+  > Returns the source location of a semantic node.  >    Extended to handle semantic-make-view (078).
+
 
 ---
 ### DEFUN `GET-SINGLE-VALUE-TYPE`
@@ -517,6 +523,13 @@ Generated on 2026-04-18T03:25:37.963596Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes (x~ v), (y~ v), (z~ v), (w~ v) — device-vector component accessors.  >    The operator symbol determines the 0-based LLVM element index (0..3).  >    Returns a semantic-extract-value node whose type is the scalar component type.  >   >    Brand-instance gensyms (e.g. VALUE-T-204 derived from float2) are resolved  >    to their concrete device-vector base type via *type-derivation-graph* before  >    width and component-scalar extraction.  >   >    In :write mode (inside a set! target), also validates that a cell-deref  >    aggregate is not read-only.
+
+
+---
+### DEFUN `%MV-RESOLVE-SRC-TYPE`
+- **Args**: `(SRC-TYPE)`
+
+  > Resolve a source storage-handle type to a canonical list.  >    Handles type aliases, mangled symbols (e.g. TENSOR_INT_1_...),  >    (vector ...) / (matrix ...) sugar, and already-canonical lists.  >    Returns (CELL elem addr access) or (TENSOR elem N addr access align), or NIL.
 
 
 ---
@@ -747,9 +760,121 @@ Generated on 2026-04-18T03:25:37.963596Z
 
 
 ---
+### DEFUN `%MV-SOURCE-HEAD`
+- **Args**: `(CANON)`
+
+  > Return the head keyword (:cell or :tensor) from a canonical type, or NIL.
+
+
+---
+### DEFUN `%MV-SOURCE-ELEM`
+- **Args**: `(CANON)`
+
+  > Return the element-type symbol from a canonical storage handle type.
+
+
+---
+### DEFUN `%MV-SOURCE-ADDR`
+- **Args**: `(CANON)`
+
+  > Return the address-space keyword from a canonical storage handle type.
+
+
+---
+### DEFUN `%MV-SOURCE-ACCESS`
+- **Args**: `(CANON)`
+
+  > Return the access keyword from a canonical storage handle type.
+
+
+---
+### DEFUN `%MV-SOURCE-ALIGN`
+- **Args**: `(CANON)`
+
+  > Return the :align keyword from a canonical storage handle type (tensors only).
+
+
+---
+### DEFUN `%MV-IS-STRUCT-ELEM`
+- **Args**: `(ELEM-TYPE)`
+
+  > Returns T if ELEM-TYPE is a registered def-struct type.
+
+
+---
+### DEFUN `%MV-PARSE-KWARGS`
+- **Args**: `(KWARG-LIST)`
+
+  > Parse a flat keyword-arg list like (:offset 2 :length 5 :major :row).  >    Returns a plist.
+
+
+---
+### DEFUN `%MV-EVAL-INTEGER`
+- **Args**: `(FORM)`
+
+  > Evaluate a compile-time integer form (bare integer or quoted integer).  >    Returns an integer or NIL.
+
+
+---
+### DEFUN `%MV-EVAL-LIST`
+- **Args**: `(FORM)`
+
+  > Evaluate a compile-time list form like '(2 3 4) or (2 3 4) for extents/strides.  >    Returns a list of integers or NIL.
+
+
+---
+### DEFUN `%MV-CHECK-RESTRICTIONS`
+- **Args**: `(OP SRC-CANON NEW-ELEM LOCATION)`
+
+  > Enforce compile-time restrictions for view constructors.  >    Signals a compiler-error on violation.
+
+
+---
+### DEFUN `%MV-RESULT-ALIGN`
+- **Args**: `(SRC-ALIGN EXPLICIT-STRIDES-P COL-MAJOR-P)`
+
+  > Determine result alignment given source alignment and constructor options.
+
+
+---
+### DEFUN `%MV-RESULT-CELL-TYPE`
+- **Args**: `(NEW-ELEM ADDR ACCESS)`
+
+  > Build canonical cell result type.
+
+
+---
+### DEFUN `%MV-RESULT-TENSOR-TYPE`
+- **Args**: `(NEW-ELEM RANK ADDR ACCESS ALIGN)`
+
+  > Build canonical tensor result type.
+
+
+---
+### DEFUN `%MV-ROW-MAJOR-STRIDES`
+- **Args**: `(EXTENTS)`
+
+  > Compute row-major strides for given extents list.  >    Innermost stride = 1; stride[k] = product(extents[k+1..N-1]).
+
+
+---
+### DEFUN `%MV-COL-MAJOR-STRIDES`
+- **Args**: `(EXTENTS)`
+
+  > Compute col-major strides for a 2D matrix with extents [height width].  >    stride_row=1, stride_col=height.
+
+
+---
+### DEFUN `ANALYZE-MAKE-VIEW-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes make-cell / make-vector / make-matrix / make-tensor view constructors.  >    These create a new Storage Handle struct that reinterprets existing storage.  >    No memory is allocated; the result is a new tensor/cell value derived from  >    the source's parent storage pointer.  >   >    Syntax:  >      (make-cell   src elem-type &key (offset 0))  >      (make-vector src elem-type &key length (offset 0))  >      (make-matrix src elem-type width height &key (major :row) (offset 0) strides)  >      (make-tensor src elem-type extents-list &key (offset 0) strides)  >   >    Returns a semantic-make-view node.
+
+
+---
 ### DEFUN `REGISTER-STRUCT-ANALYZERS`
 
-  > Registers all struct/storage-handle expression analyzers.  >    Redefines the original to add make-scratch-{vector,matrix,tensor}.
+  > Registers all struct/storage-handle expression analyzers.  >    Extends the original to add make-cell/vector/matrix/tensor view constructors.
 
 
 ---
@@ -1190,6 +1315,34 @@ Generated on 2026-04-18T03:25:37.963596Z
               DI-BUILDER DI-SCOPE LOCATION-MAP)`
 
   > Generates the LLVM value for one element of a ##(...) literal.  >    If the element type already matches COMP-TYPE, generates normally.  >    If the element is a plain-int or plain-float constant being coerced to  >    a different integral/float type, produces the correctly-typed constant  >    directly without emitting a conversion instruction.
+
+
+---
+### DEFUN `%MV-BUILD-CONST-I64-ARRAY`
+- **Args**: `(BUILDER RANK VALUES)`
+
+  > Build an LLVM [rank x i64] constant array from a list of integers.  >    If VALUES is shorter than rank, remaining slots are filled with 0.
+
+
+---
+### DEFUN `%MV-BUILD-ZERO-I64-ARRAY`
+- **Args**: `(RANK)`
+
+  > Build a constant all-zero [rank x i64] array.
+
+
+---
+### DEFUN `%MV-BUMP-PTR`
+- **Args**: `(BUILDER BASE-PTR OFFSET-BYTES ADDR-SPACE)`
+
+  > GEP base-ptr by offset-bytes (an i64 LLVM value).  >    Returns the new ptr in the same address space.
+
+
+---
+### DEFUN `%MV-BUILD-STORAGE`
+- **Args**: `(BUILDER MODULE ADDR-SPACE SRC-PARENT NEW-PTR NEW-BYTESIZE)`
+
+  > Build a new STORAGE_{addr} struct value from ptr and bytesize.
 
 
 ---
@@ -3215,6 +3368,12 @@ Generated on 2026-04-18T03:25:37.963596Z
 
 
 ---
+### DEFSTRUCT `SEMANTIC-MAKE-VIEW`
+
+  > Represents a make-cell/vector/matrix/tensor view construction.  >    Creates a new Storage Handle that reinterprets an existing one.  >    No memory allocation occurs — only a new struct value is built.  >    Fields:  >      type        — result type, e.g. (tensor int 1 :global :read-write :compact)  >      source-node — semantic node for the source storage handle  >      element-type — new element type symbol (e.g. int, float, short)  >      rank        — N: 0=cell, 1=vector, 2=matrix, N=tensor  >      offset      — element offset (non-negative integer, default 0)  >      length      — explicit length (integer) or NIL for auto-compute (vectors only)  >      extents     — list of N integers (matrix/tensor); NIL for cell/auto-vector  >      strides     — explicit strides list or NIL (computed from extents/major)  >      major       — :row or :col (make-matrix only; default :row)  >      source-location
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\session.lisp`
 
 ### DEFSTRUCT `COMPILER-SESSION`
@@ -3980,7 +4139,7 @@ Generated on 2026-04-18T03:25:37.963596Z
 ### DEFUN `TYPES-EQUIVALENT-P`
 - **Args**: `(T1 T2)`
 
-  > Checks if two types are equivalent, with alias resolution and template handling.  >    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels  >    before mangling comparison. This supports def-type aliases for any template type.  >    FIX2: Use %type-spec-equal-p (package-agnostic) for cons-vs-cons case.
+  > Checks if two types are equivalent, with alias resolution and template handling.  >    FIX: Always canonicalize list type specs (not just CELL) to strip keyword labels  >    before mangling comparison. This supports def-type aliases for any template type.  >    FIX2: Use %type-spec-equal-p (package-agnostic) for cons-vs-cons case.  >    FIX3: Use compiler-session check instead of broken (boundp '*current-module*).
 
 
 ---
@@ -4012,7 +4171,7 @@ Generated on 2026-04-18T03:25:37.963596Z
 ### DEFUN `%INSTANTIATE-TEMPLATE-IF-NEEDED`
 - **Args**: `(BASE-TYPE TEMPLATE-ARGS MANGLED-NAME)`
 
-  > Helper: Attempts to instantiate a template if not already instantiated.  >    Returns T if template exists/instantiated successfully, NIL otherwise.
+  > Helper: Attempts to instantiate a template if not already instantiated.  >    Returns T if template exists/instantiated successfully, NIL otherwise.  >    FIX3: Use (and *compiler-session* (compiler-session-module *compiler-session*))  >    instead of (boundp '*current-module*) — the latter always returns NIL because  >    *current-module* is a define-symbol-macro, not a defvar special variable.
 
 
 ---
