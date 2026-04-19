@@ -7,6 +7,6 @@
 
 (def-function test-make-cell-source-with-offset (v)
     (declare #'(int-vec-t => int))
-  (let* ((sub (make-vector v int :offset 2 :length 5))
-         (c   (make-cell sub int :offset 1)))
-    (~ c)))
+  (let ((sub (make-vector v int :offset 2 :length 5)))
+    (let ((c (make-cell sub int :offset 1)))
+      (~ c))))

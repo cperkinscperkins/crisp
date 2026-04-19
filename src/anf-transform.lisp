@@ -51,7 +51,8 @@
        (when (and (symbolp op)
                   (macro-function op)
                   (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes set! declare progn let
-                                         template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op))))
+                                         template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
+                                         make-cell make-vector make-matrix make-tensor))))
              (multiple-value-bind (expanded changed) (macroexpand-1 expr)
                (when changed
                      (return-from anf-normalize (anf-normalize expanded is-nested?)))))
@@ -163,6 +164,19 @@
                 (let ((temp (anf-fresh-temp)))
                   (values temp `((,temp ,anf-form))))
                 (values anf-form nil))))
+        ;; make-cell/vector/matrix/tensor: view constructors.
+        ;; The source (first arg after op) is a normal expression to be ANF-normalized.
+        ;; All remaining args (elem-type, width/height/extents, keyword args) pass verbatim.
+        ((member op '(make-cell make-vector make-matrix make-tensor))
+          (let* ((source (cadr expr))
+                 (rest-args (cddr expr)))
+            (multiple-value-bind (new-source source-bindings)
+                (anf-normalize source t)
+              (let ((anf-form `(,op ,new-source ,@rest-args)))
+                (if is-nested?
+                    (let ((temp (anf-fresh-temp)))
+                      (values temp (append source-bindings `((,temp ,anf-form)))))
+                    (values anf-form source-bindings))))))
         ((member op '(quote template-instantiation compiler-no-op def-function def-kernel def-kernel-exact eval-when))
           (if is-nested?
               (let ((temp (anf-fresh-temp)))

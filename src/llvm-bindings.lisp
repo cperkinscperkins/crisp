@@ -301,6 +301,12 @@
          (rhs :pointer)
          (name :string))
 
+(defcfun ("LLVMBuildUDiv" llvm-build-udiv) :pointer
+         (builder :pointer)
+         (lhs :pointer)
+         (rhs :pointer)
+         (name :string))
+
 (defcfun ("LLVMBuildFDiv" llvm-build-fdiv) :pointer
          (builder :pointer)
          (lhs :pointer)

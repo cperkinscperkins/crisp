@@ -247,3 +247,29 @@
   type ; Always ulong (or similar integer type)
   target-type ; The Crisp type to measure
   source-location)
+
+(defstruct semantic-make-view
+  "Represents a make-cell/vector/matrix/tensor view construction.
+   Creates a new Storage Handle that reinterprets an existing one.
+   No memory allocation occurs — only a new struct value is built.
+   Fields:
+     type        — result type, e.g. (tensor int 1 :global :read-write :compact)
+     source-node — semantic node for the source storage handle
+     element-type — new element type symbol (e.g. int, float, short)
+     rank        — N: 0=cell, 1=vector, 2=matrix, N=tensor
+     offset      — element offset (non-negative integer, default 0)
+     length      — explicit length (integer) or NIL for auto-compute (vectors only)
+     extents     — list of N integers (matrix/tensor); NIL for cell/auto-vector
+     strides     — explicit strides list or NIL (computed from extents/major)
+     major       — :row or :col (make-matrix only; default :row)
+     source-location"
+  type
+  source-node
+  element-type
+  rank
+  offset
+  length
+  extents
+  strides
+  major
+  source-location)
