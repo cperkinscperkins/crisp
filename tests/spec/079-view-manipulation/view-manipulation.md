@@ -11,3 +11,13 @@ insert checks to make sure boundaries aren't exceeded if the --runtime-checks co
 flag is used. Otherwise, no runtime checks are inserted and it's assumed the user knows
 what they are doing. 
 
+Initial Tests:
+- setting each mutable scalar (offset~, length~)
+- setting virtual array elemtns (offset~[0], strides~[0], extenst~[1])
+
+Then tests for:
+Reading through a modified view — the practical use case. Test 01 sets offset~ but never dereferences through c afterward. The critical correctness question is: does (~ c) after (set! (offset~ c) 2) produce IR that loads the offset from the alloca (runtime value) vs using the compile-time offset baked in? Currently unverified.
+
+Tensor-dimension mutations — tests 03/04/05 cover vector/matrix. A test setting (set! (~ (offset~ tensor) k) val) for an N-dim tensor would complete the coverage.
+
+CHECK directives — the current tests have no IR validation. They only check "compiles without error." A CHECK on the insertvalue instruction with the correct field index and type would give us confidence the IR is right.

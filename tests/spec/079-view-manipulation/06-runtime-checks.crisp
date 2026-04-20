@@ -1,0 +1,19 @@
+;; TEST-WITH[--runtime-checks] : validate-has-llvm-trap
+;;
+;; Verify that view mutations emit bounds assertions when --runtime-checks is active.
+;;
+;; Under --runtime-checks, (set! (offset~ c) new-val) emits:
+;;   icmp ult new-val, storage-capacity
+;;   br i1 cmp, label ok, label trap
+;;   trap: call void @llvm.trap()
+;;
+;; DEFAULT pass: compiles cleanly, no llvm.trap emitted (assertions elided).
+;; TEST-WITH pass: llvm.trap must appear in the IR.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-rt-check-set-offset (v)
+    (declare #'(int-vec-t => nil))
+  (let ((c (make-cell v int)))
+    (set! (offset~ c) 2)
+    (return)))

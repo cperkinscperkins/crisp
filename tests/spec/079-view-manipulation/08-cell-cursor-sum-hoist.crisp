@@ -1,0 +1,32 @@
+;; SKIP-WITH[--differentiate]: "view manipulation not yet differentiated"
+;; TEST-HOIST[L0] : validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; Cell cursor sum: move a cell view through a 4-element int vector [0,1,2,3]
+;; by mutating offset~ (byte offset), accumulate sum, write result to output cell.
+;;
+;; Input vector is iota-initialized by the hoist harness: [0, 1, 2, 3].
+;; Int byte offsets: element 0 = 0, element 1 = 4, element 2 = 8, element 3 = 12.
+;; sum = 0+1+2+3 = 6.
+;;
+;; This E2E test validates:
+;;   - set! (offset~ cursor) correctly updates the alloca
+;;   - subsequent (~ cursor) reads from the updated byte offset (dynamic, not baked-in)
+;;   - the cell-cursor sliding-window pattern produces correct output
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-cell-t (cell int :address-space :global :access :read-write))
+
+(def-kernel cursor_sum (v &out out)
+    (declare #'(int-vec-t &out out-cell-t => nil))
+  (let ((cursor (make-cell v int))
+        (sum 0))
+    (set! (offset~ cursor) 0)
+    (set! sum (+ sum (~ cursor)))
+    (set! (offset~ cursor) 4)
+    (set! sum (+ sum (~ cursor)))
+    (set! (offset~ cursor) 8)
+    (set! sum (+ sum (~ cursor)))
+    (set! (offset~ cursor) 12)
+    (set! sum (+ sum (~ cursor)))
+    (set! (~ out) sum)))
