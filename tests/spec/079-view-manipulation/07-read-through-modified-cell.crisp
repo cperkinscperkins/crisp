@@ -1,0 +1,16 @@
+;; Read through a cell whose offset~ was modified at runtime.
+;;
+;; After (set! (offset~ c) 4), the cell's byte-offset field in the alloca is 4.
+;; The subsequent (~ c) must load from base_ptr + 4 (element index 1 for int),
+;; NOT use a compile-time constant offset baked in at the make-cell site.
+;;
+;; This verifies the "cell cursor" pattern: the IR extracts offset at runtime
+;; from the alloca (not a constant), so the load address is computed dynamically.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-read-through (v)
+    (declare #'(int-vec-t => int))
+  (let ((c (make-cell v int)))
+    (set! (offset~ c) 4)
+    (~ c)))

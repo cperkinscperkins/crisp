@@ -1,0 +1,11 @@
+;; Set an individual stride element of a matrix view.
+;; strides~ returns (array ulong N); mutate element 0 via (set! (~ (strides~ m) 0) val).
+;; Exploratory: tests chained set! through a virtual-array accessor.
+
+(def-type int-mat-t (matrix int :align :compact :address-space :global :access :read-write))
+
+(def-function test-set-stride (m)
+    (declare #'(int-mat-t => ulong))
+  (let ((view (make-matrix m int 4 4)))
+    (set! (~ (strides~ view) 0) 8)
+    (~ (strides~ view) 0)))

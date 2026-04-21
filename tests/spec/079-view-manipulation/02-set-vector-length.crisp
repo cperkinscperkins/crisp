@@ -1,0 +1,11 @@
+;; Set length~ of a vector view, then read it back.
+;; length~ on a tensor is a scalar ulong field — should be straightforward set!.
+;; We verify the new length is what we wrote.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-set-vector-length (v)
+    (declare #'(int-vec-t => ulong))
+  (let ((view (make-vector v int :length 8)))
+    (set! (length~ view) 4)
+    (length~ view)))

@@ -1,0 +1,12 @@
+;; Set offset~ element of a vector view (offset~ is a virtual array of length 1 for vectors).
+;; Syntax: (set! (~ (offset~ v) 0) n)
+;; This is the chained write: get-virtual-array then set element.
+;; Uncertain whether this already works — exploratory.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-set-vector-offset (v)
+    (declare #'(int-vec-t => ulong))
+  (let ((view (make-vector v int :length 4)))
+    (set! (~ (offset~ view) 0) 2)
+    (~ (offset~ view) 0)))
