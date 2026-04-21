@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; FAIL-WITH[--differentiate]: "message"
+;; FAIL-WITH[--differentiate]: "Cannot differentiate: kernel mutates input parameter"
 ;;
 ;; Mutating an input tensor inside a differentiable kernel must be a
 ;; compile error when --differentiate is active. The AD system cannot

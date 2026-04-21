@@ -1924,3 +1924,142 @@ Returns the form or NIL."
       (return-from validate-075-03-scratch-matrix-implicit-meta nil))
     (and (%075-validate-tensor-implicit "075-03" k-def 'tensor 2 9 :local :match-warp-tile)
          (progn (log:info "validate-075-03: PASS") t))))
+
+;;; ---------------------------------------------------------------------------
+;;; 080-advanced-ad  — tensor / vector / matrix autodiff validators
+;;; ---------------------------------------------------------------------------
+
+(defun validate-vec-add-grad (ir-path)
+  "Validates the backward kernel for 01-vec-add (vector addition):
+     - @vec_add_grad is defined
+     - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT type present (gradient tensors)
+     - fadd instruction present (addition backward)
+     - idx_GRAD is NOT present (integer scalar filtering)"
+  (unless (probe-file ir-path)
+    (log:error "validate-vec-add-grad: IR file not found: ~a" ir-path)
+    (return-from validate-vec-add-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @vec_add_grad(" ir)
+         (progn (log:error "validate-vec-add-grad: @vec_add_grad not found") nil))
+     (or (search "TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT" ir)
+         (progn (log:error "validate-vec-add-grad: gradient tensor type READ-WRITE not found") nil))
+     (or (search "fadd float" ir)
+         (progn (log:error "validate-vec-add-grad: fadd not found in backward body") nil))
+     (or (not (search "idx_GRAD" ir))
+         (progn (log:error "validate-vec-add-grad: idx_GRAD should not be emitted (integer scalar)") nil))
+     (progn (log:info "validate-vec-add-grad: PASS") t))))
+
+(defun validate-vec-multiply-grad (ir-path)
+  "Validates the backward kernel for 02-vec-multiply (vector product rule):
+     - @vec_mult_grad is defined
+     - fmul instruction present (product rule: d/dA of A*B = B, needs multiply)
+     - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT type present
+     - idx_GRAD is NOT present"
+  (unless (probe-file ir-path)
+    (log:error "validate-vec-multiply-grad: IR file not found: ~a" ir-path)
+    (return-from validate-vec-multiply-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @vec_mult_grad(" ir)
+         (progn (log:error "validate-vec-multiply-grad: @vec_mult_grad not found") nil))
+     (or (search "fmul float" ir)
+         (progn (log:error "validate-vec-multiply-grad: fmul not found (product rule requires multiply)") nil))
+     (or (search "TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT" ir)
+         (progn (log:error "validate-vec-multiply-grad: gradient tensor type READ-WRITE not found") nil))
+     (or (not (search "idx_GRAD" ir))
+         (progn (log:error "validate-vec-multiply-grad: idx_GRAD should not be emitted") nil))
+     (progn (log:info "validate-vec-multiply-grad: PASS") t))))
+
+(defun validate-vec-mixed-grad (ir-path)
+  "Validates the backward kernel for 03-vec-mixed (scalar float + tensor inputs):
+     - @vec_scale_grad is defined
+     - float parameter for scale_GRAD (scalar gradient carried through)
+     - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT present (A_GRAD tensor)
+     - fmul present (d(scale*A)/dA = scale; d/dscale = A — both use multiply)
+     - idx_GRAD is NOT present"
+  (unless (probe-file ir-path)
+    (log:error "validate-vec-mixed-grad: IR file not found: ~a" ir-path)
+    (return-from validate-vec-mixed-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @vec_scale_grad(" ir)
+         (progn (log:error "validate-vec-mixed-grad: @vec_scale_grad not found") nil))
+     (or (search "%scale_grad" ir)
+         (progn (log:error "validate-vec-mixed-grad: scale_grad adjoint variable not found") nil))
+     (or (search "TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT" ir)
+         (progn (log:error "validate-vec-mixed-grad: A_GRAD tensor type READ-WRITE not found") nil))
+     (or (search "fmul float" ir)
+         (progn (log:error "validate-vec-mixed-grad: fmul not found (scale*A product rule)") nil))
+     (or (not (search "idx_GRAD" ir))
+         (progn (log:error "validate-vec-mixed-grad: idx_GRAD should not be emitted") nil))
+     (progn (log:info "validate-vec-mixed-grad: PASS") t))))
+
+(defun validate-matrix-add-grad (ir-path)
+  "Validates the backward kernel for 04-matrix-add (2D matrix, two indices):
+     - @mat_add_grad is defined
+     - TENSOR_FLOAT_2_GLOBAL_READ-WRITE_COMPACT type present (2D gradient tensors)
+     - fadd present
+     - row_GRAD and col_GRAD are NOT present (integer scalar filtering)"
+  (unless (probe-file ir-path)
+    (log:error "validate-matrix-add-grad: IR file not found: ~a" ir-path)
+    (return-from validate-matrix-add-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @mat_add_grad(" ir)
+         (progn (log:error "validate-matrix-add-grad: @mat_add_grad not found") nil))
+     (or (search "TENSOR_FLOAT_2_GLOBAL_READ-WRITE_COMPACT" ir)
+         (progn (log:error "validate-matrix-add-grad: 2D gradient tensor type READ-WRITE not found") nil))
+     (or (search "fadd float" ir)
+         (progn (log:error "validate-matrix-add-grad: fadd not found in backward body") nil))
+     (or (not (search "row_GRAD" ir))
+         (progn (log:error "validate-matrix-add-grad: row_GRAD should not be emitted (integer)") nil))
+     (or (not (search "col_GRAD" ir))
+         (progn (log:error "validate-matrix-add-grad: col_GRAD should not be emitted (integer)") nil))
+     (progn (log:info "validate-matrix-add-grad: PASS") t))))
+
+(defun validate-tensor-add-grad (ir-path)
+  "Validates the backward kernel for 05-tensor-add (3D tensor, three indices):
+     - @tensor_add_grad is defined
+     - TENSOR_FLOAT_3_GLOBAL_READ-WRITE_COMPACT type present (3D gradient tensors)
+     - fadd present
+     - d0_GRAD, d1_GRAD, d2_GRAD are NOT present (integer scalar filtering)"
+  (unless (probe-file ir-path)
+    (log:error "validate-tensor-add-grad: IR file not found: ~a" ir-path)
+    (return-from validate-tensor-add-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @tensor_add_grad(" ir)
+         (progn (log:error "validate-tensor-add-grad: @tensor_add_grad not found") nil))
+     (or (search "TENSOR_FLOAT_3_GLOBAL_READ-WRITE_COMPACT" ir)
+         (progn (log:error "validate-tensor-add-grad: 3D gradient tensor type READ-WRITE not found") nil))
+     (or (search "fadd float" ir)
+         (progn (log:error "validate-tensor-add-grad: fadd not found in backward body") nil))
+     (or (not (search "d0_GRAD" ir))
+         (progn (log:error "validate-tensor-add-grad: d0_GRAD should not be emitted (integer)") nil))
+     (or (not (search "d1_GRAD" ir))
+         (progn (log:error "validate-tensor-add-grad: d1_GRAD should not be emitted (integer)") nil))
+     (or (not (search "d2_GRAD" ir))
+         (progn (log:error "validate-tensor-add-grad: d2_GRAD should not be emitted (integer)") nil))
+     (progn (log:info "validate-tensor-add-grad: PASS") t))))
+
+(defun validate-vec-transcendental-grad (ir-path)
+  "Validates the backward kernel for 06-vec-transcendental (sin with cos chain rule):
+     - @vec_sin_grad is defined
+     - @llvm.cos.f32 intrinsic declared and called (derivative of sin is cos)
+     - fmul present (chain rule: cos(x) * adj)
+     - idx_GRAD is NOT present"
+  (unless (probe-file ir-path)
+    (log:error "validate-vec-transcendental-grad: IR file not found: ~a" ir-path)
+    (return-from validate-vec-transcendental-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @vec_sin_grad(" ir)
+         (progn (log:error "validate-vec-transcendental-grad: @vec_sin_grad not found") nil))
+     (or (search "llvm.cos" ir)
+         (progn (log:error "validate-vec-transcendental-grad: @llvm.cos not found (sin backward needs cos)") nil))
+     (or (search "fmul float" ir)
+         (progn (log:error "validate-vec-transcendental-grad: fmul not found (chain rule multiply)") nil))
+     (or (not (search "idx_GRAD" ir))
+         (progn (log:error "validate-vec-transcendental-grad: idx_GRAD should not be emitted") nil))
+     (progn (log:info "validate-vec-transcendental-grad: PASS") t))))

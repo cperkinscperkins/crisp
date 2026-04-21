@@ -522,9 +522,10 @@ Tensors Vectors and Matrices
 - - [x] scratch tensors / matrix / vector
 - - [ ] scratch tensor sizeExpression - but we need strategy etc support first.
 - - [ ] CUDA support for :local ( need cu hoist)
-- - [ ] "view" manipulation - changing offset, make-xxxx etc
+- - [x] "view" manipulation - changing offset, make-xxxx etc
 - - [ ] double check branding
 - - [ ] differentiate support!!
+- - - [ ] atomic-add! deferred. Need to add atomics and ensure differntiation is updated
 - - [ ] vector helpers
 - - [ ] matrix helpers
 - - [ ] tile?

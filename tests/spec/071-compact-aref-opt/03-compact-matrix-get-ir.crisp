@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
 ;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-071-03-compact-matrix-get-ir
 ;;
 ;; NOTE: This test currently fails with "EXPLICIT-RETURN is undefined" — the same
