@@ -1,0 +1,19 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-vec-transcendental-grad
+;;
+;; Transcendental (sin) applied element-wise: C[idx] = sin(A[idx])
+;;
+;; Expected backward kernel vec_sin_grad (A idx C C_GRAD &out A_GRAD):
+;;   adj(tmp_c)   += (~ C_GRAD idx)
+;;   cos_tmp_a     = cos(tmp_a)          ; derivative of sin is cos
+;;   adj(tmp_a)   += cos_tmp_a * adj(tmp_c)
+;;   (set! (~ A_GRAD idx) (+ (~ A_GRAD idx) adj(tmp_a)))
+;;
+;; The backward IR must contain '@llvm.cos' (cos intrinsic) and 'fmul'
+;; for the chain-rule multiply, plus GEP for indexed access.
+
+(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
+(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+
+(def-kernel vec_sin (A idx &out C)
+  (declare #'(in-vec ulong &out out-vec))
+  (set! (~ C idx) (sin (~ A idx))))

@@ -1,0 +1,20 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-tensor-add-grad
+;;
+;; 3D tensor, three indices: T_out[d0][d1][d2] = T_a[d0][d1][d2] + T_b[d0][d1][d2]
+;;
+;; Expected backward kernel tensor_add_grad (T_a T_b d0 d1 d2 T_out T_out_GRAD &out T_a_GRAD T_b_GRAD):
+;;   adj(tmp_c)  += (~ T_out_GRAD d0 d1 d2)
+;;   adj(tmp_a)  += adj(tmp_c)
+;;   adj(tmp_b)  += adj(tmp_c)
+;;   (set! (~ T_a_GRAD d0 d1 d2) (+ (~ T_a_GRAD d0 d1 d2) adj(tmp_a)))
+;;   (set! (~ T_b_GRAD d0 d1 d2) (+ (~ T_b_GRAD d0 d1 d2) adj(tmp_b)))
+;;
+;; Verifies that three-index (full tensor) access works. The three index symbols
+;; d0, d1, d2 must all be present in both the seed read and the gradient writes.
+
+(def-type in-ten  (tensor float 3 :address-space :global :access :read-only))
+(def-type out-ten (tensor float 3 :address-space :global :access :read-write))
+
+(def-kernel tensor_add (T_a T_b d0 d1 d2 &out T_out)
+  (declare #'(in-ten in-ten ulong ulong ulong &out out-ten))
+  (set! (~ T_out d0 d1 d2) (+ (~ T_a d0 d1 d2) (~ T_b d0 d1 d2))))

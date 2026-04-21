@@ -1,0 +1,22 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-vec-add-grad
+;;
+;; Simplest tensor AD case: 1D vector, single index, addition.
+;;
+;; Forward kernel: C[idx] = A[idx] + B[idx]
+;;
+;; Expected backward kernel vec_add_grad (A B idx C C_GRAD &out A_GRAD B_GRAD):
+;;   adj(tmp_c) += (~ C_GRAD idx)
+;;   adj(tmp_a) += adj(tmp_c)         ; + backward
+;;   adj(tmp_b) += adj(tmp_c)
+;;   (set! (~ A_GRAD idx) (+ (~ A_GRAD idx) adj(tmp_a)))
+;;   (set! (~ B_GRAD idx) (+ (~ B_GRAD idx) adj(tmp_b)))
+;;
+;; A_GRAD and B_GRAD must have :access :read-write (backward reads and writes them).
+;; The backward IR must contain 'fadd' and GEP instructions for indexed access.
+
+(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
+(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+
+(def-kernel vec_add (A B idx &out C)
+  (declare #'(in-vec in-vec ulong &out out-vec))
+  (set! (~ C idx) (+ (~ A idx) (~ B idx))))
