@@ -731,3 +731,8 @@
 (defun llvm-type-kind-is-array? (ty)
   "Returns T if TY is an LLVM array type ([N x T])."
   (= (llvm-get-type-kind ty) +llvm-array-type-kind+))
+
+
+(defcfun ("LLVMGetIntTypeWidth" llvm-get-int-type-width) :unsigned-int
+  "Returns the bit-width of an LLVM integer type (e.g. 32 for i32, 64 for i64)."
+  (int-ty :pointer))
