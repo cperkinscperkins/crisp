@@ -21,5 +21,5 @@
     (format stream "~a ~a~@[ :kind ~a~]"
             (parameter-def-name obj)
             (parameter-def-type obj)
-            (cl:unless (eq (parameter-def-kind obj) :in)
+            (unless (eq (parameter-def-kind obj) :in)
               (parameter-def-kind obj)))))

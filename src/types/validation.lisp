@@ -27,7 +27,7 @@
            (boundp '*crisp-type-aliases*)
            (gethash type-spec *crisp-type-aliases*))
       ;; It's an alias - resolve with cycle detection
-      (cl:let ((seen (make-hash-table :test 'eq)))
+      (let ((seen (make-hash-table :test 'eq)))
         (loop for name = type-spec then (gethash name *crisp-type-aliases*)
               while (and (symbolp name)
                          (gethash name *crisp-type-aliases*)
@@ -48,18 +48,18 @@
 (defun %bare-storage-handle-value-error (item spec)
   "Raises an intelligent error when a bare address-space/access/align value
    is found in a storage handle type spec, suggesting the correct key-value form."
-  (cl:cond
-    ((cl:member (cl:string item)
+  (cond
+    ((member (string item)
                 '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
                 :test #'string-equal)
      (error "Bare keyword ~s in type spec ~s. Did you mean ':address-space ~(~a~)'?"
             item spec item))
-    ((cl:member (cl:string item)
+    ((member (string item)
                 '("READ-WRITE" "READ-ONLY" "WRITE-ONLY" "READABLE" "WRITEABLE")
                 :test #'string-equal)
      (error "Bare keyword ~s in type spec ~s. Did you mean ':access ~(~a~)'?"
             item spec item))
-    ((cl:member (cl:string item)
+    ((member (string item)
                 '("STRIDED" "COMPACT")
                 :test #'string-equal)
      (error "Bare keyword ~s in type spec ~s. Did you mean ':align ~(~a~)'?"
@@ -78,94 +78,94 @@
    Bare address-space/access/align values → intelligent 'did you mean :key value?' error.
    Address-space / access / align MUST use key-value form: :address-space :local etc."
   (log:info "EXPAND-STORAGE-HANDLE: ~s" spec)
-  (cl:cond
+  (cond
     ((null spec) nil)
     ((symbolp spec) spec)
     ((consp spec)
-     (cl:let ((base (cl:first spec)))
-       (cl:if (and (symbolp base)
+     (let ((base (first spec)))
+       (if (and (symbolp base)
                    (member (symbol-name base)
                            '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
            (progn
-             (cl:when (null (rest spec))
+             (when (null (rest spec))
                (error 'crisp-incomplete-type-error :type-spec spec))
 
-             (cl:let* ((args         (rest spec))
-                       (element-type (cl:first args))
+             (let* ((args         (rest spec))
+                       (element-type (first args))
                        (rest-args    (rest args)))
 
-               (cl:cond
+               (cond
 
                 ;; ── VECTOR: syntactic sugar for (tensor T 1 ...) ─────────────
                 ((string-equal (symbol-name base) "VECTOR")
-                 (cl:let* ((addr      :global)
+                 (let* ((addr      :global)
                            (acc       :read-write)
                            (aln       :compact)
                            (remaining rest-args))
                    ;; Extra positional arg after element-type is an error.
-                   (cl:when (and remaining
-                                 (not (keywordp (cl:first remaining))))
+                   (when (and remaining
+                                 (not (keywordp (first remaining))))
                      (error "Invalid type option ~s in vector spec ~s. Vector takes no arity argument; use (tensor ~s N) for N > 2."
-                            (cl:first remaining) spec element-type))
-                   (cl:loop while remaining do
-                     (cl:let ((item (pop remaining)))
-                       (cl:cond
-                         ((string-equal (cl:string item) "ADDRESS-SPACE")
-                          (cl:unless remaining
+                            (first remaining) spec element-type))
+                   (loop while remaining do
+                     (let ((item (pop remaining)))
+                       (cond
+                         ((string-equal (string item) "ADDRESS-SPACE")
+                          (unless remaining
                             (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                          (setf addr (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                         ((string-equal (cl:string item) "ACCESS")
-                          (cl:unless remaining
+                          (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+                         ((string-equal (string item) "ACCESS")
+                          (unless remaining
                             (error "Missing value for :ACCESS in ~s" spec))
-                          (setf acc (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                         ((string-equal (cl:string item) "ALIGN")
-                          (cl:unless remaining
+                          (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
+                         ((string-equal (string item) "ALIGN")
+                          (unless remaining
                             (error "Missing value for :ALIGN in ~s" spec))
-                          (cl:let ((v (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                            (cl:unless (cl:member v '(:compact :compact-offset :strided))
+                          (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
+                            (unless (member v '(:compact :compact-offset :strided))
                               (error "Invalid :align value ~s in ~s. Expected :compact, :compact-offset, or :strided." v spec))
                             (setf aln v)))
-                         ((string-equal (cl:string item) "DIRECTION")
-                          (cl:when remaining (pop remaining)))
+                         ((string-equal (string item) "DIRECTION")
+                          (when remaining (pop remaining)))
                          (t
                           (%bare-storage-handle-value-error item spec)))))
-                   (cl:list (find-symbol "TENSOR" :crisp.compiler)
+                   (list (find-symbol "TENSOR" :crisp.compiler)
                             element-type 1 addr acc aln)))
 
                 ;; ── MATRIX: syntactic sugar for (tensor T 2 ...) ─────────────
                 ((string-equal (symbol-name base) "MATRIX")
-                 (cl:let* ((addr      :global)
+                 (let* ((addr      :global)
                            (acc       :read-write)
                            (aln       :compact)
                            (remaining rest-args))
                    ;; Extra positional arg after element-type is an error.
-                   (cl:when (and remaining
-                                 (not (keywordp (cl:first remaining))))
+                   (when (and remaining
+                                 (not (keywordp (first remaining))))
                      (error "Invalid type option ~s in matrix spec ~s. Matrix takes no arity argument; use (tensor ~s N) for arbitrary arity."
-                            (cl:first remaining) spec element-type))
-                   (cl:loop while remaining do
-                     (cl:let ((item (pop remaining)))
-                       (cl:cond
-                         ((string-equal (cl:string item) "ADDRESS-SPACE")
-                          (cl:unless remaining
+                            (first remaining) spec element-type))
+                   (loop while remaining do
+                     (let ((item (pop remaining)))
+                       (cond
+                         ((string-equal (string item) "ADDRESS-SPACE")
+                          (unless remaining
                             (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                          (setf addr (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                         ((string-equal (cl:string item) "ACCESS")
-                          (cl:unless remaining
+                          (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+                         ((string-equal (string item) "ACCESS")
+                          (unless remaining
                             (error "Missing value for :ACCESS in ~s" spec))
-                          (setf acc (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                         ((string-equal (cl:string item) "ALIGN")
-                          (cl:unless remaining
+                          (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
+                         ((string-equal (string item) "ALIGN")
+                          (unless remaining
                             (error "Missing value for :ALIGN in ~s" spec))
-                          (cl:let ((v (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                            (cl:unless (cl:member v '(:compact :compact-offset :strided))
+                          (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
+                            (unless (member v '(:compact :compact-offset :strided))
                               (error "Invalid :align value ~s in ~s. Expected :compact, :compact-offset, or :strided." v spec))
                             (setf aln v)))
-                         ((string-equal (cl:string item) "DIRECTION")
-                          (cl:when remaining (pop remaining)))
+                         ((string-equal (string item) "DIRECTION")
+                          (when remaining (pop remaining)))
                          (t
                           (%bare-storage-handle-value-error item spec)))))
-                   (cl:list (find-symbol "TENSOR" :crisp.compiler)
+                   (list (find-symbol "TENSOR" :crisp.compiler)
                             element-type 2 addr acc aln)))
 
                 ;; ── TENSOR: bare-value matching retained for idempotency ──────
@@ -177,95 +177,95 @@
                 ;; Vector and matrix are only ever user-written (once expanded they
                 ;; become tensor), so they can enforce strict key-required form.
                 ((string-equal (symbol-name base) "TENSOR")
-                 (cl:let* ((n-arg        (and rest-args
-                                              (not (keywordp (cl:first rest-args)))
-                                              (cl:first rest-args)))
+                 (let* ((n-arg        (and rest-args
+                                              (not (keywordp (first rest-args)))
+                                              (first rest-args)))
                            (rest-after-n (if n-arg (rest rest-args) rest-args))
                            (addr         :global)
                            (acc          :read-write)
                            (aln          :compact)
                            (remaining    rest-after-n))
-                   (cl:unless n-arg
+                   (unless n-arg
                      (error 'crisp-incomplete-type-error :type-spec spec))
-                   (cl:loop while remaining do
-                     (cl:let ((item (pop remaining)))
-                       (cl:cond
+                   (loop while remaining do
+                     (let ((item (pop remaining)))
+                       (cond
                          ;; bare address-space values (canonical form idempotency)
-                         ((cl:member (cl:string item)
+                         ((member (string item)
                                      '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
                                      :test #'string-equal)
-                          (setf addr (intern (string-upcase (cl:string item)) :keyword)))
+                          (setf addr (intern (string-upcase (string item)) :keyword)))
                          ;; bare access values
-                         ((cl:member (cl:string item)
+                         ((member (string item)
                                      '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
                                        "READABLE" "WRITEABLE")
                                      :test #'string-equal)
-                          (setf acc (intern (string-upcase (cl:string item)) :keyword)))
+                          (setf acc (intern (string-upcase (string item)) :keyword)))
                          ;; bare align values (canonical form idempotency)
-                         ((cl:member (cl:string item) '("COMPACT" "COMPACT-OFFSET" "STRIDED")
+                         ((member (string item) '("COMPACT" "COMPACT-OFFSET" "STRIDED")
                                      :test #'string-equal)
-                          (setf aln (intern (string-upcase (cl:string item)) :keyword)))
-                         ((string-equal (cl:string item) "ADDRESS-SPACE")
-                          (cl:unless remaining
+                          (setf aln (intern (string-upcase (string item)) :keyword)))
+                         ((string-equal (string item) "ADDRESS-SPACE")
+                          (unless remaining
                             (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                          (setf addr (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                         ((string-equal (cl:string item) "ACCESS")
-                          (cl:unless remaining
+                          (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+                         ((string-equal (string item) "ACCESS")
+                          (unless remaining
                             (error "Missing value for :ACCESS in ~s" spec))
-                          (setf acc (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                         ((string-equal (cl:string item) "ALIGN")
-                          (cl:unless remaining
+                          (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
+                         ((string-equal (string item) "ALIGN")
+                          (unless remaining
                             (error "Missing value for :ALIGN in ~s" spec))
-                          (cl:let ((v (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                            (cl:unless (cl:member v '(:compact :compact-offset :strided))
+                          (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
+                            (unless (member v '(:compact :compact-offset :strided))
                               (error "Invalid :align value ~s in ~s. Expected :compact, :compact-offset, or :strided." v spec))
                             (setf aln v)))
-                         ((string-equal (cl:string item) "DIRECTION")
-                          (cl:when remaining (pop remaining)))
+                         ((string-equal (string item) "DIRECTION")
+                          (when remaining (pop remaining)))
                          (t
                           (error "Invalid type option: ~s in tensor spec ~s" item spec)))))
                    (list base element-type n-arg addr acc aln)))
 
                 ;; ── CELL: original 4-tuple logic, unchanged ──────────────────
                 (t
-                 (cl:if (null rest-args)
-                     (cl:list base element-type :global :read-write)
-                     (cl:let ((addr      :global)
+                 (if (null rest-args)
+                     (list base element-type :global :read-write)
+                     (let ((addr      :global)
                               (acc       :read-write)
                               (remaining rest-args))
-                       (cl:loop while remaining do
-                         (cl:let ((item (pop remaining)))
-                           (cl:cond
-                             ((cl:member (cl:string item)
+                       (loop while remaining do
+                         (let ((item (pop remaining)))
+                           (cond
+                             ((member (string item)
                                          '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
                                          :test #'string-equal)
-                              (setf addr (intern (string-upcase (cl:string item)) :keyword)))
-                             ((cl:member (cl:string item)
+                              (setf addr (intern (string-upcase (string item)) :keyword)))
+                             ((member (string item)
                                          '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
                                            "READABLE" "WRITEABLE")
                                          :test #'string-equal)
-                              (setf acc (intern (string-upcase (cl:string item)) :keyword)))
-                             ((string-equal (cl:string item) "ADDRESS-SPACE")
-                              (cl:unless remaining
+                              (setf acc (intern (string-upcase (string item)) :keyword)))
+                             ((string-equal (string item) "ADDRESS-SPACE")
+                              (unless remaining
                                 (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                              (setf addr (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                             ((string-equal (cl:string item) "ACCESS")
-                              (cl:unless remaining
+                              (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+                             ((string-equal (string item) "ACCESS")
+                              (unless remaining
                                 (error "Missing value for :ACCESS in ~s" spec))
-                              (setf acc (intern (string-upcase (cl:string (pop remaining))) :keyword)))
-                             ((string-equal (cl:string item) "DIRECTION")
-                              (cl:when remaining (pop remaining)))
+                              (setf acc (intern (string-upcase (string (pop remaining))) :keyword)))
+                             ((string-equal (string item) "DIRECTION")
+                              (when remaining (pop remaining)))
                              (t
                               (error "Invalid type option: ~s in spec ~s" item spec)))))
-                       (cl:list base element-type addr acc)))))))
+                       (list base element-type addr acc)))))))
            spec)))))
 
 
 ;; Helper: Parse Template Param Spec
 (defun parse-template-parameter-spec (param)
   "Parses (Name [Type] [Default]) -> (list Name Type Default)"
-  (cl:if (consp param)
-         (cl:case (length param)
+  (if (consp param)
+         (case (length param)
            (1 (list (first param) 'T nil))
            (2 (list (first param) (second param) nil))
            (3 (list (first param) (second param) (third param)))
@@ -275,11 +275,11 @@
 
 ;; 1. Permissive validate-template-arg
 (defun validate-template-arg (arg type name)
-  (cl:cond
+  (cond
     ((eq type 'T) t)
     ((typep arg type) t)
     ;; Permissive Fix: If arg is SYMBOL (but not keyword) and Type accepts the KEYWORD version
-    ((cl:and (symbolp arg)
+    ((and (symbolp arg)
        (not (keywordp arg))
        (typep (intern (symbol-name arg) :keyword) type))
      t)
@@ -299,47 +299,47 @@
     (return-from canonicalize-type-specifier spec))
 
   ;; First, apply storage handle expansion
-  (cl:when (consp spec)
+  (when (consp spec)
     (setf spec (expand-storage-handle-type-specifier spec)))
 
   ;; After expansion, check again (in case alias expanded to array)
   (when (and (consp spec) (%array-type-p spec))
     (return-from canonicalize-type-specifier spec))
 
-  (cl:let ((base (if (consp spec) (cl:first spec) spec))
+  (let ((base (if (consp spec) (first spec) spec))
            (args (if (consp spec) (rest spec) nil)))
-    (cl:cond
+    (cond
       ((symbolp base)
        ;; 1. Check Template Aliases (def-type)
-       (cl:let ((alias-def (gethash base *crisp-template-aliases*)))
-         (cl:if alias-def
-                (cl:let ((params (car alias-def))
+       (let ((alias-def (gethash base *crisp-template-aliases*)))
+         (if alias-def
+                (let ((params (car alias-def))
                          (type-spec (cdr alias-def)))
-                  (cl:if params
-                         (cl:let* ((arity (length params))
+                  (if params
+                         (let* ((arity (length params))
                                    (required-args (subseq args 0 (min (length args) arity)))
                                    (rest-args (subseq args (length required-args)))
                                    (substitutions (pairlis params required-args)))
-                           (cl:let ((expanded-base (sublis substitutions type-spec)))
-                             (cl:if (and rest-args (consp expanded-base))
+                           (let ((expanded-base (sublis substitutions type-spec)))
+                             (if (and rest-args (consp expanded-base))
                                     (canonicalize-type-specifier (append expanded-base rest-args))
                                     (canonicalize-type-specifier expanded-base))))
-                         (cl:if args
-                                (canonicalize-type-specifier (append (cl:if (consp type-spec) type-spec (list type-spec)) args))
-                                (cl:let ((resolved (resolve-type-alias base)))
-                                  (cl:if (equal resolved base)
+                         (if args
+                                (canonicalize-type-specifier (append (if (consp type-spec) type-spec (list type-spec)) args))
+                                (let ((resolved (resolve-type-alias base)))
+                                  (if (equal resolved base)
                                          (progn
                                           (log:warn "[canonicalize-type-specifier] Alias Cycle detected for ~a, returning base." base)
                                           (list base))
                                          (canonicalize-type-specifier resolved))))))
 
                 ;; 2. Standard Templates (With Validation)
-                (cl:let* ((template-data (first (gethash base *template-registry*)))
+                (let* ((template-data (first (gethash base *template-registry*)))
                           (raw-params (and template-data (template-data-parameters template-data))))
-                  (cl:if raw-params
-                         (cl:let* ((parsed-params (mapcar #'parse-template-parameter-spec raw-params))
+                  (if raw-params
+                         (let* ((parsed-params (mapcar #'parse-template-parameter-spec raw-params))
                                    (clean-args (extract-positional-from-keyword-args args (length parsed-params)))
-                                   (full-args (cl:loop for (p-name p-type p-default) in parsed-params
+                                   (full-args (loop for (p-name p-type p-default) in parsed-params
                                               for i from 0
                                               for arg = (if (< i (length clean-args))
                                                             (nth i clean-args)
@@ -350,7 +350,7 @@
                            (cons base full-args))
 
                          ;; Not a template, return as is (normalized to list)
-                         (cl:if (consp spec) spec (list spec)))))))
+                         (if (consp spec) spec (list spec)))))))
       ((consp spec) spec)
       (t (list spec)))))
 
@@ -367,7 +367,7 @@
 (defun %type-spec-equal-p (t1 t2)
   "Recursive package-agnostic comparison of type spec trees.
    Used in types-equivalent-p for the cons-vs-cons case."
-  (cl:cond
+  (cond
     ((and (null t1) (null t2)) t)
     ((or (null t1) (null t2)) nil)
     ((and (consp t1) (consp t2))
@@ -384,9 +384,9 @@
    before mangling comparison. This supports def-type aliases for any template type.
    FIX2: Use %type-spec-equal-p (package-agnostic) for cons-vs-cons case.
    FIX3: Use compiler-session check instead of broken (boundp '*current-module*)."
-  (cl:let ((t1 (resolve-type-alias t1))
+  (let ((t1 (resolve-type-alias t1))
            (t2 (resolve-type-alias t2)))
-    (cl:cond
+    (cond
       ((or (equal t1 t2)
            (and (symbolp t1) (symbolp t2) (string-equal (symbol-name t1) (symbol-name t2))))
        t)
@@ -395,23 +395,23 @@
        t)
       ((and (consp t1) (symbolp t2))
        (let* ((expanded (canonicalize-type-specifier t1))
-              (base-type (cl:first expanded))
+              (base-type (first expanded))
               (params (rest expanded)))
-         (cl:if (and (symbolp base-type)
+         (if (and (symbolp base-type)
                   (not (excluded-template-base-type-p base-type)))
              (progn
-              (cl:when (gethash base-type *template-registry*)
-                (cl:let ((instantiated-form
+              (when (gethash base-type *template-registry*)
+                (let ((instantiated-form
                           (funcall *template-instantiator-fn* base-type params
                             (lambda (form location)
-                              (cl:let ((is-wrapper
+                              (let ((is-wrapper
                                      (and (consp form)
                                           (symbolp (car form))
                                           (string-equal (symbol-name (car form)) "DEF-FUNCTION")
                                           (symbolp (second form))
                                           (search "_WRAPPER" (symbol-name (second form))
                                                   :test #'char-equal))))
-                                (cl:if (and (not is-wrapper)
+                                (if (and (not is-wrapper)
                                          *compiler-session*
                                          (compiler-session-module *compiler-session*))
                                     (compile-toplevel-form form location
@@ -423,8 +423,8 @@
                                     (eval form)))))))
                   instantiated-form
                   t))
-              (cl:let ((mangled (mangle-template-struct-name base-type params)))
-                (cl:cond
+              (let ((mangled (mangle-template-struct-name base-type params)))
+                (cond
                   ((eq mangled t2) t)
                   ((string-equal (symbol-name mangled) (symbol-name t2)) t)
                   (t nil))))
@@ -432,8 +432,8 @@
       ((and (symbolp t1) (consp t2))
        (types-equivalent-p t2 t1))
       ;; Parameterized struct vs parameterized struct — use package-agnostic comparison
-      ((and (cl:consp t1) (cl:consp t2))
-       (cl:let ((e1 (canonicalize-type-specifier t1))
+      ((and (consp t1) (consp t2))
+       (let ((e1 (canonicalize-type-specifier t1))
                 (e2 (canonicalize-type-specifier t2)))
          (%type-spec-equal-p e1 e2)))
       ((and (or (member t1 '(keyword :keyword symbol common-lisp:symbol))
@@ -442,8 +442,8 @@
       ((and (or (member t2 '(keyword :keyword symbol common-lisp:symbol))
                 (and (symbolp t2) (member (symbol-name t2) '("KEYWORD" "SYMBOL") :test #'string-equal)))
             (gethash t1 *crisp-enums*)) t)
-      ((and (consp t1) (= (length t1) 1) (valid-type-p (cl:first t1)) (types-equivalent-p (cl:first t1) t2)) t)
-      ((and (consp t2) (= (length t2) 1) (valid-type-p (cl:first t2)) (types-equivalent-p t1 (cl:first t2))) t)
+      ((and (consp t1) (= (length t1) 1) (valid-type-p (first t1)) (types-equivalent-p (first t1) t2)) t)
+      ((and (consp t2) (= (length t2) 1) (valid-type-p (first t2)) (types-equivalent-p t1 (first t2))) t)
       (t nil))))
 
 
@@ -452,9 +452,9 @@
   (or (and (boundp '*template-arity-lookup-fn*)
            (funcall *template-arity-lookup-fn* name))
       ;; Fallback to registry if lookup fn not ready
-      (cl:let ((entries (gethash name *template-registry*)))
-        (cl:when entries
-          (length (template-data-parameters (cl:first entries)))))))
+      (let ((entries (gethash name *template-registry*)))
+        (when entries
+          (length (template-data-parameters (first entries)))))))
 
 (defun type-lists-equivalent-p (l1 l2)
   (and (= (length l1) (length l2))
@@ -465,8 +465,8 @@
 
 (defun valid-basic-type-p (type-spec)
   "Checks if type-spec is a valid basic symbol type (built-in, struct, or function reference)."
-  (cl:when (and (symbolp type-spec) (not (keywordp type-spec)))
-    (cl:cond
+  (when (and (symbolp type-spec) (not (keywordp type-spec)))
+    (cond
       ((gethash type-spec *crisp-types*) t)
       ((gethash type-spec *crisp-structs*) t)
       ((gethash type-spec *crisp-enums*) t)
@@ -494,12 +494,12 @@
   "Checks if type-spec is a valid function literal or descriptor.
 Extended to also accept raw (function ...) forms from the Crisp reader
 (i.e., #'(float float => float) which the CL reader gives as (function ...))."
-  (or (and (consp type-spec) (eq (cl:first type-spec) :function-literal)
+  (or (and (consp type-spec) (eq (first type-spec) :function-literal)
            (= (length type-spec) 2) (symbolp (second type-spec)))
-      (and (consp type-spec) (eq (cl:first type-spec) :function-type))
+      (and (consp type-spec) (eq (first type-spec) :function-type))
       ;; Raw function type from #'(...) reader expansion: (function (... => ...))
       ;; Note: must return T (boolean), not the member result, to satisfy valid-type-p's type decl.
-      (and (consp type-spec) (eq (cl:first type-spec) 'common-lisp:function))))
+      (and (consp type-spec) (eq (first type-spec) 'common-lisp:function))))
 
 
 
@@ -509,16 +509,16 @@ Extended to also accept raw (function ...) forms from the Crisp reader
    FIX3: Use (and *compiler-session* (compiler-session-module *compiler-session*))
    instead of (boundp '*current-module*) — the latter always returns NIL because
    *current-module* is a define-symbol-macro, not a defvar special variable."
-  (cl:let ((templates (or (gethash base-type *template-registry*)
-                          (cl:let ((found nil))
-                            (maphash (cl:lambda (k v)
-                                       (cl:when (and (symbolp k)
+  (let ((templates (or (gethash base-type *template-registry*)
+                          (let ((found nil))
+                            (maphash (lambda (k v)
+                                       (when (and (symbolp k)
                                                      (string-equal (symbol-name k)
                                                                    (symbol-name base-type)))
-                                         (cl:setf found v)))
+                                         (setf found v)))
                                      *template-registry*)
                             found))))
-    (cl:cond
+    (cond
       ;; No templates found for this base type
       ((null templates) nil)
 
@@ -538,14 +538,14 @@ Extended to also accept raw (function ...) forms from the Crisp reader
            ;; mapping is void — valid as return type but INVALID as a parameter.
            ;; The wrapper is never called at GPU runtime, so it needs no IR body.
            ;; We still eval it so the overload gets registered in *function-table*.
-           (cl:let ((is-wrapper
+           (let ((is-wrapper
                   (and (consp form)
                        (symbolp (car form))
                        (string-equal (symbol-name (car form)) "DEF-FUNCTION")
                        (symbolp (second form))
                        (search "_WRAPPER" (symbol-name (second form))
                                :test #'char-equal))))
-             (cl:if (and (not is-wrapper)
+             (if (and (not is-wrapper)
                       *compiler-session*
                       (compiler-session-module *compiler-session*))
                  (compile-toplevel-form form nil
@@ -561,7 +561,7 @@ Extended to also accept raw (function ...) forms from the Crisp reader
 (defun %validate-template-instantiation (base-type template-args)
   "Helper: Validates a template instantiation, checking if it's already defined
    or can be instantiated. Returns T if valid, NIL otherwise."
-  (cl:let ((mangled-name (mangle-template-struct-name base-type template-args)))
+  (let ((mangled-name (mangle-template-struct-name base-type template-args)))
     (or (gethash mangled-name *crisp-structs*)
         (%instantiate-template-if-needed base-type template-args mangled-name))))
 
@@ -572,31 +572,31 @@ Extended to also accept raw (function ...) forms from the Crisp reader
   "Checks if type-spec is a valid parameterized type (cell, templates, array, etc).
    Extended to recognise (array T N), reject nested arrays, and accept symbol counts
    (e.g. the symbol |5| produced by unmangle-template-struct-name)."
-  (cl:when (consp type-spec)
-    (cl:let* ((expanded (canonicalize-type-specifier type-spec))
-              (base-type (cl:first expanded))
-              (params (cl:rest expanded)))
-      (cl:cond
+  (when (consp type-spec)
+    (let* ((expanded (canonicalize-type-specifier type-spec))
+              (base-type (first expanded))
+              (params (rest expanded)))
+      (cond
         ((not (symbolp base-type)) nil)
         ((excluded-template-base-type-p base-type) nil)
 
         ;; (array T N) — compile-time fixed array type
         ;; count may be an integer (from source) or a symbol like |5| (from unmangle)
         ((%array-type-p expanded)
-         (cl:let* ((elem-type (cl:first params))
-                   (count-raw (cl:second params))
-                   (count (cl:cond
+         (let* ((elem-type (first params))
+                   (count-raw (second params))
+                   (count (cond
                             ((integerp count-raw) count-raw)
                             ((and (symbolp count-raw)
                                   (ignore-errors (parse-integer (symbol-name count-raw)))))
                             (t nil))))
            ;; Nesting is illegal
-           (cl:when (%array-type-p elem-type)
+           (when (%array-type-p elem-type)
              (error 'crisp-compiler-error
                     :message (format nil "Array type cannot be nested: ~s is illegal. Use def-struct or a cell instead."
                                      type-spec)))
            ;; Validate: exactly 2 args, valid non-array element type, positive integer count
-           (and (= (cl:length params) 2)
+           (and (= (length params) 2)
                 (valid-basic-type-p elem-type)
                 count
                 (> count 0))))
@@ -604,7 +604,7 @@ Extended to also accept raw (function ...) forms from the Crisp reader
         ((and (or (gethash base-type *crisp-structs*)
                   (gethash base-type *crisp-types*))
               (or (null params)
-                  (keywordp (cl:first params))))
+                  (keywordp (first params))))
          t)
 
         ((symbolp base-type)
@@ -634,7 +634,7 @@ Extended to also accept raw (function ...) forms from the Crisp reader
 
 (defun encode-address-space (as)
   "Maps a keyword address space to an integer, sensitive to *target-backend*."
-  (cl:let ((backend (if (boundp '*target-backend*) *target-backend* :generic))
+  (let ((backend (if (boundp '*target-backend*) *target-backend* :generic))
            (as-key (if (keywordp as) as (intern (symbol-name as) :keyword))))
     (case backend
       (:spirv
@@ -667,12 +667,12 @@ Extended to also accept raw (function ...) forms from the Crisp reader
 
 
 (defun find-template-robust (name)
-  (or (cl:gethash name *template-registry*)
-      (cl:let ((found nil))
-        (maphash (cl:lambda (k v)
-                   (cl:when (and (symbolp k)
+  (or (gethash name *template-registry*)
+      (let ((found nil))
+        (maphash (lambda (k v)
+                   (when (and (symbolp k)
                                  (string-equal (symbol-name k) (symbol-name name)))
-                     (cl:setf found v)))
+                     (setf found v)))
                  *template-registry*)
         found)))
 
@@ -682,8 +682,8 @@ Extended to also accept raw (function ...) forms from the Crisp reader
   "Returns T if TYPE-SPEC is a list form whose head is the symbol ARRAY.
    Used throughout the array implementation to identify (array T N) type specs."
   (and (consp type-spec)
-       (symbolp (cl:first type-spec))
-       (string-equal (symbol-name (cl:first type-spec)) "ARRAY")))
+       (symbolp (first type-spec))
+       (string-equal (symbol-name (first type-spec)) "ARRAY")))
 
 
 
@@ -692,27 +692,27 @@ Extended to also accept raw (function ...) forms from the Crisp reader
    Extended to handle (array T N) → LLVM [N x T_llvm].
    Extended to normalize VECTOR/MATRIX sugar to TENSOR before dispatch,
    and to canonicalize type alias values before recursing."
-  (cl:let ((*resolve-depth* (1+ *resolve-depth*)))
-    (cl:when (> *resolve-depth* 50)
-      (cl:error "Infinite recursion detected in resolve-type-to-llvm for ~s" type-spec))
+  (let ((*resolve-depth* (1+ *resolve-depth*)))
+    (when (> *resolve-depth* 50)
+      (error "Infinite recursion detected in resolve-type-to-llvm for ~s" type-spec))
 
     ;; ── Early-out: VECTOR/MATRIX sugar → TENSOR ──────────────────────────────
     ;; VECTOR and MATRIX are not in *template-registry*, so the normal
     ;; "Parameterized Structs" branch cannot handle them.  Expand to TENSOR first
     ;; so the rest of the dispatch sees a canonical (tensor ...) form.
-    (cl:when (cl:and (cl:consp type-spec)
-                     (cl:symbolp (cl:first type-spec))
-                     (cl:member (cl:symbol-name (cl:first type-spec))
-                                '("VECTOR" "MATRIX") :test #'cl:string-equal))
-      (log:info "resolve-type-to-llvm: expanding ~a sugar to TENSOR" (cl:first type-spec))
-      (cl:return-from resolve-type-to-llvm
+    (when (and (consp type-spec)
+                     (symbolp (first type-spec))
+                     (member (symbol-name (first type-spec))
+                                '("VECTOR" "MATRIX") :test #'string-equal))
+      (log:info "resolve-type-to-llvm: expanding ~a sugar to TENSOR" (first type-spec))
+      (return-from resolve-type-to-llvm
         (resolve-type-to-llvm (expand-storage-handle-type-specifier type-spec))))
 
-    (cl:cond
+    (cond
       ;; (array T N) → [N x T_llvm]
       ((%array-type-p type-spec)
-       (cl:let* ((elem-type (cl:second type-spec))
-                 (count-raw (cl:third type-spec))
+       (let* ((elem-type (second type-spec))
+                 (count-raw (third type-spec))
                  (count (etypecase count-raw
                           (integer count-raw)
                           (symbol  (parse-integer (symbol-name count-raw))))))
@@ -720,126 +720,126 @@ Extended to also accept raw (function ...) forms from the Crisp reader
          (crisp.llvm-bindings::llvm-array-type (resolve-type-to-llvm elem-type) count)))
 
       ;; Derived Type - resolve to base type (MUST come before *crisp-types* check)
-      ((cl:and (cl:symbolp type-spec)
-         (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
-                   (node-alt (cl:when (not node-direct)
-                               (cl:gethash (cl:intern (cl:symbol-name type-spec)
-                                                      (cl:find-package :crisp-language))
+      ((and (symbolp type-spec)
+         (let* ((node-direct (gethash type-spec *type-derivation-graph*))
+                   (node-alt (when (not node-direct)
+                               (gethash (intern (symbol-name type-spec)
+                                                      (find-package :crisp-language))
                                            *type-derivation-graph*)))
                    (node (or node-direct node-alt)))
            (and node (type-node-original-type node))))
-       (cl:let* ((node-direct (cl:gethash type-spec *type-derivation-graph*))
-                 (node-alt (cl:when (not node-direct)
-                             (cl:gethash (cl:intern (cl:symbol-name type-spec)
-                                                    (cl:find-package :crisp-language))
+       (let* ((node-direct (gethash type-spec *type-derivation-graph*))
+                 (node-alt (when (not node-direct)
+                             (gethash (intern (symbol-name type-spec)
+                                                    (find-package :crisp-language))
                                          *type-derivation-graph*)))
                  (actual-type (if node-direct type-spec
-                                  (cl:intern (cl:symbol-name type-spec)
-                                             (cl:find-package :crisp-language))))
+                                  (intern (symbol-name type-spec)
+                                             (find-package :crisp-language))))
                  (base-type (get-type-base actual-type)))
          (resolve-type-to-llvm base-type)))
 
       ;; Built-in Scalar
-      ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-types*))
-       (cl:funcall (crisp-type-llvm-type-fn (cl:gethash type-spec *crisp-types*))))
+      ((and (symbolp type-spec) (gethash type-spec *crisp-types*))
+       (funcall (crisp-type-llvm-type-fn (gethash type-spec *crisp-types*))))
 
       ;; Type Alias (Symbol) — canonicalize alias value before recursing so that
       ;; aliases pointing to (vector ...) / (matrix ...) are normalized to TENSOR.
-      ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-type-aliases*))
+      ((and (symbolp type-spec) (gethash type-spec *crisp-type-aliases*))
        (resolve-type-to-llvm
-        (canonicalize-type-specifier (cl:gethash type-spec *crisp-type-aliases*))))
+        (canonicalize-type-specifier (gethash type-spec *crisp-type-aliases*))))
 
       ;; C-Pointer with properties: e.g. (c-pointer :address-space :global)
-      ((cl:and (cl:consp type-spec) (cl:eq (cl:first type-spec) 'c-pointer))
-       (cl:let* ((args (cl:rest type-spec))
-                 (as-key (cl:getf args :address-space))
+      ((and (consp type-spec) (eq (first type-spec) 'c-pointer))
+       (let* ((args (rest type-spec))
+                 (as-key (getf args :address-space))
                  (as-val (encode-address-space as-key)))
          (llvm-pointer-type (llvm-int8-type) as-val)))
 
       ;; Struct (Pre-existing)
-      ((cl:and (cl:symbolp type-spec) (find-struct-definition-by-name type-spec))
+      ((and (symbolp type-spec) (find-struct-definition-by-name type-spec))
        (ensure-struct-llvm-type type-spec))
 
       ;; Enumerations (map to i32)
-      ((cl:and (cl:symbolp type-spec) (cl:gethash type-spec *crisp-enums*))
+      ((and (symbolp type-spec) (gethash type-spec *crisp-enums*))
        (llvm-int32-type))
 
       ;; Keyword/Symbol/Quote (map to i32)
-      ((cl:or (cl:member type-spec '(keyword symbol quote))
-         (cl:and (cl:consp type-spec) (cl:member (cl:first type-spec) '(keyword symbol quote))))
+      ((or (member type-spec '(keyword symbol quote))
+         (and (consp type-spec) (member (first type-spec) '(keyword symbol quote))))
        (llvm-int32-type))
 
       ;; Parameterized Structs (On-Demand Instantiation) OR Mangled Symbols
-      ((cl:or (cl:and (cl:consp type-spec)
+      ((or (and (consp type-spec)
                 (valid-type-p type-spec)
-                (find-template-robust (cl:first type-spec)))
-         (cl:and (cl:symbolp type-spec)
-           (cl:let ((parts (unmangle-template-struct-name type-spec)))
-             (cl:and parts (cl:consp parts) (find-template-robust (cl:first parts))))))
-       (cl:let* ((canonical (canonicalize-type-specifier type-spec))
-                 (is-cons (cl:consp canonical))
-                 (unmangled (cl:if is-cons canonical (unmangle-template-struct-name canonical)))
-                 (base (cl:first unmangled))
-                 (raw-args (cl:rest unmangled))
+                (find-template-robust (first type-spec)))
+         (and (symbolp type-spec)
+           (let ((parts (unmangle-template-struct-name type-spec)))
+             (and parts (consp parts) (find-template-robust (first parts))))))
+       (let* ((canonical (canonicalize-type-specifier type-spec))
+                 (is-cons (consp canonical))
+                 (unmangled (if is-cons canonical (unmangle-template-struct-name canonical)))
+                 (base (first unmangled))
+                 (raw-args (rest unmangled))
                  (mangled (mangle-template-struct-name base raw-args)))
-         (cl:unless (find-struct-definition-by-name mangled)
-           (cl:let ((crisp.compiler::*defer-struct-validation* nil))
+         (unless (find-struct-definition-by-name mangled)
+           (let ((crisp.compiler::*defer-struct-validation* nil))
              (ensure-template-instantiation base raw-args
-                                            (cl:lambda (form location)
-                                              (cl:eval form)
-                                              (cl:when (cl:and (boundp '*current-module*) *current-module*)
+                                            (lambda (form location)
+                                              (eval form)
+                                              (when (and (boundp '*current-module*) *current-module*)
                                                 (compile-toplevel-form form location
                                                                        *current-module*
                                                                        *current-builder*
                                                                        *current-di-builder*
                                                                        *current-di-compile-unit*
                                                                        *current-location-map*))))))
-         (cl:unless (find-struct-definition-by-name mangled)
-           (cl:error "Type Resolution: FAILED to instantiate struct ~a" mangled))
+         (unless (find-struct-definition-by-name mangled)
+           (error "Type Resolution: FAILED to instantiate struct ~a" mangled))
          (resolve-type-to-llvm mangled)))
 
       ;; Generic List Wrapper
-      ((cl:consp type-spec)
-       (resolve-type-to-llvm (cl:first type-spec)))
+      ((consp type-spec)
+       (resolve-type-to-llvm (first type-spec)))
 
       (t
-       (cl:let ((alias-match (cl:loop for k being the hash-keys of *crisp-type-aliases*
-                               when (cl:string-equal (cl:symbol-name k) (cl:symbol-name type-spec))
+       (let ((alias-match (loop for k being the hash-keys of *crisp-type-aliases*
+                               when (string-equal (symbol-name k) (symbol-name type-spec))
                                return k)))
-         (cl:if alias-match
+         (if alias-match
                 ;; Canonicalize before recursing (same fix as Type Alias branch above)
                 (resolve-type-to-llvm
-                 (canonicalize-type-specifier (cl:gethash alias-match *crisp-type-aliases*)))
-                (cl:error "Cannot resolve type to LLVM: ~a" type-spec)))))))
+                 (canonicalize-type-specifier (gethash alias-match *crisp-type-aliases*)))
+                (error "Cannot resolve type to LLVM: ~a" type-spec)))))))
 
 (defun incomplete-type-p (type-spec)
   "Checks if a type specifier is incomplete (missing required compile-time properties).
    Returns T if incomplete, NIL if complete."
-  (cl:cond
+  (cond
     ((symbolp type-spec)
      ;; A bare symbol is incomplete if:
      ;; 1. It's a template with arity > 0
      ;; 2. It's a struct with required :c-t fields (and no defaults)
-     (cl:let ((arity (get-template-arity type-spec))
+     (let ((arity (get-template-arity type-spec))
               (struct-def (find-struct-definition-by-name type-spec)))
        (log:debug "Checking incompleteness for symbol ~a. Arity: ~a. StructDef: ~a" type-spec arity struct-def)
        (or (and arity (> arity 0))
            (and struct-def
                 (loop for m in (crisp-struct-definition-members struct-def)
-                        thereis (cl:let* ((is-ct (and (consp m) (eq (third m) :c-t)))
+                        thereis (let* ((is-ct (and (consp m) (eq (third m) :c-t)))
                                           (default-val (and is-ct (fourth m))))
-                                  (cl:when (and is-ct (null default-val))
+                                  (when (and is-ct (null default-val))
                                     (log:debug "  Incomplete due to C-T member: ~a" m)
                                     t)))))))
 
     ((consp type-spec)
-     (cl:let* ((canon (canonicalize-type-specifier type-spec))
-               (base (cl:first canon))
+     (let* ((canon (canonicalize-type-specifier type-spec))
+               (base (first canon))
                (args (rest canon)))
        (if (symbolp base)
-           (cl:let ((arity (get-template-arity base)))
+           (let ((arity (get-template-arity base)))
              (log:debug "Checking completeness for ~a (Arity: ~a)" base arity)
-             (cl:cond
+             (cond
                ;; 1. Check Template Arity (Positional Args)
                ((and arity (< (length args) arity))
                 (log:info "Type ~a is incomplete: missing template args (got ~d, need ~d)" type-spec (length args) arity)
@@ -847,24 +847,24 @@ Extended to also accept raw (function ...) forms from the Crisp reader
 
                ;; 2. Check Compile-Time Struct Members (Keyword Args)
                (t
-                (cl:let ((struct-def (find-struct-definition-by-name base)))
+                (let ((struct-def (find-struct-definition-by-name base)))
                   (if struct-def
-                      (cl:let ((prop-args (if arity (subseq args arity) args)))
+                      (let ((prop-args (if arity (subseq args arity) args)))
                         (log:debug "Checking properties for ~a. PropArgs: ~a" base prop-args)
 
                         ;; Map provided properties
-                        (cl:let ((provided-props (make-hash-table :test 'eq)))
-                          (cl:let ((ptr prop-args))
+                        (let ((provided-props (make-hash-table :test 'eq)))
+                          (let ((ptr prop-args))
                             (loop while ptr do
-                                    (cl:let ((key (cl:first ptr))
+                                    (let ((key (first ptr))
                                              (val (second ptr)))
-                                      (cl:when (keywordp key)
+                                      (when (keywordp key)
                                         (setf (gethash key provided-props) val))
                                       (setf ptr (cddr ptr)))))
 
                           ;; Check required :c-t members
                           (loop for m in (crisp-struct-definition-members struct-def)
-                                  thereis (cl:let* ((name (cl:first m))
+                                  thereis (let* ((name (first m))
                                                     (is-ct (and (consp m) (eq (third m) :c-t)))
                                                     (default-val (and is-ct (fourth m)))
                                                     (key (intern (symbol-name name) :keyword)))
@@ -901,7 +901,7 @@ Extended to also accept raw (function ...) forms from the Crisp reader
       args
       ;; Try label-stripping the full arg list.
       (let* ((stripped
-              (cl:let ((result nil)
+              (let ((result nil)
                        (remaining args))
                 (loop while remaining
                       for item = (pop remaining)

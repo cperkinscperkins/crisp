@@ -283,7 +283,7 @@
                (or (string-equal sig-name arg-name)
                    (and (> (length arg-name) (length sig-name))
                         (string-equal sig-name (subseq arg-name 0 (length sig-name)))
-                        (cl:char= (cl:char arg-name (length sig-name)) #\-)))))
+                        (char= (cl:char arg-name (length sig-name)) #\-)))))
 
         ;; B. Standard recursive list match
         (match-list-structure sig-type arg-type inference-map template-params)
@@ -630,29 +630,29 @@
 Returns NIL on failure, or (list template-data concrete-types) on success.
 Extended: HOF-type sig-params are allowed to fail matching when all template
 parameters have already been inferred from earlier arguments."
-  (cl:let* ((raw-sig (crisp.compiler::template-data-signature tmpl))
+  (let* ((raw-sig (crisp.compiler::template-data-signature tmpl))
             (sig (crisp.compiler::%unwrap-function-signature raw-sig))
             (raw-params (crisp.compiler::template-data-parameters tmpl))
-            (params (mapcar (lambda (p) (if (consp p) (cl:first p) p)) raw-params))
+            (params (mapcar (lambda (p) (if (consp p) (first p) p)) raw-params))
             (sig-params (when sig (butlast sig 2))))
 
     (when (and sig-params (= (length sig-params) (length argument-types)))
-          (cl:let ((inference-map (make-hash-table)))
+          (let ((inference-map (make-hash-table)))
             ;; Try to match each sig-param against arg-type.
             ;; If matching fails for a HOF-type parameter but all template params
             ;; are already inferred, allow it to proceed.
-            (cl:let ((all-matched
-                      (cl:loop for sig-param in sig-params
+            (let ((all-matched
+                      (loop for sig-param in sig-params
                                for arg-type in argument-types
                                always
                                (or (crisp.compiler::match-template-arg
                                     sig-param arg-type inference-map params)
                                    ;; Fallback: if all params already inferred, skip this param
-                                   (cl:every (lambda (p) (gethash p inference-map)) params)))))
+                                   (every (lambda (p) (gethash p inference-map)) params)))))
               (when all-matched
-                    (cl:let ((concrete-types (cl:loop for p in params
+                    (let ((concrete-types (loop for p in params
                                                       collect (gethash p inference-map))))
-                      (when (cl:every #'identity concrete-types)
+                      (when (every #'identity concrete-types)
                             (list (list tmpl concrete-types))))))))))
 
 (defun try-infer-template-types (name argument-types)

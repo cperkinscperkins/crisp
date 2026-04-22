@@ -11,7 +11,7 @@
    Cross-package same-name fix: device vector types like USHORT2 may be interned in
    :crisp-language or :crisp.compiler depending on the code path; treat same symbol-name
    as the same type after alias resolution."
-  (cl:let ((type-a-name (resolve-type-alias type-a-name))
+  (let ((type-a-name (resolve-type-alias type-a-name))
            (type-b-name (resolve-type-alias type-b-name)))
     (cond
       ;; Fast path: identical symbols
@@ -24,7 +24,7 @@
        type-a-name)
       ;; Try DAG-based dominance resolution
       (t
-       (cl:let ((dominant-type (resolve-dominance type-a-name type-b-name)))
+       (let ((dominant-type (resolve-dominance type-a-name type-b-name)))
          (log:debug "get-promoted-type: ~a + ~a => dominant=~a" type-a-name type-b-name dominant-type)
          (if dominant-type
              dominant-type
@@ -138,15 +138,15 @@
 
       ;; 1. Try Lazy Instantiation for &optional / &key
       (let ((generic-def (gethash op *generic-functions*)))
-        (cl:when generic-def
+        (when generic-def
           (log:info "Found generic function ~a, attempting lazy instantiation..." op)
           (let ((new-sig (instantiate-generic-function generic-def explicit-arg-types context nil ; location unavailable here
                                                           )))
-            (cl:when new-sig
+            (when new-sig
               (setf signature new-sig)))))
 
       ;; 2. Try Template Instantiator (C++ Style)
-      (cl:when (and (not signature) *template-instantiator-fn*)
+      (when (and (not signature) *template-instantiator-fn*)
         (loop repeat 3 until signature do
                 (if (funcall *template-instantiator-fn* op explicit-arg-types
                       (lambda (form location)

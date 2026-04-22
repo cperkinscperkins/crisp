@@ -60,7 +60,7 @@ This supports overloading templates by arity or other factors.")
    Populated when def-struct / def-record with brand declarations are processed.")
 
 ;; NEW struct to hold brand metadata (this is a CL struct, not a Crisp def-struct)
-(cl:defstruct brand-definition
+(defstruct brand-definition
   "Stores the definition of a branded type declared inside a struct/record."
   (brand-name nil :type symbol) ; e.g., TOKEN-T
   (base-type nil :type symbol) ; e.g., ULONG
@@ -136,7 +136,7 @@ This supports overloading templates by arity or other factors.")
   "Populates *crisp-types* with built-in scalar types and device vector types."
   (clrhash *crisp-types*)
   ;; --- Scalar types (unchanged from original) ---
-  (cl:let ((types
+  (let ((types
             `(;; Signed Integers
               (char ,#'llvm-int8-type 8 :signed-int)
               (short ,#'llvm-int16-type 16 :signed-int)
@@ -168,7 +168,7 @@ This supports overloading templates by arity or other factors.")
   ;; --- Device vector types ---
   ;; Each base type paired with its element-llvm-fn, element size (bits), and category.
   ;; Symbols are interned in :crisp-language so Crisp source lookups succeed.
-  (cl:let ((cl-pkg (find-package :crisp-language))
+  (let ((cl-pkg (find-package :crisp-language))
         (base-specs
          (list (list 'char   #'llvm-int8-type   8  :signed-int)
                (list 'uchar  #'llvm-int8-type   8  :unsigned-int)

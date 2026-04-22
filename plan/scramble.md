@@ -497,7 +497,8 @@ Miscelleny
 - [ ] TEST-FILES[ 01-basic.crisp 11-app.crisp]  
 - [ ] ieee / fast accuracy support
 - [ ] is-uniform? and if*/when* variants
-- [ ] what is going on with validation.lisp? why does everything need cl:cond  
+- [ ] what is going on with validation.lisp? why does everything need cl:cond ?
+      same with autodiff.lisp  . FIX 
 
 
 Tensors Vectors and Matrices

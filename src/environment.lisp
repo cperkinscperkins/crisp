@@ -391,7 +391,7 @@
                            ;; so they remain incomplete and eligible as implicit template params.
                            (and (incomplete-type-p ptype)
                                 (not (and (symbolp ptype)
-                                          (cl:find #\_ (cl:symbol-name ptype))
+                                          (find #\_ (symbol-name ptype))
                                           (find-struct-definition-by-name ptype)))))
                 collect p)))
     (when implicit-args
@@ -446,10 +446,10 @@
 
    ;; 0. Type Aliases
    ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
-     (cl:let ((resolved (resolve-type-alias spec)))
+     (let ((resolved (resolve-type-alias spec)))
        (valid-type-p resolved)
-       (if (and (consp resolved) (eq (cl:first resolved) 'common-lisp:function))
-           (cl:let* ((sig (if (listp (second resolved)) (second resolved) (rest resolved)))
+       (if (and (consp resolved) (eq (first resolved) 'common-lisp:function))
+           (let* ((sig (if (listp (second resolved)) (second resolved) (rest resolved)))
                      (arrow-pos (position-if (lambda (x) (and (symbolp x)
                                                               (string-equal (symbol-name x) "=>")))
                                              sig))
@@ -460,7 +460,7 @@
 
    ;; 0.1 Template Aliases (e.g. (in-cell int))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
-     (cl:let* ((alias-name (first spec))
+     (let* ((alias-name (first spec))
                (args (rest spec))
                (alias-def (gethash alias-name *crisp-template-aliases*))
                (params (car alias-def))
@@ -469,8 +469,8 @@
                (required-args (subseq args 0 (min (length args) arity)))
                (rest-args (subseq args (length required-args)))
                (substitutions (pairlis params required-args)))
-       (cl:let ((expanded (sublis substitutions body-spec)))
-         (cl:let ((final-spec (if (and rest-args (consp expanded))
+       (let ((expanded (sublis substitutions body-spec)))
+         (let ((final-spec (if (and rest-args (consp expanded))
                                   (append expanded rest-args)
                                   (if rest-args
                                       (cons expanded rest-args)
@@ -483,7 +483,7 @@
          (symbolp (first spec))
          (symbolp (second spec))
          (is-brand-type-p (first spec)))
-     (cl:let* ((brand-name (first spec))
+     (let* ((brand-name (first spec))
                (var-ref (second spec))
                (brand-def (is-brand-type-p brand-name)))
        (if (gethash brand-name *parameterized-brand-names*)
@@ -499,10 +499,10 @@
 
    ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
    ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
-     (cl:let* ((alias-name (first spec))
+     (let* ((alias-name (first spec))
                (args (rest spec))
                (expanded-base (gethash alias-name *crisp-type-aliases*)))
-       (cl:let ((final-spec (if (listp expanded-base)
+       (let ((final-spec (if (listp expanded-base)
                                 (append expanded-base args)
                                 (cons expanded-base args))))
          (log:info "EXPAND-ALIAS-HEAD: ~a -> ~a" spec final-spec)
@@ -518,7 +518,7 @@
 
    ;; Function Type: #'(int => int) — raw (function ...) form from reader
    ((and (listp spec) (member (first spec) '(function common-lisp:function)))
-     (cl:let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
+     (let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
        `(:function-type ,(analyze-return-type-from-spec sig)
                         :params ,(mapcar #'parse-type-specifier
                                     (subseq sig 0 (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "=>"))) sig))))))
@@ -526,11 +526,11 @@
    ;; Storage Handle Constructor Rules
    ((and (listp spec) (member (symbol-name (first spec)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
      (log:info "PARSE: Calling expand for ~s" spec)
-     (cl:let ((canonical (expand-storage-handle-type-specifier spec)))
+     (let ((canonical (expand-storage-handle-type-specifier spec)))
        (if (valid-type-p canonical)
-           (cl:let ((base (first canonical))
+           (let ((base (first canonical))
                     (params (rest canonical)))
-             (cl:let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+             (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
                (mangle-template-struct-name base resolved-params)))
            (error 'crisp-unknown-type-error :type-name spec))))
 
@@ -540,13 +540,13 @@
    ;; Generic Parameterized Type: e.g. '(point float)
    ((and (listp spec) (valid-type-p spec))
      (log:info "PARSE: Generic path for ~s" spec)
-     (cl:let* ((base (first spec))
+     (let* ((base (first spec))
                (raw-params (rest spec))
                (arity (get-template-arity base))
                (params (if (and arity (> (length raw-params) arity))
                            (extract-positional-from-keyword-args raw-params arity)
                            raw-params)))
-       (cl:let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+       (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
          (if (and arity (> arity 0))
              (mangle-template-struct-name base resolved-params)
              (if resolved-params
@@ -718,7 +718,7 @@
              (type-spec nil)
              (vars nil))
 
-        ;; Heuristic: Check if first arg is a valid type (Standard CL: type TYPE VARS...)
+        ;; Heuristic: Check if first arg is a valid type (Standard  type TYPE VARS...)
         (if (valid-type-p first-arg)
             (setf type-spec first-arg
               vars (rest args))

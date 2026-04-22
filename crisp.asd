@@ -18,18 +18,18 @@
                                              (:file "src/llvm-bindings") ; 2. Uses one package, defines FFI
                                              (:file "src/utils")
                                              (:file "src/session") ;; NEW - Compiler Session
+                                             (:file "src/macros")
                                              (:file "src/mangling") ;; NEW
                                              (:file "src/semantic")
                                              (:file "src/errors") ; 3. Conditions
                                              (:file "src/types/definitions")
                                              (:file "src/types/registry")
+                                             
                                              (:file "src/types/validation")
                                              (:file "src/types/hierarchy")
                                              (:file "src/parameters")
                                              (:file "src/types/brand")
                                              (:file "src/structs") ; 5. Struct Layout
-
-                                             (:file "src/macros")
                                              (:file "src/compiler") ; 6. Uses FFI, defines compiler
                                              (:file "src/enums")
                                              (:file "src/environment")

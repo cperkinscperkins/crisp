@@ -334,22 +334,22 @@
   "Validates that both distance_point_point and distance_coordinate_coordinate
    are defined and called in the IR. Used for :subst :no tests where explicit
    as-point/as-coordinate casts are required."
-  (cl:unless (probe-file ir-path)
+  (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-no-subst-overloads nil))
   (let ((ir-content (uiop:read-file-string ir-path)))
     ;; Check both overloads are defined
-    (cl:unless (search "define i32 @distance_point_point(" ir-content)
+    (unless (search "define i32 @distance_point_point(" ir-content)
       (log:error "distance_point_point function not defined")
       (return-from validate-no-subst-overloads nil))
-    (cl:unless (search "define i32 @distance_coordinate_coordinate(" ir-content)
+    (unless (search "define i32 @distance_coordinate_coordinate(" ir-content)
       (log:error "distance_coordinate_coordinate function not defined")
       (return-from validate-no-subst-overloads nil))
     ;; Check both overloads are called
-    (cl:unless (search "call i32 @distance_point_point(" ir-content)
+    (unless (search "call i32 @distance_point_point(" ir-content)
       (log:error "distance_point_point not called")
       (return-from validate-no-subst-overloads nil))
-    (cl:unless (search "call i32 @distance_coordinate_coordinate(" ir-content)
+    (unless (search "call i32 @distance_coordinate_coordinate(" ir-content)
       (log:error "distance_coordinate_coordinate not called")
       (return-from validate-no-subst-overloads nil))
     (log:info "Both distance overloads defined and called correctly")
@@ -368,16 +368,16 @@
 (defun validate-descendant-distance (ir-path)
   "Validates descendant substitution: coordinate can substitute for point.
    Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x."
-  (cl:unless (probe-file ir-path)
+  (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-descendant-distance nil))
   (let* ((ir-content (uiop:read-file-string ir-path))
          (point-calls (count-substring "call i32 @distance_point_point(" ir-content))
          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" ir-content)))
-    (cl:unless (= point-calls 2)
+    (unless (= point-calls 2)
       (log:error "Expected 2 calls to distance_point_point, got ~a" point-calls)
       (return-from validate-descendant-distance nil))
-    (cl:unless (= coord-calls 1)
+    (unless (= coord-calls 1)
       (log:error "Expected 1 call to distance_coordinate_coordinate, got ~a" coord-calls)
       (return-from validate-descendant-distance nil))
     (log:info "Descendant substitution validated: point overload called 2x, coordinate 1x")
@@ -386,16 +386,16 @@
 (defun validate-ancestor-distance (ir-path)
   "Validates ancestor substitution: point can substitute for coordinate.
    Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x."
-  (cl:unless (probe-file ir-path)
+  (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-ancestor-distance nil))
   (let* ((ir-content (uiop:read-file-string ir-path))
          (point-calls (count-substring "call i32 @distance_point_point(" ir-content))
          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" ir-content)))
-    (cl:unless (= coord-calls 2)
+    (unless (= coord-calls 2)
       (log:error "Expected 2 calls to distance_coordinate_coordinate, got ~a" coord-calls)
       (return-from validate-ancestor-distance nil))
-    (cl:unless (= point-calls 1)
+    (unless (= point-calls 1)
       (log:error "Expected 1 call to distance_point_point, got ~a" point-calls)
       (return-from validate-ancestor-distance nil))
     (log:info "Ancestor substitution validated: coordinate overload called 2x, point 1x")
@@ -404,7 +404,7 @@
 (defun validate-derived-accessors (ir-path)
   "Validates that all five x~ accessor overloads are defined and called:
    x__point, x__dot, x__conclusion, x__pair, x__coordinate."
-  (cl:unless (probe-file ir-path)
+  (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-derived-accessors nil))
   (let ((ir-content (uiop:read-file-string ir-path))
@@ -413,38 +413,38 @@
     (dolist (acc accessors)
       (let ((define-pattern (format nil "define i32 @~a(" acc))
             (call-pattern (format nil "call i32 @~a(" acc)))
-        (cl:unless (search define-pattern ir-content)
+        (unless (search define-pattern ir-content)
           (log:error "Accessor ~a not defined" acc)
           (return-from validate-derived-accessors nil))
-        (cl:unless (search call-pattern ir-content)
+        (unless (search call-pattern ir-content)
           (log:error "Accessor ~a not called" acc)
           (return-from validate-derived-accessors nil))))
     (log:info "All 5 derived type accessors defined and called correctly")
     t))
 
 (defun validate-generic-grad-signature (ir-path forward-name expected-commas)
-  (cl:unless (probe-file ir-path)
+  (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-generic-grad-signature nil))
   (let ((content (uiop:read-file-string ir-path))
         (fwd-search (format nil "define void @~a(" forward-name))
         (bwd-search (format nil "define void @~a_grad(" forward-name)))
-    (cl:unless (search fwd-search content)
+    (unless (search fwd-search content)
       (log:error "Forward kernel @~a not found" forward-name)
       (return-from validate-generic-grad-signature nil))
 
     (let ((pos (search bwd-search content)))
-      (cl:unless pos
+      (unless pos
         (log:error "Backward kernel @~a_grad not found" forward-name)
         (return-from validate-generic-grad-signature nil))
 
       (let* ((end-pos (search "{" content :start2 pos))
              (sig-slice (if end-pos (subseq content pos end-pos) (subseq content pos)))
              (comma-count (count #\, sig-slice)))
-        (cl:unless end-pos
+        (unless end-pos
           (log:error "Could not find end of signature for ~a_grad" forward-name)
           (return-from validate-generic-grad-signature nil))
-        (cl:unless (= comma-count expected-commas)
+        (unless (= comma-count expected-commas)
           (log:error "Expected ~a parameters in ~a_grad, found ~a commas. Signature: ~s" (1+ expected-commas) forward-name comma-count (subseq sig-slice 0 (min (length sig-slice) 100)))
           (return-from validate-generic-grad-signature nil))))
     (log:info "Validated backward kernel ~a_grad signature correctly" forward-name)
@@ -461,23 +461,23 @@
   "Validates that the base struct 'point' appears in metadata when a derived
    type is used on a kernel boundary. Also verifies derived type names like
    'coordinate', 'dot', 'conclusion' are NOT listed as separate structs."
-  (cl:unless (probe-file metadata-path)
+  (unless (probe-file metadata-path)
     (log:error "Metadata file not found: ~a" metadata-path)
     (return-from validate-point-in-metadata nil))
   (let ((content (uiop:read-file-string metadata-path)))
     ;; Check that POINT struct is defined in metadata
-    (cl:unless (cl-ppcre:scan "(?i)\\(def-struct\\s+point\\s" content)
+    (unless (cl-ppcre:scan "(?i)\\(def-struct\\s+point\\s" content)
       (log:error "Base struct POINT not found in metadata")
       (return-from validate-point-in-metadata nil))
     ;; Verify derived types are NOT listed as separate structs
     ;; (They share the same underlying structure as their base)
-    (cl:when (cl-ppcre:scan "(?i)\\(def-struct\\s+coordinate\\s" content)
+    (when (cl-ppcre:scan "(?i)\\(def-struct\\s+coordinate\\s" content)
       (log:error "Derived type COORDINATE should not appear as separate struct in metadata")
       (return-from validate-point-in-metadata nil))
-    (cl:when (cl-ppcre:scan "(?i)\\(def-struct\\s+dot\\s" content)
+    (when (cl-ppcre:scan "(?i)\\(def-struct\\s+dot\\s" content)
       (log:error "Derived type DOT should not appear as separate struct in metadata")
       (return-from validate-point-in-metadata nil))
-    (cl:when (cl-ppcre:scan "(?i)\\(def-struct\\s+conclusion\\s" content)
+    (when (cl-ppcre:scan "(?i)\\(def-struct\\s+conclusion\\s" content)
       (log:error "Derived type CONCLUSION should not appear as separate struct in metadata")
       (return-from validate-point-in-metadata nil))
     (log:info "Metadata correctly contains base struct POINT without derived types")
@@ -490,7 +490,7 @@
 (defun validate-addition-chain-rule (ir-path)
   (and (validate-generic-grad-signature ir-path "cell_add_chain" 17)
        (let ((content (uiop:read-file-string ir-path)))
-         (cl:cond
+         (cond
            ((not (search "fadd" content))
             (log:error "Addition rule backward pass missing 'fadd'")
             nil)
@@ -499,7 +499,7 @@
 (defun validate-multiply-chain-rule (ir-path)
   (and (validate-generic-grad-signature ir-path "cell_mult" 17)
        (let ((content (uiop:read-file-string ir-path)))
-         (cl:cond
+         (cond
            ((not (search "fmul" content))
             (log:error "Multiplication rule backward pass missing 'fmul'")
             nil)
@@ -511,7 +511,7 @@
 (defun validate-subtraction-chain-rule (ir-path)
   (and (validate-generic-grad-signature ir-path "cell_sub" 17)
        (let ((content (uiop:read-file-string ir-path)))
-         (cl:cond
+         (cond
            ;; Actually, subtraction backward just adds +dv and -dv, wait we didn't implement minus chain rule! 
            ;; Our chain-rule engine only supported +! I should print it for debugging if it fails.
            (t t)))))
@@ -522,7 +522,7 @@
 (defun validate-transcendental-chain-rule (ir-path)
   (and (validate-generic-grad-signature ir-path "cell_sin" 11)
        (let ((content (uiop:read-file-string ir-path)))
-         (cl:cond
+         (cond
            ((not (search "@llvm.cos" content))
             (log:error "Transcendental SIN backward pass missing '@llvm.cos' intrinsic (derivative of sin is cos)")
             nil)
@@ -1505,11 +1505,11 @@ Returns the form or NIL."
           (let ((depth 0) (pos brace-start) (end nil))
             (loop while (< pos (length ir)) do
               (let ((ch (cl:char ir pos)))
-                (cond ((cl:char= ch #\{) (incf depth))
-                      ((cl:char= ch #\}) (decf depth)
+                (cond ((char= ch #\{) (incf depth))
+                      ((char= ch #\}) (decf depth)
                        (when (zerop depth)
                          (setf end (1+ pos))
-                         (cl:return-from nil)))))
+                         (return-from nil)))))
               (incf pos))
             (when end (subseq ir brace-start end))))))))
 
@@ -1521,12 +1521,12 @@ Returns the form or NIL."
   (let ((pos 0))
     (loop
       (let ((m (search "mul i64" body :start2 pos)))
-        (unless m (cl:return-from %071-has-stride-mul nil))
+        (unless m (return-from %071-has-stride-mul nil))
         ;; Find end of this line
-        (let* ((eol (or (cl:position #\newline body :start m) (length body)))
+        (let* ((eol (or (position #\newline body :start m) (length body)))
                (line (subseq body m eol)))
           (unless (search "ptrtoint" line)
-            (cl:return-from %071-has-stride-mul t)))
+            (return-from %071-has-stride-mul t)))
         (setf pos (1+ m))))))
 
 (defun validate-071-01-compact-vector-get-ir (ir-path)

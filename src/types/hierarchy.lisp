@@ -52,10 +52,10 @@
   (unless type-names
     (return-from create-numeric-hierarchy nil))
 
-  (cl:let ((nodes nil))
+  (let ((nodes nil))
     ;; Create all nodes first
     (dolist (type-name type-names)
-      (cl:let ((node (make-type-node :type-name type-name
+      (let ((node (make-type-node :type-name type-name
                                      :original-type nil ; Real type, not derived
                                      :base-type type-name ; Base is itself
                                      :subst-mode nil
@@ -96,7 +96,7 @@
    - If types are equal, return T
    - Walk UP from source through ancestors to find target
    - Handles cycles (from :equal relationships) via visited tracking"
-  (cl:cond
+  (cond
     ((eq source-type target-type) t)
     (t (has-ancestor-path? source-type target-type (make-hash-table)))))
 
@@ -115,25 +115,25 @@
    Returns T if path exists, NIL otherwise.
    VISITED hash table prevents infinite loops (from :equal cycles)."
   ;; Cycle detection
-  (cl:when (gethash from-type visited)
+  (when (gethash from-type visited)
     (return-from has-ancestor-path? nil))
 
   (setf (gethash from-type visited) t)
 
   ;; Package-agnostic lookup
-  (cl:let* ((node-direct (gethash from-type *type-derivation-graph*))
-            (node-alt (cl:when (and (not node-direct) (symbolp from-type))
-                        (gethash (cl:intern (cl:symbol-name from-type)
-                                            (cl:find-package :crisp-language))
+  (let* ((node-direct (gethash from-type *type-derivation-graph*))
+            (node-alt (when (and (not node-direct) (symbolp from-type))
+                        (gethash (intern (symbol-name from-type)
+                                            (find-package :crisp-language))
                                  *type-derivation-graph*)))
             (node (or node-direct node-alt)))
-    (cl:unless node
+    (unless node
       (log:debug "Type ~a not found in derivation graph" from-type)
       (return-from has-ancestor-path? nil))
 
     ;; Check each ancestor
     (dolist (ancestor (type-node-ancestors node))
-      (cl:when (or (eq ancestor to-type)
+      (when (or (eq ancestor to-type)
                    (has-ancestor-path? ancestor to-type visited))
         (return-from has-ancestor-path? t))))
 
@@ -143,13 +143,13 @@
   "Returns the base 'real' type for a given type (derived or real).
    If the type is not in the derivation graph, returns the type itself."
   ;; Handle package mismatches - try both current package and CRISP-LANGUAGE
-  (cl:let* ((node-direct (gethash type-name *type-derivation-graph*))
-            (node-alt (cl:when (and (not node-direct) (symbolp type-name))
-                        (gethash (cl:intern (cl:symbol-name type-name)
-                                            (cl:find-package :crisp-language))
+  (let* ((node-direct (gethash type-name *type-derivation-graph*))
+            (node-alt (when (and (not node-direct) (symbolp type-name))
+                        (gethash (intern (symbol-name type-name)
+                                            (find-package :crisp-language))
                                  *type-derivation-graph*)))
             (node (or node-direct node-alt)))
-    (cl:if node
+    (if node
            (type-node-base-type node)
            ;; Not a derived type, return as-is
            type-name)))
@@ -158,28 +158,28 @@
   "Returns a list of all types that TYPE-NAME can substitute for (including itself).
    Uses BFS to walk up the ancestor graph, plus handles :equal relationships.
    Returns types in order from closest to farthest (BFS order)."
-  (cl:let ((reachable '())
+  (let ((reachable '())
            (visited (make-hash-table))
            (queue (list type-name)))
-    (cl:loop while queue
-    do (cl:let ((current (pop queue)))
-         (cl:unless (gethash current visited)
+    (loop while queue
+    do (let ((current (pop queue)))
+         (unless (gethash current visited)
            (setf (gethash current visited) t)
            (push current reachable)
            ;; Get node with package-agnostic lookup
-           (cl:let* ((node-direct (gethash current *type-derivation-graph*))
-                     (node-alt (cl:when (and (not node-direct) (symbolp current))
+           (let* ((node-direct (gethash current *type-derivation-graph*))
+                     (node-alt (when (and (not node-direct) (symbolp current))
                                  (gethash (intern (symbol-name current)
                                                   (find-package :crisp-language))
                                           *type-derivation-graph*)))
                      (node (or node-direct node-alt)))
-             (cl:when node
+             (when node
                ;; Add ancestors to queue
                (dolist (ancestor (type-node-ancestors node))
                  (push ancestor queue))
                ;; For :equal relationships, also add descendants
                ;; (since equal types can substitute for each other)
-               (cl:when (eq (type-node-subst-mode node) :equal)
+               (when (eq (type-node-subst-mode node) :equal)
                  (dolist (desc (type-node-descendants node))
                    (push desc queue))))))))
     (nreverse reachable)))
@@ -195,16 +195,16 @@
    4. Return the first common type in type-a's reachable list (closest to type-a)
 
    Returns NIL if no common type exists."
-  (cl:let* ((reachable-a (get-reachable-types type-a))
+  (let* ((reachable-a (get-reachable-types type-a))
             (reachable-b (get-reachable-types type-b))
             ;; Find common types
             (common (intersection reachable-a reachable-b :test #'eq)))
-    (cl:cond
+    (cond
       ((null common) nil) ; No common type - incompatible
       ;; Return the first common type in reachable-a's order
       ;; (this is the closest to type-a in the hierarchy)
       (t (dolist (type reachable-a nil)
-           (cl:when (member type common :test #'eq)
+           (when (member type common :test #'eq)
              (cl:return type)))))))
 
 
@@ -220,15 +220,15 @@
    - One brand instance, one non-brand: brand instance dominates.
    - Neither is a brand instance: standard substitutability /
      find-common-promoted-type."
-  (cl:cond
+  (cond
     ((eq type-a type-b) type-a)
 
     (t
-     (cl:let ((brand-a (and (boundp '*brand-instance-types*)
+     (let ((brand-a (and (boundp '*brand-instance-types*)
                             (gethash type-a *brand-instance-types*)))
               (brand-b (and (boundp '*brand-instance-types*)
                             (gethash type-b *brand-instance-types*))))
-       (cl:cond
+       (cond
          ;; Both brand instances of the SAME brand -> cannot mix
          ((and brand-a brand-b (eq brand-a brand-b))
           (log:debug "resolve-dominance: blocking cross-instance mix of ~a and ~a (both brand ~a)"
@@ -267,9 +267,9 @@
 (defun compute-base-type (original-type-name)
   "Walks the original-type chain to find the root 'real' type.
    Returns the base type name, or NIL if not found."
-  (cl:let ((node (gethash original-type-name *type-derivation-graph*)))
-    (cl:if node
-           (cl:if (type-node-original-type node)
+  (let ((node (gethash original-type-name *type-derivation-graph*)))
+    (if node
+           (if (type-node-original-type node)
                   ;; Has an original, keep walking
                   (compute-base-type (type-node-original-type node))
                   ;; No original-type means this IS the base
@@ -298,19 +298,19 @@
              new-type-name original-type-name subst-mode)
 
   ;; Resolve type aliases first - if original-type is an alias, resolve it
-  (cl:let ((resolved-original (resolve-type-alias original-type-name)))
-    (cl:when (not (eq resolved-original original-type-name))
+  (let ((resolved-original (resolve-type-alias original-type-name)))
+    (when (not (eq resolved-original original-type-name))
       (log:debug "Resolved alias ~a to ~a" original-type-name resolved-original)
       (setf original-type-name resolved-original)))
 
   ;; Check for existing definition in derivation graph (Idempotency Check)
-  (cl:let ((existing-node (gethash new-type-name *type-derivation-graph*)))
-    (cl:when existing-node
+  (let ((existing-node (gethash new-type-name *type-derivation-graph*)))
+    (when existing-node
       ;; If it exists, check if it's identical
-      (cl:if (and (eq (type-node-type-name existing-node) new-type-name)
+      (if (and (eq (type-node-type-name existing-node) new-type-name)
                   (eq (type-node-original-type existing-node) original-type-name)
                   (eq (type-node-subst-mode existing-node) subst-mode))
-             (cl:progn
+             (progn
                (log:info "Type ~a already registered with identical definition. Skipping re-registration." new-type-name)
                (return-from register-derived-type new-type-name))
              ;; Different definition -> Error!
@@ -318,7 +318,7 @@
                new-type-name (type-node-original-type existing-node) original-type-name))))
 
   ;; Validate new type name does not collide with existing NON-DERIVED types
-  (cl:when (or (gethash new-type-name *crisp-types*)
+  (when (or (gethash new-type-name *crisp-types*)
                (gethash new-type-name *crisp-structs*)
                (gethash new-type-name *crisp-enums*)
                (and (boundp '*crisp-type-aliases*)
@@ -326,7 +326,7 @@
     (error "Cannot define derived type ~a: name collides with existing type/struct/enum." new-type-name))
 
   ;; Validate original type exists (in derivation graph, types, structs, or aliases)
-  (cl:unless (or (gethash original-type-name *type-derivation-graph*)
+  (unless (or (gethash original-type-name *type-derivation-graph*)
                  (gethash original-type-name *crisp-types*)
                  (gethash original-type-name *crisp-structs*)
                  (and (boundp '*crisp-type-aliases*)
@@ -335,17 +335,17 @@
       new-type-name original-type-name))
 
   ;; Validate subst-mode
-  (cl:unless (member subst-mode '(:no :equal :descendant :ancestor))
+  (unless (member subst-mode '(:no :equal :descendant :ancestor))
     (error "Invalid subst-mode ~a for derived type ~a. Must be :no, :equal, :descendant, or :ancestor"
       subst-mode new-type-name))
 
   ;; Compute base type
-  (cl:let ((base-type (compute-base-type original-type-name)))
+  (let ((base-type (compute-base-type original-type-name)))
     (log:debug "Computed base type for ~a: ~a" new-type-name base-type)
 
     ;; Ensure original type has a node in the graph (for establishing relationships)
     ;; If it's not already there, create a basic "real type" node for it
-    (cl:unless (gethash original-type-name *type-derivation-graph*)
+    (unless (gethash original-type-name *type-derivation-graph*)
       (setf (gethash original-type-name *type-derivation-graph*)
         (make-type-node :type-name original-type-name
                         :original-type nil ; It's a real type
@@ -356,7 +356,7 @@
       (log:debug "Created implicit node for original type ~a" original-type-name))
 
     ;; Create new type node
-    (cl:let ((new-node (make-type-node :type-name new-type-name
+    (let ((new-node (make-type-node :type-name new-type-name
                                        :original-type original-type-name
                                        :base-type base-type
                                        :subst-mode subst-mode
@@ -364,12 +364,12 @@
                                        :descendants nil)))
 
       ;; Update relationships based on subst-mode
-      (cl:cond
+      (cond
         ;; Case 1: :descendant - new type is more specific than original
         ((eq subst-mode :descendant)
          (setf (type-node-ancestors new-node) (list original-type-name))
          ;; Update original's descendants
-         (cl:let ((orig-node (gethash original-type-name *type-derivation-graph*)))
+         (let ((orig-node (gethash original-type-name *type-derivation-graph*)))
            (push new-type-name (type-node-descendants orig-node)))
          (log:debug "~a is descendant of ~a (can substitute for original)"
                     new-type-name original-type-name))
@@ -379,7 +379,7 @@
          ;; New type has no ancestors from this relationship (it's more general)
          (setf (type-node-ancestors new-node) nil)
          ;; Update original's ancestors
-         (cl:let ((orig-node (gethash original-type-name *type-derivation-graph*)))
+         (let ((orig-node (gethash original-type-name *type-derivation-graph*)))
            (push new-type-name (type-node-ancestors orig-node)))
          (log:debug "~a is ancestor of ~a (original can substitute for new)"
                     new-type-name original-type-name))
@@ -391,7 +391,7 @@
          (setf (type-node-ancestors new-node) (list original-type-name))
          (setf (type-node-descendants new-node) (list original-type-name))
          ;; Update original's descendants AND ANCESTORS
-         (cl:let ((orig-node (gethash original-type-name *type-derivation-graph*)))
+         (let ((orig-node (gethash original-type-name *type-derivation-graph*)))
            (push new-type-name (type-node-descendants orig-node))
            (push new-type-name (type-node-ancestors orig-node)))
          (log:debug "~a is equal to ~a (bidirectional substitution)"
@@ -411,9 +411,9 @@
 
       ;; Also register in *crisp-types* so type checking and casting work correctly
       ;; Derived types have identical memory layout to their base type
-      (cl:let ((base-crisp-type (or (gethash base-type *crisp-types*)
+      (let ((base-crisp-type (or (gethash base-type *crisp-types*)
                                     (gethash base-type *crisp-structs*))))
-        (cl:cond
+        (cond
           ;; Base is a built-in type (int, float, etc.)
           ((crisp-type-p base-crisp-type)
            (setf (gethash new-type-name *crisp-types*)
@@ -467,29 +467,29 @@
             ancestor-type-name descendant-type-name)
 
   ;; --- Validation: Both types must exist ---
-  (cl:let* ((ancestor-base (get-type-base ancestor-type-name))
+  (let* ((ancestor-base (get-type-base ancestor-type-name))
             (descendant-base (get-type-base descendant-type-name))
             (ancestor-struct (or (gethash ancestor-base *crisp-structs*)
-                                 (cl:when (symbolp ancestor-base)
-                                   (gethash (cl:intern (cl:symbol-name ancestor-base)
-                                                       (cl:find-package :crisp-language))
+                                 (when (symbolp ancestor-base)
+                                   (gethash (intern (symbol-name ancestor-base)
+                                                       (find-package :crisp-language))
                                             *crisp-structs*))))
             (descendant-struct (or (gethash descendant-base *crisp-structs*)
-                                   (cl:when (symbolp descendant-base)
-                                     (gethash (cl:intern (cl:symbol-name descendant-base)
-                                                         (cl:find-package :crisp-language))
+                                   (when (symbolp descendant-base)
+                                     (gethash (intern (symbol-name descendant-base)
+                                                         (find-package :crisp-language))
                                               *crisp-structs*)))))
 
     ;; --- Validation: No self-reference ---
-    (cl:when (eq ancestor-type-name descendant-type-name)
+    (when (eq ancestor-type-name descendant-type-name)
       (error "set-derived: a type cannot derive from itself. ~a is not amused by your attempt at recursive self-improvement."
              ancestor-type-name))
 
     ;; --- Validation: Both must be structs ---
-    (cl:unless ancestor-struct
-      (cl:let ((in-types (gethash ancestor-type-name *crisp-types*))
+    (unless ancestor-struct
+      (let ((in-types (gethash ancestor-type-name *crisp-types*))
                (in-enums (gethash ancestor-type-name *crisp-enums*)))
-        (cl:cond
+        (cond
           (in-enums
            (error "set-derived: ancestor type ~a is an enumeration. Only structs (or types derived from structs) are permitted."
                   ancestor-type-name))
@@ -499,10 +499,10 @@
           (t
            (error "set-derived: ancestor type ~a does not exist." ancestor-type-name)))))
 
-    (cl:unless descendant-struct
-      (cl:let ((in-types (gethash descendant-type-name *crisp-types*))
+    (unless descendant-struct
+      (let ((in-types (gethash descendant-type-name *crisp-types*))
                (in-enums (gethash descendant-type-name *crisp-enums*)))
-        (cl:cond
+        (cond
           (in-enums
            (error "set-derived: descendant type ~a is an enumeration. Only structs (or types derived from structs) are permitted."
                   descendant-type-name))
@@ -514,21 +514,21 @@
 
     ;; --- Validation: Must be structs, not records ---
     ;; Category is stored in *crisp-types*, not in crisp-struct-definition
-    (cl:let ((ancestor-crisp-type (or (gethash ancestor-type-name *crisp-types*)
+    (let ((ancestor-crisp-type (or (gethash ancestor-type-name *crisp-types*)
                                       (gethash ancestor-base *crisp-types*)))
              (descendant-crisp-type (or (gethash descendant-type-name *crisp-types*)
                                         (gethash descendant-base *crisp-types*))))
-      (cl:when (and ancestor-crisp-type (eq (crisp-type-category ancestor-crisp-type) :record))
+      (when (and ancestor-crisp-type (eq (crisp-type-category ancestor-crisp-type) :record))
         (error "set-derived: ancestor type ~a is a record. set-derived only works with structs."
                ancestor-type-name))
-      (cl:when (and descendant-crisp-type (eq (crisp-type-category descendant-crisp-type) :record))
+      (when (and descendant-crisp-type (eq (crisp-type-category descendant-crisp-type) :record))
         (error "set-derived: descendant type ~a is a record. set-derived only works with structs."
                descendant-type-name)))
 
     ;; --- Validation: Ancestor size <= Descendant size ---
-    (cl:let ((ancestor-size (crisp-struct-definition-total-size ancestor-struct))
+    (let ((ancestor-size (crisp-struct-definition-total-size ancestor-struct))
              (descendant-size (crisp-struct-definition-total-size descendant-struct)))
-      (cl:when (> ancestor-size descendant-size)
+      (when (> ancestor-size descendant-size)
         (error "set-derived: ancestor ~a (size ~a bytes) is larger than descendant ~a (size ~a bytes). The ancestor must be smaller or equal."
                ancestor-type-name ancestor-size descendant-type-name descendant-size)))
 
@@ -540,12 +540,12 @@
     ;; Check if adding this edge would create a cycle:
     ;; descendant's ancestors will include ancestor. If ancestor can already
     ;; reach descendant by walking UP through ancestors, we have a cycle.
-    (cl:when (is-substitutable-for? ancestor-type-name descendant-type-name)
+    (when (is-substitutable-for? ancestor-type-name descendant-type-name)
       (error "set-derived: adding ~a -> ~a would create a cycle in the type hierarchy. The compiler disapproves of your circular reasoning."
              ancestor-type-name descendant-type-name))
 
     ;; --- Registration: Ensure both have type-nodes ---
-    (cl:unless (gethash ancestor-type-name *type-derivation-graph*)
+    (unless (gethash ancestor-type-name *type-derivation-graph*)
       (setf (gethash ancestor-type-name *type-derivation-graph*)
         (make-type-node :type-name ancestor-type-name
                         :original-type nil
@@ -555,7 +555,7 @@
                         :descendants nil))
       (log:debug "Created implicit type-node for ~a" ancestor-type-name))
 
-    (cl:unless (gethash descendant-type-name *type-derivation-graph*)
+    (unless (gethash descendant-type-name *type-derivation-graph*)
       (setf (gethash descendant-type-name *type-derivation-graph*)
         (make-type-node :type-name descendant-type-name
                         :original-type nil
@@ -566,15 +566,15 @@
       (log:debug "Created implicit type-node for ~a" descendant-type-name))
 
     ;; --- Registration: Link ancestor <-> descendant ---
-    (cl:let ((ancestor-node (gethash ancestor-type-name *type-derivation-graph*))
+    (let ((ancestor-node (gethash ancestor-type-name *type-derivation-graph*))
              (descendant-node (gethash descendant-type-name *type-derivation-graph*)))
 
       ;; Add ancestor to descendant's ancestors (if not already there)
-      (cl:unless (member ancestor-type-name (type-node-ancestors descendant-node))
+      (unless (member ancestor-type-name (type-node-ancestors descendant-node))
         (push ancestor-type-name (type-node-ancestors descendant-node)))
 
       ;; Add descendant to ancestor's descendants (if not already there)
-      (cl:unless (member descendant-type-name (type-node-descendants ancestor-node))
+      (unless (member descendant-type-name (type-node-descendants ancestor-node))
         (push descendant-type-name (type-node-descendants ancestor-node))))
 
     (log:info "set-derived: successfully linked ~a (ancestor) -> ~a (descendant)"
@@ -586,29 +586,29 @@
   "Recursively flattens a struct definition to its scalar data members.
    Returns a list of (type byte-offset) pairs, skipping padding fields.
    Nested structs are expanded recursively."
-  (cl:let ((members (crisp-struct-definition-padded-members struct-def))
+  (let ((members (crisp-struct-definition-padded-members struct-def))
            (result '())
            (current-offset 0))
     (dolist (member members)
-      (cl:let* ((member-name (first member))
+      (let* ((member-name (first member))
                 (member-type (second member))
-                (member-name-str (cl:symbol-name member-name))
+                (member-name-str (symbol-name member-name))
                 (is-padding (and (> (length member-name-str) 4)
                                  (string= (subseq member-name-str 0 4) "_PAD"))))
-        (cl:cond
+        (cond
           ;; Skip padding fields but count their size
           (is-padding
            (incf current-offset (get-native-size member-type)))
 
           ;; Nested struct -> recurse
-          ((cl:let* ((base (get-type-base member-type))
+          ((let* ((base (get-type-base member-type))
                      (nested (or (gethash base *crisp-structs*)
-                                 (cl:when (symbolp base)
-                                   (gethash (cl:intern (cl:symbol-name base)
-                                                       (cl:find-package :crisp-language))
+                                 (when (symbolp base)
+                                   (gethash (intern (symbol-name base)
+                                                       (find-package :crisp-language))
                                             *crisp-structs*)))))
-             (cl:when nested
-               (cl:let ((nested-flat (flatten-struct-data-members nested)))
+             (when nested
+               (let ((nested-flat (flatten-struct-data-members nested)))
                  (dolist (entry nested-flat)
                    (push (list (first entry) (+ current-offset (second entry))) result))
                  (incf current-offset (crisp-struct-definition-total-size nested))
@@ -626,14 +626,14 @@
   "Validates shape compatibility for set-derived.
    Flattens both structs and checks that each ancestor data member has a
    matching data member in the descendant with the same type and byte offset."
-  (cl:let ((ancestor-flat (flatten-struct-data-members ancestor-struct))
+  (let ((ancestor-flat (flatten-struct-data-members ancestor-struct))
            (descendant-flat (flatten-struct-data-members descendant-struct)))
 
     (log:debug "Shape check: ~a flat=~s, ~a flat=~s"
                ancestor-name ancestor-flat descendant-name descendant-flat)
 
     ;; Ancestor must not have more data members than descendant
-    (cl:when (> (length ancestor-flat) (length descendant-flat))
+    (when (> (length ancestor-flat) (length descendant-flat))
       (error "set-derived: ancestor ~a has ~a data members but descendant ~a has only ~a. The descendant must have at least as many."
              ancestor-name (length ancestor-flat) descendant-name (length descendant-flat)))
 
@@ -641,18 +641,18 @@
     (loop for ancestor-entry in ancestor-flat
           for descendant-entry in descendant-flat
           for idx from 0
-          do (cl:let ((a-type (first ancestor-entry))
+          do (let ((a-type (first ancestor-entry))
                       (a-offset (second ancestor-entry))
                       (d-type (first descendant-entry))
                       (d-offset (second descendant-entry)))
                ;; Types must match exactly (resolving aliases)
-               (cl:let ((a-resolved (resolve-type-alias a-type))
+               (let ((a-resolved (resolve-type-alias a-type))
                         (d-resolved (resolve-type-alias d-type)))
-                 (cl:unless (eq a-resolved d-resolved)
+                 (unless (eq a-resolved d-resolved)
                    (error "set-derived: shape mismatch at member index ~a. Ancestor ~a has type ~a but descendant ~a has type ~a. Types must match exactly."
                           idx ancestor-name a-resolved descendant-name d-resolved)))
                ;; Byte offsets must match
-               (cl:unless (= a-offset d-offset)
+               (unless (= a-offset d-offset)
                  (error "set-derived: layout mismatch at member index ~a. Ancestor ~a has offset ~a but descendant ~a has offset ~a."
                         idx ancestor-name a-offset descendant-name d-offset))))))
 

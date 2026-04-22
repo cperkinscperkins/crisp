@@ -462,25 +462,25 @@
    For (array T N): returns compile-time constant N as ulong literal.
    For tensor types: dispatches to the runtime length~ accessor function.
    Signals crisp-compiler-error if argument is neither array nor tensor."
-  (unless (= (cl:length expr) 2)
+  (unless (= (length expr) 2)
     (error 'crisp-compiler-error
            :message "length~ expects exactly 1 argument: (length~ arr)"
            :source-location location))
-  (let* ((arg-node (analyze-expression (cl:second expr) env context location))
+  (let* ((arg-node (analyze-expression (second expr) env context location))
          (raw-type (semantic-node-type arg-node))
          (arg-type (resolve-type-alias
-                    (if (and (listp raw-type) (= (cl:length raw-type) 1) (listp (cl:first raw-type)))
-                        (cl:first raw-type)
+                    (if (and (listp raw-type) (= (length raw-type) 1) (listp (first raw-type)))
+                        (first raw-type)
                         raw-type)))
          ;; Check if this is a tensor type (mangled symbol or canonical list starting with TENSOR)
          (is-tensor (let ((resolved (resolve-type-alias arg-type)))
                       (or (and (symbolp resolved)
                                (let* ((parts (unmangle-template-struct-name resolved))
-                                      (base (cl:first parts)))
+                                      (base (first parts)))
                                  (and base (string-equal (symbol-name base) "TENSOR"))))
                           (and (listp resolved)
-                               (symbolp (cl:first resolved))
-                               (string-equal (symbol-name (cl:first resolved)) "TENSOR"))))))
+                               (symbolp (first resolved))
+                               (string-equal (symbol-name (first resolved)) "TENSOR"))))))
     (cond
      ;; Tensor: delegate to the runtime length~ accessor in the function table
      (is-tensor
@@ -488,7 +488,7 @@
       (analyze-function-call 'length~ expr env context location))
      ;; Array: compile-time constant
      ((%array-type-p arg-type)
-      (let* ((n-raw (cl:third arg-type))
+      (let* ((n-raw (third arg-type))
              (n (etypecase n-raw
                   (integer n-raw)
                   (symbol  (parse-integer (symbol-name n-raw))))))

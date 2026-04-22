@@ -162,8 +162,8 @@
                    (mapcan (lambda (m) (get-expanded-types (second m) module)) runtime-members))))
               ;; Case 1.5: (array T N) field — explode to N individual T values (SROA)
               ((%array-type-p lookup-spec)
-               (let* ((elem-type (cl:second lookup-spec))
-                      (count-raw (cl:third lookup-spec))
+               (let* ((elem-type (second lookup-spec))
+                      (count-raw (third lookup-spec))
                       (count (etypecase count-raw
                                (integer count-raw)
                                (symbol (parse-integer (symbol-name count-raw))))))
@@ -213,7 +213,7 @@
          values))
       ;; (array T N): extract each element individually (SROA for record fields)
       ((%array-type-p lookup-spec)
-       (let* ((count-raw (cl:third lookup-spec))
+       (let* ((count-raw (third lookup-spec))
               (count (etypecase count-raw
                        (integer count-raw)
                        (symbol (parse-integer (symbol-name count-raw))))))
@@ -256,8 +256,8 @@
          agg))
       ;; (array T N): assemble N scalar components back into an array value (SROA)
       ((%array-type-p lookup-spec)
-       (let* ((elem-type (cl:second lookup-spec))
-              (count-raw (cl:third lookup-spec))
+       (let* ((elem-type (second lookup-spec))
+              (count-raw (third lookup-spec))
               (count (etypecase count-raw
                        (integer count-raw)
                        (symbol (parse-integer (symbol-name count-raw)))))

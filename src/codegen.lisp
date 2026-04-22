@@ -279,38 +279,38 @@
 
    Returns a GEP pointer to the array field, or NIL if the pattern is not matched."
   (when (and (semantic-call-p array-node)
-             (= (cl:length (semantic-call-args array-node)) 1))
+             (= (length (semantic-call-args array-node)) 1))
     (let* ((call-type (semantic-call-type array-node))
            (raw-type  (if (and (listp call-type)
-                               (= (cl:length call-type) 1)
-                               (listp (cl:first call-type)))
-                          (cl:first call-type)
+                               (= (length call-type) 1)
+                               (listp (first call-type)))
+                          (first call-type)
                           call-type)))
       (when (%array-type-p (resolve-type-alias raw-type))
         (let* ((call-name    (semantic-call-name array-node))
                (name-str     (symbol-name call-name)))
-          (when (and (> (cl:length name-str) 1)
-                     (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
-            (let* ((field-name-str  (subseq name-str 0 (1- (cl:length name-str))))
-                   (arg-node        (cl:first (semantic-call-args array-node)))
+          (when (and (> (length name-str) 1)
+                     (char= (cl:char name-str (1- (length name-str))) #\~))
+            (let* ((field-name-str  (subseq name-str 0 (1- (length name-str))))
+                   (arg-node        (first (semantic-call-args array-node)))
                    (raw-type-sym    (semantic-node-type arg-node))
                    ;; NEW v2: resolve alias then expand storage handle spec,
                    ;; then mangle if it's a tensor/vector/matrix family.
                    (struct-type-sym
-                    (cl:let* (;; 1. Resolve type alias (e.g. SC-INT-MAT -> (matrix int ...))
+                    (let* (;; 1. Resolve type alias (e.g. SC-INT-MAT -> (matrix int ...))
                               (resolved-alias (resolve-type-alias raw-type-sym))
                               ;; 2. Expand storage handle (e.g. (matrix ...) -> (tensor ... 2 ...))
                               (expanded (if (consp resolved-alias)
                                             (expand-storage-handle-type-specifier resolved-alias)
                                             resolved-alias))
                               ;; 3. Check for tensor-family canonical head
-                              (head (when (consp expanded) (cl:first expanded))))
+                              (head (when (consp expanded) (first expanded))))
                       (if (and head
                                (symbolp head)
-                               (cl:member (symbol-name head)
+                               (member (symbol-name head)
                                           '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal))
                           ;; Mangle to symbol (result interned in same pkg as head)
-                          (mangle-template-struct-name head (cl:rest expanded))
+                          (mangle-template-struct-name head (rest expanded))
                           ;; Otherwise keep original (already-mangled symbol or non-tensor type)
                           raw-type-sym)))
                    (struct-def      (when (symbolp struct-type-sym)
@@ -649,7 +649,7 @@
    Cross-package same-name fix: USHORT2 may be in :crisp-language or :crisp.compiler;
    treat same symbol-name as no-op cast."
   ;; Resolve aliases first
-  (cl:let ((from-type-name (resolve-type-alias from-type-name))
+  (let ((from-type-name (resolve-type-alias from-type-name))
            (to-type-name (resolve-type-alias to-type-name)))
     ;; Fast path: identical (eq)
     (if (equal from-type-name to-type-name)
@@ -717,7 +717,7 @@
                        (llvm-build-addrspace-cast builder from-val to-llvm-type "ptr2ptr_ascast"))))
                ;; Handle casts between derived types with same base type (same memory layout)
                ((and (symbolp from-type-name) (symbolp to-type-name))
-                 (cl:let ((from-base (get-type-base from-type-name))
+                 (let ((from-base (get-type-base from-type-name))
                           (to-base (get-type-base to-type-name)))
                    (if (eq from-base to-base)
                        (progn
@@ -1533,8 +1533,8 @@
   (let* ((array-node   (semantic-aref-array-node node))
          (index-node   (semantic-aref-index-node node))
          (array-type   (let ((raw (semantic-node-type array-node)))
-                         (if (and (listp raw) (= (cl:length raw) 1) (listp (cl:first raw)))
-                             (cl:first raw)
+                         (if (and (listp raw) (= (length raw) 1) (listp (first raw)))
+                             (first raw)
                              raw)))
          (element-type (semantic-aref-type node))
          (index-val    (generate-node-ir index-node builder module var-env
@@ -1543,10 +1543,10 @@
     (let ((cell-spec (let* ((resolved (resolve-type-alias array-type))
                             (canon    (canonicalize-type-specifier resolved)))
                        (cond
-                        ((and (listp canon) (symbolp (cl:first canon))
-                              (string-equal (symbol-name (cl:first canon)) "CELL")) canon)
-                        ((and (listp canon) (= (cl:length canon) 1) (symbolp (cl:first canon)))
-                         (unmangle-template-struct-name (cl:first canon)))
+                        ((and (listp canon) (symbolp (first canon))
+                              (string-equal (symbol-name (first canon)) "CELL")) canon)
+                        ((and (listp canon) (= (length canon) 1) (symbolp (first canon)))
+                         (unmangle-template-struct-name (first canon)))
                         ((symbolp canon)
                          (unmangle-template-struct-name canon))
                         (t canon)))))
@@ -1555,8 +1555,8 @@
        ;; Case 2: (array T N) fixed-size array — GEP into alloca (unchanged)
        ((%array-type-p (resolve-type-alias array-type))
         (let* ((resolved-arr-type (resolve-type-alias array-type))
-               (elem-type-spec    (cl:second resolved-arr-type))
-               (count-raw         (cl:third  resolved-arr-type))
+               (elem-type-spec    (second resolved-arr-type))
+               (count-raw         (third  resolved-arr-type))
                (count             (etypecase count-raw
                                     (integer count-raw)
                                     (symbol  (parse-integer (symbol-name count-raw)))))
@@ -1605,14 +1605,14 @@
        ;; Case 3: TENSOR — flat index pre-computed; GEP via parent storage pointer.
        ;; SROA field 0 of tensor is (storage Addr) → {address ptr, byte-size}.
        ;; Field 0 of storage is the raw pointer.
-       ((and (listp cell-spec) (symbolp (cl:first cell-spec))
-             (string-equal (symbol-name (cl:first cell-spec)) "TENSOR"))
+       ((and (listp cell-spec) (symbolp (first cell-spec))
+             (string-equal (symbol-name (first cell-spec)) "TENSOR"))
         (let* ((tensor-val     (generate-node-ir array-node builder module var-env
                                                  di-builder di-scope location-map))
                (elem-type-spec element-type)
                (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
-               (mangled-name   (mangle-template-struct-name (cl:first cell-spec)
-                                                            (cl:rest cell-spec))))
+               (mangled-name   (mangle-template-struct-name (first cell-spec)
+                                                            (rest cell-spec))))
           (log:info "semantic-aref tensor: struct=~a elem=~a" mangled-name elem-type-spec)
           (ensure-struct-llvm-type mangled-name)
           (let* ((parent-val  (llvm-build-extract-value builder tensor-val 0 "t_parent_val"))
@@ -1633,14 +1633,14 @@
                 (values loaded nil t-ptr))))))
 
        ;; Case 1: CELL parameterized type (unchanged)
-       ((and (listp cell-spec) (symbolp (cl:first cell-spec))
-             (string-equal (symbol-name (cl:first cell-spec)) "CELL"))
+       ((and (listp cell-spec) (symbolp (first cell-spec))
+             (string-equal (symbol-name (first cell-spec)) "CELL"))
         (let* ((cell-val       (generate-node-ir array-node builder module var-env
                                                  di-builder di-scope location-map))
                (elem-type-spec element-type)
                (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
-               (mangled-struct-name (mangle-template-struct-name (cl:first cell-spec)
-                                                                  (cl:rest cell-spec))))
+               (mangled-struct-name (mangle-template-struct-name (first cell-spec)
+                                                                  (rest cell-spec))))
           (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
           (ensure-struct-llvm-type mangled-struct-name)
           (let ()
@@ -1737,12 +1737,12 @@
 (defun %mv-build-const-i64-array (builder rank values)
   "Build an LLVM [rank x i64] constant array from a list of integers.
    If VALUES is shorter than rank, remaining slots are filled with 0."
-  (cl:let* ((i64      (llvm-int64-type))
+  (let* ((i64      (llvm-int64-type))
              (arr-type (llvm-array-type i64 rank))
              (undef    (llvm-get-undef arr-type)))
-    (cl:loop for k from 0 below rank
+    (loop for k from 0 below rank
              with result = undef
-             for v = (or (cl:nth k values) 0)
+             for v = (or (nth k values) 0)
              do (setf result
                       (llvm-build-insert-value builder result
                                                (llvm-const-int i64 v nil)
@@ -1758,7 +1758,7 @@
    Returns the new ptr in the same address space."
   (cffi:with-foreign-object (indices :pointer 1)
     (setf (cffi:mem-aref indices :pointer 0) offset-bytes)
-    (cl:let* ((ptr-i8 (llvm-build-in-bounds-gep2
+    (let* ((ptr-i8 (llvm-build-in-bounds-gep2
                        builder (llvm-int8-type) base-ptr indices 1 "mv_bumped_i8"))
                (ptr-as (llvm-get-pointer-address-space (llvm-type-of ptr-i8))))
       (declare (ignore addr-space ptr-as))
@@ -1767,7 +1767,7 @@
 (defun %mv-build-storage (builder module addr-space src-parent new-ptr new-bytesize)
   "Build a new STORAGE_{addr} struct value from ptr and bytesize."
   (declare (ignore module))
-  (cl:let* ((storage-type (crisp-type-to-llvm-type `(storage ,addr-space) module))
+  (let* ((storage-type (crisp-type-to-llvm-type `(storage ,addr-space) module))
              (s0 (llvm-build-insert-value builder (llvm-get-undef storage-type)
                                           new-ptr 0 "mv_storage_ptr"))
              (s1 (llvm-build-insert-value builder s0 new-bytesize 1 "mv_storage_bs")))
@@ -1782,7 +1782,7 @@
                                di-builder di-scope location-map)
   "Generates IR for make-cell / make-vector / make-matrix / make-tensor.
    Extended: emits a bounds-check (llvm.trap) when *runtime-checks-enabled* is T."
-  (cl:let* ((result-type   (semantic-make-view-type node))
+  (let* ((result-type   (semantic-make-view-type node))
              (src-node      (semantic-make-view-source-node node))
              (elem-type-sym (semantic-make-view-element-type node))
              (rank          (semantic-make-view-rank node))
@@ -1811,27 +1811,27 @@
               (if (zerop offset-elems)
                   src-ptr
                   (%mv-bump-ptr builder src-ptr offset-bytes
-                                (%mv-source-addr (list (cl:first result-type) nil
-                                                       (cl:third result-type))))))
+                                (%mv-source-addr (list (first result-type) nil
+                                                       (third result-type))))))
              (new-bytesize
               (if (zerop offset-elems)
                   src-bytesize
                   (llvm-build-sub builder src-bytesize offset-bytes "mv_new_bs")))
 
-             (addr-space (cond ((string-equal (symbol-name (cl:first result-type)) "CELL")
-                                (cl:third result-type))
-                               (t (cl:fourth result-type))))
+             (addr-space (cond ((string-equal (symbol-name (first result-type)) "CELL")
+                                (third result-type))
+                               (t (fourth result-type))))
 
              (new-storage (%mv-build-storage builder module addr-space
                                              src-parent new-ptr new-bytesize))
 
-             (mangled-name (mangle-template-struct-name (cl:first result-type)
-                                                        (cl:rest result-type)))
+             (mangled-name (mangle-template-struct-name (first result-type)
+                                                        (rest result-type)))
              (result-struct-type (ensure-struct-llvm-type mangled-name))
              (result-undef (llvm-get-undef result-struct-type)))
 
     (log:info "make-view: op=~a rank=~d elem=~a mangled=~a offset=~d"
-              (cl:first result-type) rank elem-type-sym mangled-name offset-elems)
+              (first result-type) rank elem-type-sym mangled-name offset-elems)
 
     ;; Runtime bounds check: verify (offset_bytes + view_bytes) <= src_bytesize.
     ;; view_bytes = len_elems * sizeof(elem):
@@ -1863,7 +1863,7 @@
 
      ;; ── cell (rank=0): { STORAGE, byte-offset-i64 } ──────────────────
      ((= rank 0)
-      (cl:let* ((orig-storage (%mv-build-storage builder module addr-space
+      (let* ((orig-storage (%mv-build-storage builder module addr-space
                                                  src-parent src-ptr src-bytesize))
                 (byte-offset-val
                  (if (zerop offset-elems)
@@ -1877,7 +1877,7 @@
 
      ;; ── tensor/vector/matrix (rank>=1) ────────────────────────────────
      (t
-      (cl:let* ((zero-offsets (%mv-build-zero-i64-array rank))
+      (let* ((zero-offsets (%mv-build-zero-i64-array rank))
                 (stride-vals (or strides (%mv-row-major-strides (or extents (make-list rank :initial-element 1)))))
                 (stride-arr  (%mv-build-const-i64-array builder rank stride-vals))
                 (extent-vals (or extents (make-list rank :initial-element 0)))

@@ -9,10 +9,10 @@
 
 (defun %emit-sub-fn-backward (fn args bkwd-fn t-adj-forms n-fp pkg emit-fn local-adj-fn &optional (sym-prefix "BW"))
   (declare (ignore fn))
-  (cl:let* ((deltas (cl:loop for i from 0 below n-fp
+  (let* ((deltas (loop for i from 0 below n-fp
                              collect (intern (format nil "%~A_D~a" sym-prefix i) pkg)))
             (accum-forms
-             (cl:loop for arg in args
+             (loop for arg in args
                       for i from 0 below n-fp
                       when (symbolp arg)
                       collect `(set! ,(funcall local-adj-fn arg)
@@ -28,28 +28,28 @@
   "Returns T if TYPE-SPEC (possibly a type alias) resolves to a tensor/vector/matrix
    storage handle. Vectors (N=1) and matrices (N=2) are syntactic sugar for tensor,
    so a single head check covers all three."
-  (cl:let* ((canonical (canonicalize-type-specifier type-spec)))
+  (let* ((canonical (canonicalize-type-specifier type-spec)))
     (and (consp canonical)
-         (string-equal (symbol-name (cl:first canonical)) "TENSOR"))))
+         (string-equal (symbol-name (first canonical)) "TENSOR"))))
 
 (defun %crisp-float-tensor-type-p (type-spec)
   "Returns T if TYPE-SPEC resolves to a tensor/vector/matrix whose element type
    is a float type (float, double, etc.).  Non-float tensors (e.g. vector long)
    are not differentiable and should not receive gradient parameters."
-  (cl:let ((canonical (canonicalize-type-specifier type-spec)))
+  (let ((canonical (canonicalize-type-specifier type-spec)))
     (and (consp canonical)
-         (string-equal (symbol-name (cl:first canonical)) "TENSOR")
-         (%crisp-float-type-p (cl:second canonical)))))
+         (string-equal (symbol-name (first canonical)) "TENSOR")
+         (%crisp-float-type-p (second canonical)))))
 
 (defun %ensure-tensor-read-write (type-spec)
   "If TYPE-SPEC is a tensor/vector/matrix, returns the canonical 6-tuple with
    :access replaced by :read-write. Non-tensor types are returned unchanged."
-  (cl:if (%crisp-tensor-type-p type-spec)
-      (cl:let ((c (canonicalize-type-specifier type-spec)))
+  (if (%crisp-tensor-type-p type-spec)
+      (let ((c (canonicalize-type-specifier type-spec)))
         ;; canonical form: (tensor elem N addr access align)
         ;;                   0      1    2  3    4      5
-        (cl:list (cl:nth 0 c) (cl:nth 1 c) (cl:nth 2 c)
-                 (cl:nth 3 c) :read-write   (cl:nth 5 c)))
+        (list (nth 0 c) (nth 1 c) (nth 2 c)
+                 (nth 3 c) :read-write   (nth 5 c)))
       type-spec))
 
 
@@ -62,43 +62,43 @@ tensor inputs. When (~ src idx...) is encountered and src has an entry in this
 table, gradient accumulation is emitted directly as
   (set! (~ src_GRAD idx...) (+ (~ src_GRAD idx...) adj(v)))
 rather than the scalar-adjoint path used for cells."
-  (cl:flet ((local-adj (x) (funcall local-adj-fn x))
+  (flet ((local-adj (x) (funcall local-adj-fn x))
             (emit (x) (funcall emit-fn x)))
-    (cl:cond
+    (cond
       ;; Primitive: +
       ((and (consp expr) (eq (car expr) '+))
-        (cl:let ((a (cadr expr)) (b (caddr expr)))
-          (cl:when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
-          (cl:when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
+        (let ((a (cadr expr)) (b (caddr expr)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
       ;; Primitive: -
       ((and (consp expr) (eq (car expr) '-))
-        (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-          (cl:when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
-          (cl:when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
       ;; Primitive: *
       ((and (consp expr) (eq (car expr) '*))
-        (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-          (cl:when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
-          (cl:when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
       ;; Primitive: /
       ((and (consp expr) (eq (car expr) '/))
-        (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-          (cl:when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
-          (cl:when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
       ;; Primitive: sin
       ((and (consp expr) (eq (car expr) 'sin))
-        (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-          (cl:when (symbolp a)
-            (cl:let* ((a-adj (local-adj a))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (let* ((a-adj (local-adj a))
                       (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
               (setf (gethash cos-a adjoint-map) cos-a)
               (emit `(set! ,cos-a (cos ,a)))
               (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
       ;; Primitive: cos
       ((and (consp expr) (eq (car expr) 'cos))
-        (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-          (cl:when (symbolp a)
-            (cl:let* ((a-adj (local-adj a))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (let* ((a-adj (local-adj a))
                       (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
               (setf (gethash sin-a adjoint-map) sin-a)
               (emit `(set! ,sin-a (sin ,a)))
@@ -108,15 +108,15 @@ rather than the scalar-adjoint path used for cells."
       ;;   (~ src)          → cell read  → scalar adjoint accumulation (existing)
       ;;   (~ src idx...)   → tensor read → element-wise gradient write (new)
       ((and (consp expr) (eq (car expr) '~))
-        (cl:let* ((src     (cadr expr))
+        (let* ((src     (cadr expr))
                   (indices (cddr expr))
                   (v-adj   (local-adj v)))
-          (cl:when (symbolp src)
-            (cl:cond
+          (when (symbolp src)
+            (cond
               ;; Tensor read with a known kernel input: emit element-wise grad accumulation.
               ;; The same index expressions from the forward read are reused in the backward.
               ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
-               (cl:let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
+               (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
                                           (symbol-package src))))
                  (emit `(set! (~ ,grad-sym ,@indices)
                               (+ (~ ,grad-sym ,@indices) ,v-adj)))))
@@ -127,11 +127,11 @@ rather than the scalar-adjoint path used for cells."
       ((and (consp expr)
             (symbolp (car expr))
             (gethash (car expr) *differentiable-functions*))
-        (cl:let* ((fn   (car expr))
+        (let* ((fn   (car expr))
                    (args (cdr expr))
                    (info (gethash fn *differentiable-functions*)))
-          (cl:if (getf info :hof)
-              (cl:if hof-handler-fn
+          (if (getf info :hof)
+              (if hof-handler-fn
                   (funcall hof-handler-fn fn args v)
                   (error "HOF handler required for sub-function ~A but not provided" fn))
               (%emit-sub-fn-backward fn args
@@ -143,10 +143,10 @@ rather than the scalar-adjoint path used for cells."
                                     (if (symbolp v) (symbol-name v) "BW")))))
       ;; Struct accessor (name ends in ~): treat like identity.
       ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
-            (cl:let ((fname (symbol-name (car expr))))
+            (let ((fname (symbol-name (car expr))))
               (and (> (length fname) 1)
                    (cl:char= (cl:char fname (1- (length fname))) #\~))))
-        (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
           (when (symbolp a)
             (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
       ;; Comparison/boolean ops: skip
@@ -180,14 +180,14 @@ multi-value bindings, HOF inline backward, errors for non-differentiable
 functions (B3), and mutation errors (B4).
 Extended for feature 080: tensor/vector/matrix inputs — element-wise gradient
 accumulation via indexed (~ src_GRAD idx...) writes."
-  (cl:let ((backward-forms nil)
+  (let ((backward-forms nil)
            (adjoint-map (make-hash-table :test 'equal))
            ;; Build tensor-inputs-ht: maps each tensor-typed input symbol to its type.
            ;; Used by %handle-single-value-backward to distinguish tensor reads from
            ;; cell reads and emit element-wise gradient accumulation.
            (tensor-inputs-ht
-            (cl:let ((ht (make-hash-table :test 'eq)))
-              (cl:loop for sym  in inputs
+            (let ((ht (make-hash-table :test 'eq)))
+              (loop for sym  in inputs
                        for typ  in input-types
                        when (%crisp-float-tensor-type-p typ)
                        do (setf (gethash sym ht) typ))
@@ -195,7 +195,7 @@ accumulation via indexed (~ src_GRAD idx...) writes."
 
     (labels ((local-adj (v)
                (or (gethash v adjoint-map)
-                   (cl:let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
+                   (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
                                          (symbol-package v))))
                      (setf (gethash v adjoint-map) adv)
                      adv)))
@@ -206,23 +206,23 @@ accumulation via indexed (~ src_GRAD idx...) writes."
              ;; ANF-transform the concrete body, process backwards using
              ;; the kernel's own closures.
              (hof-inline-backward (fn args v)
-               (cl:let* ((hof-data (gethash fn *differentiable-hof-store*)))
-                 (cl:unless hof-data
+               (let* ((hof-data (gethash fn *differentiable-hof-store*)))
+                 (unless hof-data
                    (error "HOF ~A not found in *differentiable-hof-store*" fn))
-                 (cl:let* ((param-syms   (getf hof-data :param-syms))
+                 (let* ((param-syms   (getf hof-data :param-syms))
                            (fn-param-idx (getf hof-data :fn-param-idx))
                            (body-forms   (getf hof-data :body-forms))
                            (fn-arg       (nth fn-param-idx args))
-                           (concrete-fn  (cl:cond
+                           (concrete-fn  (cond
                                            ((and (consp fn-arg) (eq (car fn-arg) 'function))
                                             (cadr fn-arg))
                                            ((symbolp fn-arg) fn-arg)
                                            (t nil))))
-                   (cl:unless concrete-fn
+                   (unless concrete-fn
                      (error "Cannot inline-differentiate HOF ~A:  could not resolve concrete fn from arg ~A" fn fn-arg))
-                   (cl:let* ((fn-param      (nth fn-param-idx param-syms))
+                   (let* ((fn-param      (nth fn-param-idx param-syms))
                              (subst-alist
-                              (cl:loop for p in param-syms
+                              (loop for p in param-syms
                                        for a in args
                                        for i from 0
                                        unless (= i fn-param-idx)
@@ -233,21 +233,21 @@ accumulation via indexed (~ src_GRAD idx...) writes."
                              (anf-body      (mapcar #'anf-transform concrete-body))
                              (hof-flat      (flatten-anf-body anf-body))
                              (hof-flat-norm
-                              (cl:let ((last-f (cl:car (cl:last hof-flat))))
-                                (cl:if (or (symbolp last-f)
-                                        (and (consp last-f) (eq (cl:first last-f) 'return)))
+                              (let ((last-f (car (last hof-flat))))
+                                (if (or (symbolp last-f)
+                                        (and (consp last-f) (eq (first last-f) 'return)))
                                     hof-flat
-                                    (cl:let ((ret-sym (intern (format nil "%HOF_RET_~A" (symbol-name v))
+                                    (let ((ret-sym (intern (format nil "%HOF_RET_~A" (symbol-name v))
                                                                (symbol-package v))))
                                       (append (butlast hof-flat)
                                               (list (list ret-sym last-f) ret-sym))))))
                              (return-vars   (%extract-return-vars hof-flat-norm)))
-                     (cl:dolist (rv return-vars)
+                     (dolist (rv return-vars)
                        (setf (gethash rv adjoint-map) (local-adj v)))
                      ;; HOF body has no tensor kernel inputs — pass nil for tensor-inputs-ht.
-                     (cl:dolist (hf-form (cl:reverse hof-flat-norm))
-                       (cl:when (and (consp hf-form) (= (length hf-form) 2) (symbolp (car hf-form)))
-                         (cl:let ((hv    (car hf-form))
+                     (dolist (hf-form (reverse hof-flat-norm))
+                       (when (and (consp hf-form) (= (length hf-form) 2) (symbolp (car hf-form)))
+                         (let ((hv    (car hf-form))
                                   (hexpr (cadr hf-form)))
                            (%handle-single-value-backward hv hexpr adjoint-map #'emit #'local-adj
                                                           :hof-handler-fn #'hof-inline-backward
@@ -256,12 +256,12 @@ accumulation via indexed (~ src_GRAD idx...) writes."
 
              ) ; end labels binding list
 
-      (cl:let ((reversed-body (reverse flat-anf)))
-        (cl:dolist (form reversed-body)
-          (cl:cond
+      (let ((reversed-body (reverse flat-anf)))
+        (dolist (form reversed-body)
+          (cond
             ;; ---- Single-value binding: (v expr) -------------------
             ((and (listp form) (= (length form) 2) (symbolp (car form)))
-              (cl:let ((v    (car form))
+              (let ((v    (car form))
                        (expr (cadr form)))
                 (%handle-single-value-backward v expr adjoint-map #'emit #'local-adj
                                                :hof-handler-fn #'hof-inline-backward
@@ -272,12 +272,12 @@ accumulation via indexed (~ src_GRAD idx...) writes."
             ((and (listp form) (>= (length form) 3)
                   (symbolp (car form))
                   (every #'symbolp (butlast form)))
-              (cl:let* ((result-vars (butlast form))
+              (let* ((result-vars (butlast form))
                         (expr        (car (last form))))
-                (cl:when (and (consp expr)
+                (when (and (consp expr)
                            (symbolp (car expr))
                            (gethash (car expr) *differentiable-functions*))
-                  (cl:let* ((fn   (car expr))
+                  (let* ((fn   (car expr))
                              (args (cdr expr))
                              (info (gethash fn *differentiable-functions*))
                              (bkwd (getf info :bkwd-name))
@@ -291,14 +291,14 @@ accumulation via indexed (~ src_GRAD idx...) writes."
             ;; For outputs: seed adj(val) from the output gradient tensor/cell.
             ;; For inputs:  error — inputs may not be mutated in a differentiable kernel.
             ((and (consp form) (eq (car form) 'set!))
-              (cl:let ((place (cadr form))
+              (let ((place (cadr form))
                        (val   (caddr form)))
-                (cl:when (and (consp place) (eq (car place) '~) (symbolp val))
-                  (cl:let ((target  (cadr place))
+                (when (and (consp place) (eq (car place) '~) (symbolp val))
+                  (let ((target  (cadr place))
                            (indices (cddr place)))   ; nil for cell, (i...) for tensor
-                    (cl:cond
+                    (cond
                       ((member target outputs)
-                       (cl:let ((tgt-grad (intern (format nil "~A_GRAD" (symbol-name target))
+                       (let ((tgt-grad (intern (format nil "~A_GRAD" (symbol-name target))
                                                   (symbol-package target))))
                          ;; Seed adj(val) from the output gradient at the same indices.
                          ;; For cells: (~ tgt-grad) — no indices.
@@ -318,21 +318,21 @@ accumulation via indexed (~ src_GRAD idx...) writes."
       ;;   ~ case of %handle-single-value-backward when tensor-inputs-ht was consulted.
       ;; Cell inputs:   (set! (~ in_GRAD) adj(in))
       ;; Float scalar:  (set! in_GRAD adj(in))
-      (cl:loop for in in inputs
+      (loop for in in inputs
                for in-type in input-types do
-                 (cl:let* ((in-grad    (intern (format nil "~A_GRAD" (symbol-name in))
+                 (let* ((in-grad    (intern (format nil "~A_GRAD" (symbol-name in))
                                                (symbol-package in)))
                            (canon-type (canonicalize-type-specifier
                                          (if (listp in-type) in-type (list in-type))))
                            (is-cell    (and (consp canon-type)
-                                            (string-equal (symbol-name (cl:first canon-type)) "CELL")))
+                                            (string-equal (symbol-name (first canon-type)) "CELL")))
                            (is-tensor  (%crisp-float-tensor-type-p in-type)))
-                   (cl:cond
+                   (cond
                      (is-tensor nil)  ; per-element writes already done
                      (is-cell   (emit `(set! (~ ,in-grad) ,(local-adj in))))
                      (t         (emit `(set! ,in-grad ,(local-adj in)))))))
 
-      (cl:let* ((local-bindings (cl:loop for v being the hash-keys of adjoint-map
+      (let* ((local-bindings (loop for v being the hash-keys of adjoint-map
                                          using (hash-value adv)
                                          collect `(,adv 0.0)))
                 (result `(let ,local-bindings
@@ -350,7 +350,7 @@ accumulation via indexed (~ src_GRAD idx...) writes."
 float-category scalar type (float, double, half, bfloat16).
 Checks *crisp-types* directly first (for primitives like 'float),
 then falls back to compute-base-type for derived/alias types."
-  (cl:let* ((direct-info (and (symbolp type-spec) (gethash type-spec *crisp-types*)))
+  (let* ((direct-info (and (symbolp type-spec) (gethash type-spec *crisp-types*)))
             (base (if direct-info type-spec (compute-base-type type-spec)))
             (info (when base (gethash base *crisp-types*))))
     (and info (eq (crisp-type-category info) :float))))
@@ -362,7 +362,7 @@ then falls back to compute-base-type for derived/alias types."
 (defun %crisp-record-type-p (type-spec)
   "Returns T if TYPE-SPEC names a def-record (category :record).
    Handles parameterized forms like (V-POINT :EARNESTNESS 3.0)."
-  (cl:let* ((base (if (consp type-spec) (cl:first type-spec) type-spec))
+  (let* ((base (if (consp type-spec) (first type-spec) type-spec))
              (info (gethash base *crisp-types*)))
     (and info (eq (crisp-type-category info) :record))))
 
@@ -374,15 +374,15 @@ then falls back to compute-base-type for derived/alias types."
   "Returns a list of (FIELD-NAME RESOLVED-FIELD-TYPE) for the runtime
    (non-:c-t) members of the record type named by REC-TYPE-SPEC.
    Handles parameterised forms like (V-POINT :EARNESTNESS 3.0)."
-  (cl:let* ((base (if (consp rec-type-spec) (cl:first rec-type-spec) rec-type-spec))
+  (let* ((base (if (consp rec-type-spec) (first rec-type-spec) rec-type-spec))
              (struct-def (or (gethash base *crisp-structs*)
                              (gethash (intern (symbol-name base) :crisp-language)
                                       *crisp-structs*))))
     (when struct-def
-      (cl:loop for m in (crisp-struct-definition-members struct-def)
-               unless (and (consp m) (eq (cl:third m) :c-t))
-               collect (cl:list (cl:first m)
-                                 (compute-base-type (cl:second m)))))))
+      (loop for m in (crisp-struct-definition-members struct-def)
+               unless (and (consp m) (eq (third m) :c-t))
+               collect (list (first m)
+                                 (compute-base-type (second m)))))))
 
 ;;; ----------------------------------------------------------
 ;;; %record-accessor-system-generated-p
@@ -393,18 +393,18 @@ then falls back to compute-base-type for derived/alias types."
    accessor for REC-TYPE — i.e. it has NOT been user-overloaded.
    Heuristic: count *function-table* entries whose first parameter type
    matches REC-TYPE.  Exactly 1 means system-generated only."
-  (cl:let* ((sigs (gethash accessor-sym *function-table*))
-             (base-name (symbol-name (if (consp rec-type) (cl:first rec-type) rec-type)))
+  (let* ((sigs (gethash accessor-sym *function-table*))
+             (base-name (symbol-name (if (consp rec-type) (first rec-type) rec-type)))
              (matching
-              (cl:loop for sig in sigs
-                       when (cl:let* ((params (function-signature-parameters sig))
-                                      (first-param (cl:first params))
+              (loop for sig in sigs
+                       when (let* ((params (function-signature-parameters sig))
+                                      (first-param (first params))
                                       (first-type (and first-param
                                                         (parameter-def-type first-param))))
                               (and first-type
                                    (string-equal (symbol-name
                                                   (if (consp first-type)
-                                                      (cl:first first-type)
+                                                      (first first-type)
                                                       first-type))
                                                  base-name)))
                        collect sig)))
@@ -432,15 +432,15 @@ then falls back to compute-base-type for derived/alias types."
      (field~  p)  -> p_field   (only when field~ is system-generated for p's type)
    RECORD-SUBS-HT maps param-sym -> alist of (field-sym . exploded-sym).
    RECORD-TYPE-HT  maps param-sym -> rec-type-spec."
-  (cl:flet ((raw-accessor-p (name-str)
+  (flet ((raw-accessor-p (name-str)
                ;; ~field~ : starts AND ends with ~, length > 2
-               (and (> (cl:length name-str) 2)
+               (and (> (length name-str) 2)
                     (cl:char= (cl:char name-str 0) #\~)
-                    (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~)))
+                    (cl:char= (cl:char name-str (1- (length name-str))) #\~)))
              (regular-accessor-p (name-str)
                ;; field~ : ends with ~ but does NOT start with ~
-               (and (> (cl:length name-str) 1)
-                    (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~)
+               (and (> (length name-str) 1)
+                    (cl:char= (cl:char name-str (1- (length name-str))) #\~)
                     (cl:char/= (cl:char name-str 0) #\~))))
     (cond
       ;; ---- Atom: pass through --------------------------------
@@ -448,34 +448,34 @@ then falls back to compute-base-type for derived/alias types."
 
       ;; ---- (~field~ p) : raw accessor call -------------------
       ((and (= (length form) 2)
-            (symbolp (cl:first form))
-            (raw-accessor-p (symbol-name (cl:first form))))
-       (cl:let* ((op-name  (symbol-name (cl:first form)))
-                 (field-name (intern (cl:subseq op-name 1 (1- (length op-name)))
-                                     (symbol-package (cl:first form))))
-                 (arg     (cl:second form))
+            (symbolp (first form))
+            (raw-accessor-p (symbol-name (first form))))
+       (let* ((op-name  (symbol-name (first form)))
+                 (field-name (intern (subseq op-name 1 (1- (length op-name)))
+                                     (symbol-package (first form))))
+                 (arg     (second form))
                  (fld-map (gethash arg record-subs-ht)))
          (if fld-map
-             (cl:let ((hit (assoc field-name fld-map :test #'string-equal)))
+             (let ((hit (assoc field-name fld-map :test #'string-equal)))
                (if hit (cdr hit) form))
              ;; arg is not a record param — recurse normally
-             (cl:list (cl:first form)
+             (list (first form)
                       (%substitute-record-accessors arg record-subs-ht record-type-ht)))))
 
       ;; ---- (field~ p) : regular accessor call ----------------
       ((and (= (length form) 2)
-            (symbolp (cl:first form))
-            (regular-accessor-p (symbol-name (cl:first form))))
-       (cl:let* ((op      (cl:first form))
+            (symbolp (first form))
+            (regular-accessor-p (symbol-name (first form))))
+       (let* ((op      (first form))
                  (op-name (symbol-name op))
-                 (field-name (intern (cl:subseq op-name 0 (1- (length op-name)))
+                 (field-name (intern (subseq op-name 0 (1- (length op-name)))
                                      (symbol-package op)))
-                 (arg     (cl:second form))
+                 (arg     (second form))
                  (fld-map (gethash arg record-subs-ht))
                  (rec-type (gethash arg record-type-ht)))
          (if (and fld-map rec-type
                   (%record-accessor-system-generated-p op rec-type))
-             (cl:let ((hit (assoc field-name fld-map :test #'string-equal)))
+             (let ((hit (assoc field-name fld-map :test #'string-equal)))
                (if hit (cdr hit)
                    ;; field name not in this record — recurse
                    (mapcar (lambda (x) (%substitute-record-accessors x record-subs-ht record-type-ht)) form)))
@@ -496,18 +496,18 @@ then falls back to compute-base-type for derived/alias types."
    rewrites to (SET! (~ var) expr), since the gradient output
    for a record field is a cell, not a plain scalar.
    GRAD-CELL-SYMS is a list of symbols that need cell-style emission."
-  (cl:flet ((grad-cell-p (sym)
+  (flet ((grad-cell-p (sym)
                (and (symbolp sym) (member sym grad-cell-syms :test #'eq))))
     (cond
       ((atom form) form)
       ;; (set! var expr) — var is a grad-cell sym
       ((and (consp form)
-            (eq (cl:first form) 'set!)
+            (eq (first form) 'set!)
             (= (length form) 3)
-            (grad-cell-p (cl:second form)))
-       (cl:list 'set!
-                (cl:list '~ (cl:second form))
-                (%fix-record-grad-cell-emissions (cl:third form) grad-cell-syms)))
+            (grad-cell-p (second form)))
+       (list 'set!
+                (list '~ (second form))
+                (%fix-record-grad-cell-emissions (third form) grad-cell-syms)))
       ;; recurse
       (t
        (mapcar (lambda (x) (%fix-record-grad-cell-emissions x grad-cell-syms)) form)))))
@@ -530,7 +530,7 @@ then falls back to compute-base-type for derived/alias types."
    record-subs-ht : param-sym -> alist (field-sym . exploded-sym).
    record-type-ht  : param-sym -> rec-type-spec.
    grad-cell-syms  : list of _GRAD symbols that need (set! (~ ..) adj) emission."
-  (cl:let ((flat-inputs        '())
+  (let ((flat-inputs        '())
            (flat-input-types   '())
            (reassembly-bindings '())
            (grad-out-params    '())
@@ -539,38 +539,38 @@ then falls back to compute-base-type for derived/alias types."
            (record-type-ht     (make-hash-table :test 'eq))
            (grad-cell-syms     '()))
 
-    (cl:loop for p in inputs
+    (loop for p in inputs
              for t-spec in input-types do
       (if (%crisp-record-type-p t-spec)
           ;; --- Record input: explode to scalar fields ---------
-          (cl:let* ((base-type (if (consp t-spec) (cl:first t-spec) t-spec))
+          (let* ((base-type (if (consp t-spec) (first t-spec) t-spec))
                     (fields    (%get-record-runtime-fields t-spec))
                     (make-sym  (intern (format nil "MAKE-~a" (symbol-name base-type)) pkg))
                     (field-syms
-                     (cl:loop for (fname ftype) in fields
-                              collect (cl:list fname
+                     (loop for (fname ftype) in fields
+                              collect (list fname
                                                ftype
                                                (%record-field-param-sym p fname pkg)))))
             ;; Register for substitution
             (setf (gethash p record-subs-ht)
-                  (cl:loop for (fname ftype fsym) in field-syms
+                  (loop for (fname ftype fsym) in field-syms
                            collect (cons fname fsym)))
             (setf (gethash p record-type-ht) t-spec)
             ;; Flat scalar params
-            (cl:loop for (fname ftype fsym) in field-syms do
+            (loop for (fname ftype fsym) in field-syms do
               (push fsym flat-inputs)
               (push ftype flat-input-types))
             ;; Reassembly binding: (p (make-base-type :field0 f0 :field1 f1 ...))
             ;; Uses keyword args to match the def-record constructor signature.
-            (push (cl:list p (cons make-sym
-                                   (cl:loop for (fname ftype fsym) in field-syms
+            (push (list p (cons make-sym
+                                   (loop for (fname ftype fsym) in field-syms
                                             append (list (intern (symbol-name fname) :keyword)
                                                          fsym))))
                   reassembly-bindings)
             ;; Gradient cell outputs — float fields only
-            (cl:loop for (fname ftype fsym) in field-syms do
+            (loop for (fname ftype fsym) in field-syms do
               (when (%crisp-float-type-p ftype)
-                (cl:let ((grad-sym (intern (format nil "~a_GRAD" (symbol-name fsym)) pkg)))
+                (let ((grad-sym (intern (format nil "~a_GRAD" (symbol-name fsym)) pkg)))
                   (push grad-sym grad-out-params)
                   (push '(cell float :address-space :global :access :read-write) grad-out-types)
                   (push grad-sym grad-cell-syms)))))
@@ -596,12 +596,12 @@ then falls back to compute-base-type for derived/alias types."
   "Returns T if FN-SYM should be silently skipped in the AD backward walk.
 Skips: system-generated functions (name contains %), AS/AS-* type casts and
 derived-type coercions, and TO-<int-type> integer conversions."
-  (cl:let ((name (symbol-name fn-sym)))
+  (let ((name (symbol-name fn-sym)))
     (or
-     (cl:find #\% name)
+     (find #\% name)
      (string= name "AS")
      (and (>= (length name) 3) (string= (subseq name 0 3) "AS-"))
-     (cl:loop for suffix in '("ULONG" "LONG" "UINT" "INT" "USHORT" "SHORT" "UCHAR" "CHAR" "BOOL")
+     (loop for suffix in '("ULONG" "LONG" "UINT" "INT" "USHORT" "SHORT" "UCHAR" "CHAR" "BOOL")
               when (and (>= (length name) (+ 3 (length suffix)))
                         (string= (subseq name 0 3) "TO-")
                         (string= (subseq name (- (length name) (length suffix))) suffix))
@@ -626,14 +626,14 @@ function in a differentiable context, compilation will error at that point.
 
 Returns the backward def-function form, or NIL if the function has no
 differentiable float params, is a HOF, or cannot be differentiated."
-  (cl:let* ((pkg (symbol-package name)))
+  (let* ((pkg (symbol-package name)))
 
     (multiple-value-bind (env return-types)
         (parse-function-declarations params declarations)
 
-      (cl:let* (;; Float-typed params (the differentiable ones)
+      (let* (;; Float-typed params (the differentiable ones)
                 (float-param-entries
-                 (cl:loop for pd in env
+                 (loop for pd in env
                           when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
                                     (%crisp-float-type-p (parameter-def-type pd)))
                           collect pd))
@@ -645,7 +645,7 @@ differentiable float params, is a HOF, or cannot be differentiated."
 
                 ;; HOF detection: any param has a function type?
                 (fn-param-entries
-                 (cl:loop for pd in env
+                 (loop for pd in env
                           for i from 0
                           when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
                                     (%crisp-function-type-p (parameter-def-type pd)))
@@ -659,16 +659,16 @@ differentiable float params, is a HOF, or cannot be differentiated."
 
         ;; If HOF: store info and register with :hof t. No _GRAD function generated.
         (when is-hof
-          (cl:let* ((fn-param-idx  (car (car fn-param-entries)))
+          (let* ((fn-param-idx  (car (car fn-param-entries)))
                     (fn-param-sym  (parameter-def-name (cdr (car fn-param-entries))))
                     ;; Strip any trailing source-location atom from body-forms
-                    (clean-body    (cl:loop for f in body-forms
+                    (clean-body    (loop for f in body-forms
                                             unless (and (atom f) (not (symbolp f)))
                                             collect f)))
             (log:info "AUTODIFF: ~a is HOF (fn-param=~a idx=~a) — storing for inline backward"
                       name fn-param-sym fn-param-idx)
             (setf (gethash name *differentiable-hof-store*)
-                  (list :param-syms       (cl:loop for pd in env
+                  (list :param-syms       (loop for pd in env
                                                    collect (parameter-def-name pd))
                         :fn-param-idx     fn-param-idx
                         :fn-param-sym     fn-param-sym
@@ -684,8 +684,8 @@ differentiable float params, is a HOF, or cannot be differentiated."
         ;; If the body contains non-differentiable operations, catch the error,
         ;; unregister the function, and return nil. The kernel backward walk
         ;; will error if this function is actually called in a diff context.
-        (cl:let* ((bkwd-name  (intern (format nil "~A_GRAD" (symbol-name name)) pkg))
-                  (t-grad-syms (cl:loop for i from 0 below n-return
+        (let* ((bkwd-name  (intern (format nil "~A_GRAD" (symbol-name name)) pkg))
+                  (t-grad-syms (loop for i from 0 below n-return
                                         collect (intern (format nil "T_GRAD~A" i) pkg)))
                   (orig-param-types (mapcar #'parameter-def-type env))
                   (t-grad-types return-types-non-void)
@@ -703,14 +703,14 @@ differentiable float params, is a HOF, or cannot be differentiated."
                     bkwd-name name n-float-params n-return)
 
           (handler-case
-            (cl:let* ((anf-body   (mapcar #'anf-transform body-forms))
+            (let* ((anf-body   (mapcar #'anf-transform body-forms))
                       (raw-flat   (flatten-anf-body anf-body))
                       (flat-anf
-                       (cl:let ((last-f (cl:car (cl:last raw-flat))))
+                       (let ((last-f (car (last raw-flat))))
                          (if (or (symbolp last-f)
-                                 (and (consp last-f) (eq (cl:first last-f) 'return)))
+                                 (and (consp last-f) (eq (first last-f) 'return)))
                              raw-flat
-                             (cl:let ((ret-sym (intern "%RET-0" pkg)))
+                             (let ((ret-sym (intern "%RET-0" pkg)))
                                (append (butlast raw-flat)
                                        (list (list ret-sym last-f)
                                              ret-sym))))))
@@ -741,30 +741,30 @@ FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).
 T-GRAD-SYMS      : symbols for the incoming gradient inputs (one per return value).
 RETURN-VARS      : symbols of the return variables (identified from FLAT-ANF last element).
 Returns a (let (...) ...) form suitable as the body of the _GRAD companion function."
-  (cl:let ((backward-forms nil)
+  (let ((backward-forms nil)
            (adjoint-map (make-hash-table :test 'equal))
            (return-var-seeds (make-hash-table :test 'eq)))
 
     ;; Map each return-var to its t_grad seed
-    (cl:loop for rv in return-vars
+    (loop for rv in return-vars
              for tg in t-grad-syms do
       (setf (gethash rv return-var-seeds) tg))
 
     (labels ((local-adj (v)
                (or (gethash v adjoint-map)
-                   (cl:let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
+                   (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
                                          (symbol-package v))))
                      (setf (gethash v adjoint-map) adv)
                      adv)))
              (emit (form)
                (push form backward-forms)))
 
-      (cl:let ((reversed-body (reverse flat-anf)))
+      (let ((reversed-body (reverse flat-anf)))
         (dolist (form reversed-body)
           (cond
             ;; ---- Single-value binding: (v expr) -------------------
             ((and (listp form) (= (length form) 2) (symbolp (car form)))
-              (cl:let ((v    (car form))
+              (let ((v    (car form))
                        (expr (cadr form)))
                 (%handle-single-value-backward v expr adjoint-map #'emit #'local-adj
                                                :error-on-unknown t)))
@@ -773,12 +773,12 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
             ((and (listp form) (>= (length form) 3)
                   (symbolp (car form))
                   (every #'symbolp (butlast form)))
-              (cl:let* ((result-vars (butlast form))
+              (let* ((result-vars (butlast form))
                         (expr        (car (last form))))
                 (when (and (consp expr)
                            (symbolp (car expr))
                            (gethash (car expr) *differentiable-functions*))
-                  (cl:let* ((fn      (car expr))
+                  (let* ((fn      (car expr))
                              (args    (cdr expr))
                              (info    (gethash fn *differentiable-functions*))
                              (bkwd-fn (getf info :bkwd-name))
@@ -797,17 +797,17 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
     ;;   - forward single-value bindings from flat-anf (so temps like %ANF-T-3 are in scope)
     ;;   - return-var adjoints: initialised to their t_grad seed
     ;;   - all other adjoints: initialised to 0.0
-    (cl:let* ((forward-bindings
-               (cl:loop for form in flat-anf
+    (let* ((forward-bindings
+               (loop for form in flat-anf
                         when (and (consp form)
                                   (= (length form) 2)
                                   (symbolp (car form))
                                   (not (gethash (car form) return-var-seeds)))
                         collect form))
               (adjoint-bindings
-               (cl:loop for v being the hash-keys of adjoint-map
+               (loop for v being the hash-keys of adjoint-map
                         using (hash-value adv)
-                        collect (cl:let ((seed (gethash v return-var-seeds)))
+                        collect (let ((seed (gethash v return-var-seeds)))
                                   `(,adv ,(if seed seed 0.0)))))
               (all-bindings (append forward-bindings adjoint-bindings)))
       `(let ,all-bindings
@@ -822,16 +822,16 @@ Returns a (let (...) ...) form suitable as the body of the _GRAD companion funct
 Signals a compiler error if any mutation is detected, naming FN-NAME."
   (labels ((walk (form)
              (when (consp form)
-               (when (and (eq (cl:first form) 'set!)
-                          (consp (cl:second form))
-                          (eq (cl:first (cl:second form)) '~)
-                          (symbolp (cl:second (cl:second form)))
-                          (member (cl:second (cl:second form)) param-names :test #'string-equal))
+               (when (and (eq (first form) 'set!)
+                          (consp (second form))
+                          (eq (first (second form)) '~)
+                          (symbolp (second (second form)))
+                          (member (second (second form)) param-names :test #'string-equal))
                  (error "Cannot differentiate function ~A: it mutates parameter ~A via cell write (set! (~~ ~A) ...). This function is not valid in a differentiable kernel."
                         fn-name
-                        (cl:second (cl:second form))
-                        (cl:second (cl:second form))))
-               (mapc #'walk (cl:rest form)))))
+                        (second (second form))
+                        (second (second form))))
+               (mapc #'walk (rest form)))))
     (mapc #'walk body-forms)))
 
 
@@ -840,8 +840,8 @@ Signals a compiler error if any mutation is detected, naming FN-NAME."
 (defun %crisp-function-type-p (type-spec)
   "Returns T if TYPE-SPEC is a parsed :function-type or :function-literal specifier."
   (and (consp type-spec)
-       (or (eq (cl:first type-spec) :function-type)
-           (eq (cl:first type-spec) :function-literal))))
+       (or (eq (first type-spec) :function-type)
+           (eq (first type-spec) :function-literal))))
 
 
 (defun %subst-form (form subst-alist)
@@ -849,9 +849,9 @@ Signals a compiler error if any mutation is detected, naming FN-NAME."
   (cond
     ((null form) nil)
     ((atom form)
-     (cl:let ((pair (cl:assoc form subst-alist)))
+     (let ((pair (assoc form subst-alist)))
        (if pair (cdr pair) form)))
-    (t (cl:cons (%subst-form (car form) subst-alist)
+    (t (cons (%subst-form (car form) subst-alist)
                 (%subst-form (cdr form) subst-alist)))))
 
 
@@ -861,7 +861,7 @@ with (CONCRETE-FN-SYM ...) in FORM."
   (cond
     ((atom form) form)
     ((and (eq (car form) 'funcall) (consp (cdr form)))
-     (cl:let* ((fn-arg    (cadr form))
+     (let* ((fn-arg    (cadr form))
                (call-args (mapcar (lambda (a) (%remove-funcall a fn-param-sym concrete-fn-sym))
                                   (cddr form)))
                (resolved  (cond
@@ -882,9 +882,9 @@ with (CONCRETE-FN-SYM ...) in FORM."
 (defun %fn-name-is-grad-p (name)
   "Returns T if NAME ends with the _GRAD suffix, indicating it is already
 a backward companion and should not receive its own companion."
-  (cl:let ((s (symbol-name name)))
-    (cl:and (> (cl:length s) 5)
-            (string= (cl:subseq s (- (cl:length s) 5)) "_GRAD"))))
+  (let ((s (symbol-name name)))
+    (and (> (length s) 5)
+            (string= (subseq s (- (length s) 5)) "_GRAD"))))
 
 
 ;;; Helper: extract return variable(s) from the last element of a flat ANF body.
@@ -894,11 +894,11 @@ a backward companion and should not receive its own companion."
 (defun %extract-return-vars (flat-anf)
   "Returns the list of return-value symbols from FLAT-ANF.
 Handles both implicit last-expression and explicit (return v0 v1 ...) forms."
-  (cl:let ((last-form (cl:car (cl:last flat-anf))))
+  (let ((last-form (car (last flat-anf))))
     (cond
       ((symbolp last-form)
-       (cl:list last-form))
-      ((and (consp last-form) (eq (cl:first last-form) 'return))
-       (cl:rest last-form))
+       (list last-form))
+      ((and (consp last-form) (eq (first last-form) 'return))
+       (rest last-form))
       (t
        (error "Cannot extract return vars from flat-ANF last form: ~s" last-form)))))

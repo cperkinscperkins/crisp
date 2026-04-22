@@ -572,30 +572,30 @@
              (width (get-physical-width type))
              (start phys-index)
              (end (+ phys-index width -1))
-             (type-head (when (consp type) (symbol-name (cl:first type))))
+             (type-head (when (consp type) (symbol-name (first type))))
              ;; Extract address-space:
              ;;   CELL positional: (cell elem ADDR access) — addr at index 2
              ;;   TENSOR positional: (tensor elem N ADDR access align) — addr at index 3
              (address-space
               (cond
-                ((and (consp type) (string-equal type-head "CELL") (>= (cl:length type) 3))
-                 (cl:nth 2 type))
-                ((and (consp type) (cl:member type-head '("TENSOR" "VECTOR" "MATRIX")
+                ((and (consp type) (string-equal type-head "CELL") (>= (length type) 3))
+                 (nth 2 type))
+                ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
                                              :test #'string-equal)
-                      (>= (cl:length type) 4))
-                 (cl:nth 3 type))   ; positional 6-tuple: index 3 is addr
+                      (>= (length type) 4))
+                 (nth 3 type))   ; positional 6-tuple: index 3 is addr
                 (t :local)))
              ;; Extract access:
              ;;   CELL positional: (cell elem addr ACCESS) — access at index 3
              ;;   TENSOR positional: (tensor elem N addr ACCESS align) — access at index 4
              (access
               (cond
-                ((and (consp type) (string-equal type-head "CELL") (>= (cl:length type) 4))
-                 (cl:nth 3 type))
-                ((and (consp type) (cl:member type-head '("TENSOR" "VECTOR" "MATRIX")
+                ((and (consp type) (string-equal type-head "CELL") (>= (length type) 4))
+                 (nth 3 type))
+                ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
                                              :test #'string-equal)
-                      (>= (cl:length type) 5))
-                 (cl:nth 4 type))   ; positional 6-tuple: index 4 is access
+                      (>= (length type) 5))
+                 (nth 4 type))   ; positional 6-tuple: index 4 is access
                 (t :read-write)))
              ;; Look up size-expr from side table (nil for non-tensor implicit params)
              (size-expr (gethash name *implicit-scratch-size-expr-map*)))
@@ -663,12 +663,12 @@
   "Resolves TYPE-SPEC alias to its inline form. If NEW-ACCESS (:read-only or :write-only)
    is provided and the resolved type is a cell, replaces the :access keyword value.
    Used to build semantically correct declared-types for backward kernel metadata (Option B)."
-  (cl:let* ((resolved (resolve-type-alias type-spec))
+  (let* ((resolved (resolve-type-alias type-spec))
              (is-cell (and (consp resolved)
                            (symbolp (first resolved))
                            (string-equal (symbol-name (first resolved)) "CELL"))))
     (if (and is-cell new-access)
-        (cl:let* ((pos (position :access resolved))
+        (let* ((pos (position :access resolved))
                   (new-spec (copy-list resolved)))
           (if pos
               (progn (setf (nth (1+ pos) new-spec) new-access)
@@ -685,19 +685,19 @@
      - Params after  &out: resolve alias, force cell :access to :write-only
    This corrects the raw types stored by %generate-backward-kernel-ast, which
    copies them mechanically from the forward kernel's type list."
-  (cl:let ((raw-types (gethash bwd-k-name *kernel-declared-signatures*)))
+  (let ((raw-types (gethash bwd-k-name *kernel-declared-signatures*)))
     (when raw-types
-      (cl:let* ((out-mode nil)
+      (let* ((out-mode nil)
                 (semantic-types
-                  (mapcar (cl:lambda (pair)
-                            (cl:let* ((p  (car pair))
+                  (mapcar (lambda (pair)
+                            (let* ((p  (car pair))
                                       (ts (cdr pair)))
                               (cond
                                 ((and (symbolp p) (string-equal (symbol-name p) "&OUT"))
                                  (setf out-mode t)
                                  pair)
                                 (t
-                                 (cl:let ((access (if out-mode :write-only :read-only)))
+                                 (let ((access (if out-mode :write-only :read-only)))
                                    (cons p (%bwd-resolve-type ts access)))))))
                           raw-types)))
         (setf (gethash bwd-k-name *kernel-declared-signatures*) semantic-types)

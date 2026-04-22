@@ -410,14 +410,14 @@ the _GRAD backward companion after the forward function."
   (unless (gethash (second form) *function-table*)
     (register-function-signature form location))
 
-  (cl:let* ((name (second form))
+  (let* ((name (second form))
             (params (third form))
             (body-and-loc (cdddr form))
             ;; Extract declarations manually to check for optional args and system flag.
-            (declare-forms (cl:loop for f in body-and-loc
+            (declare-forms (loop for f in body-and-loc
                                     while (and (listp f) (eq (car f) 'declare))
                                     collect f))
-            (declarations (cl:loop for f in declare-forms append (rest f)))
+            (declarations (loop for f in declare-forms append (rest f)))
             (is-system (member '(crisp-system-generated) declarations :test #'equal)))
 
     (multiple-value-bind (explicit-env return-types optional-idx defaults key-idx)
@@ -437,7 +437,7 @@ the _GRAD backward companion after the forward function."
          (when (and *differentiate-p*
                     (not (%fn-name-is-grad-p name))
                     (not is-system))
-           (cl:let* ((body-forms (nthcdr (length declare-forms) body-and-loc))
+           (let* ((body-forms (nthcdr (length declare-forms) body-and-loc))
                      (bkwd-form (%generate-backward-function-ast name params declarations body-forms)))
              (when bkwd-form
                (log:info "AUTODIFF: Compiling backward companion for ~a" name)
@@ -469,10 +469,10 @@ Also scans *template-registry* for HOF templates after walk-code-forms."
   ;; Step 2: Walk all forms (registers templates, signatures, etc.)
   (walk-code-forms forms
                    (lambda (form location)
-                     (cl:let* ((name (second form))
+                     (let* ((name (second form))
                                (body (cdddr form)))
                        (register-function-signature form location)
-                       (cl:let ((*compiler-context* (make-compiler-context)))
+                       (let ((*compiler-context* (make-compiler-context)))
                          (setf (compiler-context-scanning-function-name *compiler-context*) name)
                          (multiple-value-bind (is-originator callees)
                              (shallow-analyze-body body)
@@ -633,7 +633,7 @@ in single-pass mode."
   (let ((name-str (symbol-name name)))
     (when (and (> (cl:length name-str) 2)
                (cl:char= (cl:char name-str 0) #\~)
-               (cl:char= (cl:char name-str (1- (cl:length name-str))) #\~))
+               (cl:char= (cl:char name-str (1- (length name-str))) #\~))
           (unless (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)))
             (error 'crisp-compiler-error
               :source-location location
@@ -892,8 +892,8 @@ in single-pass mode."
     (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
            (is-entry-p (loop for d in declarations
                              thereis (and (listp d)
-                                          (symbolp (cl:first d))
-                                          (string-equal (symbol-name (cl:first d)) "ENTRY-POINT"))))
+                                          (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
            (*boundary-struct-params*
              (if is-entry-p
                  (loop for param in explicit-env
@@ -1067,20 +1067,20 @@ in single-pass mode."
           ;; === Brand Instance Type Checking (when --differentiate is active) ===
           (let ((refined-return-types (function-signature-return-types augmented-signature)))
 
-            (cl:when *differentiate-p*
+            (when *differentiate-p*
               (let ((sig-params (function-signature-parameters augmented-signature)))
 
                 ;; 1. Brand parameter type checking
                 (loop for param in sig-params
                       for arg-node in final-arg-nodes
                       for param-type = (parameter-def-type param)
-                      do (cl:let ((brand-def (is-brand-type-p param-type)))
-                           (cl:when (and brand-def (brand-active-p brand-def))
+                      do (let ((brand-def (is-brand-type-p param-type)))
+                           (when (and brand-def (brand-active-p brand-def))
                              ;; FIX: Use brand-name to find owner, supporting shared brands
-                             (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                             (let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
                                                                         sig-params final-arg-nodes)))
-                               (cl:when owner-var
-                                 (cl:let* ((expected-type (resolve-brand-type param-type owner-var))
+                               (when owner-var
+                                 (let* ((expected-type (resolve-brand-type param-type owner-var))
                                            (actual-type (get-single-value-type arg-node)))
                                    (unless (or (eq actual-type expected-type)
                                                (is-substitutable-for? actual-type expected-type))
@@ -1092,9 +1092,9 @@ in single-pass mode."
                 ;; 2. Brand return type refinement
                 (setf refined-return-types
                   (loop for ret-type in (function-signature-return-types augmented-signature)
-                        collect (cl:let ((brand-def (is-brand-type-p ret-type)))
+                        collect (let ((brand-def (is-brand-type-p ret-type)))
                                   (if (and brand-def (brand-active-p brand-def))
-                                      (cl:let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                      (let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
                                                                                  sig-params final-arg-nodes)))
                                         (if owner-var
                                             (resolve-brand-type ret-type owner-var)
@@ -1403,30 +1403,30 @@ for HOF functions). Handles top-level def-function, progn, and with-template-typ
 Guards parse-function-declarations against unknown-type errors from brand types
 that are not yet registered at pre-registration time."
   (when *differentiate-p*
-    (cl:dolist (form forms)
+    (dolist (form forms)
       (cond
         ;; Top-level def-function: existing HOF-aware logic
         ((and (consp form) (eq (car form) 'def-function))
-         (cl:let* ((name (second form))
+         (let* ((name (second form))
                    (params (third form))
                    (body-and-loc (cdddr form)))
            (multiple-value-bind (declare-forms declarations fn-body)
                (%extract-fn-body-and-declarations body-and-loc)
              (declare (ignore declare-forms))
-             (cl:let ((is-system (member '(crisp-system-generated) declarations :test #'equal)))
+             (let ((is-system (member '(crisp-system-generated) declarations :test #'equal)))
                (unless (or is-system (%fn-name-is-grad-p name))
                  (handler-case
                    (multiple-value-bind (env return-types)
                        (parse-function-declarations params declarations)
-                     (cl:let* ((float-param-entries
-                                (cl:loop for pd in env
+                     (let* ((float-param-entries
+                                (loop for pd in env
                                          when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
                                                    (%crisp-float-type-p (parameter-def-type pd)))
                                          collect pd))
                                (n-float-params (length float-param-entries))
                                (n-return (length (remove nil return-types)))
                                (fn-param-entries
-                                (cl:loop for pd in env
+                                (loop for pd in env
                                          for i from 0
                                          when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
                                                    (%crisp-function-type-p (parameter-def-type pd)))
@@ -1434,13 +1434,13 @@ that are not yet registered at pre-registration time."
                                (is-hof (consp fn-param-entries)))
                        (when (> n-float-params 0)
                          (if is-hof
-                             (cl:let* ((fn-param-idx (car (car fn-param-entries)))
+                             (let* ((fn-param-idx (car (car fn-param-entries)))
                                        (fn-param-sym (parameter-def-name (cdr (car fn-param-entries))))
                                        (float-param-syms (mapcar #'parameter-def-name float-param-entries))
-                                       (clean-body  (cl:loop for f in fn-body
+                                       (clean-body  (loop for f in fn-body
                                                              unless (and (atom f) (not (symbolp f)))
                                                              collect f))
-                                       (param-syms (cl:loop for pd in env collect (parameter-def-name pd))))
+                                       (param-syms (loop for pd in env collect (parameter-def-name pd))))
                                (%register-hof-entry name "definition" param-syms fn-param-idx fn-param-sym float-param-syms clean-body n-float-params n-return))
                              (%register-standard-differentiable-entry name "definition" n-float-params n-return)))))
                    (error (e)
@@ -1456,9 +1456,9 @@ that are not yet registered at pre-registration time."
         ;; Non-HOF branch: register optimistically; concrete instantiation will update
         ;;   the entry with accurate counts before the backward walk runs.
         ((and (consp form) (eq (car form) 'with-template-type))
-         (cl:dolist (bform (cddr form))   ; skip 'with-template-type' and params list
+         (dolist (bform (cddr form))   ; skip 'with-template-type' and params list
            (when (and (consp bform) (eq (car bform) 'def-function))
-             (cl:let* ((name   (second bform))
+             (let* ((name   (second bform))
                        (params (third bform))
                        (body-and-loc (cdddr bform)))
                (multiple-value-bind (declare-forms declarations fn-body)
@@ -1472,7 +1472,7 @@ that are not yet registered at pre-registration time."
                       (%register-hof-entry name "template via with-template-type" params fn-param-idx fn-param-sym float-param-syms fn-body (1- (length params)) 1))
                      ;; Non-HOF template: register optimistically.
                      ((not (gethash name *differentiable-functions*))
-                      (cl:let ((n-params (cl:count-if (lambda (p) (not (string-equal (symbol-name p) "&OUT"))) params)))
+                      (let ((n-params (count-if (lambda (p) (not (string-equal (symbol-name p) "&OUT"))) params)))
                         (%register-standard-differentiable-entry name "template via with-template-type" n-params 1 :optimistic-p t))))))))))))))
 
 (defun %pre-register-hof-templates ()
@@ -1483,14 +1483,14 @@ Must be called after walk-code-forms so *template-registry* is populated."
   (when *differentiate-p*
     (maphash
      (lambda (name templates)
-       (cl:dolist (tmpl templates)
-         (cl:let* ((body (template-data-body tmpl)))
+       (dolist (tmpl templates)
+         (let* ((body (template-data-body tmpl)))
            ;; Only process def-function templates (not def-kernel, def-struct, etc.)
            (when (and (consp body)
-                      (symbolp (cl:first body))
-                      (string-equal (symbol-name (cl:first body)) "DEF-FUNCTION"))
-             (cl:let* ((params (cl:third body))
-                       (body-and-loc (cl:nthcdr 3 body)))
+                      (symbolp (first body))
+                      (string-equal (symbol-name (first body)) "DEF-FUNCTION"))
+             (let* ((params (third body))
+                       (body-and-loc (nthcdr 3 body)))
                (multiple-value-bind (declare-forms declarations fn-body)
                    (%extract-fn-body-and-declarations body-and-loc)
                  (declare (ignore declare-forms declarations))
@@ -1510,12 +1510,12 @@ Must be called after walk-code-forms so *template-registry* is populated."
     ((null tree) nil)
     ((atom tree) nil)
     ;; Is this a (funcall target ...) form?
-    ((and (symbolp (cl:first tree))
-          (string= (symbol-name (cl:first tree)) "FUNCALL")
-          (eq (cl:second tree) target-sym))
+    ((and (symbolp (first tree))
+          (string= (symbol-name (first tree)) "FUNCALL")
+          (eq (second tree) target-sym))
      t)
     ;; Recurse into sub-trees
-    (t (cl:some (lambda (sub) (%tree-has-funcall-p sub target-sym)) tree))))
+    (t (some (lambda (sub) (%tree-has-funcall-p sub target-sym)) tree))))
 
 
 
@@ -1562,10 +1562,10 @@ Must be called after walk-code-forms so *template-registry* is populated."
    aggregate is not read-only."
   (let* ((op       (first expr))
          (op-name  (symbol-name op))
-         (index    (cond ((cl:string= op-name "X~") 0)
-                         ((cl:string= op-name "Y~") 1)
-                         ((cl:string= op-name "Z~") 2)
-                         ((cl:string= op-name "W~") 3)
+         (index    (cond ((string= op-name "X~") 0)
+                         ((string= op-name "Y~") 1)
+                         ((string= op-name "Z~") 2)
+                         ((string= op-name "W~") 3)
                          (t (error "analyze-dvec-component-ref: unknown accessor ~a" op))))
          ;; Always read the aggregate; the write context is on the component, not the vector.
          (arg-node (let ((*analysis-access-mode* :read))
@@ -1589,7 +1589,7 @@ Must be called after walk-code-forms so *template-registry* is populated."
               (analyze-function-call op expr env context location))
             (error 'crisp-compiler-error
                    :message (format nil "~a requires a device-vector argument; got ~a"
-                                    (cl:string-downcase op-name) arg-type)
+                                    (string-downcase op-name) arg-type)
                    :source-location location))))
 
     ;; Resolve brand-instance / derived types to their concrete device-vector
@@ -1598,14 +1598,14 @@ Must be called after walk-code-forms so *template-registry* is populated."
     (let* ((dvec-type (let ((node (gethash arg-type *type-derivation-graph*)))
                         (if node (type-node-base-type node) arg-type)))
            (type-name (symbol-name dvec-type))
-           (width     (cl:digit-char-p (cl:char type-name (cl:1- (cl:length type-name))))))
+           (width     (digit-char-p (cl:char type-name (1- (length type-name))))))
 
       ;; Validate: component index must be in range for this vector width.
       (unless (and width (< index width))
         (error 'crisp-compiler-error
                :message (format nil
                  "~a is out of range for ~a (width ~a); valid accessors: ~a"
-                 (cl:string-downcase op-name) arg-type width
+                 (string-downcase op-name) arg-type width
                  (subseq '("x~" "y~" "z~" "w~") 0 (or width 0)))
                :source-location location))
 
@@ -1615,7 +1615,7 @@ Must be called after walk-code-forms so *template-registry* is populated."
 
       ;; Component scalar type: strip trailing width digit(s) from the CONCRETE type name.
       ;; e.g.  "FLOAT2" -> "FLOAT",  "USHORT4" -> "USHORT",  "HALF3" -> "HALF"
-      (let* ((base-name (cl:string-right-trim "1234" type-name))
+      (let* ((base-name (string-right-trim "1234" type-name))
              (comp-sym  (intern base-name (find-package :crisp-language))))
         (log:debug "analyze-dvec-component-ref: ~a on ~a (dvec ~a) -> index ~a, comp ~a"
                    op-name arg-type dvec-type index comp-sym)
@@ -1631,13 +1631,13 @@ Must be called after walk-code-forms so *template-registry* is populated."
    Handles type aliases, mangled symbols (e.g. TENSOR_INT_1_...),
    (vector ...) / (matrix ...) sugar, and already-canonical lists.
    Returns (CELL elem addr access) or (TENSOR elem N addr access align), or NIL."
-  (cl:labels ((fully-expand (x)
+  (labels ((fully-expand (x)
                 "Recursively resolve alias or unmangle, then expand sugar."
-                (cl:let* ((r  (resolve-type-alias x))
+                (let* ((r  (resolve-type-alias x))
                            (ex (cond
                                  ;; Already a canonical list
                                  ((consp r)
-                                  (cl:let ((h (symbol-name (cl:first r))))
+                                  (let ((h (symbol-name (first r))))
                                     (cond
                                       ((string-equal h "CELL")   r)
                                       ((string-equal h "TENSOR") r)
@@ -1648,11 +1648,11 @@ Must be called after walk-code-forms so *template-registry* is populated."
                                  ;; Symbol: try unmangle first (for mangled names like
                                  ;; TENSOR_INT_1_GLOBAL_READ-WRITE_COMPACT), then alias expand
                                  ((symbolp r)
-                                  (cl:let* ((unmangled (unmangle-template-struct-name r))
+                                  (let* ((unmangled (unmangle-template-struct-name r))
                                              ;; unmangle returns a list like (TENSOR INT 1 ...) or nil
                                              (unm-head  (and (consp unmangled)
-                                                             (symbolp (cl:first unmangled))
-                                                             (symbol-name (cl:first unmangled)))))
+                                                             (symbolp (first unmangled))
+                                                             (symbol-name (first unmangled)))))
                                     (cond
                                       ;; Successfully unmangled to a TENSOR or CELL form
                                       ((and unm-head (string-equal unm-head "TENSOR"))
@@ -1662,9 +1662,9 @@ Must be called after walk-code-forms so *template-registry* is populated."
                                        (expand-storage-handle-type-specifier unmangled))
                                       ;; Not a mangled name — try normal expansion
                                       (t
-                                       (cl:let ((e (expand-storage-handle-type-specifier r)))
+                                       (let ((e (expand-storage-handle-type-specifier r)))
                                          (if (consp e) (fully-expand e) r))))))
                                  (t r))))
                   ex)))
-    (cl:let ((result (fully-expand src-type)))
+    (let ((result (fully-expand src-type)))
       (when (consp result) result))))

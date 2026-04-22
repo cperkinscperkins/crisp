@@ -59,8 +59,8 @@
 (defun parse-cli-args (args)
   "Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets).
 Supports one or more .crisp source files: the last file is treated as the primary (determines output name)."
-  (let* ((flags (remove-if-not (lambda (arg) (char= (char arg 0) #\-)) args))
-         (files (remove-if (lambda (arg) (char= (char arg 0) #\-)) args))
+  (let* ((flags (remove-if-not (lambda (arg) (char= (cl:char arg 0) #\-)) args))
+         (files (remove-if (lambda (arg) (char= (cl:char arg 0) #\-)) args))
          (log-level-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--log-level=" f)) flags))
          (log-level (if log-level-flag
                         (intern (string-upcase (subseq log-level-flag (length "--log-level="))) :keyword)

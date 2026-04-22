@@ -119,3 +119,28 @@ The fixed array declaration is normally for compile-time known contiguous data.
 
 BUT if the (array) declaration is inside a def-record it is a VIRTUAL array, and is SROA exploded just
 like any record var when being passed to functions or kernels.
+
+
+## Implementation: package name qualifiers.
+
+You'll sometimes see the following symbols package qualified with `cl:`
+
+Sometimes:
+`let`, `when`, `unless`, `cond`, `return` — Crisp redefines these as real host macros → bare name works (after src/macros loads).  But BEFORE src/macros.lisp loads, they may need to be qualified.
+
+Alwyas:
+`truncate`, `floor`, `ceil`, `round` — initialize-compiler installs cl:* counterparts at startup, but bootstrapping code in initialize-compiler itself still needs `cl:` on the right-hand side of those assignments
+`char`, `short`, `float`, `double`, `int`, `long`, `sin`, `cos` etc. — Crisp type symbols with no CL function binding → always need cl: when used as CL functions (e.g. `(cl:char str idx), (cl:float x)`)
+
+
+### cl:return
+Final rule for `cl:return` in `:crisp.compiler` files:
+
+Crisp's return macro expands to (explicit-return ...) — which is only valid inside the Crisp kernel compiler context. Anywhere in host Lisp implementation code that uses return to exit a loop or block, you need cl:return. The tricky cases are:
+
+Pattern	Needs cl:?
+(loop ... (return value))	Yes — bare function-call style
+(loop ... (when ... (return)))	Yes — same
+(loop ... finally (return x))	Yes
+(loop for x when pred return x)	No — return as a LOOP keyword (word position, not a call)
+'(def-function ... (return val))	No — inside a quoted Crisp kernel form

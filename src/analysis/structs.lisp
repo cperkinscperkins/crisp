@@ -6,27 +6,27 @@
   "Determines the element type of an array, pointer, cell, or tensor type.
    Returns NIL if unknown.
    Handles single-element list wrapping, e.g. ((array float 4)) → (array float 4)."
-  (let* ((type (if (and (listp type) (= (cl:length type) 1) (listp (cl:first type)))
-                   (cl:first type)
+  (let* ((type (if (and (listp type) (= (length type) 1) (listp (first type)))
+                   (first type)
                    type))
          (type (resolve-type-alias type)))
     (cond
      ((listp type)
-      (let ((base (cl:first type)))
+      (let ((base (first type)))
         (if (and (symbolp base)
                  (member (symbol-name base)
                          '("CELL" "VECTOR" "MATRIX" "TENSOR" "PTR" "ARRAY" "POINTER")
                          :test #'string-equal))
-            (cl:second type)
+            (second type)
             nil)))
      ((symbolp type)
       (let ((unmangled (unmangle-template-struct-name type)))
         (if (and (consp unmangled)
-                 (symbolp (cl:first unmangled))
-                 (member (symbol-name (cl:first unmangled))
+                 (symbolp (first unmangled))
+                 (member (symbol-name (first unmangled))
                          '("CELL" "TENSOR" "VECTOR" "MATRIX")
                          :test #'string-equal))
-            (cl:second unmangled)
+            (second unmangled)
             nil)))
      (t nil))))
 
@@ -69,10 +69,10 @@
 (defun numeric-type-category (type-name)
   "Returns the category (:signed-int, :unsigned-int, :float) if TYPE-NAME is a numeric
    scalar in *crisp-types*, or NIL otherwise. Resolves aliases and derived types first."
-  (cl:let* ((resolved (resolve-type-alias type-name))
+  (let* ((resolved (resolve-type-alias type-name))
             (base (get-type-base resolved))
-            (crisp-type (cl:when (symbolp base) (gethash base *crisp-types*))))
-    (cl:when (and crisp-type
+            (crisp-type (when (symbolp base) (gethash base *crisp-types*))))
+    (when (and crisp-type
                   (member (crisp-type-category crisp-type) '(:signed-int :unsigned-int :float)))
       (crisp-type-category crisp-type))))
 
@@ -111,10 +111,10 @@
                                           type-name (first member) arg-type expected-type)
                                ;; Type check with branded type promotion
                                (unless (type-equal-p arg-type expected-type)
-                                 (cl:let ((brand-def (is-brand-type-p expected-type)))
+                                 (let ((brand-def (is-brand-type-p expected-type)))
                                    (if brand-def
                                        ;; Branded member: check numeric compatibility with base type
-                                       (cl:let* ((base-type (brand-definition-base-type brand-def))
+                                       (let* ((base-type (brand-definition-base-type brand-def))
                                                  (arg-cat (numeric-type-category arg-type))
                                                  (base-cat (numeric-type-category base-type)))
                                          (if (and arg-cat base-cat)
@@ -239,11 +239,11 @@
 (defun %tensor-type-p (type)
   "Returns T if TYPE denotes a tensor (list or mangled-symbol form)."
   (cond
-    ((and (listp type) (symbolp (cl:first type)))
-     (string-equal (symbol-name (cl:first type)) "TENSOR"))
+    ((and (listp type) (symbolp (first type)))
+     (string-equal (symbol-name (first type)) "TENSOR"))
     ((symbolp type)
      (let ((name (symbol-name type)))
-       (and (>= (cl:length name) 7)
+       (and (>= (length name) 7)
             (string-equal (subseq name 0 7) "TENSOR_"))))
     (t nil)))
 
@@ -256,14 +256,14 @@
                (symbol  (ignore-errors (parse-integer (symbol-name raw) :junk-allowed nil)))
                (t nil))))
     (cond
-      ((and (listp type) (symbolp (cl:first type))
-            (string-equal (symbol-name (cl:first type)) "TENSOR"))
-       (coerce-n (cl:third type)))
+      ((and (listp type) (symbolp (first type))
+            (string-equal (symbol-name (first type)) "TENSOR"))
+       (coerce-n (third type)))
       ((symbolp type)
        (let ((unmangled (unmangle-template-struct-name type)))
-         (when (and (consp unmangled) (symbolp (cl:first unmangled))
-                    (string-equal (symbol-name (cl:first unmangled)) "TENSOR"))
-           (coerce-n (cl:third unmangled)))))
+         (when (and (consp unmangled) (symbolp (first unmangled))
+                    (string-equal (symbol-name (first unmangled)) "TENSOR"))
+           (coerce-n (third unmangled)))))
       (t nil))))
 
 (defun %build-tensor-flat-index-form (target-sym index-forms)
@@ -277,11 +277,11 @@
              `(to-ulong ,idx-form))
            (dim-term (k)
              `(+ (~ (offset~ ,target-sym) ,k)
-                 (* ,(coerce-index (cl:nth k index-forms)) (~ (strides~ ,target-sym) ,k)))))
-    (if (= (cl:length index-forms) 1)
+                 (* ,(coerce-index (nth k index-forms)) (~ (strides~ ,target-sym) ,k)))))
+    (if (= (length index-forms) 1)
         (dim-term 0)
         (reduce (lambda (acc k) `(+ ,acc ,(dim-term k)))
-                (loop for k from 1 below (cl:length index-forms) collect k)
+                (loop for k from 1 below (length index-forms) collect k)
                 :initial-value (dim-term 0)))))
 
           
@@ -301,14 +301,14 @@
                ((and (symbolp raw) (string-equal (symbol-name raw) "STRIDED"))         :strided)
                (t nil))))
     (cond
-      ((and (listp type) (symbolp (cl:first type))
-            (string-equal (symbol-name (cl:first type)) "TENSOR"))
-       (coerce-aln (cl:sixth type)))
+      ((and (listp type) (symbolp (first type))
+            (string-equal (symbol-name (first type)) "TENSOR"))
+       (coerce-aln (sixth type)))
       ((symbolp type)
        (let ((unmangled (unmangle-template-struct-name type)))
-         (when (and (consp unmangled) (symbolp (cl:first unmangled))
-                    (string-equal (symbol-name (cl:first unmangled)) "TENSOR"))
-           (coerce-aln (cl:sixth unmangled)))))
+         (when (and (consp unmangled) (symbolp (first unmangled))
+                    (string-equal (symbol-name (first unmangled)) "TENSOR"))
+           (coerce-aln (sixth unmangled)))))
       (t nil))))
 
 
@@ -317,15 +317,15 @@
    :compact guarantees all offsets are zero at the kernel boundary, so we skip them.
    N=1: flat = i_0
    N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1})"
-  (let ((n (cl:length index-forms)))
+  (let ((n (length index-forms)))
     (if (= n 1)
         ;; Vector: just the index, cast to ulong
-        `(to-ulong ,(cl:first index-forms))
+        `(to-ulong ,(first index-forms))
         ;; Matrix / tensor: Horner only, no offset
-        (cl:let ((acc `(to-ulong ,(cl:first index-forms))))
+        (let ((acc `(to-ulong ,(first index-forms))))
           (loop for k from 1 below n
                 do (setf acc `(+ (* ,acc (~ (extents~ ,target-sym) ,k))
-                                 (to-ulong ,(cl:nth k index-forms)))))
+                                 (to-ulong ,(nth k index-forms)))))
           acc))))
 
 
@@ -336,17 +336,17 @@
    Strides are ignored (compact layout), but per-dimension offsets are read.
    N=1: flat = offset[0] + i_0
    N>=2: flat = Horner(i_0..i_{N-1}, ext_1..ext_{N-1}) + sum(offset[k])"
-  (let ((n (cl:length index-forms)))
+  (let ((n (length index-forms)))
     (if (= n 1)
         `(+ (~ (offset~ ,target-sym) 0)
-            (to-ulong ,(cl:first index-forms)))
-        (cl:let ((horner `(to-ulong ,(cl:first index-forms)))
+            (to-ulong ,(first index-forms)))
+        (let ((horner `(to-ulong ,(first index-forms)))
                  (offset-sum (reduce (lambda (a b) `(+ ,a ,b))
                                      (loop for k from 0 below n
                                            collect `(~ (offset~ ,target-sym) ,k)))))
           (loop for k from 1 below n
                 do (setf horner `(+ (* ,horner (~ (extents~ ,target-sym) ,k))
-                                    (to-ulong ,(cl:nth k index-forms)))))
+                                    (to-ulong ,(nth k index-forms)))))
           `(+ ,horner ,offset-sum)))))
 
 (defun analyze-aref-expression (expr env context location)
@@ -355,10 +355,10 @@
      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)
      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)
      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)"
-  (let* ((op          (cl:first expr))
-         (target-sym  (if (symbolp (cl:second expr)) (cl:second expr) nil))
-         (array-node  (analyze-expression (cl:second expr) env context (append location '(1))))
-         (index-expr  (cl:third expr))
+  (let* ((op          (first expr))
+         (target-sym  (if (symbolp (second expr)) (second expr) nil))
+         (array-node  (analyze-expression (second expr) env context (append location '(1))))
+         (index-expr  (third expr))
          (index-node  (if index-expr
                           (analyze-expression index-expr env context (append location '(2)))
                           (make-semantic-literal :value-type 'int :value 0
@@ -384,7 +384,7 @@
                              (and (symbolp elem-type)
                                   (string-equal (symbol-name elem-type) "T"))
                              (and (consp elem-type)
-                                  (let ((head (cl:first elem-type)))
+                                  (let ((head (first elem-type)))
                                     (or (eq head 'void) (eq head 'T)
                                         (and (symbolp head)
                                              (string-equal (symbol-name head) "VOID"))))))))
@@ -396,9 +396,9 @@
 
                 ;; ── Tensor path ──────────────────────────────────────────────
                 (let* ((index-forms (cddr expr)))
-                  (unless (= (cl:length index-forms) tensor-n)
+                  (unless (= (length index-forms) tensor-n)
                     (error "Tensor ~a requires ~a index~:p (arity ~a), got ~a."
-                           target-sym tensor-n tensor-n (cl:length index-forms)))
+                           target-sym tensor-n tensor-n (length index-forms)))
                   (let* ((align      (%get-tensor-align array-type))
                          (flat-form  (cond
                                        ((eq align :compact)
@@ -482,8 +482,8 @@
           :source-location location)))
 
      ;; Case 2: Function call / struct accessor
-     ((and (listp target-form) (>= (length target-form) 1) (symbolp (cl:first target-form)))
-       (let* ((op           (cl:first target-form))
+     ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
+       (let* ((op           (first target-form))
               (op-args      (rest target-form))
               (arg-nodes    (loop for arg in op-args
                                   for i from 1
@@ -556,9 +556,9 @@
                     (unless (= (length arg-nodes) 1)
                       (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a."
                              op (length arg-nodes)))
-                    (let* ((clean-name  (cl:string-trim "~" op-name))
+                    (let* ((clean-name  (string-trim "~" op-name))
                            (member-sym  (intern clean-name (symbol-package op)))
-                           (struct-node (cl:first arg-nodes))
+                           (struct-node (first arg-nodes))
                            (struct-type (semantic-node-type struct-node)))
                       (unless (or (semantic-var-read-p struct-node)
                                   (semantic-aref-p struct-node))
@@ -590,9 +590,9 @@
               (unless (= (length arg-nodes) 1)
                 (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a."
                        op (length arg-nodes)))
-              (let* ((clean-name  (cl:string-trim "~" op-name))
+              (let* ((clean-name  (string-trim "~" op-name))
                      (member-sym  (intern clean-name (symbol-package op)))
-                     (struct-node (cl:first arg-nodes))
+                     (struct-node (first arg-nodes))
                      (struct-type (semantic-node-type struct-node)))
                 (unless (or (semantic-var-read-p struct-node)
                             (semantic-aref-p struct-node))
@@ -886,58 +886,58 @@
 (defun %mv-source-head (canon)
   "Return the head keyword (:cell or :tensor) from a canonical type, or NIL."
   (when (consp canon)
-    (cl:let ((h (symbol-name (cl:first canon))))
+    (let ((h (symbol-name (first canon))))
       (cond ((string-equal h "CELL")   :cell)
             ((string-equal h "TENSOR") :tensor)
             (t nil)))))
 
 (defun %mv-source-elem (canon)
   "Return the element-type symbol from a canonical storage handle type."
-  (cl:second canon))
+  (second canon))
 
 (defun %mv-source-addr (canon)
   "Return the address-space keyword from a canonical storage handle type."
-  (cond ((eq (%mv-source-head canon) :cell)   (cl:third canon))
-        ((eq (%mv-source-head canon) :tensor)  (cl:fourth canon))
+  (cond ((eq (%mv-source-head canon) :cell)   (third canon))
+        ((eq (%mv-source-head canon) :tensor)  (fourth canon))
         (t :global)))
 
 (defun %mv-source-access (canon)
   "Return the access keyword from a canonical storage handle type."
-  (cond ((eq (%mv-source-head canon) :cell)   (cl:fourth canon))
-        ((eq (%mv-source-head canon) :tensor)  (cl:fifth canon))
+  (cond ((eq (%mv-source-head canon) :cell)   (fourth canon))
+        ((eq (%mv-source-head canon) :tensor)  (fifth canon))
         (t :read-write)))
 
 (defun %mv-source-align (canon)
   "Return the :align keyword from a canonical storage handle type (tensors only)."
   (when (eq (%mv-source-head canon) :tensor)
-    (cl:sixth canon)))
+    (sixth canon)))
 
 (defun %mv-is-struct-elem (elem-type)
   "Returns T if ELEM-TYPE is a registered def-struct type."
-  (cl:let ((ct (gethash elem-type *crisp-types*)))
+  (let ((ct (gethash elem-type *crisp-types*)))
     (and ct (eq (crisp-type-category ct) :struct))))
 
 (defun %mv-parse-kwargs (kwarg-list)
   "Parse a flat keyword-arg list like (:offset 2 :length 5 :major :row).
    Returns a plist."
-  (cl:let ((result '()))
-    (cl:loop for (k v) on kwarg-list by #'cl:cddr
-             when (keywordp k) do (setf (cl:getf result k) v))
+  (let ((result '()))
+    (loop for (k v) on kwarg-list by #'cddr
+             when (keywordp k) do (setf (getf result k) v))
     result))
 
 (defun %mv-eval-integer (form)
   "Evaluate a compile-time integer form (bare integer or quoted integer).
    Returns an integer or NIL."
   (cond ((integerp form) form)
-        ((and (consp form) (eq (cl:first form) 'quote) (integerp (cl:second form)))
-         (cl:second form))
+        ((and (consp form) (eq (first form) 'quote) (integerp (second form)))
+         (second form))
         (t nil)))
 
 (defun %mv-eval-list (form)
   "Evaluate a compile-time list form like '(2 3 4) or (2 3 4) for extents/strides.
    Returns a list of integers or NIL."
-  (cond ((and (consp form) (eq (cl:first form) 'quote) (listp (cl:second form)))
-         (cl:second form))
+  (cond ((and (consp form) (eq (first form) 'quote) (listp (second form)))
+         (second form))
         ((and (consp form) (every #'integerp form))
          form)
         (t nil)))
@@ -947,7 +947,7 @@
 (defun %mv-check-restrictions (op src-canon new-elem location)
   "Enforce compile-time restrictions for view constructors.
    Signals a compiler-error on violation."
-  (cl:let* ((src-elem  (%mv-source-elem src-canon))
+  (let* ((src-elem  (%mv-source-elem src-canon))
              (same-elem (or (eq src-elem new-elem)
                             (string-equal (symbol-name src-elem)
                                           (symbol-name new-elem))))
@@ -981,17 +981,17 @@
 (defun %mv-row-major-strides (extents)
   "Compute row-major strides for given extents list.
    Innermost stride = 1; stride[k] = product(extents[k+1..N-1])."
-  (cl:let* ((n (cl:length extents))
+  (let* ((n (length extents))
              (strides (make-list n :initial-element 1)))
-    (cl:loop for k from (- n 2) downto 0
-             do (setf (cl:nth k strides)
-                      (* (cl:nth (1+ k) strides) (cl:nth (1+ k) extents))))
+    (loop for k from (- n 2) downto 0
+             do (setf (nth k strides)
+                      (* (nth (1+ k) strides) (nth (1+ k) extents))))
     strides))
 
 (defun %mv-col-major-strides (extents)
   "Compute col-major strides for a 2D matrix with extents [height width].
    stride_row=1, stride_col=height."
-  (cl:let ((height (cl:first extents)))
+  (let ((height (first extents)))
     (list 1 height)))
 
 ;;; ── main analyzer ────────────────────────────────────────────
@@ -1009,10 +1009,10 @@
      (make-tensor src elem-type extents-list &key (offset 0) strides)
 
    Returns a semantic-make-view node."
-  (cl:let* ((op       (cl:first expr))
-             (args     (cl:rest expr))
+  (let* ((op       (first expr))
+             (args     (rest expr))
              ;; --- source ---
-             (src-expr (cl:first args))
+             (src-expr (first args))
              (src-node (analyze-expression src-expr env context (append location '(1))))
              (src-type (semantic-node-type src-node))
              (src-canon (%mv-resolve-src-type src-type)))
@@ -1022,13 +1022,13 @@
     (unless (%mv-source-head src-canon)
       (error "~a: Source type ~a is not a storage handle (cell/vector/matrix/tensor)" op src-type))
 
-    (cl:ecase op
+    (ecase op
 
       ;; ── make-cell ────────────────────────────────────────────────────
       (make-cell
-       (cl:let* ((new-elem  (cl:second args))
-                 (kwargs    (%mv-parse-kwargs (cl:nthcdr 2 args)))
-                 (offset    (or (%mv-eval-integer (cl:getf kwargs :offset)) 0))
+       (let* ((new-elem  (second args))
+                 (kwargs    (%mv-parse-kwargs (nthcdr 2 args)))
+                 (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
                  (addr      (%mv-source-addr src-canon))
                  (access    (%mv-source-access src-canon)))
          (%mv-check-restrictions op src-canon new-elem location)
@@ -1046,10 +1046,10 @@
 
       ;; ── make-vector ──────────────────────────────────────────────────
       (make-vector
-       (cl:let* ((new-elem  (cl:second args))
-                 (kwargs    (%mv-parse-kwargs (cl:nthcdr 2 args)))
-                 (offset    (or (%mv-eval-integer (cl:getf kwargs :offset)) 0))
-                 (length    (%mv-eval-integer (cl:getf kwargs :length))) ; NIL = auto
+       (let* ((new-elem  (second args))
+                 (kwargs    (%mv-parse-kwargs (nthcdr 2 args)))
+                 (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
+                 (length    (%mv-eval-integer (getf kwargs :length))) ; NIL = auto
                  (addr      (%mv-source-addr src-canon))
                  (access    (%mv-source-access src-canon))
                  (src-align (%mv-source-align src-canon))
@@ -1069,16 +1069,16 @@
 
       ;; ── make-matrix ──────────────────────────────────────────────────
       (make-matrix
-       (cl:let* ((new-elem  (cl:second args))
-                 (width     (%mv-eval-integer (cl:third args)))
-                 (height    (%mv-eval-integer (cl:fourth args)))
-                 (kwargs    (%mv-parse-kwargs (cl:nthcdr 4 args)))
-                 (offset    (or (%mv-eval-integer (cl:getf kwargs :offset)) 0))
-                 (major-kw  (or (cl:getf kwargs :major) :row))
-                 (strides-form (cl:getf kwargs :strides))
+       (let* ((new-elem  (second args))
+                 (width     (%mv-eval-integer (third args)))
+                 (height    (%mv-eval-integer (fourth args)))
+                 (kwargs    (%mv-parse-kwargs (nthcdr 4 args)))
+                 (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
+                 (major-kw  (or (getf kwargs :major) :row))
+                 (strides-form (getf kwargs :strides))
                  (strides   (%mv-eval-list strides-form))
                  (explicit-strides-p (not (null strides)))
-                 (col-p     (cl:member major-kw '(:col col) :test #'string-equal))
+                 (col-p     (member major-kw '(:col col) :test #'string-equal))
                  (extents   (list height width))
                  (result-strides
                   (cond (explicit-strides-p strides)
@@ -1106,15 +1106,15 @@
 
       ;; ── make-tensor ──────────────────────────────────────────────────
       (make-tensor
-       (cl:let* ((new-elem     (cl:second args))
-                 (extents-form (cl:third args))
+       (let* ((new-elem     (second args))
+                 (extents-form (third args))
                  (extents      (%mv-eval-list extents-form))
-                 (kwargs       (%mv-parse-kwargs (cl:nthcdr 3 args)))
-                 (offset       (or (%mv-eval-integer (cl:getf kwargs :offset)) 0))
-                 (strides-form (cl:getf kwargs :strides))
+                 (kwargs       (%mv-parse-kwargs (nthcdr 3 args)))
+                 (offset       (or (%mv-eval-integer (getf kwargs :offset)) 0))
+                 (strides-form (getf kwargs :strides))
                  (strides      (%mv-eval-list strides-form))
                  (explicit-strides-p (not (null strides)))
-                 (rank         (when extents (cl:length extents)))
+                 (rank         (when extents (length extents)))
                  (result-strides (if explicit-strides-p strides
                                      (when extents (%mv-row-major-strides extents))))
                  (length       (when extents (reduce #'* extents)))
