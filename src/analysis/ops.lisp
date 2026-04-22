@@ -124,6 +124,19 @@
   (declare (ignore expr env context location))
   (error "dec! not implemented"))
 (defun analyze-atomic-add!-expression (expr env context location)
+  ;; TODO: implement atomic-add! for tensor gradient accumulation and general use.
+  ;;
+  ;; Syntax: (atomic-add! (~ tensor idx...) delta)
+  ;;           or (atomic-add! cell-or-var delta)
+  ;;
+  ;; Implementation sketch:
+  ;;   1. Semantic analysis: verify target is a writable storage location; infer result type.
+  ;;   2. Codegen: emit LLVMBuildAtomicRMW with LLVMAtomicRMWBinOpFAdd (float) or
+  ;;      LLVMAtomicRMWBinOpAdd (integer), ordering LLVMAtomicOrderingSequentiallyConsistent.
+  ;;      Requires adding LLVMBuildAtomicRMW to src/llvm-bindings.lisp.
+  ;;   3. ANF: treat (atomic-add! place delta) as a statement (no binding needed).
+  ;;   4. Once implemented, the tensor AD backward walk can use atomic-add! for scatter
+  ;;      patterns. Element-wise kernels do not need it (no concurrent index conflicts).
   (declare (ignore expr env context location))
   (error "atomic-add! not implemented"))
 

@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "Cannot differentiate: kernel mutates input parameter"
+;;
+;; Mutating an input tensor inside a differentiable kernel must be a
+;; compile error when --differentiate is active. The AD system cannot
+;; compute a gradient for a kernel that overwrites one of its inputs.
+;;
+;; Without --differentiate this compiles and runs fine: it just copies
+;; B[idx] into A[idx] and then writes A[idx] to C[idx].
+
+(def-type in-vec  (vector float :address-space :global :access :read-write :align :compact))
+(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+
+(def-kernel vec_bad_mut (A B idx &out C)
+  (declare #'(in-vec in-vec ulong &out out-vec))
+  (set! (~ A idx) (~ B idx))    ;; <-- mutates input tensor A
+  (set! (~ C idx) (~ A idx)))

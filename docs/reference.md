@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-21T03:42:05.512007Z
+Generated on 2026-04-22T05:24:52.412862Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -949,15 +949,39 @@ Generated on 2026-04-21T03:42:05.512007Z
               &OPTIONAL (SYM-PREFIX BW))`
 
 ---
+### DEFUN `%CRISP-TENSOR-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a tensor/vector/matrix  >    storage handle. Vectors (N=1) and matrices (N=2) are syntactic sugar for tensor,  >    so a single head check covers all three.
+
+
+---
+### DEFUN `%CRISP-FLOAT-TENSOR-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC resolves to a tensor/vector/matrix whose element type  >    is a float type (float, double, etc.).  Non-float tensors (e.g. vector long)  >    are not differentiable and should not receive gradient parameters.
+
+
+---
+### DEFUN `%ENSURE-TENSOR-READ-WRITE`
+- **Args**: `(TYPE-SPEC)`
+
+  > If TYPE-SPEC is a tensor/vector/matrix, returns the canonical 6-tuple with  >    :access replaced by :read-write. Non-tensor types are returned unchanged.
+
+
+---
 ### DEFUN `%HANDLE-SINGLE-VALUE-BACKWARD`
 - **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
-              (ERROR-ON-UNKNOWN T))`
+              (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT)`
+
+  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  > TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for  > tensor inputs. When (~ src idx...) is encountered and src has an entry in this  > table, gradient accumulation is emitted directly as  >   (set! (~ src_GRAD idx...) (+ (~ src_GRAD idx...) adj(v)))  > rather than the scalar-adjoint path used for cells.
+
 
 ---
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)`
 
-  > Walks a flattened ANF body backwards to accumulate adjoints.  > Returns a backward ANF body (a let form).  > Extended for feature 052: handles differentiable sub-function calls (B1/B2),  > multi-value bindings, HOF inline backward, errors for non-differentiable  > functions (B3), and mutation errors (B4).
+  > Walks a flattened ANF body backwards to accumulate adjoints.  > Returns a backward ANF body (a let form).  > Extended for feature 052: handles differentiable sub-function calls (B1/B2),  > multi-value bindings, HOF inline backward, errors for non-differentiable  > functions (B3), and mutation errors (B4).  > Extended for feature 080: tensor/vector/matrix inputs — element-wise gradient  > accumulation via indexed (~ src_GRAD idx...) writes.
 
 
 ---
@@ -2226,6 +2250,9 @@ Generated on 2026-04-21T03:42:05.512007Z
 - **Args**: `(FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT
               REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)`
 
+  > Computes the parameter lists and type lists for the backward (gradient) kernel.  > Extended for feature 080: filters integer scalar inputs from gradient outputs,  > and ensures tensor gradient outputs have :access :read-write.
+
+
 ---
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
 - **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
@@ -3035,6 +3062,48 @@ Generated on 2026-04-21T03:42:05.512007Z
 - **Args**: `(META-PATH)`
 
   > Validates scratch matrix (N=2) metacrisp:  >      - implicit :type is (TENSOR FLOAT 2 :ADDRESS-SPACE :LOCAL ...) canonical list  >      - physical-signature has 9 exploded scalar entries for the implicit range  >      - :range is (0 8)
+
+
+---
+### DEFUN `VALIDATE-VEC-ADD-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates the backward kernel for 01-vec-add (vector addition):  >      - @vec_add_grad is defined  >      - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT type present (gradient tensors)  >      - fadd instruction present (addition backward)  >      - idx_GRAD is NOT present (integer scalar filtering)
+
+
+---
+### DEFUN `VALIDATE-VEC-MULTIPLY-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates the backward kernel for 02-vec-multiply (vector product rule):  >      - @vec_mult_grad is defined  >      - fmul instruction present (product rule: d/dA of A*B = B, needs multiply)  >      - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT type present  >      - idx_GRAD is NOT present
+
+
+---
+### DEFUN `VALIDATE-VEC-MIXED-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates the backward kernel for 03-vec-mixed (scalar float + tensor inputs):  >      - @vec_scale_grad is defined  >      - float parameter for scale_GRAD (scalar gradient carried through)  >      - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT present (A_GRAD tensor)  >      - fmul present (d(scale*A)/dA = scale; d/dscale = A — both use multiply)  >      - idx_GRAD is NOT present
+
+
+---
+### DEFUN `VALIDATE-MATRIX-ADD-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates the backward kernel for 04-matrix-add (2D matrix, two indices):  >      - @mat_add_grad is defined  >      - TENSOR_FLOAT_2_GLOBAL_READ-WRITE_COMPACT type present (2D gradient tensors)  >      - fadd present  >      - row_GRAD and col_GRAD are NOT present (integer scalar filtering)
+
+
+---
+### DEFUN `VALIDATE-TENSOR-ADD-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates the backward kernel for 05-tensor-add (3D tensor, three indices):  >      - @tensor_add_grad is defined  >      - TENSOR_FLOAT_3_GLOBAL_READ-WRITE_COMPACT type present (3D gradient tensors)  >      - fadd present  >      - d0_GRAD, d1_GRAD, d2_GRAD are NOT present (integer scalar filtering)
+
+
+---
+### DEFUN `VALIDATE-VEC-TRANSCENDENTAL-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates the backward kernel for 06-vec-transcendental (sin with cos chain rule):  >      - @vec_sin_grad is defined  >      - @llvm.cos.f32 intrinsic declared and called (derivative of sin is cos)  >      - fmul present (chain rule: cos(x) * adj)  >      - idx_GRAD is NOT present
 
 
 ---

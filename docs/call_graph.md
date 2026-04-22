@@ -269,7 +269,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%CHECK-FN-BODY-FOR-MUTATIONS BODY-FORMS PARAM-NAMES FN-NAME)  autodiff.lisp
 - - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS)  autodiff.lisp
 - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                          T))  autodiff.lisp
+                                                                                                          T) TENSOR-INPUTS-HT)  autodiff.lisp
 - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                             BW))  autodiff.lisp
 - - - - - - - - (%BACKWARD-SKIP-FN-P FN-SYM)  autodiff.lisp
@@ -512,8 +512,16 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%SUBSTITUTE-RECORD-ACCESSORS FORM RECORD-SUBS-HT RECORD-TYPE-HT)  autodiff.lisp [RECURSION]
 - - - (%RECORD-ACCESSOR-SYSTEM-GENERATED-P ACCESSOR-SYM REC-TYPE)  autodiff.lisp
 - - (%COMPUTE-BACKWARD-KERNEL-PARAMS FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)  macros.lisp
-- - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp
+- - - - (%CRISP-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - (%EXPLODE-KERNEL-ARGS PARAMS SIGNATURE)  macros.lisp
 - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -527,6 +535,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (INSTANTIATE-TEMPLATE NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)  templates.lisp [See above]
 - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
 - - (GENERATE-BACKWARD-WALK FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)  autodiff.lisp
+- - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp
 - - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp [RECURSION]
 - - - (%REMOVE-FUNCALL FORM FN-PARAM-SYM CONCRETE-FN-SYM)  autodiff.lisp
@@ -534,7 +543,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
 - - - (%EXTRACT-RETURN-VARS FLAT-ANF)  autodiff.lisp [See above]
 - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                  T))  autodiff.lisp [See above]
+                                                                                                  T) TENSOR-INPUTS-HT)  autodiff.lisp [See above]
 - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                   BW))  autodiff.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -1136,6 +1145,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-INTEGER-LITERALS-IR IR-PATH)  metadata-val.lisp
 
+- (VALIDATE-MATRIX-ADD-GRAD IR-PATH)  metadata-val.lisp
+
 - (VALIDATE-MULTIPLE-SCRATCH-CELLS METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-MULTIPLY-CHAIN-RULE IR-PATH)  metadata-val.lisp
@@ -1205,10 +1216,20 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-SUBTRACTION-CHAIN-RULE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
 
+- (VALIDATE-TENSOR-ADD-GRAD IR-PATH)  metadata-val.lisp
+
 - (VALIDATE-TOP-KERNEL-4-ARGS-IR IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-TRANSCENDENTAL-CHAIN-RULE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
+
+- (VALIDATE-VEC-ADD-GRAD IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-VEC-MIXED-GRAD IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-VEC-MULTIPLY-GRAD IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-VEC-TRANSCENDENTAL-GRAD IR-PATH)  metadata-val.lisp
 
 - (WITH-STRUCT-ACCESSORS STRUCT-TYPE BINDINGS &BODY BODY)  macros.lisp
 

@@ -1,0 +1,21 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-vec-mixed-grad
+;;
+;; Scalar and vector inputs mixed: C[idx] = scale * A[idx]
+;; 'scale' is a plain float scalar; 'A' is a vector.
+;;
+;; Expected backward kernel vec_scale_grad (A scale idx C C_GRAD &out A_GRAD scale_GRAD):
+;;   adj(tmp_c) += (~ C_GRAD idx)
+;;   adj(tmp_a) += scale * adj(tmp_c)      ; d/dA of scale*A = scale
+;;   adj(scale) += tmp_a * adj(tmp_c)      ; d/dscale of scale*A = A[idx]
+;;   (set! (~ A_GRAD idx) (+ (~ A_GRAD idx) adj(tmp_a)))   ; tensor gradient
+;;   (set! scale_GRAD adj(scale))                           ; scalar gradient
+;;
+;; This verifies that scalar and tensor gradient outputs coexist correctly
+;; in the same backward kernel signature.
+
+(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
+(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+
+(def-kernel vec_scale (A scale idx &out C)
+  (declare #'(in-vec float ulong &out out-vec))
+  (set! (~ C idx) (* scale (~ A idx))))

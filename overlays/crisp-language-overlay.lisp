@@ -7,6 +7,3 @@
 
 (in-package :crisp-language)
 
-;;; --- START PATCHES ---
-
-;;; set-derived is exported/imported via package.lisp

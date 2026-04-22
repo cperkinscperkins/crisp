@@ -1,0 +1,20 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-matrix-add-grad
+;;
+;; 2D matrix, two indices: C[row][col] = A[row][col] + B[row][col]
+;;
+;; Expected backward kernel mat_add_grad (A B row col C C_GRAD &out A_GRAD B_GRAD):
+;;   adj(tmp_c) += (~ C_GRAD row col)
+;;   adj(tmp_a) += adj(tmp_c)
+;;   adj(tmp_b) += adj(tmp_c)
+;;   (set! (~ A_GRAD row col) (+ (~ A_GRAD row col) adj(tmp_a)))
+;;   (set! (~ B_GRAD row col) (+ (~ B_GRAD row col) adj(tmp_b)))
+;;
+;; Verifies that two-index tensor access works correctly through the AD machinery.
+;; The backward IR must carry both 'row' and 'col' through to the gradient writes.
+
+(def-type in-mat  (matrix float :address-space :global :access :read-only  :align :compact))
+(def-type out-mat (matrix float :address-space :global :access :read-write :align :compact))
+
+(def-kernel mat_add (A B row col &out C)
+  (declare #'(in-mat in-mat ulong ulong &out out-mat))
+  (set! (~ C row col) (+ (~ A row col) (~ B row col))))

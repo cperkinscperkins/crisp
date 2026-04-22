@@ -22,34 +22,73 @@
                           (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adj-forms))))
                             ,@accum-forms))))))
 
-(defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn &key hof-handler-fn (error-on-unknown t))
+
+
+(defun %crisp-tensor-type-p (type-spec)
+  "Returns T if TYPE-SPEC (possibly a type alias) resolves to a tensor/vector/matrix
+   storage handle. Vectors (N=1) and matrices (N=2) are syntactic sugar for tensor,
+   so a single head check covers all three."
+  (cl:let* ((canonical (canonicalize-type-specifier type-spec)))
+    (and (consp canonical)
+         (string-equal (symbol-name (cl:first canonical)) "TENSOR"))))
+
+(defun %crisp-float-tensor-type-p (type-spec)
+  "Returns T if TYPE-SPEC resolves to a tensor/vector/matrix whose element type
+   is a float type (float, double, etc.).  Non-float tensors (e.g. vector long)
+   are not differentiable and should not receive gradient parameters."
+  (cl:let ((canonical (canonicalize-type-specifier type-spec)))
+    (and (consp canonical)
+         (string-equal (symbol-name (cl:first canonical)) "TENSOR")
+         (%crisp-float-type-p (cl:second canonical)))))
+
+(defun %ensure-tensor-read-write (type-spec)
+  "If TYPE-SPEC is a tensor/vector/matrix, returns the canonical 6-tuple with
+   :access replaced by :read-write. Non-tensor types are returned unchanged."
+  (cl:if (%crisp-tensor-type-p type-spec)
+      (cl:let ((c (canonicalize-type-specifier type-spec)))
+        ;; canonical form: (tensor elem N addr access align)
+        ;;                   0      1    2  3    4      5
+        (cl:list (cl:nth 0 c) (cl:nth 1 c) (cl:nth 2 c)
+                 (cl:nth 3 c) :read-write   (cl:nth 5 c)))
+      type-spec))
+
+
+(defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
+                                      &key hof-handler-fn (error-on-unknown t)
+                                           tensor-inputs-ht)
+  "Generates backward-pass adjoint updates for a single ANF binding (v := expr).
+TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for
+tensor inputs. When (~ src idx...) is encountered and src has an entry in this
+table, gradient accumulation is emitted directly as
+  (set! (~ src_GRAD idx...) (+ (~ src_GRAD idx...) adj(v)))
+rather than the scalar-adjoint path used for cells."
   (cl:flet ((local-adj (x) (funcall local-adj-fn x))
             (emit (x) (funcall emit-fn x)))
-    (cond
+    (cl:cond
       ;; Primitive: +
       ((and (consp expr) (eq (car expr) '+))
         (cl:let ((a (cadr expr)) (b (caddr expr)))
-          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
-          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
+          (cl:when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
+          (cl:when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
       ;; Primitive: -
       ((and (consp expr) (eq (car expr) '-))
         (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
-          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
+          (cl:when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+          (cl:when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
       ;; Primitive: *
       ((and (consp expr) (eq (car expr) '*))
         (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
-          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
+          (cl:when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+          (cl:when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
       ;; Primitive: /
       ((and (consp expr) (eq (car expr) '/))
         (cl:let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
-          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
+          (cl:when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
+          (cl:when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
       ;; Primitive: sin
       ((and (consp expr) (eq (car expr) 'sin))
         (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-          (when (symbolp a)
+          (cl:when (symbolp a)
             (cl:let* ((a-adj (local-adj a))
                       (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
               (setf (gethash cos-a adjoint-map) cos-a)
@@ -58,16 +97,32 @@
       ;; Primitive: cos
       ((and (consp expr) (eq (car expr) 'cos))
         (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-          (when (symbolp a)
+          (cl:when (symbolp a)
             (cl:let* ((a-adj (local-adj a))
                       (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
               (setf (gethash sin-a adjoint-map) sin-a)
               (emit `(set! ,sin-a (sin ,a)))
               (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
-      ;; Cell read: ~
+      ;; Cell or tensor read: ~
+      ;; Distinguishes by index count:
+      ;;   (~ src)          → cell read  → scalar adjoint accumulation (existing)
+      ;;   (~ src idx...)   → tensor read → element-wise gradient write (new)
       ((and (consp expr) (eq (car expr) '~))
-        (cl:let* ((a (cadr expr)) (v-adj (local-adj v)))
-          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
+        (cl:let* ((src     (cadr expr))
+                  (indices (cddr expr))
+                  (v-adj   (local-adj v)))
+          (cl:when (symbolp src)
+            (cl:cond
+              ;; Tensor read with a known kernel input: emit element-wise grad accumulation.
+              ;; The same index expressions from the forward read are reused in the backward.
+              ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
+               (cl:let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
+                                          (symbol-package src))))
+                 (emit `(set! (~ ,grad-sym ,@indices)
+                              (+ (~ ,grad-sym ,@indices) ,v-adj)))))
+              ;; Cell read (no indices) or tensor not in known inputs: scalar adjoint path.
+              (t
+               (emit `(set! ,(local-adj src) (+ ,(local-adj src) ,v-adj))))))))
       ;; Differentiable sub-function call
       ((and (consp expr)
             (symbolp (car expr))
@@ -75,8 +130,8 @@
         (cl:let* ((fn   (car expr))
                    (args (cdr expr))
                    (info (gethash fn *differentiable-functions*)))
-          (if (getf info :hof)
-              (if hof-handler-fn
+          (cl:if (getf info :hof)
+              (cl:if hof-handler-fn
                   (funcall hof-handler-fn fn args v)
                   (error "HOF handler required for sub-function ~A but not provided" fn))
               (%emit-sub-fn-backward fn args
@@ -113,14 +168,30 @@
       ;; Other
       (t nil))))
 
+
+
+
+
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types)
   "Walks a flattened ANF body backwards to accumulate adjoints.
 Returns a backward ANF body (a let form).
 Extended for feature 052: handles differentiable sub-function calls (B1/B2),
 multi-value bindings, HOF inline backward, errors for non-differentiable
-functions (B3), and mutation errors (B4)."
+functions (B3), and mutation errors (B4).
+Extended for feature 080: tensor/vector/matrix inputs — element-wise gradient
+accumulation via indexed (~ src_GRAD idx...) writes."
   (cl:let ((backward-forms nil)
-           (adjoint-map (make-hash-table :test 'equal)))
+           (adjoint-map (make-hash-table :test 'equal))
+           ;; Build tensor-inputs-ht: maps each tensor-typed input symbol to its type.
+           ;; Used by %handle-single-value-backward to distinguish tensor reads from
+           ;; cell reads and emit element-wise gradient accumulation.
+           (tensor-inputs-ht
+            (cl:let ((ht (make-hash-table :test 'eq)))
+              (cl:loop for sym  in inputs
+                       for typ  in input-types
+                       when (%crisp-float-tensor-type-p typ)
+                       do (setf (gethash sym ht) typ))
+              ht)))
 
     (labels ((local-adj (v)
                (or (gethash v adjoint-map)
@@ -130,32 +201,25 @@ functions (B3), and mutation errors (B4)."
                      adv)))
              (emit (form)
                (push form backward-forms))
-             ;; Emit _GRAD call + adjoint accumulation for a normal sub-function.
-
 
              ;; HOF inline backward: substitute concrete fn, remove funcall,
              ;; ANF-transform the concrete body, process backwards using
              ;; the kernel's own closures.
              (hof-inline-backward (fn args v)
                (cl:let* ((hof-data (gethash fn *differentiable-hof-store*)))
-                 (unless hof-data
+                 (cl:unless hof-data
                    (error "HOF ~A not found in *differentiable-hof-store*" fn))
                  (cl:let* ((param-syms   (getf hof-data :param-syms))
                            (fn-param-idx (getf hof-data :fn-param-idx))
                            (body-forms   (getf hof-data :body-forms))
-                           ;; Resolve concrete function from call args
                            (fn-arg       (nth fn-param-idx args))
-                           (concrete-fn  (cond
-                                           ;; (function +) — inline atomic
+                           (concrete-fn  (cl:cond
                                            ((and (consp fn-arg) (eq (car fn-arg) 'function))
                                             (cadr fn-arg))
-                                           ;; Bare symbol
                                            ((symbolp fn-arg) fn-arg)
                                            (t nil))))
-                   (unless concrete-fn
-                     (error "Cannot inline-differentiate HOF ~A: ~
-                             could not resolve concrete fn from arg ~A" fn fn-arg))
-                   ;; Build substitution: non-fn params -> call-site args
+                   (cl:unless concrete-fn
+                     (error "Cannot inline-differentiate HOF ~A:  could not resolve concrete fn from arg ~A" fn fn-arg))
                    (cl:let* ((fn-param      (nth fn-param-idx param-syms))
                              (subst-alist
                               (cl:loop for p in param-syms
@@ -166,44 +230,43 @@ functions (B3), and mutation errors (B4)."
                              (subst-body    (mapcar (lambda (f) (%subst-form f subst-alist)) body-forms))
                              (concrete-body (mapcar (lambda (f) (%remove-funcall f fn-param concrete-fn))
                                                     subst-body))
-                             ;; ANF + flatten the concrete body
                              (anf-body      (mapcar #'anf-transform concrete-body))
                              (hof-flat      (flatten-anf-body anf-body))
-                             ;; Normalize last form if needed
                              (hof-flat-norm
                               (cl:let ((last-f (cl:car (cl:last hof-flat))))
-                                (if (or (symbolp last-f)
+                                (cl:if (or (symbolp last-f)
                                         (and (consp last-f) (eq (cl:first last-f) 'return)))
                                     hof-flat
-                                    (cl:let ((ret-sym (intern (format nil "%HOF_RET_%A" (symbol-name v))
+                                    (cl:let ((ret-sym (intern (format nil "%HOF_RET_~A" (symbol-name v))
                                                                (symbol-package v))))
                                       (append (butlast hof-flat)
                                               (list (list ret-sym last-f) ret-sym))))))
                              (return-vars   (%extract-return-vars hof-flat-norm)))
-                     ;; Seed return-var adjoints to v's adjoint
                      (cl:dolist (rv return-vars)
                        (setf (gethash rv adjoint-map) (local-adj v)))
-                     ;; Process hof-flat-norm backwards (same primitive rules)
+                     ;; HOF body has no tensor kernel inputs — pass nil for tensor-inputs-ht.
                      (cl:dolist (hf-form (cl:reverse hof-flat-norm))
-                       (when (and (consp hf-form) (= (length hf-form) 2) (symbolp (car hf-form)))
+                       (cl:when (and (consp hf-form) (= (length hf-form) 2) (symbolp (car hf-form)))
                          (cl:let ((hv    (car hf-form))
                                   (hexpr (cadr hf-form)))
                            (%handle-single-value-backward hv hexpr adjoint-map #'emit #'local-adj
                                                           :hof-handler-fn #'hof-inline-backward
-                                                          :error-on-unknown t))))))))
+                                                          :error-on-unknown t
+                                                          :tensor-inputs-ht nil))))))))
 
              ) ; end labels binding list
 
       (cl:let ((reversed-body (reverse flat-anf)))
         (cl:dolist (form reversed-body)
-          (cond
+          (cl:cond
             ;; ---- Single-value binding: (v expr) -------------------
             ((and (listp form) (= (length form) 2) (symbolp (car form)))
               (cl:let ((v    (car form))
                        (expr (cadr form)))
                 (%handle-single-value-backward v expr adjoint-map #'emit #'local-adj
                                                :hof-handler-fn #'hof-inline-backward
-                                               :error-on-unknown t)))
+                                               :error-on-unknown t
+                                               :tensor-inputs-ht tensor-inputs-ht)))
 
             ;; ---- Multi-value binding: (v0 v1 ... expr) -----------
             ((and (listp form) (>= (length form) 3)
@@ -211,7 +274,7 @@ functions (B3), and mutation errors (B4)."
                   (every #'symbolp (butlast form)))
               (cl:let* ((result-vars (butlast form))
                         (expr        (car (last form))))
-                (when (and (consp expr)
+                (cl:when (and (consp expr)
                            (symbolp (car expr))
                            (gethash (car expr) *differentiable-functions*))
                   (cl:let* ((fn   (car expr))
@@ -223,36 +286,51 @@ functions (B3), and mutation errors (B4)."
                              (t-adjs (mapcar #'local-adj result-vars)))
                     (%emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg #'emit #'local-adj "BW")))))
 
-            ;; ---- B4: Mutation of kernel input cell ----------------
+            ;; ---- B4: set! on a storage handle ----------------------
+            ;; Handles both cell writes (~ target) and tensor writes (~ target idx...).
+            ;; For outputs: seed adj(val) from the output gradient tensor/cell.
+            ;; For inputs:  error — inputs may not be mutated in a differentiable kernel.
             ((and (consp form) (eq (car form) 'set!))
               (cl:let ((place (cadr form))
                        (val   (caddr form)))
-                (when (and (consp place) (eq (car place) '~) (symbolp val))
-                  (cl:let ((target (cadr place)))
-                    (cond
+                (cl:when (and (consp place) (eq (car place) '~) (symbolp val))
+                  (cl:let ((target  (cadr place))
+                           (indices (cddr place)))   ; nil for cell, (i...) for tensor
+                    (cl:cond
                       ((member target outputs)
-                        (cl:let ((tgt-grad (intern (format nil "~A_GRAD" (symbol-name target))
-                                                   (symbol-package target))))
-                          (emit `(set! ,(local-adj val) (+ ,(local-adj val) (~ ,tgt-grad))))))
+                       (cl:let ((tgt-grad (intern (format nil "~A_GRAD" (symbol-name target))
+                                                  (symbol-package target))))
+                         ;; Seed adj(val) from the output gradient at the same indices.
+                         ;; For cells: (~ tgt-grad) — no indices.
+                         ;; For tensors: (~ tgt-grad idx...) — same indices as forward write.
+                         (emit `(set! ,(local-adj val)
+                                      (+ ,(local-adj val) (~ ,tgt-grad ,@indices))))))
                       ((member target inputs)
-                        (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
-                               target target))
+                       (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
+                              target target))
                       (t nil))))))
 
             ;; ---- Everything else: skip ----------------------------
             (t nil))))
 
-      ;; Emit gradient output writes for all inputs
+      ;; Emit gradient output writes for all inputs.
+      ;; Tensor inputs: SKIP — per-element writes were already emitted in the
+      ;;   ~ case of %handle-single-value-backward when tensor-inputs-ht was consulted.
+      ;; Cell inputs:   (set! (~ in_GRAD) adj(in))
+      ;; Float scalar:  (set! in_GRAD adj(in))
       (cl:loop for in in inputs
                for in-type in input-types do
-                 (cl:let* ((in-grad (intern (format nil "~A_GRAD" (symbol-name in))
-                                            (symbol-package in)))
-                           (canon-type (crisp.compiler::canonicalize-type-specifier
-                                        (if (listp in-type) in-type (list in-type))))
-                           (is-cell (eq (car canon-type) 'cell)))
-                   (if is-cell
-                       (emit `(set! (~ ,in-grad) ,(local-adj in)))
-                       (emit `(set! ,in-grad ,(local-adj in))))))
+                 (cl:let* ((in-grad    (intern (format nil "~A_GRAD" (symbol-name in))
+                                               (symbol-package in)))
+                           (canon-type (canonicalize-type-specifier
+                                         (if (listp in-type) in-type (list in-type))))
+                           (is-cell    (and (consp canon-type)
+                                            (string-equal (symbol-name (cl:first canon-type)) "CELL")))
+                           (is-tensor  (%crisp-float-tensor-type-p in-type)))
+                   (cl:cond
+                     (is-tensor nil)  ; per-element writes already done
+                     (is-cell   (emit `(set! (~ ,in-grad) ,(local-adj in))))
+                     (t         (emit `(set! ,in-grad ,(local-adj in)))))))
 
       (cl:let* ((local-bindings (cl:loop for v being the hash-keys of adjoint-map
                                          using (hash-value adv)

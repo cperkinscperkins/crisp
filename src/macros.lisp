@@ -533,49 +533,77 @@
     (values (nreverse inputs) (nreverse input-types)
             (nreverse outputs) (nreverse output-types))))
 
+
+
 (defun %compute-backward-kernel-params (flat-inputs flat-input-types outputs output-types
                                         record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
-  (let* ((record-exploded-syms
-          (loop for orig in inputs
-                append (let ((flds (gethash orig record-subs-ht)))
-                         (when flds (mapcar #'cdr flds)))))
-         (non-rec-scalar-in-grad-params
-          (loop for p in flat-inputs
-                for t-spec in flat-input-types
-                unless (or (%crisp-record-type-p t-spec)
-                           (member p record-exploded-syms :test #'eq))
-                collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
-         (non-rec-scalar-in-grad-types
-          (loop for p in flat-inputs
-                for t-spec in flat-input-types
-                unless (or (%crisp-record-type-p t-spec)
-                           (member p record-exploded-syms :test #'eq))
-                collect t-spec))
-         (all-grad-out-params (append rec-grad-out-params non-rec-scalar-in-grad-params))
-         (all-grad-out-types  (append rec-grad-out-types  non-rec-scalar-in-grad-types))
-         (out-grads
-          (loop for p in outputs
-                collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
-         (bwd-params (append flat-inputs outputs out-grads
-                             (when all-grad-out-params (list '&out))
-                             all-grad-out-params))
-         (bwd-types  (append flat-input-types output-types output-types
-                             (when all-grad-out-params (list '&out))
-                             all-grad-out-types))
-         (diff-flat-inputs
-          (loop for p in flat-inputs
-                for t-spec in flat-input-types
-                when (if (member p record-exploded-syms :test #'eq)
-                         (%crisp-float-type-p t-spec)
-                         t)
-                collect p))
-         (diff-flat-input-types
-          (loop for p in flat-inputs
-                for t-spec in flat-input-types
-                when (if (member p record-exploded-syms :test #'eq)
-                         (%crisp-float-type-p t-spec)
-                         t)
-                collect t-spec)))
+  "Computes the parameter lists and type lists for the backward (gradient) kernel.
+Extended for feature 080: filters integer scalar inputs from gradient outputs,
+and ensures tensor gradient outputs have :access :read-write."
+  (cl:let* ((record-exploded-syms
+             (cl:loop for orig in inputs
+                      append (cl:let ((flds (gethash orig record-subs-ht)))
+                               (when flds (mapcar #'cdr flds)))))
+
+            ;; Differentiability predicate for a non-record-exploded input.
+            ;; Float scalars, float tensor/vector/matrix inputs, and cells get _GRAD outputs.
+            ;; Integer scalars (ulong row, ulong col, etc.) and non-float tensors do not.
+            (differentiable-non-rec-p
+             (lambda (t-spec)
+               (cl:let ((canonical (canonicalize-type-specifier t-spec)))
+                 (or (%crisp-float-type-p t-spec)
+                     (%crisp-float-tensor-type-p t-spec)
+                     ;; Cells are float storage handles — always differentiable
+                     (and (consp canonical)
+                          (string-equal (symbol-name (cl:first canonical)) "CELL"))))))
+
+            (non-rec-scalar-in-grad-params
+             (cl:loop for p in flat-inputs
+                      for t-spec in flat-input-types
+                      unless (or (%crisp-record-type-p t-spec)
+                                 (member p record-exploded-syms :test #'eq)
+                                 (not (funcall differentiable-non-rec-p t-spec)))
+                      collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+
+            ;; Tensor gradient outputs must be :read-write — the backward kernel
+            ;; reads the current accumulated value and adds to it.
+            (non-rec-scalar-in-grad-types
+             (cl:loop for p in flat-inputs
+                      for t-spec in flat-input-types
+                      unless (or (%crisp-record-type-p t-spec)
+                                 (member p record-exploded-syms :test #'eq)
+                                 (not (funcall differentiable-non-rec-p t-spec)))
+                      collect (%ensure-tensor-read-write t-spec)))
+
+            (all-grad-out-params (append rec-grad-out-params non-rec-scalar-in-grad-params))
+            (all-grad-out-types  (append rec-grad-out-types  non-rec-scalar-in-grad-types))
+            (out-grads
+             (cl:loop for p in outputs
+                      collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+            (bwd-params (append flat-inputs outputs out-grads
+                                (when all-grad-out-params (list '&out))
+                                all-grad-out-params))
+            (bwd-types  (append flat-input-types output-types output-types
+                                (when all-grad-out-params (list '&out))
+                                all-grad-out-types))
+
+            ;; diff-flat-inputs: the inputs that generate-backward-walk should process.
+            ;; For record-exploded syms: only float fields (unchanged).
+            ;; For others: only float scalars and tensors — integer scalars excluded.
+            (diff-flat-inputs
+             (cl:loop for p in flat-inputs
+                      for t-spec in flat-input-types
+                      when (if (member p record-exploded-syms :test #'eq)
+                               (%crisp-float-type-p t-spec)
+                               (funcall differentiable-non-rec-p t-spec))
+                      collect p))
+            (diff-flat-input-types
+             (cl:loop for p in flat-inputs
+                      for t-spec in flat-input-types
+                      when (if (member p record-exploded-syms :test #'eq)
+                               (%crisp-float-type-p t-spec)
+                               (funcall differentiable-non-rec-p t-spec))
+                      collect t-spec)))
     (values bwd-params bwd-types diff-flat-inputs diff-flat-input-types)))
 
 (defun %generate-backward-kernel-ast (name params signature-types raw-body)
