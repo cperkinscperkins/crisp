@@ -391,12 +391,16 @@ and ensures tensor gradient outputs have :access :read-write."
                                (when flds (mapcar #'cdr flds)))))
 
             ;; Differentiability predicate for a non-record-exploded input.
-            ;; Only float scalars and float tensor/vector/matrix inputs get _GRAD outputs.
+            ;; Float scalars, float tensor/vector/matrix inputs, and cells get _GRAD outputs.
             ;; Integer scalars (ulong row, ulong col, etc.) and non-float tensors do not.
             (differentiable-non-rec-p
              (lambda (t-spec)
-               (or (%crisp-float-type-p t-spec)
-                   (%crisp-float-tensor-type-p t-spec))))
+               (cl:let ((canonical (canonicalize-type-specifier t-spec)))
+                 (or (%crisp-float-type-p t-spec)
+                     (%crisp-float-tensor-type-p t-spec)
+                     ;; Cells are float storage handles — always differentiable
+                     (and (consp canonical)
+                          (string-equal (symbol-name (cl:first canonical)) "CELL"))))))
 
             (non-rec-scalar-in-grad-params
              (cl:loop for p in flat-inputs
