@@ -1,0 +1,25 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-vec-basic-sub-grad
+;;
+;; Simplest tensor sub-function AD case: 1D vector, single index.
+;;
+;; Forward kernel: C[idx] = some_operation(A[idx], B[idx])
+;;   where some_operation(a, b) = a*a + b
+;;
+;; Expected:
+;;   - some_operation_GRAD(a, b, t_grad) defined in IR — returns two deltas
+;;   - vec_sub_op_GRAD(A, B, idx, C, C_GRAD, &out A_GRAD, B_GRAD) defined
+;;   - backward kernel body calls some_operation_grad
+;;   - gradient writes are tensor-indexed: (~ A_GRAD idx), (~ B_GRAD idx)
+;;   - fadd present (gradient accumulation)
+;;   - idx_GRAD NOT present (ulong index is non-differentiable)
+
+(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
+(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+
+(def-function some-operation (a b)
+    (declare #'(float float => float))
+    (+ (* a a) b))
+
+(def-kernel vec_sub_op (A B idx &out C)
+  (declare #'(in-vec in-vec ulong &out out-vec))
+  (set! (~ C idx) (some-operation (~ A idx) (~ B idx))))

@@ -1,0 +1,26 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-vec-mixed-sub-grad
+;;
+;; Mixed inputs: a scalar float 'scale' and a vector 'A', processed through
+;; a sub-function. The scalar gets a scalar gradient output; the vector gets
+;; a tensor gradient output.
+;;
+;; Forward: C[idx] = scale_element(scale, A[idx])
+;;   where scale_element(s, a) = s * a
+;;
+;; Expected:
+;;   - @scale_element_grad defined
+;;   - @vec_scale_sub_grad defined
+;;   - backward kernel has scalar scale_GRAD output AND tensor A_GRAD output
+;;   - fmul present (product rule)
+;;   - idx_GRAD NOT present
+
+(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
+(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+
+(def-function scale-element (s a)
+    (declare #'(float float => float))
+    (* s a))
+
+(def-kernel vec_scale_sub (scale A idx &out C)
+  (declare #'(float in-vec ulong &out out-vec))
+  (set! (~ C idx) (scale-element scale (~ A idx))))

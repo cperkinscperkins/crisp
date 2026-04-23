@@ -497,8 +497,9 @@ Miscelleny
 - [ ] TEST-FILES[ 01-basic.crisp 11-app.crisp]  
 - [ ] ieee / fast accuracy support
 - [ ] is-uniform? and if*/when* variants
-- [ ] what is going on with validation.lisp? why does everything need cl:cond ?
+- [x] what is going on with validation.lisp? why does everything need cl:cond ?
       same with autodiff.lisp  . FIX 
+- [ ] i64 and ui64 as types and literals!!
 
 
 Tensors Vectors and Matrices
@@ -527,8 +528,8 @@ Tensors Vectors and Matrices
 - - [ ] double check branding
 - - [ ] differentiate support!!
 - - - [ ] atomic-add! deferred. Need to add atomics and ensure differntiation is updated
-- - - [ ] sub-function tensor AD deferred
-- - - [ ] non-float tensors. Limitation. We have good readable compilation error?
+- - - [x] sub-function tensor AD deferred
+- - - [x] non-float tensors. Limitation. We have good readable compilation error?
 - - [ ] vector helpers
 - - [ ] matrix helpers
 - - [ ] tile?

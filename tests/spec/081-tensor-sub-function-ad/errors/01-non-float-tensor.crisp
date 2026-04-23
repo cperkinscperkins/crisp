@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "Cannot differentiate kernel INT_VEC_OP: no differentiable parameters"
+
+;; Kernel operating entirely on integer (long) vectors — not differentiable.
+;; With --differentiate there are no float parameters to generate gradients for.
+;; The compiler should give a clear error rather than silently emitting a
+;; nonsensical backward kernel with no gradient parameters.
+
+(def-type in-vec  (vector long :address-space :global :access :read-only  :align :compact))
+(def-type out-vec (vector long :address-space :global :access :read-write :align :compact))
+
+(def-kernel int_vec_op (A B idx &out C)
+  (declare #'(in-vec in-vec ulong &out out-vec))
+  (set! (~ C idx) (+ (~ A idx) (~ B idx))))

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-22T05:24:52.412862Z
+Generated on 2026-04-23T03:43:00.660626Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -166,7 +166,7 @@ Generated on 2026-04-22T05:24:52.412862Z
 ### DEFUN `ANALYZE-CRISP-DVEC-LITERAL`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (crisp-vec-literal e1 e2 ...) — produced by the ##(...) reader macro.  >    Infers the component type from the first element, validates width (2-4) and  >    element type compatibility, then returns a semantic-device-vec-literal node.
+  > Analyzes (crisp-vec-literal e1 e2 ...) -- produced by the ##(...) reader macro.  >    Infers the component type from the first element, validates width (2-4) and  >    element type compatibility, then returns a semantic-device-vec-literal node.
 
 
 ---
@@ -522,7 +522,7 @@ Generated on 2026-04-22T05:24:52.412862Z
 ### DEFUN `ANALYZE-DVEC-COMPONENT-REF`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (x~ v), (y~ v), (z~ v), (w~ v) — device-vector component accessors.  >    The operator symbol determines the 0-based LLVM element index (0..3).  >    Returns a semantic-extract-value node whose type is the scalar component type.  >   >    Brand-instance gensyms (e.g. VALUE-T-204 derived from float2) are resolved  >    to their concrete device-vector base type via *type-derivation-graph* before  >    width and component-scalar extraction.  >   >    In :write mode (inside a set! target), also validates that a cell-deref  >    aggregate is not read-only.
+  > Analyzes (x~ v), (y~ v), (z~ v), (w~ v) -- device-vector component accessors.  >    The operator symbol determines the 0-based LLVM element index (0..3).  >    Returns a semantic-extract-value node whose type is the scalar component type.  >   >    Brand-instance gensyms (e.g. VALUE-T-204 derived from float2) are resolved  >    to their concrete device-vector base type via *type-derivation-graph* before  >    width and component-scalar extraction.  >   >    In :write mode (inside a set! target), also validates that a cell-deref  >    aggregate is not read-only.
 
 
 ---
@@ -2210,7 +2210,7 @@ Generated on 2026-04-22T05:24:52.412862Z
 ### DEFUN `%INCOMPLETE-STORAGE-HANDLE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if the type-spec is a storage handle but is missing explicit required keys  >    (address-space, access). Handles both the cell 4-tuple and tensor 6-tuple canonical forms.  >    A fully-expanded tensor spec (tensor elem N addr acc aln) — 5 args after head — is complete.
+  > Returns T if the type-spec is a storage handle but is missing explicit required keys  >    (address-space, access). Handles both the cell 4-tuple and tensor 6-tuple canonical forms.  >    A fully-expanded tensor spec (tensor elem N addr acc aln) -- 5 args after head -- is complete.
 
 
 ---
@@ -3104,6 +3104,55 @@ Generated on 2026-04-22T05:24:52.412862Z
 - **Args**: `(IR-PATH)`
 
   > Validates the backward kernel for 06-vec-transcendental (sin with cos chain rule):  >      - @vec_sin_grad is defined  >      - @llvm.cos.f32 intrinsic declared and called (derivative of sin is cos)  >      - fmul present (chain rule: cos(x) * adj)  >      - idx_GRAD is NOT present
+
+
+---
+### DEFUN `VALIDATE-VEC-BASIC-SUB-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates 081/01-vec-basic-sub-function:  >      - @some_operation_grad is defined (the _GRAD companion)  >      - @vec_sub_op_grad is defined (the backward kernel)  >      - some_operation_grad is called inside vec_sub_op_grad body  >      - fadd present (gradient accumulation)  >      - idx_GRAD NOT present (integer index filtered)
+
+
+---
+### DEFUN `VALIDATE-VEC-CHAIN-DEPTH-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates 081/02-vec-chain-depth:  >      - three _GRAD companions defined: some_operation_grad, other_operation_grad, final_operation_grad  >      - @vec_chain_grad backward kernel defined  >      - idx_GRAD NOT present
+
+
+---
+### DEFUN `VALIDATE-MAT-BASIC-SUB-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates 081/03-matrix-basic-sub-function:  >      - @scale_and_bias_grad defined  >      - @mat_sub_op_grad defined  >      - 2D gradient tensor type present (TENSOR_FLOAT_2 ... READ-WRITE)  >      - fmul present (product rule for a*b)  >      - row_GRAD and col_GRAD NOT present
+
+
+---
+### DEFUN `VALIDATE-TENSOR-BASIC-SUB-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates 081/04-tensor-basic-sub-function:  >      - @combine_grad defined  >      - @tensor_sub_op_grad defined  >      - 3D gradient tensor type present  >      - d0_GRAD, d1_GRAD, d2_GRAD NOT present
+
+
+---
+### DEFUN `VALIDATE-VEC-MVB-SUB-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates 081/05-vec-multi-value-return:  >      - @split_op_grad defined (two t_grad inputs, two delta outputs)  >      - @vec_mvb_op_grad defined  >      - split_op_grad called in backward kernel body  >      - idx_GRAD NOT present
+
+
+---
+### DEFUN `VALIDATE-VEC-FAN-OUT-SUB-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates 081/06-vec-fan-out:  >      - @some_operation_grad and @augmentation_grad both defined  >      - @vec_fan_op_grad defined  >      - both _GRAD functions referenced (two paths contribute to A_GRAD)  >      - idx_GRAD NOT present
+
+
+---
+### DEFUN `VALIDATE-VEC-MIXED-SUB-GRAD`
+- **Args**: `(IR-PATH)`
+
+  > Validates 081/07-vec-mixed-scalar-tensor:  >      - @scale_element_grad defined  >      - @vec_scale_sub_grad defined  >      - scalar scale_GRAD present (float scalar gradient)  >      - TENSOR_FLOAT_1 present (tensor gradient for A_GRAD)  >      - fmul present (product rule for s*a)  >      - idx_GRAD NOT present
 
 
 ---

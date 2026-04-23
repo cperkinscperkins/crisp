@@ -1145,6 +1145,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-INTEGER-LITERALS-IR IR-PATH)  metadata-val.lisp
 
+- (VALIDATE-MAT-BASIC-SUB-GRAD IR-PATH)  metadata-val.lisp
+
 - (VALIDATE-MATRIX-ADD-GRAD IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-MULTIPLE-SCRATCH-CELLS METADATA-PATH)  metadata-val.lisp
@@ -1218,6 +1220,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-TENSOR-ADD-GRAD IR-PATH)  metadata-val.lisp
 
+- (VALIDATE-TENSOR-BASIC-SUB-GRAD IR-PATH)  metadata-val.lisp
+
 - (VALIDATE-TOP-KERNEL-4-ARGS-IR IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-TRANSCENDENTAL-CHAIN-RULE IR-PATH)  metadata-val.lisp
@@ -1225,9 +1229,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-VEC-ADD-GRAD IR-PATH)  metadata-val.lisp
 
+- (VALIDATE-VEC-BASIC-SUB-GRAD IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-VEC-CHAIN-DEPTH-GRAD IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-VEC-FAN-OUT-SUB-GRAD IR-PATH)  metadata-val.lisp
+
 - (VALIDATE-VEC-MIXED-GRAD IR-PATH)  metadata-val.lisp
 
+- (VALIDATE-VEC-MIXED-SUB-GRAD IR-PATH)  metadata-val.lisp
+
 - (VALIDATE-VEC-MULTIPLY-GRAD IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-VEC-MVB-SUB-GRAD IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-VEC-TRANSCENDENTAL-GRAD IR-PATH)  metadata-val.lisp
 

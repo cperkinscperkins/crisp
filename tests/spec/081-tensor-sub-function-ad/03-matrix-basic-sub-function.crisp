@@ -1,0 +1,26 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-mat-basic-sub-grad
+;;
+;; Sub-function with 2D matrix input.
+;; Verifies that both indices (row, col) are correctly threaded through
+;; the backward kernel when a sub-function is involved.
+;;
+;; Forward: C[row][col] = scale_and_bias(A[row][col], B[row][col])
+;;   where scale_and_bias(a, b) = a * b
+;;
+;; Expected:
+;;   - @scale_and_bias_grad defined
+;;   - @mat_sub_op_grad defined
+;;   - 2D gradient tensor type present (TENSOR_FLOAT_2 ... READ-WRITE)
+;;   - fmul present (product rule for a*b)
+;;   - row_GRAD and col_GRAD NOT present
+
+(def-type in-mat  (matrix float :address-space :global :access :read-only  :align :compact))
+(def-type out-mat (matrix float :address-space :global :access :read-write :align :compact))
+
+(def-function scale-and-bias (a b)
+    (declare #'(float float => float))
+    (* a b))
+
+(def-kernel mat_sub_op (A B row col &out C)
+  (declare #'(in-mat in-mat ulong ulong &out out-mat))
+  (set! (~ C row col) (scale-and-bias (~ A row col) (~ B row col))))
