@@ -1,0 +1,24 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-tensor-basic-sub-grad
+;;
+;; Sub-function with full 3D tensor input, three indices.
+;; Exercises the deepest tensor case with a user sub-function.
+;;
+;; Forward: C[d0][d1][d2] = combine(A[d0][d1][d2], B[d0][d1][d2])
+;;   where combine(a, b) = a*2.0 + b
+;;
+;; Expected:
+;;   - @combine_grad defined
+;;   - @tensor_sub_op_grad defined
+;;   - 3D gradient tensor type present
+;;   - d0_GRAD, d1_GRAD, d2_GRAD NOT present
+
+(def-type in-ten  (tensor float 3 :address-space :global :access :read-only))
+(def-type out-ten (tensor float 3 :address-space :global :access :read-write))
+
+(def-function combine (a b)
+    (declare #'(float float => float))
+    (+ (* a 2.0) b))
+
+(def-kernel tensor_sub_op (A B d0 d1 d2 &out C)
+  (declare #'(in-ten in-ten ulong ulong ulong &out out-ten))
+  (set! (~ C d0 d1 d2) (combine (~ A d0 d1 d2) (~ B d0 d1 d2))))

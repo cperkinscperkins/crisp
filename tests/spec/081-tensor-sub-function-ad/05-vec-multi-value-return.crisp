@@ -1,0 +1,28 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-vec-mvb-sub-grad
+;;
+;; Sub-function returning two values, kernel uses multi-value binding (mvb),
+;; writes each to a separate output vector.
+;;
+;; Forward: (C[idx], D[idx]) = split_op(A[idx], B[idx])
+;;   where split_op(a, b) returns (a*a + b, 2*a*b)  [two float values]
+;;
+;; Expected:
+;;   - @split_op_grad defined, takes (a, b, t_grad0, t_grad1), returns two deltas
+;;   - @vec_mvb_op_grad defined with two output gradient tensors (C_GRAD, D_GRAD)
+;;     and two input gradient tensors (A_GRAD, B_GRAD)
+;;   - backward kernel body calls split_op_grad
+;;   - idx_GRAD NOT present
+
+(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
+(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+
+(def-function split-op (a b)
+    (declare #'(float float => float float))
+    (return (+ (* a a) b)
+            (* (* 2.0 a) b)))
+
+(def-kernel vec_mvb_op (A B idx &out C D)
+  (declare #'(in-vec in-vec ulong &out out-vec out-vec))
+  (let ((x y (split-op (~ A idx) (~ B idx))))
+    (set! (~ C idx) x)
+    (set! (~ D idx) y)))
