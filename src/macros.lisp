@@ -625,6 +625,11 @@ and ensures tensor gradient outputs have :access :read-write."
           (multiple-value-bind (bwd-params bwd-types diff-flat-inputs diff-flat-input-types)
               (%compute-backward-kernel-params flat-inputs flat-input-types outputs output-types
                                                record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
+            ;; 081-1: If no differentiable inputs exist, raise a clear error rather than
+            ;; silently generating a nonsensical backward kernel with no gradient parameters.
+            (when (and flat-inputs (null diff-flat-inputs))
+              (error 'crisp.compiler:crisp-compiler-error
+                :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types — add (forward-only) declaration or use float element types)" name)))
             (multiple-value-bind (exploded-params exploded-types bwd-cell-reassembly-bindings)
                 (%explode-kernel-args bwd-params bwd-types)
               (let* ((anf-body      (mapcar #'anf-transform subst-body))

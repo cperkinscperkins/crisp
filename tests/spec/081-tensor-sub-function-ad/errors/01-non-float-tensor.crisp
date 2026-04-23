@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; FAIL-WITH[--differentiate]: "Cannot differentiate"
+;; FAIL-WITH[--differentiate]: "Cannot differentiate kernel INT_VEC_OP: no differentiable parameters"
 
 ;; Kernel operating entirely on integer (long) vectors — not differentiable.
 ;; With --differentiate there are no float parameters to generate gradients for.
