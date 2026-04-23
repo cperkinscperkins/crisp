@@ -46,7 +46,7 @@
       (and (eq elem-type 'float) (%dvec-float-type-p    comp-type))))
 
 (defun analyze-crisp-dvec-literal (expr env context location)
-  "Analyzes (crisp-vec-literal e1 e2 ...) — produced by the ##(...) reader macro.
+  "Analyzes (crisp-vec-literal e1 e2 ...) -- produced by the ##(...) reader macro.
    Infers the component type from the first element, validates width (2-4) and
    element type compatibility, then returns a semantic-device-vec-literal node."
   (let* ((raw-elements (rest expr))
@@ -395,7 +395,7 @@
 
 
 
-;;; Fix: compile-def-function — Option A: wrap backward companion compilation
+;;; Fix: compile-def-function -- Option A: wrap backward companion compilation
 ;;; in handler-case. If the generated _GRAD def-function fails to compile
 ;;; (e.g. type mismatch for double/derived-type gradients), catch the error,
 ;;; unregister the function from *differentiable-functions*, log info, and
@@ -455,7 +455,7 @@ the _GRAD backward companion after the forward function."
         do (visit-toplevel-form form (list i) visitor-fn)))
 
 
-;;; Updated analyze-signatures-pass — calls %pre-register-hof-templates after
+;;; Updated analyze-signatures-pass -- calls %pre-register-hof-templates after
 ;;; walk-code-forms so HOF templates in the template registry are registered.
 ;;; src/analysis/core.lisp
 (defun analyze-signatures-pass (forms)
@@ -748,18 +748,18 @@ in single-pass mode."
 ;;; immutable (SPIR-V constant memory). Two dynamic variables and
 ;;; checks in the analysis phase enforce this.
 ;;;
-;;; *boundary-struct-params* — list of uppercase param-name strings
+;;; *boundary-struct-params* -- list of uppercase param-name strings
 ;;;   for def-struct-typed parameters of the current entry-point kernel.
 ;;;   Nil when compiling regular functions.
 ;;;
-;;; *struct-mutating-functions* — hash table mapping uppercase
+;;; *struct-mutating-functions* -- hash table mapping uppercase
 ;;;   function names -> T for functions that (directly or indirectly)
 ;;;   mutate a struct-typed :in parameter.
 ;;;
 ;;; Enforcement paths:
-;;;   1. Direct: (set! (x~ p) val) in kernel where p is boundary → error
-;;;   2. Indirect: (f p) in kernel where f is struct-mutating → error
-;;;   3. Propagation: f mutates :in param → register f as struct-mutating
+;;;   1. Direct: (set! (x~ p) val) in kernel where p is boundary -> error
+;;;   2. Indirect: (f p) in kernel where f is struct-mutating -> error
+;;;   3. Propagation: f mutates :in param -> register f as struct-mutating
 ;;; ============================================================
 
 (defvar *boundary-struct-params* nil
@@ -878,7 +878,16 @@ in single-pass mode."
    binds *boundary-struct-params* and *boundary-array-params* to enforce immutability."
   (log:info "Analyzing function ~s" name)
 
-  (when *differentiate-p*
+  ;; Apply ANF only when differentiating AND the kernel/function is not forward-only.
+  ;; forward-only kernels bypass the AD pass entirely; ANF-transforming their bodies
+  ;; can break constructs (e.g. nested cell-of-array lvalue dereferences) that the
+  ;; normal semantic analyzer handles correctly but the ANF form does not.
+  ;; def-kernel passes (non-differentiable) in declarations for forward-only kernels,
+  ;; following the same pattern as (entry-point).
+  (when (and *differentiate-p*
+             (not (find "NON-DIFFERENTIABLE" declarations
+                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                        :test #'string-equal)))
         (log:info "Applying ANF to function body")
         (let* ((progn-body `(progn ,@body))
                (anf-body (anf-normalize progn-body nil))
@@ -1550,7 +1559,7 @@ Must be called after walk-code-forms so *template-registry* is populated."
 
 
 (defun analyze-dvec-component-ref (expr env context location)
-  "Analyzes (x~ v), (y~ v), (z~ v), (w~ v) — device-vector component accessors.
+  "Analyzes (x~ v), (y~ v), (z~ v), (w~ v) -- device-vector component accessors.
    The operator symbol determines the 0-based LLVM element index (0..3).
    Returns a semantic-extract-value node whose type is the scalar component type.
 
@@ -1576,7 +1585,7 @@ Must be called after walk-code-forms so *template-registry* is populated."
 
     ;; If the argument is NOT a device-vector:
     ;; - When ct is nil (user-defined struct/record not in *crisp-types*), or
-    ;;   ct is a struct/record category — fall back to the function call path
+    ;;   ct is a struct/record category -- fall back to the function call path
     ;;   so that user-defined x~/y~/z~/w~ struct accessors still work.
     ;; - For clearly non-aggregate built-in types (scalar, void, pointer, meta)
     ;;   signal a type error immediately so the user gets a clear message.
@@ -1660,7 +1669,7 @@ Must be called after walk-code-forms so *template-registry* is populated."
                                        (expand-storage-handle-type-specifier unmangled))
                                       ((and unm-head (string-equal unm-head "CELL"))
                                        (expand-storage-handle-type-specifier unmangled))
-                                      ;; Not a mangled name — try normal expansion
+                                      ;; Not a mangled name -- try normal expansion
                                       (t
                                        (let ((e (expand-storage-handle-type-specifier r)))
                                          (if (consp e) (fully-expand e) r))))))

@@ -298,13 +298,13 @@
 (defun %incomplete-storage-handle-p (type-spec)
   "Returns T if the type-spec is a storage handle but is missing explicit required keys
    (address-space, access). Handles both the cell 4-tuple and tensor 6-tuple canonical forms.
-   A fully-expanded tensor spec (tensor elem N addr acc aln) — 5 args after head — is complete."
+   A fully-expanded tensor spec (tensor elem N addr acc aln) -- 5 args after head -- is complete."
   (let ((resolved (%resolve-alias-strict type-spec)))
     (when (and (consp resolved) (%storage-handle-type-p resolved))
       (let* ((base (first resolved))
              (args (rest resolved)))
         (cond
-          ;; Tensor fully expanded: 5 args (elem N addr acc aln) → complete.
+          ;; Tensor fully expanded: 5 args (elem N addr acc aln) -> complete.
           ;; This also covers vector and matrix after sugar expansion (both become tensor).
           ((and (symbolp base)
                 (string-equal (symbol-name base) "TENSOR")
@@ -553,7 +553,7 @@ and ensures tensor gradient outputs have :access :read-write."
                (cl:let ((canonical (canonicalize-type-specifier t-spec)))
                  (or (%crisp-float-type-p t-spec)
                      (%crisp-float-tensor-type-p t-spec)
-                     ;; Cells are float storage handles — always differentiable
+                     ;; Cells are float storage handles -- always differentiable
                      (and (consp canonical)
                           (string-equal (symbol-name (cl:first canonical)) "CELL"))))))
 
@@ -565,7 +565,7 @@ and ensures tensor gradient outputs have :access :read-write."
                                  (not (funcall differentiable-non-rec-p t-spec)))
                       collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
 
-            ;; Tensor gradient outputs must be :read-write — the backward kernel
+            ;; Tensor gradient outputs must be :read-write -- the backward kernel
             ;; reads the current accumulated value and adds to it.
             (non-rec-scalar-in-grad-types
              (cl:loop for p in flat-inputs
@@ -589,7 +589,7 @@ and ensures tensor gradient outputs have :access :read-write."
 
             ;; diff-flat-inputs: the inputs that generate-backward-walk should process.
             ;; For record-exploded syms: only float fields (unchanged).
-            ;; For others: only float scalars and tensors — integer scalars excluded.
+            ;; For others: only float scalars and tensors -- integer scalars excluded.
             (diff-flat-inputs
              (cl:loop for p in flat-inputs
                       for t-spec in flat-input-types
@@ -629,7 +629,7 @@ and ensures tensor gradient outputs have :access :read-write."
             ;; silently generating a nonsensical backward kernel with no gradient parameters.
             (when (and flat-inputs (null diff-flat-inputs))
               (error 'crisp.compiler:crisp-compiler-error
-                :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types — add (forward-only) declaration or use float element types)" name)))
+                :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types -- add (forward-only) declaration or use float element types)" name)))
             (multiple-value-bind (exploded-params exploded-types bwd-cell-reassembly-bindings)
                 (%explode-kernel-args bwd-params bwd-types)
               (let* ((anf-body      (mapcar #'anf-transform subst-body))
@@ -708,22 +708,28 @@ and ensures tensor gradient outputs have :access :read-write."
   (multiple-value-bind (exploded-params exploded-types reassembly-bindings raw-body other-decls signature-types is-differentiable)
       (parse-kernel-signature name params body)
 
-    ;; Expand to def-kernel-exact
-    `(progn
-      (eval-when (:compile-toplevel :load-toplevel :execute)
-        (setf (gethash ',name crisp.compiler::*kernel-declared-signatures*)
-          (loop for p in ',params
-                for t-spec in ',signature-types
-                collect (cons p t-spec))))
-      (def-kernel-exact ,name ,exploded-params
-                        (declare #'(,@exploded-types))
-                        ,@(when other-decls `((declare ,@other-decls)))
-                        (let (,@reassembly-bindings)
-                          ,@raw-body))
+    ;; Expand to def-kernel-exact.
+    ;; When the kernel is forward-only (not differentiable), add a (non-differentiable)
+    ;; declaration so that internal-def-function can suppress the ANF transformation.
+    ;; This mirrors the (entry-point) declare pattern -- a list form, safe for
+    ;; parse-function-declarations which calls (car x) on each declaration.
+    (let ((non-diff-decl (unless is-differentiable '((non-differentiable)))))
+      `(progn
+        (eval-when (:compile-toplevel :load-toplevel :execute)
+          (setf (gethash ',name crisp.compiler::*kernel-declared-signatures*)
+            (loop for p in ',params
+                  for t-spec in ',signature-types
+                  collect (cons p t-spec))))
+        (def-kernel-exact ,name ,exploded-params
+                          (declare #'(,@exploded-types))
+                          ,@(when (or other-decls non-diff-decl)
+                              `((declare ,@other-decls ,@non-diff-decl)))
+                          (let (,@reassembly-bindings)
+                            ,@raw-body))
 
-      ;; Inject the Backward Kernel AST if differentiation is enabled and allowed
-      ,@(when is-differentiable
-              (list (%generate-backward-kernel-ast name params signature-types raw-body))))))
+        ;; Inject the Backward Kernel AST if differentiation is enabled and allowed
+        ,@(when is-differentiable
+                (list (%generate-backward-kernel-ast name params signature-types raw-body)))))))
 
 
 (defmacro with-struct-accessors (struct-type bindings &body body)
