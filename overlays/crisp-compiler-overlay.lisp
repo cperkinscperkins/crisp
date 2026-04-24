@@ -15,6 +15,14 @@
 OP is a keyword (:add :sub :min :max :xchg).
 Target (second element of EXPR) must be an aref expression like (~ vec idx).
 When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta."
+  ;; Validate argument count: inc!/dec! take 1 arg (target only); others take 2 (target + delta).
+  (let ((expected-args (if no-delta 1 2))
+        (actual-args   (1- (length expr))))
+    (unless (= actual-args expected-args)
+      (error 'crisp-type-error
+        :message (format nil "~a: expected ~a argument~:p, got ~a"
+                         (first expr) expected-args actual-args)
+        :source-location location)))
   (let* ((target-form (second expr))
          (target-node (analyze-expression target-form env context (append location '(1)))))
     (unless (semantic-aref-p target-node)
@@ -612,6 +620,71 @@ avoid race conditions in parallel GPU threads (082-atomics)."
 ;; 082-atomics: validator for test 10 (tensor AD backward uses atomicrmw)
 ;; src/metadata-val.lisp
 ;; =============================================================================
+
+;; =============================================================================
+;; 082-atomics: per-opcode IR validators for tests 01-09
+;; src/metadata-val.lisp
+;; =============================================================================
+
+(defun validate-atomicrmw-add (ir-path)
+  "Verifies atomicrmw add (integer fetch-and-add) is present in the IR.
+Used by: 01-atomic-add-cell, 03-atomic-inc-cell."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-add: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-add nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw add" ir)
+        (progn (log:error "validate-atomicrmw-add: 'atomicrmw add' not found in IR") nil))))
+
+(defun validate-atomicrmw-sub (ir-path)
+  "Verifies atomicrmw sub (integer fetch-and-sub) is present in the IR.
+Used by: 02-atomic-sub-cell, 04-atomic-dec-cell."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-sub: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-sub nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw sub" ir)
+        (progn (log:error "validate-atomicrmw-sub: 'atomicrmw sub' not found in IR") nil))))
+
+(defun validate-atomicrmw-min (ir-path)
+  "Verifies atomicrmw min (signed integer fetch-and-min) is present in the IR.
+Used by: 05-atomic-min-cell."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-min: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-min nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw min" ir)
+        (progn (log:error "validate-atomicrmw-min: 'atomicrmw min' not found in IR") nil))))
+
+(defun validate-atomicrmw-max (ir-path)
+  "Verifies atomicrmw max (signed integer fetch-and-max) is present in the IR.
+Used by: 06-atomic-max-cell."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-max: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-max nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw max" ir)
+        (progn (log:error "validate-atomicrmw-max: 'atomicrmw max' not found in IR") nil))))
+
+(defun validate-atomicrmw-xchg (ir-path)
+  "Verifies atomicrmw xchg (unconditional exchange) is present in the IR.
+Used by: 07-atomic-xchg-cell, 09-atomic-set-alias."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-xchg: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-xchg nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw xchg" ir)
+        (progn (log:error "validate-atomicrmw-xchg: 'atomicrmw xchg' not found in IR") nil))))
+
+(defun validate-atomicrmw-fadd (ir-path)
+  "Verifies atomicrmw fadd (float fetch-and-add) is present in the IR.
+Used by: 08-atomic-add-float."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-fadd: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-fadd nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw fadd" ir)
+        (progn (log:error "validate-atomicrmw-fadd: 'atomicrmw fadd' not found in IR") nil))))
 
 (defun validate-tensor-ad-atomic (ir-path)
   "Validates that tensor gradient accumulation in the backward kernel uses atomicrmw fadd.

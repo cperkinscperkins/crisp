@@ -1,4 +1,5 @@
 ;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-xchg
 ;; Tests atomic-set! which is an alias for atomic-xchg!.
 ;; Both must generate identical IR: atomicrmw xchg i32 ... seq_cst
 

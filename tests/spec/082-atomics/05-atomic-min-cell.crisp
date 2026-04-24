@@ -1,7 +1,7 @@
 ;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-min
 ;; Tests atomic-min! — stores the minimum, returns the old value.
 ;; Signed integer: LLVMAtomicRMWBinOpMin.
-;; Expected IR: atomicrmw min i32 ... seq_cst
 
 (def-type min-vec (vector int :address-space :global :access :read-write))
 

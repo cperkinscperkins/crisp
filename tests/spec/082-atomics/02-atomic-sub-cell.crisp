@@ -1,7 +1,7 @@
 ;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-sub
 ;; Tests atomic-sub! on a vector element (integer type).
 ;; Returns the old value — fetch-and-sub semantics.
-;; Expected IR: atomicrmw sub i32 ... seq_cst
 
 (def-type counter-vec (vector int :address-space :global :access :read-write))
 

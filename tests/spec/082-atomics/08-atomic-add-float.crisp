@@ -1,7 +1,7 @@
 ;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-fadd
 ;; Tests atomic-add! with float element type.
 ;; Float type requires LLVMAtomicRMWBinOpFAdd (not the integer Add).
-;; Expected IR: atomicrmw fadd float ... seq_cst
 
 (def-type float-acc (vector float :address-space :global :access :read-write))
 

@@ -1,7 +1,7 @@
 ;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-max
 ;; Tests atomic-max! — stores the maximum, returns the old value.
 ;; Signed integer: LLVMAtomicRMWBinOpMax.
-;; Expected IR: atomicrmw max i32 ... seq_cst
 
 (def-type max-vec (vector int :address-space :global :access :read-write))
 

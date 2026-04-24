@@ -1,6 +1,6 @@
 ;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-xchg
 ;; Tests atomic-xchg! — unconditionally exchanges value, returns old value.
-;; Expected IR: atomicrmw xchg i32 ... seq_cst
 
 (def-type latch-vec (vector int :address-space :global :access :read-write))
 
