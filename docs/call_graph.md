@@ -172,8 +172,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp
-- - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
 - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
 - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - (%GENERATE-KEYWORD-LITERAL-IR VALUE)  codegen.lisp
@@ -196,7 +196,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - (%BUILD-FUNCTION-CALL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE SIG CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT RETURN-TYPE-NAMES)  codegen.lisp
 - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp
-- - - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
 - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp
 - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp
 - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
@@ -243,10 +243,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - - - - - - - - - - (%LOOKUP-FIELD-PHYSICAL-INDEX STRUCT-DEF FIELD-NAME-STR)  codegen.lisp
 - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
-- - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
 - - - - - - - - - - (%DVEC-COERCE-ELEMENT-IR ELEM-NODE COMP-TYPE COMP-LLVM-TYPE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
 - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
 - - - - - - - - - - (%MV-BUMP-PTR BUILDER BASE-PTR OFFSET-BYTES ADDR-SPACE)  codegen.lisp
 - - - - - - - - - - (%MV-SOURCE-ADDR CANON)  analysis/structs.lisp
 - - - - - - - - - - - (%MV-SOURCE-HEAD CANON)  analysis/structs.lisp
@@ -603,6 +603,29 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-ATOMIC-ADD!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+
+- (ANALYZE-ATOMIC-DEC!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
+
+- (ANALYZE-ATOMIC-INC!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
+
+- (ANALYZE-ATOMIC-MAX!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
+
+- (ANALYZE-ATOMIC-MIN!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
+
+- (ANALYZE-ATOMIC-SET!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
+
+- (ANALYZE-ATOMIC-SUB!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
+
+- (ANALYZE-ATOMIC-XCHG!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
 
 - (ANALYZE-BITCAST-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -832,7 +855,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GET-PROMOTED-TYPE TYPE-A-NAME TYPE-B-NAME)  type-checker.lisp [See above]
 
 - (DEF-BINARY-OP-CODEGEN NODE-TYPE INT-INST FLOAT-INST ACCESSOR-PREFIX)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
@@ -844,7 +867,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 
 - (DEF-CAST-CODEGEN NODE-TYPE DOCSTRING ARG-ACCESSOR TYPE-ACCESSOR &BODY BODY)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
@@ -854,7 +877,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (DEF-COMPARISON-CODEGEN TYPE-NAME INT-PRED FLOAT-PRED ACCESSOR-PREFIX)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
@@ -911,7 +934,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (DEF-UNARY-MATH-CODEGEN NODE-TYPE INTRINSIC-NAME)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
@@ -919,7 +942,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (DUMP-ENV ENV &KEY (TITLE Environment Dump)) :CRISP.UTILS  utils.lisp
 
 - (GENERATE-COMPARISON-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE OP-NODE-INT OP-NODE-FLOAT)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-MAKE-VIEW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-ATOMIC-RMW) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (GET-TEMPLATE-SIGNATURE NAME CONCRETE-TYPES)  templates.lisp
@@ -1076,6 +1099,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-ANCESTOR-DISTANCE IR-PATH)  metadata-val.lisp
 - - (COUNT-SUBSTRING NEEDLE HAYSTACK)  metadata-val.lisp
 
+- (VALIDATE-ATOMICRMW-ADD IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-ATOMICRMW-FADD IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-ATOMICRMW-MAX IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-ATOMICRMW-MIN IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-ATOMICRMW-SUB IR-PATH)  metadata-val.lisp
+
+- (VALIDATE-ATOMICRMW-XCHG IR-PATH)  metadata-val.lisp
+
 - (VALIDATE-BASIC-GRAD-SIGNATURE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
 
@@ -1217,6 +1252,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-SUBTRACTION-CHAIN-RULE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
+
+- (VALIDATE-TENSOR-AD-ATOMIC IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-TENSOR-ADD-GRAD IR-PATH)  metadata-val.lisp
 

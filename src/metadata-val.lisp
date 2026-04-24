@@ -2229,3 +2229,83 @@ Returns the form or NIL."
          (progn (log:error "validate-vec-mixed-sub-grad: idx_GRAD should not be emitted") nil))
      (progn (log:info "validate-vec-mixed-sub-grad: PASS") t))))
 
+
+
+(defun validate-atomicrmw-add (ir-path)
+  "Verifies atomicrmw add (integer fetch-and-add) is present in the IR.
+Used by: 01-atomic-add-cell, 03-atomic-inc-cell."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-add: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-add nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw add" ir)
+        (progn (log:error "validate-atomicrmw-add: 'atomicrmw add' not found in IR") nil))))
+
+(defun validate-atomicrmw-sub (ir-path)
+  "Verifies atomicrmw sub (integer fetch-and-sub) is present in the IR.
+Used by: 02-atomic-sub-cell, 04-atomic-dec-cell."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-sub: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-sub nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw sub" ir)
+        (progn (log:error "validate-atomicrmw-sub: 'atomicrmw sub' not found in IR") nil))))
+
+(defun validate-atomicrmw-min (ir-path)
+  "Verifies atomicrmw min (signed integer fetch-and-min) is present in the IR.
+Used by: 05-atomic-min-cell."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-min: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-min nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw min" ir)
+        (progn (log:error "validate-atomicrmw-min: 'atomicrmw min' not found in IR") nil))))
+
+(defun validate-atomicrmw-max (ir-path)
+  "Verifies atomicrmw max (signed integer fetch-and-max) is present in the IR.
+Used by: 06-atomic-max-cell."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-max: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-max nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw max" ir)
+        (progn (log:error "validate-atomicrmw-max: 'atomicrmw max' not found in IR") nil))))
+
+(defun validate-atomicrmw-xchg (ir-path)
+  "Verifies atomicrmw xchg (unconditional exchange) is present in the IR.
+Used by: 07-atomic-xchg-cell, 09-atomic-set-alias."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-xchg: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-xchg nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw xchg" ir)
+        (progn (log:error "validate-atomicrmw-xchg: 'atomicrmw xchg' not found in IR") nil))))
+
+(defun validate-atomicrmw-fadd (ir-path)
+  "Verifies atomicrmw fadd (float fetch-and-add) is present in the IR.
+Used by: 08-atomic-add-float."
+  (unless (probe-file ir-path)
+    (log:error "validate-atomicrmw-fadd: IR file not found: ~a" ir-path)
+    (return-from validate-atomicrmw-fadd nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (or (search "atomicrmw fadd" ir)
+        (progn (log:error "validate-atomicrmw-fadd: 'atomicrmw fadd' not found in IR") nil))))
+
+(defun validate-tensor-ad-atomic (ir-path)
+  "Validates that tensor gradient accumulation in the backward kernel uses atomicrmw fadd.
+Checks:
+  - tensor_ad_atomic_grad function is defined
+  - atomicrmw instruction is present (atomic gradient accumulation)
+  - idx_GRAD is NOT present (integer index is non-differentiable)"
+  (unless (probe-file ir-path)
+    (log:error "validate-tensor-ad-atomic: IR file not found: ~a" ir-path)
+    (return-from validate-tensor-ad-atomic nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "tensor_ad_atomic_grad" ir)
+         (progn (log:error "validate-tensor-ad-atomic: tensor_ad_atomic_grad function not found") nil))
+     (or (search "atomicrmw" ir)
+         (progn (log:error "validate-tensor-ad-atomic: atomicrmw not found (expected atomic gradient accumulation)") nil))
+     (or (not (search "idx_GRAD" ir))
+         (progn (log:error "validate-tensor-ad-atomic: idx_GRAD should not be emitted (integer index is non-differentiable)") nil))
+     (progn (log:info "validate-tensor-ad-atomic: PASS") t))))

@@ -169,6 +169,18 @@
 (defstruct semantic-aref
   type array-node index-node source-location)
 
+(defstruct semantic-atomic-rmw
+  "Represents an atomic read-modify-write operation (atomic-add!, atomic-sub!, etc.).
+Returns the value at the location BEFORE the modification (fetch-and-op semantics).
+OP is a keyword: :add :sub :min :max :xchg.
+DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
+  type        ; element type — also the return type (old value)
+  op          ; keyword :add :sub :min :max :xchg
+  target-node ; semantic-aref for the memory location
+  delta-node  ; semantic node for the value to apply
+  source-location)
+
+
 (defstruct semantic-cast
   "Base struct for all cast operations."
   type arg source-location)

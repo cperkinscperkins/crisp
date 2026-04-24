@@ -1892,3 +1892,56 @@
                 (t3 (llvm-build-insert-value builder t2 extent-arr    3 "mv_t_extents"))
                 (t4 (llvm-build-insert-value builder t3 length-val    4 "mv_t_length")))
         t4)))))
+
+
+
+(defmethod generate-node-ir ((node semantic-atomic-rmw) builder module var-env
+                              di-builder di-scope location-map)
+  "Generates IR for atomic RMW operations (atomic-add!, atomic-sub!, etc.).
+Returns the old value at the target location (fetch-and-op semantics).
+LLVM AtomicRMWBinOp enum: xchg=0 add=1 sub=2 max=7 min=8 umax=9 umin=10
+                           fadd=11 fsub=12 fmax=13 fmin=14
+LLVMAtomicOrdering SequentiallyConsistent = 7"
+  (let* ((target-aref     (semantic-atomic-rmw-target-node node))
+         (delta-node      (semantic-atomic-rmw-delta-node node))
+         (op              (semantic-atomic-rmw-op node))
+         (elem-type       (semantic-atomic-rmw-type node))
+         (elem-crisp-type (gethash elem-type *crisp-types*))
+         (is-float        (and elem-crisp-type
+                               (eq (crisp-type-category elem-crisp-type) :float)))
+         (is-unsigned     (and elem-crisp-type
+                               (eq (crisp-type-category elem-crisp-type) :unsigned-int))))
+
+    ;; Get the GEP pointer from the target aref (3rd return value)
+    (multiple-value-bind (aref-val aref-loc ptr)
+        (generate-node-ir target-aref builder module var-env di-builder di-scope location-map)
+      (declare (ignore aref-val aref-loc))
+      (unless ptr
+        (error "Compiler error in atomic RMW: target ~a did not produce an address pointer"
+               target-aref))
+
+      ;; Compute the delta value
+      (let* ((delta-raw (generate-node-ir delta-node builder module var-env
+                                          di-builder di-scope location-map))
+             (delta-val (extract-primary-value builder delta-raw elem-type))
+             ;; Select the LLVM RMW opcode
+             ;; Inline integer literals avoid defconstant redefinition issues in overlays.
+             (rmw-op (ecase op
+                       (:add  (if is-float 11 1))   ;; fadd=11, add=1
+                       (:sub  (if is-float 12 2))   ;; fsub=12, sub=2
+                       (:min  (cond (is-float 14)   ;; fmin=14
+                                    (is-unsigned 10) ;; umin=10
+                                    (t 8)))          ;; min=8 (signed)
+                       (:max  (cond (is-float 13)   ;; fmax=13
+                                    (is-unsigned 9)  ;; umax=9
+                                    (t 7)))          ;; max=7 (signed)
+                       (:xchg 0))))                 ;; xchg=0
+
+        (log:info "atomic-rmw: op=~a elem-type=~a is-float=~a is-unsigned=~a rmw-op=~a"
+                  op elem-type is-float is-unsigned rmw-op)
+
+        (let ((result (crisp.llvm-bindings::llvm-build-atomic-rmw
+                       builder rmw-op ptr delta-val
+                       7  ;; LLVMAtomicOrderingSequentiallyConsistent
+                       0))) ;; single-thread=0 (multi-threaded GPU)
+          (values result nil))))))

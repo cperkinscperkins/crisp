@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-23T03:43:00.660626Z
+Generated on 2026-04-24T20:10:24.207614Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -410,14 +410,14 @@ Generated on 2026-04-23T03:43:00.660626Z
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the Crisp type of a semantic node.  >    Extended to handle semantic-make-view (078).
+  > Returns the Crisp type of a semantic node.  > Extended for 082-atomics to handle semantic-atomic-rmw.
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
 
-  > Returns the source location of a semantic node.  >    Extended to handle semantic-make-view (078).
+  > Returns the source location of a semantic node.  > Extended for 082-atomics to handle semantic-atomic-rmw.
 
 
 ---
@@ -562,10 +562,6 @@ Generated on 2026-04-23T03:43:00.660626Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
-### DEFUN `ANALYZE-ATOMIC-ADD!-EXPRESSION`
-- **Args**: `(EXPR ENV CONTEXT LOCATION)`
-
----
 ### DEFUN `ANALYZE-CAST-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
@@ -608,7 +604,73 @@ Generated on 2026-04-23T03:43:00.660626Z
 
 
 ---
+### DEFUN `%ANALYZE-ATOMIC-RMW-EXPRESSION`
+- **Args**: `(OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)`
+
+  > Shared helper for all atomic RMW analyzers.  > OP is a keyword (:add :sub :min :max :xchg).  > Target (second element of EXPR) must be an aref expression like (~ vec idx).  > When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-ADD!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-add! target delta) — atomic fetch-and-add.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-SUB!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-sub! target delta) — atomic fetch-and-subtract.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-INC!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-inc! target) — atomic increment by 1.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-DEC!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-dec! target) — atomic decrement by 1.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-MIN!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-min! target val) — atomic fetch-and-min.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-MAX!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-max! target val) — atomic fetch-and-max.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-XCHG!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-xchg! target new-val) — atomic exchange.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-SET!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-set! target new-val) — alias for atomic-xchg!.
+
+
+---
 ### DEFUN `REGISTER-OPS-ANALYZERS`
+
+  > Registers all expression analyzer functions.  > Redefined for 082-atomics to add atomic RMW op analyzers.
+
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\structs.lisp`
@@ -910,7 +972,7 @@ Generated on 2026-04-23T03:43:00.660626Z
 ### DEFUN `ANF-NORMALIZE`
 - **Args**: `(EXPR IS-NESTED?)`
 
-  > Returns (VALUES normalized-expr bindings-list)
+  > Returns (VALUES normalized-expr bindings-list).  > Redefined for 082-atomics: atomic RMW ops (atomic-add! etc.) treat the first  > argument as a place (not hoisted to a temp), matching the set! convention.
 
 
 ---
@@ -974,7 +1036,7 @@ Generated on 2026-04-23T03:43:00.660626Z
 - **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
               (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT)`
 
-  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  > TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for  > tensor inputs. When (~ src idx...) is encountered and src has an entry in this  > table, gradient accumulation is emitted directly as  >   (set! (~ src_GRAD idx...) (+ (~ src_GRAD idx...) adj(v)))  > rather than the scalar-adjoint path used for cells.
+  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  > TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for  > tensor inputs. When (~ src idx...) is encountered and src has an entry in this  > table, gradient accumulation is emitted as atomic-add! (atomicrmw fadd) to  > avoid race conditions in parallel GPU threads (082-atomics).
 
 
 ---
@@ -3156,6 +3218,55 @@ Generated on 2026-04-23T03:43:00.660626Z
 
 
 ---
+### DEFUN `VALIDATE-ATOMICRMW-ADD`
+- **Args**: `(IR-PATH)`
+
+  > Verifies atomicrmw add (integer fetch-and-add) is present in the IR.  > Used by: 01-atomic-add-cell, 03-atomic-inc-cell.
+
+
+---
+### DEFUN `VALIDATE-ATOMICRMW-SUB`
+- **Args**: `(IR-PATH)`
+
+  > Verifies atomicrmw sub (integer fetch-and-sub) is present in the IR.  > Used by: 02-atomic-sub-cell, 04-atomic-dec-cell.
+
+
+---
+### DEFUN `VALIDATE-ATOMICRMW-MIN`
+- **Args**: `(IR-PATH)`
+
+  > Verifies atomicrmw min (signed integer fetch-and-min) is present in the IR.  > Used by: 05-atomic-min-cell.
+
+
+---
+### DEFUN `VALIDATE-ATOMICRMW-MAX`
+- **Args**: `(IR-PATH)`
+
+  > Verifies atomicrmw max (signed integer fetch-and-max) is present in the IR.  > Used by: 06-atomic-max-cell.
+
+
+---
+### DEFUN `VALIDATE-ATOMICRMW-XCHG`
+- **Args**: `(IR-PATH)`
+
+  > Verifies atomicrmw xchg (unconditional exchange) is present in the IR.  > Used by: 07-atomic-xchg-cell, 09-atomic-set-alias.
+
+
+---
+### DEFUN `VALIDATE-ATOMICRMW-FADD`
+- **Args**: `(IR-PATH)`
+
+  > Verifies atomicrmw fadd (float fetch-and-add) is present in the IR.  > Used by: 08-atomic-add-float.
+
+
+---
+### DEFUN `VALIDATE-TENSOR-AD-ATOMIC`
+- **Args**: `(IR-PATH)`
+
+  > Validates that tensor gradient accumulation in the backward kernel uses atomicrmw fadd.  > Checks:  >   - tensor_ad_atomic_grad function is defined  >   - atomicrmw instruction is present (atomic gradient accumulation)  >   - idx_GRAD is NOT present (integer index is non-differentiable)
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
 
 ### DEFVAR `*EMIT-METADATA*`
@@ -3400,6 +3511,12 @@ Generated on 2026-04-23T03:43:00.660626Z
 
 ---
 ### DEFSTRUCT `SEMANTIC-AREF`
+
+---
+### DEFSTRUCT `SEMANTIC-ATOMIC-RMW`
+
+  > Represents an atomic read-modify-write operation (atomic-add!, atomic-sub!, etc.).  > Returns the value at the location BEFORE the modification (fetch-and-op semantics).  > OP is a keyword: :add :sub :min :max :xchg.  > DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1).
+
 
 ---
 ### DEFSTRUCT `SEMANTIC-CAST`

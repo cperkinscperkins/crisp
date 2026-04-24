@@ -500,6 +500,7 @@ Miscelleny
 - [x] what is going on with validation.lisp? why does everything need cl:cond ?
       same with autodiff.lisp  . FIX 
 - [ ] i64 and ui64 as types and literals!!
+- [ ] atomic-binop! deferred. Needs dotimes+
 
 
 Tensors Vectors and Matrices

@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-sub
+;; Tests atomic-sub! on a vector element (integer type).
+;; Returns the old value — fetch-and-sub semantics.
+
+(def-type counter-vec (vector int :address-space :global :access :read-write))
+
+(def-function test-atomic-sub (v delta)
+  (declare #'(counter-vec int => int))
+  (atomic-sub! (~ v 0) delta))

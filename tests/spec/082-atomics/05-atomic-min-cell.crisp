@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-min
+;; Tests atomic-min! — stores the minimum, returns the old value.
+;; Signed integer: LLVMAtomicRMWBinOpMin.
+
+(def-type min-vec (vector int :address-space :global :access :read-write))
+
+(def-function test-atomic-min (v candidate)
+  (declare #'(min-vec int => int))
+  (atomic-min! (~ v 0) candidate))

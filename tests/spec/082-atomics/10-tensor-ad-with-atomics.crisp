@@ -1,0 +1,18 @@
+;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-tensor-ad-atomic
+;;
+;; Tests that tensor gradient accumulation in the backward kernel uses
+;; atomic-add! (atomicrmw fadd) instead of the non-atomic set!+fadd pattern.
+;;
+;; Forward kernel: C[idx] = A[idx]   (identity — simplest possible scatter)
+;;
+;; Expected backward IR:
+;;   - @tensor_ad_atomic_grad is defined
+;;   - atomicrmw present (gradient accumulation is atomic)
+;;   - idx_GRAD NOT present (integer index is non-differentiable)
+
+(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
+(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+
+(def-kernel tensor_ad_atomic (A idx &out C)
+  (declare #'(in-vec ulong &out out-vec))
+  (set! (~ C idx) (~ A idx)))

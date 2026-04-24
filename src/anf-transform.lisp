@@ -39,8 +39,13 @@
          (values `(,acc ,@anf-args) bindings))))
    (t (error "Invalid place in set!: ~S" place))))
 
+
+
+
 (defun anf-normalize (expr is-nested?)
-  "Returns (VALUES normalized-expr bindings-list)"
+  "Returns (VALUES normalized-expr bindings-list).
+Redefined for 082-atomics: atomic RMW ops (atomic-add! etc.) treat the first
+argument as a place (not hoisted to a temp), matching the set! convention."
   (cond
    ((anf-is-atomic? expr)
      (values expr nil))
@@ -51,8 +56,8 @@
        (when (and (symbolp op)
                   (macro-function op)
                   (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes set! declare progn let
-                                         template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
-                                         make-cell make-vector make-matrix make-tensor))))
+                                          template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
+                                          make-cell make-vector make-matrix make-tensor))))
              (multiple-value-bind (expanded changed) (macroexpand-1 expr)
                (when changed
                      (return-from anf-normalize (anf-normalize expanded is-nested?)))))
@@ -120,7 +125,6 @@
                   (setf new-bindings (append new-bindings val-bindings))
                   (setf new-bindings (append new-bindings (list `(,@vars ,new-val)))))))
             (let* ((anf-body (mapcar #'%anf-transform body-forms))
-                   ;; Decls need to be hoisted into the new bindings list so they appear above the body
                    (hoisted-decls (loop for d in decls collect `(declare ,d)))
                    (anf-progn (if (> (length anf-body) 1) `(progn ,@anf-body) (car anf-body))))
               (if is-nested?
@@ -155,18 +159,12 @@
                   (let ((temp (anf-fresh-temp)))
                     (values temp `((,temp ,anf-msc))))
                   (values anf-msc nil)))))
-        ;; make-scratch-vector/matrix/tensor: preserve all positional + keyword args verbatim.
-        ;; The sizeExpression and keyword args are opaque to ANF; only the operator + args
-        ;; need to survive intact for the analysis and codegen phases.
         ((member op '(make-scratch-vector make-scratch-matrix make-scratch-tensor))
           (let ((anf-form `(,op ,@(cdr expr))))
             (if is-nested?
                 (let ((temp (anf-fresh-temp)))
                   (values temp `((,temp ,anf-form))))
                 (values anf-form nil))))
-        ;; make-cell/vector/matrix/tensor: view constructors.
-        ;; The source (first arg after op) is a normal expression to be ANF-normalized.
-        ;; All remaining args (elem-type, width/height/extents, keyword args) pass verbatim.
         ((member op '(make-cell make-vector make-matrix make-tensor))
           (let* ((source (cadr expr))
                  (rest-args (cddr expr)))
@@ -201,6 +199,23 @@
                     (let ((temp (anf-fresh-temp)))
                       (values temp (append limit-bindings `((,temp ,anf-dotimes)))))
                     (values anf-dotimes limit-bindings))))))
+        ;; 082-atomics: atomic RMW ops treat the first arg as a place (not hoisted).
+        ;; Use string= to handle cross-package symbols (crisp.compiler vs crisp-language).
+        ((and (symbolp op)
+              (member (symbol-name op)
+                      '("ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-INC!" "ATOMIC-DEC!"
+                        "ATOMIC-MIN!" "ATOMIC-MAX!" "ATOMIC-XCHG!" "ATOMIC-SET!")
+                      :test #'string=))
+          (let ((place (cadr expr))
+                (rest-args (cddr expr)))
+            (multiple-value-bind (new-place place-bindings) (anf-normalize-place place)
+              (multiple-value-bind (anf-args arg-bindings) (anf-normalize-args rest-args)
+                (let ((call `(,op ,new-place ,@anf-args))
+                      (all-bindings (append place-bindings arg-bindings)))
+                  (if is-nested?
+                      (let ((temp (anf-fresh-temp)))
+                        (values temp (append all-bindings `((,temp ,call)))))
+                      (values call all-bindings)))))))
         (t
           (let ((args (cdr expr)))
             (multiple-value-bind (anf-args bindings) (anf-normalize-args args)

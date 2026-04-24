@@ -1118,9 +1118,11 @@ in single-pass mode."
 
 ;; --- Helper to get the type from any node ---
 
+
+
 (defun semantic-node-type (node)
   "Returns the Crisp type of a semantic node.
-   Extended to handle semantic-make-view (078)."
+Extended for 082-atomics to handle semantic-atomic-rmw."
   (etypecase node
     (semantic-literal (semantic-literal-value-type node))
     (semantic-device-vec-literal (semantic-device-vec-literal-vec-type node))
@@ -1156,14 +1158,13 @@ in single-pass mode."
     (semantic-struct-member-update (semantic-struct-member-update-type node))
     (semantic-sizeof (semantic-sizeof-type node))
     ;; 078 view constructors
-    (semantic-make-view (semantic-make-view-type node))))
-
-
-
+    (semantic-make-view (semantic-make-view-type node))
+    ;; 082 atomic RMW — returns the old value (same type as the element)
+    (semantic-atomic-rmw (semantic-atomic-rmw-type node))))
 
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
-   Extended to handle semantic-make-view (078)."
+Extended for 082-atomics to handle semantic-atomic-rmw."
   (etypecase node
     (semantic-literal (semantic-literal-source-location node))
     (semantic-device-vec-literal (semantic-device-vec-literal-source-location node))
@@ -1199,7 +1200,9 @@ in single-pass mode."
     (semantic-progn (semantic-progn-source-location node))
     (semantic-struct-member-update (semantic-struct-member-update-source-location node))
     ;; 078 view constructors
-    (semantic-make-view (semantic-make-view-source-location node))))
+    (semantic-make-view (semantic-make-view-source-location node))
+    ;; 082 atomic RMW
+    (semantic-atomic-rmw (semantic-atomic-rmw-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)

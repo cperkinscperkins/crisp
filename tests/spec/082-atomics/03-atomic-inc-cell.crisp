@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-add
+;; Tests atomic-inc! — atomically increments by 1, returns old value.
+;; Implemented as atomicrmw add with delta=1.
+
+(def-type counter-vec (vector int :address-space :global :access :read-write))
+
+(def-function test-atomic-inc (v)
+  (declare #'(counter-vec => int))
+  (atomic-inc! (~ v 0)))

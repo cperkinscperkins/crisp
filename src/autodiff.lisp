@@ -52,7 +52,7 @@
                  (nth 3 c) :read-write   (nth 5 c)))
       type-spec))
 
-
+#|
 (defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
                                       &key hof-handler-fn (error-on-unknown t)
                                            tensor-inputs-ht)
@@ -141,6 +141,121 @@ rather than the scalar-adjoint path used for cells."
                                     (symbol-package v)
                                     emit-fn local-adj-fn
                                     (if (symbolp v) (symbol-name v) "BW")))))
+      ;; Struct accessor (name ends in ~): treat like identity.
+      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
+            (let ((fname (symbol-name (car expr))))
+              (and (> (length fname) 1)
+                   (cl:char= (cl:char fname (1- (length fname))) #\~))))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
+      ;; Comparison/boolean ops: skip
+      ((and (consp expr) (symbolp (car expr))
+            (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
+       nil)
+      ;; If form: skip
+      ((and (consp expr) (symbolp (car expr))
+            (string= (symbol-name (car expr)) "IF"))
+       nil)
+      ;; System/integer-conversion functions: skip silently
+      ((and (consp expr) (symbolp (car expr))
+            (%backward-skip-fn-p (car expr)))
+       nil)
+      ;; Unknown user function
+      ((and (consp expr) (symbolp (car expr)))
+       (when error-on-unknown
+         (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
+      ;; Other
+      (t nil))))
+      |#
+
+
+(defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
+                                      &key hof-handler-fn (error-on-unknown t)
+                                           tensor-inputs-ht)
+  "Generates backward-pass adjoint updates for a single ANF binding (v := expr).
+TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for
+tensor inputs. When (~ src idx...) is encountered and src has an entry in this
+table, gradient accumulation is emitted as atomic-add! (atomicrmw fadd) to
+avoid race conditions in parallel GPU threads (082-atomics)."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (cond
+      ;; Primitive: +
+      ((and (consp expr) (eq (car expr) '+))
+        (let ((a (cadr expr)) (b (caddr expr)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
+      ;; Primitive: -
+      ((and (consp expr) (eq (car expr) '-))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
+      ;; Primitive: *
+      ((and (consp expr) (eq (car expr) '*))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
+      ;; Primitive: /
+      ((and (consp expr) (eq (car expr) '/))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
+      ;; Primitive: sin
+      ((and (consp expr) (eq (car expr) 'sin))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (let* ((a-adj (local-adj a))
+                   (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
+              (setf (gethash cos-a adjoint-map) cos-a)
+              (emit `(set! ,cos-a (cos ,a)))
+              (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
+      ;; Primitive: cos
+      ((and (consp expr) (eq (car expr) 'cos))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (let* ((a-adj (local-adj a))
+                   (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
+              (setf (gethash sin-a adjoint-map) sin-a)
+              (emit `(set! ,sin-a (sin ,a)))
+              (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
+      ;; Cell or tensor read: ~
+      ;; Distinguishes by index count:
+      ;;   (~ src)          → cell read  → scalar adjoint accumulation (existing)
+      ;;   (~ src idx...)   → tensor read → atomic gradient accumulation (082-atomics)
+      ((and (consp expr) (eq (car expr) '~))
+        (let* ((src     (cadr expr))
+               (indices (cddr expr))
+               (v-adj   (local-adj v)))
+          (when (symbolp src)
+            (cond
+              ;; Tensor read with a known kernel input: emit atomic gradient accumulation.
+              ;; atomic-add! avoids the race condition in the non-atomic set!+fadd pattern.
+              ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
+               (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
+                                       (symbol-package src))))
+                 (emit `(atomic-add! (~ ,grad-sym ,@indices) ,v-adj))))
+              ;; Cell read (no indices) or tensor not in known inputs: scalar adjoint path.
+              (t
+               (emit `(set! ,(local-adj src) (+ ,(local-adj src) ,v-adj))))))))
+      ;; Differentiable sub-function call
+      ((and (consp expr)
+            (symbolp (car expr))
+            (gethash (car expr) *differentiable-functions*))
+        (let* ((fn   (car expr))
+               (args (cdr expr))
+               (info (gethash fn *differentiable-functions*)))
+          (if (getf info :hof)
+              (if hof-handler-fn
+                  (funcall hof-handler-fn fn args v)
+                  (error "HOF handler required for sub-function ~A but not provided" fn))
+              (%emit-sub-fn-backward fn args
+                                     (getf info :bkwd-name)
+                                     (list (local-adj v))
+                                     (getf info :n-float-params)
+                                     (symbol-package v)
+                                     emit-fn local-adj-fn
+                                     (if (symbolp v) (symbol-name v) "BW")))))
       ;; Struct accessor (name ends in ~): treat like identity.
       ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
             (let ((fname (symbol-name (car expr))))

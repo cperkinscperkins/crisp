@@ -123,22 +123,6 @@
 (defun analyze-dec!-expression (expr env context location)
   (declare (ignore expr env context location))
   (error "dec! not implemented"))
-(defun analyze-atomic-add!-expression (expr env context location)
-  ;; TODO: implement atomic-add! for tensor gradient accumulation and general use.
-  ;;
-  ;; Syntax: (atomic-add! (~ tensor idx...) delta)
-  ;;           or (atomic-add! cell-or-var delta)
-  ;;
-  ;; Implementation sketch:
-  ;;   1. Semantic analysis: verify target is a writable storage location; infer result type.
-  ;;   2. Codegen: emit LLVMBuildAtomicRMW with LLVMAtomicRMWBinOpFAdd (float) or
-  ;;      LLVMAtomicRMWBinOpAdd (integer), ordering LLVMAtomicOrderingSequentiallyConsistent.
-  ;;      Requires adding LLVMBuildAtomicRMW to src/llvm-bindings.lisp.
-  ;;   3. ANF: treat (atomic-add! place delta) as a statement (no binding needed).
-  ;;   4. Once implemented, the tensor AD backward walk can use atomic-add! for scatter
-  ;;      patterns. Element-wise kernels do not need it (no concurrent index conflicts).
-  (declare (ignore expr env context location))
-  (error "atomic-add! not implemented"))
 
 (defun analyze-cast-expression (expr env context location)
   "Analyzes a to-XXXX or as-XXXX cast expression."
@@ -307,7 +291,83 @@
          (arg-node (analyze-expression val-form env context (append location '(2)))))
     (make-semantic-bitcast :type target-type :arg arg-node :source-location location)))
 
+
+
+
+(defun %analyze-atomic-rmw-expression (op expr env context location &key no-delta)
+  "Shared helper for all atomic RMW analyzers.
+OP is a keyword (:add :sub :min :max :xchg).
+Target (second element of EXPR) must be an aref expression like (~ vec idx).
+When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta."
+  ;; Validate argument count: inc!/dec! take 1 arg (target only); others take 2 (target + delta).
+  (let ((expected-args (if no-delta 1 2))
+        (actual-args   (1- (length expr))))
+    (unless (= actual-args expected-args)
+      (error 'crisp-type-error
+        :message (format nil "~a: expected ~a argument~:p, got ~a"
+                         (first expr) expected-args actual-args)
+        :source-location location)))
+  (let* ((target-form (second expr))
+         (target-node (analyze-expression target-form env context (append location '(1)))))
+    (unless (semantic-aref-p target-node)
+      (error 'crisp-type-error
+        :message (format nil "~a: target must be a memory location like (~~ vec idx), got ~a"
+                         (first expr) target-form)
+        :source-location location))
+    (let* ((elem-type  (semantic-aref-type target-node))
+           (delta-node (if no-delta
+                           ;; inc!/dec! synthesize a literal 1 of the appropriate type
+                           (let* ((ct  (gethash elem-type *crisp-types*))
+                                  (one (if (and ct (eq (crisp-type-category ct) :float))
+                                           1.0d0 1)))
+                             (make-semantic-literal :value-type elem-type
+                                                    :value one
+                                                    :source-location location))
+                           ;; regular: analyze the delta argument
+                           (analyze-expression (third expr) env context
+                                               (append location '(2))))))
+      (make-semantic-atomic-rmw :type elem-type
+                                :op op
+                                :target-node target-node
+                                :delta-node delta-node
+                                :source-location location))))
+
+(defun analyze-atomic-add!-expression (expr env context location)
+  "Analyzes (atomic-add! target delta) — atomic fetch-and-add."
+  (%analyze-atomic-rmw-expression :add expr env context location))
+
+(defun analyze-atomic-sub!-expression (expr env context location)
+  "Analyzes (atomic-sub! target delta) — atomic fetch-and-subtract."
+  (%analyze-atomic-rmw-expression :sub expr env context location))
+
+(defun analyze-atomic-inc!-expression (expr env context location)
+  "Analyzes (atomic-inc! target) — atomic increment by 1."
+  (%analyze-atomic-rmw-expression :add expr env context location :no-delta t))
+
+(defun analyze-atomic-dec!-expression (expr env context location)
+  "Analyzes (atomic-dec! target) — atomic decrement by 1."
+  (%analyze-atomic-rmw-expression :sub expr env context location :no-delta t))
+
+(defun analyze-atomic-min!-expression (expr env context location)
+  "Analyzes (atomic-min! target val) — atomic fetch-and-min."
+  (%analyze-atomic-rmw-expression :min expr env context location))
+
+(defun analyze-atomic-max!-expression (expr env context location)
+  "Analyzes (atomic-max! target val) — atomic fetch-and-max."
+  (%analyze-atomic-rmw-expression :max expr env context location))
+
+(defun analyze-atomic-xchg!-expression (expr env context location)
+  "Analyzes (atomic-xchg! target new-val) — atomic exchange."
+  (%analyze-atomic-rmw-expression :xchg expr env context location))
+
+(defun analyze-atomic-set!-expression (expr env context location)
+  "Analyzes (atomic-set! target new-val) — alias for atomic-xchg!."
+  (%analyze-atomic-rmw-expression :xchg expr env context location))
+
+
 (defun register-ops-analyzers ()
+  "Registers all expression analyzer functions.
+Redefined for 082-atomics to add atomic RMW op analyzers."
   (def-expression-analyzer + analyze-add-expression)
   (def-expression-analyzer - analyze-sub-expression)
   (def-expression-analyzer * analyze-mul-expression)
@@ -321,15 +381,39 @@
   (def-expression-analyzer = analyze-eq-expression)
   (def-expression-analyzer != analyze-neq-expression)
 
-  (def-expression-analyzer atomic-add! analyze-atomic-add!-expression)
-  (def-expression-analyzer to analyze-value-cast-expression)
-  ;; Duplicate 'to' in original? Yes.
-  (def-expression-analyzer as analyze-generic-as-expression)
+  ;; 082-atomics: register under crisp.compiler package symbols
+  (def-expression-analyzer atomic-add!  analyze-atomic-add!-expression)
+  (def-expression-analyzer atomic-sub!  analyze-atomic-sub!-expression)
+  (def-expression-analyzer atomic-inc!  analyze-atomic-inc!-expression)
+  (def-expression-analyzer atomic-dec!  analyze-atomic-dec!-expression)
+  (def-expression-analyzer atomic-min!  analyze-atomic-min!-expression)
+  (def-expression-analyzer atomic-max!  analyze-atomic-max!-expression)
+  (def-expression-analyzer atomic-xchg! analyze-atomic-xchg!-expression)
+  (def-expression-analyzer atomic-set!  analyze-atomic-set!-expression)
+
+  ;; 082-atomics: also register under crisp-language package symbols.
+  ;; Source files are read in crisp-language context, so atomic-add! etc.
+  ;; from source are crisp-language::atomic-add!, not crisp.compiler::atomic-add!.
+  (let ((lang (find-package :crisp-language)))
+    (when lang
+      (dolist (pair '(("ATOMIC-ADD!"  analyze-atomic-add!-expression)
+                      ("ATOMIC-SUB!"  analyze-atomic-sub!-expression)
+                      ("ATOMIC-INC!"  analyze-atomic-inc!-expression)
+                      ("ATOMIC-DEC!"  analyze-atomic-dec!-expression)
+                      ("ATOMIC-MIN!"  analyze-atomic-min!-expression)
+                      ("ATOMIC-MAX!"  analyze-atomic-max!-expression)
+                      ("ATOMIC-XCHG!" analyze-atomic-xchg!-expression)
+                      ("ATOMIC-SET!"  analyze-atomic-set!-expression)))
+        (setf (gethash (intern (first pair) lang) *expression-analyzers*)
+              (second pair)))))
+
+  (def-expression-analyzer to  analyze-value-cast-expression)
+  (def-expression-analyzer as  analyze-generic-as-expression)
   (def-expression-analyzer as-bits analyze-bitcast-expression)
   (def-expression-analyzer inc! analyze-inc!-expression)
   (def-expression-analyzer dec! analyze-dec!-expression)
 
-  ;; Register cast operators dymaically
+  ;; Register cast operators dynamically
   (log:info "Registering cast operators. *crisp-types* count: ~a" (hash-table-count *crisp-types*))
   (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
     (when (symbolp type-name)

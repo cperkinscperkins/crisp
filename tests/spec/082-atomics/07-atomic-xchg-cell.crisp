@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=llvmir]: validate-atomicrmw-xchg
+;; Tests atomic-xchg! — unconditionally exchanges value, returns old value.
+
+(def-type latch-vec (vector int :address-space :global :access :read-write))
+
+(def-function test-atomic-xchg (v new-val)
+  (declare #'(latch-vec int => int))
+  (atomic-xchg! (~ v 0) new-val))
