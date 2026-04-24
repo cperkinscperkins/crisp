@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 9
+;;
+;; E2E: read a single element through a row view.
+;; Row-major 3x4 matrix, iota-initialized: [0,1,2,3, 4,5,6,7, 8,9,10,11].
+;;   row 2 = elements at (2,0), (2,1), (2,2), (2,3) = flat indices 8, 9, 10, 11.
+;; Read col 1 of that row = flat index 9.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-cell-t (cell int :address-space :global :access :read-write))
+
+(def-kernel test_row_access (v &out out)
+  (declare #'(int-vec-t &out out-cell-t => nil))
+  (let ((M  (make-matrix v int 4 3))
+        (r2 (row 2 M)))
+    (set! (~ out) (~ r2 1))))

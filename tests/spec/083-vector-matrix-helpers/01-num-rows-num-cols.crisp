@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; num-rows returns extents[0] (height), num-cols returns extents[1] (width).
+;; make-matrix v int 4 3 => width=4 cols, height=3 rows => extents=[3,4]
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-num-rows-cols (v)
+  (declare #'(int-vec-t => ulong ulong))
+  (let ((M (make-matrix v int 4 3)))
+    (return (num-rows M) (num-cols M))))

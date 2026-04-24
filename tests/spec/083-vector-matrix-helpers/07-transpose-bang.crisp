@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 43
+;; transpose! updates a local binding in place.
+;; Input: col-major 3x4. After transpose!: 4x3. Encoded: 4*10+3 = 43.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-cell-t (cell int :address-space :global :access :read-write))
+
+(def-kernel test_transpose_bang (v &out out)
+  (declare #'(int-vec-t &out out-cell-t => nil))
+  (let ((M (make-matrix v int 4 3 :major :col)))
+    (transpose! M)
+    (set! (~ out) (to-int (+ (* (num-rows M) 10uc) (num-cols M))))))
