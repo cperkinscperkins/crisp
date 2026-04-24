@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; Tests atomic-dec! — atomically decrements by 1, returns old value.
+;; Implemented as atomicrmw sub with delta=1.
+;; Expected IR: atomicrmw sub i32 ... seq_cst
+
+(def-type counter-vec (vector int :address-space :global :access :read-write))
+
+(def-function test-atomic-dec (v)
+  (declare #'(counter-vec => int))
+  (atomic-dec! (~ v 0)))

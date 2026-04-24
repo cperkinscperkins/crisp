@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;; Tests atomic-set! which is an alias for atomic-xchg!.
+;; Both must generate identical IR: atomicrmw xchg i32 ... seq_cst
+
+(def-type latch-vec (vector int :address-space :global :access :read-write))
+
+(def-function test-atomic-set (v new-val)
+  (declare #'(latch-vec int => int))
+  (atomic-set! (~ v 0) new-val))

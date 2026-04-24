@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; Tests atomic-add! on a vector element (integer type).
+;; Returns the old value — fetch-and-add semantics.
+;; Expected IR: atomicrmw add i32 ... seq_cst
+
+(def-type counter-vec (vector int :address-space :global :access :read-write))
+
+(def-function test-atomic-add (v delta)
+  (declare #'(counter-vec int => int))
+  (atomic-add! (~ v 0) delta))

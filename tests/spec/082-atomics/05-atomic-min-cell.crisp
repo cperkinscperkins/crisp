@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; Tests atomic-min! — stores the minimum, returns the old value.
+;; Signed integer: LLVMAtomicRMWBinOpMin.
+;; Expected IR: atomicrmw min i32 ... seq_cst
+
+(def-type min-vec (vector int :address-space :global :access :read-write))
+
+(def-function test-atomic-min (v candidate)
+  (declare #'(min-vec int => int))
+  (atomic-min! (~ v 0) candidate))
