@@ -85,20 +85,9 @@
          :elements     analyzed
          :source-location location)))))
 
+
+
 #|
-;; src/analysis/core.lisp
-;; Redefine to include crisp-vec-literal alongside the built-in registrations.
-(defun initialize-expression-analyzers ()
-  "Registers all expression analyzers, including device vector support."
-  (clrhash *expression-analyzers*)
-  (register-ops-analyzers)
-  (register-control-analyzers)
-  (register-struct-analyzers)
-  (setf (gethash 'crisp-vec-literal *expression-analyzers*)
-        #'analyze-crisp-dvec-literal))
-        |#
-
-
 (defun initialize-expression-analyzers ()
   "Registers all expression analyzers, including device vector support."
   (clrhash *expression-analyzers*)
@@ -117,6 +106,38 @@
         (setf (gethash sym-cl *expression-analyzers*) #'analyze-dvec-component-ref)
         (unless (eq sym-cl sym-cc)
           (setf (gethash sym-cc *expression-analyzers*) #'analyze-dvec-component-ref))))))
+          |#
+
+
+(defun initialize-expression-analyzers ()
+  "Registers all expression analyzers, extended for 083-vector-matrix-helpers."
+  (clrhash *expression-analyzers*)
+  (register-ops-analyzers)
+  (register-control-analyzers)
+  (register-struct-analyzers)
+  ;; ##(...) device vector literal
+  (setf (gethash 'crisp-vec-literal *expression-analyzers*)
+        #'analyze-crisp-dvec-literal)
+  ;; Component accessors x~ / y~ / z~ / w~
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (name '("X~" "Y~" "Z~" "W~"))
+      (let ((sym-cl (intern name cl-pkg))
+            (sym-cc (intern name cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) #'analyze-dvec-component-ref)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) #'analyze-dvec-component-ref))))
+    ;; 083 matrix helpers: transpose, col, row, transpose!
+    (dolist (entry `(("TRANSPOSE"  . ,#'analyze-transpose-expression)
+                     ("COL"        . ,#'analyze-col-expression)
+                     ("ROW"        . ,#'analyze-row-expression)
+                     ("TRANSPOSE!" . ,#'analyze-transpose-bang-expression)))
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg))
+            (fn     (cdr entry)))
+        (setf (gethash sym-cl *expression-analyzers*) fn)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) fn))))))
 
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
@@ -1119,10 +1140,9 @@ in single-pass mode."
 ;; --- Helper to get the type from any node ---
 
 
-
 (defun semantic-node-type (node)
   "Returns the Crisp type of a semantic node.
-Extended for 082-atomics to handle semantic-atomic-rmw."
+Extended for 083-vector-matrix-helpers to handle semantic-stride-view."
   (etypecase node
     (semantic-literal (semantic-literal-value-type node))
     (semantic-device-vec-literal (semantic-device-vec-literal-vec-type node))
@@ -1159,12 +1179,15 @@ Extended for 082-atomics to handle semantic-atomic-rmw."
     (semantic-sizeof (semantic-sizeof-type node))
     ;; 078 view constructors
     (semantic-make-view (semantic-make-view-type node))
-    ;; 082 atomic RMW — returns the old value (same type as the element)
-    (semantic-atomic-rmw (semantic-atomic-rmw-type node))))
+    ;; 082 atomic RMW
+    (semantic-atomic-rmw (semantic-atomic-rmw-type node))
+    ;; 083 stride-view (transpose, col, row)
+    (semantic-stride-view (semantic-stride-view-type node))))
+
 
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
-Extended for 082-atomics to handle semantic-atomic-rmw."
+Extended for 083-vector-matrix-helpers to handle semantic-stride-view."
   (etypecase node
     (semantic-literal (semantic-literal-source-location node))
     (semantic-device-vec-literal (semantic-device-vec-literal-source-location node))
@@ -1202,7 +1225,9 @@ Extended for 082-atomics to handle semantic-atomic-rmw."
     ;; 078 view constructors
     (semantic-make-view (semantic-make-view-source-location node))
     ;; 082 atomic RMW
-    (semantic-atomic-rmw (semantic-atomic-rmw-source-location node))))
+    (semantic-atomic-rmw (semantic-atomic-rmw-source-location node))
+    ;; 083 stride-view
+    (semantic-stride-view (semantic-stride-view-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)

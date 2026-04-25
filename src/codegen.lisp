@@ -1945,3 +1945,131 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                        7  ;; LLVMAtomicOrderingSequentiallyConsistent
                        0))) ;; single-thread=0 (multi-threaded GPU)
           (values result nil))))))
+
+
+(defun %sv-to-i64 (builder val)
+  "Sign-extends VAL to i64 if smaller than 64 bits; returns as-is if already i64.
+   Avoids the invalid sext-to-same-width LLVM instruction."
+  (let* ((tp   (llvm-type-of val))
+         (kind (llvm-get-type-kind tp)))
+    (if (= kind 8)  ; integer kind
+        (let ((w (crisp.llvm-bindings::llvm-get-int-type-width tp)))
+          (cond ((= w 64) val)
+                ((< w 64) (llvm-build-sext builder val (llvm-int64-type) "sv_idx64"))
+                (t        (llvm-build-trunc builder val (llvm-int64-type) "sv_trunc"))))
+        val)))
+
+        
+(defmethod generate-node-ir ((node semantic-stride-view)
+                              builder module var-env di-builder di-scope location-map)
+  "Generates LLVM IR for transpose, col, and row stride-view operations on 2D tensors.
+   Produces a new tensor struct value with recomputed offsets, strides, extents, and length.
+   :transpose — swaps dim0/dim1 in offsets, strides, and extents; length unchanged.
+   :col c     — extracts column c as 1D vector (stride=row-stride, len=height).
+   :row r     — extracts row r as 1D vector (stride=col-stride, len=width)."
+  (let* ((op          (semantic-stride-view-op node))
+         (src-node    (semantic-stride-view-source-node node))
+         (idx-node    (semantic-stride-view-index-node node))
+         (result-type (semantic-stride-view-type node))
+
+         ;; Generate source tensor value (a fully-loaded struct)
+         (src-val  (generate-node-ir src-node builder module var-env
+                                     di-builder di-scope location-map))
+
+         ;; Extract source tensor struct fields (physical indices 0–4)
+         (src-parent  (llvm-build-extract-value builder src-val 0 "sv_parent"))
+         (src-offsets (llvm-build-extract-value builder src-val 1 "sv_offsets"))
+         (src-strides (llvm-build-extract-value builder src-val 2 "sv_strides"))
+         (src-extents (llvm-build-extract-value builder src-val 3 "sv_extents"))
+
+         ;; Extract individual i64 elements from the 2D [2 x i64] arrays
+         (src-off0 (llvm-build-extract-value builder src-offsets 0 "sv_off0"))
+         (src-off1 (llvm-build-extract-value builder src-offsets 1 "sv_off1"))
+         (src-str0 (llvm-build-extract-value builder src-strides  0 "sv_str0"))
+         (src-str1 (llvm-build-extract-value builder src-strides  1 "sv_str1"))
+         (src-ext0 (llvm-build-extract-value builder src-extents  0 "sv_ext0"))
+         (src-ext1 (llvm-build-extract-value builder src-extents  1 "sv_ext1"))
+
+         ;; Resolve and instantiate the result tensor struct type (on-demand if needed)
+         (mangled       (mangle-template-struct-name (first result-type) (rest result-type)))
+         (result-llvm-t (crisp-type-to-llvm-type result-type module))
+         (result-undef  (llvm-get-undef result-llvm-t))
+         (i64           (llvm-int64-type)))
+
+    (log:info "stride-view: op=~a result-type=~a mangled=~a" op result-type mangled)
+
+    (ecase op
+
+      (:transpose
+       ;; Transpose swaps dim0↔dim1 in offsets, strides, and extents.
+       ;; Length (total elements) is unchanged.
+       (let* ((arr2-undef (llvm-get-undef (llvm-array-type i64 2)))
+              (src-len    (llvm-build-extract-value builder src-val 4 "sv_t_len"))
+              ;; new offsets = [off1, off0]
+              (new-off (llvm-build-insert-value builder
+                         (llvm-build-insert-value builder arr2-undef src-off1 0 "sv_t_no0")
+                         src-off0 1 "sv_t_no1"))
+              ;; new strides = [str1, str0]
+              (new-str (llvm-build-insert-value builder
+                         (llvm-build-insert-value builder arr2-undef src-str1 0 "sv_t_ns0")
+                         src-str0 1 "sv_t_ns1"))
+              ;; new extents = [ext1, ext0]
+              (new-ext (llvm-build-insert-value builder
+                         (llvm-build-insert-value builder arr2-undef src-ext1 0 "sv_t_ne0")
+                         src-ext0 1 "sv_t_ne1")))
+         (let* ((r0 (llvm-build-insert-value builder result-undef src-parent 0 "sv_t_r0"))
+                (r1 (llvm-build-insert-value builder r0 new-off  1 "sv_t_r1"))
+                (r2 (llvm-build-insert-value builder r1 new-str  2 "sv_t_r2"))
+                (r3 (llvm-build-insert-value builder r2 new-ext  3 "sv_t_r3"))
+                (r4 (llvm-build-insert-value builder r3 src-len  4 "sv_t_r4")))
+           r4)))
+
+      (:col
+       ;; Column c slice from 2D matrix M.
+       ;; result.offset[0] = M.off0 + M.off1 + c * M.str1  (start of column c)
+       ;; result.strides[0] = M.str0  (step between rows in the column)
+       ;; result.extents[0] = M.ext0  (height = number of rows)
+       ;; result.length     = M.ext0
+       (let* ((idx-raw      (generate-node-ir idx-node builder module var-env
+                                              di-builder di-scope location-map))
+              (idx-i64      (%sv-to-i64 builder idx-raw))
+              ;; new offset[0] = off0 + off1 + c * str1
+              (c-x-str1  (llvm-build-mul builder idx-i64 src-str1 "sv_c_cxs1"))
+              (off1-plus (llvm-build-add builder src-off1 c-x-str1 "sv_c_o1p"))
+              (new-off0  (llvm-build-add builder src-off0 off1-plus "sv_c_off0"))
+              ;; Build [1 x i64] arrays
+              (arr1-undef  (llvm-get-undef (llvm-array-type i64 1)))
+              (res-offsets (llvm-build-insert-value builder arr1-undef new-off0  0 "sv_c_roff"))
+              (res-strides (llvm-build-insert-value builder arr1-undef src-str0  0 "sv_c_rstr"))
+              (res-extents (llvm-build-insert-value builder arr1-undef src-ext0  0 "sv_c_rext")))
+         (let* ((r0 (llvm-build-insert-value builder result-undef src-parent   0 "sv_c_r0"))
+                (r1 (llvm-build-insert-value builder r0 res-offsets 1 "sv_c_r1"))
+                (r2 (llvm-build-insert-value builder r1 res-strides 2 "sv_c_r2"))
+                (r3 (llvm-build-insert-value builder r2 res-extents 3 "sv_c_r3"))
+                (r4 (llvm-build-insert-value builder r3 src-ext0    4 "sv_c_r4")))
+           r4)))
+
+      (:row
+       ;; Row r slice from 2D matrix M.
+       ;; result.offset[0] = M.off0 + M.off1 + r * M.str0  (start of row r)
+       ;; result.strides[0] = M.str1  (step between columns in the row)
+       ;; result.extents[0] = M.ext1  (width = number of columns)
+       ;; result.length     = M.ext1
+       (let* ((idx-raw      (generate-node-ir idx-node builder module var-env
+                                              di-builder di-scope location-map))
+              (idx-i64      (%sv-to-i64 builder idx-raw))
+              ;; new offset[0] = off0 + off1 + r * str0
+              (r-x-str0  (llvm-build-mul builder idx-i64 src-str0 "sv_r_rxs0"))
+              (off1-plus (llvm-build-add builder src-off1 r-x-str0 "sv_r_o1p"))
+              (new-off0  (llvm-build-add builder src-off0 off1-plus "sv_r_off0"))
+              ;; Build [1 x i64] arrays
+              (arr1-undef  (llvm-get-undef (llvm-array-type i64 1)))
+              (res-offsets (llvm-build-insert-value builder arr1-undef new-off0  0 "sv_r_roff"))
+              (res-strides (llvm-build-insert-value builder arr1-undef src-str1  0 "sv_r_rstr"))
+              (res-extents (llvm-build-insert-value builder arr1-undef src-ext1  0 "sv_r_rext")))
+         (let* ((r0 (llvm-build-insert-value builder result-undef src-parent   0 "sv_r_r0"))
+                (r1 (llvm-build-insert-value builder r0 res-offsets 1 "sv_r_r1"))
+                (r2 (llvm-build-insert-value builder r1 res-strides 2 "sv_r_r2"))
+                (r3 (llvm-build-insert-value builder r2 res-extents 3 "sv_r_r3"))
+                (r4 (llvm-build-insert-value builder r3 src-ext1    4 "sv_r_r4")))
+           r4))))))

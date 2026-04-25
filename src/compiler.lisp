@@ -368,10 +368,8 @@ Returns (values addr-space-int access-qual-string type-name-string)."
 
 
 (defun register-builtins ()
-  "Registers built-in types: storage, cell, and tensor def-record templates.
-   Cell and tensor carry the value-t brand for --differentiate mode.
-   Tensor: N-dimensional strided view; offset/strides/extents are virtual
-   fixed arrays of length N (SROA to N ulong registers each at boundaries)."
+  "Registers built-in types and templates.
+   Extended for 083-vector-matrix-helpers to add num-rows, num-cols, get-layout."
   (log:info "Registering built-in structs (storage, cell, tensor)...")
 
   ;; Clear brand-specific state that is NOT cleared by initialize-compiler.
@@ -389,8 +387,6 @@ Returns (values addr-space-int access-qual-string type-name-string)."
              (access access :c-t :read-write))))
 
   ;; CELL: opaque handle to a storage slice.
-  ;;   value-t brand enables --differentiate provenance tracking.
-  ;;   NOTE: index-t intentionally omitted (package-symbol conflict avoidance with fake-cell).
   (eval '(with-template-type ((To T) (Addr address-space :global) (Acc access :read-write))
            (def-record cell
              (brand value-t To :subst :descendant :enforce :diff)
@@ -409,9 +405,6 @@ Returns (values addr-space-int access-qual-string type-name-string)."
     '((cell To Addr Acc) => ulong))
 
   ;; TENSOR: N-dimensional strided view over a storage handle.
-  ;;   offset, strides, extents: virtual fixed arrays of length N.
-  ;;   length: product of extents, stored as a field for O(1) (length~ t).
-  ;;   value-t brand follows the same pattern as cell.
   (eval '(with-template-type ((To T) (N integer 1) (Addr address-space :global)
                                (Acc access :read-write) (Aln align :compact))
            (def-record tensor
@@ -436,6 +429,41 @@ Returns (values addr-space-int access-qual-string type-name-string)."
        (declare (crisp-system-generated))
        (return (sizeof To)))
     '((tensor To N Addr Acc Aln) => ulong))
+
+  ;; 083: num-rows — return extents[0] (height dimension) of a 2D tensor.
+  (register-template 'num-rows
+    '(To (Addr address-space :global) (Acc access :read-write) (Aln align :compact))
+    nil
+    '(def-function num-rows (m)
+       (declare (function ((tensor To 2 Addr Acc Aln) => ulong)))
+       (declare (crisp-system-generated))
+       (return (~ (extents~ m) 0)))
+    '((tensor To 2 Addr Acc Aln) => ulong))
+
+  ;; 083: num-cols — return extents[1] (width dimension) of a 2D tensor.
+  (register-template 'num-cols
+    '(To (Addr address-space :global) (Acc access :read-write) (Aln align :compact))
+    nil
+    '(def-function num-cols (m)
+       (declare (function ((tensor To 2 Addr Acc Aln) => ulong)))
+       (declare (crisp-system-generated))
+       (return (~ (extents~ m) 1)))
+    '((tensor To 2 Addr Acc Aln) => ulong))
+
+  ;; 083: get-layout — classify 2D tensor layout at runtime.
+  ;; Returns 0 (:row-major) if last stride==1, 1 (:col-major) if first stride==1, else 2 (:other-layout).
+  (register-template 'get-layout
+    '(To (Addr address-space :global) (Acc access :read-write) (Aln align :compact))
+    nil
+    '(def-function get-layout (m)
+       (declare (function ((tensor To 2 Addr Acc Aln) => int)))
+       (declare (crisp-system-generated))
+       (if (= (~ (strides~ m) 1) 1ul)
+           0
+           (if (= (~ (strides~ m) 0) 1ul)
+               1
+               2)))
+    '((tensor To 2 Addr Acc Aln) => int))
 
   (log:info "Built-in structs registered."))
 
