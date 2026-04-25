@@ -1,5 +1,4 @@
 ;; TEST-EXPECT: PASS
-;; SKIP-WITH[--differentiate]: "at the moment differentiate requires floating point storage handles"
 ;; TEST-HOIST[L0]: validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER out: 43
 ;; transpose! updates a local binding in place.

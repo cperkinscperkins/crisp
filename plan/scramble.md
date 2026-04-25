@@ -487,8 +487,8 @@ TECHNICAL DEBT AND OVERSIGHTS
         maybe just x~, y~, z~ and w~.  
         or (~ v <index>)
 
-- [ ] AutoDiff fix: Redesign so gradient cells are always cell float regardless of primal type, and generate zero backward kernels for integer inputs. This is the "mathematically correct" approach but requires more work.
-- - [ ] Would allow re-enable of tests in 082 and other places that skip --differentiate pass for this reason
+- [ ] AutoDiff fix: Redesign so gradient storage handles are always  floating point regardless of primal type, and generate zero backward kernels for integer inputs. This is the "mathematically correct" approach but requires more work.
+- - [ ] Would allow re-enable of tests in 083 and other places that skip --differentiate pass for this reason
 
 - [ ] crisp-compile.exe as a release?
 
