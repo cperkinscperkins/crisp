@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "STRIDED"
+;; transpose! requires :align :strided input. Compact matrix should be a compile-time error,
+;; because compact element access ignores stride fields — mutating them would be silently wrong.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-transpose-bang-compact (v)
+  (declare #'(int-vec-t => ulong ulong))
+  (let ((M (make-matrix v int 4 3)))
+    (transpose! M)
+    (return (num-rows M) (num-cols M))))

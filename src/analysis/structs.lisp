@@ -1165,3 +1165,113 @@
   (def-expression-analyzer make-tensor analyze-make-view-expression))
 
 
+(defun %083-require-2d-tensor (raw-type location)
+  "Validates that RAW-TYPE is a 2D tensor and returns the canonical 6-tuple list.
+   Unwraps single-element list wrappers and mangled symbols.
+   Signals crisp-compiler-error if the type is not a 2D tensor."
+  (let* ((resolved (resolve-type-alias raw-type))
+         (resolved (if (and (listp resolved) (= (length resolved) 1) (listp (first resolved)))
+                       (first resolved)
+                       resolved))
+         (canon (cond
+                  ;; Already in canonical list form
+                  ((and (listp resolved)
+                        (symbolp (first resolved))
+                        (string-equal (symbol-name (first resolved)) "TENSOR"))
+                   resolved)
+                  ;; Mangled symbol form — unmangle it
+                  ((symbolp resolved)
+                   (let ((u (unmangle-template-struct-name resolved)))
+                     (if (and (listp u) (symbolp (first u))
+                              (string-equal (symbol-name (first u)) "TENSOR"))
+                         u nil)))
+                  ;; Sugar form like (matrix ...)
+                  ((consp resolved)
+                   (let ((exp (expand-storage-handle-type-specifier resolved)))
+                     (if (and (listp exp) (symbolp (first exp))
+                              (string-equal (symbol-name (first exp)) "TENSOR"))
+                         exp nil)))
+                  (t nil))))
+    (unless (and canon (eql (third canon) 2))
+      (error 'crisp-compiler-error
+             :message (format nil "Expected a 2D tensor (matrix) type, got ~a" raw-type)
+             :source-location location))
+    canon))
+
+;; src/analysis/structs.lisp
+(defun analyze-transpose-expression (expr env context location)
+  "Analyzes (transpose M) for 2D tensors.
+   Returns semantic-stride-view with op=:transpose and result type (tensor elem 2 addr access :strided)."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+           :message "transpose expects exactly 1 argument: (transpose matrix)"
+           :source-location location))
+  (let* ((src-node (analyze-expression (second expr) env context location))
+         (raw-type (semantic-node-type src-node))
+         (canon    (%083-require-2d-tensor raw-type location))
+         (elem     (second canon))
+         (addr     (fourth canon))
+         (access   (fifth canon)))
+    (make-semantic-stride-view
+     :op :transpose
+     :source-node src-node
+     :index-node nil
+     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 2 addr access :strided)
+     :source-location location)))
+
+;; src/analysis/structs.lisp
+(defun analyze-col-expression (expr env context location)
+  "Analyzes (col index M) for 2D tensors.
+   Returns semantic-stride-view with op=:col and result type (tensor elem 1 addr access :strided)."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+           :message "col expects exactly 2 arguments: (col index matrix)"
+           :source-location location))
+  (let* ((idx-node (analyze-expression (second expr) env context location))
+         (src-node (analyze-expression (third expr) env context location))
+         (raw-type (semantic-node-type src-node))
+         (canon    (%083-require-2d-tensor raw-type location))
+         (elem     (second canon))
+         (addr     (fourth canon))
+         (access   (fifth canon)))
+    (make-semantic-stride-view
+     :op :col
+     :source-node src-node
+     :index-node idx-node
+     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr access :strided)
+     :source-location location)))
+
+;; src/analysis/structs.lisp
+(defun analyze-row-expression (expr env context location)
+  "Analyzes (row index M) for 2D tensors.
+   Returns semantic-stride-view with op=:row and result type (tensor elem 1 addr access :strided)."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+           :message "row expects exactly 2 arguments: (row index matrix)"
+           :source-location location))
+  (let* ((idx-node (analyze-expression (second expr) env context location))
+         (src-node (analyze-expression (third expr) env context location))
+         (raw-type (semantic-node-type src-node))
+         (canon    (%083-require-2d-tensor raw-type location))
+         (elem     (second canon))
+         (addr     (fourth canon))
+         (access   (fifth canon)))
+    (make-semantic-stride-view
+     :op :row
+     :source-node src-node
+     :index-node idx-node
+     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr access :strided)
+     :source-location location)))
+
+;; src/analysis/structs.lisp
+(defun analyze-transpose-bang-expression (expr env context location)
+  "Analyzes (transpose! M). Expands to (set! M (transpose M)).
+   Signals a type error if M's type is :compact (result is :strided, incompatible)."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+           :message "transpose! expects exactly 1 argument: (transpose! matrix)"
+           :source-location location))
+  (let ((m (second expr)))
+    (analyze-expression `(set! ,m (transpose ,m)) env context location)))
+
+

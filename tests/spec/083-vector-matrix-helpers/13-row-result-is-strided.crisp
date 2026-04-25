@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; row always returns :align :strided regardless of the source matrix alignment.
+;; Verified by passing the result to a function that only accepts :strided vectors.
+;; Source matrix is compact (the harder case).
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function require-strided-vec (c)
+  (declare #'((vector int :align :strided :address-space :global :access :read-write) => ulong))
+  (length~ c))
+
+(def-function test-row-is-strided (v)
+  (declare #'(int-vec-t => ulong))
+  (let ((M  (make-matrix v int 4 3))
+        (r1 (row 1 M)))
+    (require-strided-vec r1)))

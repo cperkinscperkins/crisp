@@ -39,3 +39,7 @@ referencing.
  compiler will then allow any type of storage handle to be used as an argument to that function. But, note, that it will default to the slightly slower `:strided` behavior.
  - be exact. Just specify the alignment you expect/desire. For users who aren't using transpose or slicing operations, this is simplest.
 
+ Note that the tensor properties `offset` and `stride` are CANNOT be mutated when the alignment is `:compact`.  Attempting to do so is a compilation error.
+ Similarly, `stride` is only mutable in a `:strided` aligned storage handle, and the compiler will emi
+ an error if you attempt to mutate it otherwise.
+

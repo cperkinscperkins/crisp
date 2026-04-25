@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "at the moment differentiate requires floating point storage handles"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 1
+;;
+;; E2E: read a single element through a column view.
+;; Row-major 2x2 matrix, iota-initialized: [0,1,2,3].
+;;   M[0][0]=0, M[0][1]=1, M[1][0]=2, M[1][1]=3
+;;   col 1 = elements at (0,1), (1,1) = flat indices 1, 3.
+;; Read row 0 of that column = flat index 1.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-cell-t (cell int :address-space :global :access :read-write))
+
+(def-kernel test_col_access (v &out out)
+  (declare #'(int-vec-t &out out-cell-t => nil))
+  (let ((M  (make-matrix v int 2 2))
+        (c1 (col 1 M)))
+    (set! (~ out) (~ c1 0))))

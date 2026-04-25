@@ -285,3 +285,19 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   strides
   major
   source-location)
+
+(defstruct semantic-stride-view
+  "A view into an existing 2D tensor with stride/extent/offset computed at runtime.
+   Used for: transpose (swaps row/col dimensions), col (extract 1D column slice),
+   row (extract 1D row slice).
+   Fields:
+     op           — :transpose, :col, or :row
+     source-node  — semantic node for the 2D source matrix
+     index-node   — semantic node for the column/row index (NIL for transpose)
+     type         — result type list, e.g. (tensor int 2 :global :read-write :strided)
+     source-location"
+  op
+  source-node
+  index-node
+  type
+  source-location)

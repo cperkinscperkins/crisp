@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; col x M returns a 1D strided vector of column x.
+;; Input: row-major 3x4 matrix (extents=[3,4], strides=[4,1]).
+;; Column 1: offset = 0 + 1*1 = 1, stride = 4 (row stride), extent = 3 (num_rows).
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+
+(def-function test-col-stride-extent (v)
+  (declare #'(int-vec-t => ulong ulong))
+  (let ((M  (make-matrix v int 4 3))
+        (c1 (col 1 M)))
+    (return (~ (strides~ c1) 0) (length~ c1))))

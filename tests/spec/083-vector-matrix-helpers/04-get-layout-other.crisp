@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "at the moment differentiate requires floating point storage handles"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 1
+;; get-layout with non-standard strides '(2 2) returns :other-layout.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-cell-t (cell int :address-space :global :access :read-write))
+
+(def-kernel test_get_layout_other (v &out out)
+  (declare #'(int-vec-t &out out-cell-t => nil))
+  (let ((M (make-matrix v int 4 3 :strides '(2 2))))
+    (set! (~ out) (if (= (get-layout M) :other-layout) 1 0))))

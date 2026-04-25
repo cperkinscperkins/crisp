@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "at the moment differentiate requires floating point storage handles"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 1
+;; transpose of a col-major matrix produces a row-major result.
+;; Input: col-major 3x4 (strides=[1,3]).
+;; Transposed: strides=[3,1], extents=[4,3] => get-layout returns :row-major.
+
+(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type out-cell-t (cell int :address-space :global :access :read-write))
+
+(def-kernel test_transpose_strides (v &out out)
+  (declare #'(int-vec-t &out out-cell-t => nil))
+  (let ((M  (make-matrix v int 4 3 :major :col))
+        (TM (transpose M)))
+    (set! (~ out) (if (= (get-layout TM) :row-major) 1 0))))

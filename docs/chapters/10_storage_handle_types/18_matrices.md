@@ -14,11 +14,15 @@ Additionally, there are special functions specifically for matrices.
 
 Given an index `x` and a 2D `tensor` matrix `A`   this returns a 1D `tensor` of that column of the matrix.
 
+Note that the `tensor` (aka `vector`) that is returned will have `:align :strided`, regardless of the original `:align` of the matrix. 
+
 ### row
 
 `(row y:ulong A:matrix) => 1D tensor` 
 
 Given an index `y` and a 2D `tensor` matrix `A`   this returns a 1D `tensor` of that row of the matrix.
+
+Note that the `tensor` (aka `vector`) that is returned will have `:align :strided`, regardless of the original `:align` of the matrix. 
 
 ### num-cols / num-rows
 
@@ -47,6 +51,19 @@ and ending with a 4x3 matrix. This is done simply by updating the strides. It is
 
 Note that the while data is not moved it does mean that a "row major" matrix will now be "col major", and vice versa.
 
+The matrix returned by `transpose` will always be `:align :strided` , regardless of the original matrix argument `:align`.
+
+#### transpose! notes
+
+`transpose!` mutates the matrix in place. This can only work for matrices that are `:align :strided`. 
+Attempting to call `transpose!` on a matrix with any other `:align` is a compiliation error.
+
+AlsoNote also, that due to the way Storage Handles wrap data, that `transpose!` will only effect the matrix in the scope of the function that is making the call (and any children it passes the matrix to after). 
+It does NOT change the transposition of the matrix by the caller. 
+
+> Implementation Note: consider dropping transpose!
+
+#### understanding transposition
 Here is a quick example with a 2x3 matrix:
 ```
         Col 0   Col 1   Col 2

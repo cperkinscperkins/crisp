@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-24T20:10:24.207614Z
+Generated on 2026-04-25T19:22:35.879464Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -172,7 +172,7 @@ Generated on 2026-04-24T20:10:24.207614Z
 ---
 ### DEFUN `INITIALIZE-EXPRESSION-ANALYZERS`
 
-  > Registers all expression analyzers, including device vector support.
+  > Registers all expression analyzers, extended for 083-vector-matrix-helpers.
 
 
 ---
@@ -410,14 +410,14 @@ Generated on 2026-04-24T20:10:24.207614Z
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the Crisp type of a semantic node.  > Extended for 082-atomics to handle semantic-atomic-rmw.
+  > Returns the Crisp type of a semantic node.  > Extended for 083-vector-matrix-helpers to handle semantic-stride-view.
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
 
-  > Returns the source location of a semantic node.  > Extended for 082-atomics to handle semantic-atomic-rmw.
+  > Returns the source location of a semantic node.  > Extended for 083-vector-matrix-helpers to handle semantic-stride-view.
 
 
 ---
@@ -940,6 +940,41 @@ Generated on 2026-04-24T20:10:24.207614Z
 
 
 ---
+### DEFUN `%083-REQUIRE-2D-TENSOR`
+- **Args**: `(RAW-TYPE LOCATION)`
+
+  > Validates that RAW-TYPE is a 2D tensor and returns the canonical 6-tuple list.  >    Unwraps single-element list wrappers and mangled symbols.  >    Signals crisp-compiler-error if the type is not a 2D tensor.
+
+
+---
+### DEFUN `ANALYZE-TRANSPOSE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (transpose M) for 2D tensors.  >    Returns semantic-stride-view with op=:transpose and result type (tensor elem 2 addr access :strided).
+
+
+---
+### DEFUN `ANALYZE-COL-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (col index M) for 2D tensors.  >    Returns semantic-stride-view with op=:col and result type (tensor elem 1 addr access :strided).
+
+
+---
+### DEFUN `ANALYZE-ROW-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (row index M) for 2D tensors.  >    Returns semantic-stride-view with op=:row and result type (tensor elem 1 addr access :strided).
+
+
+---
+### DEFUN `ANALYZE-TRANSPOSE-BANG-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (transpose! M). Expands to (set! M (transpose M)).  >    Signals a type error if M's type is :compact (result is :strided, incompatible).
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\anf-transform.lisp`
 
 ### DEFVAR `*ANF-COUNTER*`
@@ -1432,6 +1467,13 @@ Generated on 2026-04-24T20:10:24.207614Z
 
 
 ---
+### DEFUN `%SV-TO-I64`
+- **Args**: `(BUILDER VAL)`
+
+  > Sign-extends VAL to i64 if smaller than 64 bits; returns as-is if already i64.  >    Avoids the invalid sext-to-same-width LLVM instruction.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
@@ -1577,7 +1619,7 @@ Generated on 2026-04-24T20:10:24.207614Z
 ---
 ### DEFUN `REGISTER-BUILTINS`
 
-  > Registers built-in types: storage, cell, and tensor def-record templates.  >    Cell and tensor carry the value-t brand for --differentiate mode.  >    Tensor: N-dimensional strided view; offset/strides/extents are virtual  >    fixed arrays of length N (SROA to N ulong registers each at boundaries).
+  > Registers built-in types and templates.  >    Extended for 083-vector-matrix-helpers to add num-rows, num-cols, get-layout.
 
 
 ---
@@ -3606,6 +3648,12 @@ Generated on 2026-04-24T20:10:24.207614Z
 ### DEFSTRUCT `SEMANTIC-MAKE-VIEW`
 
   > Represents a make-cell/vector/matrix/tensor view construction.  >    Creates a new Storage Handle that reinterprets an existing one.  >    No memory allocation occurs — only a new struct value is built.  >    Fields:  >      type        — result type, e.g. (tensor int 1 :global :read-write :compact)  >      source-node — semantic node for the source storage handle  >      element-type — new element type symbol (e.g. int, float, short)  >      rank        — N: 0=cell, 1=vector, 2=matrix, N=tensor  >      offset      — element offset (non-negative integer, default 0)  >      length      — explicit length (integer) or NIL for auto-compute (vectors only)  >      extents     — list of N integers (matrix/tensor); NIL for cell/auto-vector  >      strides     — explicit strides list or NIL (computed from extents/major)  >      major       — :row or :col (make-matrix only; default :row)  >      source-location
+
+
+---
+### DEFSTRUCT `SEMANTIC-STRIDE-VIEW`
+
+  > A view into an existing 2D tensor with stride/extent/offset computed at runtime.  >    Used for: transpose (swaps row/col dimensions), col (extract 1D column slice),  >    row (extract 1D row slice).  >    Fields:  >      op           — :transpose, :col, or :row  >      source-node  — semantic node for the 2D source matrix  >      index-node   — semantic node for the column/row index (NIL for transpose)  >      type         — result type list, e.g. (tensor int 2 :global :read-write :strided)  >      source-location
 
 
 ---
