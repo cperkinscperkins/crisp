@@ -473,7 +473,7 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [ ] 02-kernel-illegal-voidp and friends. no CHECK-FAIL header.   Other negative tests same
 - [ ] Visual Code to use "lisp" syntax highlighting with .crisp files?
 - [ ] script to generate Table of Contents for docs?  It's woefully out of date.
-- [ ] do the docs on "declare" include "forward-only" ?
+- [x] do the docs on "declare" include "forward-only" ? (YES)
 - [ ] refactor. warnings when compiling, running tests. (string-downcase (symbol-name ...)) if over let, etc.
 - [ ] LLVM-IR can only bitcast same size. So (as-ulong 12345) is a problem. (to-ulong 12345) works.
       Should revisit docs and decide how to handle this.
@@ -501,6 +501,17 @@ Miscelleny
       same with autodiff.lisp  . FIX 
 - [ ] i64 and ui64 as types and literals!!
 - [ ] atomic-binop! deferred. Needs dotimes+
+- [ ] compilation error when trying to mutate `offset` or `stride` in a `:compact` aligned storage handle.
+      or `stride` in `:compact-offset`
+      and everything OK in `:stride` alignment. 
+      `extent` ?? <== needs documentation if not always mutable.
+- [ ] src/stdlib/matrix.crisp  -- Time to start thinking about a "standard library" of Crisp support
+      and what it wouuld take to enable it in the compiler. 
+      In the meantime, just note which functions might be good candidates.
+
+Standard Library Candidates
+===========================
+- transpose / transpose!
 
 
 Tensors Vectors and Matrices
@@ -527,12 +538,12 @@ Tensors Vectors and Matrices
 - - [ ] CUDA support for :local ( need cu hoist)
 - - [x] "view" manipulation - changing offset, make-xxxx etc
 - - [ ] double check branding
-- - [ ] differentiate support!!
-- - - [ ] atomic-add! deferred. Need to add atomics and ensure differntiation is updated
+- - [x] differentiate support!!
+- - - [x] atomic-add! deferred. Need to add atomics and ensure differntiation is updated
 - - - [x] sub-function tensor AD deferred
 - - - [x] non-float tensors. Limitation. We have good readable compilation error?
-- - [ ] vector helpers
-- - [ ] matrix helpers
+- - [x] vector helpers
+- - [x] matrix helpers
 - - [ ] tile?
 - - [ ] no-sroa ?
 

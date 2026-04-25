@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: FAIL
-;; CHECK-FAIL: "strided"
+;; CHECK-FAIL: "STRIDED"
 ;; transpose! requires :align :strided input. Compact matrix should be a compile-time error,
 ;; because compact element access ignores stride fields — mutating them would be silently wrong.
 

@@ -286,6 +286,10 @@
    #:bytes~ #:sizeof
    ;; Tensor accessors
    #:num-dims~ #:length~ #:strides~ #:extents~
+   ;; Matrix helpers
+   #:num-rows #:num-cols #:get-layout #:transpose #:transpose! #:col #:row
+   ;; Matrix layout enum
+   #:matrix-layout #:is-matrix-layout?
 
    ;; All cast/conversion operators
    #:to-char #:as-char
@@ -415,6 +419,10 @@
                 #:bytes~ #:sizeof
                 ;; Tensor accessors
                 #:num-dims~ #:length~ #:strides~ #:extents~
+                ;; Matrix helpers
+                #:num-rows #:num-cols #:get-layout #:transpose #:transpose! #:col #:row
+                ;; Matrix layout enum
+                #:matrix-layout #:is-matrix-layout?
 
                 ;; All cast/conversion operators
                 #:to-char #:as-char
@@ -541,6 +549,10 @@
    #:bytes~ #:sizeof
    ;; Tensor accessors
    #:num-dims~ #:length~ #:strides~ #:extents~
+   ;; Matrix helpers
+   #:num-rows #:num-cols #:get-layout #:transpose #:transpose! #:col #:row
+   ;; Matrix layout enum
+   #:matrix-layout #:is-matrix-layout?
 
    ;; Enumerations
    #:def-enumeration

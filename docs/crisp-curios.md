@@ -121,6 +121,22 @@ BUT if the (array) declaration is inside a def-record it is a VIRTUAL array, and
 like any record var when being passed to functions or kernels.
 
 
+# Vectors, Tensors, and Matrices
+
+So ALL Storage Hnadles (not just cell) are realized via def-struct, so they are "virtual" structs, just
+collections of registers.  Moreover, vectors, tensors, and matrices have several (array ulong N) internal
+entries: `extents`, `offsets` and `strides`.  These are each VIRTUAL arrays and are mutable collections of
+registers.
+
+## align: :compact :compact-offset :strided
+The vectors, matrices, and tensors all have an :align compile time attribute. 
+When :align is :compact then the `~`  accessors `(~ someVec someIndex)` IGNORES the strides and offsets
+making it faster.  For `:compact-offset` only the :stride is ignored.  and for `:strided` everything is considered.
+
+But note that for a :compact storage handle, the normally mutable extents~, strides~ and offsets~ properties
+throw a compile error if someone tries to modify them. A reinterpreted view will be needed.
+
+
 ## Implementation: package name qualifiers.
 
 You'll sometimes see the following symbols package qualified with `cl:`
