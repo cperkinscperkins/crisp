@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-25T19:22:35.879464Z
+Generated on 2026-04-25T20:57:37.191932Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1198,6 +1198,20 @@ Generated on 2026-04-25T19:22:35.879464Z
 
 
 ---
+### DEFUN `%CRISP-INTEGER-TENSOR-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC resolves to a tensor whose element type is an integer  > category (:signed-int or :unsigned-int). Mirrors %crisp-float-tensor-type-p.
+
+
+---
+### DEFUN `%INTEGER-TENSOR-ELEM-TO-FLOAT`
+- **Args**: `(TYPE-SPEC)`
+
+  > Replaces the element type of an integer tensor with its float analog:  >    64-bit integers (long, ulong) → double; all others → float.  >    Also forces :access to :read-write (gradient tensors are always writable).  >    Returns TYPE-SPEC unchanged if it is not an integer tensor.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
 
 ### DEFUN `GET-OR-CREATE-DI-TYPE`
@@ -2354,14 +2368,14 @@ Generated on 2026-04-25T19:22:35.879464Z
 - **Args**: `(FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT
               REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)`
 
-  > Computes the parameter lists and type lists for the backward (gradient) kernel.  > Extended for feature 080: filters integer scalar inputs from gradient outputs,  > and ensures tensor gradient outputs have :access :read-write.
+  > Computes the parameter lists and type lists for the backward (gradient) kernel.  > 085: integer tensor inputs now also receive _GRAD outputs, typed as float tensors  > (64-bit integers → double, all others → float). The backward walk still only  > processes float inputs — integer tensor inputs contribute zero gradient.
 
 
 ---
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
 - **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
 
-  > Generates the def-kernel-exact AST for the backward (gradient) pass.  >    Extends the original to handle def-record inputs at the kernel boundary  >    via Option B (scalar explosion before AD).
+  > Generates the def-kernel-exact AST for the backward (gradient) pass.  > 085: when diff-flat-inputs is empty but integer tensor inputs exist, emits a  > trivial backward kernel (just return). The float-typed _GRAD tensors declared  > in the signature remain zero — the correct gradient for integer arithmetic.
 
 
 ---

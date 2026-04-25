@@ -538,47 +538,54 @@
 (defun %compute-backward-kernel-params (flat-inputs flat-input-types outputs output-types
                                         record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
   "Computes the parameter lists and type lists for the backward (gradient) kernel.
-Extended for feature 080: filters integer scalar inputs from gradient outputs,
-and ensures tensor gradient outputs have :access :read-write."
-  (cl:let* ((record-exploded-syms
-             (cl:loop for orig in inputs
+085: integer tensor inputs now also receive _GRAD outputs, typed as float tensors
+(64-bit integers → double, all others → float). The backward walk still only
+processes float inputs — integer tensor inputs contribute zero gradient."
+  (let* ((record-exploded-syms
+             (loop for orig in inputs
                       append (cl:let ((flds (gethash orig record-subs-ht)))
                                (when flds (mapcar #'cdr flds)))))
 
-            ;; Differentiability predicate for a non-record-exploded input.
-            ;; Float scalars, float tensor/vector/matrix inputs, and cells get _GRAD outputs.
-            ;; Integer scalars (ulong row, ulong col, etc.) and non-float tensors do not.
+            ;; Backward-walk participation: float scalars, float tensors, cells only.
             (differentiable-non-rec-p
              (lambda (t-spec)
                (cl:let ((canonical (canonicalize-type-specifier t-spec)))
                  (or (%crisp-float-type-p t-spec)
                      (%crisp-float-tensor-type-p t-spec)
-                     ;; Cells are float storage handles -- always differentiable
                      (and (consp canonical)
-                          (string-equal (symbol-name (cl:first canonical)) "CELL"))))))
+                          (string-equal (symbol-name (first canonical)) "CELL"))))))
+
+            ;; Gets-grad-output: everything above PLUS integer tensors.
+            ;; Integer scalars (ulong indices, etc.) are still excluded.
+            (has-grad-output-p
+             (lambda (t-spec)
+               (or (funcall differentiable-non-rec-p t-spec)
+                   (%crisp-integer-tensor-type-p t-spec))))
 
             (non-rec-scalar-in-grad-params
-             (cl:loop for p in flat-inputs
+             (loop for p in flat-inputs
                       for t-spec in flat-input-types
                       unless (or (%crisp-record-type-p t-spec)
                                  (member p record-exploded-syms :test #'eq)
-                                 (not (funcall differentiable-non-rec-p t-spec)))
+                                 (not (funcall has-grad-output-p t-spec)))
                       collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
 
-            ;; Tensor gradient outputs must be :read-write -- the backward kernel
-            ;; reads the current accumulated value and adds to it.
+            ;; For integer tensors: promote element type to float analog.
+            ;; For float tensors/scalars/cells: same as before.
             (non-rec-scalar-in-grad-types
-             (cl:loop for p in flat-inputs
+             (loop for p in flat-inputs
                       for t-spec in flat-input-types
                       unless (or (%crisp-record-type-p t-spec)
                                  (member p record-exploded-syms :test #'eq)
-                                 (not (funcall differentiable-non-rec-p t-spec)))
-                      collect (%ensure-tensor-read-write t-spec)))
+                                 (not (funcall has-grad-output-p t-spec)))
+                      collect (if (%crisp-integer-tensor-type-p t-spec)
+                                  (%integer-tensor-elem-to-float t-spec)
+                                  (%ensure-tensor-read-write t-spec))))
 
             (all-grad-out-params (append rec-grad-out-params non-rec-scalar-in-grad-params))
             (all-grad-out-types  (append rec-grad-out-types  non-rec-scalar-in-grad-types))
             (out-grads
-             (cl:loop for p in outputs
+             (loop for p in outputs
                       collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
             (bwd-params (append flat-inputs outputs out-grads
                                 (when all-grad-out-params (list '&out))
@@ -587,18 +594,16 @@ and ensures tensor gradient outputs have :access :read-write."
                                 (when all-grad-out-params (list '&out))
                                 all-grad-out-types))
 
-            ;; diff-flat-inputs: the inputs that generate-backward-walk should process.
-            ;; For record-exploded syms: only float fields (unchanged).
-            ;; For others: only float scalars and tensors -- integer scalars excluded.
+            ;; diff-flat-inputs: only float scalars and tensors — integers excluded.
             (diff-flat-inputs
-             (cl:loop for p in flat-inputs
+             (loop for p in flat-inputs
                       for t-spec in flat-input-types
                       when (if (member p record-exploded-syms :test #'eq)
                                (%crisp-float-type-p t-spec)
                                (funcall differentiable-non-rec-p t-spec))
                       collect p))
             (diff-flat-input-types
-             (cl:loop for p in flat-inputs
+             (loop for p in flat-inputs
                       for t-spec in flat-input-types
                       when (if (member p record-exploded-syms :test #'eq)
                                (%crisp-float-type-p t-spec)
@@ -608,8 +613,9 @@ and ensures tensor gradient outputs have :access :read-write."
 
 (defun %generate-backward-kernel-ast (name params signature-types raw-body)
   "Generates the def-kernel-exact AST for the backward (gradient) pass.
-   Extends the original to handle def-record inputs at the kernel boundary
-   via Option B (scalar explosion before AD)."
+085: when diff-flat-inputs is empty but integer tensor inputs exist, emits a
+trivial backward kernel (just return). The float-typed _GRAD tensors declared
+in the signature remain zero — the correct gradient for integer arithmetic."
   (multiple-value-bind (inputs input-types outputs output-types)
       (%split-kernel-inputs-outputs params signature-types)
     (let* ((pkg (symbol-package name))
@@ -625,37 +631,54 @@ and ensures tensor gradient outputs have :access :read-write."
           (multiple-value-bind (bwd-params bwd-types diff-flat-inputs diff-flat-input-types)
               (%compute-backward-kernel-params flat-inputs flat-input-types outputs output-types
                                                record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
-            ;; 081-1: If no differentiable inputs exist, raise a clear error rather than
-            ;; silently generating a nonsensical backward kernel with no gradient parameters.
-            (when (and flat-inputs (null diff-flat-inputs))
+            ;; 085: only error when there are truly no grad outputs at all —
+            ;; i.e. no float inputs AND no integer tensor inputs.
+            ;; Integer tensor inputs produce float-typed _GRAD outputs (zero gradient).
+            (when (and flat-inputs
+                       (null diff-flat-inputs)
+                       (not (some #'%crisp-integer-tensor-type-p flat-input-types)))
               (error 'crisp.compiler:crisp-compiler-error
                 :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types -- add (forward-only) declaration or use float element types)" name)))
             (multiple-value-bind (exploded-params exploded-types bwd-cell-reassembly-bindings)
                 (%explode-kernel-args bwd-params bwd-types)
-              (let* ((anf-body      (mapcar #'anf-transform subst-body))
-                     (flat-anf      (flatten-anf-body anf-body))
-                     (forward-bindings
-                      (loop for form in flat-anf
-                            when (and (consp form) (= (length form) 2) (symbolp (car form)))
-                            collect form))
-                     (raw-backward-walk
-                      (generate-backward-walk flat-anf diff-flat-inputs outputs
-                                              diff-flat-input-types output-types))
-                     (backward-walk
-                      (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
-                     (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
-                `(progn
-                  (eval-when (:compile-toplevel :load-toplevel :execute)
-                    (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
-                      (loop for p in ',bwd-params
-                               for t-spec in ',bwd-types
-                               collect (cons p t-spec))))
-                  (def-kernel-exact ,bwd-name ,exploded-params
-                                    (declare #'(,@exploded-types))
-                                    (let (,@all-reassembly)
-                                      (let (,@forward-bindings)
-                                        ,backward-walk))
-                                    (return)))))))))))
+              ;; 085: when diff-flat-inputs is empty (all-integer-tensor case), emit a
+              ;; trivial backward kernel. Avoids generating an ill-formed empty (let ())
+              ;; from generate-backward-walk. The _GRAD tensors stay zero (correct).
+              (if (null diff-flat-inputs)
+                  `(progn
+                    (eval-when (:compile-toplevel :load-toplevel :execute)
+                      (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
+                        (loop for p in ',bwd-params
+                                 for t-spec in ',bwd-types
+                                 collect (cons p t-spec))))
+                    (def-kernel-exact ,bwd-name ,exploded-params
+                                      (declare #'(,@exploded-types))
+                                      (return)))
+                  ;; Normal path: generate ANF and backward walk.
+                  (let* ((anf-body      (mapcar #'anf-transform subst-body))
+                         (flat-anf      (flatten-anf-body anf-body))
+                         (forward-bindings
+                          (loop for form in flat-anf
+                                when (and (consp form) (= (length form) 2) (symbolp (car form)))
+                                collect form))
+                         (raw-backward-walk
+                          (generate-backward-walk flat-anf diff-flat-inputs outputs
+                                                  diff-flat-input-types output-types))
+                         (backward-walk
+                          (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
+                         (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
+                    `(progn
+                      (eval-when (:compile-toplevel :load-toplevel :execute)
+                        (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
+                          (loop for p in ',bwd-params
+                                   for t-spec in ',bwd-types
+                                   collect (cons p t-spec))))
+                      (def-kernel-exact ,bwd-name ,exploded-params
+                                        (declare #'(,@exploded-types))
+                                        (let (,@all-reassembly)
+                                          (let (,@forward-bindings)
+                                            ,backward-walk))
+                                        (return))))))))))))
 
 (defun parse-kernel-signature (name params body)
   "Parses kernel parameters and body, performing validation and type extraction.

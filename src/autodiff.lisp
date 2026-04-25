@@ -1017,3 +1017,32 @@ Handles both implicit last-expression and explicit (return v0 v1 ...) forms."
        (rest last-form))
       (t
        (error "Cannot extract return vars from flat-ANF last form: ~s" last-form)))))
+
+
+
+(defun %crisp-integer-tensor-type-p (type-spec)
+  "Returns T if TYPE-SPEC resolves to a tensor whose element type is an integer
+category (:signed-int or :unsigned-int). Mirrors %crisp-float-tensor-type-p."
+  (let ((canonical (canonicalize-type-specifier type-spec)))
+    (and (consp canonical)
+         (string-equal (symbol-name (first canonical)) "TENSOR")
+         (let* ((elem (second canonical))
+                   (info (gethash elem *crisp-types*)))
+           (and info (member (crisp-type-category info)
+                             '(:signed-int :unsigned-int)))))))
+
+(defun %integer-tensor-elem-to-float (type-spec)
+  "Replaces the element type of an integer tensor with its float analog:
+   64-bit integers (long, ulong) → double; all others → float.
+   Also forces :access to :read-write (gradient tensors are always writable).
+   Returns TYPE-SPEC unchanged if it is not an integer tensor."
+  (if (%crisp-integer-tensor-type-p type-spec)
+      (let* ((canonical (canonicalize-type-specifier type-spec))
+                (elem      (second canonical))
+                (info      (gethash elem *crisp-types*))
+                (float-elem (if (and info (>= (crisp-type-size info) 64))
+                                'double
+                                'float)))
+        (list (nth 0 canonical) float-elem (nth 2 canonical)
+              (nth 3 canonical) :read-write  (nth 5 canonical)))
+      (%ensure-tensor-read-write type-spec)))

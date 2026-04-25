@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; A kernel operating on 64-bit integer (long) tensors can be differentiated.
+;; 64-bit integer element types map to double-precision gradients.
+
+(def-type in-vec  (vector long :address-space :global :access :read-only  :align :compact))
+(def-type out-vec (vector long :address-space :global :access :read-write :align :compact))
+
+(def-kernel long_copy (A &out C)
+  (declare #'(in-vec &out out-vec))
+  (set! (~ C 0) (~ A 0)))

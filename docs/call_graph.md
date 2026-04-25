@@ -518,11 +518,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
 - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp
-- - - - (%CRISP-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
 - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%INTEGER-TENSOR-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp
+- - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp
+- - - - - (%CRISP-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp [See above]
 - - (%EXPLODE-KERNEL-ARGS PARAMS SIGNATURE)  macros.lisp
 - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -534,6 +540,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - (INSTANTIATE-TEMPLATE NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)  templates.lisp [See above]
+- - (DEF-KERNEL-EXACT NAME PARAMS &REST BODY)  macros.lisp
+- - - (STRICT-VALID-TYPE-P SPEC)  macros.lisp
+- - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
 - - (GENERATE-BACKWARD-WALK FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)  autodiff.lisp
 - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
@@ -550,12 +562,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp
 - - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp [RECURSION]
-- - (DEF-KERNEL-EXACT NAME PARAMS &REST BODY)  macros.lisp
-- - - (STRICT-VALID-TYPE-P SPEC)  macros.lisp
-- - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
-- - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (%GENERATE-RAW-ACCESSOR MEMBER-SPEC NAME PKG RUNTIME-INDEX)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
