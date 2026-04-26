@@ -47,7 +47,7 @@ If not provided Crisp will generate the scratch memory for you.
 
 ### reduce-to-warp
 
-`(reduce-to-warp someFunction <someVar> identity &optional (active-threads +warp-size+) )`
+`(reduce-to-warp someFunction <someVar> identity &optional (active-threads (get-warp-size)) )`
 
 `reduce-to-warp` is a macro that applies `someFunction` to `<someVar>` expression in the current thread and another thread in
 the same warp. It does this iteratively until all the threads in the warp whose id is less than `active-threads`
@@ -78,7 +78,7 @@ Possible Implementation:
 
 ```
 ;; -- reduce-to-warp --
-(defmacro reduce-to-warp (someFunction someVar identity  &optional (active-threads +warp-size+))
+(defmacro reduce-to-warp (someFunction someVar identity  &optional (active-threads (get-warp-size)))
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
   `(in-warp (lane-id)
@@ -90,7 +90,7 @@ Possible Implementation:
 
       ;; Perform the full, unconditional reduction on 'val'.
       ;; The loop bounds are always based on the full warp size.
-      (dec-times-by-half+ (s (/ +warp-size+ 2))
+      (dec-times-by-half+ (s (/ (get-warp-size) 2))
         (set! val (funcall ,someFunction (shuffle-xor val s) val)))
 
       ;; Write the final result (from lane 0) back into someVar for all threads.
@@ -121,7 +121,7 @@ next operations can be performed within the workgroup.
 #### local-scratch-vec
 The `:local-scratch-vec` key.  If not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32. 
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32. 
 
 #### message
 The `:message` will be applied to the creation of the `:local-scratch-vec` if Crisp is generating it on your
@@ -152,7 +152,7 @@ Possible Implementation
     (local-barrier)
 
     ; inter warp reduction
-    (let ((num-warps (ceil (get-local-work-size) +warp-size+))
+    (let ((num-warps (ceil (get-local-work-size) (get-warp-size)))
           (local-id (get-local-id)))
         ; Only a subset of threads needed for this phase.
         (when (< local-id num-warps)
@@ -200,7 +200,7 @@ This routine accepts two optional arguments.  `localScratchVec` and `globalScrat
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector`  that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 `reduce-to-1-second-stage` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
 If you want to provide it yourself, it should be a `vector` whose `element-type` is the same as `<someVar>` , 
@@ -243,7 +243,7 @@ Possible Implementation
       (let ((N (length~ ,globalScratchVec))
             (l-w-s (get-local-work-size)))
         (declare (uniform N l-w-s))
-        (cond*  ((< N +warp-size+)
+        (cond*  ((< N (get-warp-size))
                   (let ((lane-id (get-lane-id))
                         (var (if (< lane-id N) (~ ,globalScratchVec lane-id) ,identity)))
                     (reduce-to-warp ,someFunction var ,identity N)
@@ -284,7 +284,7 @@ This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 
@@ -331,7 +331,7 @@ This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 
@@ -383,7 +383,7 @@ This routine accepts two optional arguments.  `localScratchVec` and `globalScrat
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector`  that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 `reduce-to-1-cont` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
 If you want to provide it yourself, it should be a `vector` whose `element-type` is the same as `<someVar>` , 

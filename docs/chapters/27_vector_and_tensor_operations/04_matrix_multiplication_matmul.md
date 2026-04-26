@@ -96,7 +96,7 @@ the hardware accellerated types that have a widened accumulator, quantized integ
 |#
 
 ;; same TILE_DIM as used by convert-layout 
-(def-const TILE_DIM +warp-size+ ulong)
+(def-const TILE_DIM 32 ulong)
 
 ;; helpers (not fully defined yet)
 ;;   make-tile variants will call make-tile-scratch-vector themselves.

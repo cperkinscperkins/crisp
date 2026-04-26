@@ -195,7 +195,7 @@
 
 ## Fused Softmax
 
-## Builtin GPU Functions & Constants
+## Builtin GPU Functions
 
 ## Forgotten
 

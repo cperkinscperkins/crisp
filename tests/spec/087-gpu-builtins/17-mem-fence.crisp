@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; mem-fence ensures memory ordering across threads (global + local scopes).
+;; Lowers to OpMemoryBarrier in SPIR-V.
+
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(def-kernel test_mem_fence (&out c)
+  (declare #'(&out out-t))
+  (mem-fence)
+  (set! (~ c) 0))

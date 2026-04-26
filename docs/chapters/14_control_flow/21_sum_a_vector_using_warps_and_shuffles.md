@@ -23,7 +23,7 @@ This version of vector summing is likely faster than the last one.
 
 ```
 ;; 32 warps maximum for most hardware
-(def-constant +warp-size+:ulong 32)
+(def-constant +warp-size+ 32ul)
 
 ;; the source vector can be any size. 
 (def-type source-vec (in-vec long :compact))    
@@ -39,7 +39,6 @@ This version of vector summing is likely faster than the last one.
     (loop-vector-stride A (i)
       (inc! sum (~ A i))))) ; <-- inc! implicity returns final sum
 
-;; NOTE: +warp-size+ is a constant Crisp provides.
 
 ;; -- sum_vector_warp_first_stage --
 (def-kernel sum_vector_warp_first_stage (A Res)

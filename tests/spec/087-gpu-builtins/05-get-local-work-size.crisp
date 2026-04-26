@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; get-local-work-size: 3D form returns ulong3 (workgroup dimensions);
+;; scalar form returns ulong for compile-time dimension n.
+
+(def-type out-3d (cell ulong3 :address-space :global :access :read-write))
+(def-type out-1d (cell ulong  :address-space :global :access :read-write))
+
+(def-kernel test_get_local_work_size_3d (&out result)
+  (declare #'(&out out-3d))
+  (set! (~ result) (get-local-work-size)))
+
+(def-kernel test_get_local_work_size_n (&out result)
+  (declare #'(&out out-1d))
+  (set! (~ result) (get-local-work-size 0)))

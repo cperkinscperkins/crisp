@@ -2073,3 +2073,186 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                 (r3 (llvm-build-insert-value builder r2 res-extents 3 "sv_r_r3"))
                 (r4 (llvm-build-insert-value builder r3 src-ext1    4 "sv_r_r4")))
            r4))))))
+
+
+
+(defun %spirv-get-or-create-fn (module fn-name llvm-ret-type param-types param-count)
+  "Gets or creates an LLVM function declaration in MODULE."
+  (let ((existing (llvm-get-named-function module fn-name)))
+    (if (cffi:null-pointer-p existing)
+        (let ((ft (llvm-function-type llvm-ret-type param-types param-count nil)))
+          (llvm-add-function module fn-name ft))
+        existing)))
+
+(defun %call-spirv-vec3-builtin (builder module spirv-name)
+  "Emits a call to @__spirv_BuiltIn<SPIRV-NAME>() returning <3 x i64> (ulong3).
+   Example: spirv-name=\"GlobalInvocationId\" -> @__spirv_BuiltInGlobalInvocationId"
+  (let* ((fn-name   (format nil "__spirv_BuiltIn~a" spirv-name))
+         (vec3-type (crisp-type-to-llvm-type 'ulong3 module))
+         (fn        (%spirv-get-or-create-fn module fn-name vec3-type (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder
+                      (llvm-function-type vec3-type (cffi:null-pointer) 0 nil)
+                      fn (cffi:null-pointer) 0
+                      (string-downcase spirv-name))))
+
+(defun %call-spirv-uint-builtin (builder module spirv-name)
+  "Emits a call to @__spirv_BuiltIn<SPIRV-NAME>() returning i32 (uint)."
+  (let* ((fn-name  (format nil "__spirv_BuiltIn~a" spirv-name))
+         (i32-type (llvm-int32-type))
+         (fn       (%spirv-get-or-create-fn module fn-name i32-type (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder
+                      (llvm-function-type i32-type (cffi:null-pointer) 0 nil)
+                      fn (cffi:null-pointer) 0
+                      (string-downcase spirv-name))))
+
+(defun %extract-vec3-i64 (builder vec-val dim name-suffix)
+  "Extracts element at DIM (0/1/2) from a <3 x i64> LLVM value."
+  (llvm-build-extract-element builder vec-val
+                               (llvm-const-int (llvm-int32-type) dim nil)
+                               name-suffix))
+
+(defun %gen-product-of-vec3 (builder module spirv-name result-name)
+  "Computes x*y*z for the <3 x i64> builtin @__spirv_BuiltIn<SPIRV-NAME>."
+  (let* ((vec (%call-spirv-vec3-builtin builder module spirv-name))
+         (x   (%extract-vec3-i64 builder vec 0 "x"))
+         (y   (%extract-vec3-i64 builder vec 1 "y"))
+         (z   (%extract-vec3-i64 builder vec 2 "z"))
+         (xy  (llvm-build-mul builder x y "xy")))
+    (llvm-build-mul builder xy z result-name)))
+
+(defun %gen-flat-linear-id-from-vecs (builder lid-vec lws-vec name)
+  "Synthesizes z*lws.y*lws.x + y*lws.x + x from two <3 x i64> values."
+  (let* ((x    (%extract-vec3-i64 builder lid-vec 0 "lx"))
+         (y    (%extract-vec3-i64 builder lid-vec 1 "ly"))
+         (z    (%extract-vec3-i64 builder lid-vec 2 "lz"))
+         (lwsx (%extract-vec3-i64 builder lws-vec 0 "lwsx"))
+         (lwsy (%extract-vec3-i64 builder lws-vec 1 "lwsy"))
+         (lwsy_lwsx (llvm-build-mul builder lwsy lwsx "lwsy_x"))
+         (z_part    (llvm-build-mul builder z lwsy_lwsx "z_part"))
+         (y_part    (llvm-build-mul builder y lwsx "y_part"))
+         (yx        (llvm-build-add builder y_part x "yx")))
+    (llvm-build-add builder z_part yx name)))
+
+(defun %gen-local-linear-id (builder module)
+  "Synthesizes get-local-linear-id: z*lws.y*lws.x + y*lws.x + x."
+  (let ((lid-vec (%call-spirv-vec3-builtin builder module "LocalInvocationId"))
+        (lws-vec (%call-spirv-vec3-builtin builder module "WorkgroupSize")))
+    (%gen-flat-linear-id-from-vecs builder lid-vec lws-vec "local_linear_id")))
+
+(defun %gen-global-linear-id (builder module)
+  "Synthesizes get-global-linear-id: flat_wg * lws_total + flat_lid."
+  (let* (;; Flat local ID
+         (lid-vec  (%call-spirv-vec3-builtin builder module "LocalInvocationId"))
+         (lws-vec  (%call-spirv-vec3-builtin builder module "WorkgroupSize"))
+         (flat-lid (%gen-flat-linear-id-from-vecs builder lid-vec lws-vec "flat_lid"))
+         ;; LWS total
+         (lwsx     (%extract-vec3-i64 builder lws-vec 0 "lwsx"))
+         (lwsy     (%extract-vec3-i64 builder lws-vec 1 "lwsy"))
+         (lwsz     (%extract-vec3-i64 builder lws-vec 2 "lwsz"))
+         (lws-xy   (llvm-build-mul builder lwsx lwsy "lws_xy"))
+         (lws-tot  (llvm-build-mul builder lws-xy lwsz "lws_tot"))
+         ;; Flat workgroup ID
+         (wgid-vec (%call-spirv-vec3-builtin builder module "WorkgroupId"))
+         (ng-vec   (%call-spirv-vec3-builtin builder module "NumWorkgroups"))
+         (flat-wg  (%gen-flat-linear-id-from-vecs builder wgid-vec ng-vec "flat_wg"))
+         ;; result = flat_wg * lws_tot + flat_lid
+         (base     (llvm-build-mul builder flat-wg lws-tot "base")))
+    (llvm-build-add builder base flat-lid "global_linear_id")))
+
+(defun %gen-spirv-control-barrier (builder module)
+  "Emits @__spirv_ControlBarrier(i32 2, i32 2, i32 264).
+   Scope=Workgroup(2) MemScope=Workgroup(2) Semantics=AcquireRelease(8)|WorkgroupMemory(256)."
+  (let* ((i32-type (llvm-int32-type))
+         (fn-name  "__spirv_ControlBarrier")
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 3)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 2) i32-type)
+                        arr))
+         (fn-type  (llvm-function-type (llvm-void-type) param-types 3 nil))
+         (fn       (let ((ex (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p ex)
+                         (llvm-add-function module fn-name fn-type)
+                         ex)))
+         (args     (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 3)))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 0) (llvm-const-int i32-type 2 nil))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 1) (llvm-const-int i32-type 2 nil))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 2) (llvm-const-int i32-type 264 nil))
+                     arr)))
+    (llvm-build-call2 builder fn-type fn args 3 "")
+    (values nil nil)))
+
+(defun %gen-spirv-memory-barrier (builder module)
+  "Emits @__spirv_MemoryBarrier(i32 1, i32 520).
+   MemScope=CrossWorkgroup(1) Semantics=AcquireRelease(8)|CrossWorkgroupMemory(512)."
+  (let* ((i32-type (llvm-int32-type))
+         (fn-name  "__spirv_MemoryBarrier")
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i32-type)
+                        arr))
+         (fn-type  (llvm-function-type (llvm-void-type) param-types 2 nil))
+         (fn       (let ((ex (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p ex)
+                         (llvm-add-function module fn-name fn-type)
+                         ex)))
+         (args     (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 0) (llvm-const-int i32-type 1 nil))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 1) (llvm-const-int i32-type 520 nil))
+                     arr)))
+    (llvm-build-call2 builder fn-type fn args 2 "")
+    (values nil nil)))
+
+;;; ----- generate-node-ir for semantic-gpu-builtin -----
+;; src/codegen.lisp
+
+(defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
+  "Generates LLVM IR for a GPU built-in function call."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let* ((bname (semantic-gpu-builtin-builtin-name node))
+         (dim   (semantic-gpu-builtin-dimension node)))
+    (log:info "Generating GPU builtin IR: ~a dim=~a" bname dim)
+    (labels
+        ;; Helper: call primitive vec3 builtin and optionally extractelement
+        ((vec3-or-scalar (spirv-name)
+           (let ((vec (%call-spirv-vec3-builtin builder module spirv-name)))
+             (if dim
+                 (values (%extract-vec3-i64 builder vec dim (format nil "~a_~a" (string-downcase spirv-name) dim)) nil)
+                 (values vec nil)))))
+      (case bname
+        ;; --- Primitive 3D/scalar vector builtins ---
+        (:get-global-id       (vec3-or-scalar "GlobalInvocationId"))
+        (:get-local-id        (vec3-or-scalar "LocalInvocationId"))
+        (:get-workgroup-id    (vec3-or-scalar "WorkgroupId"))
+        (:get-num-groups      (vec3-or-scalar "NumWorkgroups"))
+        (:get-local-work-size (vec3-or-scalar "WorkgroupSize"))
+        (:get-global-work-size (vec3-or-scalar "GlobalSize"))
+        (:get-global-offset   (vec3-or-scalar "GlobalOffset"))
+        ;; --- Synthesized: GlobalInvocationId + GlobalOffset ---
+        (:get-global-id-abs
+         (let* ((gid  (%call-spirv-vec3-builtin builder module "GlobalInvocationId"))
+                (goff (%call-spirv-vec3-builtin builder module "GlobalOffset")))
+           (if dim
+               (let* ((gid-n  (%extract-vec3-i64 builder gid  dim "gid_n"))
+                      (goff-n (%extract-vec3-i64 builder goff dim "goff_n")))
+                 (values (llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
+               ;; 3D: vector add (<3 x i64> + <3 x i64>)
+               (values (llvm-build-add builder gid goff "gid_abs") nil))))
+        ;; --- WorkDim (hidden kernel parameter, uint) ---
+        (:get-work-dim
+         (values (%call-spirv-uint-builtin builder module "WorkDim") nil))
+        ;; --- Synthesized scalar builtins ---
+        (:get-local-linear-id
+         (values (%gen-local-linear-id builder module) nil))
+        (:get-local-linear-size
+         (values (%gen-product-of-vec3 builder module "WorkgroupSize" "local_linear_size") nil))
+        (:get-global-linear-id
+         (values (%gen-global-linear-id builder module) nil))
+        ((:get-global-linear-size :get-total-threads)
+         (values (%gen-product-of-vec3 builder module "GlobalSize" "total_threads") nil))
+        (:get-total-groups
+         (values (%gen-product-of-vec3 builder module "NumWorkgroups" "total_groups") nil))
+        ;; --- Barriers (void) ---
+        (:local-barrier (%gen-spirv-control-barrier builder module))
+        (:mem-fence     (%gen-spirv-memory-barrier  builder module))
+        (t (error "generate-node-ir: unknown GPU builtin ~a" bname))))))

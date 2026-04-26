@@ -187,7 +187,8 @@ Now using soa-vector for better performance
 ;;
 ;; fft-pass-soa-tiled -- This requires a 2D enqueue
 ;;
-(def-const TILE_DIM +warp-size+) ; 32
+(def-const TILE_DIM 32) ; 32 is warp size on most hardware
+
 (with-template-type (T A CT) ; T=float type, A=alignment, CT=complex type
   (declare (type-is T #'is-floating-point?)
            (value-is A #'is-alignment?)

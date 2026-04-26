@@ -115,7 +115,7 @@ Possible Implemenation
 When working with matrices, we often want coalesced memory access, but that is limited
 to the `:row-major` / `:col-major` choice.  For this reason, a very common
 usage pattern when working with matrices is to use local memory tiles.
-These are typically `32x32` (ie `+warp-size+` squared ).
+These are typically `32x32` (ie `(get-warp-size)` squared ).
 
 The `load-tile` and `store-tile` macros can help with that. They presume the kernel
 has been enqueued with 2D arity and just use the local-id x and y for the target IN the tile.  
@@ -173,11 +173,11 @@ not necessarily like we want them to be.
 ;; (make-tile-scratch-vector T)
 ;; (make-tile dim T)
 
-(def-const TILE_DIM:ulong +warp-size+)
+(def-const TILE_DIM:ulong (get-warp-size))
 
 ;; -- convert-layout --
 (def-function convert-layout (source-M dest-M choice &optional (scratch (make-scratch-matrix (element-type~ source-M) :match-warp-tile)))
-  ;; scratch is 32x32 (+warp-size+ x +warp-size+)
+  ;; scratch is usuallly 32x32 (TILE_DIM x TILE_DIM)
   (declare #(matrix matrix matrix-layout &optional (vector (element-type~ source-M)) => nil)
             (global-size :strategy :strided))
   (c-t-assert (!= choice :other-layout) "dude")

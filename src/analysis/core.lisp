@@ -4,6 +4,11 @@
 (defvar *analysis-access-mode* :read)
 
 
+(defvar *in-dispatch-context* nil
+  "T when the analyzer is inside a def-kernel/def-grid-function body.
+   Used to restrict GPU built-in calls to kernel entry points only.")
+
+
 (defun %dvec-integral-type-p (type-sym)
   "Returns T if TYPE-SYM is a registered integer (signed or unsigned) Crisp type."
   (let ((ct (gethash type-sym *crisp-types*)))
@@ -87,9 +92,61 @@
 
 
 
-#|
+(defun %gpu-builtin-info (builtin-kw)
+  "Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.
+   BASE-RETURN-TYPE: return type when called with no args (nil = void).
+   ACCEPTS-DIM-P: T if the builtin accepts a scalar dimension arg 0/1/2."
+  (case builtin-kw
+    ((:get-global-id :get-local-id :get-workgroup-id :get-num-groups
+      :get-local-work-size :get-global-work-size :get-global-offset
+      :get-global-id-abs)
+     (list 'ulong3 t))
+    (:get-work-dim          (list 'uint  nil))
+    ((:get-local-linear-id :get-local-linear-size
+      :get-global-linear-id :get-global-linear-size
+      :get-total-threads :get-total-groups)
+     (list 'ulong nil))
+    ((:local-barrier :mem-fence)
+     (list nil nil))
+    (t (error "Unknown GPU builtin: ~a" builtin-kw))))
+
+;;; ----- Analyzer -----
+
+(defun %analyze-gpu-builtin (builtin-kw name-str expr env context location)
+  "Analyzer for all GPU built-in function forms."
+  (declare (ignore env context))
+  (unless *in-dispatch-context*
+    (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
+  (let* ((info     (%gpu-builtin-info builtin-kw))
+         (base-ty  (first info))
+         (acc-dim  (second info))
+         (args     (rest expr)))
+    (cond
+      ((null args)
+       (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                  :dimension nil
+                                  :type base-ty
+                                  :source-location location))
+      ((= (length args) 1)
+       (let ((dim-arg (first args)))
+         (unless acc-dim
+           (error "GPU built-in '~a' does not accept a dimension argument" name-str))
+         (unless (integerp dim-arg)
+           (error "GPU built-in '~a': dimension must be a compile-time integer constant (0, 1, or 2), got: ~a"
+                  name-str dim-arg))
+         (unless (member dim-arg '(0 1 2))
+           (error "GPU built-in '~a': dimension ~a is out of valid range (must be 0, 1, or 2)"
+                  name-str dim-arg))
+         (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                    :dimension dim-arg
+                                    :type 'ulong
+                                    :source-location location)))
+      (t
+       (error "GPU built-in '~a' takes 0 or 1 arguments, got ~a" name-str (length args))))))
+
+
 (defun initialize-expression-analyzers ()
-  "Registers all expression analyzers, including device vector support."
+  "Registers all expression analyzers; extended for 087-gpu-builtins."
   (clrhash *expression-analyzers*)
   (register-ops-analyzers)
   (register-control-analyzers)
@@ -97,30 +154,9 @@
   ;; ##(...) device vector literal
   (setf (gethash 'crisp-vec-literal *expression-analyzers*)
         #'analyze-crisp-dvec-literal)
-  ;; Component accessors  x~ / y~ / z~ / w~
   (let ((cl-pkg (find-package :crisp-language))
         (cc-pkg (find-package :crisp.compiler)))
-    (dolist (name '("X~" "Y~" "Z~" "W~"))
-      (let ((sym-cl (intern name cl-pkg))
-            (sym-cc (intern name cc-pkg)))
-        (setf (gethash sym-cl *expression-analyzers*) #'analyze-dvec-component-ref)
-        (unless (eq sym-cl sym-cc)
-          (setf (gethash sym-cc *expression-analyzers*) #'analyze-dvec-component-ref))))))
-          |#
-
-
-(defun initialize-expression-analyzers ()
-  "Registers all expression analyzers, extended for 083-vector-matrix-helpers."
-  (clrhash *expression-analyzers*)
-  (register-ops-analyzers)
-  (register-control-analyzers)
-  (register-struct-analyzers)
-  ;; ##(...) device vector literal
-  (setf (gethash 'crisp-vec-literal *expression-analyzers*)
-        #'analyze-crisp-dvec-literal)
-  ;; Component accessors x~ / y~ / z~ / w~
-  (let ((cl-pkg (find-package :crisp-language))
-        (cc-pkg (find-package :crisp.compiler)))
+    ;; Component accessors x~ / y~ / z~ / w~
     (dolist (name '("X~" "Y~" "Z~" "W~"))
       (let ((sym-cl (intern name cl-pkg))
             (sym-cc (intern name cc-pkg)))
@@ -137,7 +173,35 @@
             (fn     (cdr entry)))
         (setf (gethash sym-cl *expression-analyzers*) fn)
         (unless (eq sym-cl sym-cc)
-          (setf (gethash sym-cc *expression-analyzers*) fn))))))
+          (setf (gethash sym-cc *expression-analyzers*) fn))))
+    ;; 087 GPU built-in functions
+    (dolist (entry '(("GET-GLOBAL-ID"          :get-global-id)
+                     ("GET-LOCAL-ID"            :get-local-id)
+                     ("GET-WORKGROUP-ID"        :get-workgroup-id)
+                     ("GET-NUM-GROUPS"          :get-num-groups)
+                     ("GET-LOCAL-WORK-SIZE"     :get-local-work-size)
+                     ("GET-GLOBAL-WORK-SIZE"    :get-global-work-size)
+                     ("GET-GLOBAL-OFFSET"       :get-global-offset)
+                     ("GET-GLOBAL-ID-ABS"       :get-global-id-abs)
+                     ("GET-WORK-DIM"            :get-work-dim)
+                     ("GET-LOCAL-LINEAR-ID"     :get-local-linear-id)
+                     ("GET-LOCAL-LINEAR-SIZE"   :get-local-linear-size)
+                     ("GET-GLOBAL-LINEAR-ID"    :get-global-linear-id)
+                     ("GET-GLOBAL-LINEAR-SIZE"  :get-global-linear-size)
+                     ("GET-TOTAL-THREADS"       :get-total-threads)
+                     ("GET-TOTAL-GROUPS"        :get-total-groups)
+                     ("LOCAL-BARRIER"           :local-barrier)
+                     ("MEM-FENCE"               :mem-fence)))
+      (let* ((name-str (first entry))
+             (kw       (second entry))
+             (fn       (let ((kw0 kw) (ns0 name-str))
+                         (lambda (expr env context location)
+                           (%analyze-gpu-builtin kw0 ns0 expr env context location)))))
+        (let ((sym-cl (intern name-str cl-pkg))
+              (sym-cc (intern name-str cc-pkg)))
+          (setf (gethash sym-cl *expression-analyzers*) fn)
+          (unless (eq sym-cl sym-cc)
+            (setf (gethash sym-cc *expression-analyzers*) fn)))))))
 
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)
@@ -892,19 +956,12 @@ in single-pass mode."
                                         vname-str)
                        :source-location location)))))))))
 
-;;; src/analysis/core.lisp
-;;; Redefine internal-def-function to also populate *boundary-array-params*.
 (defun internal-def-function (name params declarations body location)
   "Wrapper around internal-compile-function. Detects kernel entry-points and
-   binds *boundary-struct-params* and *boundary-array-params* to enforce immutability."
+   binds *boundary-struct-params*, *boundary-array-params*, and
+   *in-dispatch-context* to enforce kernel-boundary rules."
   (log:info "Analyzing function ~s" name)
 
-  ;; Apply ANF only when differentiating AND the kernel/function is not forward-only.
-  ;; forward-only kernels bypass the AD pass entirely; ANF-transforming their bodies
-  ;; can break constructs (e.g. nested cell-of-array lvalue dereferences) that the
-  ;; normal semantic analyzer handles correctly but the ANF form does not.
-  ;; def-kernel passes (non-differentiable) in declarations for forward-only kernels,
-  ;; following the same pattern as (entry-point).
   (when (and *differentiate-p*
              (not (find "NON-DIFFERENTIABLE" declarations
                         :key (lambda (x) (when (consp x) (symbol-name (car x))))
@@ -924,6 +981,7 @@ in single-pass mode."
                              thereis (and (listp d)
                                           (symbolp (first d))
                                           (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (*in-dispatch-context* is-entry-p)
            (*boundary-struct-params*
              (if is-entry-p
                  (loop for param in explicit-env
@@ -1142,7 +1200,7 @@ in single-pass mode."
 
 (defun semantic-node-type (node)
   "Returns the Crisp type of a semantic node.
-Extended for 083-vector-matrix-helpers to handle semantic-stride-view."
+Extended for 087-gpu-builtins."
   (etypecase node
     (semantic-literal (semantic-literal-value-type node))
     (semantic-device-vec-literal (semantic-device-vec-literal-vec-type node))
@@ -1177,17 +1235,17 @@ Extended for 083-vector-matrix-helpers to handle semantic-stride-view."
     (semantic-progn (semantic-progn-type node))
     (semantic-struct-member-update (semantic-struct-member-update-type node))
     (semantic-sizeof (semantic-sizeof-type node))
-    ;; 078 view constructors
     (semantic-make-view (semantic-make-view-type node))
-    ;; 082 atomic RMW
     (semantic-atomic-rmw (semantic-atomic-rmw-type node))
-    ;; 083 stride-view (transpose, col, row)
-    (semantic-stride-view (semantic-stride-view-type node))))
+    (semantic-stride-view (semantic-stride-view-type node))
+    (semantic-gpu-builtin (semantic-gpu-builtin-type node))))
 
+;;; ----- Redefine semantic-node-source-location (adds semantic-gpu-builtin) -----
+;; src/analysis/core.lisp
 
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
-Extended for 083-vector-matrix-helpers to handle semantic-stride-view."
+Extended for 087-gpu-builtins."
   (etypecase node
     (semantic-literal (semantic-literal-source-location node))
     (semantic-device-vec-literal (semantic-device-vec-literal-source-location node))
@@ -1222,12 +1280,10 @@ Extended for 083-vector-matrix-helpers to handle semantic-stride-view."
     (semantic-ct-array (semantic-ct-array-source-location node))
     (semantic-progn (semantic-progn-source-location node))
     (semantic-struct-member-update (semantic-struct-member-update-source-location node))
-    ;; 078 view constructors
     (semantic-make-view (semantic-make-view-source-location node))
-    ;; 082 atomic RMW
     (semantic-atomic-rmw (semantic-atomic-rmw-source-location node))
-    ;; 083 stride-view
-    (semantic-stride-view (semantic-stride-view-source-location node))))
+    (semantic-stride-view (semantic-stride-view-source-location node))
+    (semantic-gpu-builtin (semantic-gpu-builtin-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)

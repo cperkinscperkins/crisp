@@ -49,4 +49,5 @@ Global Variable,RESOLVE-TYPE-TO-LLVM,INITIALIZE-CRISP-TYPES,DEF-EXPRESSION-ANALY
 *SCANNING-FUNCTION-NAME*,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 *SCRATCH-CELL-COUNTER*,,,,,,,,,,,,,,,,,,,,,,,,RW,,,,,,,,,,,W,W,,,,,,W,,,,,,,,,,,,,,,,,W,,W,,
 *IMPLICIT-ARG-MAP*,,,,,,,,,,,,,,,,,,,,,,,,,,,RW,,,,,,W,,,,,,,,RW,W,RW,,,,,,,RW,,,,,,,,,RW,RW,W,,
+*IN-DISPATCH-CONTEXT*,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,
 *ANALYSIS-ACCESS-MODE*,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,RW,,,,,,,,,,,,,,,,,

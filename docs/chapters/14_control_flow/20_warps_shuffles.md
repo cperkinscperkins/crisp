@@ -30,13 +30,13 @@ be used otherwise. <!-- NOTE: I don't think this has to be true at all. Maybe? -
 
 
 ### shuffle
-`(shuffle <someVar> target-lane-id &optional (width +warp-size+))`
+`(shuffle <someVar> target-lane-id &optional (width (get-warp-size)))`
 The `(shuffle ...)` expression evaluates to the current value of `someVar` as it is in another thread. 
 THe target lane-id is provided directly to `shuffle`.
 
 ### shuffle-up  / shuffle-down
-`(shuffle-up <someVar> delta &optional (width +warp-size+))`
-`(shuffle-down <someVar> delta &optional (width +warp-size+))`
+`(shuffle-up <someVar> delta &optional (width (get-warp-size)))`
+`(shuffle-down <someVar> delta &optional (width (get-warp-size)))`
 These expressions evaluate to the current value of `someVar` in a thread that is plus or minus `delta` lanes over.
 Note that `-up` / `-down` do not necessarily have an intuitive interpretation. The direction is where the data 
 is going to, rather than the operation performed with the delta. So `shuffle-up` SUBTRACTS `delta` from the current 
@@ -45,7 +45,7 @@ Meanwhile, `shuffle-down` ADDS `delta` to the current lane id and return the val
 lane (ie, the data is shuffling "down" to us.) Whatever. 
 
 ### shuffle-xor
-`(shuffle-xor <someVar> &optional lane-id-mask:ulong (width +warp-size+))`
+`(shuffle-xor <someVar> &optional lane-id-mask:ulong (width (get-warp-size)))`
 
 Those other shuffle operations do cool tricks. But `shuffle-xor` is where real sorcery occurs.
 
@@ -58,7 +58,7 @@ The magic occurs in the interaction between the descending-by-half mask gotten f
 This gives us a butterfly communication pattern, which allows all threads to contribute to a reduction in a logarithmic
 number of steps.
 ```
-(dec-times-by-half (s (/ +warp-size+ 2)) ;;start the descent with half the warp size. ie 16 then 8, 4, 2, 1
+(dec-times-by-half (s (/ (get-warp-size) 2)) ;;start the descent with half the warp size. ie 16 then 8, 4, 2, 1
         ... (shuffle-xor someVal s))
 ```
 

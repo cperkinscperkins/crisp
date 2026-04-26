@@ -39,7 +39,7 @@ So for a workgroup size of 64 and four total workgroups, threads 0 to 63 ALL get
 
 `:warp-idx` is just like `:workgroup-idx` except the threads are grouped by warp and it is 1D only.
 Note that if using `:warp-idx` that it is extremely important that the kernel is hoisted 
-with a `local_work_size` that is a multiple of `+warp-size+`.  Otherwise operations like warp level
+with a `local_work_size` that is a multiple of `(get-warp-size)`.  Otherwise operations like warp level
 reductions could end up deadlocking.
 
 For the "small" vectors, etc or direct sizes, the bindings are index values shared by all threads grouped

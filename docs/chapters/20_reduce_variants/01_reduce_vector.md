@@ -49,7 +49,7 @@ This routine accepts two optional arguments.  `localScratchVec` and `globalScrat
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 `reduce-vec-second-stage` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
 If you want to provide it yourself, it should be a `vector` whose `element-type` is the same as `<someVar>` , 
@@ -100,7 +100,7 @@ This is what an implementation of `reduce-vec-second-stage` might look like
 `(reduce-vec-warp someFunction vec identity) => result`
 
 `reduce-vec-warp` is NOT a general purpose vec reduction routine. It uses warp-level functions
-to reduce, but cannot reduce any vector whose length is greater than `+warp-size+` (32).
+to reduce, but cannot reduce any vector whose length is greater than `(get-warp-size)` (32).
 
 Note that unlike most reductions, this is NOT a grid-level function.
 
@@ -137,7 +137,7 @@ This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 

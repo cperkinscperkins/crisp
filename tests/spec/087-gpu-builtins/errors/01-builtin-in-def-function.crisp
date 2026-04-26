@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "dispatch context"
+;; GPU built-in functions are only valid inside def-kernel / def-grid-function bodies.
+;; Using them in a plain def-function is a compile-time error.
+
+(def-function bad_fn ()
+  (declare #'(=> ulong))
+  (get-global-id 0))

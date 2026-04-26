@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-25T20:57:37.191932Z
+Generated on 2026-04-26T18:20:45.531165Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -135,6 +135,12 @@ Generated on 2026-04-25T20:57:37.191932Z
 ### DEFVAR `*ANALYSIS-ACCESS-MODE*`
 
 ---
+### DEFVAR `*IN-DISPATCH-CONTEXT*`
+
+  > T when the analyzer is inside a def-kernel/def-grid-function body.  >    Used to restrict GPU built-in calls to kernel entry points only.
+
+
+---
 ### DEFUN `%DVEC-INTEGRAL-TYPE-P`
 - **Args**: `(TYPE-SYM)`
 
@@ -170,9 +176,23 @@ Generated on 2026-04-25T20:57:37.191932Z
 
 
 ---
+### DEFUN `%GPU-BUILTIN-INFO`
+- **Args**: `(BUILTIN-KW)`
+
+  > Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.  >    BASE-RETURN-TYPE: return type when called with no args (nil = void).  >    ACCEPTS-DIM-P: T if the builtin accepts a scalar dimension arg 0/1/2.
+
+
+---
+### DEFUN `%ANALYZE-GPU-BUILTIN`
+- **Args**: `(BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for all GPU built-in function forms.
+
+
+---
 ### DEFUN `INITIALIZE-EXPRESSION-ANALYZERS`
 
-  > Registers all expression analyzers, extended for 083-vector-matrix-helpers.
+  > Registers all expression analyzers; extended for 087-gpu-builtins.
 
 
 ---
@@ -382,7 +402,7 @@ Generated on 2026-04-25T20:57:37.191932Z
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params* and *boundary-array-params* to enforce immutability.
+  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params*, *boundary-array-params*, and  >    *in-dispatch-context* to enforce kernel-boundary rules.
 
 
 ---
@@ -410,14 +430,14 @@ Generated on 2026-04-25T20:57:37.191932Z
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the Crisp type of a semantic node.  > Extended for 083-vector-matrix-helpers to handle semantic-stride-view.
+  > Returns the Crisp type of a semantic node.  > Extended for 087-gpu-builtins.
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
 
-  > Returns the source location of a semantic node.  > Extended for 083-vector-matrix-helpers to handle semantic-stride-view.
+  > Returns the source location of a semantic node.  > Extended for 087-gpu-builtins.
 
 
 ---
@@ -1485,6 +1505,76 @@ Generated on 2026-04-25T20:57:37.191932Z
 - **Args**: `(BUILDER VAL)`
 
   > Sign-extends VAL to i64 if smaller than 64 bits; returns as-is if already i64.  >    Avoids the invalid sext-to-same-width LLVM instruction.
+
+
+---
+### DEFUN `%SPIRV-GET-OR-CREATE-FN`
+- **Args**: `(MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)`
+
+  > Gets or creates an LLVM function declaration in MODULE.
+
+
+---
+### DEFUN `%CALL-SPIRV-VEC3-BUILTIN`
+- **Args**: `(BUILDER MODULE SPIRV-NAME)`
+
+  > Emits a call to @__spirv_BuiltIn<SPIRV-NAME>() returning <3 x i64> (ulong3).  >    Example: spirv-name="GlobalInvocationId" -> @__spirv_BuiltInGlobalInvocationId
+
+
+---
+### DEFUN `%CALL-SPIRV-UINT-BUILTIN`
+- **Args**: `(BUILDER MODULE SPIRV-NAME)`
+
+  > Emits a call to @__spirv_BuiltIn<SPIRV-NAME>() returning i32 (uint).
+
+
+---
+### DEFUN `%EXTRACT-VEC3-I64`
+- **Args**: `(BUILDER VEC-VAL DIM NAME-SUFFIX)`
+
+  > Extracts element at DIM (0/1/2) from a <3 x i64> LLVM value.
+
+
+---
+### DEFUN `%GEN-PRODUCT-OF-VEC3`
+- **Args**: `(BUILDER MODULE SPIRV-NAME RESULT-NAME)`
+
+  > Computes x*y*z for the <3 x i64> builtin @__spirv_BuiltIn<SPIRV-NAME>.
+
+
+---
+### DEFUN `%GEN-FLAT-LINEAR-ID-FROM-VECS`
+- **Args**: `(BUILDER LID-VEC LWS-VEC NAME)`
+
+  > Synthesizes z*lws.y*lws.x + y*lws.x + x from two <3 x i64> values.
+
+
+---
+### DEFUN `%GEN-LOCAL-LINEAR-ID`
+- **Args**: `(BUILDER MODULE)`
+
+  > Synthesizes get-local-linear-id: z*lws.y*lws.x + y*lws.x + x.
+
+
+---
+### DEFUN `%GEN-GLOBAL-LINEAR-ID`
+- **Args**: `(BUILDER MODULE)`
+
+  > Synthesizes get-global-linear-id: flat_wg * lws_total + flat_lid.
+
+
+---
+### DEFUN `%GEN-SPIRV-CONTROL-BARRIER`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @__spirv_ControlBarrier(i32 2, i32 2, i32 264).  >    Scope=Workgroup(2) MemScope=Workgroup(2) Semantics=AcquireRelease(8)|WorkgroupMemory(256).
+
+
+---
+### DEFUN `%GEN-SPIRV-MEMORY-BARRIER`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @__spirv_MemoryBarrier(i32 1, i32 520).  >    MemScope=CrossWorkgroup(1) Semantics=AcquireRelease(8)|CrossWorkgroupMemory(512).
 
 
 ---
@@ -3656,6 +3746,12 @@ Generated on 2026-04-25T20:57:37.191932Z
 ### DEFSTRUCT `SEMANTIC-SIZEOF`
 
   > Represents a sizeof(type) expression.
+
+
+---
+### DEFSTRUCT `SEMANTIC-GPU-BUILTIN`
+
+  > Represents a GPU built-in function call (e.g. get-global-id, local-barrier).  >    BUILTIN-NAME is a keyword: :get-global-id, :local-barrier, etc.  >    DIMENSION is NIL for the 3D vector form, or 0/1/2 for the scalar-n form.  >    TYPE is the Crisp return type: 'ulong3, 'ulong, 'uint, or NIL (void).
 
 
 ---

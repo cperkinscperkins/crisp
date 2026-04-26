@@ -34,7 +34,7 @@ These dot product and matmul implementations work for ALL types.
 
 
 ;; same TILE_DIM as used by convert-layout 
-(def-const TILE_DIM +warp-size+ ulong)
+(def-const TILE_DIM 32 ulong) ; warp-size on most hardware
 
 ;; -- matmul --
 (with-template-type (T Al)

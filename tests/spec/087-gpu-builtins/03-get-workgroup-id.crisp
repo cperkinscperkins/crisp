@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; get-workgroup-id: 3D form returns ulong3 (workgroup index within the grid);
+;; scalar form returns ulong for compile-time dimension n.
+
+(def-type out-3d (cell ulong3 :address-space :global :access :read-write))
+(def-type out-1d (cell ulong  :address-space :global :access :read-write))
+
+(def-kernel test_get_workgroup_id_3d (&out result)
+  (declare #'(&out out-3d))
+  (set! (~ result) (get-workgroup-id)))
+
+(def-kernel test_get_workgroup_id_n (&out result)
+  (declare #'(&out out-1d))
+  (set! (~ result) (get-workgroup-id 0)))

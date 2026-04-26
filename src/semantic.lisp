@@ -260,6 +260,16 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   target-type ; The Crisp type to measure
   source-location)
 
+(defstruct semantic-gpu-builtin
+  "Represents a GPU built-in function call (e.g. get-global-id, local-barrier).
+   BUILTIN-NAME is a keyword: :get-global-id, :local-barrier, etc.
+   DIMENSION is NIL for the 3D vector form, or 0/1/2 for the scalar-n form.
+   TYPE is the Crisp return type: 'ulong3, 'ulong, 'uint, or NIL (void)."
+  builtin-name
+  dimension
+  type
+  source-location)
+
 (defstruct semantic-make-view
   "Represents a make-cell/vector/matrix/tensor view construction.
    Creates a new Storage Handle that reinterprets an existing one.
