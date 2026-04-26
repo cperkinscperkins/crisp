@@ -563,6 +563,8 @@ EMERGENCY REORG
 Preperatory
 ===========
 - [ ] get-global-id or whatever and friends. 
+- [ ] remove "+warp-size+" from design doc. Use (get-warp-size)
+      it MIGHT be compile-time constant replaced, if compiling for known target.
 - [ ] strategy
 
 Grid vs Thread Context

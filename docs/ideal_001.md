@@ -3223,7 +3223,7 @@ Possible Implemenation
 When working with matrices, we often want coalesced memory access, but that is limited
 to the `:row-major` / `:col-major` choice.  For this reason, a very common
 usage pattern when working with matrices is to use local memory tiles.
-These are typically `32x32` (ie `+warp-size+` squared ).
+These are typically `32x32` (ie `(get-warp-size)` squared ).
 
 The `load-tile` and `store-tile` macros can help with that. They presume the kernel
 has been enqueued with 2D arity and just use the local-id x and y for the target IN the tile.  
@@ -3281,11 +3281,11 @@ not necessarily like we want them to be.
 ;; (make-tile-scratch-vector T)
 ;; (make-tile dim T)
 
-(def-const TILE_DIM:ulong +warp-size+)
+(def-const TILE_DIM:ulong (get-warp-size))
 
 ;; -- convert-layout --
 (def-function convert-layout (source-M dest-M choice &optional (scratch (make-scratch-matrix (element-type~ source-M) :match-warp-tile)))
-  ;; scratch is 32x32 (+warp-size+ x +warp-size+)
+  ;; scratch is usuallly 32x32 (TILE_DIM x TILE_DIM)
   (declare #(matrix matrix matrix-layout &optional (vector (element-type~ source-M)) => nil)
             (global-size :strategy :strided))
   (c-t-assert (!= choice :other-layout) "dude")
@@ -4825,7 +4825,7 @@ So for a workgroup size of 64 and four total workgroups, threads 0 to 63 ALL get
 
 `:warp-idx` is just like `:workgroup-idx` except the threads are grouped by warp and it is 1D only.
 Note that if using `:warp-idx` that it is extremely important that the kernel is hoisted 
-with a `local_work_size` that is a multiple of `+warp-size+`.  Otherwise operations like warp level
+with a `local_work_size` that is a multiple of `(get-warp-size)`.  Otherwise operations like warp level
 reductions could end up deadlocking.
 
 For the "small" vectors, etc or direct sizes, the bindings are index values shared by all threads grouped
@@ -5487,13 +5487,13 @@ be used otherwise. <!-- NOTE: I don't think this has to be true at all. Maybe? -
 
 
 ### shuffle
-`(shuffle <someVar> target-lane-id &optional (width +warp-size+))`
+`(shuffle <someVar> target-lane-id &optional (width (get-warp-size)))`
 The `(shuffle ...)` expression evaluates to the current value of `someVar` as it is in another thread. 
 THe target lane-id is provided directly to `shuffle`.
 
 ### shuffle-up  / shuffle-down
-`(shuffle-up <someVar> delta &optional (width +warp-size+))`
-`(shuffle-down <someVar> delta &optional (width +warp-size+))`
+`(shuffle-up <someVar> delta &optional (width (get-warp-size)))`
+`(shuffle-down <someVar> delta &optional (width (get-warp-size)))`
 These expressions evaluate to the current value of `someVar` in a thread that is plus or minus `delta` lanes over.
 Note that `-up` / `-down` do not necessarily have an intuitive interpretation. The direction is where the data 
 is going to, rather than the operation performed with the delta. So `shuffle-up` SUBTRACTS `delta` from the current 
@@ -5502,7 +5502,7 @@ Meanwhile, `shuffle-down` ADDS `delta` to the current lane id and return the val
 lane (ie, the data is shuffling "down" to us.) Whatever. 
 
 ### shuffle-xor
-`(shuffle-xor <someVar> &optional lane-id-mask:ulong (width +warp-size+))`
+`(shuffle-xor <someVar> &optional lane-id-mask:ulong (width (get-warp-size)))`
 
 Those other shuffle operations do cool tricks. But `shuffle-xor` is where real sorcery occurs.
 
@@ -5515,7 +5515,7 @@ The magic occurs in the interaction between the descending-by-half mask gotten f
 This gives us a butterfly communication pattern, which allows all threads to contribute to a reduction in a logarithmic
 number of steps.
 ```
-(dec-times-by-half (s (/ +warp-size+ 2)) ;;start the descent with half the warp size. ie 16 then 8, 4, 2, 1
+(dec-times-by-half (s (/ (get-warp-size) 2)) ;;start the descent with half the warp size. ie 16 then 8, 4, 2, 1
         ... (shuffle-xor someVal s))
 ```
 
@@ -5572,7 +5572,7 @@ This version of vector summing is likely faster than the last one.
 
 ```
 ;; 32 warps maximum for most hardware
-(def-constant +warp-size+:ulong 32)
+(def-constant +warp-size+ 32ul)
 
 ;; the source vector can be any size. 
 (def-type source-vec (in-vec long :compact))    
@@ -5588,7 +5588,6 @@ This version of vector summing is likely faster than the last one.
     (loop-vector-stride A (i)
       (inc! sum (~ A i))))) ; <-- inc! implicity returns final sum
 
-;; NOTE: +warp-size+ is a constant Crisp provides.
 
 ;; -- sum_vector_warp_first_stage --
 (def-kernel sum_vector_warp_first_stage (A Res)
@@ -6147,7 +6146,7 @@ If not provided Crisp will generate the scratch memory for you.
 
 ### reduce-to-warp
 
-`(reduce-to-warp someFunction <someVar> identity &optional (active-threads +warp-size+) )`
+`(reduce-to-warp someFunction <someVar> identity &optional (active-threads (get-warp-size)) )`
 
 `reduce-to-warp` is a macro that applies `someFunction` to `<someVar>` expression in the current thread and another thread in
 the same warp. It does this iteratively until all the threads in the warp whose id is less than `active-threads`
@@ -6178,7 +6177,7 @@ Possible Implementation:
 
 ```
 ;; -- reduce-to-warp --
-(defmacro reduce-to-warp (someFunction someVar identity  &optional (active-threads +warp-size+))
+(defmacro reduce-to-warp (someFunction someVar identity  &optional (active-threads (get-warp-size)))
   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
   `(in-warp (lane-id)
@@ -6190,7 +6189,7 @@ Possible Implementation:
 
       ;; Perform the full, unconditional reduction on 'val'.
       ;; The loop bounds are always based on the full warp size.
-      (dec-times-by-half+ (s (/ +warp-size+ 2))
+      (dec-times-by-half+ (s (/ (get-warp-size) 2))
         (set! val (funcall ,someFunction (shuffle-xor val s) val)))
 
       ;; Write the final result (from lane 0) back into someVar for all threads.
@@ -6221,7 +6220,7 @@ next operations can be performed within the workgroup.
 #### local-scratch-vec
 The `:local-scratch-vec` key.  If not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32. 
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32. 
 
 #### message
 The `:message` will be applied to the creation of the `:local-scratch-vec` if Crisp is generating it on your
@@ -6252,7 +6251,7 @@ Possible Implementation
     (local-barrier)
 
     ; inter warp reduction
-    (let ((num-warps (ceil (get-local-work-size) +warp-size+))
+    (let ((num-warps (ceil (get-local-work-size) (get-warp-size)))
           (local-id (get-local-id)))
         ; Only a subset of threads needed for this phase.
         (when (< local-id num-warps)
@@ -6300,7 +6299,7 @@ This routine accepts two optional arguments.  `localScratchVec` and `globalScrat
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector`  that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 `reduce-to-1-second-stage` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
 If you want to provide it yourself, it should be a `vector` whose `element-type` is the same as `<someVar>` , 
@@ -6343,7 +6342,7 @@ Possible Implementation
       (let ((N (length~ ,globalScratchVec))
             (l-w-s (get-local-work-size)))
         (declare (uniform N l-w-s))
-        (cond*  ((< N +warp-size+)
+        (cond*  ((< N (get-warp-size))
                   (let ((lane-id (get-lane-id))
                         (var (if (< lane-id N) (~ ,globalScratchVec lane-id) ,identity)))
                     (reduce-to-warp ,someFunction var ,identity N)
@@ -6384,7 +6383,7 @@ This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 
@@ -6431,7 +6430,7 @@ This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 
@@ -6483,7 +6482,7 @@ This routine accepts two optional arguments.  `localScratchVec` and `globalScrat
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector`  that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 `reduce-to-1-cont` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
 If you want to provide it yourself, it should be a `vector` whose `element-type` is the same as `<someVar>` , 
@@ -6585,7 +6584,7 @@ This routine accepts two optional arguments.  `localScratchVec` and `globalScrat
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 `reduce-vec-second-stage` also accepts an optional `globalScratchVec`. Crisp will generate it for you if you do not provide it.  
 If you want to provide it yourself, it should be a `vector` whose `element-type` is the same as `<someVar>` , 
@@ -6636,7 +6635,7 @@ This is what an implementation of `reduce-vec-second-stage` might look like
 `(reduce-vec-warp someFunction vec identity) => result`
 
 `reduce-vec-warp` is NOT a general purpose vec reduction routine. It uses warp-level functions
-to reduce, but cannot reduce any vector whose length is greater than `+warp-size+` (32).
+to reduce, but cannot reduce any vector whose length is greater than `(get-warp-size)` (32).
 
 Note that unlike most reductions, this is NOT a grid-level function.
 
@@ -6673,7 +6672,7 @@ This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
-Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / +warp-size+` ). `+warp-size+` is usualy 32.
+Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32.
 
 
 - After the operation completes, the state of `localScratchVec` is indeterminant. 
@@ -8461,7 +8460,7 @@ the hardware accellerated types that have a widened accumulator, quantized integ
 |#
 
 ;; same TILE_DIM as used by convert-layout 
-(def-const TILE_DIM +warp-size+ ulong)
+(def-const TILE_DIM 32 ulong)
 
 ;; helpers (not fully defined yet)
 ;;   make-tile variants will call make-tile-scratch-vector themselves.
@@ -9698,7 +9697,8 @@ Now using soa-vector for better performance
 ;;
 ;; fft-pass-soa-tiled -- This requires a 2D enqueue
 ;;
-(def-const TILE_DIM +warp-size+) ; 32
+(def-const TILE_DIM 32) ; 32 is warp size on most hardware
+
 (with-template-type (T A CT) ; T=float type, A=alignment, CT=complex type
   (declare (type-is T #'is-floating-point?)
            (value-is A #'is-alignment?)
@@ -9877,35 +9877,43 @@ scratch vector whose length is equal to the local work size.
 
 
 
-Builtin GPU Functions & Constants
-=================================
+Builtin GPU Functions
+=====================
 
-- get-num-warps
-- get-warp-id     index of warp WITHIN its workgroup
-- get-lane-id     thread index within warp
-- get-work-dim    number of dimensions the kernel was launched with 
+These GPU built-in functions help inspect the execution environment. Note that all of 
+these are considered "grid level" operations and CANNOT appear in the body of a `def-function`.  They can only appear in `def-grid-function`, `def-kernel` or `def-kernel-exact` . 
 
-- get-local-id   x y z     thread index inside workgroup
-- get-local-work-size => (x y z)   size of workgroup
+Many of these functions are in pairs, like `get-local-id => ulong3` and `get-local-id n => ulong`.  For the variant that takes an `n` argument, `n` must be known at compile time. 
+If you need to use a runtime `n`, get the vector `ulong3` and index it `(~ (get-local-id) n)`
 
-- get-workgroup-id x y z   index of group 
-- get-num-groups => (x y z)     total number of workgroups
 
-- get-global-id  x y z     thread index within all threads. always starts at 0
-- get-global-id-abs x y z    absolute thread index. (equals get-global-id + get-global-offset)
-- get-global-work-size => (x y z) 
-- get-global-offset => (x y z)
-
-- get-local-linear-id
-- get-local-linear-size      
-- get-global-linear-id
-- get-global-linear-size
-- get-total-threads   (same as get-global-linear-size)
-- +warp-size+
-
-- local-barrier
-- mem-fence 
-- sync-warp 
+| Function | Return Type | Description |
+| :--- | :--- | :--- |
+| `get-work-dim` | `uint` | Number of dimensions the kernel was launched with (1, 2, or 3). **SPV only** — implemented as a hidden kernel parameter via the `WorkDim` built-in (SPIR-V value 40). No PTX equivalent; emits NYI error on PTX. |
+| `get-local-id` | `ulong3` | 3D thread index inside the workgroup. |
+| `get-local-id n` | `ulong` | Scalar thread index inside workgroup for compile-time dimension `n`. |
+| `get-local-work-size` | `ulong3` | Total size of the workgroup in 3 dimensions. |
+| `get-local-work-size n` | `ulong` | Scalar workgroup size for compile-time dimension `n`. |
+| `get-workgroup-id` | `ulong3` | 3D index of the workgroup within the grid. |
+| `get-workgroup-id n` | `ulong` | Scalar workgroup index for compile-time dimension `n`. |
+| `get-num-groups` | `ulong3` | Total number of workgroups in the grid across 3 dimensions. |
+| `get-num-groups n` | `ulong` | Scalar group count for compile-time dimension `n`. |
+| `get-total-groups` | `ulong` | Total number of workgroups as a scalar (product of the grid dimensions). Synthesized from `get-num-groups`. |
+| `get-global-id` | `ulong3` | 3D thread index within the entire grid (always starts at 0). |
+| `get-global-id n` | `ulong` | Scalar global thread index for compile-time dimension `n`. |
+| `get-global-id-abs` | `ulong3` | Absolute thread index: `get-global-id` + `get-global-offset`. |
+| `get-global-id-abs n` | `ulong` | Scalar absolute thread index for compile-time dimension `n`. |
+| `get-global-work-size` | `ulong3` | Total number of threads in the grid across 3 dimensions. |
+| `get-global-work-size n` | `ulong` | Scalar global work size for copmile-time dimension `n`. |
+| `get-total-threads` | `ulong` | Total number of threads as a scalar (product of the grid). Synthesized from `get-global-work-size`. |
+| `get-global-offset` | `ulong3` | The starting offset of the grid in 3 dimensions. |
+| `get-global-offset n` | `ulong` | Scalar global offset for compile-time dimension `n`. |
+| `get-local-linear-id` | `ulong` | Flattened 1D index of the thread within its workgroup. Synthesized: `z*lws.y*lws.x + y*lws.x + x`. |
+| `get-local-linear-size` | `ulong` | Total number of threads in a single workgroup. Alias: `get-local-work-size 0 * 1 * 2`. |
+| `get-global-linear-id` | `ulong` | Flattened 1D index of the thread within the entire grid. |
+| `get-global-linear-size` | `ulong` | Total threads in the grid. Alias of `get-total-threads`. |
+| `local-barrier` | `void` | Synchronizes all threads within a workgroup. |
+| `mem-fence` | `void` | Ensures memory ordering across threads (global + local). |
 
 - get-timestamp   returns the high resolution clock counter. ( %clock64 register).
 
@@ -11673,7 +11681,7 @@ These dot product and matmul implementations work for ALL types.
 
 
 ;; same TILE_DIM as used by convert-layout 
-(def-const TILE_DIM +warp-size+ ulong)
+(def-const TILE_DIM 32 ulong) ; warp-size on most hardware
 
 ;; -- matmul --
 (with-template-type (T Al)
