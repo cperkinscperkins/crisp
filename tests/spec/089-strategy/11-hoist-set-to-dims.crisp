@@ -1,0 +1,15 @@
+;; SKIP-WITH[--differentiate]: "strategy hoist not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT: zeKernelSetGroupSize(kernel, 1, 1, 1)
+;; STRATEGY-EXPECT: (uint32_t)width_arg
+;; STRATEGY-EXPECT: (uint32_t)height_arg
+;;
+;; Hoist: (global-size :set-to (width height)) => groupCount uses runtime arg values.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel hoist_set_to_dims (width height &out result)
+    (declare (type width height ulong)
+             (type result result-t)
+             (global-size :set-to (width height)))
+  (set! (~ result) 0))

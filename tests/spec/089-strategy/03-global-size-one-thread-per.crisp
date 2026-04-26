@@ -1,0 +1,11 @@
+;; TEST-WITH[--metadata]: crisp.compiler::validate-089-03-global-size-one-thread-per
+;;
+;; Metadata: (global-size :derive-from (width height) :strategy :one-thread-per).
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel one_thread_per (width height &out result)
+    (declare (type width height ulong)
+             (type result result-t)
+             (global-size :derive-from (width height) :strategy :one-thread-per))
+  (set! (~ result) 0))

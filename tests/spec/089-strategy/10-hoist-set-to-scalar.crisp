@@ -1,0 +1,13 @@
+;; SKIP-WITH[--differentiate]: "strategy hoist not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT: zeKernelSetGroupSize(kernel, 1, 1, 1)
+;; STRATEGY-EXPECT: groupCount = { 256, 1, 1 }
+;;
+;; Hoist: (global-size :set-to 256) scalar => groupCount = {256, 1, 1}.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel hoist_set_to_scalar (&out result)
+    (declare (type result result-t)
+             (global-size :set-to 256))
+  (set! (~ result) 0))

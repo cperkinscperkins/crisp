@@ -1,0 +1,11 @@
+;; TEST-WITH[--metadata]: crisp.compiler::validate-089-02-global-size-set-to-dims
+;;
+;; Metadata: (global-size :set-to (width height)) names kernel params.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel set_to_dims (width height &out result)
+    (declare (type width height ulong)
+             (type result result-t)
+             (global-size :set-to (width height)))
+  (set! (~ result) 0))

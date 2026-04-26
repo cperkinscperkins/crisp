@@ -1,0 +1,11 @@
+;; TEST-WITH[--metadata]: crisp.compiler::validate-089-05-local-size-exact
+;;
+;; Metadata: (local-size :derive-from (width height) :strategy :exact).
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel exact_local (width height &out result)
+    (declare (type width height ulong)
+             (type result result-t)
+             (local-size :derive-from (width height) :strategy :exact))
+  (set! (~ result) 0))

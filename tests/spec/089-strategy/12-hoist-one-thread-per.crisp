@@ -1,0 +1,16 @@
+;; SKIP-WITH[--differentiate]: "strategy hoist not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT: zeKernelSetGroupSize(kernel, 1, 1, 1)
+;; STRATEGY-EXPECT: (uint32_t)width_arg
+;; STRATEGY-EXPECT: (uint32_t)height_arg
+;;
+;; Hoist: :one-thread-per maps each element to one thread;
+;;        groupCount = {width_arg, height_arg, 1}.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel hoist_one_thread_per (width height &out result)
+    (declare (type width height ulong)
+             (type result result-t)
+             (global-size :derive-from (width height) :strategy :one-thread-per))
+  (set! (~ result) 0))

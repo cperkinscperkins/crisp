@@ -1,0 +1,10 @@
+;; TEST-WITH[--metadata]: crisp.compiler::validate-089-01-global-size-set-to-scalar
+;;
+;; Metadata: (global-size :set-to 256) is stored verbatim in metacrisp.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel set_to_scalar (&out result)
+    (declare (type result result-t)
+             (global-size :set-to 256))
+  (set! (~ result) 0))
