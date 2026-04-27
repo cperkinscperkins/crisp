@@ -36,6 +36,25 @@
 (def-kernel rec_kernel (vp)
    (declare #'(v-point))
    ...)
+
+
+ STRATEGIES.
+ Pretend our kernel is like the following
+ (def-kernel lighten_image (image-data width height)
+   (declare (type image-data (vector uchar :address-space :global :access :read-write))
+            (type width height ulong)
+            (global-size :derive-from ( width height) :strategy :one-thread-per))
+    ...)
+
+  
+  Then the metadata for the kernel will have a :global-size entry
+  and it's value will be a direct copy of that declaration 
+  e.g.
+  (:name "lighten_image"
+    :source #P"path/to/lighten.crisp"
+    :global-size (global-size :derive-from ( width height) :strategy :one-thread-per)
+    ... etc.)
+
 |#
 
 ;; the .metacrisp file might have multiple kernels.
@@ -44,6 +63,9 @@
     
     (:name "my_kernel" 
       :source #P"path/to/some.crisp"
+      :global-size (global-size ...)   ;<-- if the kernel declared such, it is copied here.
+      :local-size  (local-size ...)
+      :num-groups (num-groups :derive-from (n) :strategy :strided)
       (:output-targets ((:spv #P"path/to/some/.spv") (:ptx #P"path/to/some/.ptx")))
         (:physical-signature 
         ;; scratch cell "sc"
