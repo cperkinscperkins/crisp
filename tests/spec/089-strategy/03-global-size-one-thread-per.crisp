@@ -1,3 +1,4 @@
+;; SKIP-WITH[--differentiate]: "kernel has no differentiable float parameters"
 ;; TEST-WITH[--metadata]: crisp.compiler::validate-089-03-global-size-one-thread-per
 ;;
 ;; Metadata: (global-size :derive-from (width height) :strategy :one-thread-per).
