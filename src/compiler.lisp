@@ -213,9 +213,12 @@ Returns (values addr-space-int access-qual-string type-name-string)."
 
           (values metadata-refs metadata-defs next-id))))))
 
+
+
+
 (defun inject-spir-kernel-metadata (ir-text)
   "Inject OpenCL kernel metadata for all SPIR kernels found in IR text.
- Returns modified IR text with metadata."
+Returns modified IR text with metadata."
   (let ((kernels (find-spir-kernels ir-text)))
     (if (null kernels)
         ir-text
@@ -233,22 +236,35 @@ Returns (values addr-space-int access-qual-string type-name-string)."
                 (multiple-value-bind (metadata-refs metadata-defs next-id)
                     (generate-kernel-metadata params metadata-id-base)
 
-                  (let* ((kernel-sig-start (search func-name result))
-                         (new-brace-pos (position #\{ result :start kernel-sig-start))
-                         (close-paren-pos (position #\) result :end new-brace-pos :from-end t)))
+                  (let* (;; Search for @funcname( to find the definition, not occurrences
+                         ;; of func-name inside struct type names like S_file_funcname_TYPE
+                         (at-name-str (format nil "@~a(" func-name))
+                         (kernel-sig-start (search at-name-str result))
+                         (new-brace-pos (when kernel-sig-start
+                                          (position #\{ result :start kernel-sig-start)))
+                         ;; Search for ) only AFTER kernel-sig-start to stay within the signature
+                         (close-paren-pos (when (and kernel-sig-start new-brace-pos)
+                                            (position #\) result
+                                                      :start kernel-sig-start
+                                                      :end new-brace-pos
+                                                      :from-end t))))
 
-                    (setf result (concatenate 'string
-                                   (subseq result 0 (1+ close-paren-pos))
-                                   metadata-refs
-                                   " "
-                                   (string #\{)
-                                   (subseq result (1+ new-brace-pos))))
+                    (log:info "  at-name-str=~s kernel-sig-start=~a new-brace-pos=~a close-paren-pos=~a"
+                              at-name-str kernel-sig-start new-brace-pos close-paren-pos)
 
-                    (setf all-metadata-defs (concatenate 'string all-metadata-defs metadata-defs))
-                    (setf metadata-id-base next-id))))))
+                    (if (null close-paren-pos)
+                        (log:warn "inject-spir-kernel-metadata: could not find ) for ~a, skipping" func-name)
+                        (progn
+                          (setf result (concatenate 'string
+                                         (subseq result 0 (1+ close-paren-pos))
+                                         metadata-refs
+                                         " "
+                                         (string #\{)
+                                         (subseq result (1+ new-brace-pos))))
+                          (setf all-metadata-defs (concatenate 'string all-metadata-defs metadata-defs))
+                          (setf metadata-id-base next-id))))))))
 
           (concatenate 'string result (format nil "~%~%") all-metadata-defs)))))
-
 
 
 (defun compile-to-spirv (module output-path &key debug-p)
@@ -478,12 +494,17 @@ Returns (values addr-space-int access-qual-string type-name-string)."
 
 
 
+(defvar *kernel-dispatch-declarations* (make-hash-table :test #'eq)
+  "Maps kernel name symbol → plist of dispatch declarations extracted from def-kernel.
+   Keys: :global-size, :local-size, :num-groups. Values: the raw s-expression forms
+   e.g. :global-size = (global-size :derive-from (width height) :strategy :one-thread-per).")
   
+
 
 
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil))
   "Initializes the compiler state.
-   Extended to also clear *implicit-scratch-size-expr-map* for scratch tensor support."
+   Extended to also clear *kernel-dispatch-declarations* for strategy support."
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
@@ -539,8 +560,11 @@ Returns (values addr-space-int access-qual-string type-name-string)."
   (when (boundp '*struct-mutating-functions*)
         (clrhash *struct-mutating-functions*))
 
-  ;; NEW: clear scratch tensor size-expr side table
+  ;; clear scratch tensor size-expr side table
   (clrhash *implicit-scratch-size-expr-map*)
+
+  ;; clear dispatch declarations side table
+  (clrhash *kernel-dispatch-declarations*)
 
   (register-builtins)
 
