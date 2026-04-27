@@ -123,10 +123,10 @@
                                (t "1"))))
           (format stream "    ~a = ~a;~%" field-path init-val)))))))
 
+
 (defun generate-l0-launcher (metacrisp-path)
   "Generate Level Zero C++ launcher code from metacrisp file.
-   Binds *hoist-current-structs* so generate-kernel-arguments-with-usm
-   can identify and handle def-struct parameters."
+   Extended to extract and pass dispatch declarations to generate-cpp-main."
   (let* ((data     (parse-metacrisp-file metacrisp-path))
          (kernels  (metacrisp-kernels data))
          (aliases  (metacrisp-aliases data))
@@ -143,6 +143,14 @@
         (let* ((kernel-name    (getf kernel :name))
                (declared-sig  (getf kernel :declared-signature))
                (implicit-sig  (getf kernel :implicit-params))
+               ;; Extract dispatch info from parsed metacrisp plist
+               (dispatch-info (let ((gs (getf kernel :global-size))
+                                    (ls (getf kernel :local-size))
+                                    (ng (getf kernel :num-groups)))
+                                 (when (or gs ls ng)
+                                   (append (when gs (list :global-size gs))
+                                           (when ls (list :local-size  ls))
+                                           (when ng (list :num-groups  ng))))))
                (comparable-range-start
                  (lambda (param)
                    (let ((r (getf param :range)))
@@ -176,7 +184,7 @@
                      (generate-cpp-dvec-typedefs stream dvec-types)
                      (generate-cpp-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
                      (generate-cpp-helpers stream)
-                     (generate-cpp-main stream kernel-name spv-path full-sig aliases (metacrisp-records data))))
+                     (generate-cpp-main stream kernel-name spv-path full-sig aliases (metacrisp-records data) dispatch-info)))
                  (format t "  Done: ~a~%" (namestring output-path))))))))))
 
 (defun generate-cpp-preamble (stream metacrisp-path kernel-name output-name)
@@ -298,8 +306,13 @@
   (format stream "    return buffer;~%")
   (format stream "}~%~%"))
 
-(defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases records)
-  "Generate C++ main function"
+
+
+
+
+;;; src/hoist-l0/main.lisp
+(defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases records &optional dispatch-info)
+  "Generate C++ main function. Extended to accept dispatch-info for strategy-aware launch."
   (format stream "int main() {~%")
   (format stream "    ze_result_t result;~%")
   (format stream "    std::cout << \"Level Zero Launcher for kernel: ~a\" << std::endl;~%~%" kernel-name)
@@ -312,23 +325,17 @@
         (generate-module-loading stream spv-path))
 
   ;; Kernel creation and launch
-  (let ((allocations (generate-kernel-launch stream kernel-name declared-sig aliases records)))
+  (let ((allocations (generate-kernel-launch stream kernel-name declared-sig aliases records dispatch-info)))
 
     ;; Print output buffers
     (format stream "    // Verify Output~%")
     (dolist (alloc allocations)
       (let ((name (getf alloc :name))
             (ptr (getf alloc :ptr))
-            (size-v (getf alloc :size-var)) ;; Need to capture size variable name
+            (size-v (getf alloc :size-var))
             (dir (getf alloc :direction))
             (access (getf alloc :access)))
-
-        ;; Determine if we should print this buffer
-        ;; Criterion: Explicit :out OR (no explicit :out exist AND is writeable)
-        ;; For now, simplistic approach: Print anything that is NOT pure input.
-        ;; :in pointers are initialized but USM is shared, so technically readable?
-        ;; But usually we only care about side effects.
-        ;; Let's try printing ALL buffers correctly typed.
+        (declare (ignore dir access))
 
         (format stream "    std::cout << \"BUFFER ~a: \";~%" name)
         (format stream "    for (size_t i = 0; i < ~a; i++) {~%" size-v)
@@ -413,8 +420,136 @@
   (format stream "    }~%")
   (format stream "    std::cout << \"Module loaded successfully\" << std::endl;~%~%"))
 
-(defun generate-kernel-launch (stream kernel-name declared-sig aliases records)
-  "Generate kernel creation and launch code. Returns list of USM allocations."
+
+
+
+(defun %dispatch-sym-to-cpp-var (sym)
+  "Convert a dispatch param symbol (e.g. 'WIDTH or 'width) to C++ variable name 'width_arg'."
+  (format nil "~a_arg" (substitute #\_ #\- (string-downcase (symbol-name sym)))))
+
+
+;;; src/hoist-l0/main.lisp (v2 — fix (listp nil) = T bug in dims cond)
+;; Bug: (cond ((listp set-to) set-to) ...) when set-to=NIL: (listp nil)=T so dims=nil,
+;; all group-count dims become "1". Fix: use (consp set-to) which returns NIL for nil.
+(defun %l0-emit-dispatch (stream global-decl local-decl num-groups-decl)
+  "Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.
+   Handles: :set-to scalar/list, :derive-from with :one-thread-per/:strided/:tiled/:interleaved."
+  (let* ((ls-rest (when local-decl (cdr local-decl)))
+         (ls-set-to (when ls-rest (getf ls-rest :set-to)))
+         (local-x (cond
+                    ((integerp ls-set-to) ls-set-to)
+                    ((and (listp ls-set-to) (first ls-set-to)) (first ls-set-to))
+                    (t 1)))
+         (local-y (cond
+                    ((and (listp ls-set-to) (second ls-set-to)) (second ls-set-to))
+                    (t 1)))
+
+         (dispatch-decl (or global-decl num-groups-decl))
+         (disp-rest (when dispatch-decl (cdr dispatch-decl)))
+         (strategy (when disp-rest (getf disp-rest :strategy)))
+         (strat-name (when strategy (symbol-name strategy)))
+
+         (is-strided      (and strat-name (string-equal strat-name "STRIDED")))
+         (is-tiled        (and strat-name (string-equal strat-name "TILED")))
+         (is-interleaved  (and strat-name (string-equal strat-name "INTERLEAVED")))
+
+         (set-to      (when disp-rest (getf disp-rest :set-to)))
+         (derive-from (when disp-rest (getf disp-rest :derive-from)))
+         (tile-shape  (when disp-rest (getf disp-rest :tile-shape))))
+
+    (when is-strided
+      (format stream "    // Strategy: strided — query hardware compute properties~%")
+      (format stream "    ze_device_compute_properties_t _computeProps = { ZE_STRUCTURE_TYPE_DEVICE_COMPUTE_PROPERTIES };~%")
+      (format stream "    zeDeviceGetComputeProperties(device, &_computeProps);~%")
+      (format stream "    uint32_t _hw_threads = _computeProps.numSubslices * _computeProps.numEUsPerSubslice * _computeProps.numThreadsPerEU;~%~%"))
+
+    (when is-interleaved
+      (format stream "    // Strategy: :interleaved not yet implemented — using default dispatch~%"))
+
+    (let ((wg-x (if is-tiled
+                    (format nil "~a" (or (first tile-shape) 1))
+                    (format nil "~a" local-x)))
+          (wg-y (if is-tiled
+                    (format nil "~a" (or (second tile-shape) 1))
+                    (format nil "~a" local-y))))
+
+      (format stream "    // Set group (workgroup) size~%")
+      (format stream "    result = zeKernelSetGroupSize(kernel, ~a, ~a, 1);~%" wg-x wg-y)
+      (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+      (format stream "        std::cerr << \"ERROR: zeKernelSetGroupSize failed: \" << result << std::endl;~%")
+      (format stream "        return 1;~%")
+      (format stream "    }~%~%")
+
+      (format stream "    // Compute dispatch group count~%")
+
+      (flet ((dim-to-gc (dim local-val)
+               (cond
+                 ((null dim) "1")
+                 ((integerp dim)
+                  (if (> local-val 1)
+                      (format nil "(~a + ~a) / ~a" dim (1- local-val) local-val)
+                      (format nil "~a" dim)))
+                 ((symbolp dim)
+                  (let ((cpp-var (%dispatch-sym-to-cpp-var dim)))
+                    (if (> local-val 1)
+                        (format nil "((uint32_t)~a + ~a) / ~a" cpp-var (1- local-val) local-val)
+                        (format nil "(uint32_t)~a" cpp-var))))
+                 (t "1"))))
+
+        (cond
+          (is-strided
+           (format stream "    ze_group_count_t groupCount = { _hw_threads, 1, 1 };~%"))
+
+          (is-interleaved
+           (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%"))
+
+          ((null dispatch-decl)
+           (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%"))
+
+          (is-tiled
+           (let* ((d0 (first derive-from))
+                  (d1 (second derive-from))
+                  (d2 (third derive-from))
+                  (tx (or (first tile-shape) 1))
+                  (ty (or (second tile-shape) 1)))
+             (when d0
+               (format stream "    uint32_t _gx = ((uint32_t)~a + ~a) / ~a;~%"
+                 (%dispatch-sym-to-cpp-var d0) (1- tx) tx))
+             (when d1
+               (format stream "    uint32_t _gy = ((uint32_t)~a + ~a) / ~a;~%"
+                 (%dispatch-sym-to-cpp-var d1) (1- ty) ty))
+             (when d2
+               (format stream "    uint32_t _gz = ((uint32_t)~a + 0) / 1;~%"
+                 (%dispatch-sym-to-cpp-var d2)))
+             (format stream "    ze_group_count_t groupCount = { ~a, ~a, ~a };~%"
+               (if d0 "_gx" "1")
+               (if d1 "_gy" "1")
+               (if d2 "_gz" "1"))))
+
+          ((integerp set-to)
+           (let ((g0 (dim-to-gc set-to local-x)))
+             (format stream "    ze_group_count_t groupCount = { ~a, 1, 1 };~%" g0)))
+
+          ;; :set-to list OR :derive-from
+          ;; FIXED: use (consp set-to) not (listp set-to) — (listp nil)=T would
+          ;; wrongly pick set-to=nil over derive-from when :set-to is absent.
+          (t
+           (let* ((dims (cond
+                          ((consp set-to) set-to)
+                          (derive-from derive-from)
+                          (t nil)))
+                  (d0 (first dims))
+                  (d1 (second dims))
+                  (d2 (third dims))
+                  (g0 (dim-to-gc d0 local-x))
+                  (g1 (dim-to-gc d1 (if (> local-y 1) local-y 1)))
+                  (g2 (dim-to-gc d2 1)))
+             (format stream "    ze_group_count_t groupCount = { ~a, ~a, ~a };~%" g0 g1 g2))))))))
+
+
+(defun generate-kernel-launch (stream kernel-name declared-sig aliases records &optional dispatch-info)
+  "Generate kernel creation and launch code. Returns list of USM allocations.
+   Extended to accept dispatch-info plist with :global-size, :local-size, :num-groups."
   (format stream "    // Create kernel~%")
   (format stream "    ze_kernel_desc_t kernelDesc = { ZE_STRUCTURE_TYPE_KERNEL_DESC };~%")
   (format stream "    kernelDesc.pKernelName = \"~a\";~%" kernel-name)
@@ -449,15 +584,13 @@
     (format stream "        return 1;~%")
     (format stream "    }~%~%")
 
-    ;; Launch kernel
+    ;; Launch kernel — strategy-aware dispatch
     (format stream "    // Launch kernel~%")
-    (format stream "    // Set group size~%")
-    (format stream "    result = zeKernelSetGroupSize(kernel, 1, 1, 1);~%")
-    (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
-    (format stream "        std::cerr << \"ERROR: zeKernelSetGroupSize failed: \" << result << std::endl;~%")
-    (format stream "        return 1;~%")
-    (format stream "    }~%~%")
-    (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%")
+    (let ((global-decl (when dispatch-info (getf dispatch-info :global-size)))
+          (local-decl  (when dispatch-info (getf dispatch-info :local-size)))
+          (num-groups-decl (when dispatch-info (getf dispatch-info :num-groups))))
+      (%l0-emit-dispatch stream global-decl local-decl num-groups-decl))
+
     (format stream "    result = zeCommandListAppendLaunchKernel(cmdList, kernel, &groupCount, nullptr, 0, nullptr);~%")
     (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
     (format stream "        std::cerr << \"ERROR: zeCommandListAppendLaunchKernel failed: \" << result << std::endl;~%")

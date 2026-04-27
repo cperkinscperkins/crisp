@@ -1,0 +1,14 @@
+;; SKIP-WITH[--differentiate]: "strategy hoist not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT: zeKernelSetGroupSize(kernel, 64, 1, 1)
+;; STRATEGY-EXPECT: (1024 + 63) / 64
+;;
+;; Hoist: local-size=64, global-size=1024 => groups = ceil(1024/64) = 16.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel hoist_local_global_exact (&out result)
+    (declare (type result result-t)
+             (global-size :set-to 1024)
+             (local-size :set-to 64))
+  (set! (~ result) 0))

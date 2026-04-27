@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-26T18:20:45.531165Z
+Generated on 2026-04-27T06:10:33.319379Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -402,7 +402,7 @@ Generated on 2026-04-26T18:20:45.531165Z
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params*, *boundary-array-params*, and  >    *in-dispatch-context* to enforce kernel-boundary rules.
+  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params*, *boundary-array-params*, and  >    *in-dispatch-context* to enforce kernel-boundary rules.  >    Extended to capture global-size/local-size/num-groups dispatch declarations.
 
 
 ---
@@ -1696,7 +1696,7 @@ Generated on 2026-04-26T18:20:45.531165Z
 ### DEFUN `INJECT-SPIR-KERNEL-METADATA`
 - **Args**: `(IR-TEXT)`
 
-  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  >  Returns modified IR text with metadata.
+  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  > Returns modified IR text with metadata.
 
 
 ---
@@ -1739,10 +1739,16 @@ Generated on 2026-04-26T18:20:45.531165Z
 
 
 ---
+### DEFVAR `*KERNEL-DISPATCH-DECLARATIONS*`
+
+  > Maps kernel name symbol → plist of dispatch declarations extracted from def-kernel.  >    Keys: :global-size, :local-size, :num-groups. Values: the raw s-expression forms  >    e.g. :global-size = (global-size :derive-from (width height) :strategy :one-thread-per).
+
+
+---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
 
-  > Initializes the compiler state.  >    Extended to also clear *implicit-scratch-size-expr-map* for scratch tensor support.
+  > Initializes the compiler state.  >    Extended to also clear *kernel-dispatch-declarations* for strategy support.
 
 
 ---
@@ -1979,7 +1985,7 @@ Generated on 2026-04-26T18:20:45.531165Z
 ### DEFUN `GENERATE-L0-LAUNCHER`
 - **Args**: `(METACRISP-PATH)`
 
-  > Generate Level Zero C++ launcher code from metacrisp file.  >    Binds *hoist-current-structs* so generate-kernel-arguments-with-usm  >    can identify and handle def-struct parameters.
+  > Generate Level Zero C++ launcher code from metacrisp file.  >    Extended to extract and pass dispatch declarations to generate-cpp-main.
 
 
 ---
@@ -2019,9 +2025,10 @@ Generated on 2026-04-26T18:20:45.531165Z
 
 ---
 ### DEFUN `GENERATE-CPP-MAIN`
-- **Args**: `(STREAM KERNEL-NAME SPV-PATH DECLARED-SIG ALIASES RECORDS)`
+- **Args**: `(STREAM KERNEL-NAME SPV-PATH DECLARED-SIG ALIASES RECORDS
+              &OPTIONAL DISPATCH-INFO)`
 
-  > Generate C++ main function
+  > Generate C++ main function. Extended to accept dispatch-info for strategy-aware launch.
 
 
 ---
@@ -2039,10 +2046,25 @@ Generated on 2026-04-26T18:20:45.531165Z
 
 
 ---
-### DEFUN `GENERATE-KERNEL-LAUNCH`
-- **Args**: `(STREAM KERNEL-NAME DECLARED-SIG ALIASES RECORDS)`
+### DEFUN `%DISPATCH-SYM-TO-CPP-VAR`
+- **Args**: `(SYM)`
 
-  > Generate kernel creation and launch code. Returns list of USM allocations.
+  > Convert a dispatch param symbol (e.g. 'WIDTH or 'width) to C++ variable name 'width_arg'.
+
+
+---
+### DEFUN `%L0-EMIT-DISPATCH`
+- **Args**: `(STREAM GLOBAL-DECL LOCAL-DECL NUM-GROUPS-DECL)`
+
+  > Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.  >    Handles: :set-to scalar/list, :derive-from with :one-thread-per/:strided/:tiled/:interleaved.
+
+
+---
+### DEFUN `GENERATE-KERNEL-LAUNCH`
+- **Args**: `(STREAM KERNEL-NAME DECLARED-SIG ALIASES RECORDS &OPTIONAL
+              DISPATCH-INFO)`
+
+  > Generate kernel creation and launch code. Returns list of USM allocations.  >    Extended to accept dispatch-info plist with :global-size, :local-size, :num-groups.
 
 
 ---
@@ -3413,6 +3435,90 @@ Generated on 2026-04-26T18:20:45.531165Z
 
 
 ---
+### DEFUN `%089-FIND-KERNEL`
+- **Args**: `(METACRISP-PATH)`
+
+  > Parse metacrisp file and return the first kernel plist.
+
+
+---
+### DEFUN `%089-DECL-STRATEGY=`
+- **Args**: `(DECL-VALUE EXPECTED-STRATEGY)`
+
+  > True if the :strategy keyword in DECL-VALUE equals EXPECTED-STRATEGY (string-equal).
+
+
+---
+### DEFUN `%089-CHECK-DISPATCH-KEY`
+- **Args**: `(K-DEF KEY EXPECTED-HEAD)`
+
+  > Return the value at KEY in K-DEF, verifying the head symbol name matches EXPECTED-HEAD.
+
+
+---
+### DEFUN `VALIDATE-089-01-GLOBAL-SIZE-SET-TO-SCALAR`
+- **Args**: `(PATH)`
+
+  > Validates :global-size (global-size :set-to 256) in metacrisp.
+
+
+---
+### DEFUN `VALIDATE-089-02-GLOBAL-SIZE-SET-TO-DIMS`
+- **Args**: `(PATH)`
+
+  > Validates :global-size (global-size :set-to (width height)) in metacrisp.
+
+
+---
+### DEFUN `VALIDATE-089-03-GLOBAL-SIZE-ONE-THREAD-PER`
+- **Args**: `(PATH)`
+
+  > Validates :global-size with :strategy :one-thread-per in metacrisp.
+
+
+---
+### DEFUN `VALIDATE-089-04-LOCAL-SIZE-SET-TO`
+- **Args**: `(PATH)`
+
+  > Validates :local-size (local-size :set-to 64) in metacrisp.
+
+
+---
+### DEFUN `VALIDATE-089-05-LOCAL-SIZE-EXACT`
+- **Args**: `(PATH)`
+
+  > Validates :local-size with :strategy :exact in metacrisp.
+
+
+---
+### DEFUN `VALIDATE-089-06-NUM-GROUPS-STRIDED`
+- **Args**: `(PATH)`
+
+  > Validates :num-groups (num-groups :derive-from (n) :strategy :strided) in metacrisp.
+
+
+---
+### DEFUN `VALIDATE-089-07-GLOBAL-AND-LOCAL`
+- **Args**: `(PATH)`
+
+  > Validates both :global-size and :local-size present in metacrisp.
+
+
+---
+### DEFUN `VALIDATE-089-08-GLOBAL-SIZE-STRIDED`
+- **Args**: `(PATH)`
+
+  > Validates :global-size with :strategy :strided in metacrisp.
+
+
+---
+### DEFUN `VALIDATE-089-09-GLOBAL-SIZE-TILED`
+- **Args**: `(PATH)`
+
+  > Validates :global-size with :strategy :tiled and :tile-shape (16 16) in metacrisp.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
 
 ### DEFVAR `*EMIT-METADATA*`
@@ -3527,6 +3633,9 @@ Generated on 2026-04-26T18:20:45.531165Z
 ---
 ### DEFUN `SERIALIZE-KERNELS`
 - **Args**: `(OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)`
+
+  > Emits the (:kernels ...) section of the metacrisp file.  >    Extended to include :global-size, :local-size, :num-groups dispatch declarations.
+
 
 ---
 ### DEFUN `%BWD-RESOLVE-TYPE`

@@ -2309,3 +2309,147 @@ Checks:
      (or (not (search "idx_GRAD" ir))
          (progn (log:error "validate-tensor-ad-atomic: idx_GRAD should not be emitted (integer index is non-differentiable)") nil))
      (progn (log:info "validate-tensor-ad-atomic: PASS") t))))
+
+
+;;; =========================================================
+;;; 089-strategy: dispatch declaration metadata validators
+;;; =========================================================
+
+(defun %089-find-kernel (metacrisp-path)
+  "Parse metacrisp file and return the first kernel plist."
+  (unless (probe-file metacrisp-path)
+    (log:error "Metacrisp file not found: ~a" metacrisp-path)
+    (return-from %089-find-kernel nil))
+  (let* ((forms (uiop:read-file-forms metacrisp-path))
+         (kernels-form (assoc :kernels forms))
+         (kernels (when kernels-form (rest kernels-form))))
+    (first kernels)))
+
+(defun %089-decl-strategy= (decl-value expected-strategy)
+  "True if the :strategy keyword in DECL-VALUE equals EXPECTED-STRATEGY (string-equal)."
+  (let ((strat (getf (cdr decl-value) :strategy)))
+    (and strat (string-equal (symbol-name strat) expected-strategy))))
+
+(defun %089-check-dispatch-key (k-def key expected-head)
+  "Return the value at KEY in K-DEF, verifying the head symbol name matches EXPECTED-HEAD."
+  (let ((val (getf k-def key)))
+    (unless (and val (consp val) (string-equal (symbol-name (car val)) expected-head))
+      (log:error "Expected ~a at ~a, got ~a" expected-head key val)
+      (return-from %089-check-dispatch-key nil))
+    val))
+
+(defun validate-089-01-global-size-set-to-scalar (path)
+  "Validates :global-size (global-size :set-to 256) in metacrisp."
+  (let ((k (or (%089-find-kernel path) (return-from validate-089-01-global-size-set-to-scalar nil))))
+    (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
+      (unless gs (return-from validate-089-01-global-size-set-to-scalar nil))
+      (let ((set-to (getf (cdr gs) :set-to)))
+        (unless (and (integerp set-to) (= set-to 256))
+          (log:error "Expected :set-to 256, got ~a" gs)
+          (return-from validate-089-01-global-size-set-to-scalar nil)))
+      (log:info "validate-089-01: PASS")
+      t)))
+
+(defun validate-089-02-global-size-set-to-dims (path)
+  "Validates :global-size (global-size :set-to (width height)) in metacrisp."
+  (let ((k (or (%089-find-kernel path) (return-from validate-089-02-global-size-set-to-dims nil))))
+    (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
+      (unless gs (return-from validate-089-02-global-size-set-to-dims nil))
+      (let ((set-to (getf (cdr gs) :set-to)))
+        (unless (and (listp set-to) (= (length set-to) 2))
+          (log:error "Expected :set-to (width height) list of 2, got ~a" set-to)
+          (return-from validate-089-02-global-size-set-to-dims nil))
+        (unless (and (string-equal (symbol-name (first set-to)) "WIDTH")
+                     (string-equal (symbol-name (second set-to)) "HEIGHT"))
+          (log:error "Expected width height dims, got ~a" set-to)
+          (return-from validate-089-02-global-size-set-to-dims nil)))
+      (log:info "validate-089-02: PASS")
+      t)))
+
+(defun validate-089-03-global-size-one-thread-per (path)
+  "Validates :global-size with :strategy :one-thread-per in metacrisp."
+  (let ((k (or (%089-find-kernel path) (return-from validate-089-03-global-size-one-thread-per nil))))
+    (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
+      (unless gs (return-from validate-089-03-global-size-one-thread-per nil))
+      (let ((derive-from (getf (cdr gs) :derive-from)))
+        (unless (and (listp derive-from) (= (length derive-from) 2))
+          (log:error "Expected :derive-from list of 2, got ~a" derive-from)
+          (return-from validate-089-03-global-size-one-thread-per nil)))
+      (unless (%089-decl-strategy= gs "ONE-THREAD-PER")
+        (log:error "Expected :strategy :one-thread-per in ~a" gs)
+        (return-from validate-089-03-global-size-one-thread-per nil))
+      (log:info "validate-089-03: PASS")
+      t)))
+
+(defun validate-089-04-local-size-set-to (path)
+  "Validates :local-size (local-size :set-to 64) in metacrisp."
+  (let ((k (or (%089-find-kernel path) (return-from validate-089-04-local-size-set-to nil))))
+    (let ((ls (%089-check-dispatch-key k :local-size "LOCAL-SIZE")))
+      (unless ls (return-from validate-089-04-local-size-set-to nil))
+      (let ((set-to (getf (cdr ls) :set-to)))
+        (unless (and (integerp set-to) (= set-to 64))
+          (log:error "Expected :set-to 64, got ~a" ls)
+          (return-from validate-089-04-local-size-set-to nil)))
+      (log:info "validate-089-04: PASS")
+      t)))
+
+(defun validate-089-05-local-size-exact (path)
+  "Validates :local-size with :strategy :exact in metacrisp."
+  (let ((k (or (%089-find-kernel path) (return-from validate-089-05-local-size-exact nil))))
+    (let ((ls (%089-check-dispatch-key k :local-size "LOCAL-SIZE")))
+      (unless ls (return-from validate-089-05-local-size-exact nil))
+      (unless (%089-decl-strategy= ls "EXACT")
+        (log:error "Expected :strategy :exact in ~a" ls)
+        (return-from validate-089-05-local-size-exact nil))
+      (log:info "validate-089-05: PASS")
+      t)))
+
+(defun validate-089-06-num-groups-strided (path)
+  "Validates :num-groups (num-groups :derive-from (n) :strategy :strided) in metacrisp."
+  (let ((k (or (%089-find-kernel path) (return-from validate-089-06-num-groups-strided nil))))
+    (let ((ng (%089-check-dispatch-key k :num-groups "NUM-GROUPS")))
+      (unless ng (return-from validate-089-06-num-groups-strided nil))
+      (unless (%089-decl-strategy= ng "STRIDED")
+        (log:error "Expected :strategy :strided in ~a" ng)
+        (return-from validate-089-06-num-groups-strided nil))
+      (log:info "validate-089-06: PASS")
+      t)))
+
+(defun validate-089-07-global-and-local (path)
+  "Validates both :global-size and :local-size present in metacrisp."
+  (let ((k (or (%089-find-kernel path) (return-from validate-089-07-global-and-local nil))))
+    (unless (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")
+      (return-from validate-089-07-global-and-local nil))
+    (unless (%089-check-dispatch-key k :local-size "LOCAL-SIZE")
+      (return-from validate-089-07-global-and-local nil))
+    (log:info "validate-089-07: PASS")
+    t))
+
+(defun validate-089-08-global-size-strided (path)
+  "Validates :global-size with :strategy :strided in metacrisp."
+  (let ((k (or (%089-find-kernel path) (return-from validate-089-08-global-size-strided nil))))
+    (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
+      (unless gs (return-from validate-089-08-global-size-strided nil))
+      (unless (%089-decl-strategy= gs "STRIDED")
+        (log:error "Expected :strategy :strided in ~a" gs)
+        (return-from validate-089-08-global-size-strided nil))
+      (log:info "validate-089-08: PASS")
+      t)))
+
+(defun validate-089-09-global-size-tiled (path)
+  "Validates :global-size with :strategy :tiled and :tile-shape (16 16) in metacrisp."
+  (let ((k (or (%089-find-kernel path) (return-from validate-089-09-global-size-tiled nil))))
+    (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
+      (unless gs (return-from validate-089-09-global-size-tiled nil))
+      (unless (%089-decl-strategy= gs "TILED")
+        (log:error "Expected :strategy :tiled in ~a" gs)
+        (return-from validate-089-09-global-size-tiled nil))
+      (let ((tile-shape (getf (cdr gs) :tile-shape)))
+        (unless (and (listp tile-shape)
+                     (= (length tile-shape) 2)
+                     (= (first tile-shape) 16)
+                     (= (second tile-shape) 16))
+          (log:error "Expected :tile-shape (16 16), got ~a" tile-shape)
+          (return-from validate-089-09-global-size-tiled nil)))
+      (log:info "validate-089-09: PASS")
+      t)))

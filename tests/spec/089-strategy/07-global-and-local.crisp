@@ -1,0 +1,12 @@
+;; SKIP-WITH[--differentiate]: "kernel has no differentiable float parameters"
+;; TEST-WITH[--metadata]: crisp.compiler::validate-089-07-global-and-local
+;;
+;; Metadata: both :global-size and :local-size present in the metacrisp.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel global_and_local (&out result)
+    (declare (type result result-t)
+             (global-size :set-to 1024)
+             (local-size :set-to 64))
+  (set! (~ result) 0))

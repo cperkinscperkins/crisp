@@ -1124,6 +1124,47 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%075-FIND-KERNEL METACRISP-PATH KERNEL-NAME)  metadata-val.lisp [See above]
 - - (%075-VALIDATE-TENSOR-IMPLICIT TAG K-DEF EXPECTED-TYPE-HEAD EXPECTED-N EXPECTED-SLOTS EXPECTED-ADDR-SPACE EXPECTED-SIZE-EXPR)  metadata-val.lisp [See above]
 
+- (VALIDATE-089-01-GLOBAL-SIZE-SET-TO-SCALAR PATH)  metadata-val.lisp
+- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp
+- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp
+
+- (VALIDATE-089-02-GLOBAL-SIZE-SET-TO-DIMS PATH)  metadata-val.lisp
+- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
+- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
+
+- (VALIDATE-089-03-GLOBAL-SIZE-ONE-THREAD-PER PATH)  metadata-val.lisp
+- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
+- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
+- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp
+
+- (VALIDATE-089-04-LOCAL-SIZE-SET-TO PATH)  metadata-val.lisp
+- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
+- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
+
+- (VALIDATE-089-05-LOCAL-SIZE-EXACT PATH)  metadata-val.lisp
+- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
+- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
+- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp [See above]
+
+- (VALIDATE-089-06-NUM-GROUPS-STRIDED PATH)  metadata-val.lisp
+- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
+- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
+- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp [See above]
+
+- (VALIDATE-089-07-GLOBAL-AND-LOCAL PATH)  metadata-val.lisp
+- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
+- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
+
+- (VALIDATE-089-08-GLOBAL-SIZE-STRIDED PATH)  metadata-val.lisp
+- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
+- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
+- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp [See above]
+
+- (VALIDATE-089-09-GLOBAL-SIZE-TILED PATH)  metadata-val.lisp
+- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
+- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
+- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp [See above]
+
 - (VALIDATE-10-BASICS-META PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL
                                                               TARGETS-P))  metadata-val.lisp

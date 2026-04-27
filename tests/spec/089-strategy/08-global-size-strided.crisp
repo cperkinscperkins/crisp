@@ -1,0 +1,12 @@
+;; SKIP-WITH[--differentiate]: "kernel has no differentiable float parameters"
+;; TEST-WITH[--metadata]: crisp.compiler::validate-089-08-global-size-strided
+;;
+;; Metadata: (global-size :derive-from (n) :strategy :strided).
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel global_strided (n &out result)
+    (declare (type n ulong)
+             (type result result-t)
+             (global-size :derive-from (n) :strategy :strided))
+  (set! (~ result) 0))

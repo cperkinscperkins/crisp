@@ -1,0 +1,14 @@
+;; SKIP-WITH[--differentiate]: "strategy hoist not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT: interleaved
+;; STRATEGY-EXPECT: groupCount = { 1, 1, 1 }
+;;
+;; Hoist: :interleaved is deferred — generates a comment and falls back to {1,1,1}.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel hoist_interleaved (n &out result)
+    (declare (type n ulong)
+             (type result result-t)
+             (global-size :derive-from (n) :strategy :interleaved))
+  (set! (~ result) 0))

@@ -1,0 +1,12 @@
+;; SKIP-WITH[--differentiate]: "kernel has no differentiable float parameters"
+;; TEST-WITH[--metadata]: crisp.compiler::validate-089-06-num-groups-strided
+;;
+;; Metadata: (num-groups :derive-from (n) :strategy :strided).
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel strided_groups (n &out result)
+    (declare (type n ulong)
+             (type result result-t)
+             (num-groups :derive-from (n) :strategy :strided))
+  (set! (~ result) 0))

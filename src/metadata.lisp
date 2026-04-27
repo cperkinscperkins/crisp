@@ -609,50 +609,69 @@
         (incf phys-index width)))
     (nreverse implicit-args)))
 
+
+
 (defun serialize-kernels (output-stream kernel-names &key source output-targets)
+  "Emits the (:kernels ...) section of the metacrisp file.
+   Extended to include :global-size, :local-size, :num-groups dispatch declarations."
   (when kernel-names
         (format output-stream "(:kernels~%")
         (dolist (k-name (sort (copy-list kernel-names) #'string< :key #'symbol-name))
           (let ((sigs (gethash k-name *function-table*))
                 (blocks-to-emit nil))
             ;; Use only the FIRST signature (Pass 1 registered, Pass 2 updated)
-            ;; The last one is likely a stale duplicate from macro expansion.
             (dolist (actual-sig (list (first sigs)))
               (when actual-sig
                     (let* ((phys-sig-str (generate-physical-signature actual-sig))
                            (declared-types (gethash k-name *kernel-declared-signatures*))
                            (decl-sig-list (generate-declared-signature actual-sig declared-types))
                            (implicit-sig-list (generate-implicit-signature actual-sig declared-types))
+                           (dispatch-info (gethash k-name *kernel-dispatch-declarations*))
                            (source-loc (if source source
                                            (namestring (uiop/filesystem:native-namestring (first (function-signature-source-location actual-sig)))))))
 
-                      ;; Construct the block structure for deduplication
                       (push (list :name (string-downcase (symbol-name k-name))
                                   :source source-loc
                                   :output output-targets
                                   :phys phys-sig-str
                                   :decl decl-sig-list
-                                  :impl implicit-sig-list)
+                                  :impl implicit-sig-list
+                                  :dispatch dispatch-info)
                             blocks-to-emit))))
 
-            ;; Valid deduplication on the content we care about
             (setf blocks-to-emit (remove-duplicates (nreverse blocks-to-emit) :test #'equalp))
 
             (dolist (blk blocks-to-emit)
-              (format output-stream "  (:name ~s~%" (getf blk :name))
-              (format output-stream "    :source ~s~%" (pathname (getf blk :source)))
-              (when (getf blk :output) (format output-stream "    :output-targets ~s~%" (getf blk :output)))
-              (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
-              (format output-stream "    :declared-signature ")
-              (print-without-packages (getf blk :decl) output-stream)
-              (format output-stream "~%")
-              (when (getf blk :impl)
-                    (format output-stream "    :implicit-params ")
-                    (print-without-packages (getf blk :impl) output-stream)
+              (let ((dispatch (getf blk :dispatch)))
+                (format output-stream "  (:name ~s~%" (getf blk :name))
+                (format output-stream "    :source ~s~%" (pathname (getf blk :source)))
+                (when (getf blk :output) (format output-stream "    :output-targets ~s~%" (getf blk :output)))
+                ;; Emit dispatch declarations before physical/declared signatures
+                (let ((global-size-decl (getf dispatch :global-size))
+                      (local-size-decl  (getf dispatch :local-size))
+                      (num-groups-decl  (getf dispatch :num-groups)))
+                  (when global-size-decl
+                    (format output-stream "    :global-size ")
+                    (print-without-packages global-size-decl output-stream)
                     (format output-stream "~%"))
-              (format output-stream "  )~%"))))
-        (format output-stream "  )~%")))
-
+                  (when local-size-decl
+                    (format output-stream "    :local-size ")
+                    (print-without-packages local-size-decl output-stream)
+                    (format output-stream "~%"))
+                  (when num-groups-decl
+                    (format output-stream "    :num-groups ")
+                    (print-without-packages num-groups-decl output-stream)
+                    (format output-stream "~%")))
+                (format output-stream "    :physical-signature ~a~%" (getf blk :phys))
+                (format output-stream "    :declared-signature ")
+                (print-without-packages (getf blk :decl) output-stream)
+                (format output-stream "~%")
+                (when (getf blk :impl)
+                      (format output-stream "    :implicit-params ")
+                      (print-without-packages (getf blk :impl) output-stream)
+                      (format output-stream "~%"))
+                (format output-stream "  )~%"))))
+        (format output-stream "  )~%"))))
 
 
 ;;; =========================================================

@@ -1,0 +1,11 @@
+;; SKIP-WITH[--differentiate]: "kernel has no differentiable float parameters"
+;; TEST-WITH[--metadata]: crisp.compiler::validate-089-04-local-size-set-to
+;;
+;; Metadata: (local-size :set-to 64) is stored verbatim in metacrisp.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel local_size_set (&out result)
+    (declare (type result result-t)
+             (local-size :set-to 64))
+  (set! (~ result) 0))

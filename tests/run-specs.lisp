@@ -425,6 +425,40 @@
        (format t "PASS~%")
        t)))
 
+(defun parse-strategy-expect (directive-lines)
+  "Parse STRATEGY-EXPECT: <string> lines.
+   Returns list of expected strings to find in generated C++ source content."
+  (let ((expectations '()))
+    (dolist (line directive-lines)
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "STRATEGY-EXPECT:")
+              (let ((value (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 16))))
+                (push value expectations)))))
+    (nreverse expectations)))
+
+(defun validate-l0-strategy-content (crisp-file cpp-files)
+  "Validates generated C++ files contain expected strategy dispatch strings.
+   Reads STRATEGY-EXPECT: directives from the .crisp file.
+   Does not require compilation or hardware — checks C++ source content only."
+  (when (null cpp-files)
+    (format t "FAIL: No C++ files to validate~%")
+    (return-from validate-l0-strategy-content nil))
+  (let* ((directives (extract-test-directives crisp-file))
+         (expectations (parse-strategy-expect directives))
+         (passed t))
+    (when (null expectations)
+      (format t "PASS: No STRATEGY-EXPECT directives (trivial pass).~%")
+      (return-from validate-l0-strategy-content t))
+    (dolist (cpp cpp-files)
+      (let ((content (uiop:read-file-string cpp)))
+        (dolist (exp expectations)
+          (unless (search exp content)
+            (format t "FAIL: Expected string not found in ~a:~%  '~a'~%" (file-namestring cpp) exp)
+            (setf passed nil)))))
+    (when passed
+      (format t "PASS: All ~a strategy expectations met.~%" (length expectations)))
+    passed))
+
 (defun validate-l0-cell-address-space (crisp-file cpp-files)
   "Validates C++ files compile and contain correct LOCAL memory setup (nullptr value)."
   (declare (ignore crisp-file))

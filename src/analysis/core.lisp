@@ -956,10 +956,13 @@ in single-pass mode."
                                         vname-str)
                        :source-location location)))))))))
 
+
+
 (defun internal-def-function (name params declarations body location)
   "Wrapper around internal-compile-function. Detects kernel entry-points and
    binds *boundary-struct-params*, *boundary-array-params*, and
-   *in-dispatch-context* to enforce kernel-boundary rules."
+   *in-dispatch-context* to enforce kernel-boundary rules.
+   Extended to capture global-size/local-size/num-groups dispatch declarations."
   (log:info "Analyzing function ~s" name)
 
   (when (and *differentiate-p*
@@ -998,6 +1001,26 @@ in single-pass mode."
             (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
       (when (and is-entry-p *boundary-array-params*)
             (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
+
+      ;; Extract and store dispatch declarations for entry-point kernels
+      (when is-entry-p
+        (let ((global-size-decl (find "GLOBAL-SIZE" declarations
+                                      :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                      :test #'string-equal))
+              (local-size-decl  (find "LOCAL-SIZE" declarations
+                                      :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                      :test #'string-equal))
+              (num-groups-decl  (find "NUM-GROUPS" declarations
+                                      :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                      :test #'string-equal)))
+          (when (or global-size-decl local-size-decl num-groups-decl)
+            (let ((dispatch-plist
+                    (append (when global-size-decl (list :global-size global-size-decl))
+                            (when local-size-decl  (list :local-size  local-size-decl))
+                            (when num-groups-decl  (list :num-groups  num-groups-decl)))))
+              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
+              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))))
+
       (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
 
 

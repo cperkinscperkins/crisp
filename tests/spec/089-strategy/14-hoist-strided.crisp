@@ -1,0 +1,14 @@
+;; SKIP-WITH[--differentiate]: "strategy hoist not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT: zeDeviceGetComputeProperties
+;; STRATEGY-EXPECT: _hw_threads
+;;
+;; Hoist: :strided strategy queries hardware compute properties for optimal group count.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel hoist_strided (n &out result)
+    (declare (type n ulong)
+             (type result result-t)
+             (num-groups :derive-from (n) :strategy :strided))
+  (set! (~ result) 0))

@@ -36,6 +36,7 @@ Global Variable,RESOLVE-TYPE-TO-LLVM,INITIALIZE-CRISP-TYPES,DEF-EXPRESSION-ANALY
 *HOIST-CURRENT-STRUCTS*,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 *KERNEL-DECLARED-SIGNATURES*,,,,,,,,,,,,,,,,,RW,,,,,W,W,,,,,,,,,,W,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 *TEMPLATE-REGISTRY*,,,,,,,,,,,R,,RW,RW,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,R,,,,,,,,,,,,,,,,,,,
+*KERNEL-DISPATCH-DECLARATIONS*,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,
 *IMPLICIT-SCRATCH-SIZE-EXPR-MAP*,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,,,,W,W,,,,,,,,,,,,,,,,,,,,,
 *DIFFERENTIABLE-HOF-STORE*,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,W,,,,,,,,,,W,,,,,,,,,,,,,,,
 *CACHED-INT64-TYPE*,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,W,,,,,,,,,,,,,,,,,,,,,,,,,,

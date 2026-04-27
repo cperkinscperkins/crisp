@@ -562,10 +562,13 @@ EMERGENCY REORG
 
 Preperatory
 ===========
-- [ ] get-global-id or whatever and friends. 
-- [ ] remove "+warp-size+" from design doc. Use (get-warp-size)
+- [x] get-global-id or whatever and friends. 
+- [x] remove "+warp-size+" from design doc. Use (get-warp-size)
       it MIGHT be compile-time constant replaced, if compiling for known target.
 - [ ] strategy
+- - [ ] DEFER :interleaved
+- - [ ] FOLLOW UP: check-thread-bounds check-wg-bounds
+- - [ ] document :num-groups in ref.metacrisp
 
 Grid vs Thread Context
 =======================

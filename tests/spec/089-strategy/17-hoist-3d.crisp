@@ -1,0 +1,14 @@
+;; SKIP-WITH[--differentiate]: "strategy hoist not yet differentiated"
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; STRATEGY-EXPECT: zeKernelSetGroupSize(kernel, 1, 1, 1)
+;; STRATEGY-EXPECT: (uint32_t)w_arg, (uint32_t)h_arg, (uint32_t)d_arg
+;;
+;; Hoist: 3D dispatch with :one-thread-per => groupCount = {w_arg, h_arg, d_arg}.
+
+(def-type result-t (cell int :address-space :global :access :read-write))
+
+(def-kernel hoist_3d (w h d &out result)
+    (declare (type w h d ulong)
+             (type result result-t)
+             (global-size :derive-from (w h d) :strategy :one-thread-per))
+  (set! (~ result) 0))
