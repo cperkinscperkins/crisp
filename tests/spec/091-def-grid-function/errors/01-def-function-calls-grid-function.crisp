@@ -8,6 +8,6 @@
   (declare #'(&out out-t))
   (set! (~ result) 0))
 
-(def-function bad-caller (result)
+(def-function bad-caller (&out result)
   (declare #'(&out out-t => nil))
   (my-grid-fn result))
