@@ -1,0 +1,13 @@
+;; CHECK-FAIL: "nested"
+;; (declare (workgroup-level)) cannot be nested inside another (declare (workgroup-level)).
+
+(defmacro with-workgroup-sync (&body body)
+  `(let ()
+     (declare (workgroup-level))
+     ,@body))
+
+(def-function bad-nested-wg (x)
+  (declare #'(int => int))
+  (with-workgroup-sync
+    (with-workgroup-sync
+      (+ x 1))))

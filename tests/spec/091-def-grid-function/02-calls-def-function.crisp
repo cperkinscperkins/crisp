@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; def-grid-function can call a thread-level def-function.
+
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(def-function double-it (x)
+  (declare #'(int => int))
+  (* x 2))
+
+(def-grid-function fill-doubled (x &out result)
+  (declare #'(int &out out-t))
+  (set! (~ result) (double-it x)))
