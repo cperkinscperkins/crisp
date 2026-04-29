@@ -1,0 +1,13 @@
+;; CHECK-FAIL: "dispatch"
+;; (declare (grid-level)) cannot appear inside a def-function (thread-level context).
+;; A dispatch context is required for grid-level operations.
+
+(defmacro with-grid-work (&body body)
+  `(let ()
+     (declare (grid-level))
+     ,@body))
+
+(def-function thread-level-fn (x)
+  (declare #'(int => int))
+  (with-grid-work
+    (+ x 1)))

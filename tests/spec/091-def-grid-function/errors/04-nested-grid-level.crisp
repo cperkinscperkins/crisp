@@ -1,0 +1,16 @@
+;; CHECK-FAIL: "nested"
+;; (declare (grid-level)) cannot be nested inside another (declare (grid-level)).
+;; Grid-level contexts must be sequential, never nested.
+
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(defmacro with-grid-work (&body body)
+  `(let ()
+     (declare (grid-level))
+     ,@body))
+
+(def-grid-function bad-nested-grid (&out result)
+  (declare #'(&out out-t))
+  (with-grid-work
+    (with-grid-work
+      (set! (~ result) 0))))

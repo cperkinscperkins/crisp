@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; A let with (declare (grid-level)) is valid inside a def-grid-function body.
+;; The def-grid-function body is a dispatch context, which is required for grid-level.
+
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(defmacro with-grid-work (&body body)
+  `(let ()
+     (declare (grid-level))
+     ,@body))
+
+(def-grid-function grid-write (&out result)
+  (declare #'(&out out-t))
+  (with-grid-work
+    (set! (~ result) 42)))

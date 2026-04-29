@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; Multiple sequential (declare (grid-level)) contexts are valid in one def-grid-function.
+;; They may not be nested, but sequential (back-to-back) is permitted.
+
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(defmacro with-grid-work (&body body)
+  `(let ()
+     (declare (grid-level))
+     ,@body))
+
+(def-grid-function two-phase-write (&out result)
+  (declare #'(&out out-t))
+  (with-grid-work
+    (set! (~ result) 1))
+  (with-grid-work
+    (set! (~ result) 2)))

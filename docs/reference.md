@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-27T06:10:33.319379Z
+Generated on 2026-04-29T04:52:31.462108Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -39,17 +39,31 @@ Generated on 2026-04-27T06:10:33.319379Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
+### DEFUN `%STRIP-EXECUTION-CONTEXT-DECLARES`
+- **Args**: `(BODY-FORMS)`
+
+  > Strips leading (declare ...) forms from BODY-FORMS.  >    Returns (values remaining-body all-decl-specs).  >    Uses string-equal matching so package of 'declare doesn't matter.
+
+
+---
+### DEFUN `%CHECK-CONTEXT-DECLARATIONS`
+- **Args**: `(DECL-SPECS LOCATION)`
+
+  > Checks DECL-SPECS for (grid-level) and (workgroup-level) declarations.  >    Enforces that:  >    - (grid-level) requires *in-dispatch-context* and cannot be nested.  >    - (workgroup-level) cannot be nested inside another workgroup-level context.  >    Returns (values has-grid-level has-workgroup-level).
+
+
+---
 ### DEFUN `ANALYZE-LET-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(let ...)` expression.
+  > Analyzes a `(let ...)` expression.  >    Extended (091): strips leading declare forms from the body, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
 
 
 ---
 ### DEFUN `ANALYZE-PROGN-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(progn ...)` expression.
+  > Analyzes a `(progn ...)` expression.  >    Extended (091): strips leading declare forms, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
 
 
 ---
@@ -138,6 +152,18 @@ Generated on 2026-04-27T06:10:33.319379Z
 ### DEFVAR `*IN-DISPATCH-CONTEXT*`
 
   > T when the analyzer is inside a def-kernel/def-grid-function body.  >    Used to restrict GPU built-in calls to kernel entry points only.
+
+
+---
+### DEFVAR `*IN-GRID-LEVEL-CONTEXT*`
+
+  > T when the analyzer is currently inside a (declare (grid-level)) let/progn scope.  >    Grid-level contexts cannot be nested inside each other.
+
+
+---
+### DEFVAR `*IN-WORKGROUP-LEVEL-CONTEXT*`
+
+  > T when the analyzer is currently inside a (declare (workgroup-level)) let/progn scope.  >    Workgroup-level contexts cannot be nested inside each other.
 
 
 ---
@@ -402,7 +428,7 @@ Generated on 2026-04-27T06:10:33.319379Z
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params*, *boundary-array-params*, and  >    *in-dispatch-context* to enforce kernel-boundary rules.  >    Extended to capture global-size/local-size/num-groups dispatch declarations.
+  > Wrapper around internal-compile-function. Detects kernel entry-points and  >    binds *boundary-struct-params*, *boundary-array-params*, and  >    *in-dispatch-context* to enforce kernel-boundary rules.  >    Extended to capture global-size/local-size/num-groups dispatch declarations.  >    Extended (091) to handle (grid-function) declaration: sets dispatch context,  >    validates void return type.  >    Note: ANF pre-processing removed from forward pass — backward pass applies  >    its own anf-transform in %generate-backward-function-ast.
 
 
 ---
@@ -423,7 +449,7 @@ Generated on 2026-04-27T06:10:33.319379Z
 ### DEFUN `ANALYZE-FUNCTION-CALL`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a function call expression.  >    Checks for struct immutability violations via %check-struct-mutating-call.
+  > Analyzes a function call expression.  >    Checks for struct immutability violations via %check-struct-mutating-call.  >    Extended (091): grid functions can only be called from a dispatch context.
 
 
 ---
@@ -1031,10 +1057,17 @@ Generated on 2026-04-27T06:10:33.319379Z
 
 
 ---
+### DEFUN `%STRIP-CTX-DECLARES`
+- **Args**: `(EXPR)`
+
+  > Recursively strip (declare (grid-level)) and (declare (workgroup-level))  > from let/progn bodies before ANF transform.
+
+
+---
 ### DEFUN `%ANF-TRANSFORM`
 - **Args**: `(EXPR)`
 
-  > Internal helper for recursive ANF transformation.
+  > Internal helper for recursive ANF transformation.  > Pre-strips execution-context declares so anf-normalize never sees them.
 
 
 ---
@@ -1651,6 +1684,12 @@ Generated on 2026-04-27T06:10:33.319379Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\compiler.lisp`
 
+### DEFVAR `*GRID-FUNCTIONS*`
+
+  > Maps grid function name → T.  >    Used to enforce that grid functions can only be called from  >    dispatch contexts (def-kernel or def-grid-function bodies).
+
+
+---
 ### DEFUN `RUN-TOOL-COMMAND`
 - **Args**: `(ARGS &KEY (LOG-PREFIX ))`
 
@@ -1748,7 +1787,7 @@ Generated on 2026-04-27T06:10:33.319379Z
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL))`
 
-  > Initializes the compiler state.  >    Extended to also clear *kernel-dispatch-declarations* for strategy support.
+  > Initializes the compiler state.  >    Extended to clear *grid-functions* for def-grid-function support.
 
 
 ---
@@ -1914,6 +1953,13 @@ Generated on 2026-04-27T06:10:33.319379Z
 - **Args**: `(PARAMS DECLARATIONS)`
 
   > Builds the environment from standard CL (type type-spec vars...) declarations.
+
+
+---
+### DEFUN `%VALIDATE-GRID-FUNCTION-RETURN-TYPE`
+- **Args**: `(RETURN-TYPES)`
+
+  > Validates that a grid function has a void return type.  >    Grid functions are void by definition; declaring a return type is an error.
 
 
 ---
@@ -2502,6 +2548,13 @@ Generated on 2026-04-27T06:10:33.319379Z
 - **Args**: `(NAME PARAMS &REST BODY)`
 
   > Defines a GPU Kernel (Entry Point).  >      >    Constraint: All parameter types MUST be complete.  >    Incomplete types (missing compile-time properties) are forbidden at the kernel boundary  >    because the host must know the exact layout to marshall arguments.
+
+
+---
+### DEFMACRO `DEF-GRID-FUNCTION`
+- **Args**: `(NAME PARAMS &REST BODY)`
+
+  > Defines a grid-level function.  >    Grid functions have a dispatch-level context in their body: they can call both  >    thread-level (def-function) and grid-level functions.  >   >    Unlike def-function:  >    - Cannot return values (void).  >    - Cannot be called from def-function (thread-level context).  >   >    Unlike def-kernel:  >    - Lisp-style naming allowed (dashes ok, case-insensitive).  >    - Supports &optional and &key parameters.  >    - Not an entry point; cannot be enqueued by the host directly.
 
 
 ---

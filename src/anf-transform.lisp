@@ -227,9 +227,39 @@ argument as a place (not hoisted to a temp), matching the set! convention."
 
    (t (error "Unsupported form for anf-transform: ~S" expr))))
 
+
+
+(defun %strip-ctx-declares (expr)
+  "Recursively strip (declare (grid-level)) and (declare (workgroup-level))
+from let/progn bodies before ANF transform."
+  (if (not (consp expr))
+      expr
+      (let ((op (car expr)))
+        (cond
+         ((and (symbolp op) (string-equal (symbol-name op) "LET"))
+          (let* ((bindings (cadr expr))
+                 (body (cddr expr))
+                 (stripped (remove-if
+                              (lambda (f)
+                                (and (consp f)
+                                     (symbolp (car f))
+                                     (string-equal (symbol-name (car f)) "DECLARE")
+                                     (consp (cdr f))
+                                     (consp (cadr f))
+                                     (symbolp (caadr f))
+                                     (member (symbol-name (caadr f))
+                                             '("GRID-LEVEL" "WORKGROUP-LEVEL")
+                                             :test #'string=)))
+                              body)))
+            `(let ,bindings ,@(mapcar #'%strip-ctx-declares stripped))))
+         ((and (symbolp op) (string-equal (symbol-name op) "PROGN"))
+          `(progn ,@(mapcar #'%strip-ctx-declares (cdr expr))))
+         (t expr)))))
+
 (defun %anf-transform (expr)
-  "Internal helper for recursive ANF transformation."
-  (multiple-value-bind (normalized bindings) (anf-normalize expr nil)
+  "Internal helper for recursive ANF transformation.
+Pre-strips execution-context declares so anf-normalize never sees them."
+  (multiple-value-bind (normalized bindings) (anf-normalize (%strip-ctx-declares expr) nil)
     (if bindings
         `(let ,bindings ,normalized)
         normalized)))
@@ -238,6 +268,7 @@ argument as a place (not hoisted to a temp), matching the set! convention."
   "Transforms a Crisp expression into A-Normal Form."
   (let ((*anf-counter* 0))
     (%anf-transform expr)))
+
 
 (defun anf-transform-module (forms)
   "Iterates over top-level forms, running ANF transform on function/kernel bodies."

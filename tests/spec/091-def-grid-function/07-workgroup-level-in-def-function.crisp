@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; (declare (workgroup-level)) in a let body is valid inside a def-function (thread context).
+;; Unlike grid-level, workgroup-level does not require a dispatch context.
+
+(defmacro with-workgroup-sync (&body body)
+  `(let ()
+     (declare (workgroup-level))
+     ,@body))
+
+(def-function wg-compute (x)
+  (declare #'(int => int))
+  (with-workgroup-sync
+    (+ x 1)))

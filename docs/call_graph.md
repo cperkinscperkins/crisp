@@ -301,20 +301,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
 - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
 - - - - - - - (INTERNAL-DEF-FUNCTION NAME PARAMS DECLARATIONS BODY LOCATION)  analysis/core.lisp
-- - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp
-- - - - - - - - - (ANF-IS-ATOMIC? EXPR)  anf-transform.lisp
-- - - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
-- - - - - - - - - (ANF-NORMALIZE-PLACE PLACE)  anf-transform.lisp
-- - - - - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp
-- - - - - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
-- - - - - - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [RECURSION]
-- - - - - - - - - (ANF-FRESH-TEMP)  anf-transform.lisp
-- - - - - - - - - (%ANF-TRANSFORM EXPR)  anf-transform.lisp
-- - - - - - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
-- - - - - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [See above]
 - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
 - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp
 - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (%VALIDATE-GRID-FUNCTION-RETURN-TYPE RETURN-TYPES)  environment.lisp
 - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
 - - - - - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
 - - - - - - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
@@ -738,6 +728,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 
 - (ANALYZE-LET-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (%STRIP-EXECUTION-CONTEXT-DECLARES BODY-FORMS)  analysis/control.lisp
+- - (%CHECK-CONTEXT-DECLARATIONS DECL-SPECS LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
@@ -774,6 +766,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
 
 - (ANALYZE-PROGN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (%STRIP-EXECUTION-CONTEXT-DECLARES BODY-FORMS)  analysis/control.lisp [See above]
+- - (%CHECK-CONTEXT-DECLARATIONS DECL-SPECS LOCATION)  analysis/control.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 
@@ -876,7 +870,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-IF-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
 
 - (ANF-TRANSFORM EXPR)  anf-transform.lisp
-- - (%ANF-TRANSFORM EXPR)  anf-transform.lisp [See above]
+- - (%ANF-TRANSFORM EXPR)  anf-transform.lisp
+- - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp
+- - - - (ANF-IS-ATOMIC? EXPR)  anf-transform.lisp
+- - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
+- - - - (ANF-NORMALIZE-PLACE PLACE)  anf-transform.lisp
+- - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp
+- - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
+- - - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [RECURSION]
+- - - - (ANF-FRESH-TEMP)  anf-transform.lisp
+- - - - (%ANF-TRANSFORM EXPR)  anf-transform.lisp [RECURSION]
+- - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [See above]
+- - - (%STRIP-CTX-DECLARES EXPR)  anf-transform.lisp
 
 - (ANF-TRANSFORM-MODULE FORMS)  anf-transform.lisp
 - - (WITH-TEMPLATE-TYPE PARAMS &BODY BODY)  templates.lisp
@@ -936,6 +941,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp [See above]
 
 - (DEF-ENUMERATION NAME &REST SPECS)  enums.lisp
+
+- (DEF-GRID-FUNCTION NAME PARAMS &REST BODY)  macros.lisp
+- - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (DEF-KERNEL NAME PARAMS &REST BODY)  macros.lisp
 - - (PARSE-KERNEL-SIGNATURE NAME PARAMS BODY)  macros.lisp

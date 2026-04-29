@@ -103,103 +103,163 @@
         (body (cons 'progn (cddr expr))))
     (analyze-static-if-expression `(if ,cond nil ,body) env context location)))
 
+
+
+(defun %strip-execution-context-declares (body-forms)
+  "Strips leading (declare ...) forms from BODY-FORMS.
+   Returns (values remaining-body all-decl-specs).
+   Uses string-equal matching so package of 'declare doesn't matter."
+  (let ((decl-forms (loop for f in body-forms
+                          while (and (listp f)
+                                     (symbolp (car f))
+                                     (string-equal (symbol-name (car f)) "DECLARE"))
+                          collect f))
+        )
+    (values (nthcdr (length decl-forms) body-forms)
+            (loop for d in decl-forms append (rest d)))))
+
+(defun %check-context-declarations (decl-specs location)
+  "Checks DECL-SPECS for (grid-level) and (workgroup-level) declarations.
+   Enforces that:
+   - (grid-level) requires *in-dispatch-context* and cannot be nested.
+   - (workgroup-level) cannot be nested inside another workgroup-level context.
+   Returns (values has-grid-level has-workgroup-level)."
+  (let ((has-grid-level (find "GRID-LEVEL" decl-specs
+                              :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                              :test #'string-equal))
+        (has-workgroup-level (find "WORKGROUP-LEVEL" decl-specs
+                                   :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                   :test #'string-equal)))
+
+    (when has-grid-level
+      (unless *in-dispatch-context*
+        (error 'crisp-compiler-error
+          :message "Grid-level context cannot appear in a thread-level function. A dispatch context (def-kernel or def-grid-function) is required."
+          :source-location location))
+      (when *in-grid-level-context*
+        (error 'crisp-compiler-error
+          :message "Grid-level contexts cannot be nested. Sequential usage is allowed but nesting is not."
+          :source-location location)))
+
+    (when has-workgroup-level
+      (when *in-workgroup-level-context*
+        (error 'crisp-compiler-error
+          :message "Workgroup-level contexts cannot be nested inside another workgroup-level context."
+          :source-location location)))
+
+    (values has-grid-level has-workgroup-level)))
+
 (defun analyze-let-expression (expr env context location)
-  "Analyzes a `(let ...)` expression."
+  "Analyzes a `(let ...)` expression.
+   Extended (091): strips leading declare forms from the body, checks for
+   (grid-level) and (workgroup-level) declarations, and enforces nesting rules."
   (unless (and (>= (length expr) 2) (listp (cadr expr)))
     (error "Malformed let form: ~a" expr))
 
-  (let ((binding-forms (cadr expr))
-        (body-forms (cddr expr)))
-    ;; Implement let* scoping by sequentially building the environment.
-    (multiple-value-bind (final-env analyzed-bindings)
-        (let ((current-env env)
-              (bindings-list '()))
-          (loop for binding in binding-forms
-                for i from 0 do
-                  (log:debug "Analyzing let binding form: ~s" binding)
+  (let* ((binding-forms (cadr expr))
+         (raw-body (cddr expr)))
 
-                  ;; Determine if this is a "flat" MVB binding like (a b (val))
-                  ;; or a standard nested binding like ((a b) (val)) or (a (val)).
-                  (let ((is-flat-mvb (and (> (length binding) 2)
-                                          (not (listp (first binding))))))
+    ;; Strip leading declares and check for execution-context declarations
+    (multiple-value-bind (body-forms decl-specs)
+        (%strip-execution-context-declares raw-body)
+      (multiple-value-bind (has-grid-level has-workgroup-level)
+          (%check-context-declarations decl-specs location)
 
-                    (let* ((binding-vars (if is-flat-mvb
-                                             (butlast binding)
-                                             (if (and (= (length binding) 2) (listp (first binding)))
-                                                 (first binding)
-                                                 (list (first binding)))))
-                           (init-form (first (last binding)))
-                           ;; Track binding name for make-scratch-cell unique ID generation
-                           (current-binding-name (if (= (length binding-vars) 1) (first binding-vars) nil))
-                           ;; Analyze the value form
-                           (init-node
-                            (let ((old-name (compiler-context-current-binding-name context)))
-                              (when current-binding-name
-                                    (setf (compiler-context-current-binding-name context) current-binding-name))
-                              (unwind-protect
-                                  (analyze-expression init-form current-env context
-                                                      (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1))))
-                                (when current-binding-name
-                                      (setf (compiler-context-current-binding-name context) old-name)))))
-                           (init-node-types (semantic-node-type init-node)))
+        ;; Bind context vars for the body analysis
+        (let ((*in-grid-level-context* (or *in-grid-level-context* has-grid-level))
+              (*in-workgroup-level-context* (or *in-workgroup-level-context* has-workgroup-level)))
 
-                      (cond
-                       ;; Case 1: Single variable binding (standard let)
-                       ((= (length binding-vars) 1)
-                         (let* ((var-name (first binding-vars))
-                                ;; For a single binding, we implicitly take the first return value's type.
-                                (var-type (get-single-value-type init-node)))
-                           (log:warn "ANALYZE-LET VAR: ~a -> Inferred Type: ~a" var-name var-type)
-                           (push (cons var-name init-node) bindings-list)
-                           (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local) current-env))))
+          ;; Implement let* scoping by sequentially building the environment.
+          (multiple-value-bind (final-env analyzed-bindings)
+              (let ((current-env env)
+                    (bindings-list '()))
+                (loop for binding in binding-forms
+                      for i from 0 do
+                        (log:debug "Analyzing let binding form: ~s" binding)
 
-                       ;; Case 2: Multiple variable binding (destructuring)
-                       ((> (length binding-vars) 1)
-                         (unless (listp init-node-types)
-                           (error "Cannot destructure a single-value return into multiple variables at ~a. Got type ~a for binding ~a."
-                             (semantic-node-source-location init-node) init-node-types binding))
-                         (unless (>= (length init-node-types) (length binding-vars))
-                           (error "Not enough return values from ~a to bind ~a variables at ~a" init-form (length binding-vars) (semantic-node-source-location init-node)))
+                        (let ((is-flat-mvb (and (> (length binding) 2)
+                                                (not (listp (first binding))))))
 
-                         ;; The init-node (the function call) is analyzed once.
-                         ;; We then create `extract-value` nodes for each variable.
-                         (loop for var-name in binding-vars
-                               for j from 0 do
-                                 (let* ((var-type (nth j init-node-types))
-                                        (extract-node (make-semantic-extract-value
-                                                       :type var-type
-                                                       :aggregate-node init-node
-                                                       :index j
-                                                       :source-location (semantic-node-source-location init-node))))
-                                   (push (cons var-name extract-node) bindings-list)
-                                   (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local) current-env)))))
-                       (t (error "Malformed let binding: ~a" binding))))))
-          ;; The loop builds the bindings list in reverse, so we reverse it back.
-          (values current-env (reverse bindings-list)))
+                          (let* ((binding-vars (if is-flat-mvb
+                                                   (butlast binding)
+                                                   (if (and (= (length binding) 2) (listp (first binding)))
+                                                       (first binding)
+                                                       (list (first binding)))))
+                                 (init-form (first (last binding)))
+                                 (current-binding-name (if (= (length binding-vars) 1) (first binding-vars) nil))
+                                 (init-node
+                                  (let ((old-name (compiler-context-current-binding-name context)))
+                                    (when current-binding-name
+                                          (setf (compiler-context-current-binding-name context) current-binding-name))
+                                    (unwind-protect
+                                        (analyze-expression init-form current-env context
+                                                            (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1))))
+                                      (when current-binding-name
+                                            (setf (compiler-context-current-binding-name context) old-name)))))
+                                 (init-node-types (semantic-node-type init-node)))
 
-      (let* ((analyzed-body (analyze-body-expressions body-forms final-env context (append location '(2))))
-             (last-body-node (first (last analyzed-body)))
-             (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
-        (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
-                   analyzed-bindings analyzed-body return-type)
-        (make-semantic-let :type return-type
-                           :bindings analyzed-bindings
-                           :body analyzed-body
-                           :source-location location)))))
+                            (cond
+                             ((= (length binding-vars) 1)
+                               (let* ((var-name (first binding-vars))
+                                      (var-type (get-single-value-type init-node)))
+                                 (log:warn "ANALYZE-LET VAR: ~a -> Inferred Type: ~a" var-name var-type)
+                                 (push (cons var-name init-node) bindings-list)
+                                 (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local) current-env))))
+
+                             ((> (length binding-vars) 1)
+                               (unless (listp init-node-types)
+                                 (error "Cannot destructure a single-value return into multiple variables at ~a. Got type ~a for binding ~a."
+                                   (semantic-node-source-location init-node) init-node-types binding))
+                               (unless (>= (length init-node-types) (length binding-vars))
+                                 (error "Not enough return values from ~a to bind ~a variables at ~a" init-form (length binding-vars) (semantic-node-source-location init-node)))
+
+                               (loop for var-name in binding-vars
+                                     for j from 0 do
+                                       (let* ((var-type (nth j init-node-types))
+                                              (extract-node (make-semantic-extract-value
+                                                             :type var-type
+                                                             :aggregate-node init-node
+                                                             :index j
+                                                             :source-location (semantic-node-source-location init-node))))
+                                         (push (cons var-name extract-node) bindings-list)
+                                         (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local) current-env)))))
+                             (t (error "Malformed let binding: ~a" binding))))))
+                (values current-env (reverse bindings-list)))
+
+            (let* ((analyzed-body (analyze-body-expressions body-forms final-env context (append location '(2))))
+                   (last-body-node (first (last analyzed-body)))
+                   (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
+              (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
+                         analyzed-bindings analyzed-body return-type)
+              (make-semantic-let :type return-type
+                                 :bindings analyzed-bindings
+                                 :body analyzed-body
+                                 :source-location location))))))))
 
 (defun analyze-progn-expression (expr env context location)
-  "Analyzes a `(progn ...)` expression."
-  (let ((body (cdr expr))
-        (nodes '()))
-    (dolist (form body)
-      (push (analyze-expression form env context location) nodes))
-    (setf nodes (nreverse nodes))
-    ;; Determine type from the last node
-    (let ((last-node (first (last nodes))))
-      (make-semantic-progn
-       :type (if last-node (semantic-node-type last-node) 'void)
-       :body nodes
-       :source-location location))))
+  "Analyzes a `(progn ...)` expression.
+   Extended (091): strips leading declare forms, checks for
+   (grid-level) and (workgroup-level) declarations, and enforces nesting rules."
+  (let ((raw-body (cdr expr)))
+
+    ;; Strip leading declares and check for execution-context declarations
+    (multiple-value-bind (body-forms decl-specs)
+        (%strip-execution-context-declares raw-body)
+      (multiple-value-bind (has-grid-level has-workgroup-level)
+          (%check-context-declarations decl-specs location)
+
+        ;; Bind context vars for the body analysis
+        (let ((*in-grid-level-context* (or *in-grid-level-context* has-grid-level))
+              (*in-workgroup-level-context* (or *in-workgroup-level-context* has-workgroup-level))
+              (nodes '()))
+          (dolist (form body-forms)
+            (push (analyze-expression form env context location) nodes))
+          (setf nodes (nreverse nodes))
+          (let ((last-node (first (last nodes))))
+            (make-semantic-progn
+             :type (if last-node (semantic-node-type last-node) 'void)
+             :body nodes
+             :source-location location)))))))
 
 
 (defun analyze-return-expression (expr env context location)

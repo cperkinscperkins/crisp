@@ -9,6 +9,12 @@
 ;; Initialization
 ;; ==============
 
+
+(defvar *grid-functions* (make-hash-table :test #'eq)
+  "Maps grid function name → T.
+   Used to enforce that grid functions can only be called from
+   dispatch contexts (def-kernel or def-grid-function bodies).")
+
 (defun run-tool-command (args &key (log-prefix ""))
   "Runs a command using uiop:run-program."
   (log:info "~aRunning: ~{~a~^ ~}" log-prefix args)
@@ -502,9 +508,10 @@ Returns modified IR text with metadata."
 
 
 
+
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil))
   "Initializes the compiler state.
-   Extended to also clear *kernel-dispatch-declarations* for strategy support."
+   Extended to clear *grid-functions* for def-grid-function support."
   (setf *runtime-checks-enabled* runtime-checks)
   (setf *differentiate-p* differentiate)
   (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
@@ -565,6 +572,9 @@ Returns modified IR text with metadata."
 
   ;; clear dispatch declarations side table
   (clrhash *kernel-dispatch-declarations*)
+
+  ;; clear grid-function registry
+  (clrhash *grid-functions*)
 
   (register-builtins)
 

@@ -755,6 +755,33 @@ in the signature remain zero — the correct gradient for integer arithmetic."
                 (list (%generate-backward-kernel-ast name params signature-types raw-body)))))))
 
 
+(defmacro def-grid-function (name params &rest body)
+  "Defines a grid-level function.
+   Grid functions have a dispatch-level context in their body: they can call both
+   thread-level (def-function) and grid-level functions.
+
+   Unlike def-function:
+   - Cannot return values (void).
+   - Cannot be called from def-function (thread-level context).
+
+   Unlike def-kernel:
+   - Lisp-style naming allowed (dashes ok, case-insensitive).
+   - Supports &optional and &key parameters.
+   - Not an entry point; cannot be enqueued by the host directly."
+  (let* ((declare-forms (loop for f in body
+                              while (and (listp f) (eq (car f) 'declare))
+                              collect f))
+         (body-forms (nthcdr (length declare-forms) body)))
+    `(progn
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (setf (gethash ',name crisp.compiler::*grid-functions*) t))
+       (def-function ,name ,params
+         ,@declare-forms
+         (declare (grid-function))
+         ,@body-forms
+         (return)))))
+
+
 (defmacro with-struct-accessors (struct-type bindings &body body)
   "Iterates over the members of a struct type, binding accessor symbols to the provided variables.
    Bindings: (aos-var [soa-var] [:access type])

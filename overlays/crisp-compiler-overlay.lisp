@@ -4,6 +4,3 @@
 ;;;; Applied via late binding - last definition wins
 
 (in-package :crisp.compiler)
-
-
-

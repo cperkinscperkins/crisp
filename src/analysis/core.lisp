@@ -9,6 +9,15 @@
    Used to restrict GPU built-in calls to kernel entry points only.")
 
 
+(defvar *in-grid-level-context* nil
+  "T when the analyzer is currently inside a (declare (grid-level)) let/progn scope.
+   Grid-level contexts cannot be nested inside each other.")
+
+(defvar *in-workgroup-level-context* nil
+  "T when the analyzer is currently inside a (declare (workgroup-level)) let/progn scope.
+   Workgroup-level contexts cannot be nested inside each other.")
+
+
 (defun %dvec-integral-type-p (type-sym)
   "Returns T if TYPE-SYM is a registered integer (signed or unsigned) Crisp type."
   (let ((ct (gethash type-sym *crisp-types*)))
@@ -958,24 +967,28 @@ in single-pass mode."
 
 
 
+
+;;; Removes the ANF pre-processing step from the FORWARD compilation pass.
+;;; That step was causing (declare (grid-level/workgroup-level)) inside let bodies to:
+;;;   (a) be stripped before semantic analysis → context enforcement bypassed, or
+;;;   (b) land in malformed let-binding positions → analyze-expression crash.
+;;;
+;;; The backward pass (%generate-backward-function-ast) does its own anf-transform
+;;; separately, so forward compilation does not need to pre-ANF the body.
+;;; The %anf-transform redef above handles ctx-declare stripping for the backward pass.
+
+;; src/analysis/core.lisp
+
 (defun internal-def-function (name params declarations body location)
   "Wrapper around internal-compile-function. Detects kernel entry-points and
    binds *boundary-struct-params*, *boundary-array-params*, and
    *in-dispatch-context* to enforce kernel-boundary rules.
-   Extended to capture global-size/local-size/num-groups dispatch declarations."
+   Extended to capture global-size/local-size/num-groups dispatch declarations.
+   Extended (091) to handle (grid-function) declaration: sets dispatch context,
+   validates void return type.
+   Note: ANF pre-processing removed from forward pass — backward pass applies
+   its own anf-transform in %generate-backward-function-ast."
   (log:info "Analyzing function ~s" name)
-
-  (when (and *differentiate-p*
-             (not (find "NON-DIFFERENTIABLE" declarations
-                        :key (lambda (x) (when (consp x) (symbol-name (car x))))
-                        :test #'string-equal)))
-        (log:info "Applying ANF to function body")
-        (let* ((progn-body `(progn ,@body))
-               (anf-body (anf-normalize progn-body nil))
-               (unwrapped-body (if (and (consp anf-body) (eq (car anf-body) 'progn))
-                                   (cdr anf-body)
-                                   (list anf-body))))
-          (setf body unwrapped-body)))
 
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
@@ -984,7 +997,11 @@ in single-pass mode."
                              thereis (and (listp d)
                                           (symbolp (first d))
                                           (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
-           (*in-dispatch-context* is-entry-p)
+           (is-grid-fn-p (loop for d in declarations
+                               thereis (and (listp d)
+                                            (symbolp (first d))
+                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
+           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
            (*boundary-struct-params*
              (if is-entry-p
                  (loop for param in explicit-env
@@ -1001,6 +1018,11 @@ in single-pass mode."
             (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
       (when (and is-entry-p *boundary-array-params*)
             (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
+
+      ;; Void return type enforcement for grid functions
+      (when is-grid-fn-p
+        (log:info "Compiling grid function ~a (dispatch context)" name)
+        (%validate-grid-function-return-type return-type))
 
       ;; Extract and store dispatch declarations for entry-point kernels
       (when is-entry-p
@@ -1117,9 +1139,11 @@ in single-pass mode."
 
 
 
+
 (defun analyze-function-call (op expr env context location)
   "Analyzes a function call expression.
-   Checks for struct immutability violations via %check-struct-mutating-call."
+   Checks for struct immutability violations via %check-struct-mutating-call.
+   Extended (091): grid functions can only be called from a dispatch context."
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
 
   ;; Recursion / call-graph tracking
@@ -1128,6 +1152,13 @@ in single-pass mode."
             (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
       (when (eq op (compiler-context-current-compiling-function context))
             (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
+
+  ;; Grid function dispatch-context check
+  (when (and (gethash op *grid-functions*)
+             (not *in-dispatch-context*))
+    (error 'crisp-compiler-error
+      :message (format nil "Grid function '~(~a~)' cannot be called outside a dispatch context. Use def-kernel or def-grid-function to provide a dispatch context." op)
+      :source-location location))
 
   ;; Implicit args
   (let ((implicit-args-required (gethash op *implicit-arg-map*)))
@@ -1187,7 +1218,6 @@ in single-pass mode."
                       for param-type = (parameter-def-type param)
                       do (let ((brand-def (is-brand-type-p param-type)))
                            (when (and brand-def (brand-active-p brand-def))
-                             ;; FIX: Use brand-name to find owner, supporting shared brands
                              (let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
                                                                         sig-params final-arg-nodes)))
                                (when owner-var

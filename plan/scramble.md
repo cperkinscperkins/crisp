@@ -566,9 +566,9 @@ Preperatory
 - [x] remove "+warp-size+" from design doc. Use (get-warp-size)
       it MIGHT be compile-time constant replaced, if compiling for known target.
 - [ ] strategy
-- - [ ] DEFER :interleaved
+- - [ ] DEFER :interleaved  .. until we tackle def-orchestration.
 - - [ ] FOLLOW UP: check-thread-bounds check-wg-bounds
-- - [ ] document :num-groups in ref.metacrisp
+- - [x] document :num-groups in ref.metacrisp
 
 Grid vs Thread Context
 =======================

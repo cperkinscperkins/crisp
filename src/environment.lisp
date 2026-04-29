@@ -744,3 +744,19 @@
                    :name p
                    :type (or (gethash p env) t) ;; Default to T if not declared
                    :kind :in))))
+
+
+
+(defun %validate-grid-function-return-type (return-types)
+  "Validates that a grid function has a void return type.
+   Grid functions are void by definition; declaring a return type is an error."
+  (when return-types
+    (let ((non-void-types (remove-if (lambda (x)
+                                       (or (null x)
+                                           (and (symbolp x)
+                                                (string-equal x "VOID"))))
+                             return-types)))
+      (when non-void-types
+        (error "Grid functions cannot declare a return type. Found: ~a. Grid functions must return void (nil)."
+          return-types)))))
+

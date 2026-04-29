@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "return"
+;; def-grid-function cannot declare a non-void return type.
+;; Grid functions are void by definition.
+
+(def-grid-function bad-return ()
+  (declare #'(=> int))
+  42)

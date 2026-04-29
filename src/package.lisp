@@ -205,6 +205,7 @@
    #:def-function
    #:def-kernel
    #:def-kernel-exact
+   #:def-grid-function
    #:marshall-cell
    #:marshall-tensor
    #:%marshall-tensor
@@ -365,6 +366,7 @@
                 #:def-function
                 #:def-kernel
                 #:def-kernel-exact
+                #:def-grid-function
                 #:marshall-cell
                 #:marshall-tensor
                 #:marshall-vector

@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; def-kernel (dispatch context) can call a def-grid-function.
+
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(def-grid-function zero-fill (&out result)
+  (declare #'(&out out-t))
+  (set! (~ result) 0))
+
+(def-kernel call_grid_fn (&out result)
+  (declare (type result out-t))
+  (zero-fill result))

@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; (declare (workgroup-level)) is valid inside a def-grid-function body.
+
+(def-type out-t (cell int :address-space :global :access :read-write))
+
+(defmacro with-workgroup-sync (&body body)
+  `(let ()
+     (declare (workgroup-level))
+     ,@body))
+
+(def-grid-function wg-grid-write (&out result)
+  (declare #'(&out out-t))
+  (with-workgroup-sync
+    (set! (~ result) 7)))
