@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; dotimes with a let + when inside the body.
+;; Verifies that complex body expressions work correctly inside the loop.
+
+(def-type cell-t (cell int :address-space :global :access :read-write))
+
+(def-kernel dotimes_complex_body (n &out evens)
+  (declare #'(int &out cell-t => nil))
+  (dotimes (i n)
+    (let ((remainder (- i (* 2 (/ i 2)))))
+      (when (= remainder 0)
+        (set! (~ evens) (+ (~ evens) i))))))

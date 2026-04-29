@@ -501,6 +501,7 @@ Miscelleny
 - [x] what is going on with validation.lisp? why does everything need cl:cond ?
       same with autodiff.lisp  . FIX 
 - [ ] i64 and ui64 as types and literals!!
+- [ ] also i128 and friends! 
 - [ ] atomic-binop! deferred. Needs dotimes+
 - [ ] compilation error when trying to mutate `offset` or `stride` in a `:compact` aligned storage handle.
       or `stride` in `:compact-offset`
@@ -572,10 +573,19 @@ Preperatory
 
 Grid vs Thread Context
 =======================
-- [ ] def-grid-function / dispatch/grid/thread context checking.
+- [x] def-grid-function / dispatch/grid/thread context checking.
 
 Grid Stride
 ===========
+- [ ] loop-vector-stride
+- [ ] thread-stride  ( revisit first, for possible async considerations. )
+
+Looping Constructs
+==================
+- [ ] dotimes / dotimes+ / dotimes*
+- [ ] dec-times / dec-times+ / dec-times*
+- [ ] do-times-by-doubling
+- [ ] &c.
 
 PGAS / SHMem, UALink, and Asyc Operations
 =========================================

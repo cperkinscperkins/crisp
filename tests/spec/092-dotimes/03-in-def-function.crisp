@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; dotimes inside a plain def-function (not a kernel).
+;; dotimes must not require a dispatch context -- it is a general bounded loop.
+
+(def-type cell-t (cell int :address-space :global :access :read-write))
+
+(def-function accumulate (m &out result)
+  (declare #'(int &out cell-t => nil))
+  (dotimes (i m)
+    (set! (~ result) (+ (~ result) i))))
+
+(def-kernel call_accumulate (n &out result)
+  (declare #'(int &out cell-t => nil))
+  (accumulate n result))
