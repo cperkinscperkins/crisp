@@ -311,3 +311,15 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   index-node
   type
   source-location)
+
+(defstruct semantic-dotimes
+  "Represents (dotimes (var limit [stride]) body...).
+   var is bound to 0, stride, 2*stride, ... while var < limit.
+   stride-node is NIL when the stride was omitted (emit constant 1).
+   Always returns void."
+  type
+  var-name
+  limit-node
+  stride-node
+  body
+  source-location)

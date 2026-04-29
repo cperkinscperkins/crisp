@@ -1,15 +1,16 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; dotimes inside a plain def-function (not a kernel).
+;; dotimes inside a plain def-function (not a kernel) called from a kernel.
 ;; dotimes must not require a dispatch context -- it is a general bounded loop.
+;; Note: &out params in def-function are write-only; write-last writes i each iteration.
 
 (def-type cell-t (cell int :address-space :global :access :read-write))
 
-(def-function accumulate (m &out result)
+(def-function write-last (m &out result)
   (declare #'(int &out cell-t => nil))
   (dotimes (i m)
-    (set! (~ result) (+ (~ result) i))))
+    (set! (~ result) i)))
 
-(def-kernel call_accumulate (n &out result)
+(def-kernel call_write_last (n &out result)
   (declare #'(int &out cell-t => nil))
-  (accumulate n result))
+  (write-last n result))

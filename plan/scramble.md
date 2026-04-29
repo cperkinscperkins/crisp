@@ -536,7 +536,7 @@ Tensors Vectors and Matrices
 - - [ ] test offsets, strides really SET by hoisting code (instead of always jsut 0). for both align
         would we need some sort of .cpp fixture?
 - - [x] scratch tensors / matrix / vector
-- - [ ] scratch tensor sizeExpression - but we need strategy etc support first.
+- - [ ] scratch tensor sizeExpression - but we need strategy etc support first.  <==== (!!!!)
 - - [ ] CUDA support for :local ( need cu hoist)
 - - [x] "view" manipulation - changing offset, make-xxxx etc
 - - [ ] double check branding
@@ -574,6 +574,7 @@ Preperatory
 Grid vs Thread Context
 =======================
 - [x] def-grid-function / dispatch/grid/thread context checking.
+- [ ] gen-XXXX promotion to kernel
 
 Grid Stride
 ===========
@@ -582,10 +583,40 @@ Grid Stride
 
 Looping Constructs
 ==================
-- [ ] dotimes / dotimes+ / dotimes*
+- [ ] dotimes 
+- - [ ]  dotimes+ / dotimes*
 - [ ] dec-times / dec-times+ / dec-times*
 - [ ] do-times-by-doubling
 - [ ] &c.
+
+Async Ops
+=========
+- 
+
+PERFORMANCE TESTING
+===================
+- setup RunPod AI .  ( guess we should write the CUDA hoist app too then).
+- leverage RunPod as a GitHub Actions target.  Maybe only for the hoisting tests? Separate .yml likely.
+- choose some "realizable" algorithms and get them for a series of platforms
+ - CUTLASS
+ - Cuda
+ - SYCL (OneAPI, not SYCLOS)
+ - SYCL-TLA
+ - Crisp
+- Nvidia compare: CUTLASS | Cuda | Crisp
+- Intel compare: SYCL-TLA | SYCL | Crisp
+- Algorithms
+- - SAXPY
+- - Tiled GEMM
+- - Add / Sum Reduction
+- More Algorithms
+- - Bitonic Sort
+- - Radix Sort ( but might be best with PGAS ?)
+
+These initial "first generation" algorithms might not be expressible on CUTLASS/SYCL-TLA
+
+Other Platforms: OpenCL.   Triton? Mojo?
+
 
 PGAS / SHMem, UALink, and Asyc Operations
 =========================================
