@@ -511,3 +511,150 @@
              :type (if last-node (semantic-node-type last-node) 'void)
              :body nodes
              :source-location location)))))))
+
+
+;;; ============================================================
+;;; 091-def-grid-function: ANF transform fix for context declares
+;;;
+;;; With --differentiate the ANF transform runs over function bodies.
+;;; anf-normalize's let-case strips (declare (grid-level/workgroup-level))
+;;; from the body but then re-adds them into the *bindings* position as
+;;; hoisted-decls, producing malformed bindings like:
+;;;   ((declare (declare (workgroup-level))))
+;;; When analyze-let-expression then processes that binding it calls
+;;; analyze-expression on (declare (workgroup-level)) as a value → crash.
+;;;
+;;; Fix: strip execution-context declares from let bodies BEFORE the ANF
+;;; transform. They were already consumed in the forward semantic analysis
+;;; pass and have no code-gen meaning.
+
+;; src/anf-transform.lisp
+(defun %strip-ctx-declares (expr)
+  "Recursively strip (declare (grid-level)) and (declare (workgroup-level))
+from let/progn bodies before ANF transform."
+  (if (not (consp expr))
+      expr
+      (let ((op (car expr)))
+        (cond
+         ((and (symbolp op) (string-equal (symbol-name op) "LET"))
+          (let* ((bindings (cadr expr))
+                 (body (cddr expr))
+                 (stripped (remove-if
+                              (lambda (f)
+                                (and (consp f)
+                                     (symbolp (car f))
+                                     (string-equal (symbol-name (car f)) "DECLARE")
+                                     (consp (cdr f))
+                                     (consp (cadr f))
+                                     (symbolp (caadr f))
+                                     (member (symbol-name (caadr f))
+                                             '("GRID-LEVEL" "WORKGROUP-LEVEL")
+                                             :test #'string=)))
+                              body)))
+            `(let ,bindings ,@(mapcar #'%strip-ctx-declares stripped))))
+         ((and (symbolp op) (string-equal (symbol-name op) "PROGN"))
+          `(progn ,@(mapcar #'%strip-ctx-declares (cdr expr))))
+         (t expr)))))
+
+;; src/anf-transform.lisp
+;;
+;; Redefine %anf-transform to strip ctx declares before calling anf-normalize.
+;; This fixes the root cause: anf-normalize's let-case strips (declare (grid-level))
+;; forms from the body but then re-adds them to the BINDINGS list (double-wrapped),
+;; causing analyze-let-expression to call analyze-expression on (declare ...) → crash.
+;; By stripping in %anf-transform, ALL recursive ANF paths are covered — including
+;; the internal-def-function path that calls anf-normalize directly.
+(defun %anf-transform (expr)
+  "Internal helper for recursive ANF transformation.
+Pre-strips execution-context declares so anf-normalize never sees them."
+  (multiple-value-bind (normalized bindings) (anf-normalize (%strip-ctx-declares expr) nil)
+    (if bindings
+        `(let ,bindings ,normalized)
+        normalized)))
+
+;; src/anf-transform.lisp
+;; Updated: %anf-transform now strips internally, so no need to double-strip here.
+(defun anf-transform (expr)
+  "Transforms a Crisp expression into A-Normal Form."
+  (let ((*anf-counter* 0))
+    (%anf-transform expr)))
+
+
+;;; ============================================================
+;;; 091-def-grid-function: internal-def-function (3rd redef)
+;;;
+;;; Removes the ANF pre-processing step from the FORWARD compilation pass.
+;;; That step was causing (declare (grid-level/workgroup-level)) inside let bodies to:
+;;;   (a) be stripped before semantic analysis → context enforcement bypassed, or
+;;;   (b) land in malformed let-binding positions → analyze-expression crash.
+;;;
+;;; The backward pass (%generate-backward-function-ast) does its own anf-transform
+;;; separately, so forward compilation does not need to pre-ANF the body.
+;;; The %anf-transform redef above handles ctx-declare stripping for the backward pass.
+
+;; src/analysis/core.lisp
+(defun internal-def-function (name params declarations body location)
+  "Wrapper around internal-compile-function. Detects kernel entry-points and
+   binds *boundary-struct-params*, *boundary-array-params*, and
+   *in-dispatch-context* to enforce kernel-boundary rules.
+   Extended to capture global-size/local-size/num-groups dispatch declarations.
+   Extended (091) to handle (grid-function) declaration: sets dispatch context,
+   validates void return type.
+   Note: ANF pre-processing removed from forward pass — backward pass applies
+   its own anf-transform in %generate-backward-function-ast."
+  (log:info "Analyzing function ~s" name)
+
+  (multiple-value-bind (explicit-env return-type)
+      (parse-function-declarations params declarations)
+    (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (is-entry-p (loop for d in declarations
+                             thereis (and (listp d)
+                                          (symbolp (first d))
+                                          (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+           (is-grid-fn-p (loop for d in declarations
+                               thereis (and (listp d)
+                                            (symbolp (first d))
+                                            (string-equal (symbol-name (first d)) "GRID-FUNCTION"))))
+           (*in-dispatch-context* (or is-entry-p is-grid-fn-p))
+           (*boundary-struct-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%boundary-struct-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-struct-params*))
+           (*boundary-array-params*
+             (if is-entry-p
+                 (loop for param in explicit-env
+                       when (%array-type-p (parameter-def-type param))
+                       collect (string-upcase (symbol-name (parameter-def-name param))))
+                 *boundary-array-params*)))
+      (when (and is-entry-p *boundary-struct-params*)
+            (log:debug "Kernel ~a has boundary struct params: ~a" name *boundary-struct-params*))
+      (when (and is-entry-p *boundary-array-params*)
+            (log:debug "Kernel ~a has boundary array params: ~a" name *boundary-array-params*))
+
+      ;; Void return type enforcement for grid functions
+      (when is-grid-fn-p
+        (log:info "Compiling grid function ~a (dispatch context)" name)
+        (%validate-grid-function-return-type return-type))
+
+      ;; Extract and store dispatch declarations for entry-point kernels
+      (when is-entry-p
+        (let ((global-size-decl (find "GLOBAL-SIZE" declarations
+                                      :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                      :test #'string-equal))
+              (local-size-decl  (find "LOCAL-SIZE" declarations
+                                      :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                      :test #'string-equal))
+              (num-groups-decl  (find "NUM-GROUPS" declarations
+                                      :key (lambda (x) (when (consp x) (symbol-name (car x))))
+                                      :test #'string-equal)))
+          (when (or global-size-decl local-size-decl num-groups-decl)
+            (let ((dispatch-plist
+                    (append (when global-size-decl (list :global-size global-size-decl))
+                            (when local-size-decl  (list :local-size  local-size-decl))
+                            (when num-groups-decl  (list :num-groups  num-groups-decl)))))
+              (log:info "Kernel ~a: storing dispatch declarations ~a" name dispatch-plist)
+              (setf (gethash name *kernel-dispatch-declarations*) dispatch-plist)))))
+
+      (internal-compile-function name explicit-env return-type params body declarations location *compiler-context*))))
