@@ -562,8 +562,48 @@
              :message (format nil "length~~ requires an (array T N) or tensor type, got ~a" arg-type)
              :source-location location)))))
 
+
+
+(defun analyze-dotimes-expression (expr env context location)
+  "Analyzes (dotimes (var limit [stride]) body...).
+   VAR is bound as the limit's type (int, ulong, etc.) in the body.
+   STRIDE is optional; defaults to literal 1 of the limit's type.
+   Returns a semantic-dotimes node (type void)."
+  (unless (and (>= (length expr) 2) (listp (second expr)) (>= (length (second expr)) 2))
+    (error 'crisp-compiler-error
+           :message "Malformed dotimes: expected (dotimes (var limit [stride]) body...)"
+           :source-location location))
+  (let* ((binding    (second expr))
+         (var-name   (first binding))
+         (limit-form (second binding))
+         (stride-form (third binding))   ;; NIL when omitted
+         (body-forms (cddr expr))
+         ;; Analyze limit
+         (limit-node (analyze-expression limit-form env context (append location '(0))))
+         (limit-type (get-single-value-type limit-node))
+         (limit-ct   (gethash limit-type *crisp-types*)))
+    ;; Validate: limit must be a registered integer type
+    (unless (and limit-ct (member (crisp-type-category limit-ct)
+                                  '(:signed-int :unsigned-int)))
+      (error 'crisp-compiler-error
+             :message (format nil "dotimes limit must be an integer type, got ~a" limit-type)
+             :source-location location))
+    ;; Analyze stride if provided
+    (let ((stride-node (when stride-form
+                         (analyze-expression stride-form env context (append location '(0 1))))))
+      ;; Extend env: bind var as the limit's type
+      (let* ((body-env  (cons (make-parameter-def :name var-name :type limit-type :kind :local) env))
+             (body-nodes (analyze-body-expressions body-forms body-env context (append location '(1)))))
+        (make-semantic-dotimes :type 'void
+                               :var-name var-name
+                               :limit-node limit-node
+                               :stride-node stride-node
+                               :body body-nodes
+                               :source-location location)))))
+
+
 (defun register-control-analyzers ()
-  "Registers all control flow expression analyzers, including length~ for arrays."
+  "Registers all control flow expression analyzers, including length~ and dotimes."
   (def-expression-analyzer function analyze-function-literal)
   (def-expression-analyzer common-lisp:function analyze-function-literal)
   (def-expression-analyzer funcall analyze-funcall-expression)
@@ -590,9 +630,18 @@
   (def-expression-analyzer def-function analyze-nested-def-function)
   (def-expression-analyzer template-instantiation analyze-template-instantiation)
   (def-expression-analyzer common-lisp:eval-when analyze-eval-when)
-  ;; Phase 2: array length~ special form
-  ;; Register in both packages: source is read in :crisp-language, overlay runs in :crisp.compiler.
+  ;; length~ — dual-package registration (source in :crisp-language, ANF output in :crisp.compiler)
   (let ((sym-cl (intern "LENGTH~" (find-package :crisp-language)))
         (sym-cc (intern "LENGTH~" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-length-tilde-expression)
-    (setf (gethash sym-cc *expression-analyzers*) #'analyze-length-tilde-expression)))
+    (setf (gethash sym-cc *expression-analyzers*) #'analyze-length-tilde-expression))
+  ;; dotimes — dual-package registration:
+  ;;   crisp-language::dotimes for .crisp source files
+  ;;   cl::dotimes for ANF-transformed output (anf-transform rebuilds with cl::dotimes)
+  (let ((sym-cl (intern "DOTIMES" (find-package :crisp-language)))
+        (sym-cc (intern "DOTIMES" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-dotimes-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-dotimes-expression))))
+
+

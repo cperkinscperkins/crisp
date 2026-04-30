@@ -2256,3 +2256,62 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         (:local-barrier (%gen-spirv-control-barrier builder module))
         (:mem-fence     (%gen-spirv-memory-barrier  builder module))
         (t (error "generate-node-ir: unknown GPU builtin ~a" bname))))))
+
+
+
+(defmethod generate-node-ir ((node semantic-dotimes) builder module var-env di-builder di-scope location-map)
+  "Generates IR for (dotimes (var limit [stride]) body...).
+   Uses alloca+branch loop pattern (consistent with semantic-if).
+   LLVM mem2reg promotes the alloca to a phi node during optimization."
+  (let* ((limit-node  (semantic-dotimes-limit-node node))
+         (stride-node (semantic-dotimes-stride-node node))
+         (var-name    (semantic-dotimes-var-name node))
+         (body        (semantic-dotimes-body node))
+         ;; Determine LLVM type and signed/unsigned comparison from limit type
+         (limit-type  (get-single-value-type limit-node))
+         (limit-ct    (gethash limit-type *crisp-types*))
+         (is-unsigned (and limit-ct (eq (crisp-type-category limit-ct) :unsigned-int)))
+         (cmp-pred    (if is-unsigned +llvm-int-ult+ +llvm-int-slt+))
+         (llvm-type   (crisp-type-to-llvm-type limit-type module))
+         ;; Current function
+         (current-fn  (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         ;; Generate limit value in current block
+         (limit-val   (generate-node-ir limit-node builder module var-env di-builder di-scope location-map))
+         ;; Generate stride value (or constant 1)
+         (stride-val  (if stride-node
+                          (generate-node-ir stride-node builder module var-env di-builder di-scope location-map)
+                          (llvm-const-int llvm-type 1 0)))
+         ;; Alloca for the loop variable; initialize to 0
+         (i-alloca    (llvm-build-alloca builder llvm-type (string-downcase (symbol-name var-name))))
+         (_           (llvm-build-store builder (llvm-const-int llvm-type 0 0) i-alloca))
+         ;; Basic blocks
+         (check-block (llvm-append-basic-block current-fn "dt_check"))
+         (body-block  (llvm-append-basic-block current-fn "dt_body"))
+         (exit-block  (llvm-append-basic-block current-fn "dt_exit")))
+    (declare (ignore _))
+    ;; Branch from current block into loop check
+    (llvm-build-br builder check-block)
+    ;; --- Check Block: if i < limit goto body else goto exit ---
+    (llvm-position-builder-at-end builder check-block)
+    (let* ((i-val   (llvm-build-load2 builder llvm-type i-alloca "i"))
+           (cond-v  (llvm-build-icmp builder cmp-pred i-val limit-val "dt_cond")))
+      (llvm-build-cond-br builder cond-v body-block exit-block))
+    ;; --- Body Block ---
+    (llvm-position-builder-at-end builder body-block)
+    (let ((body-env (alexandria:copy-hash-table var-env)))
+      ;; Expose the loop variable via the alloca so var-read loads from it
+      (setf (gethash var-name body-env) i-alloca)
+      ;; Generate body expressions
+      (dolist (body-node body)
+        (generate-node-ir body-node builder module body-env di-builder di-scope location-map))
+      ;; Increment: i += stride
+      (let* ((i-cur  (llvm-build-load2 builder llvm-type i-alloca "i_cur"))
+             (i-next (llvm-build-add builder i-cur stride-val "i_next")))
+        (llvm-build-store builder i-next i-alloca)))
+    ;; Branch back to check (unless body already terminated, e.g. explicit return)
+    (unless (terminator-p (llvm-get-insert-block builder))
+      (llvm-build-br builder check-block))
+    ;; --- Exit Block ---
+    (llvm-position-builder-at-end builder exit-block)
+    ;; dotimes returns void
+    (values nil nil)))

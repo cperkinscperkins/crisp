@@ -1251,10 +1251,12 @@ in single-pass mode."
 ;; --- Helper to get the type from any node ---
 
 
+
 (defun semantic-node-type (node)
   "Returns the Crisp type of a semantic node.
-Extended for 087-gpu-builtins."
+Extended for 092-dotimes."
   (etypecase node
+    (semantic-dotimes (semantic-dotimes-type node))
     (semantic-literal (semantic-literal-value-type node))
     (semantic-device-vec-literal (semantic-device-vec-literal-vec-type node))
     (semantic-var-read (semantic-var-read-type node))
@@ -1293,13 +1295,13 @@ Extended for 087-gpu-builtins."
     (semantic-stride-view (semantic-stride-view-type node))
     (semantic-gpu-builtin (semantic-gpu-builtin-type node))))
 
-;;; ----- Redefine semantic-node-source-location (adds semantic-gpu-builtin) -----
 ;; src/analysis/core.lisp
-
+;; Redefine semantic-node-source-location to include semantic-dotimes.
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
-Extended for 087-gpu-builtins."
+Extended for 092-dotimes."
   (etypecase node
+    (semantic-dotimes (semantic-dotimes-source-location node))
     (semantic-literal (semantic-literal-source-location node))
     (semantic-device-vec-literal (semantic-device-vec-literal-source-location node))
     (semantic-var-read (semantic-var-read-source-location node))

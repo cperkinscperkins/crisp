@@ -187,18 +187,29 @@ argument as a place (not hoisted to a temp), matching the set! convention."
                   (let ((temp (anf-fresh-temp)))
                     (values temp `((,temp ,anf-progn))))
                   (values anf-progn nil)))))
-        ((eq op 'dotimes)
+        ;; 092-dotimes: use string-equal so crisp-language::dotimes and cl::dotimes
+        ;; both match regardless of which package the source was read in.
+        ((and (symbolp op) (string-equal (symbol-name op) "DOTIMES"))
           (let* ((binding (cadr expr))
                  (var (car binding))
                  (limit (cadr binding))
+                 (stride (third binding))   ;; optional; NIL when omitted
                  (body (cddr expr)))
             (multiple-value-bind (new-limit limit-bindings) (anf-normalize limit t)
-              (let* ((anf-body (mapcar #'%anf-transform body))
-                     (anf-dotimes `(dotimes (,var ,new-limit) ,@anf-body)))
-                (if is-nested?
-                    (let ((temp (anf-fresh-temp)))
-                      (values temp (append limit-bindings `((,temp ,anf-dotimes)))))
-                    (values anf-dotimes limit-bindings))))))
+              (if stride
+                  (multiple-value-bind (new-stride stride-bindings) (anf-normalize stride t)
+                    (let* ((anf-body (mapcar #'%anf-transform body))
+                           (anf-dotimes `(,op (,var ,new-limit ,new-stride) ,@anf-body)))
+                      (if is-nested?
+                          (let ((temp (anf-fresh-temp)))
+                            (values temp (append limit-bindings stride-bindings `((,temp ,anf-dotimes)))))
+                          (values anf-dotimes (append limit-bindings stride-bindings)))))
+                  (let* ((anf-body (mapcar #'%anf-transform body))
+                         (anf-dotimes `(,op (,var ,new-limit) ,@anf-body)))
+                    (if is-nested?
+                        (let ((temp (anf-fresh-temp)))
+                          (values temp (append limit-bindings `((,temp ,anf-dotimes)))))
+                        (values anf-dotimes limit-bindings)))))))
         ;; 082-atomics: atomic RMW ops treat the first arg as a place (not hoisted).
         ;; Use string= to handle cross-package symbols (crisp.compiler vs crisp-language).
         ((and (symbolp op)

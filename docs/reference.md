@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-29T04:52:31.462108Z
+Generated on 2026-04-30T00:19:39.128265Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -138,9 +138,16 @@ Generated on 2026-04-29T04:52:31.462108Z
 
 
 ---
+### DEFUN `ANALYZE-DOTIMES-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (dotimes (var limit [stride]) body...).  >    VAR is bound as the limit's type (int, ulong, etc.) in the body.  >    STRIDE is optional; defaults to literal 1 of the limit's type.  >    Returns a semantic-dotimes node (type void).
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including length~ for arrays.
+  > Registers all control flow expression analyzers, including length~ and dotimes.
 
 
 ---
@@ -456,14 +463,14 @@ Generated on 2026-04-29T04:52:31.462108Z
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the Crisp type of a semantic node.  > Extended for 087-gpu-builtins.
+  > Returns the Crisp type of a semantic node.  > Extended for 092-dotimes.
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
 
-  > Returns the source location of a semantic node.  > Extended for 087-gpu-builtins.
+  > Returns the source location of a semantic node.  > Extended for 092-dotimes.
 
 
 ---
@@ -3926,6 +3933,12 @@ Generated on 2026-04-29T04:52:31.462108Z
 ### DEFSTRUCT `SEMANTIC-STRIDE-VIEW`
 
   > A view into an existing 2D tensor with stride/extent/offset computed at runtime.  >    Used for: transpose (swaps row/col dimensions), col (extract 1D column slice),  >    row (extract 1D row slice).  >    Fields:  >      op           — :transpose, :col, or :row  >      source-node  — semantic node for the 2D source matrix  >      index-node   — semantic node for the column/row index (NIL for transpose)  >      type         — result type list, e.g. (tensor int 2 :global :read-write :strided)  >      source-location
+
+
+---
+### DEFSTRUCT `SEMANTIC-DOTIMES`
+
+  > Represents (dotimes (var limit [stride]) body...).  >    var is bound to 0, stride, 2*stride, ... while var < limit.  >    stride-node is NIL when the stride was omitted (emit constant 1).  >    Always returns void.
 
 
 ---
