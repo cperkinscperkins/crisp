@@ -260,10 +260,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (%SV-TO-I64 BUILDER VAL)  codegen.lisp
 - - - - - - - - - - (%CALL-SPIRV-VEC3-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp
 - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp
 - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp
 - - - - - - - - - - (%CALL-SPIRV-UINT-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp
-- - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp
 - - - - - - - - - - (%GEN-LOCAL-LINEAR-ID BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - (%CALL-SPIRV-VEC3-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
 - - - - - - - - - - - (%GEN-FLAT-LINEAR-ID-FROM-VECS BUILDER LID-VEC LWS-VEC NAME)  codegen.lisp
@@ -729,6 +728,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
 - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
@@ -741,6 +741,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
 - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+
+- (ANALYZE-LOOP-VECTOR-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-MAKE-VIEW-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]

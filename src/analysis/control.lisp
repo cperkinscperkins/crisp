@@ -517,51 +517,59 @@
 
 
 
+
 (defun analyze-length-tilde-expression (expr env context location)
   "Analyzes (length~ arr).
    For (array T N): returns compile-time constant N as ulong literal.
-   For tensor types: dispatches to the runtime length~ accessor function.
-   Signals crisp-compiler-error if argument is neither array nor tensor."
+   For tensor/vector/matrix types: dispatches to the runtime length~ accessor.
+   Signals crisp-compiler-error if argument is none of the above."
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error
            :message "length~ expects exactly 1 argument: (length~ arr)"
            :source-location location))
-  (let* ((arg-node (analyze-expression (second expr) env context location))
-         (raw-type (semantic-node-type arg-node))
-         (arg-type (resolve-type-alias
-                    (if (and (listp raw-type) (= (length raw-type) 1) (listp (first raw-type)))
-                        (first raw-type)
-                        raw-type)))
-         ;; Check if this is a tensor type (mangled symbol or canonical list starting with TENSOR)
+  (let* ((arg-node  (analyze-expression (second expr) env context location))
+         (raw-type  (semantic-node-type arg-node))
+         (arg-type  (resolve-type-alias
+                     (if (and (listp raw-type) (= (length raw-type) 1) (listp (first raw-type)))
+                         (first raw-type)
+                         raw-type)))
+         ;; Expand vector/matrix sugar so we can inspect the canonical form
+         (expanded  (expand-storage-handle-type-specifier (resolve-type-alias arg-type)))
+         ;; A type is tensor-like if it's a mangled tensor symbol, a canonical (tensor ...) list,
+         ;; or if expanding it yields a (tensor ...) list (i.e. vector/matrix sugar).
          (is-tensor (let ((resolved (resolve-type-alias arg-type)))
                       (or (and (symbolp resolved)
                                (let* ((parts (unmangle-template-struct-name resolved))
-                                      (base (first parts)))
+                                      (base  (first parts)))
                                  (and base (string-equal (symbol-name base) "TENSOR"))))
                           (and (listp resolved)
                                (symbolp (first resolved))
-                               (string-equal (symbol-name (first resolved)) "TENSOR"))))))
+                               (string-equal (symbol-name (first resolved)) "TENSOR"))
+                          ;; VECTOR / MATRIX expand to (tensor ...) via expand-storage-handle-type-specifier
+                          (and (listp expanded)
+                               (symbolp (first expanded))
+                               (string-equal (symbol-name (first expanded)) "TENSOR"))))))
     (cond
-     ;; Tensor: delegate to the runtime length~ accessor in the function table
+     ;; Tensor / vector / matrix: delegate to the runtime length~ accessor
      (is-tensor
-      (log:info "length~~: tensor type ~a → delegating to runtime accessor" arg-type)
+      (log:info "length~~: tensor/vector/matrix type ~a -> delegating to runtime accessor" arg-type)
       (analyze-function-call 'length~ expr env context location))
-     ;; Array: compile-time constant
+     ;; Fixed-size array: compile-time constant
      ((%array-type-p arg-type)
       (let* ((n-raw (third arg-type))
-             (n (etypecase n-raw
-                  (integer n-raw)
-                  (symbol  (parse-integer (symbol-name n-raw))))))
+             (n     (etypecase n-raw
+                      (integer n-raw)
+                      (symbol  (parse-integer (symbol-name n-raw))))))
         (log:info "length~~: array type ~a -> N=~a" arg-type n)
         (make-semantic-literal :value-type 'ulong
-                               :value (coerce n '(unsigned-byte 64))
+                               :value      (coerce n '(unsigned-byte 64))
                                :source-location location)))
      ;; Neither: error
      (t
       (error 'crisp-compiler-error
-             :message (format nil "length~~ requires an (array T N) or tensor type, got ~a" arg-type)
+             :message (format nil "length~~ requires an (array T N), tensor, vector, or matrix type, got ~a"
+                              arg-type)
              :source-location location)))))
-
 
 
 (defun analyze-dotimes-expression (expr env context location)
@@ -602,8 +610,78 @@
                                :source-location location)))))
 
 
+
+(defun analyze-loop-vector-stride-expression (expr env context location)
+  "Analyzes (loop-vector-stride VEC (VAR) BODY...).
+   VEC must be a vector/matrix/tensor expression; VAR is bound to the element index (ulong).
+   Expands at analysis time to:
+     (let ((gid   (get-global-id 0))
+           (gsize (get-global-work-size 0))
+           (len   (length~ VEC)))
+       (declare (grid-level))
+       (dotimes (k len gsize)
+         (let ((VAR (+ k gid)))
+           (when (< VAR len)
+             BODY...))))
+   The (declare (grid-level)) enforces dispatch context and prevents nesting."
+  (unless (and (>= (length expr) 3)
+               (listp (third expr))
+               (= (length (third expr)) 1)
+               (symbolp (first (third expr))))
+    (error 'crisp-compiler-error
+           :message "Malformed loop-vector-stride: expected (loop-vector-stride VEC (VAR) BODY...)"
+           :source-location location))
+  (let* ((vec-form   (second expr))
+         (var-name   (first (third expr)))
+         (body-forms (cdddr expr))
+         ;; Gensym internal names to prevent variable capture
+         (gid-sym   (gensym "GID"))
+         (gsize-sym (gensym "GSIZE"))
+         (len-sym   (gensym "LEN"))
+         (k-sym     (gensym "K"))
+         ;; Use crisp-language symbols so the analyzer dispatch table recognises them
+         (cl-pkg         (find-package :crisp-language))
+         (let-sym        (intern "LET"                  cl-pkg))
+         (declare-sym    (intern "DECLARE"              cl-pkg))
+         (grid-level-sym (intern "GRID-LEVEL"           cl-pkg))
+         (dotimes-sym    (intern "DOTIMES"              cl-pkg))
+         (when-sym       (intern "WHEN"                 cl-pkg))
+         (get-gid-sym    (intern "GET-GLOBAL-ID"        cl-pkg))
+         (get-gsize-sym  (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+         (len-tilde-sym  (intern "LENGTH~"              cl-pkg))
+         (plus-sym       (intern "+"                    cl-pkg))
+         (lt-sym         (intern "<"                    cl-pkg)))
+    (let* ((inner-when
+            ;; (when (< VAR len__) body...)
+            (list* when-sym
+                   (list lt-sym var-name len-sym)
+                   body-forms))
+           (inner-let
+            ;; (let ((VAR (+ k__ gid__))) <inner-when>)
+            (list let-sym
+                  (list (list var-name (list plus-sym k-sym gid-sym)))
+                  inner-when))
+           (dotimes-form
+            ;; (dotimes (k__ len__ gsize__) <inner-let>)
+            (list dotimes-sym
+                  (list k-sym len-sym gsize-sym)
+                  inner-let))
+           (expansion
+            ;; (let ((gid__ ...) (gsize__ ...) (len__ ...))
+            ;;   (declare (grid-level))
+            ;;   <dotimes-form>)
+            (list let-sym
+                  (list (list gid-sym   (list get-gid-sym 0))
+                        (list gsize-sym (list get-gsize-sym 0))
+                        (list len-sym   (list len-tilde-sym vec-form)))
+                  (list declare-sym (list grid-level-sym))
+                  dotimes-form)))
+      (analyze-expression expansion env context location))))
+
+;; src/analysis/control.lisp
+;; Redefine register-control-analyzers to include loop-vector-stride registration.
 (defun register-control-analyzers ()
-  "Registers all control flow expression analyzers, including length~ and dotimes."
+  "Registers all control flow expression analyzers, including loop-vector-stride."
   (def-expression-analyzer function analyze-function-literal)
   (def-expression-analyzer common-lisp:function analyze-function-literal)
   (def-expression-analyzer funcall analyze-funcall-expression)
@@ -630,18 +708,22 @@
   (def-expression-analyzer def-function analyze-nested-def-function)
   (def-expression-analyzer template-instantiation analyze-template-instantiation)
   (def-expression-analyzer common-lisp:eval-when analyze-eval-when)
-  ;; length~ — dual-package registration (source in :crisp-language, ANF output in :crisp.compiler)
+  ;; length~
   (let ((sym-cl (intern "LENGTH~" (find-package :crisp-language)))
         (sym-cc (intern "LENGTH~" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-length-tilde-expression)
     (setf (gethash sym-cc *expression-analyzers*) #'analyze-length-tilde-expression))
-  ;; dotimes — dual-package registration:
-  ;;   crisp-language::dotimes for .crisp source files
-  ;;   cl::dotimes for ANF-transformed output (anf-transform rebuilds with cl::dotimes)
+  ;; dotimes
   (let ((sym-cl (intern "DOTIMES" (find-package :crisp-language)))
         (sym-cc (intern "DOTIMES" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-dotimes-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-dotimes-expression))))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-dotimes-expression)))
+  ;; loop-vector-stride — dual-package registration
+  (let ((sym-cl (intern "LOOP-VECTOR-STRIDE" (find-package :crisp-language)))
+        (sym-cc (intern "LOOP-VECTOR-STRIDE" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-loop-vector-stride-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-loop-vector-stride-expression))))
 
 

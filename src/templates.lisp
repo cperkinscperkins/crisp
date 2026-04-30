@@ -681,50 +681,59 @@ parameters have already been inferred from earlier arguments."
   (not (or (eq status :compiled)
            (and (eq status :analyzed) (not is-compiling)))))
 
+
+
+
 (defun ensure-template-instantiation (name explicit-arg-types compiler-callback)
   "Called by the compiler to auto-instantiate templates.
-   compiler-callback is (lambda (form location) ...)"
+   compiler-callback is (lambda (form location) ...).
+   Fixed: is-compiling now uses *compiler-session* instead of boundp on symbol-macro."
   (let* ((templates (gethash name *template-registry*))
-         ;; If not found directly, try stripping "MAKE-" or "MAKE-...%DISPATCH" prefix for struct constructors
          (struct-name (%resolve-template-name name))
          (templates (or templates (when struct-name (gethash struct-name *template-registry*))))
          (match-sets nil))
 
-    ;; 1. Try Function Signature Inference
     (setf match-sets (try-infer-template-types (or struct-name name) explicit-arg-types))
 
-    ;; 2. If no function match, checking for Struct/Direct Instantiation by Arity
     (unless match-sets
       (loop for tmpl in templates
             for params = (template-data-parameters tmpl)
-              ;; Relaxed check: Allow arguments >= parameters if the extras are properties (managed by mangle)
             do (when (= (length explicit-arg-types) (length params))
-                     ;; Direct match/superset by arity (explicit args are the concrete types)
-                     ;; This assumes explicit-arg-types are the TYPES, not values.
                      (push (list tmpl explicit-arg-types) match-sets))))
 
     (let ((did-work nil))
       (loop for (tmpl inferred-types) in match-sets do
-              (let* ((key (cons (template-data-name tmpl) inferred-types))
-                     (status (gethash key *instantiated-templates*))
-                     (is-compiling (and (boundp 'crisp.compiler::*current-module*)
-                                        crisp.compiler::*current-module*)))
+              (let* ((key          (cons (template-data-name tmpl) inferred-types))
+                     (status       (gethash key *instantiated-templates*))
+                     ;; FIX: *current-module* is a symbol-macro, not defvar.
+                     ;; (boundp '*current-module*) always NIL.  Check the session directly.
+                     (is-compiling (and *compiler-session*
+                                        (compiler-session-module *compiler-session*))))
 
-                ;; Smart Cache Check: Only proceed if needed
                 (when (%should-instantiate-template key status is-compiling)
                       (log:info "Auto-specializing template ~a for types ~a (Status: ~a, Is-Compiling: ~a)"
                                 name inferred-types status is-compiling)
 
-                      ;; 1. Instantiate the template using the SPECIFIC template object found
                       (let ((instantiated-code (instantiate-template tmpl inferred-types)))
-                        ;; 2. Compile the instantiated code (it's a PROGN of DEF-FUNCTIONs)
-                        (loop for form in (rest instantiated-code) ; skip 'progn
-                              do (funcall compiler-callback form nil))
+                        (loop for form in (rest instantiated-code)
+                              do (let ((is-wrapper
+                                        ;; _WRAPPER functions have c-t fields typed as type-spec/address-space/etc
+                                        ;; which map to void in LLVM — illegal as parameter types.
+                                        ;; Eval them to register overloads; never compile to IR.
+                                        (and (consp form)
+                                             (symbolp (car form))
+                                             (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+                                             (symbolp (second form))
+                                             (search "_WRAPPER" (symbol-name (second form))
+                                                     :test #'char-equal))))
+                                   (if (and is-compiling (not is-wrapper))
+                                       (funcall compiler-callback form nil)
+                                       (eval form))))
 
-                        ;; Update status
                         (setf (gethash key *instantiated-templates*) (if is-compiling :compiled :analyzed))
                         (setf did-work t)))))
       did-work)))
+
 
 (defmacro make-structure-template-instance (template-name concrete-types &rest ctor-args)
   "Instantiates the struct template ensuring definitions exist, then calls the constructor."

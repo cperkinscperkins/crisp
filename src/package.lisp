@@ -141,7 +141,12 @@
    #:llvm-md-kind-id-in-context
    #:llvm-md-string-in-context2
    #:llvm-value-as-metadata
-   #:llvm-md-node-in-context2))
+   #:llvm-md-node-in-context2
+   
+   #:llvm-add-global-in-addrspace
+   #:llvm-get-named-global
+   #:llvm-set-linkage
+   #:llvm-set-initializer))
 
 (defpackage :crisp.utils
   (:use :cl)

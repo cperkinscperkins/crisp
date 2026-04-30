@@ -596,6 +596,26 @@
               (loc :pointer))
 
 
+;;
+(defcfun ("LLVMAddGlobalInAddressSpace" llvm-add-global-in-addrspace) :pointer
+  (module    :pointer)
+  (type      :pointer)
+  (name      :string)
+  (addrspace :unsigned-int))
+
+(defcfun ("LLVMGetNamedGlobal" llvm-get-named-global) :pointer
+  (module :pointer)
+  (name   :string))
+
+(defcfun ("LLVMSetLinkage" llvm-set-linkage) :void
+  (global  :pointer)
+  (linkage :unsigned-int))
+
+(defcfun ("LLVMSetInitializer" llvm-set-initializer) :void
+  (global      :pointer)
+  (const-val   :pointer))
+
+
 ;; --- Generic Metadata (for specific annotations like kernel args) ---
 
 (defcfun ("LLVMGlobalSetMetadata" llvm-global-set-metadata) :void

@@ -2084,16 +2084,25 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
           (llvm-add-function module fn-name ft))
         existing)))
 
+
+
+
 (defun %call-spirv-vec3-builtin (builder module spirv-name)
-  "Emits a call to @__spirv_BuiltIn<SPIRV-NAME>() returning <3 x i64> (ulong3).
-   Example: spirv-name=\"GlobalInvocationId\" -> @__spirv_BuiltInGlobalInvocationId"
-  (let* ((fn-name   (format nil "__spirv_BuiltIn~a" spirv-name))
+  "Emits a load from @__spirv_BuiltIn<SPIRV-NAME> addrspace(1) global with zeroinitializer.
+   The LLVM-SPIRV translator maps addrspace(1) globals named __spirv_BuiltIn* to SPIR-V
+   OpVariable BuiltIn decorations.  Using a zeroinitializer (CommonLinkage) suppresses the
+   import linkage that an external declaration generates, preventing the
+   ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED error from Level Zero at runtime."
+  (let* ((gvar-name (format nil "__spirv_BuiltIn~a" spirv-name))
          (vec3-type (crisp-type-to-llvm-type 'ulong3 module))
-         (fn        (%spirv-get-or-create-fn module fn-name vec3-type (cffi:null-pointer) 0)))
-    (llvm-build-call2 builder
-                      (llvm-function-type vec3-type (cffi:null-pointer) 0 nil)
-                      fn (cffi:null-pointer) 0
-                      (string-downcase spirv-name))))
+         (existing  (llvm-get-named-global module gvar-name))
+         (gvar      (if (cffi:null-pointer-p existing)
+                        (let ((g (llvm-add-global-in-addrspace module vec3-type gvar-name 1)))
+                          ;; zeroinitializer → CommonLinkage (8); suppresses import linkage attr
+                          (llvm-set-initializer g (llvm-const-null vec3-type))
+                          g)
+                        existing)))
+    (llvm-build-load2 builder vec3-type gvar (string-downcase spirv-name))))
 
 (defun %call-spirv-uint-builtin (builder module spirv-name)
   "Emits a call to @__spirv_BuiltIn<SPIRV-NAME>() returning i32 (uint)."

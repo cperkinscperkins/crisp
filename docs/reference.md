@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-30T00:19:39.128265Z
+Generated on 2026-04-30T05:26:13.306145Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -134,7 +134,7 @@ Generated on 2026-04-30T00:19:39.128265Z
 ### DEFUN `ANALYZE-LENGTH-TILDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (length~ arr).  >    For (array T N): returns compile-time constant N as ulong literal.  >    For tensor types: dispatches to the runtime length~ accessor function.  >    Signals crisp-compiler-error if argument is neither array nor tensor.
+  > Analyzes (length~ arr).  >    For (array T N): returns compile-time constant N as ulong literal.  >    For tensor/vector/matrix types: dispatches to the runtime length~ accessor.  >    Signals crisp-compiler-error if argument is none of the above.
 
 
 ---
@@ -145,9 +145,16 @@ Generated on 2026-04-30T00:19:39.128265Z
 
 
 ---
+### DEFUN `ANALYZE-LOOP-VECTOR-STRIDE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (loop-vector-stride VEC (VAR) BODY...).  >    VEC must be a vector/matrix/tensor expression; VAR is bound to the element index (ulong).  >    Expands at analysis time to:  >      (let ((gid   (get-global-id 0))  >            (gsize (get-global-work-size 0))  >            (len   (length~ VEC)))  >        (declare (grid-level))  >        (dotimes (k len gsize)  >          (let ((VAR (+ k gid)))  >            (when (< VAR len)  >              BODY...))))  >    The (declare (grid-level)) enforces dispatch context and prevents nesting.
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including length~ and dotimes.
+  > Registers all control flow expression analyzers, including loop-vector-stride.
 
 
 ---
@@ -1558,7 +1565,7 @@ Generated on 2026-04-30T00:19:39.128265Z
 ### DEFUN `%CALL-SPIRV-VEC3-BUILTIN`
 - **Args**: `(BUILDER MODULE SPIRV-NAME)`
 
-  > Emits a call to @__spirv_BuiltIn<SPIRV-NAME>() returning <3 x i64> (ulong3).  >    Example: spirv-name="GlobalInvocationId" -> @__spirv_BuiltInGlobalInvocationId
+  > Emits a load from @__spirv_BuiltIn<SPIRV-NAME> addrspace(1) global with zeroinitializer.  >    The LLVM-SPIRV translator maps addrspace(1) globals named __spirv_BuiltIn* to SPIR-V  >    OpVariable BuiltIn decorations.  Using a zeroinitializer (CommonLinkage) suppresses the  >    import linkage that an external declaration generates, preventing the  >    ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED error from Level Zero at runtime.
 
 
 ---
@@ -4213,7 +4220,7 @@ Generated on 2026-04-30T00:19:39.128265Z
 ### DEFUN `ENSURE-TEMPLATE-INSTANTIATION`
 - **Args**: `(NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)`
 
-  > Called by the compiler to auto-instantiate templates.  >    compiler-callback is (lambda (form location) ...)
+  > Called by the compiler to auto-instantiate templates.  >    compiler-callback is (lambda (form location) ...).  >    Fixed: is-compiling now uses *compiler-session* instead of boundp on symbol-macro.
 
 
 ---

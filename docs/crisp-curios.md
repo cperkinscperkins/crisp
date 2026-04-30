@@ -2,6 +2,10 @@ Curious Things To Know About Crisp
 ==================================
 
 - recursion (and mutual recursion) are DISALLOWED.
+- unbound loops (such as "while") are DISALLOWED.
+- Crisp has "let", which behaves like Common Lisp "let*".  AND Crisp "let" supports multiple value binding.
+  There is no "let*" in Crisp itself.  (let ((quot rem (div 10 3))) ...)
+- but a subset of Common Lisp is used in defmacro. It is expected to expand into Crisp forms.
 - template support
 - passing functions as first order arguments means the function is implicitly promoted to a template (if not already templated), specialized on <F>, and then we monomorphically instantiate the actual function arg.
 - functions with &optional and &key parameters have their combinations monomorphically templated. lazy instantiated though to fulfill actual calls.
