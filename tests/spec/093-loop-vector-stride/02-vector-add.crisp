@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "integer-only kernel, no differentiable params"
+;; Classic vector_add using loop-vector-stride.
+;; Each thread strides over A and writes A[i]+B[i] to C[i].
+
+(def-type vec-t (vector int :address-space :global :access :read-write :align :compact))
+
+(def-kernel vector_add (A B &out C)
+  (declare #'(vec-t vec-t &out vec-t => nil) forward-only)
+  (loop-vector-stride A (i)
+    (set! (~ C i) (+ (~ A i) (~ B i)))))

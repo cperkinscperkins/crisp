@@ -1,0 +1,15 @@
+;; SKIP-WITH[--differentiate]: "integer-only kernel, no differentiable params"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 0 1 2 3
+;; Fill a 4-element vector with its indices using loop-vector-stride.
+;; global-size :set-to 4 means one thread per element, so each thread
+;; processes exactly one element: thread i writes i to out[i].
+;; (Hoist test harness allocates 4 elements by default for tensor params.)
+
+(def-type vec4 (vector int :address-space :global :access :read-write :align :compact))
+
+(def-kernel fill_iota (&out out)
+  (declare #'(&out vec4 => nil)
+           (global-size :set-to 4))
+  (loop-vector-stride out (i)
+    (set! (~ out i) (to-int i))))

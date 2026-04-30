@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "Grid-level contexts cannot be nested"
+;; Nested loop-vector-stride is forbidden (grid-level contexts cannot nest).
+
+(def-type vec-t (vector int :address-space :global :access :read-write :align :compact))
+
+(def-kernel nested_stride (A &out B)
+  (declare #'(vec-t &out vec-t => nil))
+  (loop-vector-stride A (i)
+    (loop-vector-stride B (j)
+      (set! (~ B j) (~ A i)))))
