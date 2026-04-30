@@ -1,0 +1,11 @@
+;; SKIP-WITH[--differentiate]: "dotimes kernel is integer-only, no differentiable params"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER vec: 0 1 2 3
+
+(def-type vec-t (vector int :address-space :global :access :read-write :align :compact))
+
+(def-kernel iota_kernel (n &out vec)
+    (declare #'(int &out vec-t => nil)
+            (global-size :set-to 1))  ;; in lieu of (declare single-task) which is not yet implemented
+    (dotimes (i n)
+        (set! (~ vec i) i)))

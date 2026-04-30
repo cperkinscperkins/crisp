@@ -570,6 +570,10 @@ Preperatory
 - - [ ] DEFER :interleaved  .. until we tackle def-orchestration.
 - - [ ] FOLLOW UP: check-thread-bounds check-wg-bounds
 - - [x] document :num-groups in ref.metacrisp
+- - [ ] Check single-task!  It should be a strategy, no?  Strategy helps set the relationship to some input data.  I think the original (declare single-task) might be better.
+- [ ] REVISIT 085.  We are apparently STILL refusing kernels with long/int input args or whatever.
+      Look at 092, 089, possibly others that seem like they should be differentiable, but are being
+      refused. 
 
 Grid vs Thread Context
 =======================

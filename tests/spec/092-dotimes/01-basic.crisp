@@ -7,6 +7,6 @@
 (def-type cell-t (cell int :address-space :global :access :read-write))
 
 (def-kernel dotimes_basic (n &out result)
-  (declare #'(int &out cell-t => nil))
+  (declare #'(int &out cell-t => nil) forward-only)
   (dotimes (i n)
     (set! (~ result) (+ (~ result) i))))

@@ -7,6 +7,6 @@
 (def-type cell-t (cell ulong :address-space :global :access :read-write))
 
 (def-kernel dotimes_ulong (n &out result)
-  (declare #'(ulong &out cell-t => nil))
+  (declare #'(ulong &out cell-t => nil) forward-only)
   (dotimes (i n)
     (set! (~ result) (+ (~ result) i))))
