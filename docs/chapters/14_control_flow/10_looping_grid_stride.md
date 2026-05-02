@@ -16,7 +16,7 @@ programmer achieve maximum performance.
 
 ### IMPORTANT - NO NESTING
 
-Both `loop-vector-stride` and  `thread-stride` operations are "grid level" operations. That is discussed below. Essentially,
+Both `loop-vector-stride` and  `tensor-stride` operations are "grid level" operations. That is discussed below. Essentially,
 grid level operations cannot nest inside one another. The compiler will error if you attempt to do so.
 
 Also the body of those two `-stride` operations cannot call other "grid level" operations like the variants

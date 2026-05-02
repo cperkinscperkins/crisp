@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; Not specifying :contiguous-term defaults to :last.
+;; Both types should expand to the same canonical 7-tuple and instantiate the same template.
+
+(def-type mat-default-t (matrix float :align :compact :address-space :global :access :read-write))
+(def-type mat-last-t    (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :last))
+
+(def-kernel test_default (m)
+  (declare forward-only (type m mat-default-t))
+  (return))
+
+(def-kernel test_explicit_last (m)
+  (declare forward-only (type m mat-last-t))
+  (return))

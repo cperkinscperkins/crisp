@@ -62,7 +62,7 @@ referencing.
  :contiguous-term  :row-major
  :contiguous-term  :col-major
 
- (thread-stride someMatrix (row-y col-x) ...)
+ (tensor-stride someMatrix (row-y col-x) ...)
 ```
 
 

@@ -1716,11 +1716,10 @@ Returns the form or NIL."
   "Returns T if the define line contains a ptr addrspace(3) parameter."
   (search "ptr addrspace(3)" define-line))
 
+
+
 (defun validate-074-02-scratch-vector-propagation-ir (ir-path)
-  "Validates scratch vector propagation IR:
-     - kernel_a has 7 params: ptr addrspace(3) + 5 x i64 (implicit tensor N=1)
-       + i32 (explicit n)
-     - fun_c has the same expanded signature (is a carrier)"
+  "Validates scratch vector propagation IR (updated for 7-tuple tensor names)."
   (unless (probe-file ir-path)
     (log:error "validate-074-02: IR file not found: ~a" ir-path)
     (return-from validate-074-02-scratch-vector-propagation-ir nil))
@@ -1734,15 +1733,12 @@ Returns the form or NIL."
          (progn (log:error "validate-074-02: kernel_a expected 7 params, got ~a" ka-count) nil))
      (or (search "ptr addrspace(3)" ir)
          (progn (log:error "validate-074-02: expected local (addrspace 3) scratch pointer") nil))
-     (or (search "fun_c_tensor_int_1_local_read_write_compact_int" ir)
+     (or (search "fun_c_tensor_int_1_local_read_write_compact_last_int" ir)
          (progn (log:error "validate-074-02: carrier fun_c not found with expanded implicit signature") nil))
      (progn (log:info "validate-074-02: PASS") t))))
 
 (defun validate-074-03-scratch-tensor-propagation-ir (ir-path)
-  "Validates scratch tensor (N=3) propagation IR:
-     - kernel_a has 13 params: ptr addrspace(3) + 11 x i64 (implicit tensor N=3)
-       + i32 (explicit n)
-     - fun_c has the same expanded signature"
+  "Validates scratch tensor (N=3) propagation IR (updated for 7-tuple tensor names)."
   (unless (probe-file ir-path)
     (log:error "validate-074-03: IR file not found: ~a" ir-path)
     (return-from validate-074-03-scratch-tensor-propagation-ir nil))
@@ -1754,17 +1750,14 @@ Returns the form or NIL."
     (and
      (or (= ka-count 13)
          (progn (log:error "validate-074-03: kernel_a expected 13 params, got ~a" ka-count) nil))
-     (or (search "TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT" ir)
-         (progn (log:error "validate-074-03: expected TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT type in IR") nil))
-     (or (search "fun_c_tensor_float_3_local_read_write_compact_int" ir)
+     (or (search "TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT_LAST" ir)
+         (progn (log:error "validate-074-03: expected TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT_LAST type in IR") nil))
+     (or (search "fun_c_tensor_float_3_local_read_write_compact_last_int" ir)
          (progn (log:error "validate-074-03: carrier fun_c not found with expanded implicit signature") nil))
      (progn (log:info "validate-074-03: PASS") t))))
 
 (defun validate-074-04-scratch-matrix-propagation-ir (ir-path)
-  "Validates scratch matrix (N=2) propagation IR:
-     - kernel_a has 11 params: ptr addrspace(3) + 8 x i64 (implicit tensor N=2)
-       + 2 x i64 (explicit row col as ulong)
-     - fun_c has the same expanded signature"
+  "Validates scratch matrix (N=2) propagation IR (updated for 7-tuple tensor names)."
   (unless (probe-file ir-path)
     (log:error "validate-074-04: IR file not found: ~a" ir-path)
     (return-from validate-074-04-scratch-matrix-propagation-ir nil))
@@ -1776,9 +1769,9 @@ Returns the form or NIL."
     (and
      (or (= ka-count 11)
          (progn (log:error "validate-074-04: kernel_a expected 11 params, got ~a" ka-count) nil))
-     (or (search "TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT" ir)
-         (progn (log:error "validate-074-04: expected TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT type in IR") nil))
-     (or (search "fun_c_tensor_float_2_local_read_write_compact_ulong_ulong" ir)
+     (or (search "TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT_LAST" ir)
+         (progn (log:error "validate-074-04: expected TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT_LAST type in IR") nil))
+     (or (search "fun_c_tensor_float_2_local_read_write_compact_last_ulong_ulong" ir)
          (progn (log:error "validate-074-04: carrier fun_c not found with expanded implicit signature") nil))
      (progn (log:info "validate-074-04: PASS") t))))
 

@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; matrix declared with :contiguous-term :first (col-major layout) should compile fine.
+
+(def-type mat-t (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :first))
+
+(def-kernel test_matrix_ct_first (m)
+  (declare forward-only (type m mat-t))
+  (return))

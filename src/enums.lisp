@@ -82,3 +82,5 @@
 (def-enumeration align :compact :compact-offset :strided)
 
 (def-enumeration matrix-layout :row-major :col-major :other-layout)
+
+(def-enumeration contiguity :last :first)

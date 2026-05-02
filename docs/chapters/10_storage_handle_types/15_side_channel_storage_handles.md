@@ -163,8 +163,8 @@ of the `scratch-vec` with something, and `identity` is that something.
 There are also  `load-tile` and `store-tile` helpers to assist with
 similar operations in 2D strided scenarios. They are described below with Matrices.
 Lastly, `load-tile` and `store-tile` can be used with any tile size (so long as it is
-not bigger than a single workgroup). From within  a `thread-stride` they don't require any
-placement arguments, but they are perfectly usable without. See the section on [thread-stride](#general-purpose-thread-stride). 
+not bigger than a single workgroup). From within  a `tile-stride` they don't require any
+placement arguments, but they are perfectly usable without. See the section on [tile-stride](#general-purpose-tensor-stride-grid-stride--tile-stride-and-hardware-stride). 
 
 Possible Implementation
 ```

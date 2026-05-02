@@ -2324,3 +2324,24 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (llvm-position-builder-at-end builder exit-block)
     ;; dotimes returns void
     (values nil nil)))
+
+
+(defmethod generate-node-ir ((node semantic-eq) builder module var-env di-builder di-scope location-map)
+  "Generates IR for =, guarding against NIL lhs-type for enum/keyword operands."
+  (multiple-value-bind (lhs lhs-loc)
+      (generate-node-ir (semantic-eq-left-arg node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore lhs-loc))
+    (multiple-value-bind (rhs rhs-loc)
+        (generate-node-ir (semantic-eq-right-arg node) builder module var-env di-builder di-scope location-map)
+      (declare (ignore rhs-loc))
+      (let* ((lhs-type-name (get-single-value-type (semantic-eq-left-arg node)))
+             (lhs-type (gethash lhs-type-name *crisp-types*))
+             (lhs (extract-primary-value builder lhs (semantic-node-type (semantic-eq-left-arg node))))
+             (rhs (extract-primary-value builder rhs (semantic-node-type (semantic-eq-right-arg node))))
+             ;; Guard: enums and keywords are NOT in *crisp-types*; they compile to i32 → signed int.
+             (is-float    (and lhs-type (eq (crisp-type-category lhs-type) :float)))
+             (cmp-inst
+              (if is-float
+                  (llvm-build-fcmp builder +llvm-real-oeq+ lhs rhs "fcmp_tmp")
+                  (llvm-build-icmp builder +llvm-int-eq+ lhs rhs "icmp_tmp"))))
+        (values (llvm-build-zext builder cmp-inst (llvm-int32-type) "bool_ext") nil)))))

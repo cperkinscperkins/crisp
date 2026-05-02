@@ -34,7 +34,7 @@ What could be simpler?
       (global-size :derive-from input-vec :strategy :strided))
     (r-t-assert-0 (= (length~ block-sums (get-num-workgroups))) "block-sums length should be the number of workgroups")
     (r-t-assert-0 (= (length~ input-vec) (length~ output-vec)) "in/out vec lengths don't match")
-    (thread-stride input-vec :workgroup-idx (wg-idx)
+    (hardware-stride input-vec :workgroup-idx (wg-idx)
       (load-tile input-vec scratch-vec)
       (let ((total (exclusive-scan-workgroup scratch-vec))) ;; scratch-vec now reordered. local-barrier within exclusive-scan-wg
         (when (= 0 (get-local-id))

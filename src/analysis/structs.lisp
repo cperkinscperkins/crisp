@@ -972,9 +972,16 @@
   "Build canonical cell result type."
   `(cell ,new-elem ,addr ,access))
 
+#|
 (defun %mv-result-tensor-type (new-elem rank addr access align)
   "Build canonical tensor result type."
   `(tensor ,new-elem ,rank ,addr ,access ,align))
+  |#
+
+
+(defun %mv-result-tensor-type (new-elem rank addr access align &optional (ct :last))
+  "Build canonical tensor result type (7-tuple)."
+  `(tensor ,new-elem ,rank ,addr ,access ,align ,ct))
 
 ;;; ── compute strides list (compile-time) ──────────────────────
 
@@ -997,25 +1004,14 @@
 ;;; ── main analyzer ────────────────────────────────────────────
 
 (defun analyze-make-view-expression (expr env context location)
-  "Analyzes make-cell / make-vector / make-matrix / make-tensor view constructors.
-   These create a new Storage Handle struct that reinterprets existing storage.
-   No memory is allocated; the result is a new tensor/cell value derived from
-   the source's parent storage pointer.
-
-   Syntax:
-     (make-cell   src elem-type &key (offset 0))
-     (make-vector src elem-type &key length (offset 0))
-     (make-matrix src elem-type width height &key (major :row) (offset 0) strides)
-     (make-tensor src elem-type extents-list &key (offset 0) strides)
-
-   Returns a semantic-make-view node."
+  "Analyzes make-cell / make-vector / make-matrix / make-tensor.
+   Extended for 097-contiguous-term: make-matrix passes ct=:first for :major :col."
   (let* ((op       (first expr))
-             (args     (rest expr))
-             ;; --- source ---
-             (src-expr (first args))
-             (src-node (analyze-expression src-expr env context (append location '(1))))
-             (src-type (semantic-node-type src-node))
-             (src-canon (%mv-resolve-src-type src-type)))
+         (args     (rest expr))
+         (src-expr (first args))
+         (src-node (analyze-expression src-expr env context (append location '(1))))
+         (src-type (semantic-node-type src-node))
+         (src-canon (%mv-resolve-src-type src-type)))
 
     (unless src-canon
       (error "~a: Cannot resolve source type ~a to a storage handle type" op src-type))
@@ -1024,13 +1020,12 @@
 
     (ecase op
 
-      ;; ── make-cell ────────────────────────────────────────────────────
       (make-cell
        (let* ((new-elem  (second args))
-                 (kwargs    (%mv-parse-kwargs (nthcdr 2 args)))
-                 (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
-                 (addr      (%mv-source-addr src-canon))
-                 (access    (%mv-source-access src-canon)))
+              (kwargs    (%mv-parse-kwargs (nthcdr 2 args)))
+              (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
+              (addr      (%mv-source-addr src-canon))
+              (access    (%mv-source-access src-canon)))
          (%mv-check-restrictions op src-canon new-elem location)
          (make-semantic-make-view
           :type        (%mv-result-cell-type new-elem addr access)
@@ -1044,56 +1039,55 @@
           :major       :row
           :source-location location)))
 
-      ;; ── make-vector ──────────────────────────────────────────────────
       (make-vector
        (let* ((new-elem  (second args))
-                 (kwargs    (%mv-parse-kwargs (nthcdr 2 args)))
-                 (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
-                 (length    (%mv-eval-integer (getf kwargs :length))) ; NIL = auto
-                 (addr      (%mv-source-addr src-canon))
-                 (access    (%mv-source-access src-canon))
-                 (src-align (%mv-source-align src-canon))
-                 (align     (%mv-result-align src-align nil nil)))
+              (kwargs    (%mv-parse-kwargs (nthcdr 2 args)))
+              (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
+              (length    (%mv-eval-integer (getf kwargs :length)))
+              (addr      (%mv-source-addr src-canon))
+              (access    (%mv-source-access src-canon))
+              (src-align (%mv-source-align src-canon))
+              (align     (%mv-result-align src-align nil nil)))
          (%mv-check-restrictions op src-canon new-elem location)
          (make-semantic-make-view
-          :type        (%mv-result-tensor-type new-elem 1 addr access align)
+          :type        (%mv-result-tensor-type new-elem 1 addr access align :last)
           :source-node src-node
           :element-type new-elem
           :rank        1
           :offset      offset
-          :length      length  ; NIL means auto-compute at runtime
+          :length      length
           :extents     (when length (list length))
           :strides     nil
           :major       :row
           :source-location location)))
 
-      ;; ── make-matrix ──────────────────────────────────────────────────
       (make-matrix
        (let* ((new-elem  (second args))
-                 (width     (%mv-eval-integer (third args)))
-                 (height    (%mv-eval-integer (fourth args)))
-                 (kwargs    (%mv-parse-kwargs (nthcdr 4 args)))
-                 (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
-                 (major-kw  (or (getf kwargs :major) :row))
-                 (strides-form (getf kwargs :strides))
-                 (strides   (%mv-eval-list strides-form))
-                 (explicit-strides-p (not (null strides)))
-                 (col-p     (member major-kw '(:col col) :test #'string-equal))
-                 (extents   (list height width))
-                 (result-strides
-                  (cond (explicit-strides-p strides)
-                        (col-p (%mv-col-major-strides extents))
-                        (t     (%mv-row-major-strides extents))))
-                 (length    (* width height))
-                 (addr      (%mv-source-addr src-canon))
-                 (access    (%mv-source-access src-canon))
-                 (src-align (%mv-source-align src-canon))
-                 (align     (%mv-result-align src-align explicit-strides-p col-p)))
+              (width     (%mv-eval-integer (third args)))
+              (height    (%mv-eval-integer (fourth args)))
+              (kwargs    (%mv-parse-kwargs (nthcdr 4 args)))
+              (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
+              (major-kw  (or (getf kwargs :major) :row))
+              (strides-form (getf kwargs :strides))
+              (strides   (%mv-eval-list strides-form))
+              (explicit-strides-p (not (null strides)))
+              (col-p     (member major-kw '(:col col) :test #'string-equal))
+              (extents   (list height width))
+              (result-strides
+               (cond (explicit-strides-p strides)
+                     (col-p (%mv-col-major-strides extents))
+                     (t     (%mv-row-major-strides extents))))
+              (length    (* width height))
+              (addr      (%mv-source-addr src-canon))
+              (access    (%mv-source-access src-canon))
+              (src-align (%mv-source-align src-canon))
+              (align     (%mv-result-align src-align explicit-strides-p col-p))
+              (ct        (if col-p :first :last)))
          (unless (and width height)
            (error "make-matrix: width and height must be compile-time integer literals"))
          (%mv-check-restrictions op src-canon new-elem location)
          (make-semantic-make-view
-          :type        (%mv-result-tensor-type new-elem 2 addr access align)
+          :type        (%mv-result-tensor-type new-elem 2 addr access align ct)
           :source-node src-node
           :element-type new-elem
           :rank        2
@@ -1104,29 +1098,28 @@
           :major       (if col-p :col :row)
           :source-location location)))
 
-      ;; ── make-tensor ──────────────────────────────────────────────────
       (make-tensor
        (let* ((new-elem     (second args))
-                 (extents-form (third args))
-                 (extents      (%mv-eval-list extents-form))
-                 (kwargs       (%mv-parse-kwargs (nthcdr 3 args)))
-                 (offset       (or (%mv-eval-integer (getf kwargs :offset)) 0))
-                 (strides-form (getf kwargs :strides))
-                 (strides      (%mv-eval-list strides-form))
-                 (explicit-strides-p (not (null strides)))
-                 (rank         (when extents (length extents)))
-                 (result-strides (if explicit-strides-p strides
-                                     (when extents (%mv-row-major-strides extents))))
-                 (length       (when extents (reduce #'* extents)))
-                 (addr         (%mv-source-addr src-canon))
-                 (access       (%mv-source-access src-canon))
-                 (src-align    (%mv-source-align src-canon))
-                 (align        (%mv-result-align src-align explicit-strides-p nil)))
+              (extents-form (third args))
+              (extents      (%mv-eval-list extents-form))
+              (kwargs       (%mv-parse-kwargs (nthcdr 3 args)))
+              (offset       (or (%mv-eval-integer (getf kwargs :offset)) 0))
+              (strides-form (getf kwargs :strides))
+              (strides      (%mv-eval-list strides-form))
+              (explicit-strides-p (not (null strides)))
+              (rank         (when extents (length extents)))
+              (result-strides (if explicit-strides-p strides
+                                  (when extents (%mv-row-major-strides extents))))
+              (length       (when extents (reduce #'* extents)))
+              (addr         (%mv-source-addr src-canon))
+              (access       (%mv-source-access src-canon))
+              (src-align    (%mv-source-align src-canon))
+              (align        (%mv-result-align src-align explicit-strides-p nil)))
          (unless extents
            (error "make-tensor: extents list must be a compile-time literal list like '(2 3 4)"))
          (%mv-check-restrictions op src-canon new-elem location)
          (make-semantic-make-view
-          :type        (%mv-result-tensor-type new-elem rank addr access align)
+          :type        (%mv-result-tensor-type new-elem rank addr access align :last)
           :source-node src-node
           :element-type new-elem
           :rank        rank
@@ -1136,7 +1129,6 @@
           :strides     result-strides
           :major       :row
           :source-location location))))))
-
 
 
 
@@ -1198,10 +1190,19 @@
              :source-location location))
     canon))
 
-;; src/analysis/structs.lisp
+
+
+
+(defun %get-tensor-ct (canon)
+  "Extracts the :contiguous-term keyword (7th element, index 6) from a
+   canonical tensor type tuple, defaulting to :last when absent."
+  (if (and (listp canon) (>= (length canon) 7))
+      (nth 6 canon)
+      :last))
+
 (defun analyze-transpose-expression (expr env context location)
   "Analyzes (transpose M) for 2D tensors.
-   Returns semantic-stride-view with op=:transpose and result type (tensor elem 2 addr access :strided)."
+   Result type: (tensor elem 2 addr access :strided src-ct)."
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error
            :message "transpose expects exactly 1 argument: (transpose matrix)"
@@ -1211,18 +1212,18 @@
          (canon    (%083-require-2d-tensor raw-type location))
          (elem     (second canon))
          (addr     (fourth canon))
-         (access   (fifth canon)))
+         (access   (fifth canon))
+         (src-ct   (%get-tensor-ct canon)))
     (make-semantic-stride-view
      :op :transpose
      :source-node src-node
      :index-node nil
-     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 2 addr access :strided)
+     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 2 addr access :strided src-ct)
      :source-location location)))
 
-;; src/analysis/structs.lisp
 (defun analyze-col-expression (expr env context location)
   "Analyzes (col index M) for 2D tensors.
-   Returns semantic-stride-view with op=:col and result type (tensor elem 1 addr access :strided)."
+   Result type: (tensor elem 1 addr access :strided :last)."
   (unless (= (length expr) 3)
     (error 'crisp-compiler-error
            :message "col expects exactly 2 arguments: (col index matrix)"
@@ -1238,13 +1239,13 @@
      :op :col
      :source-node src-node
      :index-node idx-node
-     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr access :strided)
+     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr access :strided :last)
      :source-location location)))
 
-;; src/analysis/structs.lisp
+;; analyze-row-expression — 1D row result; :last (single dim, contiguity trivial)
 (defun analyze-row-expression (expr env context location)
   "Analyzes (row index M) for 2D tensors.
-   Returns semantic-stride-view with op=:row and result type (tensor elem 1 addr access :strided)."
+   Result type: (tensor elem 1 addr access :strided :last)."
   (unless (= (length expr) 3)
     (error 'crisp-compiler-error
            :message "row expects exactly 2 arguments: (row index matrix)"
@@ -1260,7 +1261,7 @@
      :op :row
      :source-node src-node
      :index-node idx-node
-     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr access :strided)
+     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr access :strided :last)
      :source-location location)))
 
 ;; src/analysis/structs.lisp

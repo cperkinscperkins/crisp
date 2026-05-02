@@ -187,7 +187,7 @@ not necessarily like we want them to be.
     (let ((temp-tile scratch))
 
       ;; This loop makes each workgroup process multiple tiles.
-      (thread-stride M '(TILE_DIM TILE_DIM) (tile-idx-y tile-idx-x) 
+      (tile-stride M '(TILE_DIM TILE_DIM) (tile-idx-y tile-idx-x) 
 
         ;; load tile  - coalesced read
         (load-tile M temp-tile tile-idx-y tile-idx-x :transpose (= (get-layout M) :col-major))

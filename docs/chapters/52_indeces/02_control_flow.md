@@ -18,7 +18,10 @@
 - in-each-group                    [3D]
 
 - loop-vector-stride
-- thread-stride
+- tensor-stride
+- grid-stride
+- tile-stride
+- hardware-stride
 - - problem-space-coords
 - - tile-coords
 - - problem-space-view

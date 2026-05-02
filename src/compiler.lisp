@@ -389,9 +389,10 @@ Returns modified IR text with metadata."
 
 
 
+
 (defun register-builtins ()
   "Registers built-in types and templates.
-   Extended for 083-vector-matrix-helpers to add num-rows, num-cols, get-layout."
+   Extended for 097-contiguous-term: tensor now has Ct (contiguity) as a 6th template param."
   (log:info "Registering built-in structs (storage, cell, tensor)...")
 
   ;; Clear brand-specific state that is NOT cleared by initialize-compiler.
@@ -427,8 +428,10 @@ Returns modified IR text with metadata."
     '((cell To Addr Acc) => ulong))
 
   ;; TENSOR: N-dimensional strided view over a storage handle.
+  ;; Ct is the contiguous-term compile-time property (:last = row-major, :first = col-major).
   (eval '(with-template-type ((To T) (N integer 1) (Addr address-space :global)
-                               (Acc access :read-write) (Aln align :compact))
+                               (Acc access :read-write) (Aln align :compact)
+                               (Ct contiguity :last))
            (def-record tensor
              (brand value-t To :subst :descendant :enforce :diff)
              (parent  (storage Addr))
@@ -436,56 +439,71 @@ Returns modified IR text with metadata."
              (strides (array ulong N))
              (extents (array ulong N))
              (length  ulong)
-             (element-type  type-spec     :c-t To)
-             (num-dims      ulong         :c-t N)
-             (address-space address-space :c-t Addr)
-             (access        access        :c-t Acc)
-             (align         align         :c-t Aln))))
+             (element-type      type-spec   :c-t To)
+             (num-dims          ulong       :c-t N)
+             (address-space     address-space :c-t Addr)
+             (access            access      :c-t Acc)
+             (align             align       :c-t Aln)
+             (contiguous-term   contiguity  :c-t Ct))))
 
   ;; bytes~ helper for tensor.
   (register-template 'bytes~
     '(To (N integer 1) (Addr address-space :global)
-      (Acc access :read-write) (Aln align :compact)) nil
+      (Acc access :read-write) (Aln align :compact) (Ct contiguity :last)) nil
     '(def-function bytes~ (t1)
-       (declare (function ((tensor To N Addr Acc Aln) => ulong)))
+       (declare (function ((tensor To N Addr Acc Aln Ct) => ulong)))
        (declare (crisp-system-generated))
        (return (sizeof To)))
-    '((tensor To N Addr Acc Aln) => ulong))
+    '((tensor To N Addr Acc Aln Ct) => ulong))
 
-  ;; 083: num-rows — return extents[0] (height dimension) of a 2D tensor.
+  ;; num-rows — return extents[0] (height dimension) of a 2D tensor.
   (register-template 'num-rows
-    '(To (Addr address-space :global) (Acc access :read-write) (Aln align :compact))
+    '(To (Addr address-space :global) (Acc access :read-write)
+      (Aln align :compact) (Ct contiguity :last))
     nil
     '(def-function num-rows (m)
-       (declare (function ((tensor To 2 Addr Acc Aln) => ulong)))
+       (declare (function ((tensor To 2 Addr Acc Aln Ct) => ulong)))
        (declare (crisp-system-generated))
        (return (~ (extents~ m) 0)))
-    '((tensor To 2 Addr Acc Aln) => ulong))
+    '((tensor To 2 Addr Acc Aln Ct) => ulong))
 
-  ;; 083: num-cols — return extents[1] (width dimension) of a 2D tensor.
+  ;; num-cols — return extents[1] (width dimension) of a 2D tensor.
   (register-template 'num-cols
-    '(To (Addr address-space :global) (Acc access :read-write) (Aln align :compact))
+    '(To (Addr address-space :global) (Acc access :read-write)
+      (Aln align :compact) (Ct contiguity :last))
     nil
     '(def-function num-cols (m)
-       (declare (function ((tensor To 2 Addr Acc Aln) => ulong)))
+       (declare (function ((tensor To 2 Addr Acc Aln Ct) => ulong)))
        (declare (crisp-system-generated))
        (return (~ (extents~ m) 1)))
-    '((tensor To 2 Addr Acc Aln) => ulong))
+    '((tensor To 2 Addr Acc Aln Ct) => ulong))
 
-  ;; 083: get-layout — classify 2D tensor layout at runtime.
-  ;; Returns 0 (:row-major) if last stride==1, 1 (:col-major) if first stride==1, else 2 (:other-layout).
+  ;; get-layout — classify 2D tensor layout at runtime via stride inspection.
   (register-template 'get-layout
-    '(To (Addr address-space :global) (Acc access :read-write) (Aln align :compact))
+    '(To (Addr address-space :global) (Acc access :read-write)
+      (Aln align :compact) (Ct contiguity :last))
     nil
     '(def-function get-layout (m)
-       (declare (function ((tensor To 2 Addr Acc Aln) => int)))
+       (declare (function ((tensor To 2 Addr Acc Aln Ct) => int)))
        (declare (crisp-system-generated))
        (if (= (~ (strides~ m) 1) 1ul)
            0
            (if (= (~ (strides~ m) 0) 1ul)
                1
                2)))
-    '((tensor To 2 Addr Acc Aln) => int))
+    '((tensor To 2 Addr Acc Aln Ct) => int))
+
+  ;; contiguous-term~ — returns compile-time contiguity value for any tensor.
+  ;; When instantiated with Ct=:last, body becomes (return :last) → enum integer 0.
+  (register-template 'contiguous-term~
+    '(To (N integer 1) (Addr address-space :global)
+      (Acc access :read-write) (Aln align :compact) (Ct contiguity :last))
+    nil
+    '(def-function contiguous-term~ (t1)
+       (declare (function ((tensor To N Addr Acc Aln Ct) => contiguity)))
+       (declare (crisp-system-generated))
+       (return Ct))
+    '((tensor To N Addr Acc Aln Ct) => contiguity))
 
   (log:info "Built-in structs registered."))
 

@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; 3D tensor with :contiguous-term :last should compile fine.
+
+(def-type tensor3d-t (tensor float 3 :align :compact :address-space :global :access :read-write :contiguous-term :last))
+
+(def-kernel test_tensor3d_ct_last (t3)
+  (declare forward-only (type t3 tensor3d-t))
+  (return))

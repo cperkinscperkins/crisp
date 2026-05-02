@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-04-30T05:26:13.306145Z
+Generated on 2026-05-02T18:00:11.297287Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -967,9 +967,9 @@ Generated on 2026-04-30T05:26:13.306145Z
 
 ---
 ### DEFUN `%MV-RESULT-TENSOR-TYPE`
-- **Args**: `(NEW-ELEM RANK ADDR ACCESS ALIGN)`
+- **Args**: `(NEW-ELEM RANK ADDR ACCESS ALIGN &OPTIONAL (CT LAST))`
 
-  > Build canonical tensor result type.
+  > Build canonical tensor result type (7-tuple).
 
 
 ---
@@ -990,7 +990,7 @@ Generated on 2026-04-30T05:26:13.306145Z
 ### DEFUN `ANALYZE-MAKE-VIEW-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes make-cell / make-vector / make-matrix / make-tensor view constructors.  >    These create a new Storage Handle struct that reinterprets existing storage.  >    No memory is allocated; the result is a new tensor/cell value derived from  >    the source's parent storage pointer.  >   >    Syntax:  >      (make-cell   src elem-type &key (offset 0))  >      (make-vector src elem-type &key length (offset 0))  >      (make-matrix src elem-type width height &key (major :row) (offset 0) strides)  >      (make-tensor src elem-type extents-list &key (offset 0) strides)  >   >    Returns a semantic-make-view node.
+  > Analyzes make-cell / make-vector / make-matrix / make-tensor.  >    Extended for 097-contiguous-term: make-matrix passes ct=:first for :major :col.
 
 
 ---
@@ -1007,24 +1007,31 @@ Generated on 2026-04-30T05:26:13.306145Z
 
 
 ---
+### DEFUN `%GET-TENSOR-CT`
+- **Args**: `(CANON)`
+
+  > Extracts the :contiguous-term keyword (7th element, index 6) from a  >    canonical tensor type tuple, defaulting to :last when absent.
+
+
+---
 ### DEFUN `ANALYZE-TRANSPOSE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (transpose M) for 2D tensors.  >    Returns semantic-stride-view with op=:transpose and result type (tensor elem 2 addr access :strided).
+  > Analyzes (transpose M) for 2D tensors.  >    Result type: (tensor elem 2 addr access :strided src-ct).
 
 
 ---
 ### DEFUN `ANALYZE-COL-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (col index M) for 2D tensors.  >    Returns semantic-stride-view with op=:col and result type (tensor elem 1 addr access :strided).
+  > Analyzes (col index M) for 2D tensors.  >    Result type: (tensor elem 1 addr access :strided :last).
 
 
 ---
 ### DEFUN `ANALYZE-ROW-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (row index M) for 2D tensors.  >    Returns semantic-stride-view with op=:row and result type (tensor elem 1 addr access :strided).
+  > Analyzes (row index M) for 2D tensors.  >    Result type: (tensor elem 1 addr access :strided :last).
 
 
 ---
@@ -1130,7 +1137,7 @@ Generated on 2026-04-30T05:26:13.306145Z
 ### DEFUN `%ENSURE-TENSOR-READ-WRITE`
 - **Args**: `(TYPE-SPEC)`
 
-  > If TYPE-SPEC is a tensor/vector/matrix, returns the canonical 6-tuple with  >    :access replaced by :read-write. Non-tensor types are returned unchanged.
+  > If TYPE-SPEC is a tensor/vector/matrix, returns the canonical 7-tuple with  >    :access replaced by :read-write. Non-tensor types are returned unchanged.
 
 
 ---
@@ -1776,7 +1783,7 @@ Generated on 2026-04-30T05:26:13.306145Z
 ---
 ### DEFUN `REGISTER-BUILTINS`
 
-  > Registers built-in types and templates.  >    Extended for 083-vector-matrix-helpers to add num-rows, num-cols, get-layout.
+  > Registers built-in types and templates.  >    Extended for 097-contiguous-term: tensor now has Ct (contiguity) as a 6th template param.
 
 
 ---
@@ -3308,21 +3315,21 @@ Generated on 2026-04-30T05:26:13.306145Z
 ### DEFUN `VALIDATE-074-02-SCRATCH-VECTOR-PROPAGATION-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates scratch vector propagation IR:  >      - kernel_a has 7 params: ptr addrspace(3) + 5 x i64 (implicit tensor N=1)  >        + i32 (explicit n)  >      - fun_c has the same expanded signature (is a carrier)
+  > Validates scratch vector propagation IR (updated for 7-tuple tensor names).
 
 
 ---
 ### DEFUN `VALIDATE-074-03-SCRATCH-TENSOR-PROPAGATION-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates scratch tensor (N=3) propagation IR:  >      - kernel_a has 13 params: ptr addrspace(3) + 11 x i64 (implicit tensor N=3)  >        + i32 (explicit n)  >      - fun_c has the same expanded signature
+  > Validates scratch tensor (N=3) propagation IR (updated for 7-tuple tensor names).
 
 
 ---
 ### DEFUN `VALIDATE-074-04-SCRATCH-MATRIX-PROPAGATION-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates scratch matrix (N=2) propagation IR:  >      - kernel_a has 11 params: ptr addrspace(3) + 8 x i64 (implicit tensor N=2)  >        + 2 x i64 (explicit row col as ulong)  >      - fun_c has the same expanded signature
+  > Validates scratch matrix (N=2) propagation IR (updated for 7-tuple tensor names).
 
 
 ---
@@ -4675,7 +4682,7 @@ Generated on 2026-04-30T05:26:13.306145Z
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Expands storage handle type specs into canonical positional forms.  >    Cell        → (cell  elem addr access)               [4-tuple, defaults :global :read-write].  >    Vector      → (tensor elem 1 addr access align)      [6-tuple, sugar for tensor N=1].  >    Matrix      → (tensor elem 2 addr access align)      [6-tuple, sugar for tensor N=2].  >    Tensor      → (tensor elem N addr access align)      [6-tuple, defaults :global :read-write :compact].  >    Vector/matrix with extra positional arg → error.  >    Tensor missing N → crisp-incomplete-type-error.  >    Bare address-space/access/align values → intelligent 'did you mean :key value?' error.  >    Address-space / access / align MUST use key-value form: :address-space :local etc.
+  > Expands storage handle type specs into canonical positional forms.  >    Cell        → (cell  elem addr access)                  [4-tuple].  >    Vector      → (tensor elem 1 addr access align ct)      [7-tuple, sugar for tensor N=1].  >    Matrix      → (tensor elem 2 addr access align ct)      [7-tuple, sugar for tensor N=2].  >    Tensor      → (tensor elem N addr access align ct)      [7-tuple].  >    ct defaults to :last; :row-major/:col-major are matrix-only aliases for :last/:first.
 
 
 ---

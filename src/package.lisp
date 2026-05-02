@@ -235,6 +235,8 @@
    #:is-address-space?
    #:is-access?
    #:is-align?
+   #:contiguity
+   #:is-contiguity?
 
    ;; Global Compiler State
    #:*types*
@@ -291,11 +293,13 @@
    #:parent~ #:offset~ #:element-type~
    #:bytes~ #:sizeof
    ;; Tensor accessors
-   #:num-dims~ #:length~ #:strides~ #:extents~
+   #:num-dims~ #:length~ #:strides~ #:extents~ #:contiguous-term~
    ;; Matrix helpers
    #:num-rows #:num-cols #:get-layout #:transpose #:transpose! #:col #:row
    ;; Matrix layout enum
    #:matrix-layout #:is-matrix-layout?
+   ;; Contiguity enum
+   #:contiguity #:is-contiguity?
 
    ;; All cast/conversion operators
    #:to-char #:as-char
@@ -409,6 +413,8 @@
                 #:is-address-space?
                 #:is-access?
                 #:is-align?
+                #:contiguity
+                #:is-contiguity?
                 #:|=>|
                 #:c-t-assert #:c-t-output
 
@@ -425,11 +431,13 @@
                 #:parent~ #:offset~ #:element-type~
                 #:bytes~ #:sizeof
                 ;; Tensor accessors
-                #:num-dims~ #:length~ #:strides~ #:extents~
+                #:num-dims~ #:length~ #:strides~ #:extents~ #:contiguous-term~
                 ;; Matrix helpers
                 #:num-rows #:num-cols #:get-layout #:transpose #:transpose! #:col #:row
                 ;; Matrix layout enum
                 #:matrix-layout #:is-matrix-layout?
+                ;; Contiguity enum
+                #:contiguity #:is-contiguity?
 
                 ;; All cast/conversion operators
                 #:to-char #:as-char
@@ -555,7 +563,7 @@
    #:parent~ #:offset~ #:element-type~
    #:bytes~ #:sizeof
    ;; Tensor accessors
-   #:num-dims~ #:length~ #:strides~ #:extents~
+   #:num-dims~ #:length~ #:strides~ #:extents~ #:contiguous-term~
    ;; Matrix helpers
    #:num-rows #:num-cols #:get-layout #:transpose #:transpose! #:col #:row
    ;; Matrix layout enum
@@ -569,6 +577,8 @@
    #:is-address-space?
    #:is-access?
    #:is-align?
+   #:contiguity
+   #:is-contiguity?
 
    ;; Compiler/Codegen
    #:emit-llvm
