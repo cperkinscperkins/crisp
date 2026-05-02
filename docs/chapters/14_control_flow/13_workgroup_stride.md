@@ -1,50 +1,58 @@
-## Workgroup Stride
-
-
-Whereas `thread-stride` bends all available threads to its wicked purposes, `workgroup-stride` is 
-used to just set up a stride across a worksgroup. This makes it one of the very few "workplace level" 
-macros that Crisp provdes.  This CAN be nested in a grid level operation (such as `thread-stride`)
+## workgroup-stride
 
 ```
-(workgroup-stride <problem-space> <chunkExpr> (<bindings>) ...)
+(workgroup-stride <tile-tensor> (<bindings>) ...)
 ```
+`workgroup-stride` is the primary workhorse for computations within a single workgroup. It is designed to walk the coordinates of a `:local` or `:private` tensor (a "tile") using the full parallel resources of the workgroup. 
 
-`problem-space` 
-- a  1D vector, 2D matrix or 3D tensor 
-- size list: `(width)` or `(width height)` or `(width height depth)` 
 
-`chunkExpr` 
-- `:local-size` (normal grid stride, could be 1D, 2D, or 3D) 
-- `:warp-idx`  1D only
-- a small 1D vector, 2D matrix or 3D tensor
-- small sizes: `(w)`, `(w h)`, or `(w h d)`
-
-`bindings`
-- `(x)`, `(x y)`, `(x y z)`
-
-The `problem-space` can be anything or any size. But whatever it is, it should have
-been divided among all workgroups. Don't use `workgroup-stride` to stride something
-really big. Ideally, something small and using `:local` memory.
-
-`:local-size` - each thread in the workgroup starts with its own local id
-and each time through the stride increments the binding by the number of threads
-in the workgroup. 
-
-`:warp-idx` - every thread in a warp will get the same binding, striding by the 
-  number of warps in a workgroup.
-
-### coordinate conversion
-
-These functions operate analagously to their `thread-stride` counterparts.
+### The "One Coordinate" Binding
+The `<bindings>` always represent the local coordinates within the `<tile-tensor>`. If you are striding a $16 \times 16$ tile, the bindings will range from $(0,0)$ to $(15,15)$. The macro ensures that:
+- Coalesced Access: The contiguous dimension of the tile is automatically mapped to the fastest hardware dimension (the warp lane) to prevent bank conflicts.
+- Cooperative Execution: If the tile is larger than the physical workgroup size, the macro handles the serial-parallel tiling required to visit every element.
 
 ```
-(wg-problem-space-coords) => (x ...)
-
-(wg-chunk-coords) => (x ...)
+Example: Simple cooperative increment
+(let ((my-tile (make-scratch-matrix float (16 16) :local)))
+  (tile-stride big-matrix my-tile (y x)
+    (load-tile big-matrix my-tile)
+    
+    (workgroup-stride my-tile (ly lx)
+       ;; ly and lx are always 0-15, mapped to workgroup hardware
+       (inc! (~ my-tile ly lx) 1.0))
+       
+    (store-tile my-tile big-matrix)))
 ```
-                     
 
+### Hardware Context Helpers
 
+Instead of "modes" or "tags" that change how the stride works, Crisp provides helper macros that can be used inside the body of a `workgroup-stride` to access hardware-level information. This allows you to write warp-aware logic without losing your place in the tensor's coordinate system.
 
+### HelperDescription
+- `(warp-id)` Returns the index of the current warp within the workgroup.
+- `(warp-lane)` Returns the index of the current thread within its warp (e.g., 0–31).
+- `(warp-count)` Returns the total number of warps in the current workgroup. 
 
+### Example: Warp-Aware Logic
+This pattern is useful for algorithms where only one "representative" thread per warp should perform a specific task, such as updating a shared counter or coordinating a sub-group shuffle.
+
+```
+(workgroup-stride my-tile (ly lx)
+  ;; Every thread does the common work
+  (set! (~ my-tile ly lx) (expensive-calculation ly lx))
+  
+  ;; Only the first lane in every warp handles logging or sync
+  (when (== (warp-lane) 0)
+    (atomic-inc! (some-shared-counter) 1)))
+```
+
+### Implementation Notes
+
+- Implicit Synchronization: To maintain maximum performance, `workgroup-stride` does not inject a `(local-barrier)` at the end of its block. If your logic requires all threads to finish a pass before moving to the next, call `(local-barrier)` explicitly.
+- Arity Consistency: The number of `<bindings>` must match the arity of the `<tile-tensor>`.
+- Scope: The bindings `(ly lx)` represent the position within the tile, while any bindings from an outer tile-stride (e.g., y x) remain available for calculating positions relative to the global problem space.
+
+<-- 
+
+OLD WORKGROUP STRIDE API 
 

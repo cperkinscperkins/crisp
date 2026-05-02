@@ -1943,6 +1943,29 @@ referencing.
  Similarly, `stride` is only mutable in a `:strided` aligned storage handle, and the compiler will emi
  an error if you attempt to mutate it otherwise.
 
+ ### Contiguity  (aka row-major vs col-major )
+
+ Except `cell`, all Storage Handles have compile-time known "contiguity".  This tells the compiler
+ in which dimension the data is contiguous. 
+ The compiler time property to specify this is `:contiguous-term`. It defaults to `:last` for
+ all types, and by virtue of there being a default it means this is optional. Many users will
+ never need it, or need to know about it.
+
+ ```
+ (tensor float 6 :address-space :global :access :read-write :align :compact :contiguous-term :last)
+
+;; usable with any tensor of any arity
+ :contiguous-term  :last   ;; for a matrix, this is same as :row-major
+ :contiguous-term  :first  ;; same as :col-major for a matrix
+
+;; usable only with matrices
+ :contiguous-term  :row-major
+ :contiguous-term  :col-major
+
+ (thread-stride someMatrix (row-y col-x) ...)
+```
+
+
 Storage Properties
 ------------------
 
@@ -2011,11 +2034,12 @@ Every `tensor` has these runtime properties:
 | strides~  | stride-type |  `def-rec-vec` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
 | extents~  | extents-type | `def-rec-vec` the lenght of `num-dims` that tracks the extent of that particular dimension |
 | align~   | align-enum | `:strided` or `:compact` or `:compact-offset`. This is an immmutable compile-time property. |
+| contiguous-term~ | contiguity-enum | `:last` or `:first`. This is an immutable compile-time property. |
 
 Each of those properties can be accessed by the `XXXX~` function.
 e.g. `(length~ someTensor)` , `(parent~ someTensor)`
 
-The `align` property is known at compile-time and is immutable.  
+The `align` and `contiguous-term` properties are known at compile-time and are immutable.  
 
 But since these types are just views into some `storage`, their other properties are mutable. 
 
@@ -2144,6 +2168,7 @@ Storage Handles are completely typed by
 - `address-space` (which is one of `:global` `:local` `:private` `:constant`)
 - `access` (which is one of `:read-only` `:write-only` `:read-write` `:writable` `:readable`)
 - `align` (one of `:strided` or `:compact` or `:compact-offset`)  NOTE: `align` is not needed by the `cell` type.
+- `contiguous-term` (one of `:first` or `:last`.  Defaults to `:last` if not provided)
 
 The `tensor` type also requires the number of dimensions to be known at compile time.
 
@@ -2186,18 +2211,16 @@ For the most flexibility, keys can be used.
 (cell <element-type> &key address-space access)
 
 ;; for vector and matrix
-(XXXX <element-type> &key align address-space access extent)
+(XXXX <element-type> &key align address-space access (contiguous-term :last))
 
 ;; for tensor
-(tensor <element-type> NumDims &key align address-space access extent)
+(tensor <element-type> NumDims &key align address-space access (contiguous-term :last))
 ```
 
-Note that `:extent` is normally a runtime property and is NOT required to complete the
-type. It can optionally be provided at compile-time and, when provided, is a list of the sizes of each dimension. The sizes cannot be runtime variables, they must be compile-time expressions.
 
 
 Example: `(vector long :access :writeable)`  This specifies that some vector of longs is writeable. 
-It could be of any address space, alignment, or size.
+It could be of any address space or alignment.
 
 Example: `(tensor float 4)`  This specifies that we have a hypercube of floats, but nothing else is known about it. 
 
@@ -2318,6 +2341,8 @@ The runtime will assert that the number of source bytes is sufficient for the ne
 assertion requires compiler flags (like `--runtime-checks`). 
 
 `:compact` layout is generally more amenable to reinterpretation.
+
+The `:contiguous-term` cannot be overridden by any interpretation operation. The compiler will set it appropriately
 
 
 ```
@@ -2842,8 +2867,6 @@ Important: There are asynchronouse variants of these helpers.  See [Async Memory
 (load-tile ...) 
 (store-tile ...)
 
-(load-chunk ...)
-(store-chunk ...)
 ```
 
 In `:one-thread-per` strategies, a common practice is to divide some input vec
@@ -2857,7 +2880,7 @@ of the `scratch-vec` with something, and `identity` is that something.
 
 There are also  `load-tile` and `store-tile` helpers to assist with
 similar operations in 2D strided scenarios. They are described below with Matrices.
-Lastly, `load-chunk` and `store-chunk` can be used with any chunk size (so long as it is
+Lastly, `load-tile` and `store-tile` can be used with any tile size (so long as it is
 not bigger than a single workgroup). From within  a `thread-stride` they don't require any
 placement arguments, but they are perfectly usable without. See the section on [thread-stride](#general-purpose-thread-stride). 
 
@@ -2939,12 +2962,11 @@ In C++ lingo this is called "Undefined Behavior". In other languages it is refer
 
 The `check-async-hazards` static analysis can be elected to have the compiler check for you.
 
-### `request-load-tile` / `request-load-chunk`
+### `request-load-tile`
 ```
 (request-load-tile ...) => request-token
-(request-load-chunk ...) => request-token
 ```
-There are async variants for the tile and chunk scratch helpers as well.
+There are async variants for the tile scratch helpers as well.
 
 
 
@@ -2960,11 +2982,10 @@ memory buffers. It will emit an error if you attempt to read from `local-vec` be
 and the `await-`.
 
 
-### `request-store-global`  / `request-store-tile` / `request-store-chunk`
+### `request-store-global`  / `request-store-tile` 
 ```
 (request-store-global local-scratch-vec global-vec) => request-token
 (request-store-tile ...) => request-token
-(request-store-chunk ...) => request-token
 ```
 
 Storage back to global memory does NOT yet have wide architecture support.  Crisp has these routines, but be aware that
@@ -4784,170 +4805,399 @@ As you can see, all the indeces from 0 to 99,999 are visited, and our calculatio
 In a very short time (just 98 iterations), these 1024 threads add vectors A and B and store them in C. Wow!
 
 
-General Purpose: `thread-stride`
--------------------------------
+General Purpose: `tensor-stride`, `grid-stride`,  `tile-stride` and `hardware-stride`
+-----------------------------------------------------------------
 
 While `loop-vector-stride` is very handy and one of the most commonly used Crisp affordances, 
 it's one task is to just employ all the threads to walk a vector. Sometimes you'll need more.
-That's when `thread-stride` will come in play.  `thread-stride` allows you to configure any
-type of grid level stride. `loop-vector-stride` uses `thread-stride` under the hood.
+That's when the other Crisp stride macros will come into play.  Unlike `loop-vector-stride`, these can be used with Storage Handles of other arities.
 
+- `tensor-stride` - like `loop-vector-stride` but for matrices and tensors of any arity.
+- `grid-stride`  - not associated with any data, just sets up a simple mathematical stride, to any arity.
+- `tile-stride` - VERY HANDY stride variant of `tensor-stride` but that moves by "tiles".  Works in
+any arity and has helper macros to move between the problem space vector , the indexing, and the tile coordinate systems.
+- `hardware-stride` - stride by workgroup or warp. 
+
+
+
+### Simple Safe tensor-stride
 ```
-(thread-stride <problem-space> <chunkExpr> (<bindings>) ...) 
+(tensor-stride <tensor> (<bindings>) ...) 
+
+;;example: fill a matrix with "2"
+(tensor-stride someMatrix (row-y col-x)
+  (set! (~ someMatrix row-y col-x) 2))
 ```
+This macro visits every unique location in the tensor. Within each warp, the contiguous term of the tensor 
+is guaranteed to change. Meaning it's easy to get coalesced memory access.  Works equally well
+with row major or col major matrices, for example. 
 
-`problem-space` 
-- a  1D vector, 2D matrix or 3D tensor 
-- size list: `(width)` or `(width height)` or `(width height depth)` 
+If the contiguous term of the tensor is compile time determinable, then this will be optimized striding,
+otherwise an extra calculation at runtime might be required. Note that even though `:contiguous-term` is 
+a compile-time requirement for all tensors, incomplete types at function boundaries might make that indeterminable.  
+  
 
-`chunkExpr` 
-- `:global-size` (normal grid stride, could be 1D, 2D, or 3D) 
-- `:workgroup-idx`  could be 1D, 2D, or 3D
-- `:warp-idx`  1D only
-- a small 1D vector, 2D matrix or 3D tensor
-- small sizes: `(w)`, `(w h)`, or `(w h d)`
-
-`bindings`
-- `(x)`, `(x y)`, `(x y z)`
-
-IMPORTANT: the arity of the problem space MUST match the arity of the bindings. 
-
-The "problem space" is the space of the problem you want strided. Like a very large 
-vector or matrix, or you can just provide numeric values in a quoted list.
-
-The "chunk expression" is the grouping of the stride. If `:global-size` then it's
-like the example with explanation above, where bindings are sequential and any 
-single thread strides by the count of all of them.
-
-For `:workgroup-idx` the threads are grouped by workgroup and each thread in each workgroup gets the
-same base value for its bindings: that workgroups index. And the stride is number of workgroups.
-So for a workgroup size of 64 and four total workgroups, threads 0 to 63 ALL get [0, 4, 8, ...] 
-
-`:warp-idx` is just like `:workgroup-idx` except the threads are grouped by warp and it is 1D only.
-Note that if using `:warp-idx` that it is extremely important that the kernel is hoisted 
-with a `local_work_size` that is a multiple of `(get-warp-size)`.  Otherwise operations like warp level
-reductions could end up deadlocking.
-
-For the "small" vectors, etc or direct sizes, the bindings are index values shared by all threads grouped
-by that size.  Note that the "small" vectors or "small" sizes do NOT need to have the same
-arity as the problem space. The "small" variants CANNOT be bigger than the net workgroup size. 
-
-
-
-### coordinate conversion when striding
-
-Inside the scope of `thread-stride` there are two helper functions defined for you: `problem-space-coords`
-and `chunk-coords`.  These take the current index bindings, combined with the current thread id and
-calculate the coordinate back into the problem space or into the chunk.
-
-These functions take no arguments themselves, and the value they return has the same arity 
-as the problem space or chunk expression. 
-
+### Strict tensor-stride
 ```
-(problem-space-coords) => (x ...)
+(tensor-stride <tensor> <layout-tag> (<bindings>) ...)
 
-(chunk-coords) => (x ...)
+;; example
+(tensor-stride someMatrix :row-major (row-y col-x) 
+   (set! (~ someMatrix row-y col-x) 3))
 ```
 
-### tensor in problem space
-```
-(problem-space-view) => tensor
-```
-In the scope of `thread-stride` there is another helper function which returns a `tensor`. This `tensor`
-has the size and dimensions of the `chunkExpr` but is mapped to the current location in the problem space.
+Forces the compiler to hardcode the specified layout. If the static type contradicts it, fail compilation.
 
-Note that in the event the problem space is not evenly divisible by the chunk, then the `tensor` that is returned
-might have dimensions smaller than the chunk if it is near the memory boundary. This way there is no accidental out of bounds
-memory access.  
-<!--
- NOTE: explain risk of deadlock   
+Just as with the previous form, this `tensor-stride` macro visits every unique location in the tensor, with
+the contiguos term of the tensor mapping neatly to each warp lane.  Once again, works equally well
+with row major or col major matrices.
+
+But this variant uses a `layout-tag` argument to express the authors expectation and that will be
+EXACTLY how the tensor is strided, with the compiler optimizing every operation. 
+
+`<layout-tag>` choices are
+
+| Tag | Description |
+| -- | -- |
+| `:row-major` | bindings are `(row-y col-x)` and the LAST term is assumed to be contiguous.  IF the matrix is known at compile time to be :col-major then this is compilation error. OTHERWISE, it assumed the user knows what they are doing. |
+| `:col-major` | bindings are still `(row-y col-x)`, but the FIRST term is assumed to be contiguous.|
+| `:contiguous-last`  | bindings are `(... y x)` and the LAST term is assumed to be contiguous.|
+| `:contiguous-first` | bindings are still `(... y x)` but the FIRST term is assumed to be contigous.|
+
+If the compiler can determine the contiguos term of the tensor and sees that it disagrees with the `layout-tag` it
+will emit an error.
+But if the compiler CANNOT determine the contiguous term and the provided `layout-tag` is wrong, then this stride
+will NOT have coalesced memory access and will likely be slow.  If compiled with `--runtime-checks` a runtime check 
+is asserted into the code. 
+
+
+
+
+### Mathematical grid-stride
+```
+(grid-stride (<size-list>) (<bindings>) ...)
+
+;; example
+(grid-stride (8000000 4000000) (y x) ...)
+```
+Unlike the others, `grid-stride` does not take a `<tensor>` argument. It simply divides up the `<size-list>` 
+problem space by the number of enqueued threads and strides the problem. It treats it as a purely mathematical grid. Defaults to row-major mapping (right-most binding gets the warp).
+It is how you tell Crisp to "Forget about physical memory for a second. Just generate a virtual 2D grid of 8 million rows and 4 million columns, and march the GPU across it."
+
+
+### tile-stride
+```
+;; "safe" variants
+(tile-stride <tensor> (<size-list>) (<bindings>) ...)
+(tile-stride <tensor> <tile-tensor> (<bindings>) ...)
+
+;; "strict" variants
+(tile-stride <tensor> <layout-tag> (<size-list>) (<bindings>) ...)
+(tile-stride <tensor> <layout-tag> <tile-tensor> (<bindings>) ...)
+
+(tile-stride someMatrix (8 4) (row-y col-x)
+  (let ((t-y t-x (tile-coords row-y col-x)))) ;;coordinate within the tile.
+        (idx-y idx-x  (tile-index row-y col-x))) ;; which of the tiles is it?
+        ;; let's get location of the neighbor next tile over (this example skips bounds checking)
+        (neighbor-y neighbor-x (tensor-coords (idx-y (1+ idx)) (t-y (1+ t-x)))))
+        ...))
+
+```
+`tile-stride` breaks up a `tensor` into tiles (of any arity, not just 2D) 
+and it sets up the coordinate helper functions which can be used in the body of the `tile-stride`.
+
+As in the others, every unique coordinate in the `tensor` is visited exactly once. 
+
+The arity of the `<size-list>` must match the arity of the `tensor` and the `<bindings>`. Compilation error otherwise.
+Alternately, a smaller `<tile-tensor>` can be provided. Its extents will be used for the tile size and, of course,
+its arity must match as well. 
+
+Note that there are "safe" and "strict" variants of `tile-stride`. See the descriptions of `tensor-stride` above for that discussion
+
+These variants of `tile-stride` DO set up helper macros. They are discussed below.
+
+### hardware-stride - stride by workgroup or warp.
+```
+(hardware-stride <tensor>  <hw-tag> (<bindings>) ...)
+(hardware-stride <tensor> <layout-tag> <hw-tag> (<bindings>) ...)
+
+;; examples
+(hardware-stride someMatrix :row-major :workgroup-idx (wg-y wg-x) ...)
+   
+(hardware-stride someVector  :warp-idx (x) ...)
+```
+
+`hardware-stride`takes a `<hw-tag>` argument and chunks the stride by workgroup or warp.  
+For "strict" , provide a `<layout-tag>`.
+
+Note that the helper macros available to `tile-stride` are also available with `hardware-stride`. Theya re discussed below.
+
+
+There are two choices for `<hw-tag>`: `workgroup-idx` and `:warp-idx`.  
+
+#### `:workgroup-idx`
+- `:workgroup-idx` the threads are chunked by workgroup 
+The arity of the tensor and the bindings MUST match the arity of the workgroup enqueue.
+
+```
+;; 2D enqueue
+(harware-stride someMatrix :row-major :workgroup-idx (row-y col-x) 
+   (let ((idx-y idx-x (tile-index row-y col-x))     ;; which workgroup 
+         (local-y local-x (tile-coord row-y col-x)) ;; where are we in it
+         ...)
+```
+
+#### `:warp-idx`
+- `:warp-idx` is just like `:workgroup-idx` except the threads are grouped by warp and it is 1D only. Note that if using `:warp-idx` that it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(get-warp-size)`. Otherwise operations like warp level reductions could end up deadlocking.
+
+```
+(hardware-stride someVector :warp-idx (x) ;; x is a coordinate in someVector
+  (let ((which-warp (tile-index x))
+        (which-lane (tile-coord x)))
+      ...))
+```
+
+> Implementation Note: the chunking variants are pretty much exactly the same as their non-chunking brethren.
+> ( modulo "strict" or not)
+> The entire problem space tensor is strided and the bindings are identical across all. The chunking
+> doesn't change how the stride is executed - it changes how the helper functions convert coordinates.
+
+### Helper Macros
+
+The helper macros map the tensor coordinates to the other spaces.  These helper macros are
+available when using the `tile-stride` and `hardware-stride` stride macros.
+
+#### `tile-coords`
+`tile-coords` always has the same arity as the binding and returns that same number of argumetns.
+These coordinates are within the tile `<size-list>`/`<tile-tensor>`
+
+```
+(let ((t-z t-y t-x (tile-coords cube-z cube-y cube-x))) ...)
+```
+
+#### `tile-indices`
+`tile-indices` also matches arity. It returns the index coordinates of the tile
+
+
+#### `tensor-coords` 
+`tensor-coord` macro takes two arguments. A list of the tile indices followed by a list of the tile coordinates.
+It returns mapping coordinates into the problem space tensor.
+
+```
+(let ((row-y col-x (tensor-coord (idx-y idx-x) (t-y t-x)))))
+```
+
+#### `load-tile` / `store-tile`
+There are two other helper functions that are present when doing "tileed" striding.  
+They have their own section of the docs below.
+
+<!--  
+
+NOTE: I'm temporarily setting the stride-subview helper function aside
+NOTE: explain risk of deadlock   
  
- NOTE: compiler will use this to DETECT possible deadlocks 
+NOTE: compiler will use this to DETECT possible deadlocks 
        this makes it EASIER to detect deadlocks at "ragged edges"
        we insert (declare :ragged-edge) or something 
-  TODO: figure this out. (declare (convergent)) and friends.
+TODO: figure this out. (declare (convergent)) and friends.
+
+#### `stride-subview`
+In the scope of `thread-stride` there is helper function `stride-subview` which returns another `tensor`.
+ This `tensor` has the size and dimensions of the `chunkExpr` but is mapped to the current location in the problem space.
+
+Note that in the event the problem space is not evenly divisible by the chunk, then the `tensor` that is returned
+might have dimensions smaller than the chunk if it is near the memory boundary. This way there is no accidental out of bounds memory access.  
+
+
+Note, also, that this chunk is a subview into the problem space, which is likely `:global`.
+If you are wanting fast chunk access use `load-chunk` / `store-chunk` below to transfer to `:local` memory for fast operations.
 -->
 
-Note, also, that this is tensor is into the problem space, which is likely `:global`. If you are wanting fast chunk access
-use `load-chunk` / `store-chunk` below to transfer to `:local` memory for fast operations.
-
-### Example - Fill a 2D Matrix
-```
-(def-grid-function matrix-fill (value &out output-m)
-  (declare #'(float (matrix float :global :writeable)))
-  (thread-stride output-m :global-size (x y)
-    (set! (~ output-m y x) value)))
-```
 
 
-### `ceil-pow2`
-
-For certain operations, like warp reductions, it is imperative that certain activities
-fit completely in a warp and are not "split" across warp divide. 
-
-If the argument to `ceil-pow2` is a power of 2, it'll be returns. But if not, then the
-next hightest power of 2 will be returned. This can be very handy in loops
-or for making sure chunk strides don't split work across the warp boundary. 
-
-```
-(ceil-pow2 4) => 4
-(ceil-pow2 5) => 8
-```
 
 
-Load Chunk / Store Chunk
+Load Tile / Store Tile
 ------------------------
 
+`load-tile` and `store-tile` work with tensors of any arity, not only 2D matrices.
+
+`load-tile` is used to copy data from the :global address space problem space tensor
+to the :local address space tile tensor.
+
+`store-tile` does the opposite. Storing the :local tile tensor into the original problem
+space tensor.  
+
+Note that these helper macros are coordinate aware. When used from within `tile-stride` or `hardware-stride`
+stride macros, they know where the current tile "cursor" is and how to map between the problem space and the tile.
+
+There are also asynchronous variants.
+
+
 ```
-(load-chunk  <problem-space> <chunk> &optional (identity-val 0) (<problem-space-coords>) (<chunk-size>))
+(load-tile  <problem-space-tensor> <tile> &optional (identity-val 0))
+(request-load-tile <problem-space-tensor> <tile> &optional (identity-val 0))) => dag-token
 
-(store-chunk <chunk> <problem-space> &optional transformF (<problem-space-coords>) (<chunk-size>))
+(store-tile <tile> <problem-space-tensor> &optional transformF)
+(request-store-tile <tile> <problem-space-tensor> &optional transformF) => dag-token
+
+(await-request dag-token)
 ```
 
-`load-chunk` will map the chunk to the appropriate place in the problem space and 
-load the chunk with the data there. If used within the scope of `thread-stride` 
-then the `<problem-space-coords>` and `<chunk-size>` do not need provided.
-But this function can be used in other contexts so long as those are provided. 
-The loading of "cooperative", with each thread setting one value.
+`<problem-space-tensor>` is the original `<tensor>` of the `tile-stride`. It is most
+likely `:global` address space.
 
-Similarly, `store-chunk` does the reverse - copies memory from some chunk vector
+`<tile>` is a small `tensor` , the same dimensions of the `<tile-size>` for the `tile-stride`.
+It is typically `:local` address space. 
+
+`load-tile` will map the `<tile>` to the appropriate place in the problem space and 
+load the tile with the data there.  
+The loading is "cooperative", with each thread setting one value.
+
+Similarly, `store-tile` does the reverse - copies memory from some tile vector
 into the appropriate location in the problem space data. This is usually used with 
 some `&out` output memory whose size is identical to the problem space. 
 
-The usual practice is that the problem space vector is `:global` and the chunk is `:local`.
+The usual practice is that the problem space vector is `:global` and the tile is `:local`.
 
-`load-chunk` takes an optional `identity-val` argument. This is used when the problem space
-is not evenly divisible by the chunk size.  In that case, the chunk will be correctly loaded with
-data from the problem space where possible, but the REMAINING values of the chunk will be loaded with `identity-val`
+`load-tile` takes an optional `identity-val` argument. This is used when the problem space
+is not evenly divisible by the tile size.  In that case, the tile will be correctly loaded with
+data from the problem space where possible, but the REMAINING values of the tile will be loaded with `identity-val`
 
-`store-chunk` take an optional `transformF` argument. This is a function of `binop-type` that
+`store-tile` take an optional `transformF` argument. This is a function of `binop-type` that
 can be used to transform the value as it is stored. 
 
 ### local-barrier
 
-Both `load-chunk` and `store-chunk` invoke `(local-barrier)` at the completion of their
+Both `load-tile` and `store-tile` invoke `(local-barrier)` at the completion of their
 operation. This prevents read-after-write and write-after-read race conditions. 
 But be aware, that this also means these functions should NOT appear in conditional blocks 
 ( `when`, `if`, `cond`, `unless`) or you will incure a deadlock. The Crisp compiler should
 detect this and emit an error.
 
+### Asynchronous Variants
+Crisp also provides asynchronous variants of these tile load and store helpers.
+THe `request-XXXX` variants return a `request-token` which can be awaited on with `(await-request <token>)`
+
+```
+(let ((my-tile (make-scratch-vector float :match-workgroup-size)))
+  (tile-stride big-vector my-tile (x)
+    (let ((token (request-load-tile big-vector my-tile))
+           ;; we can do OTHER operations before we await.
+           ;; just don't touch the data behind big-vector or my-tile.
+          (idx (tile-index x)))
+        (await-request token)
+        ;; now we can touch my-tile
+        (workgroup-stride my-tile (wx)
+           (inc! (~ my-tile wx) 10))
+        (store-tile my-tile big-vector)
+        ...)))
+```
+
+
+
+### Choosing the Right tile Size
+
+When utilizing `load-tile` and `store-tile`, the shape and size of your `<tile-tile>` directly dictate how the GPU's memory controller fetches data. Choosing the wrong size will result in uncoalesced memory reads and severe performance degradation.
+
+Follow these three guidelines when defining your tile sizes:
+
+#### Capacity: Match the Workgroup Size
+Because `load-tile` is a cooperative workgroup operation, the total number of elements in your tile should ideally be a perfect multiple of your `local_work_size`. 
+- If your workgroup size is 64 threads, a tile of 64 elements means exactly 1 read per thread. 
+- A tile of 128 elements means exactly 2 reads per thread. 
+- If you pick an arbitrary total like 50 elements for a 64-thread workgroup, 14 threads sit completely idle while the memory controller waits for the active threads to finish. 
+
+#### Warp : Stretch the Contiguous Dimension
+GPU memory is physically 1-dimensional. Cache lines are pulled in 64-byte or 128-byte linear blocks. Therefore, your tile should not be shaped like a square if you can avoid it. It should be stretched as wide as possible along the tensor's `:contiguous-term`.
+
+For a `:row-major` (or `:contiguous-last`) matrix, the contiguous term is the X-axis (the columns). 
+- BAD (The Square Trap): A tile of `(Y=8, X=4)`. A warp of 32 threads will be divided across 8 different rows, requesting 4 elements from each. The hardware has to fetch 8 entirely separate cache lines simultaneously, wasting huge amounts of bandwidth.
+- GOOD (The Stretched Tile): A tile of `(Y=2, X=16)`. 16 contiguous elements (64 bytes of floats) fit perfectly into a single cache line. 
+- PERFECT:*A tile where the contiguous dimension is exactly the Warp Size (e.g., `X=32`). All 32 threads in the warp hit adjacent memory addresses simultaneously, resulting in a single, perfectly coalesced memory transaction.
+
+#### Algorithmic Concerns: Why Square Tiles Exist
+If stretched tiles are so fast to load, why do algorithms like Matrix Multiplication (MatMul) famously use square tiles (like `16x16` or `32x32`)?
+
+Because in MatMul, the bottleneck isn't just loading the data; it is reusing the data. A `16x16` tile loaded into `:local` memory allows the workgroup to perform 256 math operations without returning to global memory. A stretched `2x128` tile might load faster, but it provides far less mathematical reuse for the algorithm.
+
+
+<!-- Next is the new workgroup-stride API.  The old one follows it and is commetnd out -->
+
+workgroup-stride
+----------------
+```
+(workgroup-stride <tile-tensor> (<bindings>) ...)
+```
+`workgroup-stride` is the primary workhorse for computations within a single workgroup. It is designed to walk the coordinates of a `:local` or `:private` tensor (a "tile") using the full parallel resources of the workgroup. 
+
+
+### The "One Coordinate" Binding
+The `<bindings>` always represent the local coordinates within the `<tile-tensor>`. If you are striding a $16 \times 16$ tile, the bindings will range from $(0,0)$ to $(15,15)$. The macro ensures that:
+- Coalesced Access: The contiguous dimension of the tile is automatically mapped to the fastest hardware dimension (the warp lane) to prevent bank conflicts.
+- Cooperative Execution: If the tile is larger than the physical workgroup size, the macro handles the serial-parallel tiling required to visit every element.
+
+```
+Example: Simple cooperative increment
+(let ((my-tile (make-scratch-matrix float (16 16) :local)))
+  (tile-stride big-matrix my-tile (y x)
+    (load-tile big-matrix my-tile)
+    
+    (workgroup-stride my-tile (ly lx)
+       ;; ly and lx are always 0-15, mapped to workgroup hardware
+       (inc! (~ my-tile ly lx) 1.0))
+       
+    (store-tile my-tile big-matrix)))
+```
+
+### Hardware Context Helpers
+
+Instead of "modes" or "tags" that change how the stride works, Crisp provides helper macros that can be used inside the body of a `workgroup-stride` to access hardware-level information. This allows you to write warp-aware logic without losing your place in the tensor's coordinate system.
+
+### HelperDescription
+- `(warp-id)` Returns the index of the current warp within the workgroup.
+- `(warp-lane)` Returns the index of the current thread within its warp (e.g., 0–31).
+- `(warp-count)` Returns the total number of warps in the current workgroup. 
+
+### Example: Warp-Aware Logic
+This pattern is useful for algorithms where only one "representative" thread per warp should perform a specific task, such as updating a shared counter or coordinating a sub-group shuffle.
+
+```
+(workgroup-stride my-tile (ly lx)
+  ;; Every thread does the common work
+  (set! (~ my-tile ly lx) (expensive-calculation ly lx))
+  
+  ;; Only the first lane in every warp handles logging or sync
+  (when (== (warp-lane) 0)
+    (atomic-inc! (some-shared-counter) 1)))
+```
+
+### Implementation Notes
+
+- Implicit Synchronization: To maintain maximum performance, `workgroup-stride` does not inject a `(local-barrier)` at the end of its block. If your logic requires all threads to finish a pass before moving to the next, call `(local-barrier)` explicitly.
+- Arity Consistency: The number of `<bindings>` must match the arity of the `<tile-tensor>`.
+- Scope: The bindings `(ly lx)` represent the position within the tile, while any bindings from an outer tile-stride (e.g., y x) remain available for calculating positions relative to the global problem space.
+
+<-- 
+
+OLD WORKGROUP STRIDE API 
 
 Workgroup Stride
 ----------------
 
-Whereas `thread-stride` bends all available threads to its wicked purposes, `workgroup-stride` is 
+Whereas the other stride macros bend all available threads to their wicked purposes, `workgroup-stride` is 
 used to just set up a stride across a worksgroup. This makes it one of the very few "workplace level" 
-macros that Crisp provdes.  This CAN be nested in a grid level operation (such as `thread-stride`)
+macros that Crisp provdes.  This CAN be nested in a grid level operation (such as `tile-stride`)
 
 ```
-(workgroup-stride <problem-space> <chunkExpr> (<bindings>) ...)
+(workgroup-stride <tensor> (<bindings>) ...)
+(workgroup-stride <tensor> <tile-tag> (<bindings>) ...)
 ```
 
-`problem-space` 
-- a  1D vector, 2D matrix or 3D tensor 
-- size list: `(width)` or `(width height)` or `(width height depth)` 
+The `<tensor>` can be any arity, but because this operates at the workgroup level, it should represent a small problem space (typically a `:local` memory tile). Do not use `workgroup-stride` to walk massive global matrices.
 
-`chunkExpr` 
+
+`tile-tag` 
 - `:local-size` (normal grid stride, could be 1D, 2D, or 3D) 
 - `:warp-idx`  1D only
 - a small 1D vector, 2D matrix or 3D tensor
@@ -4974,11 +5224,25 @@ These functions operate analagously to their `thread-stride` counterparts.
 ```
 (wg-problem-space-coords) => (x ...)
 
-(wg-chunk-coords) => (x ...)
+(wg-tile-coords) => (x ...)
 ```
+
+-->
                      
 
+### `ceil-pow2`
 
+For certain operations, like warp reductions, it is imperative that certain activities
+fit completely in a warp and are not "split" across warp divide. 
+
+If the argument to `ceil-pow2` is a power of 2, it'll be returns. But if not, then the
+next hightest power of 2 will be returned. This can be very handy in loops
+or for making sure tile strides don't split work across the warp boundary. 
+
+```
+(ceil-pow2 4) => 4
+(ceil-pow2 5) => 8
+```
 
 
 
@@ -5114,10 +5378,10 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 - loop-vector-stride / loop-soa-stride
 - thread-stride
 - - problem-space-coords
-- - chunk-coords
+- - tile-coords
 - - problem-space-view
-- - load-chunk
-- - store-chunk
+- - load-tile
+- - store-tile
 - workgroup-stride
 - dotimes / dotimes+ / dotimes*
 - do-times-by-doubling
@@ -7072,12 +7336,12 @@ What could be simpler?
     (r-t-assert-0 (= (length~ block-sums (get-num-workgroups))) "block-sums length should be the number of workgroups")
     (r-t-assert-0 (= (length~ input-vec) (length~ output-vec)) "in/out vec lengths don't match")
     (thread-stride input-vec :workgroup-idx (wg-idx)
-      (load-chunk input-vec scratch-vec)
+      (load-tile input-vec scratch-vec)
       (let ((total (exclusive-scan-workgroup scratch-vec))) ;; scratch-vec now reordered. local-barrier within exclusive-scan-wg
         (when (= 0 (get-local-id))
           (set! (~ block-sums wg-idx) total)))
       (local-barrier)
-      (store-chunk scratch-vec output-vec)))
+      (store-tile scratch-vec output-vec)))
 
   (def-grid-function global-exclusive-scan-downsweep (input-vec block-sums &out output-vec)
     (declare #'((in-vec T A) (in-vec T A) &out (out-vec T A))
@@ -7903,9 +8167,9 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
 
     ;; setup shared memory
     (let ((wg-size (get-local-size))
-           ;; Need space to store the data chunk for this workgroup
-          (local-data-chunk (make-scratch-vector T :match-workgroup-size ))
-           ;; Need space to store the 'digit' for each element in the chunk
+           ;; Need space to store the data tile for this workgroup
+          (local-data-tile (make-scratch-vector T :match-workgroup-size ))
+           ;; Need space to store the 'digit' for each element in the tile
           (local-digits (make-scratch-vector uint :match-workgroup-size ))
            ;; Need space for the local scan (prefix sum) result for each thread
           (local-scan-indices (make-scratch-vector uint :match-workgroup-size))
@@ -7913,14 +8177,14 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
           (local-id (get-local-id))
           (global-id (get-global-id)))
 
-      ;; load data chunk
+      ;; load data tile
       ;; Each thread loads one element into local memory.
-      (load-local input-vec local-data-chunk)
+      (load-local input-vec local-data-tile)
       
 
       ;; calculate digits and local scan
       ;; each thread determines its element's digit for this pass.
-      (let ((initial-val (~ local-data-chunk local-id))
+      (let ((initial-val (~ local-data-tile local-id))
             ;; Apply signed/float transformations (same as histogram kernel)
             (sortable-int (radix-transform initial-val)) ; Use a helper/macro  
             (digit (bit-and (ash sortable-int (- bit-offset)) #xFF)))
@@ -7944,7 +8208,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
           ;; write to global output
           ;; Write the ORIGINAL element value to its final sorted position for this pass.
           (when (< global-id (length~ input-vec)) ; Bounds check
-            (set! (~ output-vec final-write-pos) (~ local-data-chunk local-id))))))))
+            (set! (~ output-vec final-write-pos) (~ local-data-tile local-id))))))))
 
 ;;
 ;; get-unsigned-type
@@ -9334,10 +9598,10 @@ Possible Implementation
     (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
     ;; 
     (thread-stride (length~ output-mfb-vec) (ceil-pow2 (count MFB)) (warp-num)
-      ;; we may be loading a smaller chunk than we declared to thread stride,
-      ;; so we can't use the short version of load-chunk. 
+      ;; we may be loading a smaller tile than we declared to thread stride,
+      ;; so we can't use the short version of load-tile. 
       (let ((identity-val (identity-of #'max F)))
-        (load-chunk input-vec scratch-vec identity-val '(warp-num) '((count MFB))) 
+        (load-tile input-vec scratch-vec identity-val '(warp-num) '((count MFB))) 
         (let ((max-val (reduce-vec-warp scratch-vec #'max identity-val)) ;;
               (scale-f (to (scale MFB) max-val))
               (target-block (~ output-mfb-vec warp-num)))
@@ -10329,7 +10593,7 @@ Result: The entire buffer is given to warp 0 of the "last standing" workgroup, o
 - --logging-wg-index=42
 - --logging-subdivide-by-site
 
-Result: The buffer for the dedicated target (WG 42) is subdivided, giving each log site its own "reserved" chunk (running in "first-N" mode).
+Result: The buffer for the dedicated target (WG 42) is subdivided, giving each log site its own "reserved" tile (running in "first-N" mode).
 
 
 
@@ -11051,47 +11315,43 @@ work correctly.
 
 launch-interleaved
 ------------------
+
+`launch-interleaved` is for 1D interleaved operations on vectors. 
+
 ```
-(launch-interleaved (hoist-vectors) (len offset) &rest launch-specification)
+(launch-interleaved &rest launch-specification)
 ```
 
 When the compiler encounters `launch-interleaved`, the hoisting code that is generated will enqueue
 the kernels and data such that the memory copy and the kernel execution overlap. This helps hide latency
 and is often the secret to maximizing performance and throughput.  
 
-The kernel launched should have, in addition to one or more vector data arguments, a parameter that can
-accept an "offset" into the vector and a paramter that accepts a "length". 
+In the `def-orchestration` use `make-interleaved-vector` to define a vector subview onto larger data.  The subview vector will be updated for each enqueue to progress through the data.
 
-The hoist vectors that you want to be progressively interleaved with the kernel execution are passed in the
-first argument list to `launch-interleaved`. 
+`make-interleaved-vector` will allocate a larger data vector, but create a smaller view into that data.
 
-Following that is the binding which binds the `len` and `offset` variable names.
-
-And then the launch specifications.
-
+If the original kernel vector type declaration declares `:compact-offset` as its alignment, then the subview merely has its offsets adjusted. But if the declaration is `:compact` then the underlying pointer
+will be adjusted before each enqueue.  If you plan to adjust the hoisting code, it would probably
+be best to use  `:compact-offset` as that's more flexible.
 
 Example:
 ```
 
 ;; -- vector_add_chunked --
-(def-kernel vector_add_chunked (len offset A B &out C)
+(def-kernel vector_add_chunked (A B &out C)
    ;; assume input-vec-t and output-vec-t already defined.
-  (declare #(ulong ulong input-vec-t input-vec-t &out output-vec-t)
-           (global-size :derive-from len :strategy :interleaved
-                         :msg "this kernel processes data defined by offset/len"))
-  (let ((A-view (make-vector A len offset))
-        (B-view (make-vector B len offset))
-        (C-view (make-vector C len offset)))
-    (map-stride #'+ A-view B-view C-view)))
+  (declare #(input-vec-t input-vec-t &out output-vec-t)
+           (global-size :derive-from A :strategy :strided))
+    (map-stride #'+ A B C))
 
 ;; -- add-interleaved --
 (def-orchestration add-interleaved
   (let ((VADD_CHUNKED (gen-vector_add_chunked))
-        (A (make-hoist-vector VADD_CHUNKED::A))
-        (B (make-hoist-vector VADD_CHUNKED::B))
-        (C (make-hoist-vector VADD_CHUNKED::C)))
-  (launch-interleaved (A B C) (len offset) 
-    (VADD_CHUNKED len offset A B C))))
+        (A-view (make-interleaved-vector VADD_CHUNKED::A))
+        (B-view (make-interleaved-vector VADD_CHUNKED::B))
+        (C-view (make-interleaved-vector VADD_CHUNKED::C)))
+  (launch-interleaved  
+    (VADD_CHUNKED len offset A-view B-view C-view))))
 ```
 In the example above, Crisp will generate hoisting code that interleaves the memory copy  `A`, `B`, and `C` 
 and the kernel execution.  It will demonstrate how to allocate some memory, pin it, 
@@ -11922,13 +12182,13 @@ control flow
 - loop-vector-stride
 - thread-stride
 - - problem-space-coords
-- - chunk-coords
+- - tile-coords
 - - problem-space-view
-- load-chunk
-- store-chunk
+- load-tile
+- store-tile
 - workgroup-stride
 - - wg-problem-space-coords
-- - wg-chunk-coords
+- - wg-tile-coords
 
 - grid-level         [DP]
 - workgroup-level    [DP]

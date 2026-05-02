@@ -14,11 +14,12 @@ Every `tensor` has these runtime properties:
 | strides~  | stride-type |  `def-rec-vec` the length of the `num-dims` that tracks the count to the "next" element in that dimension |
 | extents~  | extents-type | `def-rec-vec` the lenght of `num-dims` that tracks the extent of that particular dimension |
 | align~   | align-enum | `:strided` or `:compact` or `:compact-offset`. This is an immmutable compile-time property. |
+| contiguous-term~ | contiguity-enum | `:last` or `:first`. This is an immutable compile-time property. |
 
 Each of those properties can be accessed by the `XXXX~` function.
 e.g. `(length~ someTensor)` , `(parent~ someTensor)`
 
-The `align` property is known at compile-time and is immutable.  
+The `align` and `contiguous-term` properties are known at compile-time and are immutable.  
 
 But since these types are just views into some `storage`, their other properties are mutable. 
 

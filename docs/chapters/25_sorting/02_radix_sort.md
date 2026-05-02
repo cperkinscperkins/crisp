@@ -188,9 +188,9 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
 
     ;; setup shared memory
     (let ((wg-size (get-local-size))
-           ;; Need space to store the data chunk for this workgroup
-          (local-data-chunk (make-scratch-vector T :match-workgroup-size ))
-           ;; Need space to store the 'digit' for each element in the chunk
+           ;; Need space to store the data tile for this workgroup
+          (local-data-tile (make-scratch-vector T :match-workgroup-size ))
+           ;; Need space to store the 'digit' for each element in the tile
           (local-digits (make-scratch-vector uint :match-workgroup-size ))
            ;; Need space for the local scan (prefix sum) result for each thread
           (local-scan-indices (make-scratch-vector uint :match-workgroup-size))
@@ -198,14 +198,14 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
           (local-id (get-local-id))
           (global-id (get-global-id)))
 
-      ;; load data chunk
+      ;; load data tile
       ;; Each thread loads one element into local memory.
-      (load-local input-vec local-data-chunk)
+      (load-local input-vec local-data-tile)
       
 
       ;; calculate digits and local scan
       ;; each thread determines its element's digit for this pass.
-      (let ((initial-val (~ local-data-chunk local-id))
+      (let ((initial-val (~ local-data-tile local-id))
             ;; Apply signed/float transformations (same as histogram kernel)
             (sortable-int (radix-transform initial-val)) ; Use a helper/macro  
             (digit (bit-and (ash sortable-int (- bit-offset)) #xFF)))
@@ -229,7 +229,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
           ;; write to global output
           ;; Write the ORIGINAL element value to its final sorted position for this pass.
           (when (< global-id (length~ input-vec)) ; Bounds check
-            (set! (~ output-vec final-write-pos) (~ local-data-chunk local-id))))))))
+            (set! (~ output-vec final-write-pos) (~ local-data-tile local-id))))))))
 
 ;;
 ;; get-unsigned-type

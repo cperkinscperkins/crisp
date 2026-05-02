@@ -502,6 +502,7 @@ Miscelleny
       same with autodiff.lisp  . FIX 
 - [ ] i64 and ui64 as types and literals!!
 - [ ] also i128 and friends! 
+- [ ] some "strategy" work can result in `reqd_work_group_size` LLVM IR.  Support
 - [ ] atomic-binop! deferred. Needs dotimes+
 - [ ] compilation error when trying to mutate `offset` or `stride` in a `:compact` aligned storage handle.
       or `stride` in `:compact-offset`
@@ -510,6 +511,7 @@ Miscelleny
 - [ ] src/stdlib/matrix.crisp  -- Time to start thinking about a "standard library" of Crisp support
       and what it wouuld take to enable it in the compiler. 
       In the meantime, just note which functions might be good candidates.
+- [ ] DAMN - Need soa-matrix and soa-tensor N.  But it's not so bad. If struct was {int, float}, now we have {tensor<int>, tensor<float>}
 
 Standard Library Candidates
 ===========================
@@ -548,14 +550,19 @@ Tensors Vectors and Matrices
 - - [x] matrix helpers
 - - [ ] tile?
 - - [ ] no-sroa ?
+- :contiguous-term  As a compile-time property of tensor? <-- would require some refactor
+                   Is optional. Defaults to :last 
+   Matrix: 
+   :contiguous-term :first  <-- col major matrix.  
+   :contiguous-term :last  <-- row major matrix.  
+   ALSO
+   :contiguous-term :row-major / :col-major 
 
 
-EMERGENCY REORG
-===============
-- [x] jettison std140.  
-- [ ] curse the day we first heard its name.  June 2 will forever more be struck from the Crisp calendar. June 1 goes right to June 3. 
-- [x] see align-revisit.md doc
-- [x] don't forget fixed arrays.
+   ALSO  contiguous-term~  function
+   
+   REXAMINE make-scratch-matrix 
+
 
 
 
@@ -570,6 +577,7 @@ Preperatory
 - - [ ] DEFER :interleaved  .. until we tackle def-orchestration.
 - - [ ] FOLLOW UP: check-thread-bounds check-wg-bounds
 - - [x] document :num-groups in ref.metacrisp
+- - [ ] some strategy choices can result in `reqd_work_group_size` being in LLVM-IR
 - - [ ] Check single-task!  It should be a strategy, no?  Strategy helps set the relationship to some input data.  I think the original (declare single-task) might be better.
 - [ ] REVISIT 085.  We are apparently STILL refusing kernels with long/int input args or whatever.
       Look at 092, 089, possibly others that seem like they should be differentiable, but are being
@@ -582,7 +590,7 @@ Grid vs Thread Context
 
 Grid Stride
 ===========
-- [ ] loop-vector-stride
+- [x] loop-vector-stride
 - [ ] thread-stride  ( revisit first, for possible async considerations. )
 
 Looping Constructs
@@ -813,6 +821,8 @@ Milestones
 ==========
 - **2026-01-03**: Compiled first `.spv` from Crisp and successfully ran it with a bespoke OpenCL script. Massive milestone.
 - **2026-01-22**: Crisp toolset can now generate (hoist) `.cpp` files for those kernels, and the testing system runs them on actual GPU iron via Level Zero.
+- **2026-04-29** `loop-vector-stride` joins the toolkit, along with def-grid-function, strategy declarations, tensors/vectors/matrices, and more. With this Crisp can now be used FOR REAL to write
+reductions, matrix multiply, stencil operations, convolutions and more. 
 
 
 

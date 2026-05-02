@@ -37,7 +37,7 @@ Result: The entire buffer is given to warp 0 of the "last standing" workgroup, o
 - --logging-wg-index=42
 - --logging-subdivide-by-site
 
-Result: The buffer for the dedicated target (WG 42) is subdivided, giving each log site its own "reserved" chunk (running in "first-N" mode).
+Result: The buffer for the dedicated target (WG 42) is subdivided, giving each log site its own "reserved" tile (running in "first-N" mode).
 
 
 

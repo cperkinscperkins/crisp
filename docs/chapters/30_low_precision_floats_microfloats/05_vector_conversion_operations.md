@@ -44,10 +44,10 @@ Possible Implementation
     (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
     ;; 
     (thread-stride (length~ output-mfb-vec) (ceil-pow2 (count MFB)) (warp-num)
-      ;; we may be loading a smaller chunk than we declared to thread stride,
-      ;; so we can't use the short version of load-chunk. 
+      ;; we may be loading a smaller tile than we declared to thread stride,
+      ;; so we can't use the short version of load-tile. 
       (let ((identity-val (identity-of #'max F)))
-        (load-chunk input-vec scratch-vec identity-val '(warp-num) '((count MFB))) 
+        (load-tile input-vec scratch-vec identity-val '(warp-num) '((count MFB))) 
         (let ((max-val (reduce-vec-warp scratch-vec #'max identity-val)) ;;
               (scale-f (to (scale MFB) max-val))
               (target-block (~ output-mfb-vec warp-num)))

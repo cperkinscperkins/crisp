@@ -35,12 +35,12 @@ What could be simpler?
     (r-t-assert-0 (= (length~ block-sums (get-num-workgroups))) "block-sums length should be the number of workgroups")
     (r-t-assert-0 (= (length~ input-vec) (length~ output-vec)) "in/out vec lengths don't match")
     (thread-stride input-vec :workgroup-idx (wg-idx)
-      (load-chunk input-vec scratch-vec)
+      (load-tile input-vec scratch-vec)
       (let ((total (exclusive-scan-workgroup scratch-vec))) ;; scratch-vec now reordered. local-barrier within exclusive-scan-wg
         (when (= 0 (get-local-id))
           (set! (~ block-sums wg-idx) total)))
       (local-barrier)
-      (store-chunk scratch-vec output-vec)))
+      (store-tile scratch-vec output-vec)))
 
   (def-grid-function global-exclusive-scan-downsweep (input-vec block-sums &out output-vec)
     (declare #'((in-vec T A) (in-vec T A) &out (out-vec T A))

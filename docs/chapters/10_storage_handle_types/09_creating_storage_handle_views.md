@@ -70,6 +70,8 @@ assertion requires compiler flags (like `--runtime-checks`).
 
 `:compact` layout is generally more amenable to reinterpretation.
 
+The `:contiguous-term` cannot be overridden by any interpretation operation. The compiler will set it appropriately
+
 
 ```
 (def-type vec-floats-t (vector float :align :compact :address-space :local :access :read-write ))

@@ -17,12 +17,11 @@ In C++ lingo this is called "Undefined Behavior". In other languages it is refer
 
 The `check-async-hazards` static analysis can be elected to have the compiler check for you.
 
-### `request-load-tile` / `request-load-chunk`
+### `request-load-tile`
 ```
 (request-load-tile ...) => request-token
-(request-load-chunk ...) => request-token
 ```
-There are async variants for the tile and chunk scratch helpers as well.
+There are async variants for the tile scratch helpers as well.
 
 
 
@@ -38,11 +37,10 @@ memory buffers. It will emit an error if you attempt to read from `local-vec` be
 and the `await-`.
 
 
-### `request-store-global`  / `request-store-tile` / `request-store-chunk`
+### `request-store-global`  / `request-store-tile` 
 ```
 (request-store-global local-scratch-vec global-vec) => request-token
 (request-store-tile ...) => request-token
-(request-store-chunk ...) => request-token
 ```
 
 Storage back to global memory does NOT yet have wide architecture support.  Crisp has these routines, but be aware that

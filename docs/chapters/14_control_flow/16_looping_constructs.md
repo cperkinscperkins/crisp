@@ -6,10 +6,10 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 - loop-vector-stride / loop-soa-stride
 - thread-stride
 - - problem-space-coords
-- - chunk-coords
+- - tile-coords
 - - problem-space-view
-- - load-chunk
-- - store-chunk
+- - load-tile
+- - store-tile
 - workgroup-stride
 - dotimes / dotimes+ / dotimes*
 - do-times-by-doubling

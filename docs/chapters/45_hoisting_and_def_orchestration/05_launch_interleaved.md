@@ -1,46 +1,42 @@
 ## launch-interleaved
 
+
+`launch-interleaved` is for 1D interleaved operations on vectors. 
+
 ```
-(launch-interleaved (hoist-vectors) (len offset) &rest launch-specification)
+(launch-interleaved &rest launch-specification)
 ```
 
 When the compiler encounters `launch-interleaved`, the hoisting code that is generated will enqueue
 the kernels and data such that the memory copy and the kernel execution overlap. This helps hide latency
 and is often the secret to maximizing performance and throughput.  
 
-The kernel launched should have, in addition to one or more vector data arguments, a parameter that can
-accept an "offset" into the vector and a paramter that accepts a "length". 
+In the `def-orchestration` use `make-interleaved-vector` to define a vector subview onto larger data.  The subview vector will be updated for each enqueue to progress through the data.
 
-The hoist vectors that you want to be progressively interleaved with the kernel execution are passed in the
-first argument list to `launch-interleaved`. 
+`make-interleaved-vector` will allocate a larger data vector, but create a smaller view into that data.
 
-Following that is the binding which binds the `len` and `offset` variable names.
-
-And then the launch specifications.
-
+If the original kernel vector type declaration declares `:compact-offset` as its alignment, then the subview merely has its offsets adjusted. But if the declaration is `:compact` then the underlying pointer
+will be adjusted before each enqueue.  If you plan to adjust the hoisting code, it would probably
+be best to use  `:compact-offset` as that's more flexible.
 
 Example:
 ```
 
 ;; -- vector_add_chunked --
-(def-kernel vector_add_chunked (len offset A B &out C)
+(def-kernel vector_add_chunked (A B &out C)
    ;; assume input-vec-t and output-vec-t already defined.
-  (declare #(ulong ulong input-vec-t input-vec-t &out output-vec-t)
-           (global-size :derive-from len :strategy :interleaved
-                         :msg "this kernel processes data defined by offset/len"))
-  (let ((A-view (make-vector A len offset))
-        (B-view (make-vector B len offset))
-        (C-view (make-vector C len offset)))
-    (map-stride #'+ A-view B-view C-view)))
+  (declare #(input-vec-t input-vec-t &out output-vec-t)
+           (global-size :derive-from A :strategy :strided))
+    (map-stride #'+ A B C))
 
 ;; -- add-interleaved --
 (def-orchestration add-interleaved
   (let ((VADD_CHUNKED (gen-vector_add_chunked))
-        (A (make-hoist-vector VADD_CHUNKED::A))
-        (B (make-hoist-vector VADD_CHUNKED::B))
-        (C (make-hoist-vector VADD_CHUNKED::C)))
-  (launch-interleaved (A B C) (len offset) 
-    (VADD_CHUNKED len offset A B C))))
+        (A-view (make-interleaved-vector VADD_CHUNKED::A))
+        (B-view (make-interleaved-vector VADD_CHUNKED::B))
+        (C-view (make-interleaved-vector VADD_CHUNKED::C)))
+  (launch-interleaved  
+    (VADD_CHUNKED len offset A-view B-view C-view))))
 ```
 In the example above, Crisp will generate hoisting code that interleaves the memory copy  `A`, `B`, and `C` 
 and the kernel execution.  It will demonstrate how to allocate some memory, pin it, 

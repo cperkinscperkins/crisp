@@ -20,13 +20,13 @@
 - loop-vector-stride
 - thread-stride
 - - problem-space-coords
-- - chunk-coords
+- - tile-coords
 - - problem-space-view
-- load-chunk
-- store-chunk
+- load-tile
+- store-tile
 - workgroup-stride
 - - wg-problem-space-coords
-- - wg-chunk-coords
+- - wg-tile-coords
 
 - grid-level         [DP]
 - workgroup-level    [DP]

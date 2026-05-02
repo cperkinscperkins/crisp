@@ -6,6 +6,7 @@ Storage Handles are completely typed by
 - `address-space` (which is one of `:global` `:local` `:private` `:constant`)
 - `access` (which is one of `:read-only` `:write-only` `:read-write` `:writable` `:readable`)
 - `align` (one of `:strided` or `:compact` or `:compact-offset`)  NOTE: `align` is not needed by the `cell` type.
+- `contiguous-term` (one of `:first` or `:last`.  Defaults to `:last` if not provided)
 
 The `tensor` type also requires the number of dimensions to be known at compile time.
 
@@ -48,18 +49,16 @@ For the most flexibility, keys can be used.
 (cell <element-type> &key address-space access)
 
 ;; for vector and matrix
-(XXXX <element-type> &key align address-space access extent)
+(XXXX <element-type> &key align address-space access (contiguous-term :last))
 
 ;; for tensor
-(tensor <element-type> NumDims &key align address-space access extent)
+(tensor <element-type> NumDims &key align address-space access (contiguous-term :last))
 ```
 
-Note that `:extent` is normally a runtime property and is NOT required to complete the
-type. It can optionally be provided at compile-time and, when provided, is a list of the sizes of each dimension. The sizes cannot be runtime variables, they must be compile-time expressions.
 
 
 Example: `(vector long :access :writeable)`  This specifies that some vector of longs is writeable. 
-It could be of any address space, alignment, or size.
+It could be of any address space or alignment.
 
 Example: `(tensor float 4)`  This specifies that we have a hypercube of floats, but nothing else is known about it. 
 
