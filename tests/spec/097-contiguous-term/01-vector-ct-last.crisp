@@ -5,5 +5,5 @@
 (def-type vec-t (vector float :align :compact :address-space :global :access :read-write :contiguous-term :last))
 
 (def-kernel test_vector_ct_last (v)
-  (declare (type v vec-t))
+  (declare forward-only (type v vec-t))
   (return))

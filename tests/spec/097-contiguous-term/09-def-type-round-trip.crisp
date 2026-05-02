@@ -15,6 +15,6 @@
   (return (if (= (contiguous-term~ m) :first) 1 0)))
 
 (def-kernel test_def_type_round_trip (ml mf)
-  (declare (type ml mat-last-t)
+  (declare forward-only (type ml mat-last-t)
            (type mf mat-first-t))
   (return))

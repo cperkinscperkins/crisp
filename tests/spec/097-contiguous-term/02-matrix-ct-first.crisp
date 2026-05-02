@@ -5,5 +5,5 @@
 (def-type mat-t (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :first))
 
 (def-kernel test_matrix_ct_first (m)
-  (declare (type m mat-t))
+  (declare forward-only (type m mat-t))
   (return))

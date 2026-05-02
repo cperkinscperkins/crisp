@@ -7,9 +7,9 @@
 (def-type mat-last-t    (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :last))
 
 (def-kernel test_default (m)
-  (declare (type m mat-default-t))
+  (declare forward-only (type m mat-default-t))
   (return))
 
 (def-kernel test_explicit_last (m)
-  (declare (type m mat-last-t))
+  (declare forward-only (type m mat-last-t))
   (return))

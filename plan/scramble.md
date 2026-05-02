@@ -582,6 +582,7 @@ Preperatory
 - [ ] REVISIT 085.  We are apparently STILL refusing kernels with long/int input args or whatever.
       Look at 092, 089, possibly others that seem like they should be differentiable, but are being
       refused. 
+- [ ] revisit incomplete types. Too many defaults in Storage Handles.  Might be difficult.
 
 Grid vs Thread Context
 =======================
