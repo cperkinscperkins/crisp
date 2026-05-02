@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; def-type aliases preserve :contiguous-term through the type system.
+;; Sub-functions accepting the aliased type should see the correct compile-time value.
+
+(def-type mat-last-t  (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :last))
+(def-type mat-first-t (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :first))
+
+(def-function is-last (m)
+  (declare #'(mat-last-t => int))
+  (return (if (= (contiguous-term~ m) :last) 1 0)))
+
+(def-function is-first (m)
+  (declare #'(mat-first-t => int))
+  (return (if (= (contiguous-term~ m) :first) 1 0)))
+
+(def-kernel test_def_type_round_trip (ml mf)
+  (declare (type ml mat-last-t)
+           (type mf mat-first-t))
+  (return))

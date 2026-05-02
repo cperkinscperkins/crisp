@@ -1,0 +1,9 @@
+;; CHECK-FAIL: ":row-major and :col-major are only valid for 2D matrix"
+;; :row-major / :col-major are aliases for 2D matrices only.
+;; Using them on a 3D (or higher) tensor must produce a compile-time error.
+
+(def-type bad-t (tensor float 3 :align :compact :address-space :global :access :read-write :contiguous-term :row-major))
+
+(def-kernel test_kernel (t3)
+  (declare (type t3 bad-t))
+  (return))
