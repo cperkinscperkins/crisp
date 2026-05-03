@@ -5,7 +5,7 @@
 ;;
 ;; Hoist: local-size=64, global-size=1024 => groups = ceil(1024/64) = 16.
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel hoist_local_global_exact (&out result)
     (declare (type result result-t)

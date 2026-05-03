@@ -3,7 +3,7 @@
 ;;
 ;; Metadata: (global-size :derive-from (width height) :strategy :one-thread-per).
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel one_thread_per (width height &out result)
     (declare (type width height ulong)

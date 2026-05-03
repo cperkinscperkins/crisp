@@ -30,8 +30,8 @@
 ;;   :address-space :global
 ;; The hoist generator allocates USM: zeMemAllocShared(ctx, ..., 1 * sizeof(int), ...)
 
-(def-type out-c-t (cell int :address-space :global :access :read-write))
-(def-type sc-int-vec-g (vector int :address-space :global :access :read-write :align :compact))
+(def-type out-c-t (cell int :address-space :global))
+(def-type sc-int-vec-g (vector int :address-space :global :align :compact))
 
 (def-function fun-D-g (sv &out c)
     (declare #'(sc-int-vec-g &out out-c-t => nil))

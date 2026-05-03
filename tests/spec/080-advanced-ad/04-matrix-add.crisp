@@ -12,8 +12,8 @@
 ;; Verifies that two-index tensor access works correctly through the AD machinery.
 ;; The backward IR must carry both 'row' and 'col' through to the gradient writes.
 
-(def-type in-mat  (matrix float :address-space :global :access :read-only  :align :compact))
-(def-type out-mat (matrix float :address-space :global :access :read-write :align :compact))
+(def-type in-mat  (matrix float :address-space :global  :align :compact))
+(def-type out-mat (matrix float :address-space :global :align :compact))
 
 (def-kernel mat_add (A B row col &out C)
   (declare #'(in-mat in-mat ulong ulong &out out-mat))

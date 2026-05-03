@@ -13,7 +13,7 @@
 
 
 (def-kernel fun_kernel (c)
-    (declare (type c (cell rect :address-space :global :access :read-write)))
+    (declare (type c (cell rect :address-space :global)))
   (let ((r (~ c))
         (p (ul-corner~ r))
         (loc-x (x~ p)))

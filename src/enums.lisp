@@ -71,14 +71,6 @@
 
 (export 'is-address-space?)
 
-(def-enumeration access
-                 (:unknown 255)
-                 :read-only
-                 :write-only
-                 :read-write
-                 :readable
-                 :writeable)
-
 (def-enumeration align :compact :compact-offset :strided)
 
 (def-enumeration matrix-layout :row-major :col-major :other-layout)

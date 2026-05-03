@@ -3,7 +3,7 @@
 ;; at this time, def-kernel-exact produces no metadata at all. 
 ;; we can revisit this later.
 
-(def-type out-c (cell long :address-space :global :access :read-write))
+(def-type out-c (cell long :address-space :global))
 
 
 (def-function store-7-return-8 (&out c)

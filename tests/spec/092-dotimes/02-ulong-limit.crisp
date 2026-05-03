@@ -4,7 +4,7 @@
 ;; This matters for 093-loop-vector-stride where the limit comes from length~,
 ;; which returns ulong.
 
-(def-type cell-t (cell ulong :address-space :global :access :read-write))
+(def-type cell-t (cell ulong :address-space :global))
 
 (def-kernel dotimes_ulong (n &out result)
   (declare #'(ulong &out cell-t => nil) forward-only)

@@ -3,7 +3,7 @@
 ;;
 ;; Metadata: (global-size :derive-from (width height) :strategy :tiled :tile-shape (16 16)).
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel tiled_kernel (width height &out result)
     (declare (type width height ulong)

@@ -30,8 +30,8 @@
 ;;   :address-space :global
 ;; The hoist generator allocates: zeMemAllocShared(ctx, ..., 4 * sizeof(int), ...)
 
-(def-type out-c-mat-g-t (cell int :address-space :global :access :read-write))
-(def-type sc-int-mat-g (matrix int :address-space :global :access :read-write :align :compact))
+(def-type out-c-mat-g-t (cell int :address-space :global))
+(def-type sc-int-mat-g (matrix int :address-space :global :align :compact))
 
 (def-function fun-D-mg (mat &out c)
     (declare #'(sc-int-mat-g &out out-c-mat-g-t => nil))

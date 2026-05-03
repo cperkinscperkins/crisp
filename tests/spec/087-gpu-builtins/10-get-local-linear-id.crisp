@@ -3,7 +3,7 @@
 ;; get-local-linear-id is the flattened 1D index of the thread within its workgroup.
 ;; Synthesized as z*lws.y*lws.x + y*lws.x + x from LocalInvocationId and WorkgroupSize.
 
-(def-type out-t (cell ulong :address-space :global :access :read-write))
+(def-type out-t (cell ulong :address-space :global))
 
 (def-kernel test_get_local_linear_id (&out result)
   (declare #'(&out out-t))

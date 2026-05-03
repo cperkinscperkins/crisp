@@ -15,13 +15,13 @@
 ;;     (9 ULONG) (10 ULONG)                    ; explicit row, col (ulong)
 ;;
 ;;   :implicit-params — one entry with:
-;;     :type      (tensor float 2 :address-space :local :access :read-write :align :compact)
+;;     :type      (tensor float 2 :address-space :local :align :compact)
 ;;     :size-expr :match-warp-tile
 ;;     :range     (0 8)   ; 9 physical slots (3*2+3 = 9)
 ;;
 ;;   :declared-signature — row at range (9 9), col at range (10 10)
 
-(def-type sc-mat-float (matrix float :address-space :local :access :read-write :align :compact))
+(def-type sc-mat-float (matrix float :address-space :local :align :compact))
 
 (def-function fun-d-mat-meta (mat row col)
     (declare #'(sc-mat-float ulong ulong => float))

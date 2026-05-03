@@ -1,8 +1,8 @@
 ;; TEST-EXPECT: PASS
 ;; FAIL-WITH[--differentiate]: "message"
 
-(def-type in-ish (cell float :address-space :global :access :read-only))
-(def-type out-ish (cell float :address-space :global :access :write-only))
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
 
 
 ;; call an undifferentiable function. get an error

@@ -3,7 +3,7 @@
 ;; SKIP-WITH[--differentiate]: "fails without lax mode" 
 
 
-(def-type out-c (cell long :address-space :global :access :read-write))
+(def-type out-c (cell long :address-space :global))
 
 (def-kernel return_7 (c)
     (declare (type c out-c))

@@ -1,7 +1,7 @@
 ;; TEST-WITH[--metadata --differentiate]: validate-multiply-grad-metadata
 
-(def-type in-ish (cell float :address-space :global :access :read-only))
-(def-type out-ish (cell float :address-space :global :access :write-only))
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
 
 (def-kernel cell_mult (A B &out C)
   (declare #'(in-ish in-ish &out out-ish))

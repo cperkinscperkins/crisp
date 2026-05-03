@@ -2,8 +2,8 @@
 
 
 (with-template-type (T)
-    (def-type in-ish (cell T :address-space :global :access :read-only))
-    (def-type out-ish (cell T :address-space :global :access :write-only))
+    (def-type in-ish (cell T :address-space :global))
+    (def-type out-ish (cell T :address-space :global))
 
     (def-type binop-t #'(T T => T)) ;; templated function type alias
 

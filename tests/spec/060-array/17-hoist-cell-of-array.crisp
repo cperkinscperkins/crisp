@@ -9,7 +9,7 @@
 ;; Exercises cell branch when cell-base-type returns a list, not a symbol.
 ;; Write-back fixed by bug 029: store now goes directly to addrspace(1), not a local alloca.
 
-(def-type arr-c (cell (array long 4) :address-space :global :access :read-write))
+(def-type arr-c (cell (array long 4) :address-space :global))
 
 (def-kernel cell_arr_hoist_k (c)
     (declare forward-only #'(arr-c))

@@ -3,8 +3,7 @@
 (def-struct mock-vec-explicit
   (length int)
   ;; Explicitly define theier value for the compile-time property
-  (address-space address-space :c-t :global)
-  (access access :c-t :read-write))
+  (address-space address-space :c-t :global))
 
 (def-function test-compile-time-props ()
   (let ((v (make-mock-vec-explicit :length 10)))
@@ -17,6 +16,5 @@
     ;; 2. Compile-Time Assertion (The real test)
     ;; This proves address-space~ expands to a constant usable by the compiler at analysis time
     (c-t-assert (equal (address-space~ v) :global) "Address space must be global")
-    (c-t-assert (equal (access~ v) :read-write) "Access must be read-write")
     
     (return 1)))

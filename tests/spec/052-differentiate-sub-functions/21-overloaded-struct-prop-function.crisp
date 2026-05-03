@@ -2,8 +2,8 @@
 
 (def-struct point (x float) (y float))
 
-(def-type in-ish (cell point :address-space :global :access :read-only))
-(def-type out-ish (cell point :address-space :global :access :write-only))
+(def-type in-ish (cell point :address-space :global))
+(def-type out-ish (cell point :address-space :global))
 
 (def-function some-operation (a b)
     (declare #'(float float => float))

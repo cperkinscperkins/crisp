@@ -10,9 +10,9 @@
 ;; - 'l' → Local memory setup (via kernel group size, no explicit allocation)
 
 (def-kernel address_space_test (g l &out gc)
-    (declare (type g (cell int :address-space :global :access :read-write))
-             (type l (cell int :address-space :local :access :read-write))
-             (type gc (cell int :address-space :global :access :read-write)))
+    (declare (type g (cell int :address-space :global))
+             (type l (cell int :address-space :local))
+             (type gc (cell int :address-space :global)))
     (set! (~ l) 17) ;; setup local
     (set! (~ gc)  (~ l)))
 

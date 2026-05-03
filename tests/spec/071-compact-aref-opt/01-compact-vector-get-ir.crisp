@@ -7,7 +7,7 @@
 ;;   - No "mul i64" instruction in the kernel function body.
 ;;   - An "add i64" IS present (offset + index).
 
-(def-type cv-t (vector long :address-space :global :access :read-write :align :compact))
+(def-type cv-t (vector long :address-space :global :align :compact))
 
 (def-kernel compact_vec_get (i v)
     (declare #'(long cv-t => nil))

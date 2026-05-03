@@ -13,7 +13,7 @@
                     (y int)
                     (earnestness float :c-t 2.0f))
 
-(def-type out-c (cell float :address-space :global :access :read-write))
+(def-type out-c (cell float :address-space :global))
 
 (def-kernel rec_with_ct_on_boundary_k (vp-1 vp-2 &out c)
     (declare #'(v-point (v-point :earnestness 3.0) &out out-c))

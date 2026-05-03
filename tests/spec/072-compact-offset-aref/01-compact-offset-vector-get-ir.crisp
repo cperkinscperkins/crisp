@@ -8,7 +8,7 @@
 ;; This distinguishes :compact-offset from :compact (which skips the offset read)
 ;; and from :strided (which also reads strides).
 
-(def-type cov-t (vector long :address-space :global :access :read-write :align :compact-offset))
+(def-type cov-t (vector long :address-space :global :align :compact-offset))
 
 (def-kernel compact_offset_vec_get (i v)
     (declare #'(long cov-t => nil))

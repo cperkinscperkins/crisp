@@ -3,7 +3,7 @@
 ;; get-global-linear-size is the total number of threads in the entire grid.
 ;; Alias of get-total-threads; synthesized as product of GlobalSize components.
 
-(def-type out-t (cell ulong :address-space :global :access :read-write))
+(def-type out-t (cell ulong :address-space :global))
 
 (def-kernel test_get_global_linear_size (&out result)
   (declare #'(&out out-t))

@@ -3,7 +3,7 @@
 ;; Cell view at :offset 1.
 ;; Write value 99 through the cell, then read it back.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-make-cell-write (v)
     (declare #'(int-vec-t => int))

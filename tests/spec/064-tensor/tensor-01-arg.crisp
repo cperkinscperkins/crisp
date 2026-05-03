@@ -1,5 +1,5 @@
-;; tensor, like the cell Storage Hnadle,  is a parameterized type. 
-;; It's type declaration uses &key for :address-space and :access
+;; tensor, like the cell Storage Handle, is a parameterized type.
+;; It's type declaration uses &key for :address-space.
 ;; The minimal type declaration has element type and arity.
 
 

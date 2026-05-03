@@ -2,7 +2,7 @@
 ;; extents~ returns (array ulong N); mutate element 1 (width) via (set! (~ (extents~ m) 1) val).
 ;; Paired with 04: both test chained set! through virtual-array accessors.
 
-(def-type int-mat-t (matrix int :align :compact :address-space :global :access :read-write))
+(def-type int-mat-t (matrix int :align :compact :address-space :global))
 
 (def-function test-set-extent (m)
     (declare #'(int-mat-t => ulong))

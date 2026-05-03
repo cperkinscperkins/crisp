@@ -2,7 +2,7 @@
 
 ;; type constructors
 
-;; &key (tensor T N &key :address-space :access)
+;; &key (tensor T N &key :address-space)
 (def-function kernel-proxy (C y x &out A B)
     (declare #'((tensor float 2 :address-space :local) ulong ulong &out (tensor int 2) (tensor int 2 :address-space :global) => nil))
     (let ((quot rem (truncate (~ C y x))))
@@ -10,12 +10,12 @@
         (set! (~ B y x) rem)))
 
 (def-function kernel-proximate (A B &out C)
-    (declare #'((tensor long 1 :address-space :global :access :read-only) (tensor long 1 :address-space :local :access :read-only) &out (tensor float 1 :address-space :global :access :write-only) => nil))
+    (declare #'((tensor long 1 :address-space :global) (tensor long 1 :address-space :local) &out (tensor float 1 :address-space :global) => nil))
     (set! (~ C 0) (to-float (+ (~ A 0) (~ B 0)))))
 
 (def-function change-order (A B &out C)
-    (declare #'((tensor float 1 :access :read-only :address-space :local)
-                (tensor long 1 :access :read-only)
+    (declare #'((tensor float 1 :address-space :local)
+                (tensor long 1)
                 &out
                 (tensor float 1 :address-space :global)))
     (set! (~ C 0) (+ (to-float (~ B 0)) (~ A 0))))

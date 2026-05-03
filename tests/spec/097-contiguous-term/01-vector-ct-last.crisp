@@ -2,7 +2,7 @@
 ;; TEST-WITH[--ir-target=spv]
 ;; vector declared with explicit :contiguous-term :last should compile fine.
 
-(def-type vec-t (vector float :align :compact :address-space :global :access :read-write :contiguous-term :last))
+(def-type vec-t (vector float :align :compact :address-space :global :contiguous-term :last))
 
 (def-kernel test_vector_ct_last (v)
   (declare forward-only (type v vec-t))

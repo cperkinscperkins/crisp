@@ -5,7 +5,7 @@
 ;;
 ;; Hoist: 3D dispatch with :one-thread-per => groupCount = {w_arg, h_arg, d_arg}.
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel hoist_3d (w h d &out result)
     (declare (type w h d ulong)

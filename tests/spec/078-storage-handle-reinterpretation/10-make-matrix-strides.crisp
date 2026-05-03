@@ -5,7 +5,7 @@
 ;; This is standard row-major layout for a 3-wide matrix, but specified explicitly.
 ;; Access element [0, 2].
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-make-matrix-strides (v)
     (declare #'(int-vec-t => int))

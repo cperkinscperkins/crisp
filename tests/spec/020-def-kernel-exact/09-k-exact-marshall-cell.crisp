@@ -3,7 +3,7 @@
 ;; 
 ;; (marshall-cell <CellTypeExpressiion> StorageByteSize:ulong Ptr:voidp Offset:ulong) => cell:CellTypeExpressiion
 ;;
-(def-type out-c (cell long :address-space :global :access :read-write))
+(def-type out-c (cell long :address-space :global))
 
 (def-kernel-exact return_7 (byte-size ptr offset)
     (declare #'(ulong voidp ulong))

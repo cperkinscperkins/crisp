@@ -10,8 +10,8 @@
              ;; For the test environment, we just need to ensure the types exist.
              ;; We can use evaluating forms to set up environment.
 
-             (let ((forms '((def-type in-c (cell long :address-space :global :access :read-only))
-                            (def-type out-c (cell long :address-space :global :access :read-write))
+             (let ((forms '((def-type in-c (cell long :address-space :global ))
+                            (def-type out-c (cell long :address-space :global ))
 
                             (def-kernel cell_add (threshold A B &out C)
                                         (declare #'(long in-c in-c &out out-c))

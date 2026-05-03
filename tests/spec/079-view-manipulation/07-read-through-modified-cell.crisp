@@ -7,7 +7,7 @@
 ;; This verifies the "cell cursor" pattern: the IR extracts offset at runtime
 ;; from the alloca (not a constant), so the load address is computed dynamically.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-read-through (v)
     (declare #'(int-vec-t => int))

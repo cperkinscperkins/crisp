@@ -3,7 +3,7 @@
 ;; get-work-dim returns the number of dimensions the kernel was launched with (uint, 1-3).
 ;; SPIR-V only — hidden kernel parameter via the WorkDim built-in (value 40).
 
-(def-type out-t (cell uint :address-space :global :access :read-write))
+(def-type out-t (cell uint :address-space :global))
 
 (def-kernel test_get_work_dim (&out result)
   (declare #'(&out out-t))

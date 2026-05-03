@@ -1,7 +1,7 @@
 ;; CHECK-FAIL: "expected 2 arguments, got 1"
 ;; Tests that atomic-add! rejects a call with the delta argument missing.
 
-(def-type acc-vec (vector int :address-space :global :access :read-write))
+(def-type acc-vec (vector int :address-space :global))
 
 (def-function test-missing-delta (v)
   (declare #'(acc-vec => int))

@@ -21,7 +21,7 @@
 
 (def-struct data-block (values (array int 4)))
 
-(def-type dat-c (cell data-block :address-space :global :access :read-write))
+(def-type dat-c (cell data-block :address-space :global))
 
 (def-kernel cell_struct_arr_hoist_k (c)
     (declare forward-only #'(dat-c))

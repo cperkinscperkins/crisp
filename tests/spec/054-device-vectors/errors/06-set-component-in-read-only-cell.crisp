@@ -5,7 +5,7 @@
 ;;
 ;; We don't have read-only enforcement yet.  Enable test when it is present.
 
-(def-type ro-float2 (cell float2 :address-space :global :access :read-only))
+(def-type ro-float2 (cell float2 :address-space :global))
 
 (def-kernel bad_set_x (c)
   (declare forward-only #'(ro-float2))

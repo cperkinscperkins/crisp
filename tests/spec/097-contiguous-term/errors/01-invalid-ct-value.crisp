@@ -2,7 +2,7 @@
 ;; :contiguous-term only accepts :last, :first, :row-major (matrix), :col-major (matrix).
 ;; Using an unrecognized keyword must produce a compile-time error.
 
-(def-type bad-t (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :diagonal))
+(def-type bad-t (matrix float :align :compact :address-space :global :contiguous-term :diagonal))
 
 (def-kernel test_kernel (m)
   (declare (type m bad-t))

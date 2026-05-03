@@ -13,8 +13,8 @@
 ;;   - backward kernel body calls split_op_grad
 ;;   - idx_GRAD NOT present
 
-(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
-(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+(def-type in-vec  (vector float :address-space :global  :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
 
 (def-function split-op (a b)
     (declare #'(float float => float float))

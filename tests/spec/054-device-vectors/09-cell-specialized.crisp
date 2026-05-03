@@ -1,7 +1,7 @@
 
-(def-type in-c (cell ushort2 :address-space :global :access :read-only))
+(def-type in-c (cell ushort2 :address-space :global))
 
-(def-type out-c (cell ushort2 :address-space :global :access :write-only))
+(def-type out-c (cell ushort2 :address-space :global))
 
 (def-kernel cell_arg (u2 v2 &out res2)
     (declare forward-only #'(in-c ushort2 &out out-c))

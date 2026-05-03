@@ -3,7 +3,7 @@
 ;; get-local-linear-size is the total number of threads in a single workgroup.
 ;; Synthesized as product of the WorkgroupSize components.
 
-(def-type out-t (cell ulong :address-space :global :access :read-write))
+(def-type out-t (cell ulong :address-space :global))
 
 (def-kernel test_get_local_linear_size (&out result)
   (declare #'(&out out-t))

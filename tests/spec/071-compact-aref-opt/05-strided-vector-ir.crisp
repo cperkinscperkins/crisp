@@ -10,7 +10,7 @@
 ;; The validator checks:
 ;;   - "mul i64" IS present in the kernel function body.
 
-(def-type sv-t (vector long :address-space :global :access :read-write :align :strided))
+(def-type sv-t (vector long :address-space :global :align :strided))
 
 (def-kernel strided_vec_get (i v)
     (declare #'(long sv-t => nil))

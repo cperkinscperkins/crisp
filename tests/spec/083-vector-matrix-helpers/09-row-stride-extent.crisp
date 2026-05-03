@@ -3,7 +3,7 @@
 ;; Input: row-major 3x4 matrix (extents=[3,4], strides=[4,1]).
 ;; Row 1: offset = 0 + 1*4 = 4, stride = 1 (col stride), extent = 4 (num_cols).
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-row-stride-extent (v)
   (declare #'(int-vec-t => ulong ulong))

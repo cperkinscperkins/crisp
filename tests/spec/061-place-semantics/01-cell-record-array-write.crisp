@@ -14,7 +14,7 @@
 
 (def-record data-rec (values (array int 4)))
 
-(def-type dat-c (cell data-rec :address-space :global :access :read-write))
+(def-type dat-c (cell data-rec :address-space :global))
 
 (def-kernel cell_rec_arr_write_k (c)
     (declare forward-only #'(dat-c))

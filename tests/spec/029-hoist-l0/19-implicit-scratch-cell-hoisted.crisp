@@ -4,9 +4,9 @@
 ;; TEST-HOIST[L0] : validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER out-c: 8
 
-(def-type out-cell (cell int :address-space :global :access :read-write))
+(def-type out-cell (cell int :address-space :global))
 
-(def-type scratch-cell (cell int :address-space :global :access :read-write))
+(def-type scratch-cell (cell int :address-space :global))
 
 (def-function fun-D (sc &out out-cell)
     (declare #'(scratch-cell &out out-cell => nil))

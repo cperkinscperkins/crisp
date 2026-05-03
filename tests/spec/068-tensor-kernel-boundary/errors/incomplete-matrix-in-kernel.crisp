@@ -1,5 +1,5 @@
 ;; CHECK-FAIL: "incomplete storage handle type"
-;; (matrix int) is missing :address-space and :access.
+;; (matrix int) is missing :address-space.
 ;; Valid at def-function boundaries (typically not needed),
 ;; but kernels require all compile-time properties to be explicit.
 (def-kernel bad_kernel (m)

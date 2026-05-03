@@ -3,8 +3,8 @@
 ;; def-type aliases preserve :contiguous-term through the type system.
 ;; Sub-functions accepting the aliased type should see the correct compile-time value.
 
-(def-type mat-last-t  (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :last))
-(def-type mat-first-t (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :first))
+(def-type mat-last-t  (matrix float :align :compact :address-space :global :contiguous-term :last))
+(def-type mat-first-t (matrix float :align :compact :address-space :global :contiguous-term :first))
 
 (def-function is-last (m)
   (declare #'(mat-last-t => int))

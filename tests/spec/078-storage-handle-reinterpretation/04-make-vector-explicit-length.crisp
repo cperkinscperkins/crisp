@@ -3,7 +3,7 @@
 ;; Result: a vector<int> view of the first 5 elements.
 ;; Access element [2] through the view.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-make-vector-explicit-length (v)
     (declare #'(int-vec-t => int))

@@ -2,7 +2,7 @@
 ;; TEST-WITH[--ir-target=spv]
 ;; def-grid-function can call a thread-level def-function.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (def-function double-it (x)
   (declare #'(int => int))

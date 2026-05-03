@@ -11,8 +11,8 @@
 ;;
 ;; Backward IR must contain 'fmul' (for the product-rule scaling) and 'fadd'.
 
-(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
-(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+(def-type in-vec  (vector float :address-space :global  :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
 
 (def-kernel vec_mult (A B idx &out C)
   (declare #'(in-vec in-vec ulong &out out-vec))

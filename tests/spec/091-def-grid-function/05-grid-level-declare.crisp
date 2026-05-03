@@ -3,7 +3,7 @@
 ;; A let with (declare (grid-level)) is valid inside a def-grid-function body.
 ;; The def-grid-function body is a dispatch context, which is required for grid-level.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (defmacro with-grid-work (&body body)
   `(let ()

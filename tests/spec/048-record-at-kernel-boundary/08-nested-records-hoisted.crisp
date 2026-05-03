@@ -9,7 +9,7 @@
 
 (def-record v-rect (top-left v-point) (bottom-right v-point))
 
-(def-type out-c (cell int :address-space :global :access :read-write))
+(def-type out-c (cell int :address-space :global))
 
 (def-kernel nested_recs_on_boundary_k (vr &out c)
     (declare #'(v-rect &out out-c))

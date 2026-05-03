@@ -8,7 +8,7 @@
 ;; Exercises make-scratch-matrix, the N=2 syntactic sugar for
 ;; (make-scratch-tensor T 2 ...).  Calling tree matches test 02/03.
 
-(def-type scratch-float-mat (matrix float :address-space :local :access :read-write :align :compact))
+(def-type scratch-float-mat (matrix float :address-space :local :align :compact))
 
 (def-function fun-D (mat row col)
     (declare #'(scratch-float-mat ulong ulong => float))

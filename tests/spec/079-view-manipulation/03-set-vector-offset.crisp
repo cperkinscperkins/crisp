@@ -3,7 +3,7 @@
 ;; This is the chained write: get-virtual-array then set element.
 ;; Uncertain whether this already works — exploratory.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-set-vector-offset (v)
     (declare #'(int-vec-t => ulong))

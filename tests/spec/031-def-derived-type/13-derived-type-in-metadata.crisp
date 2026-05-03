@@ -11,9 +11,9 @@
 
 (def-derived-type coordinate point :subst :ancestor)
 
-(def-type in-c (cell coordinate :address-space :global :access :read-only))
+(def-type in-c (cell coordinate :address-space :global))
 
-(def-type out-c (cell int :address-space :global :access :write-only))
+(def-type out-c (cell int :address-space :global))
 
 (def-kernel measure_coordinates (c1 c2 &out result)
     (declare #'(in-c in-c &out out-c))

@@ -1,9 +1,4 @@
 (def-function test-cell-passthrough-address-space (c)
-    (declare #'((cell long) => address-space)) 
+    (declare #'((cell long) => address-space))
 
     (address-space~ c))
-
-(def-function test-cell-passthrough-access (c)
-    (declare #'((cell long) => access))  
-
-    (access~ c))

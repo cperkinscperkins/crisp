@@ -2,7 +2,7 @@
 ;; when compiled by itself, this test will fail because "add-three" is not defined.
 
 (with-template-type (T)
-    (def-type out-c (cell T :address-space :global :access :read-write))
+    (def-type out-c (cell T :address-space :global))
 
     (def-kernel add_three (a b c &out res)
         (declare #'(T T T &out (out-c T)))

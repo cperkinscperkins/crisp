@@ -5,7 +5,7 @@
 ;; Explicit :length 3 to keep the view manageable.
 ;; Access element [1].
 
-(def-type float-vec-t (vector float :align :compact :address-space :global :access :read-write))
+(def-type float-vec-t (vector float :align :compact :address-space :global))
 
 (def-function test-make-vector-diff-elem (v)
     (declare #'(float-vec-t => int))

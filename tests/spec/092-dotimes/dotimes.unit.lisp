@@ -18,7 +18,7 @@
   (initialize-compiler :log-level :error)
   (let* ((result (compile-crisp-form-to-ir-string
                    '(def-kernel dt_check (n &out r)
-                      (declare #'(int &out (cell int :address-space :global :access :read-write) => nil))
+                      (declare #'(int &out (cell int :address-space :global ) => nil))
                       (dotimes (i n)
                         (set! (~ r) (+ (~ r) i))))
                    :debug-p nil))
@@ -30,7 +30,7 @@
   (initialize-compiler :log-level :error)
   (let ((result (compile-crisp-form-to-ir-string
                   '(def-kernel dt_ulong (n &out r)
-                     (declare #'(ulong &out (cell ulong :address-space :global :access :read-write) => nil))
+                     (declare #'(ulong &out (cell ulong :address-space :global ) => nil))
                      (dotimes (i n)
                        (set! (~ r) (+ (~ r) i))))
                   :debug-p nil)))
@@ -45,7 +45,7 @@
         (progn
           (compile-crisp-form-to-ir-string
             '(def-kernel dt_zero (&out r)
-               (declare #'(&out (cell int :address-space :global :access :read-write) => nil))
+               (declare #'(&out (cell int :address-space :global ) => nil))
                (dotimes (i 0)
                  (set! (~ r) 99)))
             :debug-p nil)

@@ -7,7 +7,7 @@
 ;; Hoist: :one-thread-per maps each element to one thread;
 ;;        groupCount = {width_arg, height_arg, 1}.
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel hoist_one_thread_per (width height &out result)
     (declare (type width height ulong)

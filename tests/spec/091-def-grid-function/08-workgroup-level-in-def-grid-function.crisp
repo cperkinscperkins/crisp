@@ -2,7 +2,7 @@
 ;; TEST-WITH[--ir-target=spv]
 ;; (declare (workgroup-level)) is valid inside a def-grid-function body.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (defmacro with-workgroup-sync (&body body)
   `(let ()

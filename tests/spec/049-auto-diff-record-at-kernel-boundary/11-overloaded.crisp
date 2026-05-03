@@ -6,7 +6,7 @@
 
 (def-record v-point (x float) (y float))
 
-(def-type out-c (cell float :address-space :global :access :read-write))
+(def-type out-c (cell float :address-space :global))
 
 (def-function x~ (vp)
   (declare #'(v-point => float))

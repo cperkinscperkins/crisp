@@ -11,7 +11,7 @@
 ;; Both :compact and :strided must produce correct results;
 ;; only the generated IR differs between them.
 
-(def-type sv-t (vector long :address-space :global :access :read-write :align :strided))
+(def-type sv-t (vector long :address-space :global :align :strided))
 
 (def-kernel strided_vec_get_set (val &out v)
     (declare #'(long sv-t => nil))

@@ -15,6 +15,6 @@
 (def-derived-type conclusion dot :subst :no)
 
 (def-kernel predetermined_conclusion (&out result)
-    (declare #'(&out (cell conclusion :address-space :global :access :read-write)))
+    (declare #'(&out (cell conclusion :address-space :global)))
     (set! (x~ (~ result)) 40)
     (set! (y~ (~ result)) 50))

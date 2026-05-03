@@ -8,7 +8,7 @@
                 (and (string-equal "CELL" (symbol-name (first result)))
                      (string-equal "INT" (symbol-name (second result)))
                      (eq :global (third result))
-                     (eq :read-write (fourth result)))))
+                     (= 3 (length result)))))
 
              (true
               (let ((result (crisp.compiler::expand-storage-handle-type-specifier '(cell int :local))))
@@ -18,10 +18,11 @@
               (let ((result (crisp.compiler::expand-storage-handle-type-specifier '(cell int :address-space :private))))
                 (eq :private (third result))))
 
+             ;; :access is now ignored; only address-space is kept
              (true
-              (let ((result (crisp.compiler::expand-storage-handle-type-specifier '(cell int :local :read-only))))
+              (let ((result (crisp.compiler::expand-storage-handle-type-specifier '(cell int :local))))
                 (and (eq :local (third result))
-                     (eq :read-only (fourth result)))))
+                     (= 3 (length result)))))
 
              (true
               (let ((result (crisp.compiler::expand-storage-handle-type-specifier '(cell int :address-space global))))

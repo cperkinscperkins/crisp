@@ -18,6 +18,6 @@ In some cases there may not be any IR or binary targets specified, so :output-ta
 |#
 
 (def-kernel basic_kernel (c)
-    (declare (type c (cell float :address-space :global :access :read-write)))
+    (declare (type c (cell float :address-space :global)))
   (let ((f (~ c)))
     (set! (~ c) (+ f 1.0))))

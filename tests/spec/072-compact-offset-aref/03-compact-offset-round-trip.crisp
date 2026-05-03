@@ -13,7 +13,7 @@
 ;; round-trip in 071/04.  The IR tests (01/02) verify that the offset read IS
 ;; present; this test verifies correctness when offset=0.
 
-(def-type cov-t (vector long :address-space :global :access :read-write :align :compact-offset))
+(def-type cov-t (vector long :address-space :global :align :compact-offset))
 
 (def-kernel compact_offset_vec_get_set (val &out v)
     (declare #'(long cov-t => nil))

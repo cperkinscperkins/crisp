@@ -31,7 +31,7 @@
     (declare #'(coordinate => int))
     (+ 10000 (~x~ p)))
 
-(def-type out-c (cell int :address-space :global :access :write-only))
+(def-type out-c (cell int :address-space :global))
 
 (def-kernel make_a_point (&out result)
     (declare #'(&out out-c => nil))

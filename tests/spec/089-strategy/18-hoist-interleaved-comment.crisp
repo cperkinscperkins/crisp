@@ -5,7 +5,7 @@
 ;;
 ;; Hoist: :interleaved is deferred — generates a comment and falls back to {1,1,1}.
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel hoist_interleaved (n &out result)
     (declare (type n ulong)

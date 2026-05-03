@@ -11,11 +11,11 @@
 ;;   (set! (~ A_GRAD idx) (+ (~ A_GRAD idx) adj(tmp_a)))
 ;;   (set! (~ B_GRAD idx) (+ (~ B_GRAD idx) adj(tmp_b)))
 ;;
-;; A_GRAD and B_GRAD must have :access :read-write (backward reads and writes them).
+;; A_GRAD and B_GRAD must have (backward reads and writes them).
 ;; The backward IR must contain 'fadd' and GEP instructions for indexed access.
 
-(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
-(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+(def-type in-vec  (vector float :address-space :global  :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
 
 (def-kernel vec_add (A B idx &out C)
   (declare #'(in-vec in-vec ulong &out out-vec))

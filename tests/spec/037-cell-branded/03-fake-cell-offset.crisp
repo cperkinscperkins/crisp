@@ -5,7 +5,7 @@
 ;; branding for offset and value.  This allows us to test this works
 ;; before updating the "real" cell with branding.
 
-(with-template-type (T addr acc)
+(with-template-type (T addr)
     (def-record fake-cell
         ;; branded types
         (brand index-t ulong :subst :ancestor :enforce :diff)
@@ -14,18 +14,17 @@
         (parent (storage addr))
         (offset index-t)
         ;(element-type type-spec :c-T T)
-        (address-space address-space :c-t addr)
-        (access access :c-t acc))
+        (address-space address-space :c-t addr))
 
     (def-function ~ (c)
-        (declare #'((fake-cell T :address-space addr :access acc) => (value-t c)))
+        (declare #'((fake-cell T :address-space addr) => (value-t c)))
         ;; do something with storage.
         (as T 1))
 
     (def-function set-~ (c v)
     ;; the setter function does not need to enforce brand / track provenance. That makes using the cell too difficult
-    ;; and does not contribute to the A|D pass. 
-        (declare #'((fake-cell T :address-space addr :access acc) T => nil))
+    ;; and does not contribute to the A|D pass.
+        (declare #'((fake-cell T :address-space addr) T => nil))
         ;; do something with storage
         (return)))
 
@@ -33,7 +32,7 @@
 
 
 (def-function offset-fake-cell (fc delta)
-    (declare #'((fake-cell int :global :read-only) ulong => nil))
+    (declare #'((fake-cell int :global) ulong => nil))
     (let ((target (+ (offset~ fc) (as (index-t fc) delta))))
         (set! (offset~ fc) target)))
         

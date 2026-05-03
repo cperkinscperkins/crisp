@@ -2,7 +2,7 @@
 ;; length~ on a tensor is a scalar ulong field — should be straightforward set!.
 ;; We verify the new length is what we wrote.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-set-vector-length (v)
     (declare #'(int-vec-t => ulong))

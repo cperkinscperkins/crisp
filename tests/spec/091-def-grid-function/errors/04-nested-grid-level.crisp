@@ -2,7 +2,7 @@
 ;; (declare (grid-level)) cannot be nested inside another (declare (grid-level)).
 ;; Grid-level contexts must be sequential, never nested.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (defmacro with-grid-work (&body body)
   `(let ()

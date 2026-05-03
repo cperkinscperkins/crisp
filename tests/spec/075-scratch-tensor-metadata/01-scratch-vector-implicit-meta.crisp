@@ -15,7 +15,7 @@
 ;;     (6 INT)                                 ; explicit n
 ;;
 ;;   :implicit-params — one entry with:
-;;     :type      (tensor int 1 :address-space :local :access :read-write :align :compact)
+;;     :type      (tensor int 1 :address-space :local :align :compact)
 ;;     :size-expr :match-warp-tile     ; whatever the user passed to make-scratch-vector
 ;;     :range     (0 5)   ; 6 physical slots (3N+3 = 3*1+3 = 6)
 ;;
@@ -23,7 +23,7 @@
 ;;
 ;; Call tree: kernel_a => fun-B => fun-C!!! => fun-D(sv) => fun-E(sv)
 
-(def-type sc-vec-int (vector int :address-space :local :access :read-write :align :compact))
+(def-type sc-vec-int (vector int :address-space :local :align :compact))
 
 (def-function fun-e-meta (sv n)
     (declare #'(sc-vec-int int => int))

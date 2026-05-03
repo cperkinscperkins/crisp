@@ -2,7 +2,7 @@
 ;; def-function (thread-level) cannot call a def-grid-function.
 ;; Grid functions require a dispatch context.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (def-grid-function my-grid-fn (&out result)
   (declare #'(&out out-t))

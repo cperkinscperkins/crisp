@@ -3,7 +3,7 @@
 ;; Multiple sequential (declare (grid-level)) contexts are valid in one def-grid-function.
 ;; They may not be nested, but sequential (back-to-back) is permitted.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (defmacro with-grid-work (&body body)
   `(let ()

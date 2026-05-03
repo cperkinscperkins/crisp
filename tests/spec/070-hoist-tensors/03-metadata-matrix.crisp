@@ -6,7 +6,7 @@
 ;;                          str0(5), str1(6), ext0(7), ext1(8), len(9) — actually 10 slots
 ;;   :declared-signature — v :rank 2 :align :compact :range (0 9)
 
-(def-type out-mat-t (matrix float :address-space :global :access :read-write :align :compact))
+(def-type out-mat-t (matrix float :address-space :global :align :compact))
 
 (def-kernel mat_set_elem (v val)
     (declare #'(out-mat-t float => nil))

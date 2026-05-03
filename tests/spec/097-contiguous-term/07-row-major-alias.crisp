@@ -6,8 +6,8 @@
 ;; :contiguous-term :row-major is a matrix-only alias for :last.
 ;; Normalized at parse time; contiguous-term~ must return :last.
 
-(def-type mat-t (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :row-major))
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type mat-t (matrix float :align :compact :address-space :global :contiguous-term :row-major))
+(def-type out-t (cell int :address-space :global))
 
 (def-kernel test_row_major_alias (m &out out)
   (declare #'(mat-t &out out-t => nil))

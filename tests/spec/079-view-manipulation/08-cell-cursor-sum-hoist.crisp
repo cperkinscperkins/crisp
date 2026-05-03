@@ -14,8 +14,8 @@
 ;;   - subsequent (~ cursor) reads from the updated byte offset (dynamic, not baked-in)
 ;;   - the cell-cursor sliding-window pattern produces correct output
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
-(def-type out-cell-t (cell int :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
+(def-type out-cell-t (cell int :address-space :global))
 
 (def-kernel cursor_sum (v &out out)
     (declare #'(int-vec-t &out out-cell-t => nil))

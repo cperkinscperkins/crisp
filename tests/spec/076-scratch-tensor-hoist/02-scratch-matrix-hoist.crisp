@@ -34,8 +34,8 @@
 ;;   offset[0] = offset[1] = 0
 ;;   zeKernelSetArgumentValue(kernel, 0, 16, nullptr)   ; local memory
 
-(def-type out-c-mat-t (cell int :address-space :global :access :read-write))
-(def-type sc-int-mat (matrix int :address-space :local :access :read-write :align :compact))
+(def-type out-c-mat-t (cell int :address-space :global))
+(def-type sc-int-mat (matrix int :address-space :local :align :compact))
 
 (def-function fun-D-mat-hoist (mat &out c)
     (declare #'(sc-int-mat &out out-c-mat-t => nil))

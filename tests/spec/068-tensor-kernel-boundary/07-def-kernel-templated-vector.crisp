@@ -4,8 +4,8 @@
 ;; gen- requires a third arg (the C-style kernel name string).
 
 (with-template-type (T)
-    (def-type in-vec-t  (vector T :address-space :global :access :read-only  :align :compact))
-    (def-type out-vec-t (vector T :address-space :global :access :read-write :align :compact))
+    (def-type in-vec-t  (vector T :address-space :global  :align :compact))
+    (def-type out-vec-t (vector T :address-space :global :align :compact))
 
     (def-kernel vec_copy (in &out out)
         (declare #'((in-vec-t T) &out (out-vec-t T)))

@@ -4,7 +4,7 @@
 ;;   view[0] = src[2], view[1] = src[3], etc.
 ;; Read view[0] -- should correspond to src[2].
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-make-vector-offset (v)
     (declare #'(int-vec-t => int))

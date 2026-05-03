@@ -13,8 +13,8 @@
 ;; This verifies that scalar and tensor gradient outputs coexist correctly
 ;; in the same backward kernel signature.
 
-(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
-(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+(def-type in-vec  (vector float :address-space :global  :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
 
 (def-kernel vec_scale (A scale idx &out C)
   (declare #'(in-vec float ulong &out out-vec))

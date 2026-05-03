@@ -5,7 +5,7 @@
 ;; branding for offset and value.  This allows us to test this works
 ;; before updating the "real" cell with branding.
 
-(with-template-type (T addr acc)
+(with-template-type (T addr)
     (def-record fake-cell
         ;; branded types
         (brand index-t ulong :subst :ancestor :enforce :diff)
@@ -14,29 +14,28 @@
         (parent (storage addr))
         (offset index-t)
         ;(element-type type-spec :c-T T)
-        (address-space address-space :c-t addr)
-        (access access :c-t acc))
+        (address-space address-space :c-t addr))
 
     (def-function ~ (c)
-        (declare #'((fake-cell T :address-space addr :access acc) => (value-t c)))
+        (declare #'((fake-cell T :address-space addr) => (value-t c)))
         ;; do something with storage.
         (as T 1))
 
     (def-function set-~ (c v)
     ;; the setter function does not need to enforce brand / track provenance. That makes using the cell too difficult
-    ;; and does not contribute to the A|D pass. 
-        (declare #'((fake-cell T :address-space addr :access acc) T => nil))
+    ;; and does not contribute to the A|D pass.
+        (declare #'((fake-cell T :address-space addr) T => nil))
         ;; do something with storage
         (return)))
 
-(def-type in-ish (cell float :address-space :global :access :read-write))
-(def-type out-ish (cell float :address-space :global :access :read-write))
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
 
 (def-kernel test_fake_cell (c-in someV &out c-out)
     (declare #'(in-ish float &out out-ish))
-    (gen-fake-cell float :global :read-write)
+    (gen-fake-cell float :global)
     ; (gen-set-~ float :global :read-write) ;; unknown variable FLOAT
-    (let ((fc (make-fake-cell :parent (parent~ c-in) :offset (to-ulong 0)  :address-space :global :access :read-write)))
+    (let ((fc (make-fake-cell :parent (parent~ c-in) :offset (to-ulong 0)  :address-space :global)))
         (set-~ fc someV)                   
         (set! (~ c-out) (~ fc))))
     

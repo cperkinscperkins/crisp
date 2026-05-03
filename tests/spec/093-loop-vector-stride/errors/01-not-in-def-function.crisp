@@ -2,7 +2,7 @@
 ;; loop-vector-stride requires a dispatch context (def-kernel / def-grid-function).
 ;; Using it inside a plain def-function must error.
 
-(def-type vec-t (vector int :address-space :global :access :read-write :align :compact))
+(def-type vec-t (vector int :address-space :global :align :compact))
 
 (def-function bad_stride (v)
   (declare #'(vec-t => nil))

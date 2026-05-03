@@ -14,8 +14,8 @@
 ;; Row-major (default) strides '(2 1) would give [1, 0]: flat = 1*2 + 0*1 = 2 -> value 2.
 ;; Expected 1 proves the explicit strides were honoured.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
+(def-type out-t (cell int :address-space :global))
 
 (def-kernel kernel_a (v &out out)
     (declare #'(int-vec-t &out out-t => nil))

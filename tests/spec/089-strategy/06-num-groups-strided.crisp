@@ -3,7 +3,7 @@
 ;;
 ;; Metadata: (num-groups :derive-from (n) :strategy :strided).
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel strided_groups (n &out result)
     (declare (type n ulong)

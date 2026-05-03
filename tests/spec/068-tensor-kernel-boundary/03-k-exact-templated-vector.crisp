@@ -2,7 +2,7 @@
 ;; gen- requires a third arg (the C-style name string).
 
 (with-template-type (T)
-    (def-type out-vec-t (vector T :address-space :global :access :read-write :align :compact))
+    (def-type out-vec-t (vector T :address-space :global :align :compact))
 
     (def-kernel-exact vec_fill (byte-size ptr offset_0 stride_0 extent_0 length val)
         (declare #'(ulong voidp ulong ulong ulong ulong T))

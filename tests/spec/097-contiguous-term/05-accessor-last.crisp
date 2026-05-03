@@ -6,8 +6,8 @@
 ;; contiguous-term~ returns the compile-time :last constant.
 ;; The kernel sets out[0]=1 if contiguous-term~ equals :last, else 0.
 
-(def-type mat-t (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :last))
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type mat-t (matrix float :align :compact :address-space :global :contiguous-term :last))
+(def-type out-t (cell int :address-space :global))
 
 (def-kernel test_ct_accessor_last (m &out out)
   (declare #'(mat-t &out out-t => nil))

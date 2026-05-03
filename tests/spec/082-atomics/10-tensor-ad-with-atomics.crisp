@@ -10,8 +10,8 @@
 ;;   - atomicrmw present (gradient accumulation is atomic)
 ;;   - idx_GRAD NOT present (integer index is non-differentiable)
 
-(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
-(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+(def-type in-vec  (vector float :address-space :global  :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
 
 (def-kernel tensor_ad_atomic (A idx &out C)
   (declare #'(in-vec ulong &out out-vec))

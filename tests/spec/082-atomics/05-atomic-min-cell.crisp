@@ -3,7 +3,7 @@
 ;; Tests atomic-min! — stores the minimum, returns the old value.
 ;; Signed integer: LLVMAtomicRMWBinOpMin.
 
-(def-type min-vec (vector int :address-space :global :access :read-write))
+(def-type min-vec (vector int :address-space :global))
 
 (def-function test-atomic-min (v candidate)
   (declare #'(min-vec int => int))

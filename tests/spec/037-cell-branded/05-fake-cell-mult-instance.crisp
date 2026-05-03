@@ -1,7 +1,7 @@
 
 ;; TEST-WITH[--differentiate]
 
-(with-template-type (T addr acc)
+(with-template-type (T addr)
     (def-record fake-cell
         ;; branded types
         (brand index-t ulong :subst :ancestor :enforce :diff)
@@ -10,11 +10,10 @@
         (parent (storage addr))
         (offset index-t)
         ;(element-type type-spec :c-T T)
-        (address-space address-space :c-t addr)
-        (access access :c-t acc))
+        (address-space address-space :c-t addr))
 
     (def-function ~ (c)
-        (declare #'((fake-cell T :address-space addr :access acc) => (value-t c)))
+        (declare #'((fake-cell T :address-space addr) => (value-t c)))
         ;; do something with storage.
         (as T 1)))
 
@@ -23,8 +22,8 @@
 
 ;; two DIFFERENT instantiations. Ensure branding doesn't collide.
 
-(def-type fc-int (fake-cell int :address-space :global :access :read-write))
-(def-type fc-float (fake-cell float :address-space :global :access :read-write))
+(def-type fc-int (fake-cell int :address-space :global))
+(def-type fc-float (fake-cell float :address-space :global))
 
 (def-function two-different-types (fci fcf)
     (declare #'(fc-int fc-float => (value-t fci) (index-t fcf)))

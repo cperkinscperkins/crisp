@@ -3,7 +3,7 @@
 ;; get-global-linear-id is the flattened 1D index of the thread within the entire grid.
 ;; Synthesized from global ID and global work size components.
 
-(def-type out-t (cell ulong :address-space :global :access :read-write))
+(def-type out-t (cell ulong :address-space :global))
 
 (def-kernel test_get_global_linear_id (&out result)
   (declare #'(&out out-t))

@@ -575,7 +575,7 @@ then falls back to compute-base-type for derived/alias types."
               (when (%crisp-float-type-p ftype)
                 (let ((grad-sym (intern (format nil "~a_GRAD" (symbol-name fsym)) pkg)))
                   (push grad-sym grad-out-params)
-                  (push '(cell float :address-space :global :access :read-write) grad-out-types)
+                  (push '(cell float :address-space :global) grad-out-types)
                   (push grad-sym grad-cell-syms)))))
 
           ;; --- Non-record input: pass through as-is -----------
