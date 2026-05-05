@@ -947,3 +947,488 @@
         (log:error "validate-record-grad-metadata: no :source in kernel def")
         (return-from validate-record-grad-metadata nil))
       t)))
+
+
+;; src/metadata.lisp — generate-physical-signature: fix tensor addr-space extraction.
+;; New 6-tuple (tensor elem N ADDR aln ct): addr at index 3 = (fourth canonical).
+;; Old code used (member :address-space canonical) which always returns NIL for
+;; positional canonicals, defaulting everything to :global.
+(defun generate-physical-signature (sig-or-params)
+  "Generates the physical ABI signature from kernel parameters.
+   Records are flattened to primitive scalar entries.
+   Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple."
+  (let ((params (if (typep sig-or-params 'function-signature)
+                    (append (function-signature-implicit-parameters sig-or-params)
+                      (function-signature-parameters sig-or-params))
+                    sig-or-params))
+        (physical-args nil)
+        (current-index 0))
+    (dolist (param params)
+      (let ((type (if (typep param 'parameter-def)
+                      (parameter-def-type param)
+                      param)))
+        (unless (and (symbolp type) (string-equal (symbol-name type) "&OUT"))
+          (cond
+           ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
+                (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
+             (push (list current-index (strip-package-qualifiers '(c-pointer address-space global))) physical-args)
+             (incf current-index)
+             (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
+             (incf current-index))
+           ((%storage-handle-type-p type)
+             (let* ((canonical (canonicalize-type-specifier type))
+                    (base (if (consp canonical) (first canonical) canonical)))
+               (cond
+                ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
+                  (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
+                  (incf current-index)
+                  (push (list current-index (strip-package-qualifiers 'voidp)) physical-args)
+                  (incf current-index)
+                  (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
+                  (incf current-index))
+                ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+                  ;; ABI: PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1, EXT_0..N-1, LENGTH
+                  (let* ((n (if (integerp (third canonical))
+                                (third canonical)
+                                (parse-integer (symbol-name (third canonical)))))
+                         ;; 6-tuple: (tensor elem N ADDR aln ct) — addr positionally at index 3
+                         (as (or (fourth canonical) :global))
+                         (ptr-type (strip-package-qualifiers `(c-pointer :address-space ,as))))
+                    (push (list current-index ptr-type) physical-args) (incf current-index)
+                    (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index)
+                    (dotimes (_ n)
+                      (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index))
+                    (dotimes (_ n)
+                      (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index))
+                    (dotimes (_ n)
+                      (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index))
+                    (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index)))
+                (t
+                  (push (list current-index (strip-package-qualifiers type)) physical-args)
+                  (incf current-index)))))
+           ((%user-record-type-p type)
+             (dolist (prim-type (%enumerate-physical-types type))
+               (push (list current-index (strip-package-qualifiers prim-type)) physical-args)
+               (incf current-index)))
+           (t
+             (push (list current-index (strip-package-qualifiers type)) physical-args)
+             (incf current-index))))))
+    (nreverse physical-args)))
+
+
+;; src/metadata.lisp — generate-implicit-signature corrected.
+;; Bug in overlay version: (nreverse implicit-args) was inside the dolist body
+;; due to a paren error, so dolist returned NIL and the function always returned NIL.
+;; Fix: close the dolist before (nreverse implicit-args).
+(defun generate-implicit-signature (sig declared-params)
+  "Generates the :implicit-params plist for metadata serialization.
+   Omits :access — storage handles are always treated as read-write by hoist code."
+  (declare (ignore declared-params))
+  (let ((implicit-args nil)
+        (phys-index 0)
+        (implicit-params (function-signature-implicit-parameters sig)))
+    (dolist (param-def implicit-params)
+      (let* ((name (parameter-def-name param-def))
+             (type (parameter-def-type param-def))
+             (width (get-physical-width type))
+             (start phys-index)
+             (end (+ phys-index width -1))
+             (type-head (when (consp type) (symbol-name (first type))))
+             ;; Extract address-space positionally:
+             ;;   CELL:   (cell elem ADDR)             — addr at index 2
+             ;;   TENSOR: (tensor elem N ADDR aln ct)  — addr at index 3
+             (address-space
+              (cond
+                ((and (consp type) (string-equal type-head "CELL") (>= (length type) 3))
+                 (nth 2 type))
+                ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                           :test #'string-equal)
+                      (>= (length type) 4))
+                 (nth 3 type))
+                (t :local)))
+             (size-expr (gethash name *implicit-scratch-size-expr-map*)))
+        (push (list :name (string-downcase (symbol-name name))
+                    :type (strip-package-qualifiers type)
+                    :size-expr size-expr
+                    :address-space address-space
+                    :range (list start end))
+              implicit-args)
+        (incf phys-index width)))
+    (nreverse implicit-args)))
+
+
+;; src/metadata-val.lisp — validators updated for 6-tuple tensor names (no read_write).
+;; After removing :access, mangled names no longer include read_write / READ-WRITE.
+
+(defun validate-074-02-scratch-vector-propagation-ir (ir-path)
+  "Validates scratch vector propagation IR (updated for 6-tuple tensor names, no access)."
+  (unless (probe-file ir-path)
+    (log:error "validate-074-02: IR file not found: ~a" ir-path)
+    (return-from validate-074-02-scratch-vector-propagation-ir nil))
+  (let* ((ir (uiop:read-file-string ir-path))
+         (ka-count (%074-count-kernel-params ir "kernel_a")))
+    (unless ka-count
+      (log:error "validate-074-02: kernel_a not found in IR")
+      (return-from validate-074-02-scratch-vector-propagation-ir nil))
+    (and
+     (or (= ka-count 7)
+         (progn (log:error "validate-074-02: kernel_a expected 7 params, got ~a" ka-count) nil))
+     (or (search "ptr addrspace(3)" ir)
+         (progn (log:error "validate-074-02: expected local (addrspace 3) scratch pointer") nil))
+     (or (search "fun_c_tensor_int_1_local_compact_last_int" ir)
+         (progn (log:error "validate-074-02: carrier fun_c not found with expanded implicit signature") nil))
+     (progn (log:info "validate-074-02: PASS") t))))
+
+(defun validate-074-03-scratch-tensor-propagation-ir (ir-path)
+  "Validates scratch tensor (N=3) propagation IR (updated for 6-tuple tensor names, no access)."
+  (unless (probe-file ir-path)
+    (log:error "validate-074-03: IR file not found: ~a" ir-path)
+    (return-from validate-074-03-scratch-tensor-propagation-ir nil))
+  (let* ((ir (uiop:read-file-string ir-path))
+         (ka-count (%074-count-kernel-params ir "kernel_a")))
+    (unless ka-count
+      (log:error "validate-074-03: kernel_a not found in IR")
+      (return-from validate-074-03-scratch-tensor-propagation-ir nil))
+    (and
+     (or (= ka-count 13)
+         (progn (log:error "validate-074-03: kernel_a expected 13 params, got ~a" ka-count) nil))
+     (or (search "TENSOR_FLOAT_3_LOCAL_COMPACT_LAST" ir)
+         (progn (log:error "validate-074-03: expected TENSOR_FLOAT_3_LOCAL_COMPACT_LAST type in IR") nil))
+     (or (search "fun_c_tensor_float_3_local_compact_last_int" ir)
+         (progn (log:error "validate-074-03: carrier fun_c not found with expanded implicit signature") nil))
+     (progn (log:info "validate-074-03: PASS") t))))
+
+(defun validate-074-04-scratch-matrix-propagation-ir (ir-path)
+  "Validates scratch matrix (N=2) propagation IR (updated for 6-tuple tensor names, no access)."
+  (unless (probe-file ir-path)
+    (log:error "validate-074-04: IR file not found: ~a" ir-path)
+    (return-from validate-074-04-scratch-matrix-propagation-ir nil))
+  (let* ((ir (uiop:read-file-string ir-path))
+         (ka-count (%074-count-kernel-params ir "kernel_a")))
+    (unless ka-count
+      (log:error "validate-074-04: kernel_a not found in IR")
+      (return-from validate-074-04-scratch-matrix-propagation-ir nil))
+    (and
+     (or (= ka-count 11)
+         (progn (log:error "validate-074-04: kernel_a expected 11 params, got ~a" ka-count) nil))
+     (or (search "TENSOR_FLOAT_2_LOCAL_COMPACT_LAST" ir)
+         (progn (log:error "validate-074-04: expected TENSOR_FLOAT_2_LOCAL_COMPACT_LAST type in IR") nil))
+     (or (search "fun_c_tensor_float_2_local_compact_last_ulong_ulong" ir)
+         (progn (log:error "validate-074-04: carrier fun_c not found with expanded implicit signature") nil))
+     (progn (log:info "validate-074-04: PASS") t))))
+
+(defun validate-vec-add-grad (ir-path)
+  "Validates the backward kernel for 01-vec-add (vector addition):
+     - @vec_add_grad is defined
+     - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (gradient tensors, no access in name)
+     - fadd instruction present (addition backward)
+     - idx_GRAD is NOT present (integer scalar filtering)"
+  (unless (probe-file ir-path)
+    (log:error "validate-vec-add-grad: IR file not found: ~a" ir-path)
+    (return-from validate-vec-add-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @vec_add_grad(" ir)
+         (progn (log:error "validate-vec-add-grad: @vec_add_grad not found") nil))
+     (or (search "TENSOR_FLOAT_1_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-vec-add-grad: gradient tensor type COMPACT not found") nil))
+     (or (search "fadd float" ir)
+         (progn (log:error "validate-vec-add-grad: fadd not found in backward body") nil))
+     (or (not (search "idx_GRAD" ir))
+         (progn (log:error "validate-vec-add-grad: idx_GRAD should not be emitted (integer scalar)") nil))
+     (progn (log:info "validate-vec-add-grad: PASS") t))))
+
+(defun validate-vec-multiply-grad (ir-path)
+  "Validates the backward kernel for 02-vec-multiply (vector product rule):
+     - @vec_mult_grad is defined
+     - fmul instruction present
+     - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (no access in name)
+     - idx_GRAD is NOT present"
+  (unless (probe-file ir-path)
+    (log:error "validate-vec-multiply-grad: IR file not found: ~a" ir-path)
+    (return-from validate-vec-multiply-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @vec_mult_grad(" ir)
+         (progn (log:error "validate-vec-multiply-grad: @vec_mult_grad not found") nil))
+     (or (search "fmul float" ir)
+         (progn (log:error "validate-vec-multiply-grad: fmul not found (product rule requires multiply)") nil))
+     (or (search "TENSOR_FLOAT_1_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-vec-multiply-grad: gradient tensor type COMPACT not found") nil))
+     (or (not (search "idx_GRAD" ir))
+         (progn (log:error "validate-vec-multiply-grad: idx_GRAD should not be emitted") nil))
+     (progn (log:info "validate-vec-multiply-grad: PASS") t))))
+
+(defun validate-vec-mixed-grad (ir-path)
+  "Validates the backward kernel for 03-vec-mixed (scalar float + tensor inputs):
+     - @vec_scale_grad is defined
+     - %scale_grad present
+     - TENSOR_FLOAT_1_GLOBAL_COMPACT present (no access in name)
+     - fmul present
+     - idx_GRAD is NOT present"
+  (unless (probe-file ir-path)
+    (log:error "validate-vec-mixed-grad: IR file not found: ~a" ir-path)
+    (return-from validate-vec-mixed-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @vec_scale_grad(" ir)
+         (progn (log:error "validate-vec-mixed-grad: @vec_scale_grad not found") nil))
+     (or (search "%scale_grad" ir)
+         (progn (log:error "validate-vec-mixed-grad: scale_grad adjoint variable not found") nil))
+     (or (search "TENSOR_FLOAT_1_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-vec-mixed-grad: A_GRAD tensor type COMPACT not found") nil))
+     (or (search "fmul float" ir)
+         (progn (log:error "validate-vec-mixed-grad: fmul not found (scale*A product rule)") nil))
+     (or (not (search "idx_GRAD" ir))
+         (progn (log:error "validate-vec-mixed-grad: idx_GRAD should not be emitted") nil))
+     (progn (log:info "validate-vec-mixed-grad: PASS") t))))
+
+(defun validate-matrix-add-grad (ir-path)
+  "Validates the backward kernel for 04-matrix-add (2D matrix, two indices):
+     - @mat_add_grad is defined
+     - TENSOR_FLOAT_2_GLOBAL_COMPACT type present (no access in name)
+     - fadd present
+     - row_GRAD and col_GRAD are NOT present (integer scalar filtering)"
+  (unless (probe-file ir-path)
+    (log:error "validate-matrix-add-grad: IR file not found: ~a" ir-path)
+    (return-from validate-matrix-add-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @mat_add_grad(" ir)
+         (progn (log:error "validate-matrix-add-grad: @mat_add_grad not found") nil))
+     (or (search "TENSOR_FLOAT_2_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-matrix-add-grad: 2D gradient tensor type COMPACT not found") nil))
+     (or (search "fadd float" ir)
+         (progn (log:error "validate-matrix-add-grad: fadd not found in backward body") nil))
+     (or (not (search "row_GRAD" ir))
+         (progn (log:error "validate-matrix-add-grad: row_GRAD should not be emitted (integer)") nil))
+     (or (not (search "col_GRAD" ir))
+         (progn (log:error "validate-matrix-add-grad: col_GRAD should not be emitted (integer)") nil))
+     (progn (log:info "validate-matrix-add-grad: PASS") t))))
+
+(defun validate-tensor-add-grad (ir-path)
+  "Validates the backward kernel for 05-tensor-add (3D tensor, three indices):
+     - @tensor_add_grad is defined
+     - TENSOR_FLOAT_3_GLOBAL_COMPACT type present (no access in name)
+     - fadd present
+     - d0_GRAD, d1_GRAD, d2_GRAD are NOT present (integer scalar filtering)"
+  (unless (probe-file ir-path)
+    (log:error "validate-tensor-add-grad: IR file not found: ~a" ir-path)
+    (return-from validate-tensor-add-grad nil))
+  (let ((ir (uiop:read-file-string ir-path)))
+    (and
+     (or (search "define void @tensor_add_grad(" ir)
+         (progn (log:error "validate-tensor-add-grad: @tensor_add_grad not found") nil))
+     (or (search "TENSOR_FLOAT_3_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-tensor-add-grad: 3D gradient tensor type COMPACT not found") nil))
+     (or (search "fadd float" ir)
+         (progn (log:error "validate-tensor-add-grad: fadd not found in backward body") nil))
+     (or (not (search "d0_GRAD" ir))
+         (progn (log:error "validate-tensor-add-grad: d0_GRAD should not be emitted (integer)") nil))
+     (or (not (search "d1_GRAD" ir))
+         (progn (log:error "validate-tensor-add-grad: d1_GRAD should not be emitted (integer)") nil))
+     (or (not (search "d2_GRAD" ir))
+         (progn (log:error "validate-tensor-add-grad: d2_GRAD should not be emitted (integer)") nil))
+     (progn (log:info "validate-tensor-add-grad: PASS") t))))
+
+;; src/macros.lisp — %incomplete-storage-handle-p: fix tensor incomplete detection
+;; The previous version fell through to the catch-all for (tensor int 3) which has
+;; args length=2, so (>= 2 2) returned NIL (complete) when it should be incomplete.
+(defun %incomplete-storage-handle-p (type-spec)
+  "Returns T if the type-spec is a storage handle but is missing :address-space.
+   Canonical 6-tuple (tensor elem N addr aln ct) and 3-tuple (cell elem addr) are complete."
+  (let ((resolved (%resolve-alias-strict type-spec)))
+    (when (and (consp resolved) (%storage-handle-type-p resolved))
+      (let* ((base (first resolved))
+             (args (rest resolved)))
+        (cond
+          ;; Tensor: only complete when exactly 5 positional args OR :address-space keyword present
+          ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+           (cond
+             ((= (length args) 5) nil)           ; (elem N addr aln ct): complete
+             ((member :address-space args) nil)  ; keyword form: complete
+             (t t)))                             ; (elem N) or any other form: INCOMPLETE
+          ;; CELL/VECTOR/MATRIX: key-value form or 2+ positional args = complete
+          (t
+           (let ((is-kw (member :address-space args)))
+             (cond
+               (is-kw nil)
+               ((>= (length args) 2) nil)
+               (t t)))))))))
+
+
+;; src/analysis/structs.lisp
+;; Fix: don't fire ensure-template-instantiation for the bare reader op
+;; when that op has a registered expression analyzer.  Sub-case 2b
+;; handles (set! (op ...) v) correctly via the expression analyzer in
+;; :write mode.  Calling ensure-template-instantiation here passes
+;; all-arg-types (target-args + value type), which the arity-only
+;; fallback inside ensure-template-instantiation can wrongly accept,
+;; producing a garbage substitution and a validate-template-arg crash.
+;;
+;; This was previously masked by arity: when storage handles carried an
+;; access template parameter, target-arg count (1) + value-type (1) = 2
+;; never matched a 3-param ~ template.  Removing :access dropped the
+;; reader template down to 2 params and exposed the latent bug.
+(defun analyze-set!-expression (expr env context location)
+  "Analyzes a (set! target value) expression.
+   Enforces struct and array immutability at kernel boundary."
+  (let* ((target-form (second expr))
+         (value-form  (third expr))
+         (value-node  (analyze-expression value-form env context (append location '(2)))))
+
+    (cond
+     ;; Case 1: Simple variable assignment  (set! x v)
+     ((symbolp target-form)
+       (let ((var-info (find-variable-in-env target-form env)))
+         (unless var-info
+           (error 'crisp-unknown-variable :name target-form :source-location location))
+         (let ((var-type (parameter-def-type var-info))
+               (val-type (semantic-node-type value-node)))
+           (unless (types-compatible-p val-type var-type)
+             (error 'crisp-type-error :expected var-type :inferred val-type
+                    :source-location location)))
+         (make-semantic-set!
+          :target-node (make-semantic-var-read
+                        :name target-form
+                        :type (parameter-def-type var-info)
+                        :source-location location)
+          :value-node value-node
+          :source-location location)))
+
+     ;; Case 2: Function call / struct accessor
+     ((and (listp target-form) (>= (length target-form) 1) (symbolp (first target-form)))
+       (let* ((op           (first target-form))
+              (op-args      (rest target-form))
+              (arg-nodes    (loop for arg in op-args
+                                  for i from 1
+                                  collect (analyze-expression arg env context
+                                                              (append location (list 1 i)))))
+              (all-arg-nodes  (append arg-nodes (list value-node)))
+              (all-arg-types  (mapcar #'semantic-node-type all-arg-nodes))
+              (full-setter-name (intern (format nil "~a_SET!" op) (symbol-package op)))
+              (signatures   (append (gethash op *function-table*)
+                                    (gethash full-setter-name *function-table*)))
+              (match        (find-if (lambda (sig)
+                                       (types-list-compatible-p
+                                        all-arg-types
+                                        (mapcar #'parameter-def-type
+                                                (function-signature-parameters sig))))
+                                     signatures)))
+
+         ;; Try template instantiation if no direct match.  GUARD:
+         ;; Skip when template-op IS the bare op AND op has an expression
+         ;; analyzer.  Sub-case 2b will route this through analyze-aref-expression
+         ;; in :write mode, which is the correct path for accessor-style ops.
+         (unless match
+           (let ((template-op (if (gethash full-setter-name *template-registry*)
+                                  full-setter-name op)))
+             (when (and (gethash template-op *template-registry*)
+                        (not (and (eq template-op op)
+                                  (gethash op *expression-analyzers*))))
+               (ensure-template-instantiation
+                template-op all-arg-types
+                (lambda (f l) (declare (ignore l)) (eval f)))
+               (setf signatures (append (gethash op *function-table*)
+                                        (gethash full-setter-name *function-table*)))
+               (setf match (find-if
+                            (lambda (sig)
+                              (types-list-compatible-p
+                               all-arg-types
+                               (mapcar #'parameter-def-type
+                                       (function-signature-parameters sig))))
+                            signatures)))))
+
+         (cond
+          ;; Sub-case 2a: Found an overloaded setter function -> call it.
+          (match
+            (make-semantic-call
+             :name (function-signature-name match)
+             :type (function-signature-return-types match)
+             :args all-arg-nodes
+             :signature match
+             :source-location location))
+
+          ;; Sub-case 2b: Expression analyzer — only if result is an assignable lvalue.
+          ((gethash op *expression-analyzers*)
+            (let ((target-node
+                   (let ((*analysis-access-mode* :write))
+                     (analyze-expression target-form env context (append location '(1))))))
+              (if (or (semantic-extract-value-p target-node)
+                      (semantic-aref-p target-node))
+                  (progn
+                    ;; Array boundary immutability check (errors 01 and 02)
+                    (when (semantic-aref-p target-node)
+                      (%check-aref-boundary-mutation target-node location))
+                    (make-semantic-set!
+                     :target-node target-node
+                     :value-node value-node
+                     :source-location location))
+                  ;; Not an assignable lvalue — fall through to Sub-case 2c.
+                  (let* ((op-name (symbol-name op))
+                         (is-accessor
+                          (or (alexandria:ends-with #\~ op-name)
+                              (and (alexandria:starts-with #\~ op-name)
+                                   (alexandria:ends-with #\~ op-name)))))
+                    (unless is-accessor
+                      (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor."
+                             target-form))
+                    (unless (= (length arg-nodes) 1)
+                      (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a."
+                             op (length arg-nodes)))
+                    (let* ((clean-name  (string-trim "~" op-name))
+                           (member-sym  (intern clean-name (symbol-package op)))
+                           (struct-node (first arg-nodes))
+                           (struct-type (semantic-node-type struct-node)))
+                      (unless (or (semantic-var-read-p struct-node)
+                                  (semantic-aref-p struct-node))
+                        (error "Cannot set member of non-variable/non-reference struct form: ~a"
+                               (second target-form)))
+                      (%check-struct-boundary-mutation struct-node env context location)
+                      (let ((update-node
+                             (make-semantic-struct-member-update
+                              :type struct-type
+                              :struct-node struct-node
+                              :member-index (get-struct-member-index struct-type member-sym)
+                              :value-node value-node
+                              :source-location location)))
+                        (make-semantic-set!
+                         :target-node struct-node
+                         :value-node update-node
+                         :source-location location)))))))
+
+          ;; Sub-case 2c: Struct member update (legacy accessor logic).
+          (t
+            (let* ((op-name (symbol-name op))
+                   (is-accessor
+                    (or (alexandria:ends-with #\~ op-name)
+                        (and (alexandria:starts-with #\~ op-name)
+                             (alexandria:ends-with #\~ op-name)))))
+              (unless is-accessor
+                (error "Invalid set! target: ~a. No matching setter function found and not a struct accessor."
+                       target-form))
+              (unless (= (length arg-nodes) 1)
+                (error "Struct accessor ~a expects exactly 1 argument (the struct), got ~a."
+                       op (length arg-nodes)))
+              (let* ((clean-name  (string-trim "~" op-name))
+                     (member-sym  (intern clean-name (symbol-package op)))
+                     (struct-node (first arg-nodes))
+                     (struct-type (semantic-node-type struct-node)))
+                (unless (or (semantic-var-read-p struct-node)
+                            (semantic-aref-p struct-node))
+                  (error "Cannot set member of non-variable/non-reference struct form: ~a"
+                         (second target-form)))
+                (%check-struct-boundary-mutation struct-node env context location)
+                (let ((update-node
+                       (make-semantic-struct-member-update
+                        :type struct-type
+                        :struct-node struct-node
+                        :member-index (get-struct-member-index struct-type member-sym)
+                        :value-node value-node
+                        :source-location location)))
+                  (make-semantic-set!
+                   :target-node struct-node
+                   :value-node update-node
+                   :source-location location))))))))
+
+     (t (error "Invalid set! target structure: ~a" target-form)))))

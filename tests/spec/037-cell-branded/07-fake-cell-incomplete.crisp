@@ -5,20 +5,24 @@
 ;; which is supposed to ensure that incomplete types work in conjunction with templates.
 ;; now we test that with branded records.
 
+;; finish is just a fake pseudo-property here so we have a c-t field with no
+;; default — i.e. an incomplete field that the user must supply at construction.
+(def-enumeration finish :polished :rough)
+
 
 (with-template-type (T)
     ;; this version of fake-cell is simpler than the others (and of the original cell)
-    ;; because we only template the element-type (not address-space or access)
+    ;; because we only template the element-type (not address-space)
     (def-record fake-cell
         ;; branded types
         (brand index-t ulong :subst :ancestor :enforce :diff)
-        (brand value-t T :subst :ancestor :enforce :diff) 
+        (brand value-t T :subst :ancestor :enforce :diff)
         ;; members
         (parent (storage :global))
         (offset index-t)
         ;(element-type type-spec :c-T T)
-        (address-space address-space :c-t :global) ;;providing a default
-        (access access :c-t))                      ;; NOT providing a default.
+        (address-space address-space :c-t :global) ;; providing a default
+        (finish-c finish :c-t))                    ;; NOT providing a default — incomplete.
 
     (def-function ~ (c)
         (declare #'((fake-cell T) => (value-t c)))
@@ -37,6 +41,7 @@
 (def-kernel test_fake_cell (c-in someV &out c-out)
     (declare #'(in-ish float &out out-ish))
     (gen-fake-cell float)
-  (let ((fc (make-fake-cell :parent (parent~ c-in) :offset (to-ulong 0)  :address-space :global)))
-        (set-~ fc someV)                   
+  (let ((fc (make-fake-cell :parent (parent~ c-in) :offset (to-ulong 0)
+                            :address-space :global :finish-c :polished)))
+        (set-~ fc someV)
         (set! (~ c-out) (~ fc))))
