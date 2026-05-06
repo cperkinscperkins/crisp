@@ -593,6 +593,8 @@ Preperatory
       for Storage Handles, all def-struct, def-record 
 - [ ] scan design doc for :size :length :extent  , are we doing to actually use that :c-t with vectors or not?
 - [ ] look at make-scratch-XXXX  definitions in doc and as realized. Are they in sync? Do any need :contiguous-term ?
+- [ ] should the branded storage handles be :subst :descendant or :ancestor?  I think it got 
+changed to :descendant to make the tests pass at some point. Or not. Check though.
 
 Grid vs Thread Context
 =======================
