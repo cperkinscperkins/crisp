@@ -14,8 +14,8 @@
 ;; Row-major would give [row=0, col=1]: flat = 0*2 + 1*1 = 1 -> value 1.
 ;; Expected 2 proves col-major layout was applied.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
+(def-type out-t (cell int :address-space :global))
 
 (def-kernel kernel_a (v &out out)
     (declare #'(int-vec-t &out out-t => nil))

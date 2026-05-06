@@ -4,5 +4,5 @@
 ;; forward-only is only allowed in def-kernel and def-grid-function.
 
 (def-function dont-know-what-i-am-doing (C) 
-  (declare forward-only #'((cell float :address-space :global :access :read-write) => nil))
+  (declare forward-only #'((cell float :address-space :global) => nil))
   (set! (~ C) 2.0))

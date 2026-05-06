@@ -230,10 +230,8 @@
    ;; Enumerations
    #:def-enumeration
    #:address-space
-   #:access
    #:align
    #:is-address-space?
-   #:is-access?
    #:is-align?
    #:contiguity
    #:is-contiguity?
@@ -289,7 +287,7 @@
    #:half #:bfloat16 #:float #:double
 
    ;; Accessors
-   #:address~ #:byte-size~ #:address-space~ #:access~
+   #:address~ #:byte-size~ #:address-space~
    #:parent~ #:offset~ #:element-type~
    #:bytes~ #:sizeof
    ;; Tensor accessors
@@ -408,10 +406,8 @@
                 #:def-enumeration
                 #:address-space
                 #:is-set?
-                #:access
                 #:align
                 #:is-address-space?
-                #:is-access?
                 #:is-align?
                 #:contiguity
                 #:is-contiguity?
@@ -427,7 +423,7 @@
                 #:half #:bfloat16 #:float #:double
 
                 ;; Accessors
-                #:address~ #:byte-size~ #:address-space~ #:access~
+                #:address~ #:byte-size~ #:address-space~
                 #:parent~ #:offset~ #:element-type~
                 #:bytes~ #:sizeof
                 ;; Tensor accessors
@@ -572,10 +568,8 @@
    ;; Enumerations
    #:def-enumeration
    #:address-space
-   #:access
    #:align
    #:is-address-space?
-   #:is-access?
    #:is-align?
    #:contiguity
    #:is-contiguity?

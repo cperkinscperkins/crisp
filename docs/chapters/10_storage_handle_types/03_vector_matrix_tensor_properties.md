@@ -50,6 +50,6 @@ than the `bytes` of the parent `storage`. But the checking and enforcement for t
 
 ### Pass Through
 
-The `storage` property accessors  `address-space~` and `access~`  can both be used directly on any Storage Handle type. 
-There is no reason to do `(access~ (parent~ some-vector))`.  Simply doing `(access~ some-vector)` is sufficient.
+The `storage` property accessor  `address-space~` can be used directly on any Storage Handle type. 
+There is no reason to do `(address-space~ (parent~ some-vector))`.  Simply doing `(address-space~ some-vector)` is sufficient.
 

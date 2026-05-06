@@ -1,7 +1,7 @@
 (def-struct point (x int) (y int))
 
 (def-function test-tensor-of-struct (tp v)
-    (declare #'((tensor point 2 :address-space :global :access :read-write) int => nil))
+    (declare #'((tensor point 2 :address-space :global) int => nil))
     (set! (x~ (~ tp 0 0)) v)
     (return))
     

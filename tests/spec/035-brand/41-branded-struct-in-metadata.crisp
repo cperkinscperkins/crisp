@@ -13,7 +13,7 @@
 
 
 (def-kernel my_kernel (c)
-    (declare (type c (cell point :address-space :global :access :read-write)) forward-only)
+    (declare (type c (cell point :address-space :global)) forward-only)
   (let ((loc-x (x~ (~ c))))
     (set! (x~ (~ c)) (+ loc-x 1))))
   

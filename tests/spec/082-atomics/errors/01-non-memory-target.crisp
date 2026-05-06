@@ -2,7 +2,7 @@
 ;; Tests that atomic-add! rejects a plain variable as its target.
 ;; The target must be an indexed memory location like (~ v 0), not a bare symbol.
 
-(def-type acc-vec (vector int :address-space :global :access :read-write))
+(def-type acc-vec (vector int :address-space :global))
 
 (def-function test-bad-target (v delta)
   (declare #'(acc-vec int => int))

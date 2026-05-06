@@ -3,7 +3,7 @@
 ;; get-total-groups is the total number of workgroups in the grid as a scalar.
 ;; Synthesized as the product of get-num-groups across all 3 dimensions.
 
-(def-type out-t (cell ulong :address-space :global :access :read-write))
+(def-type out-t (cell ulong :address-space :global))
 
 (def-kernel test_get_total_groups (&out result)
   (declare #'(&out out-t))

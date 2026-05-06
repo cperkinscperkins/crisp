@@ -9,7 +9,7 @@
 
 (def-struct rect (top-left point) (bottom-right point))
 
-(def-type out-c (cell int :address-space :global :access :read-write))
+(def-type out-c (cell int :address-space :global))
 
 (def-kernel nested_structs_on_boundary_k (r &out c)
     (declare #'(rect &out out-c))

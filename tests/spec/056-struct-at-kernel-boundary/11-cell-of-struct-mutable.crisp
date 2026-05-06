@@ -5,5 +5,5 @@
 (def-struct point (x int) (y int))
 
 (def-kernel cell_struct_mutable (c)
-    (declare forward-only (type c (cell point :address-space :global :access :read-write)))
+    (declare forward-only (type c (cell point :address-space :global)))
     (set! (x~ (~ c)) 15))

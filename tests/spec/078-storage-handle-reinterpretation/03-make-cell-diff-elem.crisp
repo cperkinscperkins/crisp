@@ -4,8 +4,8 @@
 ;; Source must be :compact (not :strided) and non-struct. Both conditions met.
 ;; Inherited address-space and access from source.
 
-(def-type float-vec-t (vector float :align :compact :address-space :global :access :read-write))
-(def-type int-cell-t (cell int :address-space :global :access :read-write))
+(def-type float-vec-t (vector float :align :compact :address-space :global))
+(def-type int-cell-t (cell int :address-space :global))
 
 (def-function test-make-cell-diff-elem (v)
     (declare #'(float-vec-t => int))

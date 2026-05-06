@@ -2,8 +2,8 @@
 ;; The dimension argument to scalar GPU built-ins must be a compile-time integer constant.
 ;; Passing a runtime value (e.g. a cell read) is a compile-time error.
 
-(def-type idx-t (cell int  :address-space :global :access :read-only))
-(def-type out-t (cell ulong :address-space :global :access :read-write))
+(def-type idx-t (cell int  :address-space :global))
+(def-type out-t (cell ulong :address-space :global))
 
 (def-kernel bad_kernel (idx &out result)
   (declare #'(idx-t &out out-t))

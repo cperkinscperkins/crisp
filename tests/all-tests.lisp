@@ -133,7 +133,7 @@
              (is equal '(nil) (analyze-return-type-from-spec '(int)))
              (fail (analyze-return-type-from-spec '(int => foobar))
                    'crisp-unknown-type-error)
-             (is equal (list (intern "CELL_LONG_GLOBAL_READ-WRITE" :crisp.compiler)) (analyze-return-type-from-spec '(int => (cell long)))))
+             (is equal (list (intern "CELL_LONG_GLOBAL" :crisp.compiler)) (analyze-return-type-from-spec '(int => (cell long)))))
 
 (define-test (analyzer environment-from-spec)
              (is equalp (list (crisp.compiler::make-parameter-def :name 'a :type 'int :kind :in)
@@ -142,7 +142,7 @@
              (fail (analyze-environment-from-spec '(a) '(bar => nil))
                    'crisp-unknown-type-error)
              (is equalp (list (crisp.compiler::make-parameter-def :name 'a
-                                                                  :type (intern "CELL_LONG_GLOBAL_READ-WRITE" :crisp.compiler)
+                                                                  :type (intern "CELL_LONG_GLOBAL" :crisp.compiler)
                                                                   :kind :in))
                  (analyze-environment-from-spec '(a) '((cell long) => nil))))
 

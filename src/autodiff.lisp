@@ -44,16 +44,11 @@
 
 
 
+
 (defun %ensure-tensor-read-write (type-spec)
-  "If TYPE-SPEC is a tensor/vector/matrix, returns the canonical 7-tuple with
-   :access replaced by :read-write. Non-tensor types are returned unchanged."
-  (if (%crisp-tensor-type-p type-spec)
-      (let ((c (canonicalize-type-specifier type-spec)))
-        ;; canonical form: (tensor elem N addr access align ct)
-        ;;                   0      1    2  3    4      5     6
-        (list (nth 0 c) (nth 1 c) (nth 2 c)
-                 (nth 3 c) :read-write (nth 5 c) (%get-tensor-ct c)))
-      type-spec))
+  "For backwards compatibility: returns the canonical 6-tuple unchanged.
+   Access was removed; tensors are always read-write."
+  type-spec)
 
 
 
@@ -575,7 +570,7 @@ then falls back to compute-base-type for derived/alias types."
               (when (%crisp-float-type-p ftype)
                 (let ((grad-sym (intern (format nil "~a_GRAD" (symbol-name fsym)) pkg)))
                   (push grad-sym grad-out-params)
-                  (push '(cell float :address-space :global :access :read-write) grad-out-types)
+                  (push '(cell float :address-space :global) grad-out-types)
                   (push grad-sym grad-cell-syms)))))
 
           ;; --- Non-record input: pass through as-is -----------
@@ -922,18 +917,25 @@ category (:signed-int or :unsigned-int). Mirrors %crisp-float-tensor-type-p."
 
 
 
+
 (defun %integer-tensor-elem-to-float (type-spec)
   "Replaces the element type of an integer tensor with its float analog:
    64-bit integers (long, ulong) → double; all others → float.
-   Also forces :access to :read-write (gradient tensors are always writable).
    Returns TYPE-SPEC unchanged if it is not an integer tensor."
   (if (%crisp-integer-tensor-type-p type-spec)
       (let* ((canonical (canonicalize-type-specifier type-spec))
-                (elem      (second canonical))
-                (info      (gethash elem *crisp-types*))
-                (float-elem (if (and info (>= (crisp-type-size info) 64))
-                                'double
-                                'float)))
+             (elem      (second canonical))
+             (info      (gethash elem *crisp-types*))
+             (float-elem (if (and info (>= (crisp-type-size info) 64))
+                             'double
+                             'float)))
+        ;; 6-tuple: (tensor elem N addr aln ct)
         (list (nth 0 canonical) float-elem (nth 2 canonical)
-              (nth 3 canonical) :read-write  (nth 5 canonical) (%get-tensor-ct canonical)))
-      (%ensure-tensor-read-write type-spec)))
+              (nth 3 canonical) (nth 4 canonical) (%get-tensor-ct canonical)))
+      type-spec))
+
+
+;; is this actually used?
+(defun %autodiff-grad-cell-type ()
+  "Returns the canonical cell type used for gradient output parameters."
+  '(cell float :address-space :global))

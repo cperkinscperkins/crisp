@@ -147,7 +147,7 @@ A possible implementation might be
   -- bitonic-sort-workgroup --
   (def-function bitonic-sort-workgroup (data-in data-out &key keyF)
     (declare (local-size :set-to 256 :msg "local-work-size should be a power of 2 for bitonic-sort-workgroup")
-             #((vector T :address-space :global :access :readable) (vector T :address-space :global :access :writeable) 
+             #((vector T :address-space :global) (vector T :address-space :global) 
                 &key #'(T => #_is-orderable?) => nil))
     (let ((N   (get-local-linear-size)) ;; should be power of 2.
          (shared-array (make-scratch-vector T :match-workgroup-size))
@@ -189,7 +189,7 @@ A possible implementation might be
 
   ;; -- bitonic-sort-workgroup! --
   (def-function bitonic-sort-workgroup! (data &key keyF)
-    (declare #((vector T :address-space :global :access :read-write A) &key (function T => #_is-orderable?) => nil))
+    (declare #((vector T :address-space :global A) &key (function T => #_is-orderable?) => nil))
     (bitonic-sort-workgroup data data :key keyF)))
 
 
@@ -199,7 +199,7 @@ A possible implementation might be
 
   -- bitonic_sort_workgroup --
   (def-kernel bitonic_sort_workgroup (data-in data-out)
-    (declare #((vector T :address-space :global :access :readable) (vector T :address-space :global :access :writeable) => nil))
+    (declare #((vector T :address-space :global) (vector T :address-space :global) => nil))
     (bitonic-sort-workgroup data-in data-out)))
     
 (with-template-type (T A)
@@ -207,7 +207,7 @@ A possible implementation might be
 
   -- bitonic_sort_workgroup_in_place --
   (def-kernel bitonic_sort_workgroup_in_place (data)
-    (declare #((vector T :address-space :global :access :read-write) => nil))
+    (declare #((vector T :address-space :global) => nil))
     (bitonic-sort-workgroup! data)))
 ```
 
@@ -242,7 +242,7 @@ Possible Implementation
 
   ;; -- bitonic-merge-pass --
   (def-function bitonic-merge-pass (data j k &key keyF)
-    (declare #((vector T :address-space :global :access :read-write :align A) ulong ulong &key #'(T => #_is-orderable?) => nil))
+    (declare #((vector T :address-space :global :align A) ulong ulong &key #'(T => #_is-orderable?) => nil))
 
     (let ((i (get-global-id)))
       
@@ -275,7 +275,7 @@ Possible Implementation
 
   ;; -- bitonic_merge_pass --
   (def-kernel bitonic_merge_pass (data j k)
-    (declare #((vector T :address-space :global :access :read-write :align A) ulong ulong => nil))
+    (declare #((vector T :address-space :global :align A) ulong ulong => nil))
     (bitonic-merge-pass data j k)))
 ```
 
@@ -303,7 +303,7 @@ Possible implementation.
 
   ;; bitonic_sort_vector_in_place
   (def-kernel bitonic_sort_vector_in_place (vec)
-    (declare #((vector T :address-space :global :access :read-write :length L)))
+    (declare #((vector T :address-space :global :length L)))
     (bitonic-sort-workgroup vec vec)))
 
 

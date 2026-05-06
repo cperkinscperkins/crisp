@@ -3,5 +3,5 @@
 ;; this is for testing llvmir generation
 ;; SKIP-WITH[--differentiate]: "fails without lax mode"
 (def-kernel smoke_test (c)
-  (declare #'((cell int :address-space :global :access :read-write)))
+  (declare #'((cell int :address-space :global)))
   (set! (~ c) 42))

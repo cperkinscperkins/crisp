@@ -2,7 +2,7 @@
 
 (def-record point (x float) (y float))
 
-(def-type out-ish (cell float :address-space :global :access :write-only))
+(def-type out-ish (cell float :address-space :global))
 
 (def-function some-operation (a b)
     (declare #'(float float => float))

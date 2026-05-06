@@ -9,7 +9,7 @@
 ;; Expected result: v = [0, 43, 2, 3].
 ;; This test exercises both the read and write paths of the compact optimization.
 
-(def-type cv-t (vector long :address-space :global :access :read-write :align :compact))
+(def-type cv-t (vector long :address-space :global :align :compact))
 
 (def-kernel compact_vec_get_set (val &out v)
     (declare #'(long cv-t => nil))

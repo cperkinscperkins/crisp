@@ -4,7 +4,7 @@
 ;; Auto-length equals the source length.
 ;; Access element [0] to verify the view is usable.
 
-(def-type float-vec-t (vector float :align :compact :address-space :global :access :read-write))
+(def-type float-vec-t (vector float :align :compact :address-space :global))
 
 (def-function test-make-vector-auto-length (v)
     (declare #'(float-vec-t => int))

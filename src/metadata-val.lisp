@@ -967,15 +967,16 @@
 ;;; 050-differentiate-and-metadata: validators
 ;;; =========================================================
 
+
+
+;; src/metadata-val.lisp — validators updated to not check :access
 (defun validate-multiply-grad-metadata (paths)
-  "Validates the backward grad metacrisp for 01-multiply/cell_mult_grad kernel.
-   (A B &out C) -> backward: (A B C C_grad &out A_grad B_grad)
-   Checks: kernel name, physical sig (18 params = 6 cells x 3),
-   declared sig: a/b/c/c_grad (:in :read-only), a_grad/b_grad (:out :write-only),
-   and source path present."
+  "Validates the backward grad metacrisp for 01-multiply.
+   Checks: kernel name, physical sig (18 params), declared sig (6 params with
+   correct names and directions), and source path present."
   (let* ((paths (if (listp paths) paths (list paths)))
          (meta-path (find "multiply_grad_cell_mult.metacrisp" paths
-                         :test #'search :key #'namestring)))
+                          :test #'search :key #'namestring)))
     (unless meta-path
       (log:error "validate-multiply-grad-metadata: no *multiply_grad_cell_mult.metacrisp* in ~a" paths)
       (return-from validate-multiply-grad-metadata nil))
@@ -986,35 +987,29 @@
       (unless k-def
         (log:error "validate-multiply-grad-metadata: kernel 'cell_mult_grad' not found in ~a" meta-path)
         (return-from validate-multiply-grad-metadata nil))
-      ;; Physical signature: 18 params (6 cells x 3)
       (let ((phys-sig (getf k-def :physical-signature)))
         (unless (= (length phys-sig) 18)
           (log:error "validate-multiply-grad-metadata: expected 18 physical-sig entries, got ~a"
                      (length phys-sig))
           (return-from validate-multiply-grad-metadata nil)))
-      ;; Declared signature: 6 params with correct names, directions, access modes
       (let ((decl-sig (getf k-def :declared-signature)))
         (unless (= (length decl-sig) 6)
           (log:error "validate-multiply-grad-metadata: expected 6 declared-sig params, got ~a"
                      (length decl-sig))
           (return-from validate-multiply-grad-metadata nil))
-        (flet ((check-cell (param expected-name expected-dir expected-access)
-                 (let ((name   (getf param :name))
-                       (dir    (getf param :direction))
-                       (access (getf param :access)))
-                   (unless (and (string-equal name expected-name)
-                                (eq dir expected-dir)
-                                (eq access expected-access))
-                     (log:error "validate-multiply-grad-metadata: param ~s: expected dir=~s access=~s, got name=~s dir=~s access=~s"
-                                expected-name expected-dir expected-access name dir access)
+        (flet ((check-cell (param expected-name expected-dir)
+                 (let ((name (getf param :name))
+                       (dir  (getf param :direction)))
+                   (unless (and (string-equal name expected-name) (eq dir expected-dir))
+                     (log:error "validate-multiply-grad-metadata: param ~s: expected dir=~s, got name=~s dir=~s"
+                                expected-name expected-dir name dir)
                      (return-from validate-multiply-grad-metadata nil)))))
-          (check-cell (nth 0 decl-sig) "a"      :in  :read-only)
-          (check-cell (nth 1 decl-sig) "b"      :in  :read-only)
-          (check-cell (nth 2 decl-sig) "c"      :in  :read-only)
-          (check-cell (nth 3 decl-sig) "c_grad" :in  :read-only)
-          (check-cell (nth 4 decl-sig) "a_grad" :out :write-only)
-          (check-cell (nth 5 decl-sig) "b_grad" :out :write-only)))
-      ;; Source path present
+          (check-cell (nth 0 decl-sig) "a"      :in)
+          (check-cell (nth 1 decl-sig) "b"      :in)
+          (check-cell (nth 2 decl-sig) "c"      :in)
+          (check-cell (nth 3 decl-sig) "c_grad" :in)
+          (check-cell (nth 4 decl-sig) "a_grad" :out)
+          (check-cell (nth 5 decl-sig) "b_grad" :out)))
       (unless (getf k-def :source)
         (log:error "validate-multiply-grad-metadata: no :source in kernel def")
         (return-from validate-multiply-grad-metadata nil))
@@ -1022,10 +1017,8 @@
 
 (defun validate-record-grad-metadata (paths)
   "Validates the backward grad metacrisp for 03-record-at-boundary.
-   The record v-point (x float, y float) is exploded to scalar fields at the boundary.
-   Checks: kernel name, physical sig (14 params), declared sig (6 params):
-     vp_x/vp_y (float scalars, :in), c/c_grad (cells, :in :read-only),
-     vp_x_grad/vp_y_grad (cells, :out :write-only), and source path present."
+   Checks: kernel name, physical sig (14 params), declared sig (6 params with
+   correct names and directions), and source path present."
   (let* ((paths (if (listp paths) paths (list paths)))
          (meta-path (find "_grad_non_overloadable_accessor_k.metacrisp" paths
                          :test #'search :key #'namestring)))
@@ -1041,15 +1034,11 @@
         (log:error "validate-record-grad-metadata: kernel 'non_overloadable_accessor_k_grad' not found in ~a"
                    meta-path)
         (return-from validate-record-grad-metadata nil))
-      ;; Physical signature: 14 params
-      ;;   vp_x (float=1) + vp_y (float=1) + c (cell=3) + c_grad (cell=3)
-      ;;   + vp_x_grad (cell=3) + vp_y_grad (cell=3) = 14
       (let ((phys-sig (getf k-def :physical-signature)))
         (unless (= (length phys-sig) 14)
           (log:error "validate-record-grad-metadata: expected 14 physical-sig entries, got ~a"
                      (length phys-sig))
           (return-from validate-record-grad-metadata nil)))
-      ;; Declared signature: 6 params
       (let ((decl-sig (getf k-def :declared-signature)))
         (unless (= (length decl-sig) 6)
           (log:error "validate-record-grad-metadata: expected 6 declared-sig params, got ~a"
@@ -1062,28 +1051,23 @@
                      (log:error "validate-record-grad-metadata: param ~s: expected float :in, got name=~s dir=~s"
                                 expected-name name dir)
                      (return-from validate-record-grad-metadata nil))))
-               (check-cell (param expected-name expected-dir expected-access)
-                 (let ((name   (getf param :name))
-                       (dir    (getf param :direction))
-                       (access (getf param :access)))
-                   (unless (and (string-equal name expected-name)
-                                (eq dir expected-dir)
-                                (eq access expected-access))
-                     (log:error "validate-record-grad-metadata: param ~s: expected dir=~s access=~s, got name=~s dir=~s access=~s"
-                                expected-name expected-dir expected-access name dir access)
+               (check-cell (param expected-name expected-dir)
+                 (let ((name (getf param :name))
+                       (dir  (getf param :direction)))
+                   (unless (and (string-equal name expected-name) (eq dir expected-dir))
+                     (log:error "validate-record-grad-metadata: param ~s: expected dir=~s, got name=~s dir=~s"
+                                expected-name expected-dir name dir)
                      (return-from validate-record-grad-metadata nil)))))
           (check-scalar-in (nth 0 decl-sig) "vp_x")
           (check-scalar-in (nth 1 decl-sig) "vp_y")
-          (check-cell      (nth 2 decl-sig) "c"        :in  :read-only)
-          (check-cell      (nth 3 decl-sig) "c_grad"   :in  :read-only)
-          (check-cell      (nth 4 decl-sig) "vp_x_grad" :out :write-only)
-          (check-cell      (nth 5 decl-sig) "vp_y_grad" :out :write-only)))
-      ;; Source path present
+          (check-cell      (nth 2 decl-sig) "c"         :in)
+          (check-cell      (nth 3 decl-sig) "c_grad"    :in)
+          (check-cell      (nth 4 decl-sig) "vp_x_grad" :out)
+          (check-cell      (nth 5 decl-sig) "vp_y_grad" :out)))
       (unless (getf k-def :source)
         (log:error "validate-record-grad-metadata: no :source in kernel def")
         (return-from validate-record-grad-metadata nil))
       t)))
-
 
 
 ;;; -----------------------------------------------------------------------
@@ -1718,8 +1702,9 @@ Returns the form or NIL."
 
 
 
+
 (defun validate-074-02-scratch-vector-propagation-ir (ir-path)
-  "Validates scratch vector propagation IR (updated for 7-tuple tensor names)."
+  "Validates scratch vector propagation IR (updated for 6-tuple tensor names, no access)."
   (unless (probe-file ir-path)
     (log:error "validate-074-02: IR file not found: ~a" ir-path)
     (return-from validate-074-02-scratch-vector-propagation-ir nil))
@@ -1733,12 +1718,12 @@ Returns the form or NIL."
          (progn (log:error "validate-074-02: kernel_a expected 7 params, got ~a" ka-count) nil))
      (or (search "ptr addrspace(3)" ir)
          (progn (log:error "validate-074-02: expected local (addrspace 3) scratch pointer") nil))
-     (or (search "fun_c_tensor_int_1_local_read_write_compact_last_int" ir)
+     (or (search "fun_c_tensor_int_1_local_compact_last_int" ir)
          (progn (log:error "validate-074-02: carrier fun_c not found with expanded implicit signature") nil))
      (progn (log:info "validate-074-02: PASS") t))))
 
 (defun validate-074-03-scratch-tensor-propagation-ir (ir-path)
-  "Validates scratch tensor (N=3) propagation IR (updated for 7-tuple tensor names)."
+  "Validates scratch tensor (N=3) propagation IR (updated for 6-tuple tensor names, no access)."
   (unless (probe-file ir-path)
     (log:error "validate-074-03: IR file not found: ~a" ir-path)
     (return-from validate-074-03-scratch-tensor-propagation-ir nil))
@@ -1750,14 +1735,14 @@ Returns the form or NIL."
     (and
      (or (= ka-count 13)
          (progn (log:error "validate-074-03: kernel_a expected 13 params, got ~a" ka-count) nil))
-     (or (search "TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT_LAST" ir)
-         (progn (log:error "validate-074-03: expected TENSOR_FLOAT_3_LOCAL_READ-WRITE_COMPACT_LAST type in IR") nil))
-     (or (search "fun_c_tensor_float_3_local_read_write_compact_last_int" ir)
+     (or (search "TENSOR_FLOAT_3_LOCAL_COMPACT_LAST" ir)
+         (progn (log:error "validate-074-03: expected TENSOR_FLOAT_3_LOCAL_COMPACT_LAST type in IR") nil))
+     (or (search "fun_c_tensor_float_3_local_compact_last_int" ir)
          (progn (log:error "validate-074-03: carrier fun_c not found with expanded implicit signature") nil))
      (progn (log:info "validate-074-03: PASS") t))))
 
 (defun validate-074-04-scratch-matrix-propagation-ir (ir-path)
-  "Validates scratch matrix (N=2) propagation IR (updated for 7-tuple tensor names)."
+  "Validates scratch matrix (N=2) propagation IR (updated for 6-tuple tensor names, no access)."
   (unless (probe-file ir-path)
     (log:error "validate-074-04: IR file not found: ~a" ir-path)
     (return-from validate-074-04-scratch-matrix-propagation-ir nil))
@@ -1769,9 +1754,9 @@ Returns the form or NIL."
     (and
      (or (= ka-count 11)
          (progn (log:error "validate-074-04: kernel_a expected 11 params, got ~a" ka-count) nil))
-     (or (search "TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT_LAST" ir)
-         (progn (log:error "validate-074-04: expected TENSOR_FLOAT_2_LOCAL_READ-WRITE_COMPACT_LAST type in IR") nil))
-     (or (search "fun_c_tensor_float_2_local_read_write_compact_last_ulong_ulong" ir)
+     (or (search "TENSOR_FLOAT_2_LOCAL_COMPACT_LAST" ir)
+         (progn (log:error "validate-074-04: expected TENSOR_FLOAT_2_LOCAL_COMPACT_LAST type in IR") nil))
+     (or (search "fun_c_tensor_float_2_local_compact_last_ulong_ulong" ir)
          (progn (log:error "validate-074-04: carrier fun_c not found with expanded implicit signature") nil))
      (progn (log:info "validate-074-04: PASS") t))))
 
@@ -1922,10 +1907,11 @@ Returns the form or NIL."
 ;;; 080-advanced-ad  — tensor / vector / matrix autodiff validators
 ;;; ---------------------------------------------------------------------------
 
+
 (defun validate-vec-add-grad (ir-path)
   "Validates the backward kernel for 01-vec-add (vector addition):
      - @vec_add_grad is defined
-     - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT type present (gradient tensors)
+     - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (gradient tensors, no access in name)
      - fadd instruction present (addition backward)
      - idx_GRAD is NOT present (integer scalar filtering)"
   (unless (probe-file ir-path)
@@ -1935,8 +1921,8 @@ Returns the form or NIL."
     (and
      (or (search "define void @vec_add_grad(" ir)
          (progn (log:error "validate-vec-add-grad: @vec_add_grad not found") nil))
-     (or (search "TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT" ir)
-         (progn (log:error "validate-vec-add-grad: gradient tensor type READ-WRITE not found") nil))
+     (or (search "TENSOR_FLOAT_1_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-vec-add-grad: gradient tensor type COMPACT not found") nil))
      (or (search "fadd float" ir)
          (progn (log:error "validate-vec-add-grad: fadd not found in backward body") nil))
      (or (not (search "idx_GRAD" ir))
@@ -1946,8 +1932,8 @@ Returns the form or NIL."
 (defun validate-vec-multiply-grad (ir-path)
   "Validates the backward kernel for 02-vec-multiply (vector product rule):
      - @vec_mult_grad is defined
-     - fmul instruction present (product rule: d/dA of A*B = B, needs multiply)
-     - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT type present
+     - fmul instruction present
+     - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (no access in name)
      - idx_GRAD is NOT present"
   (unless (probe-file ir-path)
     (log:error "validate-vec-multiply-grad: IR file not found: ~a" ir-path)
@@ -1958,8 +1944,8 @@ Returns the form or NIL."
          (progn (log:error "validate-vec-multiply-grad: @vec_mult_grad not found") nil))
      (or (search "fmul float" ir)
          (progn (log:error "validate-vec-multiply-grad: fmul not found (product rule requires multiply)") nil))
-     (or (search "TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT" ir)
-         (progn (log:error "validate-vec-multiply-grad: gradient tensor type READ-WRITE not found") nil))
+     (or (search "TENSOR_FLOAT_1_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-vec-multiply-grad: gradient tensor type COMPACT not found") nil))
      (or (not (search "idx_GRAD" ir))
          (progn (log:error "validate-vec-multiply-grad: idx_GRAD should not be emitted") nil))
      (progn (log:info "validate-vec-multiply-grad: PASS") t))))
@@ -1967,9 +1953,9 @@ Returns the form or NIL."
 (defun validate-vec-mixed-grad (ir-path)
   "Validates the backward kernel for 03-vec-mixed (scalar float + tensor inputs):
      - @vec_scale_grad is defined
-     - float parameter for scale_GRAD (scalar gradient carried through)
-     - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT present (A_GRAD tensor)
-     - fmul present (d(scale*A)/dA = scale; d/dscale = A — both use multiply)
+     - %scale_grad present
+     - TENSOR_FLOAT_1_GLOBAL_COMPACT present (no access in name)
+     - fmul present
      - idx_GRAD is NOT present"
   (unless (probe-file ir-path)
     (log:error "validate-vec-mixed-grad: IR file not found: ~a" ir-path)
@@ -1980,8 +1966,8 @@ Returns the form or NIL."
          (progn (log:error "validate-vec-mixed-grad: @vec_scale_grad not found") nil))
      (or (search "%scale_grad" ir)
          (progn (log:error "validate-vec-mixed-grad: scale_grad adjoint variable not found") nil))
-     (or (search "TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT" ir)
-         (progn (log:error "validate-vec-mixed-grad: A_GRAD tensor type READ-WRITE not found") nil))
+     (or (search "TENSOR_FLOAT_1_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-vec-mixed-grad: A_GRAD tensor type COMPACT not found") nil))
      (or (search "fmul float" ir)
          (progn (log:error "validate-vec-mixed-grad: fmul not found (scale*A product rule)") nil))
      (or (not (search "idx_GRAD" ir))
@@ -1991,7 +1977,7 @@ Returns the form or NIL."
 (defun validate-matrix-add-grad (ir-path)
   "Validates the backward kernel for 04-matrix-add (2D matrix, two indices):
      - @mat_add_grad is defined
-     - TENSOR_FLOAT_2_GLOBAL_READ-WRITE_COMPACT type present (2D gradient tensors)
+     - TENSOR_FLOAT_2_GLOBAL_COMPACT type present (no access in name)
      - fadd present
      - row_GRAD and col_GRAD are NOT present (integer scalar filtering)"
   (unless (probe-file ir-path)
@@ -2001,8 +1987,8 @@ Returns the form or NIL."
     (and
      (or (search "define void @mat_add_grad(" ir)
          (progn (log:error "validate-matrix-add-grad: @mat_add_grad not found") nil))
-     (or (search "TENSOR_FLOAT_2_GLOBAL_READ-WRITE_COMPACT" ir)
-         (progn (log:error "validate-matrix-add-grad: 2D gradient tensor type READ-WRITE not found") nil))
+     (or (search "TENSOR_FLOAT_2_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-matrix-add-grad: 2D gradient tensor type COMPACT not found") nil))
      (or (search "fadd float" ir)
          (progn (log:error "validate-matrix-add-grad: fadd not found in backward body") nil))
      (or (not (search "row_GRAD" ir))
@@ -2014,7 +2000,7 @@ Returns the form or NIL."
 (defun validate-tensor-add-grad (ir-path)
   "Validates the backward kernel for 05-tensor-add (3D tensor, three indices):
      - @tensor_add_grad is defined
-     - TENSOR_FLOAT_3_GLOBAL_READ-WRITE_COMPACT type present (3D gradient tensors)
+     - TENSOR_FLOAT_3_GLOBAL_COMPACT type present (no access in name)
      - fadd present
      - d0_GRAD, d1_GRAD, d2_GRAD are NOT present (integer scalar filtering)"
   (unless (probe-file ir-path)
@@ -2024,8 +2010,8 @@ Returns the form or NIL."
     (and
      (or (search "define void @tensor_add_grad(" ir)
          (progn (log:error "validate-tensor-add-grad: @tensor_add_grad not found") nil))
-     (or (search "TENSOR_FLOAT_3_GLOBAL_READ-WRITE_COMPACT" ir)
-         (progn (log:error "validate-tensor-add-grad: 3D gradient tensor type READ-WRITE not found") nil))
+     (or (search "TENSOR_FLOAT_3_GLOBAL_COMPACT" ir)
+         (progn (log:error "validate-tensor-add-grad: 3D gradient tensor type COMPACT not found") nil))
      (or (search "fadd float" ir)
          (progn (log:error "validate-tensor-add-grad: fadd not found in backward body") nil))
      (or (not (search "d0_GRAD" ir))

@@ -2,7 +2,7 @@
 ;; Unlike structs, records at the kernel boundary ARE mutable.
 ;; Verifies: write to virtual array element is permitted.
 
-(def-type out-c (cell int :address-space :global :access :read-write))
+(def-type out-c (cell int :address-space :global))
 
 (def-record stats-block
   (counts (array int 4)))

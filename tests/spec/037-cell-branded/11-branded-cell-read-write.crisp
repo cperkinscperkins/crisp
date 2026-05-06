@@ -2,8 +2,8 @@
 
 ;; this should compile with and without the --differentiate flag.
 
-(def-type in-ish (cell float :address-space :global :access :read-write))
-(def-type out-ish (cell float :address-space :global :access :read-write))
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
 
 (def-kernel in_and_out (in &out out)
     (declare #'(in-ish &out out-ish => nil))

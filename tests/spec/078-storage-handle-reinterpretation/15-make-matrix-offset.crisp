@@ -3,7 +3,7 @@
 ;; Skip the first 3 elements via :offset 3, then view a 3x3 matrix.
 ;; Access element [0, 0] -- corresponds to flat src[3].
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-make-matrix-offset (v)
     (declare #'(int-vec-t => int))

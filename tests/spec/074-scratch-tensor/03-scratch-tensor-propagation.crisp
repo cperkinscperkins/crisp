@@ -19,7 +19,7 @@
 ;;           => fun-D(t3 n)
 ;;             => fun-E(t3 n)
 
-(def-type scratch-float-t3 (tensor float 3 :address-space :local :access :read-write :align :compact))
+(def-type scratch-float-t3 (tensor float 3 :address-space :local :align :compact))
 
 (def-function fun-E (t3 n)
     (declare #'(scratch-float-t3 int => float))

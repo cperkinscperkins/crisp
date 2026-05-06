@@ -8,7 +8,7 @@
 (def-struct skipped (x int) (y int))
 
 (def-kernel my_kernel (c)
-    (declare (type c (cell point :address-space :global :access :read-write)))
+    (declare (type c (cell point :address-space :global)))
   (let ((loc-x (x~ (~ c))))
     (set! (x~ (~ c)) (+ loc-x 1))))
   

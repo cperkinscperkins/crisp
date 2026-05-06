@@ -1,7 +1,7 @@
 (def-struct point (x int) (y int))
 
 (def-function test-cell-of-struct (p v)
-    (declare #'((cell point :address-space :global :access :read-write) int => nil))
+    (declare #'((cell point :address-space :global) int => nil))
     (set! (x~ (~ p)) v)
     (return))
     

@@ -7,7 +7,7 @@
 
 (def-record v-point (x fff) (y int))
 
-(def-type out-c (cell float :address-space :global :access :read-write))
+(def-type out-c (cell float :address-space :global))
 
 (def-kernel record_on_boundary_k (vp &out c)
     (declare #'(v-point &out out-c))

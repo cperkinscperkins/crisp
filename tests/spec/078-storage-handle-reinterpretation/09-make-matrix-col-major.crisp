@@ -5,7 +5,7 @@
 ;; Access element [1, 2] (col 2, row 1 => flat index 2*3+1 = 7).
 ;; The result handle is :strided (non-identity strides).
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-make-matrix-col-major (v)
     (declare #'(int-vec-t => int))

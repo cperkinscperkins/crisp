@@ -39,8 +39,7 @@ This is a very easy mistake to make, in all languages. For this reason, Crisp
 has the `&out` parameter list specifier.  
 Any variables after `&out` must be a `:global` Storage Handle ( ie an acceptable proxy, like `vector` `soa-vector`, `cell`, `tensor` ).
 
-It is encouraged that the access is set to `:write-only` but this is not a strict requirement.  
-Importantly, regardless of the `:access` setting, within the functions scope the compiler enforces a write-only contract. 
+Importantly, within the functions scope the compiler enforces a write-only contract. 
 Any attempt to read from an `&out` parameter will result in a compile-time error. 
 Thus protecting you from accidentally making the race condition mistake.
 

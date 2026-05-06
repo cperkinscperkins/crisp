@@ -3,7 +3,7 @@
 ;; Vector view, :length 4, :offset 0.
 ;; Write 77 to view[2], then read it back through the view.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-make-vector-write (v)
     (declare #'(int-vec-t => int))

@@ -12,8 +12,8 @@
 ;;   - backward kernel body chains through all three _GRAD calls
 ;;   - idx_GRAD NOT present
 
-(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
-(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+(def-type in-vec  (vector float :address-space :global  :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
 
 (def-function some-operation (a b)
     (declare #'(float float => float))

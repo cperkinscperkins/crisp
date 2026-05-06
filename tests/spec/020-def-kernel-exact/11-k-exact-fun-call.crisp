@@ -1,6 +1,6 @@
 ;; Call a function
 
-(def-type out-c (cell long :address-space :global :access :read-write))
+(def-type out-c (cell long :address-space :global))
 
 
 ;; In theory, def-kernel-exact COULD support &out. But it seems "inappropriate"

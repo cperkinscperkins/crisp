@@ -4,7 +4,7 @@
 ;; dotimes must not require a dispatch context -- it is a general bounded loop.
 ;; Note: &out params in def-function are write-only; write-last writes i each iteration.
 
-(def-type cell-t (cell int :address-space :global :access :read-write))
+(def-type cell-t (cell int :address-space :global))
 
 (def-function write-last (m &out result)
   (declare #'(int &out cell-t => nil))

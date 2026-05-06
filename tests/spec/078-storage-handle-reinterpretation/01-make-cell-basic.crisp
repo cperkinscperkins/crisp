@@ -3,8 +3,8 @@
 ;; Result: a cell<int> pointing at element 0 of the vector.
 ;; Read through the cell view and return the value.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
-(def-type int-cell-t (cell int :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
+(def-type int-cell-t (cell int :address-space :global))
 
 (def-function test-make-cell-basic (v)
     (declare #'(int-vec-t => int))

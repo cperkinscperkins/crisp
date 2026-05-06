@@ -3,20 +3,20 @@
 
 ;; single
 (def-function cell-add (A &out C)
-    (declare #'((cell int :address-space :global :access :readable) &out (cell int :address-space :global :access :writeable) => nil))
+    (declare #'((cell int :address-space :global) &out (cell int :address-space :global) => nil))
     (set! (~ C) (+ (~ A) (~ A))))
 
 ;; multiple
 (def-function cell-scatter (A &out B C D)
-    (declare #'((cell int :address-space :global :access :readable)
-                &out (cell int :address-space :global :access :writeable) (cell int :address-space :global) (cell int) => nil))
+    (declare #'((cell int :address-space :global)
+                &out (cell int :address-space :global) (cell int :address-space :global) (cell int) => nil))
     (let ((a (~ A)))
         (set! (~ B) a)
         (set! (~ C) a)
         (set! (~ D) a)))
 
 (def-function no-tocar (&out out-c)
-    (declare #'(&out (cell int :address-space :global :access :read-write) => nil))
+    (declare #'(&out (cell int :address-space :global) => nil))
     (let ((initial 10))
         (set! (~ out-c) (+ initial 1))))  ;; <-- setting is fine. but reading is not.
 

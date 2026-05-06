@@ -16,7 +16,7 @@
 
 (def-struct data-arr (values (array long 4)))
 
-(def-type out-c (cell long :address-space :global :access :read-write))
+(def-type out-c (cell long :address-space :global))
 
 (def-kernel struct_arr_hoist_k (s &out c)
     (declare forward-only #'(data-arr &out out-c))

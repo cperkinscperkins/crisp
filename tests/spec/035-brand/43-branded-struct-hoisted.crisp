@@ -13,6 +13,6 @@
 
 
 (def-kernel struct_on_kernel_boundary (c)
-    (declare (type c (cell point :address-space :global :access :read-write)) forward-only)
+    (declare (type c (cell point :address-space :global)) forward-only)
   (let ((loc-x (x~ (~ c))))
     (set! (x~ (~ c)) (+ loc-x 1))))

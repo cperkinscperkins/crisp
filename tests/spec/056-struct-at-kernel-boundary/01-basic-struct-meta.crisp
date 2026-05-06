@@ -13,7 +13,7 @@
 ;; and so should NOT be in the .metacrisp
 (def-struct rect (top-left point) (bottom-right point)) 
 
-(def-type out-c (cell float :address-space :global :access :read-write))
+(def-type out-c (cell float :address-space :global))
 
 (def-kernel struct_on_boundary_k (p &out c)
     (declare #'(point &out out-c))

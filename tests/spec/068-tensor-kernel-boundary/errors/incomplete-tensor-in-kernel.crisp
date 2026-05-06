@@ -1,5 +1,5 @@
 ;; CHECK-FAIL: "incomplete storage handle type"
-;; (tensor int 3) is missing :address-space and :access.
+;; (tensor int 3) is missing :address-space.
 ;; These are optional at def-function boundaries (not typically needed),
 ;; but kernels require all compile-time properties to be explicit.
 (def-kernel bad_kernel (t1)

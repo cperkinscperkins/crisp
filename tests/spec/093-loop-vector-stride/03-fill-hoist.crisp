@@ -6,7 +6,7 @@
 ;; processes exactly one element: thread i writes i to out[i].
 ;; (Hoist test harness allocates 4 elements by default for tensor params.)
 
-(def-type vec4 (vector int :address-space :global :access :read-write :align :compact))
+(def-type vec4 (vector int :address-space :global :align :compact))
 
 (def-kernel fill_iota (&out out)
   (declare #'(&out vec4 => nil)

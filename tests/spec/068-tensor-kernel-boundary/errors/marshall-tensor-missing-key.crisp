@@ -1,6 +1,6 @@
 ;; CHECK-FAIL: "marshall-tensor missing required keyword :offsets"
 ;; :offsets keyword is absent entirely.
-(def-type vol-t (tensor float 3 :address-space :global :access :read-write :align :compact))
+(def-type vol-t (tensor float 3 :address-space :global :align :compact))
 
 (def-kernel-exact bad_tensor (byte-size ptr s0 s1 s2 e0 e1 e2 length val)
     (declare #'(ulong voidp ulong ulong ulong ulong ulong ulong ulong float))

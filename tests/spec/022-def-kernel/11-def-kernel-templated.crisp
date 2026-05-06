@@ -4,8 +4,8 @@
 ;; TEST-WITH[--ir-target=llvmir] : validate-cell-add-f-ir
 
 (with-template-type (T)
-    (def-type in-c (cell T :address-space :global :access :read-only))
-    (def-type out-c (cell T :address-space :global :access :read-write))
+    (def-type in-c (cell T :address-space :global))
+    (def-type out-c (cell T :address-space :global))
 
     (def-kernel cell_add (threshold A B &out C)
         (declare #'(long (in-c T) (in-c T) &out (out-c T)))

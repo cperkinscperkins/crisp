@@ -3,7 +3,7 @@
 ;; mem-fence ensures memory ordering across threads (global + local scopes).
 ;; Lowers to OpMemoryBarrier in SPIR-V.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (def-kernel test_mem_fence (&out c)
   (declare #'(&out out-t))

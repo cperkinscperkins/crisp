@@ -6,7 +6,7 @@
 `def-kernel` defines a kernel function. It is much the same as `def-function` with only a few differences:
 
 - `def-kernel` functions always returns NIL. It does not need to explicitly declare a return type.
-- Storage Handle types (ie `cell` `vector`, `matrix` and `tensor`)  must be fully typed with address space, access, alignment and element type. (See Storage Handle Types below)
+- Storage Handle types (ie `cell` `vector`, `matrix` and `tensor`)  must be fully typed with address space, alignment and element type. (See Storage Handle Types below)
 - `def-kernel` functions do NOT support `&key` or `&optional` arguments.
 - but it DOES support `&out` 
 - the function name for kernels MUST obey the C standard identifying rules.  Thus "do_something" is a valid name, but "do-something" is not.
@@ -21,7 +21,7 @@ Like `def-function` ALL the parameters to the kernel function must have their ty
 ; note also that since the arguments are typed in the parameter list, we didn't need a declare directive at all. 
 ;  the return type is assumed NIL.
 
-(def-type int-result-cell (cell int :global :writeable))
+(def-type int-result-cell (cell int :global))
 
 ;; -- add_two --
 (def-kernel add_two (a b &out result)
@@ -84,9 +84,9 @@ which is a function Crisp provides for making Crisp vectors from `void` pointers
 ;; -- vector_add_k --
 (def-kernel-exact vector_add_k (APtr ASz BPtr BSz CPtr CSz)
   (declare #'(voidp ulong voidp ulong voidp ulong => nil))
-  (let ((A (marshall-vector APtr ASz (float-vec-t :access :read-only)))
-        (B (marshall-vector BPtr BSz (float-vec-t :access :read-only)))
-        (C (marshall-vector CPtr CSz (float-vec-t :access :write-only))))
+  (let ((A (marshall-vector APtr ASz float-vec-t))
+        (B (marshall-vector BPtr BSz float-vec-t))
+        (C (marshall-vector CPtr CSz float-vec-t)))
     (vector-add A B C)))
 ```
 
@@ -100,7 +100,7 @@ the `&out` specifier and possibly other safety checks.
 
 
 `(marshall-cell type byte-size ptr offset)`
-- `type` — fully-specified cell type alias, e.g. `(cell long :address-space :global :access :read-write)`
+- `type` — fully-specified cell type alias, e.g. `(cell long :address-space :global)`
 - `byte-size` — `ulong` total byte size of the backing buffer
 - `ptr` — raw pointer (`voidp`)
 - `offset` — `ulong` element offset into the buffer
@@ -141,7 +141,7 @@ the `&out` specifier and possibly other safety checks.
   :extents (e0 e1 ... eN-1)
   :length  len)
 ```
-- type — fully-specified tensor type alias, e.g. `(tensor float 3 :address-space :global :access :read-write :align :compact)`. Also accepts an expanded vector or matrix alias (since both desugar to tensor).
+- type — fully-specified tensor type alias, e.g. `(tensor float 3 :address-space :global :align :compact)`. Also accepts an expanded vector or matrix alias (since both desugar to tensor).
 - `byte-size` — `ulong` total byte size of the backing buffer
 - `ptr` — raw pointer (`voidp`)
 - `:offsets (o0 ... oN-1)` — list of exactly `N` `ulong` offsets, one per dimension

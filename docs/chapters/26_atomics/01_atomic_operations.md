@@ -129,10 +129,10 @@ workgroup will add its sum to the first element of the result vector.
 (def-constant +warp-size+ 32 ulong)
 
 ;; the source vector can be any size. 
-(def-type source-vec (vector long :address-space :global :access :readable))     
+(def-type source-vec (vector long :address-space :global))     
 
 ;; the final result vector is just has 1 long value
-(def-type result-vec (vector long :address-space :global :access :writeable :length 1)) 
+(def-type result-vec (vector long :address-space :global :length 1)) 
 
 ;; -- calculate-this-thread-sum --
 (def-grid-function calculate-this-thread-sum (A)

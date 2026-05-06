@@ -12,7 +12,7 @@
                   (y int)
                   (earnestness float :c-t 2.0))
 
-(def-type out-c (cell float :address-space :global :access :read-write))
+(def-type out-c (cell float :address-space :global))
 
 ;; The earnestness :c-t field does NOT appear in the physical ABI.
 ;; p1 uses the default (2.0), p2 uses a concrete binding (3.0).

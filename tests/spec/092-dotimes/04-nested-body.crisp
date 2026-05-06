@@ -3,7 +3,7 @@
 ;; dotimes with a let + when inside the body.
 ;; Verifies that complex body expressions work correctly inside the loop.
 
-(def-type cell-t (cell int :address-space :global :access :read-write))
+(def-type cell-t (cell int :address-space :global))
 
 (def-kernel dotimes_complex_body (n &out evens)
   (declare #'(int &out cell-t => nil) forward-only)

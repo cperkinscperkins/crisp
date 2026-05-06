@@ -4,7 +4,7 @@
 ;; Basic loop-vector-stride: copy every element of A into B.
 ;; Validates that the macro expands correctly and generates valid IR.
 
-(def-type vec-t (vector int :address-space :global :access :read-write :align :compact))
+(def-type vec-t (vector int :address-space :global :align :compact))
 
 (def-kernel vec_copy (A &out B)
   (declare #'(vec-t &out vec-t => nil) forward-only)

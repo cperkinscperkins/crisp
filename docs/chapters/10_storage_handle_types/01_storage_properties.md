@@ -7,7 +7,7 @@
 | --------------|---------------|--------------|-----------------|
 | byte-size~         | ulong         | runtime      | the number of bytes in the `storage`. This is immutable.|
 | address-space~ | address-space | compile-time | one of `:global`, `:local`, `:constant` |
-| access~        | access        | compile-time | one of `:read-only` `:write-only` `:read-write` `:readable` `:writeable` |
+
 
 
 The `byte-size~` property for a `storage` is sometimes known at compile time, but is most often a runtime property.
@@ -21,14 +21,13 @@ accessible to the user.
 BUT - at the moment, let's NOT hide "address" from the user.  We'll simply
 not document it, and play it by ear later. 
 
-;; the address-space and access enumerations provide the "type" for the
+;; the address-space enumerations provide the "type" for the
 ;; storage properties of the same name. 
 
 (def-record storage
     (address ulong)    
     (byte-size ulong)
-    (address-space address-space :c-t)
-    (access access :c-t))
+    (address-space address-space :c-t))
 
 -->
 

@@ -4,7 +4,7 @@
 ;; the source Storage Handle must have :compact or :compact-offset layout.
 ;; Reinterpreting element types on :strided views is mathematically undefined.
 
-(def-type strided-float-vec-t (vector float :align :strided :address-space :global :access :read-write))
+(def-type strided-float-vec-t (vector float :align :strided :address-space :global))
 
 (def-function test-strided-diff-elem (v)
     (declare #'(strided-float-vec-t => int))

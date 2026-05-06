@@ -1,6 +1,6 @@
 ;; CHECK-FAIL: "incomplete storage handle type"
-;; (vector int :address-space :global) has :address-space but is missing :access.
-;; A partially-specified type is also incomplete at the kernel boundary.
+;; (vector int) is missing :address-space and is therefore incomplete.
+;; Kernels require fully specified types.
 (def-kernel bad_kernel (v)
-    (declare #'((vector int :address-space :global) => nil))
+    (declare #'((vector int) => nil))
     (return))

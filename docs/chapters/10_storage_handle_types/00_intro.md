@@ -52,7 +52,7 @@ referencing.
  never need it, or need to know about it.
 
  ```
- (tensor float 6 :address-space :global :access :read-write :align :compact :contiguous-term :last)
+ (tensor float 6 :address-space :global :align :compact :contiguous-term :last)
 
 ;; usable with any tensor of any arity
  :contiguous-term  :last   ;; for a matrix, this is same as :row-major

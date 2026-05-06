@@ -8,8 +8,8 @@
 ;;   row 1 = elements at (1,0), (1,1) = flat indices 2, 3.
 ;; Read col 1 of that row = flat index 3.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
-(def-type out-cell-t (cell int :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
+(def-type out-cell-t (cell int :address-space :global))
 
 (def-kernel test_row_access (v &out out)
   (declare #'(int-vec-t &out out-cell-t => nil))

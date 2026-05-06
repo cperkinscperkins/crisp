@@ -1,5 +1,5 @@
-;; cell is a parameterized type. 
-;; It's type declaration uses &key for :address-space and :access
+;; cell is a parameterized type.
+;; It's type declaration uses &key for :address-space.
 ;; we no longer attempt to support 'cell' alone or '(cell)'.
 
 (def-function test-cell-as-arg (c1)

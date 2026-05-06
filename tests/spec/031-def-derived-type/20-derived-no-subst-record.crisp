@@ -17,7 +17,7 @@
     (declare #'(coordinate coordinate => int))
     (+ 100 (+ (y~ c1) (y~ c2))))
 
-(def-type out-c (cell int :address-space :global :access :write-only))
+(def-type out-c (cell int :address-space :global))
 
 (def-kernel measure_distance (ax ay bx by &out res-p res-c)
     (declare #'(int int int int &out out-c out-c))

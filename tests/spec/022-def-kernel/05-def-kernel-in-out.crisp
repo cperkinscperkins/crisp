@@ -1,7 +1,7 @@
 ;;
 
-(def-type in-c (cell long :address-space :global :access :read-only))
-(def-type out-c (cell long :address-space :global :access :write-only))
+(def-type in-c (cell long :address-space :global))
+(def-type out-c (cell long :address-space :global))
 
 (def-kernel cell_add (A B &out C)
     (declare #'(in-c in-c &out out-c))

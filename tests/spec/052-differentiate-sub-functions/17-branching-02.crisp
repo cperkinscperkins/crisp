@@ -1,7 +1,7 @@
 ;; TEST-WITH[--differentiate]
 
-(def-type in-ish (cell float :address-space :global :access :read-only))
-(def-type out-ish (cell float :address-space :global :access :write-only))
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
 
 (def-function some-operation (a b)
     (declare #'(float float => float))

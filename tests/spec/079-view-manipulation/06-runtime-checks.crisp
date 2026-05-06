@@ -10,7 +10,7 @@
 ;; DEFAULT pass: compiles cleanly, no llvm.trap emitted (assertions elided).
 ;; TEST-WITH pass: llvm.trap must appear in the IR.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-rt-check-set-offset (v)
     (declare #'(int-vec-t => nil))

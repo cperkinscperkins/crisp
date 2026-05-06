@@ -3,7 +3,7 @@
 ;;
 ;; Metadata: (local-size :set-to 64) is stored verbatim in metacrisp.
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel local_size_set (&out result)
     (declare (type result result-t)

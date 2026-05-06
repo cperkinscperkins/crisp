@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-02T18:00:11.297287Z
+Generated on 2026-05-06T05:53:49.743501Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -801,7 +801,7 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `%GET-TENSOR-ALIGN`
 - **Args**: `(TYPE)`
 
-  > Extracts the :align keyword from a tensor type specifier.  >    TYPE may be a list form (tensor elem N addr access align) or a  >    mangled symbol TENSOR_ELEM_N_ADDR_ACCESS_ALIGN.  >    Returns :compact, :compact-offset, :strided, or NIL (unknown / template).
+  > Extracts the :align keyword from a tensor type specifier.  >    New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth type).  >    Handles both list form and mangled symbol.
 
 
 ---
@@ -864,7 +864,7 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `%SCRATCH-TENSOR-CANONICAL-SPEC`
 - **Args**: `(OP ARGS)`
 
-  > Resolves the type arguments of a make-scratch-{vector,matrix,tensor} form  >    to a canonical (tensor elem N addr access align) spec.  >   >    OP is the operator symbol.  ARGS is the rest of the form (everything after  >    the operator).  Returns the canonical spec or NIL if resolution fails.  >   >    Dual-syntax disambiguation for make-scratch-tensor:  >      - If the second positional arg (after the first type-ish arg) is an integer  >        AND the first arg is NOT a registered tensor/vector/matrix type alias,  >        we treat it as Form 1: (elem-type N sizeExpr ...).  >      - Otherwise Form 2: (tensor-type sizeExpr ...).
+  > Resolves type arguments of a make-scratch-{vector,matrix,tensor} form  >    to a canonical (tensor elem N addr align ct) spec.
 
 
 ---
@@ -913,7 +913,7 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `%MV-SOURCE-ALIGN`
 - **Args**: `(CANON)`
 
-  > Return the :align keyword from a canonical storage handle type (tensors only).
+  > Return the :align keyword from a canonical storage handle type (tensors only).  >    New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth canon).
 
 
 ---
@@ -960,16 +960,16 @@ Generated on 2026-05-02T18:00:11.297287Z
 
 ---
 ### DEFUN `%MV-RESULT-CELL-TYPE`
-- **Args**: `(NEW-ELEM ADDR ACCESS)`
+- **Args**: `(NEW-ELEM ADDR)`
 
-  > Build canonical cell result type.
+  > Build canonical cell result type: (cell elem addr).
 
 
 ---
 ### DEFUN `%MV-RESULT-TENSOR-TYPE`
-- **Args**: `(NEW-ELEM RANK ADDR ACCESS ALIGN &OPTIONAL (CT LAST))`
+- **Args**: `(NEW-ELEM RANK ADDR ALIGN &OPTIONAL (CT LAST))`
 
-  > Build canonical tensor result type (7-tuple).
+  > Build canonical tensor result type: (tensor elem rank addr align ct).
 
 
 ---
@@ -990,7 +990,7 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `ANALYZE-MAKE-VIEW-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes make-cell / make-vector / make-matrix / make-tensor.  >    Extended for 097-contiguous-term: make-matrix passes ct=:first for :major :col.
+  > Analyzes make-cell / make-vector / make-matrix / make-tensor.
 
 
 ---
@@ -1010,28 +1010,28 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `%GET-TENSOR-CT`
 - **Args**: `(CANON)`
 
-  > Extracts the :contiguous-term keyword (7th element, index 6) from a  >    canonical tensor type tuple, defaulting to :last when absent.
+  > Extracts the :contiguous-term keyword (6th element, index 5) from a  >    canonical tensor type 6-tuple, defaulting to :last when absent.
 
 
 ---
 ### DEFUN `ANALYZE-TRANSPOSE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (transpose M) for 2D tensors.  >    Result type: (tensor elem 2 addr access :strided src-ct).
+  > Analyzes (transpose M) for 2D tensors.  >    Result type: (tensor elem 2 addr :strided src-ct).
 
 
 ---
 ### DEFUN `ANALYZE-COL-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (col index M) for 2D tensors.  >    Result type: (tensor elem 1 addr access :strided :last).
+  > Analyzes (col index M) for 2D tensors.  >    Result type: (tensor elem 1 addr :strided :last).
 
 
 ---
 ### DEFUN `ANALYZE-ROW-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (row index M) for 2D tensors.  >    Result type: (tensor elem 1 addr access :strided :last).
+  > Analyzes (row index M) for 2D tensors.  >    Result type: (tensor elem 1 addr :strided :last).
 
 
 ---
@@ -1137,7 +1137,7 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `%ENSURE-TENSOR-READ-WRITE`
 - **Args**: `(TYPE-SPEC)`
 
-  > If TYPE-SPEC is a tensor/vector/matrix, returns the canonical 7-tuple with  >    :access replaced by :read-write. Non-tensor types are returned unchanged.
+  > For backwards compatibility: returns the canonical 6-tuple unchanged.  >    Access was removed; tensors are always read-write.
 
 
 ---
@@ -1282,7 +1282,13 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `%INTEGER-TENSOR-ELEM-TO-FLOAT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Replaces the element type of an integer tensor with its float analog:  >    64-bit integers (long, ulong) → double; all others → float.  >    Also forces :access to :read-write (gradient tensors are always writable).  >    Returns TYPE-SPEC unchanged if it is not an integer tensor.
+  > Replaces the element type of an integer tensor with its float analog:  >    64-bit integers (long, ulong) → double; all others → float.  >    Returns TYPE-SPEC unchanged if it is not an integer tensor.
+
+
+---
+### DEFUN `%AUTODIFF-GRAD-CELL-TYPE`
+
+  > Returns the canonical cell type used for gradient output parameters.
 
 
 ---
@@ -1783,7 +1789,7 @@ Generated on 2026-05-02T18:00:11.297287Z
 ---
 ### DEFUN `REGISTER-BUILTINS`
 
-  > Registers built-in types and templates.  >    Extended for 097-contiguous-term: tensor now has Ct (contiguity) as a 6th template param.
+  > Registers built-in storage handle templates (storage, cell, tensor) and  >    their system-generated accessor functions.  Called by initialize-compiler.
 
 
 ---
@@ -2507,7 +2513,7 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `%INCOMPLETE-STORAGE-HANDLE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if the type-spec is a storage handle but is missing explicit required keys  >    (address-space, access). Handles both the cell 4-tuple and tensor 6-tuple canonical forms.  >    A fully-expanded tensor spec (tensor elem N addr acc aln) -- 5 args after head -- is complete.
+  > Returns T if the type-spec is a storage handle but is missing :address-space.  >    Canonical 6-tuple (tensor elem N addr aln ct) and 3-tuple (cell elem addr) are complete.
 
 
 ---
@@ -3168,14 +3174,14 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `VALIDATE-MULTIPLY-GRAD-METADATA`
 - **Args**: `(PATHS)`
 
-  > Validates the backward grad metacrisp for 01-multiply/cell_mult_grad kernel.  >    (A B &out C) -> backward: (A B C C_grad &out A_grad B_grad)  >    Checks: kernel name, physical sig (18 params = 6 cells x 3),  >    declared sig: a/b/c/c_grad (:in :read-only), a_grad/b_grad (:out :write-only),  >    and source path present.
+  > Validates the backward grad metacrisp for 01-multiply.  >    Checks: kernel name, physical sig (18 params), declared sig (6 params with  >    correct names and directions), and source path present.
 
 
 ---
 ### DEFUN `VALIDATE-RECORD-GRAD-METADATA`
 - **Args**: `(PATHS)`
 
-  > Validates the backward grad metacrisp for 03-record-at-boundary.  >    The record v-point (x float, y float) is exploded to scalar fields at the boundary.  >    Checks: kernel name, physical sig (14 params), declared sig (6 params):  >      vp_x/vp_y (float scalars, :in), c/c_grad (cells, :in :read-only),  >      vp_x_grad/vp_y_grad (cells, :out :write-only), and source path present.
+  > Validates the backward grad metacrisp for 03-record-at-boundary.  >    Checks: kernel name, physical sig (14 params), declared sig (6 params with  >    correct names and directions), and source path present.
 
 
 ---
@@ -3315,21 +3321,21 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `VALIDATE-074-02-SCRATCH-VECTOR-PROPAGATION-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates scratch vector propagation IR (updated for 7-tuple tensor names).
+  > Validates scratch vector propagation IR (updated for 6-tuple tensor names, no access).
 
 
 ---
 ### DEFUN `VALIDATE-074-03-SCRATCH-TENSOR-PROPAGATION-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates scratch tensor (N=3) propagation IR (updated for 7-tuple tensor names).
+  > Validates scratch tensor (N=3) propagation IR (updated for 6-tuple tensor names, no access).
 
 
 ---
 ### DEFUN `VALIDATE-074-04-SCRATCH-MATRIX-PROPAGATION-IR`
 - **Args**: `(IR-PATH)`
 
-  > Validates scratch matrix (N=2) propagation IR (updated for 7-tuple tensor names).
+  > Validates scratch matrix (N=2) propagation IR (updated for 6-tuple tensor names, no access).
 
 
 ---
@@ -3372,35 +3378,35 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `VALIDATE-VEC-ADD-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 01-vec-add (vector addition):  >      - @vec_add_grad is defined  >      - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT type present (gradient tensors)  >      - fadd instruction present (addition backward)  >      - idx_GRAD is NOT present (integer scalar filtering)
+  > Validates the backward kernel for 01-vec-add (vector addition):  >      - @vec_add_grad is defined  >      - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (gradient tensors, no access in name)  >      - fadd instruction present (addition backward)  >      - idx_GRAD is NOT present (integer scalar filtering)
 
 
 ---
 ### DEFUN `VALIDATE-VEC-MULTIPLY-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 02-vec-multiply (vector product rule):  >      - @vec_mult_grad is defined  >      - fmul instruction present (product rule: d/dA of A*B = B, needs multiply)  >      - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT type present  >      - idx_GRAD is NOT present
+  > Validates the backward kernel for 02-vec-multiply (vector product rule):  >      - @vec_mult_grad is defined  >      - fmul instruction present  >      - TENSOR_FLOAT_1_GLOBAL_COMPACT type present (no access in name)  >      - idx_GRAD is NOT present
 
 
 ---
 ### DEFUN `VALIDATE-VEC-MIXED-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 03-vec-mixed (scalar float + tensor inputs):  >      - @vec_scale_grad is defined  >      - float parameter for scale_GRAD (scalar gradient carried through)  >      - TENSOR_FLOAT_1_GLOBAL_READ-WRITE_COMPACT present (A_GRAD tensor)  >      - fmul present (d(scale*A)/dA = scale; d/dscale = A — both use multiply)  >      - idx_GRAD is NOT present
+  > Validates the backward kernel for 03-vec-mixed (scalar float + tensor inputs):  >      - @vec_scale_grad is defined  >      - %scale_grad present  >      - TENSOR_FLOAT_1_GLOBAL_COMPACT present (no access in name)  >      - fmul present  >      - idx_GRAD is NOT present
 
 
 ---
 ### DEFUN `VALIDATE-MATRIX-ADD-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 04-matrix-add (2D matrix, two indices):  >      - @mat_add_grad is defined  >      - TENSOR_FLOAT_2_GLOBAL_READ-WRITE_COMPACT type present (2D gradient tensors)  >      - fadd present  >      - row_GRAD and col_GRAD are NOT present (integer scalar filtering)
+  > Validates the backward kernel for 04-matrix-add (2D matrix, two indices):  >      - @mat_add_grad is defined  >      - TENSOR_FLOAT_2_GLOBAL_COMPACT type present (no access in name)  >      - fadd present  >      - row_GRAD and col_GRAD are NOT present (integer scalar filtering)
 
 
 ---
 ### DEFUN `VALIDATE-TENSOR-ADD-GRAD`
 - **Args**: `(IR-PATH)`
 
-  > Validates the backward kernel for 05-tensor-add (3D tensor, three indices):  >      - @tensor_add_grad is defined  >      - TENSOR_FLOAT_3_GLOBAL_READ-WRITE_COMPACT type present (3D gradient tensors)  >      - fadd present  >      - d0_GRAD, d1_GRAD, d2_GRAD are NOT present (integer scalar filtering)
+  > Validates the backward kernel for 05-tensor-add (3D tensor, three indices):  >      - @tensor_add_grad is defined  >      - TENSOR_FLOAT_3_GLOBAL_COMPACT type present (no access in name)  >      - fadd present  >      - d0_GRAD, d1_GRAD, d2_GRAD are NOT present (integer scalar filtering)
 
 
 ---
@@ -3683,7 +3689,7 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `GENERATE-PHYSICAL-SIGNATURE`
 - **Args**: `(SIG-OR-PARAMS)`
 
-  > Generates the physical ABI signature from kernel parameters.  >    Records are flattened to primitive scalar entries.
+  > Generates the physical ABI signature from kernel parameters.  >    Records are flattened to primitive scalar entries.  >    Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple.
 
 
 ---
@@ -3694,14 +3700,14 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `GENERATE-DECLARED-SIGNATURE`
 - **Args**: `(SIG &OPTIONAL DECLARED-PARAMS)`
 
-  > Generates the declared-signature plist for a kernel's metadata.  >    Handles user-defined records by using the corrected get-physical-width.
+  > Generates the declared-signature plist for a kernel's metadata.  >    Omits :access — storage handles are always treated as read-write by hoist code.
 
 
 ---
 ### DEFUN `GENERATE-IMPLICIT-SIGNATURE`
 - **Args**: `(SIG DECLARED-PARAMS)`
 
-  > Generates the :implicit-params plist for metadata serialization.  >    Handles CELL canonical lists (positional addr-space/access at idx 2/3) and  >    TENSOR/VECTOR/MATRIX canonical lists (positional addr-space/access at idx 3/4),  >    and includes :size-expr from *implicit-scratch-size-expr-map*.
+  > Generates the :implicit-params plist for metadata serialization.  >    Omits :access — storage handles are always treated as read-write by hoist code.
 
 
 ---
@@ -3715,14 +3721,14 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `%BWD-RESOLVE-TYPE`
 - **Args**: `(TYPE-SPEC &OPTIONAL NEW-ACCESS)`
 
-  > Resolves TYPE-SPEC alias to its inline form. If NEW-ACCESS (:read-only or :write-only)  >    is provided and the resolved type is a cell, replaces the :access keyword value.  >    Used to build semantically correct declared-types for backward kernel metadata (Option B).
+  > Resolves TYPE-SPEC alias to its inline form.  >    NEW-ACCESS is accepted for signature compatibility but ignored.
 
 
 ---
 ### DEFUN `%BWD-FIXUP-DECLARED-TYPES`
 - **Args**: `(BWD-K-NAME)`
 
-  > Reads BWD-K-NAME's entry in *kernel-declared-signatures*, produces semantically  >    correct inline types (Option B), and updates the entry in place.  >    Rules:  >      - Params before &out: resolve alias, force cell :access to :read-only  >      - Params after  &out: resolve alias, force cell :access to :write-only  >    This corrects the raw types stored by %generate-backward-kernel-ast, which  >    copies them mechanically from the forward kernel's type list.
+  > Reads BWD-K-NAME's entry in *kernel-declared-signatures*, resolves  >    aliases to inline types, and updates the entry in place.
 
 
 ---
@@ -4682,7 +4688,7 @@ Generated on 2026-05-02T18:00:11.297287Z
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Expands storage handle type specs into canonical positional forms.  >    Cell        → (cell  elem addr access)                  [4-tuple].  >    Vector      → (tensor elem 1 addr access align ct)      [7-tuple, sugar for tensor N=1].  >    Matrix      → (tensor elem 2 addr access align ct)      [7-tuple, sugar for tensor N=2].  >    Tensor      → (tensor elem N addr access align ct)      [7-tuple].  >    ct defaults to :last; :row-major/:col-major are matrix-only aliases for :last/:first.
+  > Expands storage handle type specs into canonical positional forms.  >    Cell   → (cell  elem addr)              [3-tuple].  >    Vector → (tensor elem 1 addr align ct)  [6-tuple, sugar for tensor N=1].  >    Matrix → (tensor elem 2 addr align ct)  [6-tuple, sugar for tensor N=2].  >    Tensor → (tensor elem N addr align ct)  [6-tuple].  >    ct defaults to :last; :row-major/:col-major are matrix-only aliases for :last/:first.
 
 
 ---

@@ -41,7 +41,7 @@ Below that, the cell can be passed explicitly and does not need "Side Channel" m
         ;; user defined 'implicit' params.  
         ;; the debug logging ;; And the :implicit-params should have one entry.
  ;; :implicit-params ((:name "davie_FROM_FUN-B_1" :type (cell int global read-write)
- ;;                       :address-space :global :access :read-write :range (0 2)))
+ ;;                       :address-space :global :range (0 2)))
  ;;
  ;; Note: The name "davie" is now scoped with originator function and unique ID 
  ;; to support multiple scratch cells. E.g. "davie_FROM_FUN-B_1". (0 2)))

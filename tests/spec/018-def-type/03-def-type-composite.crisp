@@ -1,16 +1,16 @@
 
 ;; I'm not sure about this first example.  The templated version (below) is much more common.
 
-(def-type int-cell (cell int :address-space :global)) ;; <-- :access NOT set
+(def-type int-cell (cell int :address-space :global))
 
 (def-function inc-100 (in &out o)
-    (declare #'((int-cell) &out (int-cell :access :write-only) => nil))
+    (declare #'((int-cell) &out (int-cell) => nil))
     (set! (~ o) (+ 100 (~ in))))
 
 
 (with-template-type (T)
-    (def-type in-cell (cell T :address-space :global :access :readable))
-    (def-type out-cell (cell T :address-space :global :access :writeable)))
+    (def-type in-cell (cell T :address-space :global))
+    (def-type out-cell (cell T :address-space :global)))
 
 (<T>
     (def-function inc-1000 (in &out o)
@@ -18,7 +18,7 @@
         (set! (~ o) (+ (as T 1000) (~ in))))
 
     (def-function override (in &out o)
-        (declare #'((in-cell T :address-space :local) &out (out-cell T :access :write-only)))
+        (declare #'((in-cell T :address-space :local) &out (out-cell T)))
         (set! (~ o) (+ (as T 1000) (~ in)))))
 
 (gen-inc-1000 float)

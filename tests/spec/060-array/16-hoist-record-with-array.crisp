@@ -8,7 +8,7 @@
 
 (def-record data-rec (counts (array int 4)))
 
-(def-type out-c (cell int :address-space :global :access :read-write))
+(def-type out-c (cell int :address-space :global))
 
 (def-kernel record_arr_hoist_k (r &out c)
     (declare forward-only #'(data-rec &out out-c))

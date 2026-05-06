@@ -3,8 +3,8 @@
 ;; The backward kernel compiles successfully; A_GRAD and C_GRAD are float-typed.
 ;; The backward body is a no-op (zero gradient — correct for integer arithmetic).
 
-(def-type in-vec  (vector int :address-space :global :access :read-only  :align :compact))
-(def-type out-vec (vector int :address-space :global :access :read-write :align :compact))
+(def-type in-vec  (vector int :address-space :global  :align :compact))
+(def-type out-vec (vector int :address-space :global :align :compact))
 
 (def-kernel int_copy (A &out C)
   (declare #'(in-vec &out out-vec))

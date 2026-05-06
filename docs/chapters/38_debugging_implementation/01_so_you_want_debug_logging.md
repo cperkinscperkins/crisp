@@ -14,7 +14,7 @@ When the `--logging-output` flag is set then the compiler alters the compilation
 the debug vector is now in the first param position
 - `(is-logging?)` expression evaluates to T at compile time.
 
-The debug output vector base type is a `(vector ulong :align :compact :address-space :global :access :write-only)` and it must
+The debug output vector base type is a `(vector ulong :align :compact :address-space :global)` and it must
 be setup by the host. In this part of the document we refer to this vector as "the debug buffer" or 
 just "the buffer". 
 

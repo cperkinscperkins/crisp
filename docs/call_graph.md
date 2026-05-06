@@ -510,6 +510,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%074-HAS-LOCAL-PTR-PARAM DEFINE-LINE)  metadata-val.lisp
 
+- (%AUTODIFF-GRAD-CELL-TYPE)  autodiff.lisp
+
+- (%CRISP-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+
 - (%CT-RESOLVE-VALUE VALUE)  macros.lisp
 
 - (%GENERATE-BACKWARD-KERNEL-AST NAME PARAMS SIGNATURE-TYPES RAW-BODY)  macros.lisp
@@ -536,12 +541,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp
-- - - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp
-- - - - - (%CRISP-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp [See above]
-- - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp
 - - (%EXPLODE-KERNEL-ARGS PARAMS SIGNATURE)  macros.lisp
 - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -582,6 +582,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%GENERATE-STRUCT-ACCESSOR MEMBER-SPEC NAME PKG RUNTIME-INDEX)  macros.lisp
 - - (%PARSE-CT-LITERAL VALUE)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
+
+- (%MV-SOURCE-ACCESS CANON)  analysis/structs.lisp
+- - (%MV-SOURCE-HEAD CANON)  analysis/structs.lisp [See above]
 
 - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp
 
@@ -758,17 +761,15 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%MV-PARSE-KWARGS KWARG-LIST)  analysis/structs.lisp
 - - (%MV-EVAL-INTEGER FORM)  analysis/structs.lisp
 - - (%MV-SOURCE-ADDR CANON)  analysis/structs.lisp [See above]
-- - (%MV-SOURCE-ACCESS CANON)  analysis/structs.lisp
-- - - (%MV-SOURCE-HEAD CANON)  analysis/structs.lisp [See above]
 - - (%MV-CHECK-RESTRICTIONS OP SRC-CANON NEW-ELEM LOCATION)  analysis/structs.lisp
 - - - (%MV-SOURCE-ELEM CANON)  analysis/structs.lisp
 - - - (%MV-SOURCE-ALIGN CANON)  analysis/structs.lisp
 - - - - (%MV-SOURCE-HEAD CANON)  analysis/structs.lisp [See above]
 - - - (%MV-IS-STRUCT-ELEM ELEM-TYPE)  analysis/structs.lisp
-- - (%MV-RESULT-CELL-TYPE NEW-ELEM ADDR ACCESS)  analysis/structs.lisp
+- - (%MV-RESULT-CELL-TYPE NEW-ELEM ADDR)  analysis/structs.lisp
 - - (%MV-SOURCE-ALIGN CANON)  analysis/structs.lisp [See above]
 - - (%MV-RESULT-ALIGN SRC-ALIGN EXPLICIT-STRIDES-P COL-MAJOR-P)  analysis/structs.lisp
-- - (%MV-RESULT-TENSOR-TYPE NEW-ELEM RANK ADDR ACCESS ALIGN &OPTIONAL (CT LAST))  analysis/structs.lisp
+- - (%MV-RESULT-TENSOR-TYPE NEW-ELEM RANK ADDR ALIGN &OPTIONAL (CT LAST))  analysis/structs.lisp
 - - (%MV-EVAL-LIST FORM)  analysis/structs.lisp
 - - (%MV-COL-MAJOR-STRIDES EXTENTS)  analysis/structs.lisp
 - - (%MV-ROW-MAJOR-STRIDES EXTENTS)  analysis/structs.lisp [See above]

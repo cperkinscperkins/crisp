@@ -3,7 +3,7 @@
 ;; Tests atomic-dec! — atomically decrements by 1, returns old value.
 ;; Implemented as atomicrmw sub with delta=1.
 
-(def-type counter-vec (vector int :address-space :global :access :read-write))
+(def-type counter-vec (vector int :address-space :global))
 
 (def-function test-atomic-dec (v)
   (declare #'(counter-vec => int))

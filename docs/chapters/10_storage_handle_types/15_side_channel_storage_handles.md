@@ -12,7 +12,7 @@ the correct allocation size.
 
 Each invocation must be countable by the compiler. This means they cannot appear in loops. 
 
-The invocations take a type expression as their first argument. The "new" Storage Hnadle will have the same type as the source, except that its `:access` may be changed to `:read-write` if the original source was only `:readable` or `:read-only`.   If an existing Storage Handle VALUE is
+The invocations take a type expression as their first argument.  If an existing Storage Handle VALUE is
 used as the type expression, then the size will be set to be the same. This can be very handy, because if that value originates as 
 a kernel argument, then the example hoisting code will specify that the size should match. 
 
@@ -28,35 +28,32 @@ which allows you to state its intended size and purpose.
 ### make-scratch-XXXX
 ```
 ;; cells
-(make-scratch-cell element-type  &key address-space  access name msg)
-(make-scratch-cell cell-type  &key address-space  access name msg)
+(make-scratch-cell element-type  &key address-space  name msg)
+(make-scratch-cell cell-type  &key address-space  name msg)
 
 ;; vectors
-(make-scratch-vector element-type sizeExpression &key address-space align access name msg)
-(make-scratch-vector vector-type sizeExpression &key address-space align access name msg)
+(make-scratch-vector element-type sizeExpression &key address-space align name msg)
+(make-scratch-vector vector-type sizeExpression &key address-space align name msg)
 
 ;; soa-vectors
-(make-scratch-soa-vector struct-type sizeExpression &key address-space align access name msg)
-(make-scratch-soa-vector soa-vector-type sizeExpression &key address-space align access name msg)
+(make-scratch-soa-vector struct-type sizeExpression &key address-space align name msg)
+(make-scratch-soa-vector soa-vector-type sizeExpression &key address-space align name msg)
 
 ;; matrices
-(make-scratch-matrix element-type sizeExpression &key strides address-space align access name msg)
-(make-scratch-matrix element-type sizeExpression &key (major :row) address-space align access name msg)
-(make-scratch-matrix matrix-type sizeExpression &key address-space align access name msg)
+(make-scratch-matrix element-type sizeExpression &key strides address-space align name msg)
+(make-scratch-matrix element-type sizeExpression &key (major :row) address-space align name msg)
+(make-scratch-matrix matrix-type sizeExpression &key address-space align name msg)
 
 ;; tensors
-(make-scratch-tensor element-type sizeExpression  &key strides address-space align access name msg)
-(make-scratch-tensor tensor-type sizeExpression &key address-space align access name msg)
+(make-scratch-tensor element-type sizeExpression  &key strides address-space align name msg)
+(make-scratch-tensor tensor-type sizeExpression &key address-space align name msg)
 ```
 
 The `make-scratch-XXXX` routines create "scratch" side-channel memory Storage Handles. 
 
-Scratch memory defaults to `:local` address space,  `:read-write` access and `:compact` alignment, 
+Scratch memory defaults to `:local` address space, `:compact` alignment, and `:last` contiguous term,
 but the defaults can be overridden by either using the `&key` arguments to the `make-scratch-XXXX` function
 or by using the second creation function of the pair that uses a Storage Handle type argument.
-
-Note that `:access` is NOT set by a Storage Handle type argument. It is always set to `:read-write` unless 
-directly overridden with the `:access` key.
 
 
 #### `sizeExpression`
@@ -212,8 +209,8 @@ In the example below, this function, if called by a kernel, would cause two addi
 be hoisted, plus a pointer to a unsigned long array.  
 
 ```
-(def-type float-vec (vector float :align :compact :address-space :global :access :read-only))
-(def-type ulong-vec (vector ulong :align :compact :address-space :global :access :writeable))
+(def-type float-vec (vector float :align :compact :address-space :global))
+(def-type ulong-vec (vector ulong :align :compact :address-space :global))
 
 ;; -- calc-final-result --
 (def-grid-function calc-final-result (x y &out A)

@@ -13,7 +13,7 @@
 ;;       kernel entry point parameter (only structs/scalars/pointers are valid in OpenCL SPIR-V).
 ;;       The generated C++ host code is correct; this is a compiler-level SPIR-V issue.
 
-(def-type out-c (cell long :address-space :global :access :read-write))
+(def-type out-c (cell long :address-space :global))
 
 (def-kernel arr_at_boundary_hoist_k (arr &out c)
     (declare forward-only #'((array long 4) &out out-c))

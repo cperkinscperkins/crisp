@@ -16,7 +16,7 @@
 ;; fun-C is the originator.  fun-B and kernel_A are carriers.
 ;; fun-D and fun-E receive sv explicitly as a normal argument.
 
-(def-type scratch-int-vec (vector int :address-space :local :access :read-write :align :compact))
+(def-type scratch-int-vec (vector int :address-space :local :align :compact))
 
 (def-function fun-E (sv n)
     (declare #'(scratch-int-vec int => int))

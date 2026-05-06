@@ -4,7 +4,6 @@
 Storage Handles are completely typed by 
 - type of their element
 - `address-space` (which is one of `:global` `:local` `:private` `:constant`)
-- `access` (which is one of `:read-only` `:write-only` `:read-write` `:writable` `:readable`)
 - `align` (one of `:strided` or `:compact` or `:compact-offset`)  NOTE: `align` is not needed by the `cell` type.
 - `contiguous-term` (one of `:first` or `:last`.  Defaults to `:last` if not provided)
 
@@ -37,7 +36,7 @@ specifier. Whenever the element-type is provided, the number of dimensions must 
 
 Example: `(vector float)`
 This example simply specifies that the value or parameter is a `vector` 
-with a `float` element type. It does not specify any particular alignment, address space, access, or size.
+with a `float` element type. It does not specify any particular alignment, address space, or size.
 
 Note that for the `cell` type, this is the minimum information needed to perform element access (`~`).
 
@@ -46,18 +45,18 @@ Note that for the `cell` type, this is the minimum information needed to perform
 For the most flexibility, keys can be used.
 ```
 ;; for cell
-(cell <element-type> &key address-space access)
+(cell <element-type> &key address-space)
 
 ;; for vector and matrix
-(XXXX <element-type> &key align address-space access (contiguous-term :last))
+(XXXX <element-type> &key align address-space (contiguous-term :last))
 
 ;; for tensor
-(tensor <element-type> NumDims &key align address-space access (contiguous-term :last))
+(tensor <element-type> NumDims &key align address-space (contiguous-term :last))
 ```
 
 
 
-Example: `(vector long :access :writeable)`  This specifies that some vector of longs is writeable. 
+Example: `(vector long)`  This specifies that some vector of longs is writeable. 
 It could be of any address space or alignment.
 
 Example: `(tensor float 4)`  This specifies that we have a hypercube of floats, but nothing else is known about it. 
@@ -68,25 +67,16 @@ Example: `(tensor float 4)`  This specifies that we have a hypercube of floats, 
 The element type of a Storage Hnadle must be an element of a fixed size known at compile time.
 It cannot be the type of a function. It cannot be a `def-record`.  Nor can it be a `storage` entity.
 
-### Access
-The enumeration for access has five different choices in Crisp:
-- `:read-only`
-- `:write-only`
-- `:read-write`
-- `:readable` 
-- `:writable`
-
-But note that the last two are not available in the hoisting example code for loading and enqueueing the kernel
 
 ### Usage
 
 ```
 ;; -- count --
 (def-function count (v)
-    (declare (return-type ulong) (type v (vector long :align :compact :address-space :global :access :read-only)))
+    (declare (return-type ulong) (type v (vector long :align :compact :address-space :global)))
  ...)
 
  ;; vectors can be compile-time fixed size
-(vector float :align :compact :address-space :local :access :read-write :extent (100))
+(vector float :align :compact :address-space :local :extent (100))
 ```
 

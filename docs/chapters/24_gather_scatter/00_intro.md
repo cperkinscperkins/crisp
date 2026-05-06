@@ -79,10 +79,10 @@ But the count in `count-vec` is correct regardless.
                                     &out result-index-vec ; Output: indices (ulong)
                                     &out result-count-vec) ; Output: final count (ulong, size 1)
     ;; Declare the function signature
-    (declare #((vector T :address-space :global :access :readable :align A) ; Input data vector
+    (declare #((vector T :address-space :global :align A) ; Input data vector
                (predicate-type T) ; Predicate function #(T => bool)
-               &out (vector ulong :address-space :global :access :writeable :align A) ; Output index vector
-               &out (vector ulong :address-space :global :access :writeable :align :compact :length 1) ; Output count vector
+               &out (vector ulong :address-space :global  :align A) ; Output index vector
+               &out (vector ulong :address-space :global  :align :compact :length 1) ; Output count vector
                => nil)
              ;; Declare optional local memory buffers for the scan algorithm
              &optional (local-flags (make-scratch-vector uint :match-workgroup-size))

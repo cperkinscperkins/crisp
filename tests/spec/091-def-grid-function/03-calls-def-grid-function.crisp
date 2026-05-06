@@ -2,7 +2,7 @@
 ;; TEST-WITH[--ir-target=spv]
 ;; def-grid-function can call another def-grid-function.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (def-grid-function set-value (v &out result)
   (declare #'(int &out out-t))

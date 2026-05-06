@@ -7,7 +7,7 @@
 ;; val is arg 0, so the harness assigns val = 0+42 = 42.
 ;; After the kernel, v[0] = 42: v = [42,1,2,3].
 
-(def-type vec-t (vector long :address-space :global :access :read-write :align :compact))
+(def-type vec-t (vector long :address-space :global :align :compact))
 
 (def-kernel vec_set_idx0 (val &out v)
     (declare #'(long vec-t => nil))

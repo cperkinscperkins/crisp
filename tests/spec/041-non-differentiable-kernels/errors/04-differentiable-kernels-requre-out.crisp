@@ -7,5 +7,5 @@
 ;; and, of course, it compiles perfectly when --differentiate is NOT used.
 
 (def-kernel not_me (C) 
-  (declare #'((cell float :address-space :global :access :read-write) => nil))
+  (declare #'((cell float :address-space :global) => nil))
   (set! (~ C) 2.0))

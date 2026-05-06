@@ -6,7 +6,7 @@
 
 
 (with-template-type (T)
-    (def-type out-c (cell T :address-space :global :access :read-write))
+    (def-type out-c (cell T :address-space :global))
 
     (def-function store-7 (&out c)
         (declare #'(&out (out-c T) => nil))

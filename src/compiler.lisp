@@ -389,14 +389,11 @@ Returns modified IR text with metadata."
 
 
 
-
 (defun register-builtins ()
-  "Registers built-in types and templates.
-   Extended for 097-contiguous-term: tensor now has Ct (contiguity) as a 6th template param."
-  (log:info "Registering built-in structs (storage, cell, tensor)...")
+  "Registers built-in storage handle templates (storage, cell, tensor) and
+   their system-generated accessor functions.  Called by initialize-compiler."
+  (log:info "Registering built-in structs...")
 
-  ;; Clear brand-specific state that is NOT cleared by initialize-compiler.
-  (when (boundp '*parameterized-brand-names*) (clrhash *parameterized-brand-names*))
   (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
   (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
   (when (boundp '*brand-cache-last-function*) (setf *brand-cache-last-function* nil))
@@ -406,32 +403,28 @@ Returns modified IR text with metadata."
            (def-record storage
              (address (c-pointer :address-space Addr))
              (byte-size ulong)
-             (address-space address-space :c-t Addr)
-             (access access :c-t :read-write))))
+             (address-space address-space :c-t Addr))))
 
   ;; CELL: opaque handle to a storage slice.
-  (eval '(with-template-type ((To T) (Addr address-space :global) (Acc access :read-write))
+  (eval '(with-template-type ((To T) (Addr address-space :global))
            (def-record cell
              (brand value-t To :subst :descendant :enforce :diff)
              (parent (storage Addr))
              (offset ulong)
              (element-type type-spec :c-t To)
-             (address-space address-space :c-t Addr)
-             (access access :c-t Acc))))
+             (address-space address-space :c-t Addr))))
 
   ;; bytes~ helper for cell.
-  (register-template 'bytes~ '(To (Addr address-space :global) (Acc access :read-write)) nil
+  (register-template 'bytes~ '(To (Addr address-space :global)) nil
     '(def-function bytes~ (c)
-       (declare (function ((cell To Addr Acc) => ulong)))
+       (declare (function ((cell To Addr) => ulong)))
        (declare (crisp-system-generated))
        (return (sizeof To)))
-    '((cell To Addr Acc) => ulong))
+    '((cell To Addr) => ulong))
 
   ;; TENSOR: N-dimensional strided view over a storage handle.
-  ;; Ct is the contiguous-term compile-time property (:last = row-major, :first = col-major).
   (eval '(with-template-type ((To T) (N integer 1) (Addr address-space :global)
-                               (Acc access :read-write) (Aln align :compact)
-                               (Ct contiguity :last))
+                               (Aln align :compact) (Ct contiguity :last))
            (def-record tensor
              (brand value-t To :subst :descendant :enforce :diff)
              (parent  (storage Addr))
@@ -442,68 +435,63 @@ Returns modified IR text with metadata."
              (element-type      type-spec   :c-t To)
              (num-dims          ulong       :c-t N)
              (address-space     address-space :c-t Addr)
-             (access            access      :c-t Acc)
              (align             align       :c-t Aln)
              (contiguous-term   contiguity  :c-t Ct))))
 
   ;; bytes~ helper for tensor.
   (register-template 'bytes~
     '(To (N integer 1) (Addr address-space :global)
-      (Acc access :read-write) (Aln align :compact) (Ct contiguity :last)) nil
+      (Aln align :compact) (Ct contiguity :last)) nil
     '(def-function bytes~ (t1)
-       (declare (function ((tensor To N Addr Acc Aln Ct) => ulong)))
+       (declare (function ((tensor To N Addr Aln Ct) => ulong)))
        (declare (crisp-system-generated))
        (return (sizeof To)))
-    '((tensor To N Addr Acc Aln Ct) => ulong))
+    '((tensor To N Addr Aln Ct) => ulong))
 
   ;; num-rows — return extents[0] (height dimension) of a 2D tensor.
   (register-template 'num-rows
-    '(To (Addr address-space :global) (Acc access :read-write)
-      (Aln align :compact) (Ct contiguity :last))
+    '(To (Addr address-space :global) (Aln align :compact) (Ct contiguity :last))
     nil
     '(def-function num-rows (m)
-       (declare (function ((tensor To 2 Addr Acc Aln Ct) => ulong)))
+       (declare (function ((tensor To 2 Addr Aln Ct) => ulong)))
        (declare (crisp-system-generated))
        (return (~ (extents~ m) 0)))
-    '((tensor To 2 Addr Acc Aln Ct) => ulong))
+    '((tensor To 2 Addr Aln Ct) => ulong))
 
   ;; num-cols — return extents[1] (width dimension) of a 2D tensor.
   (register-template 'num-cols
-    '(To (Addr address-space :global) (Acc access :read-write)
-      (Aln align :compact) (Ct contiguity :last))
+    '(To (Addr address-space :global) (Aln align :compact) (Ct contiguity :last))
     nil
     '(def-function num-cols (m)
-       (declare (function ((tensor To 2 Addr Acc Aln Ct) => ulong)))
+       (declare (function ((tensor To 2 Addr Aln Ct) => ulong)))
        (declare (crisp-system-generated))
        (return (~ (extents~ m) 1)))
-    '((tensor To 2 Addr Acc Aln Ct) => ulong))
+    '((tensor To 2 Addr Aln Ct) => ulong))
 
   ;; get-layout — classify 2D tensor layout at runtime via stride inspection.
   (register-template 'get-layout
-    '(To (Addr address-space :global) (Acc access :read-write)
-      (Aln align :compact) (Ct contiguity :last))
+    '(To (Addr address-space :global) (Aln align :compact) (Ct contiguity :last))
     nil
     '(def-function get-layout (m)
-       (declare (function ((tensor To 2 Addr Acc Aln Ct) => int)))
+       (declare (function ((tensor To 2 Addr Aln Ct) => int)))
        (declare (crisp-system-generated))
        (if (= (~ (strides~ m) 1) 1ul)
            0
            (if (= (~ (strides~ m) 0) 1ul)
                1
                2)))
-    '((tensor To 2 Addr Acc Aln Ct) => int))
+    '((tensor To 2 Addr Aln Ct) => int))
 
   ;; contiguous-term~ — returns compile-time contiguity value for any tensor.
-  ;; When instantiated with Ct=:last, body becomes (return :last) → enum integer 0.
   (register-template 'contiguous-term~
     '(To (N integer 1) (Addr address-space :global)
-      (Acc access :read-write) (Aln align :compact) (Ct contiguity :last))
+      (Aln align :compact) (Ct contiguity :last))
     nil
     '(def-function contiguous-term~ (t1)
-       (declare (function ((tensor To N Addr Acc Aln Ct) => contiguity)))
+       (declare (function ((tensor To N Addr Aln Ct) => contiguity)))
        (declare (crisp-system-generated))
        (return Ct))
-    '((tensor To N Addr Acc Aln Ct) => contiguity))
+    '((tensor To N Addr Aln Ct) => contiguity))
 
   (log:info "Built-in structs registered."))
 

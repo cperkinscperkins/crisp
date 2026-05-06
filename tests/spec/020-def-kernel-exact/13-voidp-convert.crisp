@@ -1,7 +1,7 @@
 ;; Not sure this is an important test.
 ;; Just trying to dot i and cross t.
 
-(def-type out-c (cell long :address-space :global :access :read-write))
+(def-type out-c (cell long :address-space :global))
 
 (def-kernel-exact capture_ptr (byte-size-1 ptr-1 offset-1 
                                byte-size-2 ptr-2 offset-2)

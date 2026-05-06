@@ -5,7 +5,7 @@
 ;; make-scratch-vector is syntactically and semantically accepted
 ;; and returns the right type.
 
-(def-type local-float-vec (vector float :address-space :local :access :read-write :align :compact))
+(def-type local-float-vec (vector float :address-space :local :align :compact))
 
 ;; Phase 1: make-scratch-vector returned directly
 (def-function scratch-vec-direct ()
@@ -25,7 +25,7 @@
     sv))
 
 ;; Phase 4: scratch matrix (N=2 sugar)
-(def-type local-float-mat (matrix float :address-space :local :access :read-write :align :compact))
+(def-type local-float-mat (matrix float :address-space :local :align :compact))
 
 (def-function scratch-mat-bound ()
     (declare #'(=> local-float-mat))
@@ -33,7 +33,7 @@
     sm))
 
 ;; Phase 5: scratch tensor (general N)
-(def-type local-float-t3 (tensor float 3 :address-space :local :access :read-write :align :compact))
+(def-type local-float-t3 (tensor float 3 :address-space :local :align :compact))
 
 (def-function scratch-tensor-bound ()
     (declare #'(=> local-float-t3))

@@ -3,7 +3,7 @@
 ;; Reading through the cell should now yield element [2] of the source.
 ;; This is a regression test: cell offset~ set! is marked done in scramble.md.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function test-set-cell-offset (v)
     (declare #'(int-vec-t => nil))

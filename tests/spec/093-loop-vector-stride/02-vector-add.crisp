@@ -4,7 +4,7 @@
 ;; Classic vector_add using loop-vector-stride.
 ;; Each thread strides over A and writes A[i]+B[i] to C[i].
 
-(def-type vec-t (vector int :address-space :global :access :read-write :align :compact))
+(def-type vec-t (vector int :address-space :global :align :compact))
 
 (def-kernel vector_add (A B &out C)
   (declare #'(vec-t vec-t &out vec-t => nil) forward-only)

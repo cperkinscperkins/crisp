@@ -10,8 +10,8 @@
 -->
 
 ```
-(def-type text-t (vector uchar :address-space :global :access :readable :align :compact))
-(def-type index-t (vector ulong :address-space :global :access :writeable :align :compact))
+(def-type text-t (vector uchar :address-space :global :align :compact))
+(def-type index-t (vector ulong :address-space :global :align :compact))
 
 ;; -- word_count --
 (def-kernel word_count (corpus word &out result counter)

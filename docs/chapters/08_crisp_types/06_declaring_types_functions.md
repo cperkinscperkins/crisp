@@ -87,7 +87,7 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
 
 ;; J - &out -- write-only-vectors
 (def-grid-function vector-add (A B &out C)
-   (declare #( v-type v-type &out (v-type :write-only)))
+   (declare #( v-type v-type &out v-type))
     ...)
 ```
 

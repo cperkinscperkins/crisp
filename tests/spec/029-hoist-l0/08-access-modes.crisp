@@ -3,8 +3,8 @@
 ;; TEST-HOIST[L0]: validate-l0-compile-only
 
 (def-kernel access_test (ro rw &out wo)
-  (declare (type ro (cell int :address-space :global :access :read-only))
-           (type wo (cell int :address-space :global :access :write-only))
-           (type rw (cell int :address-space :global :access :read-write)))
+  (declare (type ro (cell int :address-space :global))
+           (type wo (cell int :address-space :global))
+           (type rw (cell int :address-space :global)))
   (set! (~ wo) (+ (~ ro) (~ rw))))
 

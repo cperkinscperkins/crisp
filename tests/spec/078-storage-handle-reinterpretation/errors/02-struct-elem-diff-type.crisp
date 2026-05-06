@@ -7,7 +7,7 @@
   (x int)
   (y int))
 
-(def-type struct-vec-t (vector point-t :align :compact :address-space :global :access :read-write))
+(def-type struct-vec-t (vector point-t :align :compact :address-space :global))
 
 (def-function test-struct-elem-diff-type (v)
     (declare #'(struct-vec-t => int))

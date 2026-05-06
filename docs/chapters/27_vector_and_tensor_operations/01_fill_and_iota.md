@@ -16,7 +16,7 @@ Possible Implementation
   (declare (value-is A #'is-alignment?))
 
   (def-grid-function fill (someVec someValue)
-    (declare #'((vector T :align A :address-space :global :access :read-write) T))
+    (declare #'((vector T :align A :address-space :global) T))
     (loop-vector-stride someVec (i)
       (set! (~ someVec i) someValue))))
 
@@ -26,7 +26,7 @@ Possible Implementation
           (type-is T #'is-scalar?))
 
   (def-grid-function iota (someVec)
-    (declare #'((vector T :align A :address-space :global :access :read-write)))
+    (declare #'((vector T :align A :address-space :global)))
     (loop-vector-stride someVec (i)
       (set! (~ someVec i) (to T i))))) ;; <-- not supposed to be (to T ...)
 ```

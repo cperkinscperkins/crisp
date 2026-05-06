@@ -3,7 +3,7 @@
 ;;
 ;; Metadata: (global-size :derive-from (n) :strategy :strided).
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel global_strided (n &out result)
     (declare (type n ulong)

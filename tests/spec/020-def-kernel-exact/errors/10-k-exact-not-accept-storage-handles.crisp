@@ -8,6 +8,6 @@
 ;; or def-record or def-rec-vec as arguments.
 
 (def-kernel-exact bad_company (c)
-    (declare (type c (cell int :address-space :global :access :read-write)))
+    (declare (type c (cell int :address-space :global)))
     (let ((v (~ c)))
         (set! (~ c) (+ v 1))))

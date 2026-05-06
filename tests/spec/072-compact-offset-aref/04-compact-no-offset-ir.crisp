@@ -6,7 +6,7 @@
 ;; The 071 validator only checked for absence of stride mul; this test additionally
 ;; checks that the offset field (field index 1 of the tensor struct) is not loaded.
 
-(def-type cv-t (vector long :address-space :global :access :read-write :align :compact))
+(def-type cv-t (vector long :address-space :global :align :compact))
 
 (def-kernel compact_vec_get_no_offset (i v)
     (declare #'(long cv-t => nil))

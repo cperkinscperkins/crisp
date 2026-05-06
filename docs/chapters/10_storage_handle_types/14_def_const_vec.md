@@ -46,7 +46,7 @@ refer to an earlier `def-const-vec` .  The requirement is that the named const v
 clause MUST have been defined earlier in the translation unit. 
 
 ### Type Function
-CRISP also has two type functions for `:constant :read-only` vectors returned by `const-vec`
+CRISP also has two type functions for `:constant` vectors returned by `const-vec`
 `(const-vec <element-type> <align> &optional length)` 
 and
 `(const-soa-vec <element-type> <align> &optional length)`

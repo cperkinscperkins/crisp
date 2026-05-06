@@ -295,30 +295,27 @@
 
 
 
+
 (defun %incomplete-storage-handle-p (type-spec)
-  "Returns T if the type-spec is a storage handle but is missing explicit required keys
-   (address-space, access). Handles both the cell 4-tuple and tensor 6-tuple canonical forms.
-   A fully-expanded tensor spec (tensor elem N addr acc aln) -- 5 args after head -- is complete."
+  "Returns T if the type-spec is a storage handle but is missing :address-space.
+   Canonical 6-tuple (tensor elem N addr aln ct) and 3-tuple (cell elem addr) are complete."
   (let ((resolved (%resolve-alias-strict type-spec)))
     (when (and (consp resolved) (%storage-handle-type-p resolved))
       (let* ((base (first resolved))
              (args (rest resolved)))
         (cond
-          ;; Tensor fully expanded: 5 args (elem N addr acc aln) -> complete.
-          ;; This also covers vector and matrix after sugar expansion (both become tensor).
-          ((and (symbolp base)
-                (string-equal (symbol-name base) "TENSOR")
-                (= (length args) 5))
-           nil)
-          ;; Cell/original: key-value form or 3-arg positional form.
+          ;; Tensor: only complete when exactly 5 positional args OR :address-space keyword present
+          ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+           (cond
+             ((= (length args) 5) nil)           ; (elem N addr aln ct): complete
+             ((member :address-space args) nil)  ; keyword form: complete
+             (t t)))                             ; (elem N) or any other form: INCOMPLETE
+          ;; CELL/VECTOR/MATRIX: key-value form or 2+ positional args = complete
           (t
-           (let ((is-kw (or (member :address-space args) (member :access args))))
+           (let ((is-kw (member :address-space args)))
              (cond
-               (is-kw
-                (let ((has-addr (member :address-space args))
-                      (has-acc  (member :access args)))
-                  (not (and has-addr has-acc))))
-               ((= (length args) 3) nil)
+               (is-kw nil)
+               ((>= (length args) 2) nil)
                (t t)))))))))
 
 (defun %explode-kernel-args (params signature)
@@ -456,13 +453,14 @@
     type-map))
 
 
+
 (defun %validate-kernel-parameters (params type-map name)
   "Helper: Validates that kernel parameters are complete, not voidp,
    and that records do not appear in &out position."
   (dolist (p params)
     (let ((t-spec (gethash p type-map)))
       (when (and t-spec (%incomplete-storage-handle-p t-spec))
-            (error "def-kernel parameter '~a' has incomplete storage handle type ~a. Kernels require fully specified types (e.g. specify :address-space and :access)."
+            (error "def-kernel parameter '~a' has incomplete storage handle type ~a. Kernels require fully specified types (e.g. specify :address-space)."
               p t-spec))))
 
   ;; Build signature types
@@ -487,10 +485,10 @@
     (loop for t-spec in signature-types
           do (when (incomplete-type-p t-spec)
                    (error "Kernel parameters must be COMPLETE types. Found incomplete: ~a" t-spec))
-            (let ((canon (canonicalize-type-specifier t-spec)))
-              (when (or (eq canon 'voidp)
-                        (and (symbolp canon) (string-equal (symbol-name canon) "VOIDP")))
-                    (error "Kernel parameters cannot be of type 'voidp'. Use a specific pointer type with address space or a storage handle."))))
+             (let ((canon (canonicalize-type-specifier t-spec)))
+               (when (or (eq canon 'voidp)
+                         (and (symbolp canon) (string-equal (symbol-name canon) "VOIDP")))
+                 (error "Kernel parameters cannot be of type 'voidp'. Use a specific pointer type with address space or a storage handle."))))
 
     ;; Records must NOT appear in &out position
     (let ((sig-ptr (copy-list signature-types)))

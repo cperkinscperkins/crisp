@@ -6,7 +6,7 @@
 ;;
 ;; Hoist: :tiled 16x16 => workgroup=(16,16,1), groupCount=(ceil(w/16), ceil(h/16), 1).
 
-(def-type result-t (cell int :address-space :global :access :read-write))
+(def-type result-t (cell int :address-space :global))
 
 (def-kernel hoist_tiled (width height &out result)
     (declare (type width height ulong)

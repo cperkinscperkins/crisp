@@ -7,7 +7,7 @@
 ;;     :extents  (e0 e1 e2)
 ;;     :length   len)
 
-(def-type vol-t (tensor float 3 :address-space :global :access :read-write :align :compact))
+(def-type vol-t (tensor float 3 :address-space :global :align :compact))
 
 (def-kernel-exact vol_set_origin
     (byte-size ptr o0 o1 o2 s0 s1 s2 e0 e1 e2 length val)

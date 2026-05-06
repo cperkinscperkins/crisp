@@ -3,10 +3,10 @@
 ;; Verified by passing the result to a function that only accepts :strided vectors.
 ;; Source matrix is compact (the harder case).
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
 
 (def-function require-strided-vec (c)
-  (declare #'((vector int :align :strided :address-space :global :access :read-write) => ulong))
+  (declare #'((vector int :align :strided :address-space :global) => ulong))
   (length~ c))
 
 (def-function test-col-is-strided (v)

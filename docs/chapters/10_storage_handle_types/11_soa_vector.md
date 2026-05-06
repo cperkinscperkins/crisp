@@ -57,7 +57,7 @@ Example
 ```
 (def-struct point (x long) (y long))
 
-(let ((sv      (make-soa-vector point :address-space :local :access :read-write :align :compact :length 20))
+(let ((sv      (make-soa-vector point :address-space :local :align :compact :length 20))
       (y       (y~ sv 9))
       (x-vec   (x~ sv)))
     ...)
@@ -101,7 +101,7 @@ This rule is in place to prevent overly complex nested SoA layouts and to ensure
 ### Defining 
 
 ```
-(soa-vector element-type &key address-space access align length)
+(soa-vector element-type &key address-space align length)
 ```
 
 ### Creating

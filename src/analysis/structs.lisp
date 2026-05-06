@@ -284,13 +284,13 @@
                 (loop for k from 1 below (length index-forms) collect k)
                 :initial-value (dim-term 0)))))
 
-          
+     
+
 
 (defun %get-tensor-align (type)
   "Extracts the :align keyword from a tensor type specifier.
-   TYPE may be a list form (tensor elem N addr access align) or a
-   mangled symbol TENSOR_ELEM_N_ADDR_ACCESS_ALIGN.
-   Returns :compact, :compact-offset, :strided, or NIL (unknown / template)."
+   New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth type).
+   Handles both list form and mangled symbol."
   (labels ((coerce-aln (raw)
              (cond
                ((eq raw :compact)         :compact)
@@ -303,12 +303,12 @@
     (cond
       ((and (listp type) (symbolp (first type))
             (string-equal (symbol-name (first type)) "TENSOR"))
-       (coerce-aln (sixth type)))
+       (coerce-aln (fifth type)))
       ((symbolp type)
        (let ((unmangled (unmangle-template-struct-name type)))
          (when (and (consp unmangled) (symbolp (first unmangled))
                     (string-equal (symbol-name (first unmangled)) "TENSOR"))
-           (coerce-aln (sixth unmangled)))))
+           (coerce-aln (fifth unmangled)))))
       (t nil))))
 
 
@@ -455,6 +455,7 @@
 
 
 
+
 (defun analyze-set!-expression (expr env context location)
   "Analyzes a (set! target value) expression.
    Enforces struct and array immutability at kernel boundary."
@@ -501,11 +502,16 @@
                                                 (function-signature-parameters sig))))
                                      signatures)))
 
-         ;; Try template instantiation if no direct match
+         ;; Try template instantiation if no direct match.  GUARD:
+         ;; Skip when template-op IS the bare op AND op has an expression
+         ;; analyzer.  Sub-case 2b will route this through analyze-aref-expression
+         ;; in :write mode, which is the correct path for accessor-style ops.
          (unless match
            (let ((template-op (if (gethash full-setter-name *template-registry*)
                                   full-setter-name op)))
-             (when (gethash template-op *template-registry*)
+             (when (and (gethash template-op *template-registry*)
+                        (not (and (eq template-op op)
+                                  (gethash op *expression-analyzers*))))
                (ensure-template-instantiation
                 template-op all-arg-types
                 (lambda (f l) (declare (ignore l)) (eval f)))
@@ -733,35 +739,21 @@
     (t nil)))
 
 
+
 (defun %scratch-tensor-canonical-spec (op args)
-  "Resolves the type arguments of a make-scratch-{vector,matrix,tensor} form
-   to a canonical (tensor elem N addr access align) spec.
-
-   OP is the operator symbol.  ARGS is the rest of the form (everything after
-   the operator).  Returns the canonical spec or NIL if resolution fails.
-
-   Dual-syntax disambiguation for make-scratch-tensor:
-     - If the second positional arg (after the first type-ish arg) is an integer
-       AND the first arg is NOT a registered tensor/vector/matrix type alias,
-       we treat it as Form 1: (elem-type N sizeExpr ...).
-     - Otherwise Form 2: (tensor-type sizeExpr ...)."
+  "Resolves type arguments of a make-scratch-{vector,matrix,tensor} form
+   to a canonical (tensor elem N addr align ct) spec."
   (unless args
     (return-from %scratch-tensor-canonical-spec nil))
   (let* ((op-name (symbol-name op))
-         ;; Implicit N from the operator name for vector/matrix
          (implicit-n (cond ((string-equal op-name "MAKE-SCRATCH-VECTOR") 1)
                            ((string-equal op-name "MAKE-SCRATCH-MATRIX") 2)
-                           (t nil))) ; tensor: N from args
+                           (t nil)))
          (arg1 (first args)))
 
     (cond
-      ;; ── make-scratch-vector / make-scratch-matrix ─────────────────────────
-      ;; N is fixed by the operator; arg1 is elem-type or tensor-type alias.
       (implicit-n
        (let* ((is-tensor-alias
-               ;; A def-type alias is in *crisp-type-aliases* (not *crisp-types*),
-               ;; so we check resolve-type-alias directly — it returns the original
-               ;; spec list for aliases whose value is a storage-handle type.
                (and (symbolp arg1)
                     (let ((resolved (resolve-type-alias arg1)))
                       (and (consp resolved)
@@ -770,23 +762,17 @@
                                    :test #'string-equal)))))
               (raw-spec
                (if is-tensor-alias
-                   ;; Form 2: use the alias directly
                    (resolve-type-alias arg1)
-                   ;; Form 1: wrap bare element type
                    (list 'tensor arg1 implicit-n))))
          (expand-storage-handle-type-specifier
-          ;; Normalize: force address-space :local (scratch default) if not set
           (if (and (consp raw-spec)
                    (string-equal (symbol-name (first raw-spec)) "TENSOR")
-                   (= (length raw-spec) 3))   ; only elem + N, no addr/access/align yet
-              (append raw-spec '(:address-space :local :access :read-write :align :compact))
+                   (= (length raw-spec) 3))
+              (append raw-spec '(:address-space :local :align :compact))
               raw-spec))))
 
-      ;; ── make-scratch-tensor ───────────────────────────────────────────────
-      ;; Disambiguate Form 1 vs Form 2 by inspecting the second positional arg.
       (t
        (let* ((arg2 (second args))
-              ;; Form 1 if arg2 is an integer AND arg1 is not a tensor type alias
               (is-tensor-alias
                (and (symbolp arg1)
                     (let ((resolved (resolve-type-alias arg1)))
@@ -797,17 +783,15 @@
               (form-1-p (and (integerp arg2) (not is-tensor-alias)))
               (raw-spec
                (if form-1-p
-                   ;; Form 1: (make-scratch-tensor elem N sizeExpr ...)
                    (list 'tensor arg1 arg2)
-                   ;; Form 2: (make-scratch-tensor tensor-type sizeExpr ...)
                    (if is-tensor-alias
                        (resolve-type-alias arg1)
-                       (list 'tensor arg1)))))     ; degenerate: will error at expand
+                       (list 'tensor arg1)))))
          (expand-storage-handle-type-specifier
           (if (and (consp raw-spec)
                    (string-equal (symbol-name (first raw-spec)) "TENSOR")
                    (= (length raw-spec) 3))
-              (append raw-spec '(:address-space :local :access :read-write :align :compact))
+              (append raw-spec '(:address-space :local :align :compact))
               raw-spec)))))))
 
 (defun %register-scratch-tensor-implicit (op args)
@@ -907,10 +891,13 @@
         ((eq (%mv-source-head canon) :tensor)  (fifth canon))
         (t :read-write)))
 
+
+
 (defun %mv-source-align (canon)
-  "Return the :align keyword from a canonical storage handle type (tensors only)."
+  "Return the :align keyword from a canonical storage handle type (tensors only).
+   New 6-tuple (tensor elem N addr aln ct): align at position 4 = (fifth canon)."
   (when (eq (%mv-source-head canon) :tensor)
-    (sixth canon)))
+    (fifth canon)))
 
 (defun %mv-is-struct-elem (elem-type)
   "Returns T if ELEM-TYPE is a registered def-struct type."
@@ -968,20 +955,15 @@
       :strided
       (or src-align :compact)))
 
-(defun %mv-result-cell-type (new-elem addr access)
-  "Build canonical cell result type."
-  `(cell ,new-elem ,addr ,access))
-
-#|
-(defun %mv-result-tensor-type (new-elem rank addr access align)
-  "Build canonical tensor result type."
-  `(tensor ,new-elem ,rank ,addr ,access ,align))
-  |#
 
 
-(defun %mv-result-tensor-type (new-elem rank addr access align &optional (ct :last))
-  "Build canonical tensor result type (7-tuple)."
-  `(tensor ,new-elem ,rank ,addr ,access ,align ,ct))
+(defun %mv-result-cell-type (new-elem addr)
+  "Build canonical cell result type: (cell elem addr)."
+  `(cell ,new-elem ,addr))
+
+(defun %mv-result-tensor-type (new-elem rank addr align &optional (ct :last))
+  "Build canonical tensor result type: (tensor elem rank addr align ct)."
+  `(tensor ,new-elem ,rank ,addr ,align ,ct))
 
 ;;; ── compute strides list (compile-time) ──────────────────────
 
@@ -1004,8 +986,7 @@
 ;;; ── main analyzer ────────────────────────────────────────────
 
 (defun analyze-make-view-expression (expr env context location)
-  "Analyzes make-cell / make-vector / make-matrix / make-tensor.
-   Extended for 097-contiguous-term: make-matrix passes ct=:first for :major :col."
+  "Analyzes make-cell / make-vector / make-matrix / make-tensor."
   (let* ((op       (first expr))
          (args     (rest expr))
          (src-expr (first args))
@@ -1024,11 +1005,10 @@
        (let* ((new-elem  (second args))
               (kwargs    (%mv-parse-kwargs (nthcdr 2 args)))
               (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
-              (addr      (%mv-source-addr src-canon))
-              (access    (%mv-source-access src-canon)))
+              (addr      (%mv-source-addr src-canon)))
          (%mv-check-restrictions op src-canon new-elem location)
          (make-semantic-make-view
-          :type        (%mv-result-cell-type new-elem addr access)
+          :type        (%mv-result-cell-type new-elem addr)
           :source-node src-node
           :element-type new-elem
           :rank        0
@@ -1045,12 +1025,11 @@
               (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
               (length    (%mv-eval-integer (getf kwargs :length)))
               (addr      (%mv-source-addr src-canon))
-              (access    (%mv-source-access src-canon))
               (src-align (%mv-source-align src-canon))
               (align     (%mv-result-align src-align nil nil)))
          (%mv-check-restrictions op src-canon new-elem location)
          (make-semantic-make-view
-          :type        (%mv-result-tensor-type new-elem 1 addr access align :last)
+          :type        (%mv-result-tensor-type new-elem 1 addr align :last)
           :source-node src-node
           :element-type new-elem
           :rank        1
@@ -1079,7 +1058,6 @@
                      (t     (%mv-row-major-strides extents))))
               (length    (* width height))
               (addr      (%mv-source-addr src-canon))
-              (access    (%mv-source-access src-canon))
               (src-align (%mv-source-align src-canon))
               (align     (%mv-result-align src-align explicit-strides-p col-p))
               (ct        (if col-p :first :last)))
@@ -1087,7 +1065,7 @@
            (error "make-matrix: width and height must be compile-time integer literals"))
          (%mv-check-restrictions op src-canon new-elem location)
          (make-semantic-make-view
-          :type        (%mv-result-tensor-type new-elem 2 addr access align ct)
+          :type        (%mv-result-tensor-type new-elem 2 addr align ct)
           :source-node src-node
           :element-type new-elem
           :rank        2
@@ -1112,14 +1090,13 @@
                                   (when extents (%mv-row-major-strides extents))))
               (length       (when extents (reduce #'* extents)))
               (addr         (%mv-source-addr src-canon))
-              (access       (%mv-source-access src-canon))
               (src-align    (%mv-source-align src-canon))
               (align        (%mv-result-align src-align explicit-strides-p nil)))
          (unless extents
            (error "make-tensor: extents list must be a compile-time literal list like '(2 3 4)"))
          (%mv-check-restrictions op src-canon new-elem location)
          (make-semantic-make-view
-          :type        (%mv-result-tensor-type new-elem rank addr access align :last)
+          :type        (%mv-result-tensor-type new-elem rank addr align :last)
           :source-node src-node
           :element-type new-elem
           :rank        rank
@@ -1194,15 +1171,16 @@
 
 
 (defun %get-tensor-ct (canon)
-  "Extracts the :contiguous-term keyword (7th element, index 6) from a
-   canonical tensor type tuple, defaulting to :last when absent."
-  (if (and (listp canon) (>= (length canon) 7))
-      (nth 6 canon)
+  "Extracts the :contiguous-term keyword (6th element, index 5) from a
+   canonical tensor type 6-tuple, defaulting to :last when absent."
+  (if (and (listp canon) (>= (length canon) 6))
+      (nth 5 canon)
       :last))
 
+;; src/analysis/structs.lisp — transpose/col/row without access
 (defun analyze-transpose-expression (expr env context location)
   "Analyzes (transpose M) for 2D tensors.
-   Result type: (tensor elem 2 addr access :strided src-ct)."
+   Result type: (tensor elem 2 addr :strided src-ct)."
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error
            :message "transpose expects exactly 1 argument: (transpose matrix)"
@@ -1212,18 +1190,17 @@
          (canon    (%083-require-2d-tensor raw-type location))
          (elem     (second canon))
          (addr     (fourth canon))
-         (access   (fifth canon))
          (src-ct   (%get-tensor-ct canon)))
     (make-semantic-stride-view
      :op :transpose
      :source-node src-node
      :index-node nil
-     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 2 addr access :strided src-ct)
+     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 2 addr :strided src-ct)
      :source-location location)))
 
 (defun analyze-col-expression (expr env context location)
   "Analyzes (col index M) for 2D tensors.
-   Result type: (tensor elem 1 addr access :strided :last)."
+   Result type: (tensor elem 1 addr :strided :last)."
   (unless (= (length expr) 3)
     (error 'crisp-compiler-error
            :message "col expects exactly 2 arguments: (col index matrix)"
@@ -1233,19 +1210,17 @@
          (raw-type (semantic-node-type src-node))
          (canon    (%083-require-2d-tensor raw-type location))
          (elem     (second canon))
-         (addr     (fourth canon))
-         (access   (fifth canon)))
+         (addr     (fourth canon)))
     (make-semantic-stride-view
      :op :col
      :source-node src-node
      :index-node idx-node
-     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr access :strided :last)
+     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr :strided :last)
      :source-location location)))
 
-;; analyze-row-expression — 1D row result; :last (single dim, contiguity trivial)
 (defun analyze-row-expression (expr env context location)
   "Analyzes (row index M) for 2D tensors.
-   Result type: (tensor elem 1 addr access :strided :last)."
+   Result type: (tensor elem 1 addr :strided :last)."
   (unless (= (length expr) 3)
     (error 'crisp-compiler-error
            :message "row expects exactly 2 arguments: (row index matrix)"
@@ -1255,13 +1230,12 @@
          (raw-type (semantic-node-type src-node))
          (canon    (%083-require-2d-tensor raw-type location))
          (elem     (second canon))
-         (addr     (fourth canon))
-         (access   (fifth canon)))
+         (addr     (fourth canon)))
     (make-semantic-stride-view
      :op :row
      :source-node src-node
      :index-node idx-node
-     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr access :strided :last)
+     :type (list (find-symbol "TENSOR" :crisp.compiler) elem 1 addr :strided :last)
      :source-location location)))
 
 ;; src/analysis/structs.lisp

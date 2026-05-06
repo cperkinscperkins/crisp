@@ -3,7 +3,7 @@
 ;; get-total-threads is the total number of threads in the grid as a scalar.
 ;; Synthesized as the product of get-global-work-size across all 3 dimensions.
 
-(def-type out-t (cell ulong :address-space :global :access :read-write))
+(def-type out-t (cell ulong :address-space :global))
 
 (def-kernel test_get_total_threads (&out result)
   (declare #'(&out out-t))

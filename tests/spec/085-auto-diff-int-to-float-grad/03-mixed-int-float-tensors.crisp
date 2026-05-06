@@ -4,8 +4,8 @@
 ;; The integer tensor (indices) gets a float-typed _GRAD output but contributes
 ;; zero gradient — it plays no role in the backward walk.
 
-(def-type idx-vec    (vector int   :address-space :global :access :read-only  :align :compact))
-(def-type float-vec  (vector float :address-space :global :access :read-write :align :compact))
+(def-type idx-vec    (vector int   :address-space :global  :align :compact))
+(def-type float-vec  (vector float :address-space :global :align :compact))
 
 (def-kernel scale_add (indices weights &out out)
   (declare #'(idx-vec float-vec &out float-vec))

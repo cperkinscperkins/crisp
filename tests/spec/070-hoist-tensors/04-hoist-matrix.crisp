@@ -4,7 +4,7 @@
 ;; Validates that a kernel with a matrix (N=2) parameter hoists to compilable C++.
 ;; The generated C++ sets 10 kernel args: val(0) + 9 tensor slots for v.
 
-(def-type out-mat-t (matrix float :address-space :global :access :read-write :align :compact))
+(def-type out-mat-t (matrix float :address-space :global :align :compact))
 
 (def-kernel mat_set_elem (v val)
     (declare #'(out-mat-t float => nil))

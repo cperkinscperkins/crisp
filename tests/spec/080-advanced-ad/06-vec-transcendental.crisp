@@ -11,8 +11,8 @@
 ;; The backward IR must contain '@llvm.cos' (cos intrinsic) and 'fmul'
 ;; for the chain-rule multiply, plus GEP for indexed access.
 
-(def-type in-vec  (vector float :address-space :global :access :read-only  :align :compact))
-(def-type out-vec (vector float :address-space :global :access :read-write :align :compact))
+(def-type in-vec  (vector float :address-space :global  :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
 
 (def-kernel vec_sin (A idx &out C)
   (declare #'(in-vec ulong &out out-vec))

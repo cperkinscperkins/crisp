@@ -1,8 +1,8 @@
 ;; TEST-EXPECT: PASS
 ;; FAIL-WITH[--differentiate]: "message"
 
-(def-type in-ish (cell float :address-space :global :access :read-write))
-(def-type out-ish (cell float :address-space :global :access :write-only))
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
 
 (def-function some-operation (a b)
     (declare #'(float float => float))

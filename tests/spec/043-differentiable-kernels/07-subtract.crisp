@@ -1,7 +1,7 @@
 ;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-subtraction-chain-rule
 
-(def-type in-ish (cell float :address-space :global :access :read-only))
-(def-type out-ish (cell float :address-space :global :access :write-only))
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
 
 (def-kernel cell_sub (A B &out C)
   (declare #'(in-ish in-ish &out out-ish))

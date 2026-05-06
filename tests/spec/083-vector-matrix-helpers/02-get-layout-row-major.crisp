@@ -4,8 +4,8 @@
 ;; get-layout on a default (row-major) matrix returns :row-major.
 ;; Row-major: strides=[4,1] for a 3x4 matrix.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
-(def-type out-cell-t (cell int :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
+(def-type out-cell-t (cell int :address-space :global))
 
 (def-kernel test_get_layout_row (v &out out)
   (declare #'(int-vec-t &out out-cell-t => nil))

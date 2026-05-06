@@ -12,11 +12,11 @@ source .crisp files.  So each kernel will get its own .metacrisp file.
 |#
 
 (def-kernel k_one (c)
-    (declare (type c (cell float :address-space :global :access :read-write)))
+    (declare (type c (cell float :address-space :global)))
   (let ((f (~ c)))
     (set! (~ c) (+ f 1.0))))
 
 (def-kernel k_two (c)
-    (declare (type c (cell float :address-space :global :access :read-write)))
+    (declare (type c (cell float :address-space :global)))
   (let ((f (~ c)))
     (set! (~ c) (+ f 2.0))))

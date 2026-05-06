@@ -5,7 +5,7 @@
 ;; uses runtime stride values, same codepath as :compact.
 ;; The hoist harness always generates :compact example code regardless.
 
-(def-type strided-vec-t (vector long :address-space :global :access :read-write :align :strided))
+(def-type strided-vec-t (vector long :address-space :global :align :strided))
 
 (def-kernel vec_strided_read (v)
     (declare #'(strided-vec-t => nil))

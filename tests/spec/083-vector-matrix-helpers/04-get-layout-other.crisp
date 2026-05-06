@@ -3,8 +3,8 @@
 ;; HOIST-EXPECT: BUFFER out: 1
 ;; get-layout with non-standard strides '(2 2) returns :other-layout.
 
-(def-type int-vec-t (vector int :align :compact :address-space :global :access :read-write))
-(def-type out-cell-t (cell int :address-space :global :access :read-write))
+(def-type int-vec-t (vector int :align :compact :address-space :global))
+(def-type out-cell-t (cell int :address-space :global))
 
 (def-kernel test_get_layout_other (v &out out)
   (declare #'(int-vec-t &out out-cell-t => nil))

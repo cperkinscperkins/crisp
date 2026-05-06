@@ -6,7 +6,7 @@
 ;;   - Does NOT read the stride field
 ;; Tests the write (set!) path specifically.
 
-(def-type cov-t (vector long :address-space :global :access :read-write :align :compact-offset))
+(def-type cov-t (vector long :address-space :global :align :compact-offset))
 
 (def-kernel compact_offset_vec_set (i val v)
     (declare #'(long long cov-t => nil))

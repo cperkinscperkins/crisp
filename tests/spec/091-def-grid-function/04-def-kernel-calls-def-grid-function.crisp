@@ -2,7 +2,7 @@
 ;; TEST-WITH[--ir-target=spv]
 ;; def-kernel (dispatch context) can call a def-grid-function.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (def-grid-function zero-fill (&out result)
   (declare #'(&out out-t))

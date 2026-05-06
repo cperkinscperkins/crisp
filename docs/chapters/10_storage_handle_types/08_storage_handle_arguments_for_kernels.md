@@ -1,14 +1,14 @@
 ## Storage Handle Arguments for Kernels
 
 `def-kernel` is the definition for the kernel function. 
-And any Storage Handle in its parameter list MUST have its element-type, number or dimensions, align, address-space and access specified in
+And any Storage Handle in its parameter list MUST have its element-type, number or dimensions, align, and address-space specified in
 its type definition. Only the size can be unspecified. (And for `cell`, `align` is not needed.)
 The number of dimensions is (obviously) implicit for the `cell`, `vector` and `matrix` types.
 
 
 ```
-(def-type data-from-host-t (vector float :align :compact :address-space :global :access :read-only ))
-(def-type result-from-kernel-t (vector float :align :compact :address-space :global :access :write-only ))
+(def-type data-from-host-t (vector float :align :compact :address-space :global))
+(def-type result-from-kernel-t (vector float :align :compact :address-space :global))
 
 ;; -- my_kernel --
 (def-kernel my_kernel (in &out out)

@@ -2,7 +2,7 @@
 ;; dotimes limit must be an integer type.
 ;; A float limit is a type error.
 
-(def-type cell-t (cell float :address-space :global :access :read-write))
+(def-type cell-t (cell float :address-space :global))
 
 (def-kernel bad_limit (n &out result)
   (declare #'(float &out cell-t => nil))

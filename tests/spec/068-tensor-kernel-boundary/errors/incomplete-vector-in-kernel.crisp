@@ -1,5 +1,5 @@
 ;; CHECK-FAIL: "incomplete storage handle type"
-;; (vector int) is missing :address-space and :access.
+;; (vector int) is missing :address-space.
 ;; Valid at def-function boundaries (unneeded),
 ;; but kernels require all compile-time properties to be explicit.
 (def-kernel bad_kernel (v)

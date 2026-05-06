@@ -1,6 +1,6 @@
 ;; CHECK-FAIL: "Invalid :align value"
 ;; :std140 is not a valid :align option. Use :compact or :strided.
-(def-type bad-vec-t (vector float :address-space :global :access :read-write :align :std140))
+(def-type bad-vec-t (vector float :address-space :global :align :std140))
 
 (def-kernel bad_align_std140 (v)
     (declare #'(bad-vec-t => nil))

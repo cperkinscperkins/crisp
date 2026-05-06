@@ -2,7 +2,7 @@
 ;; TEST-WITH[--ir-target=spv]
 ;; A minimal def-grid-function compiles to LLVM IR like a regular function.
 
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type out-t (cell int :address-space :global))
 
 (def-grid-function zero-out (&out result)
   (declare #'(&out out-t))

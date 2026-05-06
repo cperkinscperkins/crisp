@@ -166,7 +166,7 @@ which is a string name that the compiler should give the kernel.
 (with-template-type (T)
 
    ;; -- happy_stance --
-   (def-kernel happy_stance (data:(vector T :address-space :global :access :read-write)
+   (def-kernel happy_stance (data:(vector T :address-space :global)
      ...)))
 
 (gen-happy_stance float "happy_stance_f")

@@ -19,5 +19,5 @@
 ;; 068/05-def-kernel-matrix). The IR optimization is the same either way.
 
 (def-function compact_mat_get (m row col)
-    (declare #'((matrix float :address-space :global :access :read-write :align :compact) long long => float))
+    (declare #'((matrix float :address-space :global :align :compact) long long => float))
   (~ m row col))

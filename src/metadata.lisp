@@ -395,9 +395,11 @@
 
 
 
+
 (defun generate-physical-signature (sig-or-params)
   "Generates the physical ABI signature from kernel parameters.
-   Records are flattened to primitive scalar entries."
+   Records are flattened to primitive scalar entries.
+   Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple."
   (let ((params (if (typep sig-or-params 'function-signature)
                     (append (function-signature-implicit-parameters sig-or-params)
                       (function-signature-parameters sig-or-params))
@@ -410,15 +412,12 @@
                       param)))
         (unless (and (symbolp type) (string-equal (symbol-name type) "&OUT"))
           (cond
-           ;; STORAGE: flatten to PTR + I64
            ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
                 (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
              (push (list current-index (strip-package-qualifiers '(c-pointer address-space global))) physical-args)
              (incf current-index)
              (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
              (incf current-index))
-
-           ;; CELL: ptr + size + offset
            ((%storage-handle-type-p type)
              (let* ((canonical (canonicalize-type-specifier type))
                     (base (if (consp canonical) (first canonical) canonical)))
@@ -435,8 +434,8 @@
                   (let* ((n (if (integerp (third canonical))
                                 (third canonical)
                                 (parse-integer (symbol-name (third canonical)))))
-                         (as (let ((found (member :address-space canonical)))
-                               (if found (second found) :global)))
+                         ;; 6-tuple: (tensor elem N ADDR aln ct) — addr positionally at index 3
+                         (as (or (fourth canonical) :global))
                          (ptr-type (strip-package-qualifiers `(c-pointer :address-space ,as))))
                     (push (list current-index ptr-type) physical-args) (incf current-index)
                     (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index)
@@ -450,14 +449,10 @@
                 (t
                   (push (list current-index (strip-package-qualifiers type)) physical-args)
                   (incf current-index)))))
-
-           ;; User-defined record: flatten to primitive fields
            ((%user-record-type-p type)
              (dolist (prim-type (%enumerate-physical-types type))
                (push (list current-index (strip-package-qualifiers prim-type)) physical-args)
                (incf current-index)))
-
-           ;; Scalar/other
            (t
              (push (list current-index (strip-package-qualifiers type)) physical-args)
              (incf current-index))))))
@@ -496,9 +491,10 @@
 
 
 
+
 (defun generate-declared-signature (sig &optional declared-params)
   "Generates the declared-signature plist for a kernel's metadata.
-   Handles user-defined records by using the corrected get-physical-width."
+   Omits :access — storage handles are always treated as read-write by hoist code."
   (let ((declared-args nil)
         (current-phys-index 0)
         (out-mode nil)
@@ -523,49 +519,39 @@
               (setf entry (append entry (list :direction (if out-mode :out :in))))
 
               (when (%storage-handle-type-p type)
-                    (let* ((canonical (canonicalize-type-specifier type))
-                           (base (if (consp canonical) (first canonical) canonical))
-                           (is-cell (and (symbolp base) (string-equal (symbol-name base) "CELL")))
-                           (is-tensor (and (symbolp base) (string-equal (symbol-name base) "TENSOR")))
-                           (as (if (and (consp canonical) is-cell (>= (length canonical) 3))
-                                   (nth 2 canonical)
-                                   (if (consp canonical)
-                                       (let ((found (member :address-space canonical)))
-                                         (if found (second found) :global))
-                                       :global)))
-                           (acc (if (and (consp canonical) is-cell (>= (length canonical) 4))
-                                    (nth 3 canonical)
-                                    (if (consp canonical)
-                                        (let ((found (member :access canonical)))
-                                          (if found (second found) :read-write))
-                                        :read-write))))
-                      (setf entry (append entry (list :address-space as :access acc)))
-                      (when is-tensor
-                        (let* ((n (if (integerp (third canonical))
-                                      (third canonical)
-                                      (parse-integer (symbol-name (third canonical)))))
-                               ;; Canonical tensor form is positional: (tensor T N addr acc aln)
-                               ;; :align is at index 5, not a key-value pair.
-                               (alg (or (nth 5 canonical) :compact)))
-                          (setf entry (append entry (list :rank n :align alg)))))))
+                (let* ((canonical (canonicalize-type-specifier type))
+                       (base (if (consp canonical) (first canonical) canonical))
+                       (is-cell   (and (symbolp base) (string-equal (symbol-name base) "CELL")))
+                       (is-tensor (and (symbolp base) (string-equal (symbol-name base) "TENSOR")))
+                       ;; CELL 3-tuple:   (cell elem ADDR)         — addr at index 2
+                       ;; TENSOR 6-tuple: (tensor elem N ADDR aln ct) — addr at index 3
+                       (as (if (and (consp canonical) is-cell (>= (length canonical) 3))
+                               (nth 2 canonical)
+                               (if (consp canonical)
+                                   (let ((found (member :address-space canonical)))
+                                     (if found (second found) :global))
+                                   :global))))
+                  (setf entry (append entry (list :address-space as)))
+                  (when is-tensor
+                    (let* ((n (if (integerp (third canonical))
+                                  (third canonical)
+                                  (parse-integer (symbol-name (third canonical)))))
+                           ;; TENSOR 6-tuple: (tensor T N addr ALN ct) — aln at index 4
+                           (alg (or (nth 4 canonical) :compact)))
+                      (setf entry (append entry (list :rank n :align alg)))))))
 
               (setf entry (append entry (list :range (list start end))))
               (push entry declared-args)
               (incf current-phys-index width)))))
     (nreverse declared-args)))
 
-
-
 (defun generate-implicit-signature (sig declared-params)
   "Generates the :implicit-params plist for metadata serialization.
-   Handles CELL canonical lists (positional addr-space/access at idx 2/3) and
-   TENSOR/VECTOR/MATRIX canonical lists (positional addr-space/access at idx 3/4),
-   and includes :size-expr from *implicit-scratch-size-expr-map*."
+   Omits :access — storage handles are always treated as read-write by hoist code."
   (declare (ignore declared-params))
   (let ((implicit-args nil)
         (phys-index 0)
         (implicit-params (function-signature-implicit-parameters sig)))
-
     (dolist (param-def implicit-params)
       (let* ((name (parameter-def-name param-def))
              (type (parameter-def-type param-def))
@@ -573,42 +559,27 @@
              (start phys-index)
              (end (+ phys-index width -1))
              (type-head (when (consp type) (symbol-name (first type))))
-             ;; Extract address-space:
-             ;;   CELL positional: (cell elem ADDR access) — addr at index 2
-             ;;   TENSOR positional: (tensor elem N ADDR access align) — addr at index 3
+             ;; Extract address-space positionally:
+             ;;   CELL:   (cell elem ADDR)             — addr at index 2
+             ;;   TENSOR: (tensor elem N ADDR aln ct)  — addr at index 3
              (address-space
               (cond
                 ((and (consp type) (string-equal type-head "CELL") (>= (length type) 3))
                  (nth 2 type))
                 ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
-                                             :test #'string-equal)
+                                           :test #'string-equal)
                       (>= (length type) 4))
-                 (nth 3 type))   ; positional 6-tuple: index 3 is addr
-                (t :local)))
-             ;; Extract access:
-             ;;   CELL positional: (cell elem addr ACCESS) — access at index 3
-             ;;   TENSOR positional: (tensor elem N addr ACCESS align) — access at index 4
-             (access
-              (cond
-                ((and (consp type) (string-equal type-head "CELL") (>= (length type) 4))
                  (nth 3 type))
-                ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
-                                             :test #'string-equal)
-                      (>= (length type) 5))
-                 (nth 4 type))   ; positional 6-tuple: index 4 is access
-                (t :read-write)))
-             ;; Look up size-expr from side table (nil for non-tensor implicit params)
+                (t :local)))
              (size-expr (gethash name *implicit-scratch-size-expr-map*)))
-        (let ((entry (list :name (string-downcase (symbol-name name))
-                           :type (strip-package-qualifiers type)
-                           :size-expr size-expr
-                           :address-space address-space
-                           :access access
-                           :range (list start end))))
-          (push entry implicit-args))
+        (push (list :name (string-downcase (symbol-name name))
+                    :type (strip-package-qualifiers type)
+                    :size-expr size-expr
+                    :address-space address-space
+                    :range (list start end))
+              implicit-args)
         (incf phys-index width)))
     (nreverse implicit-args)))
-
 
 
 (defun serialize-kernels (output-stream kernel-names &key source output-targets)
@@ -678,46 +649,27 @@
 ;;; 050-differentiate-and-metadata: backward kernel metacrisp
 ;;; =========================================================
 
-(defun %bwd-resolve-type (type-spec &optional new-access)
-  "Resolves TYPE-SPEC alias to its inline form. If NEW-ACCESS (:read-only or :write-only)
-   is provided and the resolved type is a cell, replaces the :access keyword value.
-   Used to build semantically correct declared-types for backward kernel metadata (Option B)."
-  (let* ((resolved (resolve-type-alias type-spec))
-             (is-cell (and (consp resolved)
-                           (symbolp (first resolved))
-                           (string-equal (symbol-name (first resolved)) "CELL"))))
-    (if (and is-cell new-access)
-        (let* ((pos (position :access resolved))
-                  (new-spec (copy-list resolved)))
-          (if pos
-              (progn (setf (nth (1+ pos) new-spec) new-access)
-                     new-spec)
-              (append resolved (list :access new-access))))
-        resolved)))
 
+(defun %bwd-resolve-type (type-spec &optional new-access)
+  "Resolves TYPE-SPEC alias to its inline form.
+   NEW-ACCESS is accepted for signature compatibility but ignored."
+  (declare (ignore new-access))
+  (resolve-type-alias type-spec))
 
 (defun %bwd-fixup-declared-types (bwd-k-name)
-  "Reads BWD-K-NAME's entry in *kernel-declared-signatures*, produces semantically
-   correct inline types (Option B), and updates the entry in place.
-   Rules:
-     - Params before &out: resolve alias, force cell :access to :read-only
-     - Params after  &out: resolve alias, force cell :access to :write-only
-   This corrects the raw types stored by %generate-backward-kernel-ast, which
-   copies them mechanically from the forward kernel's type list."
+  "Reads BWD-K-NAME's entry in *kernel-declared-signatures*, resolves
+   aliases to inline types, and updates the entry in place."
   (let ((raw-types (gethash bwd-k-name *kernel-declared-signatures*)))
     (when raw-types
-      (let* ((out-mode nil)
-                (semantic-types
-                  (mapcar (lambda (pair)
-                            (let* ((p  (car pair))
-                                      (ts (cdr pair)))
-                              (cond
-                                ((and (symbolp p) (string-equal (symbol-name p) "&OUT"))
-                                 (setf out-mode t)
-                                 pair)
-                                (t
-                                 (let ((access (if out-mode :write-only :read-only)))
-                                   (cons p (%bwd-resolve-type ts access)))))))
-                          raw-types)))
+      (let* ((semantic-types
+              (mapcar (lambda (pair)
+                        (let* ((p  (car pair))
+                               (ts (cdr pair)))
+                          (cond
+                            ((and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                             pair)
+                            (t
+                             (cons p (%bwd-resolve-type ts))))))
+                      raw-types)))
         (setf (gethash bwd-k-name *kernel-declared-signatures*) semantic-types)
         semantic-types))))

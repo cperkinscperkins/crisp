@@ -3,7 +3,7 @@
 ;; Tests atomic-add! with float element type.
 ;; Float type requires LLVMAtomicRMWBinOpFAdd (not the integer Add).
 
-(def-type float-acc (vector float :address-space :global :access :read-write))
+(def-type float-acc (vector float :address-space :global))
 
 (def-function test-atomic-add-float (v delta)
   (declare #'(float-acc float => float))

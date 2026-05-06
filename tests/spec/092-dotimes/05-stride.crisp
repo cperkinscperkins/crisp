@@ -4,7 +4,7 @@
 ;; With stride 2, i takes values 0, 2, 4, ... up to N-1.
 ;; Accumulates only the even-numbered indices.
 
-(def-type cell-t (cell int :address-space :global :access :read-write))
+(def-type cell-t (cell int :address-space :global))
 
 (def-kernel dotimes_stride (n &out result)
   (declare #'(int &out cell-t => nil) forward-only)

@@ -4,7 +4,7 @@
 ;; Accumulates a running sum into a scratch cell — tests that the
 ;; loop variable is accessible in the body and that iteration happens.
 
-(def-type cell-t (cell int :address-space :global :access :read-write))
+(def-type cell-t (cell int :address-space :global))
 
 (def-kernel dotimes_basic (n &out result)
   (declare #'(int &out cell-t => nil) forward-only)

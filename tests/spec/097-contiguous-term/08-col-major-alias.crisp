@@ -6,8 +6,8 @@
 ;; :contiguous-term :col-major is a matrix-only alias for :first.
 ;; Normalized at parse time; contiguous-term~ must return :first.
 
-(def-type mat-t (matrix float :align :compact :address-space :global :access :read-write :contiguous-term :col-major))
-(def-type out-t (cell int :address-space :global :access :read-write))
+(def-type mat-t (matrix float :align :compact :address-space :global :contiguous-term :col-major))
+(def-type out-t (cell int :address-space :global))
 
 (def-kernel test_col_major_alias (m &out out)
   (declare #'(mat-t &out out-t => nil))

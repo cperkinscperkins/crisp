@@ -3,8 +3,8 @@
 ;; get-local-id: 3D form returns ulong3 (thread index within the workgroup);
 ;; scalar form returns ulong for compile-time dimension n.
 
-(def-type out-3d (cell ulong3 :address-space :global :access :read-write))
-(def-type out-1d (cell ulong  :address-space :global :access :read-write))
+(def-type out-3d (cell ulong3 :address-space :global))
+(def-type out-1d (cell ulong  :address-space :global))
 
 (def-kernel test_get_local_id_3d (&out result)
   (declare #'(&out out-3d))

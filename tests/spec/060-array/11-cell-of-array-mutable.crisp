@@ -4,7 +4,7 @@
 ;; This is NOT a boundary immutability case: the array is behind a cell pointer.
 ;; forward-only: this kernel has no &out and is not differentiable.
 
-(def-type arr-c (cell (array long 5) :address-space :global :access :read-write))
+(def-type arr-c (cell (array long 5) :address-space :global))
 
 (def-kernel cell_of_array (c)
     (declare forward-only #'(arr-c) )
