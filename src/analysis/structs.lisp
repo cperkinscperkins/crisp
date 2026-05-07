@@ -410,42 +410,17 @@
                                        (t
                                         (log:debug "AREF strided path: ~a (align=~s)" target-sym align)
                                         (%build-tensor-flat-index-form target-sym index-forms))))
-                         (flat-node  (analyze-expression flat-form env context location))
-                         (brand-def  (and (not (eq *analysis-access-mode* :write))
-                                          (not (consp elem-type))
-                                          (find-brand-for-owner 'value-t array-type)))
-                         (is-rw      (and brand-def
-                                          (let ((owner (brand-definition-owner-struct brand-def)))
-                                            (and (symbolp owner)
-                                                 (search "READ-WRITE" (symbol-name owner))))))
-                         (resolved-type (if (and is-rw (brand-active-p brand-def))
-                                            (resolve-brand-type 'value-t target-sym elem-type)
-                                            elem-type)))
-                    (make-semantic-aref :type resolved-type
+                         (flat-node  (analyze-expression flat-form env context location)))
+                    (make-semantic-aref :type elem-type
                                         :array-node array-node
                                         :index-node flat-node
                                         :source-location location)))
 
-                ;; ── Cell / array path: single index, brand-aware (unchanged) ──
-                (let* ((cell-type    array-type)
-                       (brand-def    (and target-sym
-                                          (not (eq *analysis-access-mode* :write))
-                                          (not (consp elem-type))
-                                          (find-brand-for-owner 'value-t cell-type)))
-                       (is-rw-cell   (and brand-def
-                                          (let ((owner (brand-definition-owner-struct brand-def)))
-                                            (and (symbolp owner)
-                                                 (search "READ-WRITE" (symbol-name owner))))))
-                       (resolved-type (if (and is-rw-cell (brand-active-p brand-def))
-                                          (progn
-                                            (log:info "AREF: brand-aware read (~a) -> resolve-brand-type value-t ~a [elem: ~a]"
-                                                      cell-type target-sym elem-type)
-                                            (resolve-brand-type 'value-t target-sym elem-type))
-                                          elem-type)))
-                  (make-semantic-aref :type resolved-type
-                                      :array-node array-node
-                                      :index-node index-node
-                                      :source-location location)))))
+                ;; ── Cell / array path: single index ─────────────────────────
+                (make-semantic-aref :type elem-type
+                                    :array-node array-node
+                                    :index-node index-node
+                                    :source-location location))))
 
         ;; Fallback: not a known array/cell/tensor type → try as overloadable call
         (let ((op-name (symbol-name op)))
