@@ -583,7 +583,7 @@ Preperatory
       Look at 092, 089, possibly others that seem like they should be differentiable, but are being
       refused. 
 - [ ] revisit incomplete types. Too many defaults in Storage Handles.  Might be difficult.
-- [ ] drop :access.  It has zero bearing on any of the kernel code that is generated.
+- [x] drop :access.  It has zero bearing on any of the kernel code that is generated.
       It only effects the hoisting code. If needed we can do something like :requires-write in the metadata, 
       determined FROM usage.  But, honestly, I don't even think we need that.
 - [ ] ensure (def-type some-t <COMPLETE-TYPE>) ... #'(some-t some-t) works
@@ -593,8 +593,9 @@ Preperatory
       for Storage Handles, all def-struct, def-record 
 - [ ] scan design doc for :size :length :extent  , are we doing to actually use that :c-t with vectors or not?
 - [ ] look at make-scratch-XXXX  definitions in doc and as realized. Are they in sync? Do any need :contiguous-term ?
-- [ ] should the branded storage handles be :subst :descendant or :ancestor?  I think it got 
+- [x] should the branded storage handles be :subst :descendant or :ancestor?  I think it got 
 changed to :descendant to make the tests pass at some point. Or not. Check though.
+- - according to Gemini, we aren't actually using the branding for provenance, and instead the ANF-transform is enough. The branding could be dropped!
 
 Grid vs Thread Context
 =======================

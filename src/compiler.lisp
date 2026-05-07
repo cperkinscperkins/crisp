@@ -408,7 +408,6 @@ Returns modified IR text with metadata."
   ;; CELL: opaque handle to a storage slice.
   (eval '(with-template-type ((To T) (Addr address-space :global))
            (def-record cell
-             (brand value-t To :subst :descendant :enforce :diff)
              (parent (storage Addr))
              (offset ulong)
              (element-type type-spec :c-t To)
@@ -426,7 +425,6 @@ Returns modified IR text with metadata."
   (eval '(with-template-type ((To T) (N integer 1) (Addr address-space :global)
                                (Aln align :compact) (Ct contiguity :last))
            (def-record tensor
-             (brand value-t To :subst :descendant :enforce :diff)
              (parent  (storage Addr))
              (offset (array ulong N))
              (strides (array ulong N))

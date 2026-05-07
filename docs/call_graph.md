@@ -620,9 +620,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%BUILD-TENSOR-COMPACT-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
 - - (%BUILD-TENSOR-COMPACT-OFFSET-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
 - - (%BUILD-TENSOR-FLAT-INDEX-FORM TARGET-SYM INDEX-FORMS)  analysis/structs.lisp
-- - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
-- - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
-- - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)  types/brand.lisp [See above]
 - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-ATOMIC-ADD!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
