@@ -5,11 +5,12 @@
 ;; Phase 1 and Phase 2 tests
 
 (def-function call-scratch-directly ()
-    (declare #'(=> (cell long)))
+    ;; Scratch cells default to :local per design.
+    (declare #'(=> (cell long :address-space :local)))
     (make-scratch-cell long))
 
 (def-function scratch-cell-bound ()
-    (declare #'(=> (cell float)))
+    (declare #'(=> (cell float :address-space :local)))
   (let ((sc (make-scratch-cell float)))
     sc))
 

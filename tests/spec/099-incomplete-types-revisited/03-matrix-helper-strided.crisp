@@ -1,0 +1,18 @@
+;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
+;; Helper function takes incomplete (tensor float 2).
+;; Kernel passes complete tensor with :align :strided.
+;;
+;; Expected: Helper monomorphized for the strided path.  Per analyze-aref-expression
+;; dispatch, :strided uses %build-tensor-flat-index-form which emits offset and
+;; stride loads.  IR should contain stride-related extracts in the helper body.
+
+(def-type in-m  (tensor float 2 :address-space :global :align :strided))
+(def-type out-m (tensor float 2 :address-space :global :align :strided))
+
+(def-function read-at-2d (m i j)
+    (declare #'((tensor float 2) ulong ulong => float))
+    (~ m i j))
+
+(def-kernel matrix_helper_test (A i j &out C)
+    (declare #'(in-m ulong ulong &out out-m))
+    (set! (~ C i j) (read-at-2d A i j)))

@@ -6,7 +6,8 @@
 
 (def-type out-cell (cell int :address-space :global))
 
-(def-type scratch-cell (cell int :address-space :global))
+;; Scratch cells default to :local per design (see ideal_001.md).
+(def-type scratch-cell (cell int :address-space :local))
 
 (def-function fun-D (sc &out out-cell)
     (declare #'(scratch-cell &out out-cell => nil))

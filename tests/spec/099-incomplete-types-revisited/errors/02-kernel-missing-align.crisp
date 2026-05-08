@@ -1,0 +1,14 @@
+;; CHECK-FAIL: "incomplete"
+;;
+;; Kernel boundary policy: :align has no default in the def-record (only
+;; :contiguous-term defaults to :last).  Omitting :align in a kernel param
+;; type must be a compile-time error.
+;;
+;; This test currently passes (incorrectly) because expand-storage-handle
+;; silently fills in :align :compact.  After the fix, it should fail.
+
+(def-type bad-t (tensor float 1 :address-space :global :contiguous-term :last))
+
+(def-kernel kernel_missing_align (A idx &out C)
+    (declare #'(bad-t ulong &out bad-t))
+    (set! (~ C idx) (~ A idx)))

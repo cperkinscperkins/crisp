@@ -688,6 +688,15 @@ parameters have already been inferred from earlier arguments."
   "Called by the compiler to auto-instantiate templates.
    compiler-callback is (lambda (form location) ...).
    Fixed: is-compiling now uses *compiler-session* instead of boundp on symbol-macro."
+  ;; If the explicit args contain nil (e.g. an incomplete storage-handle type
+  ;; spec like (tensor int 1 nil :last)), skip instantiation.  Such args
+  ;; represent unresolved polymorphic slots; instantiation here would call
+  ;; validate-template-arg with nil for a typed slot and crash.  The kernel-
+  ;; rooted call chain will eventually arrive with concrete types.
+  (when (some #'null explicit-arg-types)
+    (log:debug "ensure-template-instantiation: skipping ~a — nil in args ~a"
+               name explicit-arg-types)
+    (return-from ensure-template-instantiation nil))
   (let* ((templates (gethash name *template-registry*))
          (struct-name (%resolve-template-name name))
          (templates (or templates (when struct-name (gethash struct-name *template-registry*))))

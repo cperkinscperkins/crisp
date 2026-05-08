@@ -26,9 +26,12 @@
     (return))  ;; return value has to match for functions.
 
 
-;; &out comes before either &optional or &key
+;; &out comes before either &optional or &key.
+;; Note: with the strict storage-handle policy, generic-function templates
+;; (those with &optional / &key) don't yet implement implicit-template
+;; monomorphization on incomplete cell types — so &out cells must be complete.
 (def-function out-and-optional (a &out res &optional b c)
-    (declare #'(int &out (cell int) &optional int int => nil))
+    (declare #'(int &out (cell int :address-space :global) &optional int int => nil))
     (let ((sum a))
         (when (is-set? b)
             (set! sum (+ sum b))
@@ -38,16 +41,14 @@
         (return)))
 
 ;; kernels also require COMPLETE storage handle types.
-;; But, again, out implemention at this time is minimal, and this is likely not enforced (yet),
-;; and doing so would be premature at this time.
 (def-kernel exorcise_o_a (a r b)
-    (declare #'(int (cell int :global :read-write) int => nil))
+    (declare #'(int (cell int :address-space :global) int => nil))
     (out-and-optional a r b)
     (return))
 
 
 (def-function out-and-key (a &out res &key d e)
-    (declare #'(int &out (cell int) &key :d int :e int => nil))
+    (declare #'(int &out (cell int :address-space :global) &key :d int :e int => nil))
     (let ((sum a))
         (when (is-set? d)
             (set! sum (+ sum d)))
@@ -57,14 +58,14 @@
         (return)))
 
 (def-kernel expertise_o_k (a r e)
-    (declare #'(int (cell int :global :read-write)  int => nil))
+    (declare #'(int (cell int :address-space :global)  int => nil))
     (out-and-key a r :e e)
     (return))
 
 
 ;; shebang
 (def-function shebang (a &out res &optional b  &key d e)
-    (declare #'(int &out (cell int) &optional int &key :d int :e int => nil))
+    (declare #'(int &out (cell int :address-space :global) &optional int &key :d int :e int => nil))
     (let ((sum a))
         (when (is-set? b)
             (set! sum (+ sum b)))
@@ -77,7 +78,7 @@
         (return)))
 
 (def-kernel excise (a r b e)
-    (declare #'(int (cell int :global :read-write) int int => nil))
+    (declare #'(int (cell int :address-space :global) int int => nil))
     (shebang a r b :e e)
     (return))
 

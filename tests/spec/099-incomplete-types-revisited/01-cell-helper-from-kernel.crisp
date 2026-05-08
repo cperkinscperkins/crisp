@@ -1,0 +1,19 @@
+;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
+;; Helper function takes incomplete (cell float) — no :address-space.
+;; Kernel passes complete (cell float :address-space :global).
+;;
+;; Expected: Crisp's implicit-template machinery monomorphizes read-cell into
+;; a cell_float_global specialization at the call site.  IR should reference
+;; %CELL_FLOAT_GLOBAL and use addrspace(1) on the load — no abstract types,
+;; no runtime dispatch on address space.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-function read-cell (c)
+    (declare #'((cell float) => float))
+    (~ c))
+
+(def-kernel cell_helper_test (A &out C)
+    (declare #'(in-c &out out-c))
+    (set! (~ C) (read-cell A)))

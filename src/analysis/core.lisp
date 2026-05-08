@@ -392,11 +392,24 @@
   (setf *scan-is-originator* t)
 
   ;; Extract the type argument: (make-scratch-cell TYPE)
+  ;; Per design: scratch cells default to :address-space :local in absence of
+  ;; an explicit user-supplied address-space.
   (when args
         (let* ((arg1 (first args))
-               (raw-spec (if (and (consp arg1) (eq (first arg1) 'cell))
-                             arg1
-                             (list 'cell arg1)))
+               (raw-spec (cond
+                           ((and (consp arg1) (eq (first arg1) 'cell))
+                            ;; User wrote (cell elem ...).  Inject :local if
+                            ;; no address-space is present.
+                            (if (or (member :address-space arg1)
+                                    (some (lambda (x)
+                                            (and (symbolp x)
+                                                 (member (symbol-name x)
+                                                         '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
+                                                         :test #'string-equal)))
+                                          (rest arg1)))
+                                arg1
+                                (append arg1 '(:address-space :local))))
+                           (t (list 'cell arg1 :address-space :local))))
                (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
           ;; Store in *implicit-arg-map* for this function
           ;; Unique Naming: varName_from_FnName_N

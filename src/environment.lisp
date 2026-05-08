@@ -527,12 +527,19 @@
    ((and (listp spec) (member (symbol-name (first spec)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
      (log:info "PARSE: Calling expand for ~s" spec)
      (let ((canonical (expand-storage-handle-type-specifier spec)))
-       (if (valid-type-p canonical)
+       (cond
+         ;; Incomplete: any positional slot is nil (e.g. (cell elem nil) or
+         ;; (tensor elem N nil nil ct)).  Don't mangle — return as a list
+         ;; so downstream incomplete-type-p / implicit-template detection
+         ;; can recognize it as polymorphic.
+         ((and (listp canonical) (some #'null (rest canonical)))
+          canonical)
+         ((valid-type-p canonical)
            (let ((base (first canonical))
                     (params (rest canonical)))
              (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
-               (mangle-template-struct-name base resolved-params)))
-           (error 'crisp-unknown-type-error :type-name spec))))
+               (mangle-template-struct-name base resolved-params))))
+         (t (error 'crisp-unknown-type-error :type-name spec)))))
 
    ;; Function Type/Literal (already parsed to :function-type or :function-literal)
    ((and (listp spec) (valid-function-type-p spec)) spec)

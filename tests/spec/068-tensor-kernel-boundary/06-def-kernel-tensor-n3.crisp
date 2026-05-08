@@ -3,7 +3,7 @@
 ;; (ptr, byte-size, offset_0..2, stride_0..2, extent_0..2, length).
 ;; This exercises the general-N path in %explode-kernel-params.
 
-(def-type vol-t (tensor float 3 :address-space :global))
+(def-type vol-t (tensor float 3 :address-space :global :align :compact))
 
 (def-kernel vol_set_origin (val &out vol)
     (declare #'(float &out vol-t))
