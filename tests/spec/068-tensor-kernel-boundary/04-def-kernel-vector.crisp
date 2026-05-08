@@ -1,5 +1,8 @@
 ;; SKIP-WITH[--differentiate]: "support for --differentiate and tensors is future work"
 
+;; weird. 07-def-kernel-templated-vector.crisp is working with --differentiate now
+;; but this test not?
+
 
 ;; def-kernel with a vector parameter.
 ;; The compiler auto-SROA-expands the vector to its 6 scalar components

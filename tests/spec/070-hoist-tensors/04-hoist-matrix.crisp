@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; TEST-HOIST[L0]: validate-l0-compile-only
 
 ;; Validates that a kernel with a matrix (N=2) parameter hoists to compilable C++.

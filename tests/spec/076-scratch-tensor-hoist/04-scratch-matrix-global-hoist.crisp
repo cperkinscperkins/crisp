@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; SKIP-WITH[--differentiate]: "kernel has no input param, not differentiable"
 ;; TEST-HOIST[L0] : validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER c: 99
 ;;

@@ -1,8 +1,4 @@
-;; SKIP-WITH[--differentiate] : "TODO: differentiate sub-functions, or decide to only support flat kernels, in which case error."
 
-
-;; should this just be an error? Or disabled until we can differentiate sub-functions?
-;; skip for now, I guess
 
 (def-record v-point (x float) (y float))
 
