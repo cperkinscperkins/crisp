@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 (def-struct point (x int) (y int))
 

@@ -1,5 +1,5 @@
 
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; TEST-WITH[--ir-target=llvmir] : validate-top-kernel-4-args-ir
 
 #|

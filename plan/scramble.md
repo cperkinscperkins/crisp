@@ -582,11 +582,11 @@ Preperatory
 - [ ] REVISIT 085.  We are apparently STILL refusing kernels with long/int input args or whatever.
       Look at 092, 089, possibly others that seem like they should be differentiable, but are being
       refused. 
-- [ ] revisit incomplete types. Too many defaults in Storage Handles.  Might be difficult.
+- [x] revisit incomplete types. Too many defaults in Storage Handles.  Might be difficult.
 - [x] drop :access.  It has zero bearing on any of the kernel code that is generated.
       It only effects the hoisting code. If needed we can do something like :requires-write in the metadata, 
       determined FROM usage.  But, honestly, I don't even think we need that.
-- [ ] ensure (def-type some-t <COMPLETE-TYPE>) ... #'(some-t some-t) works
+- [x] ensure (def-type some-t <COMPLETE-TYPE>) ... #'(some-t some-t) works
       and    (def-type other-t <INCOMPLETE-TYPE>) ... #'((other-t :missing :val)  other-t) also works
       DECIDE how to handle :contiguous-term . :contiguous-term :undecided ??
       DECIDE how to handle :c-t props with defaults.

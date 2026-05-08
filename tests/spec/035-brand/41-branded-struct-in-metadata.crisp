@@ -1,5 +1,5 @@
 ;; TEST-WITH[--metadata] : validate-04-basic-struct
-;; SKIP-WITH[--differentiate]
+;; SKIP-WITH[--differentiate] : "kernel has no &out param, not differentiable"
 
 ;; reusing existing validator.
 

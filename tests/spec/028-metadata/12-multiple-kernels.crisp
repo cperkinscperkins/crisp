@@ -1,5 +1,5 @@
 ;; TEST-WITH[--metadata]: validate-12-multiple-kernels
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 #|
 

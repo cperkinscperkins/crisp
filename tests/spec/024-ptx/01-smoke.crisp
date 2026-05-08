@@ -1,5 +1,5 @@
 ;; TEST-WITH[--ir-target=ptx]
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 ;; this is for testing ptx generation
 ;; ./bin/crisp-compile.exe  ./tests/spec/024-ptx/01-smoke.crisp --ir-target=ptx

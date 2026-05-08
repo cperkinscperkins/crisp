@@ -1,6 +1,6 @@
 ;; With def-kernel-exact realized
 ;; then def-kernel expands to the def-kernel-exact with args and marshalling of Storage Handles 
-;; SKIP-WITH[--differentiate]: "fails without lax mode" 
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable" 
 
 
 (def-type out-c (cell long :address-space :global))

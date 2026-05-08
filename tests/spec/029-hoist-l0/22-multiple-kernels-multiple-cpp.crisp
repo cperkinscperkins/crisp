@@ -1,6 +1,6 @@
 
 ;; TEST-HOIST[L0] : validate-l0-compile-only
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 
 #|

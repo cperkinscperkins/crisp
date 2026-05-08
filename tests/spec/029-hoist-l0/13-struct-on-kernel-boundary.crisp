@@ -1,5 +1,5 @@
 
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; HOIST-EXPECT: BUFFER c: {x=1 y=0}
 
 

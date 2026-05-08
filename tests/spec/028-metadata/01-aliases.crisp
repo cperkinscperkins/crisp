@@ -1,5 +1,5 @@
 ;; TEST-WITH[--metadata] : validate-01-aliases
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 ;; this should appear in the metadata. Used at kernel boundary.
 (def-type iii int)

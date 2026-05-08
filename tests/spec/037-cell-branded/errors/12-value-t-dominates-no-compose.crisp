@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; SKIP-WITH[--differentiate]: 'pending redesign — see comment block below'
+;; KIP-WITH[--differentiate]: 'pending redesign — see comment block below'
 ;;
 ;; Under --differentiate this test originally expected:
 ;;   FAIL-WITH "Type mismatch for operator '+'"

@@ -1,6 +1,6 @@
 
 ;; TEST-WITH[--metadata] : validate-06-nested-structs
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 ;; both point and rect should appear in the metadata.
 ;; by virtue of rect being included at kernel boundary, and rect depending on point.
