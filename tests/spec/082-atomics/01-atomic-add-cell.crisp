@@ -3,7 +3,7 @@
 ;; Tests atomic-add! on a vector element (integer type).
 ;; Returns the old value — fetch-and-add semantics.
 
-(def-type counter-vec (vector int :address-space :global))
+(def-type counter-vec (vector int :address-space :global :align :compact))
 
 (def-function test-atomic-add (v delta)
   (declare #'(counter-vec int => int))

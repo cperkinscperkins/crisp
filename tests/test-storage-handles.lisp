@@ -3,11 +3,13 @@
 
 (define-test (crisp-compiler test-storage-handles)
 
+             ;; Policy: :address-space has no default.  Incomplete cell spec
+             ;; preserves the missing slot as nil.
              (true
               (let ((result (crisp.compiler::expand-storage-handle-type-specifier '(cell int))))
                 (and (string-equal "CELL" (symbol-name (first result)))
                      (string-equal "INT" (symbol-name (second result)))
-                     (eq :global (third result))
+                     (null (third result))
                      (= 3 (length result)))))
 
              (true

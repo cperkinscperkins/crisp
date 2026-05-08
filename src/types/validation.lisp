@@ -99,9 +99,9 @@
 
                 ;; ── VECTOR ──────────────────────────────────────────
                 ((string-equal (symbol-name base) "VECTOR")
-                 (let* ((addr      :global)
-                        (aln       :compact)
-                        (ct        :last)
+                 (let* ((addr      nil)   ;; no default: must be supplied
+                        (aln       nil)   ;; no default: must be supplied
+                        (ct        :last) ;; the only auto-default
                         (remaining rest-args))
                    (when (and remaining (not (keywordp (first remaining))))
                      (error "Invalid type option ~s in vector spec ~s. Vector takes no arity argument; use (tensor ~s N) for N > 2."
@@ -139,9 +139,9 @@
 
                 ;; ── MATRIX ──────────────────────────────────────────
                 ((string-equal (symbol-name base) "MATRIX")
-                 (let* ((addr      :global)
-                        (aln       :compact)
-                        (ct        :last)
+                 (let* ((addr      nil)   ;; no default
+                        (aln       nil)   ;; no default
+                        (ct        :last) ;; auto-default
                         (remaining rest-args))
                    (when (and remaining (not (keywordp (first remaining))))
                      (error "Invalid type option ~s in matrix spec ~s. Matrix takes no arity argument; use (tensor ~s N) for arbitrary arity."
@@ -182,15 +182,18 @@
                                            (not (keywordp (first rest-args)))
                                            (first rest-args)))
                         (rest-after-n (if n-arg (rest rest-args) rest-args))
-                        (addr         :global)
-                        (aln          :compact)
-                        (ct           :last)
+                        (addr         nil)   ;; no default: must be supplied
+                        (aln          nil)   ;; no default: must be supplied
+                        (ct           :last) ;; auto-default
                         (remaining    rest-after-n))
                    (unless n-arg
                      (error 'crisp-incomplete-type-error :type-spec spec))
                    (loop while remaining do
                      (let ((item (pop remaining)))
                        (cond
+                         ;; nil placeholder for unspecified slot in canonical
+                         ;; positional form — preserve as nil (incomplete).
+                         ((null item) nil)
                          ;; bare address-space values (canonical form idempotency)
                          ((member (string item)
                                   '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
@@ -249,12 +252,15 @@
                 ;; ── CELL ────────────────────────────────────────────
                 (t
                  (if (null rest-args)
-                     (list base element-type :global)
-                     (let ((addr      :global)
+                     (list base element-type nil)  ;; addr nil → incomplete
+                     (let ((addr      nil)         ;; no default
                            (remaining rest-args))
                        (loop while remaining do
                          (let ((item (pop remaining)))
                            (cond
+                             ;; nil placeholder for unspecified slot in canonical
+                             ;; positional form — preserve as nil (incomplete).
+                             ((null item) nil)
                              ((member (string item)
                                       '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
                                       :test #'string-equal)
@@ -320,6 +326,17 @@
 
   ;; After expansion, check again (in case alias expanded to array)
   (when (and (consp spec) (%array-type-p spec))
+    (return-from canonicalize-type-specifier spec))
+
+  ;; Incomplete storage handle (nil in any positional slot) — return as-is
+  ;; without validating template args.  validate-template-arg would reject
+  ;; nil for typed slots like ADDRESS-SPACE; the incompleteness is the
+  ;; whole point of this form (polymorphic helper signature).
+  (when (and (consp spec)
+             (symbolp (first spec))
+             (member (symbol-name (first spec))
+                     '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)
+             (some #'null (rest spec)))
     (return-from canonicalize-type-specifier spec))
 
   (let ((base (if (consp spec) (first spec) spec))
@@ -623,6 +640,14 @@ Extended to also accept raw (function ...) forms from the Crisp reader
                   (keywordp (first params))))
          t)
 
+        ;; Storage handle with nil slot (incomplete) — recognize as valid
+        ;; without attempting template instantiation (which would fail on nil).
+        ((and (symbolp base-type)
+              (member (symbol-name base-type)
+                      '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)
+              (some #'null params))
+         t)
+
         ((symbolp base-type)
          (%validate-template-instantiation base-type params))
 
@@ -856,6 +881,16 @@ Extended to also accept raw (function ...) forms from the Crisp reader
            (let ((arity (get-template-arity base)))
              (log:debug "Checking completeness for ~a (Arity: ~a)" base arity)
              (cond
+               ;; 0. Storage handle with nil slot: post-expand canonical form
+               ;;    has nil in any positional slot (addr/aln) when the user
+               ;;    omitted the property and the property has no default.
+               ((and (symbolp base)
+                     (member (symbol-name base)
+                             '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)
+                     (some #'null args))
+                (log:info "Storage handle type ~a is incomplete: missing required c-t property" canon)
+                t)
+
                ;; 1. Check Template Arity (Positional Args)
                ((and arity (< (length args) arity))
                 (log:info "Type ~a is incomplete: missing template args (got ~d, need ~d)" type-spec (length args) arity)

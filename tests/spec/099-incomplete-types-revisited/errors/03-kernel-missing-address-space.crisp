@@ -1,0 +1,13 @@
+;; CHECK-FAIL: "incomplete"
+;;
+;; Kernel boundary policy: :address-space has no default in the def-record.
+;; Omitting :address-space in a kernel param type must be a compile-time error.
+;;
+;; This test currently passes (incorrectly) because expand-storage-handle
+;; silently fills in :address-space :global.  After the fix, it should fail.
+
+(def-type bad-c (cell float))
+
+(def-kernel kernel_missing_address_space (A &out C)
+    (declare #'(bad-c &out bad-c))
+    (set! (~ C) (~ A)))

@@ -297,26 +297,38 @@
 
 
 (defun %incomplete-storage-handle-p (type-spec)
-  "Returns T if the type-spec is a storage handle but is missing :address-space.
-   Canonical 6-tuple (tensor elem N addr aln ct) and 3-tuple (cell elem addr) are complete."
-  (let ((resolved (%resolve-alias-strict type-spec)))
-    (when (and (consp resolved) (%storage-handle-type-p resolved))
-      (let* ((base (first resolved))
-             (args (rest resolved)))
+  "Returns T if the type-spec is a storage handle missing a required :c-t property.
+   Canonical 6-tuple (tensor elem N addr aln ct) is complete only when addr and aln
+   are both non-nil; canonical 3-tuple (cell elem addr) is complete only when addr
+   is non-nil.  ct always has a default of :last so it's never the incompleteness
+   trigger."
+  (let* ((resolved (%resolve-alias-strict type-spec))
+         ;; Canonicalize via expand so we always inspect the positional form,
+         ;; regardless of whether the alias produced keyword or positional shape.
+         (canonical (if (and (consp resolved) (%storage-handle-type-p resolved))
+                        (expand-storage-handle-type-specifier resolved)
+                        resolved)))
+    (when (and (consp canonical) (%storage-handle-type-p canonical))
+      (let* ((base (first canonical))
+             (args (rest canonical)))
         (cond
-          ;; Tensor: only complete when exactly 5 positional args OR :address-space keyword present
+          ;; Tensor: canonical positional 6-tuple (elem N addr aln ct).
+          ;; Incomplete if addr or aln is nil (or fewer than 5 args, meaning
+          ;; the user's keyword form wasn't fully canonicalized).
           ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
            (cond
-             ((= (length args) 5) nil)           ; (elem N addr aln ct): complete
-             ((member :address-space args) nil)  ; keyword form: complete
-             (t t)))                             ; (elem N) or any other form: INCOMPLETE
-          ;; CELL/VECTOR/MATRIX: key-value form or 2+ positional args = complete
+             ;; 5 positional args: check for nil in addr (3rd) or aln (4th)
+             ((= (length args) 5)
+              (or (null (third args))   ; addr
+                  (null (fourth args)))) ; aln
+             ;; Anything else: not yet canonical — treat as incomplete
+             (t t)))
+          ;; CELL: canonical positional 3-tuple (elem addr).
+          ;; Incomplete if addr is nil or fewer than 2 args.
           (t
-           (let ((is-kw (member :address-space args)))
-             (cond
-               (is-kw nil)
-               ((>= (length args) 2) nil)
-               (t t)))))))))
+           (cond
+             ((= (length args) 2) (null (second args)))  ; addr
+             (t t))))))))
 
 (defun %explode-kernel-args (params signature)
   "Explodes storage handle parameters into raw scalars.

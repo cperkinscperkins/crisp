@@ -1,0 +1,22 @@
+;; CHECK-FAIL: "No matching function overload"
+
+;; because all types at the kernel boundary must be complete,
+;; the error case "some function declares an incomplete type but then uses the missing property"
+;; is solved when monomorphically resolving the type through the call chain.
+;; It is not yet an independent analysis that can be performed. 
+
+(def-record pants (size int) (color int :c-t))
+
+(def-function check-only-color-5 (p)
+    (declare #'((pants :color 5) => int))
+    (size~ p))
+
+(def-function steam (p)
+    (declare #'((pants) => int))
+    (check-only-color-5 p))   ;; propagates :color 5 requirement upward
+
+(def-function fake-kernel (p)
+    (declare #'((pants :color 3) => int))
+    (steam p))   ;; conflict: passing :color 3, but chain wants :color 5
+
+    

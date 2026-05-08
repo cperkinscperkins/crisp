@@ -12,8 +12,8 @@
 ;; Verifies that three-index (full tensor) access works. The three index symbols
 ;; d0, d1, d2 must all be present in both the seed read and the gradient writes.
 
-(def-type in-ten  (tensor float 3 :address-space :global))
-(def-type out-ten (tensor float 3 :address-space :global))
+(def-type in-ten  (tensor float 3 :address-space :global :align :compact))
+(def-type out-ten (tensor float 3 :address-space :global :align :compact))
 
 (def-kernel tensor_add (T_a T_b d0 d1 d2 &out T_out)
   (declare #'(in-ten in-ten ulong ulong ulong &out out-ten))

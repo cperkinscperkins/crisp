@@ -6,8 +6,12 @@
                        :parent crisp.compiler::crisp.tests)
 
 (parachute:define-test (cell-expansion-tests expand-storage-handle-defaults)
+                       ;; Policy: :address-space has no default.  An incomplete
+                       ;; cell spec preserves the missing slot as nil, leaving
+                       ;; it to the implicit-template machinery (or kernel-
+                       ;; boundary check) to resolve or reject.
                        (parachute:is equal
-                                     '(cell int :global)
+                                     '(cell int nil)
                                      (expand-storage-handle-type-specifier '(cell int))))
 
 (parachute:define-test (cell-expansion-tests expand-storage-handle-explicit-keywords)

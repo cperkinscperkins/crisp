@@ -1,0 +1,18 @@
+;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
+;; Helper takes incomplete (tensor float 2).  Kernel uses :contiguous-term :first
+;; (NON-DEFAULT — the default is :last).
+;;
+;; Expected: helper monomorphized for the :first variant.  Mangled name should
+;; contain "FIRST".  This guards against silent defaulting of :contiguous-term
+;; in the helper signature.
+
+(def-type in-m  (tensor float 2 :address-space :global :align :compact :contiguous-term :first))
+(def-type out-m (tensor float 2 :address-space :global :align :compact :contiguous-term :first))
+
+(def-function read-at-2d (m i j)
+    (declare #'((tensor float 2) ulong ulong => float))
+    (~ m i j))
+
+(def-kernel first_ct_test (A i j &out C)
+    (declare #'(in-m ulong ulong &out out-m))
+    (set! (~ C i j) (read-at-2d A i j)))

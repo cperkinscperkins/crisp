@@ -3,7 +3,7 @@
 ;; Tests atomic-sub! on a vector element (integer type).
 ;; Returns the old value — fetch-and-sub semantics.
 
-(def-type counter-vec (vector int :address-space :global))
+(def-type counter-vec (vector int :address-space :global :align :compact))
 
 (def-function test-atomic-sub (v delta)
   (declare #'(counter-vec int => int))

@@ -3,7 +3,7 @@
 ;; Tests atomic-inc! — atomically increments by 1, returns old value.
 ;; Implemented as atomicrmw add with delta=1.
 
-(def-type counter-vec (vector int :address-space :global))
+(def-type counter-vec (vector int :address-space :global :align :compact))
 
 (def-function test-atomic-inc (v)
   (declare #'(counter-vec => int))

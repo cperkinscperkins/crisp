@@ -1,0 +1,19 @@
+;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
+;; Helper signature omits :contiguous-term.  Per the design, :contiguous-term
+;; defaults to :last (the only Storage Handle property with an explicit default).
+;; Kernel passes a complete tensor that includes :contiguous-term :last.
+;;
+;; Expected: Helper signature is treated as complete (defaulted to :last).  No
+;; implicit-template machinery should be needed for the missing :contiguous-term.
+;; The call should resolve directly without monomorphization on Ct.
+
+(def-type in-v  (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
+(def-type out-v (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
+
+(def-function read-at-defaulted-ct (v idx)
+    (declare #'((tensor float 1 :address-space :global :align :compact) ulong => float))
+    (~ v idx))
+
+(def-kernel default_ct_test (A idx &out C)
+    (declare #'(in-v ulong &out out-v))
+    (set! (~ C idx) (read-at-defaulted-ct A idx)))

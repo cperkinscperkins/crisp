@@ -1,0 +1,22 @@
+;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
+;; Probe: a helper with incomplete (tensor float 1) that uses (~ v idx), but is
+;; NEVER called from a kernel (or any complete-typed call site).
+;;
+;; This captures current-behavior — the implicit-template machinery registers
+;; the function as a template.  With no instantiation, no body analysis, no IR.
+;; Expected current behavior: file compiles cleanly with no error and no helper
+;; IR.  This is NOT a failure; it documents that orphan incomplete-typed
+;; functions are silently no-ops.  Future endeavor work may decide whether to
+;; warn / error in this case (e.g., as a "dead template" diagnostic).
+
+(def-function unreachable-read-at (v idx)
+    (declare #'((tensor float 1) ulong => float))
+    (~ v idx))
+
+;; Trivial kernel that does NOT call unreachable-read-at — just to give the file
+;; an entry point so it isn't completely empty.
+(def-type out-v (tensor float 1 :address-space :global :align :compact))
+
+(def-kernel trivial_kernel (idx &out C)
+    (declare #'(ulong &out out-v))
+    (set! (~ C idx) 0.0f))

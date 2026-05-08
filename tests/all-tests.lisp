@@ -133,7 +133,9 @@
              (is equal '(nil) (analyze-return-type-from-spec '(int)))
              (fail (analyze-return-type-from-spec '(int => foobar))
                    'crisp-unknown-type-error)
-             (is equal (list (intern "CELL_LONG_GLOBAL" :crisp.compiler)) (analyze-return-type-from-spec '(int => (cell long)))))
+             ;; Policy: incomplete (cell long) is preserved as a canonical list
+             ;; with nil in the address-space slot.
+             (is equal (list '(crisp.compiler:cell crisp.compiler:long nil)) (analyze-return-type-from-spec '(int => (cell long)))))
 
 (define-test (analyzer environment-from-spec)
              (is equalp (list (crisp.compiler::make-parameter-def :name 'a :type 'int :kind :in)
@@ -141,8 +143,12 @@
                  (analyze-environment-from-spec '(a b) '(int float => nil)))
              (fail (analyze-environment-from-spec '(a) '(bar => nil))
                    'crisp-unknown-type-error)
+             ;; Policy: incomplete (cell long) keeps the missing slot as nil
+             ;; — the parameter's type is the canonical list, not a mangled
+             ;; symbol.  The implicit-template machinery resolves this at
+             ;; call sites that pass a complete-typed cell.
              (is equalp (list (crisp.compiler::make-parameter-def :name 'a
-                                                                  :type (intern "CELL_LONG_GLOBAL" :crisp.compiler)
+                                                                  :type '(crisp.compiler:cell crisp.compiler:long nil)
                                                                   :kind :in))
                  (analyze-environment-from-spec '(a) '((cell long) => nil))))
 

@@ -1,0 +1,19 @@
+;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
+;; Helper function takes incomplete (tensor float 1) — no :address-space, no :align.
+;; Kernel passes complete tensor with :align :compact.
+;;
+;; Expected: Helper monomorphized for the compact path.  Per analyze-aref-expression
+;; dispatch, :compact uses %build-tensor-compact-flat-index-form which emits
+;; index math without offset reads or stride multiplies.  IR should NOT contain
+;; loads from extents/strides storage in the helper body.
+
+(def-type in-v  (tensor float 1 :address-space :global :align :compact))
+(def-type out-v (tensor float 1 :address-space :global :align :compact))
+
+(def-function read-at (v idx)
+    (declare #'((tensor float 1) ulong => float))
+    (~ v idx))
+
+(def-kernel vector_helper_test (A idx &out C)
+    (declare #'(in-v ulong &out out-v))
+    (set! (~ C idx) (read-at A idx)))

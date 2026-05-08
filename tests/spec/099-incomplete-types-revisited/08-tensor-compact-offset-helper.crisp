@@ -1,0 +1,17 @@
+;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
+;; Helper takes incomplete (tensor float 1).  Kernel uses :align :compact-offset
+;; (NON-DEFAULT).
+;;
+;; Expected: helper monomorphized for the :compact-offset variant — uses
+;; %build-tensor-compact-offset-flat-index-form (offset reads, no stride math).
+
+(def-type in-v  (tensor float 1 :address-space :global :align :compact-offset))
+(def-type out-v (tensor float 1 :address-space :global :align :compact-offset))
+
+(def-function read-at-co (v idx)
+    (declare #'((tensor float 1) ulong => float))
+    (~ v idx))
+
+(def-kernel compact_offset_test (A idx &out C)
+    (declare #'(in-v ulong &out out-v))
+    (set! (~ C idx) (read-at-co A idx)))

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-07T16:40:18.334304Z
+Generated on 2026-05-08T05:24:55.427725Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2513,7 +2513,7 @@ Generated on 2026-05-07T16:40:18.334304Z
 ### DEFUN `%INCOMPLETE-STORAGE-HANDLE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if the type-spec is a storage handle but is missing :address-space.  >    Canonical 6-tuple (tensor elem N addr aln ct) and 3-tuple (cell elem addr) are complete.
+  > Returns T if the type-spec is a storage handle missing a required :c-t property.  >    Canonical 6-tuple (tensor elem N addr aln ct) is complete only when addr and aln  >    are both non-nil; canonical 3-tuple (cell elem addr) is complete only when addr  >    is non-nil.  ct always has a default of :last so it's never the incompleteness  >    trigger.
 
 
 ---

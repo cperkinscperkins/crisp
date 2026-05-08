@@ -3,7 +3,7 @@
 ;; Tests atomic-max! — stores the maximum, returns the old value.
 ;; Signed integer: LLVMAtomicRMWBinOpMax.
 
-(def-type max-vec (vector int :address-space :global))
+(def-type max-vec (vector int :address-space :global :align :compact))
 
 (def-function test-atomic-max (v candidate)
   (declare #'(max-vec int => int))

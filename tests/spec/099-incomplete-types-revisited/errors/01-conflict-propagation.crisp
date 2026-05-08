@@ -1,0 +1,24 @@
+;; CHECK-FAIL: "No matching function overload found"
+;;
+;; Analog to 011-incomplete-types/errors/incomplete-compile-check-fail.crisp,
+;; but for storage handles.  Outer helper accepts incomplete (cell float).
+;; Inner helper requires :address-space :local.  Kernel passes a :global cell.
+;;
+;; Expected: at monomorphization, the outer helper specializes for
+;; (cell float :address-space :global), then tries to call the inner helper
+;; which requires :local.  No matching overload → compile-time error.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-function read-from-local-only (lc)
+    (declare #'((cell float :address-space :local) => float))
+    (~ lc))
+
+(def-function passthrough (c)
+    (declare #'((cell float) => float))
+    (read-from-local-only c))
+
+(def-kernel conflict_test (A &out C)
+    (declare #'(in-c &out out-c))
+    (set! (~ C) (passthrough A)))

@@ -635,8 +635,11 @@
   ;; --- Originator Detection (both single-pass and two-pass) ---
   ;; Store the actual cell type and name in *implicit-arg-map*
   (log:debug "Originator: Found make-scratch-cell in ~s" (compiler-context-current-compiling-function context))
+  ;; Per design: scratch cells default to :address-space :local in the absence
+  ;; of an explicit user-supplied address-space.  This makes the resulting
+  ;; cell type complete so it flows through the call graph as a concrete type.
   (let* ((inner-type (cadr expr))
-         (raw-spec (list 'cell inner-type))
+         (raw-spec (list 'cell inner-type :address-space :local))
          (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
     ;; Store: (name . type) - use current binding name if available
     (let ((implicit-name (or (compiler-context-current-binding-name context) '__storage))
@@ -655,8 +658,8 @@
     (unless (gethash inner-type *crisp-types*)
       (error 'crisp-unknown-type-error :type-name inner-type :source-location location))
 
-    ;; Construct raw spec and expand/canonicalize it (e.g. inject defaults)
-    (let* ((raw-spec (list 'cell inner-type))
+    ;; Construct raw spec with :local default, then canonicalize.
+    (let* ((raw-spec (list 'cell inner-type :address-space :local))
            (canonical-spec (expand-storage-handle-type-specifier raw-spec)))
 
       ;; Ensure instantiation
