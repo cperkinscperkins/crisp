@@ -523,7 +523,7 @@
             nil
             (if (member '&out signature-types)
                 t
-                (error "Differentiable Kernels require an '&out' parameter. If this kernel performs non-differentiable operations (like printing or shuffling), declare it as 'forward-only'. (~a)" name))))
+                (error "Kernel ~a has no '&out' parameter and is not differentiable. To compile under --differentiate, either add an '&out' parameter, or declare it 'forward-only' (the latter is appropriate for kernels performing non-differentiable operations like printing or shuffling)." name))))
       nil))
 
 
