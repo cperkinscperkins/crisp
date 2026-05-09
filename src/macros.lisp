@@ -556,21 +556,27 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                       append (cl:let ((flds (gethash orig record-subs-ht)))
                                (when flds (mapcar #'cdr flds)))))
 
-            ;; Backward-walk participation: float scalars, float tensors, cells only.
+            ;; Backward-walk participation: per the 101 endeavor, float AND
+            ;; integer scalars, float AND integer tensors, cells (any element
+            ;; type).  Integer-scalar inputs used purely as indices end up
+            ;; with always-zero adjoints automatically — index operators
+            ;; (aref, cell read at index) have no gradient rule for the
+            ;; index argument, so the chain rule never reaches them.
             (differentiable-non-rec-p
              (lambda (t-spec)
                (cl:let ((canonical (canonicalize-type-specifier t-spec)))
                  (or (%crisp-float-type-p t-spec)
+                     (%crisp-integer-scalar-type-p t-spec)
                      (%crisp-float-tensor-type-p t-spec)
+                     (%crisp-integer-tensor-type-p t-spec)
                      (and (consp canonical)
                           (string-equal (symbol-name (first canonical)) "CELL"))))))
 
-            ;; Gets-grad-output: everything above PLUS integer tensors.
-            ;; Integer scalars (ulong indices, etc.) are still excluded.
+            ;; Gets-grad-output: same set as differentiable-non-rec-p.
+            ;; Integer-typed inputs receive float-typed _GRAD slots.  Index
+            ;; uses produce always-zero gradients (correct semantics, free).
             (has-grad-output-p
-             (lambda (t-spec)
-               (or (funcall differentiable-non-rec-p t-spec)
-                   (%crisp-integer-tensor-type-p t-spec))))
+             (lambda (t-spec) (funcall differentiable-non-rec-p t-spec)))
 
             (non-rec-scalar-in-grad-params
              (loop for p in flat-inputs
@@ -580,27 +586,50 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                                  (not (funcall has-grad-output-p t-spec)))
                       collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
 
-            ;; For integer tensors: promote element type to float analog.
-            ;; For float tensors/scalars/cells: same as before.
+            ;; Promote each input's _GRAD type to a writeable float-adjoint slot.
+            ;; - integer/float tensor      → element-promoted tensor (read-write)
+            ;; - integer/float cell        → element-promoted cell (keyword form)
+            ;; - integer/float bare scalar → wrap in (cell <float-elem> :address-space :global)
+            ;;   so the gradient can flow back to the caller via pointer indirection
+            ;;   (bare scalar &out can't carry a value back).
             (non-rec-scalar-in-grad-types
              (loop for p in flat-inputs
                       for t-spec in flat-input-types
                       unless (or (%crisp-record-type-p t-spec)
                                  (member p record-exploded-syms :test #'eq)
                                  (not (funcall has-grad-output-p t-spec)))
-                      collect (if (%crisp-integer-tensor-type-p t-spec)
-                                  (%integer-tensor-elem-to-float t-spec)
-                                  (%ensure-tensor-read-write t-spec))))
+                      collect (cond
+                                ((%crisp-integer-tensor-type-p t-spec)
+                                 (%integer-tensor-elem-to-float t-spec))
+                                ((%crisp-float-tensor-type-p t-spec)
+                                 (%ensure-tensor-read-write t-spec))
+                                ((%crisp-integer-cell-type-p t-spec)
+                                 (%integer-cell-elem-to-float t-spec))
+                                ((let ((c (canonicalize-type-specifier t-spec)))
+                                   (and (consp c) (symbolp (first c))
+                                        (string-equal (symbol-name (first c)) "CELL")))
+                                 ;; Float-element cell: pass through unchanged.
+                                 t-spec)
+                                ((%crisp-integer-scalar-type-p t-spec)
+                                 (list 'cell (%integer-scalar-to-float-scalar t-spec)
+                                       :address-space :global))
+                                ((%crisp-float-type-p t-spec)
+                                 (list 'cell t-spec :address-space :global))
+                                (t (%ensure-tensor-read-write t-spec)))))
 
             (all-grad-out-params (append rec-grad-out-params non-rec-scalar-in-grad-params))
             (all-grad-out-types  (append rec-grad-out-types  non-rec-scalar-in-grad-types))
             (out-grads
              (loop for p in outputs
                       collect (intern (format nil "~a_GRAD" (symbol-name p)) pkg)))
+            ;; Output _GRAD seeds (passed in by caller, parallel to outputs).
+            ;; Promote element type to float adjoint when the output is integer-typed.
+            (out-grad-types
+             (mapcar (lambda (t-spec) (%promote-to-float-adjoint t-spec)) output-types))
             (bwd-params (append flat-inputs outputs out-grads
                                 (when all-grad-out-params (list '&out))
                                 all-grad-out-params))
-            (bwd-types  (append flat-input-types output-types output-types
+            (bwd-types  (append flat-input-types output-types out-grad-types
                                 (when all-grad-out-params (list '&out))
                                 all-grad-out-types))
 

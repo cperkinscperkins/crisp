@@ -936,6 +936,65 @@ category (:signed-int or :unsigned-int). Mirrors %crisp-float-tensor-type-p."
               (nth 3 canonical) (nth 4 canonical) (%get-tensor-ct canonical)))
       type-spec))
 
+;;; ----------------------------------------------------------
+;;; 101 endeavor: integer-input AD support — type promotion helpers
+;;; ----------------------------------------------------------
+
+(defun %crisp-integer-scalar-type-p (type-spec)
+  "Returns T if TYPE-SPEC (possibly a type alias) resolves to an integer
+scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
+  (let* ((resolved (if (symbolp type-spec) (resolve-type-alias type-spec) type-spec))
+         (info (and (symbolp resolved) (gethash resolved *crisp-types*))))
+    (and info (member (crisp-type-category info) '(:signed-int :unsigned-int)))))
+
+(defun %integer-scalar-to-float-scalar (type-spec)
+  "Returns the float-analog scalar type for an integer scalar:
+   64-bit (long, ulong) → double; smaller ints → float.  Type aliases are
+   resolved.  Returns TYPE-SPEC unchanged if it is not an integer scalar."
+  (if (%crisp-integer-scalar-type-p type-spec)
+      (let* ((resolved (if (symbolp type-spec) (resolve-type-alias type-spec) type-spec))
+             (info (gethash resolved *crisp-types*)))
+        (if (and info (>= (crisp-type-size info) 64))
+            'double
+            'float))
+      type-spec))
+
+(defun %crisp-integer-cell-type-p (type-spec)
+  "Returns T if TYPE-SPEC is a cell whose element type is an integer scalar."
+  (let ((canonical (canonicalize-type-specifier type-spec)))
+    (and (consp canonical)
+         (symbolp (first canonical))
+         (string-equal (symbol-name (first canonical)) "CELL")
+         (%crisp-integer-scalar-type-p (second canonical)))))
+
+(defun %integer-cell-elem-to-float (type-spec)
+  "Replaces the element type of an integer cell with its float analog.
+   Returns the keyword form (cell float-elem :address-space addr) — length 4 —
+   to satisfy downstream consumers like marshall-cell that reject the canonical
+   3-tuple positional form.  Returns TYPE-SPEC unchanged if it is not an
+   integer cell."
+  (if (%crisp-integer-cell-type-p type-spec)
+      (let* ((canonical (canonicalize-type-specifier type-spec))
+             (elem      (second canonical))
+             (addr      (nth 2 canonical))
+             (float-elem (%integer-scalar-to-float-scalar elem)))
+        (list (nth 0 canonical) float-elem :address-space addr))
+      type-spec))
+
+(defun %promote-to-float-adjoint (type-spec)
+  "Generalised float-adjoint type promotion for AD output gradient slots.
+   - integer scalar      → float / double scalar
+   - integer tensor      → float / double tensor (element-type promoted)
+   - integer cell        → cell of float / double
+   - everything else     → unchanged (already float, or non-numeric)
+   Used to produce caller-supplied _GRAD seed types and input _GRAD output
+   types that mirror the input shape with float adjoint values."
+  (cond
+    ((%crisp-integer-tensor-type-p type-spec) (%integer-tensor-elem-to-float type-spec))
+    ((%crisp-integer-cell-type-p   type-spec) (%integer-cell-elem-to-float   type-spec))
+    ((%crisp-integer-scalar-type-p type-spec) (%integer-scalar-to-float-scalar type-spec))
+    (t type-spec)))
+
 
 ;; is this actually used?
 (defun %autodiff-grad-cell-type ()
