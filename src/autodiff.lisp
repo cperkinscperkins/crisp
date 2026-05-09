@@ -346,11 +346,13 @@ accumulation via indexed (~ src_GRAD idx...) writes."
 (defun %crisp-float-type-p (type-spec)
   "Returns T if TYPE-SPEC (possibly a type alias) resolves to a Crisp
 float-category scalar type (float, double, half, bfloat16).
-Checks *crisp-types* directly first (for primitives like 'float),
-then falls back to compute-base-type for derived/alias types."
-  (let* ((direct-info (and (symbolp type-spec) (gethash type-spec *crisp-types*)))
-            (base (if direct-info type-spec (compute-base-type type-spec)))
-            (info (when base (gethash base *crisp-types*))))
+Resolves def-type aliases via *crisp-type-aliases* first, then checks
+*crisp-types* directly (for primitives like 'float), then falls back
+to compute-base-type for derived types."
+  (let* ((resolved (if (symbolp type-spec) (resolve-type-alias type-spec) type-spec))
+         (direct-info (and (symbolp resolved) (gethash resolved *crisp-types*)))
+         (base (if direct-info resolved (compute-base-type resolved)))
+         (info (when base (gethash base *crisp-types*))))
     (and info (eq (crisp-type-category info) :float))))
 
 ;;; ----------------------------------------------------------

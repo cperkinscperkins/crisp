@@ -1,6 +1,5 @@
 ;; TEST-HOIST[L0] : validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER c: 0 0 42 0
-;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
 
 ;; Place semantics: write through a cell-of-record containing an (array int 4) field.
 ;; Kernel sets values[2] = 42 via (set! (~ (values~ (~ c)) 2) 42).
