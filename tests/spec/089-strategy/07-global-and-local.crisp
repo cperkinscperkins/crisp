@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "kernel has no differentiable float parameters"
+;; SKIP-WITH[--differentiate]: "kernel has no input param, not differentiable"
 ;; TEST-WITH[--metadata]: crisp.compiler::validate-089-07-global-and-local
 ;;
 ;; Metadata: both :global-size and :local-size present in the metacrisp.
