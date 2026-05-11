@@ -559,6 +559,11 @@ Returns modified IR text with metadata."
   (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
   (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
   (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+  ;; 101 endeavor: clear parameterized-brand-names too — left-over state from a
+  ;; prior test (e.g. value-t marked parameterized after cell+fake-cell both
+  ;; defined value-t) was bleeding into later tests in 037-cell-branded, masking
+  ;; the brand-instance mismatch that errors/02 and errors/04 expect to detect.
+  (when (boundp '*parameterized-brand-names*) (clrhash *parameterized-brand-names*))
 
   (when (boundp '*partial-template-instantiations*)
         (loop for template-name being the hash-keys of *partial-template-instantiations*

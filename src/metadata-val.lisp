@@ -944,9 +944,10 @@
 
 (defun validate-rec-kb-not-float (ir-path)
   "Validates backward kernel for 05-not-float.
-   x field is int (no grad), y is float.
-   Expects: (VP_X VP_Y C C_GRAD &out VP_Y_GRAD) = 11 params = 10 commas."
-  (validate-generic-grad-signature ir-path "x_not_float_k" 10))
+   Post 101 endeavor: integer fields are also differentiable (with float-typed
+   _GRAD slots).  x (int) and y (float) both get gradient outputs.
+   Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas."
+  (validate-generic-grad-signature ir-path "x_not_float_k" 13))
 
 (defun validate-rec-kb-unused-field (ir-path)
   "Validates backward kernel for 07-unused-field.

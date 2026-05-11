@@ -170,14 +170,19 @@ avoid race conditions in parallel GPU threads (082-atomics)."
 
 
 
-(defun generate-backward-walk (flat-anf inputs outputs input-types output-types)
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
+                               &key kernel-pkg)
   "Walks a flattened ANF body backwards to accumulate adjoints.
 Returns a backward ANF body (a let form).
 Extended for feature 052: handles differentiable sub-function calls (B1/B2),
 multi-value bindings, HOF inline backward, errors for non-differentiable
 functions (B3), and mutation errors (B4).
 Extended for feature 080: tensor/vector/matrix inputs — element-wise gradient
-accumulation via indexed (~ src_GRAD idx...) writes."
+accumulation via indexed (~ src_GRAD idx...) writes.
+KERNEL-PKG (101 endeavor): when supplied, used to intern _GRAD output symbols
+in the kernel's home package, matching the bwd-params declaration.  Falls
+back to the input symbol's own package when unsupplied (preserves prior
+behaviour for sub-function backward bodies)."
   (let ((backward-forms nil)
            (adjoint-map (make-hash-table :test 'equal))
            ;; Build tensor-inputs-ht: maps each tensor-typed input symbol to its type.
@@ -194,7 +199,11 @@ accumulation via indexed (~ src_GRAD idx...) writes."
     (labels ((local-adj (v)
                (or (gethash v adjoint-map)
                    (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
-                                         (symbol-package v))))
+                                         ;; 101: prefer kernel-pkg so adj refs
+                                         ;; match the corresponding _GRAD param
+                                         ;; in bwd-params (which lives in the
+                                         ;; kernel's home package).
+                                         (or kernel-pkg (symbol-package v)))))
                      (setf (gethash v adjoint-map) adv)
                      adv)))
              (emit (form)
@@ -312,30 +321,78 @@ accumulation via indexed (~ src_GRAD idx...) writes."
             (t nil))))
 
       ;; Emit gradient output writes for all inputs.
-      ;; Tensor inputs: SKIP — per-element writes were already emitted in the
-      ;;   ~ case of %handle-single-value-backward when tensor-inputs-ht was consulted.
-      ;; Cell inputs:   (set! (~ in_GRAD) adj(in))
-      ;; Float scalar:  (set! in_GRAD adj(in))
+      ;; Tensor inputs:        SKIP — per-element writes already emitted in the
+      ;;                       ~ case of %handle-single-value-backward.
+      ;; Cell inputs:          (set! (~ in_GRAD) adj(in))   — original cell
+      ;; Wrapped-scalar grads: (set! (~ in_GRAD) adj(in))   — scalars wrapped in
+      ;;                       (cell <float> :address-space :global) per the 101
+      ;;                       endeavor.  Branch on the GRAD-OUTPUT type, not
+      ;;                       the input type.
+      ;; Bare scalar fallback: (set! in_GRAD adj(in)) — unused at kernel level
+      ;;                       once 101 wrapping is in effect; preserved for
+      ;;                       compatibility with sub-function backward bodies
+      ;;                       (which do return-by-value).
       (loop for in in inputs
                for in-type in input-types do
                  (let* ((in-grad    (intern (format nil "~A_GRAD" (symbol-name in))
-                                               (symbol-package in)))
+                                               ;; 101: prefer kernel-pkg so the
+                                               ;; emitted reference matches the
+                                               ;; bwd-params declaration.
+                                               (or kernel-pkg (symbol-package in))))
                            (canon-type (canonicalize-type-specifier
                                          (if (listp in-type) in-type (list in-type))))
-                           (is-cell    (and (consp canon-type)
-                                            (string-equal (symbol-name (first canon-type)) "CELL")))
-                           (is-tensor  (%crisp-float-tensor-type-p in-type)))
+                           (is-cell-input
+                            (and (consp canon-type)
+                                 (string-equal (symbol-name (first canon-type)) "CELL")))
+                           (is-tensor-input
+                            (or (%crisp-float-tensor-type-p in-type)
+                                (%crisp-integer-tensor-type-p in-type)))
+                           ;; New 101 path: scalar inputs are wrapped to a cell
+                           ;; in the grad-output signature; emit the cell write.
+                           (is-scalar-wrapped
+                            (and (not is-cell-input) (not is-tensor-input)
+                                 (or (%crisp-integer-scalar-type-p in-type)
+                                     (%crisp-float-type-p in-type)))))
                    (cond
-                     (is-tensor nil)  ; per-element writes already done
-                     (is-cell   (emit `(set! (~ ,in-grad) ,(local-adj in))))
-                     (t         (emit `(set! ,in-grad ,(local-adj in)))))))
+                     (is-tensor-input nil)  ; per-element writes already done
+                     (is-cell-input     (emit `(set! (~ ,in-grad) ,(local-adj in))))
+                     (is-scalar-wrapped (emit `(set! (~ ,in-grad) ,(local-adj in))))
+                     (t                 (emit `(set! ,in-grad ,(local-adj in)))))))
 
-      (let* ((local-bindings (loop for v being the hash-keys of adjoint-map
-                                         using (hash-value adv)
-                                         collect `(,adv 0.0)))
-                (result `(let ,local-bindings
-                            ,@(nreverse backward-forms))))
-        result))))
+      ;; 101 endeavor: per-adjoint type-aware zero-init.
+      ;;   - Input adjoints: init based on the corresponding input's promoted
+      ;;     type — long/ulong scalar or long-element handle → (as double 0.0);
+      ;;     others → 0.0.
+      ;;   - Intermediate adjoints: init based on the kernel's output adjoint
+      ;;     width — if any output is double-promoted, the chain-rule seeds
+      ;;     are double and intermediates must match → (as double 0.0).
+      ;;     Otherwise → 0.0.
+      ;; Crisp's analyzer hard-codes floatp literals to 'float, so we use
+      ;; the explicit (as double 0.0) cast form to get the let-binding to
+      ;; infer double for those slots.
+      (cl:flet ((promotes-to-double-p (t-spec)
+                  (let ((promoted (%promote-to-float-adjoint t-spec)))
+                    (or (eq promoted 'double)
+                        (and (consp promoted) (eq (second promoted) 'double))))))
+        (let* ((any-output-double
+                (some #'promotes-to-double-p output-types))
+               (typed-zero-for
+                (lambda (orig-sym)
+                  (let* ((idx (position orig-sym inputs))
+                         (in-type (when idx (nth idx input-types))))
+                    (cond
+                      ;; Input adjoint: type from the input
+                      (in-type
+                       (if (promotes-to-double-p in-type) '(as double 0.0) 0.0))
+                      ;; Intermediate adjoint: type from kernel-wide output width
+                      (any-output-double '(as double 0.0))
+                      (t 0.0)))))
+               (local-bindings (loop for v being the hash-keys of adjoint-map
+                                           using (hash-value adv)
+                                           collect `(,adv ,(funcall typed-zero-for v))))
+                  (result `(let ,local-bindings
+                              ,@(nreverse backward-forms))))
+          result)))))
 
 
 
@@ -567,13 +624,22 @@ to compute-base-type for derived types."
                                             append (list (intern (symbol-name fname) :keyword)
                                                          fsym))))
                   reassembly-bindings)
-            ;; Gradient cell outputs — float fields only
+            ;; Gradient cell outputs.  Per the 101 endeavor, integer fields
+            ;; are also differentiable — they get a float-element grad cell
+            ;; (long/ulong → cell of double; smaller ints → cell of float).
             (loop for (fname ftype fsym) in field-syms do
-              (when (%crisp-float-type-p ftype)
-                (let ((grad-sym (intern (format nil "~a_GRAD" (symbol-name fsym)) pkg)))
-                  (push grad-sym grad-out-params)
-                  (push '(cell float :address-space :global) grad-out-types)
-                  (push grad-sym grad-cell-syms)))))
+              (cond
+                ((%crisp-float-type-p ftype)
+                 (let ((grad-sym (intern (format nil "~a_GRAD" (symbol-name fsym)) pkg)))
+                   (push grad-sym grad-out-params)
+                   (push '(cell float :address-space :global) grad-out-types)
+                   (push grad-sym grad-cell-syms)))
+                ((%crisp-integer-scalar-type-p ftype)
+                 (let* ((grad-sym (intern (format nil "~a_GRAD" (symbol-name fsym)) pkg))
+                        (float-elem (%integer-scalar-to-float-scalar ftype)))
+                   (push grad-sym grad-out-params)
+                   (push (list 'cell float-elem :address-space :global) grad-out-types)
+                   (push grad-sym grad-cell-syms))))))
 
           ;; --- Non-record input: pass through as-is -----------
           (progn
@@ -594,18 +660,45 @@ to compute-base-type for derived types."
 
 (defun %backward-skip-fn-p (fn-sym)
   "Returns T if FN-SYM should be silently skipped in the AD backward walk.
-Skips: system-generated functions (name contains %), AS/AS-* type casts and
-derived-type coercions, and TO-<int-type> integer conversions."
+Skips:
+  - System-generated functions (name contains %)
+  - AS / AS-* type casts and derived-type coercions
+  - TO-<int-type> integer conversions
+  - 101 endeavor: built-in metadata helpers and view constructors.
+    For metadata helpers (num-rows, num-cols, get-layout, length~, extents~,
+    strides~, parent~, bytes~, contiguous-term~) the result is independent
+    of the input's data values — gradient is zero, sink-style.
+    For view constructors (make-matrix, make-vector, make-cell, make-tensor)
+    the result is a view of the same underlying storage — for chain-rule
+    purposes we treat them as sinks (gradient does not flow back through
+    the constructor).  This is correct when the view is used only for
+    metadata extraction; it is conservative (loses gradient signal) when
+    the view is used to read/write the underlying data.  A future extension
+    could add a pass-through gradient rule for that case."
   (let ((name (symbol-name fn-sym)))
-    (or
-     (find #\% name)
-     (string= name "AS")
-     (and (>= (length name) 3) (string= (subseq name 0 3) "AS-"))
-     (loop for suffix in '("ULONG" "LONG" "UINT" "INT" "USHORT" "SHORT" "UCHAR" "CHAR" "BOOL")
-              when (and (>= (length name) (+ 3 (length suffix)))
-                        (string= (subseq name 0 3) "TO-")
-                        (string= (subseq name (- (length name) (length suffix))) suffix))
-              return t))))
+    (cl:flet ((prefix-or-mangled-p (prefix)
+                ;; Matches PREFIX exactly or PREFIX_<mangle-suffix>.
+                (let ((plen (length prefix)))
+                  (or (string= name prefix)
+                      (and (> (length name) plen)
+                           (string= (subseq name 0 plen) prefix)
+                           (cl:char= (cl:char name plen) #\_))))))
+      (or
+       (find #\% name)
+       (string= name "AS")
+       (and (>= (length name) 3) (string= (subseq name 0 3) "AS-"))
+       (loop for suffix in '("ULONG" "LONG" "UINT" "INT" "USHORT" "SHORT" "UCHAR" "CHAR" "BOOL")
+                when (and (>= (length name) (+ 3 (length suffix)))
+                          (string= (subseq name 0 3) "TO-")
+                          (string= (subseq name (- (length name) (length suffix))) suffix))
+                return t)
+       (loop for prefix in '("NUM-ROWS" "NUM-COLS" "GET-LAYOUT" "BYTES~"
+                             "LENGTH~" "EXTENTS~" "STRIDES~" "PARENT~"
+                             "CONTIGUOUS-TERM~" "ELEMENT-TYPE~" "ADDRESS-SPACE~"
+                             "ALIGN~" "NUM-DIMS~" "OFFSET~"
+                             "MAKE-MATRIX" "MAKE-VECTOR" "MAKE-CELL" "MAKE-TENSOR"
+                             "TRANSPOSE" "TRANSPOSE!" "ROW" "COL" "SLICE")
+             when (prefix-or-mangled-p prefix) return t)))))
 
 
 

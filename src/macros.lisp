@@ -702,7 +702,8 @@ in the signature remain zero — the correct gradient for integer arithmetic."
                                 collect form))
                          (raw-backward-walk
                           (generate-backward-walk flat-anf diff-flat-inputs outputs
-                                                  diff-flat-input-types output-types))
+                                                  diff-flat-input-types output-types
+                                                  :kernel-pkg pkg))
                          (backward-walk
                           (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
                          (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))

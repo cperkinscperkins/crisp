@@ -184,7 +184,8 @@
       (true (gethash vp-sym subs-ht)))))
 
 (define-test (record-ad-transforms-test expand-int-field-no-grad)
-  "An int field produces no gradient cell output."
+  "Post 101 endeavor: int fields ALSO produce gradient cell outputs (with
+   float-element type promotion).  Renamed in spirit — both fields differentiate."
   (initialize-compiler)
   (%eval-in-crisp-language "(def-record unit-mixed (x float) (y int))")
   (cl:let* ((pkg (find-package :crisp-language))
@@ -196,9 +197,9 @@
                                                       pkg)
       ;; Still two scalar inputs
       (is = 2 (length flat-ins))
-      ;; But only ONE grad cell (float field only)
-      (is = 1 (length grad-params))
-      (is = 1 (length grad-syms)))))
+      ;; Both fields now produce grad cells (101: int → cell of float)
+      (is = 2 (length grad-params))
+      (is = 2 (length grad-syms)))))
 
 (define-test (record-ad-transforms-test expand-ct-field-excluded)
   "c-t fields do not appear as scalar inputs or grad outputs."
