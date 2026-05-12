@@ -1,0 +1,13 @@
+;; TEST-WITH[--metadata] : validate-no-sroa-grad-leak
+
+;; Locks: a rank-2 tensor (matrix) at the kernel boundary destructures into
+;; ~9 ulong scalar fields under SROA (2 offsets, 2 strides, 2 extents, length,
+;; parent ptr+size). The backward kernel signature must NOT surface any of
+;; those as standalone _grad cells.
+
+(def-type mat-t (matrix float :address-space :global :align :compact))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel mat_diag_dot (m &out c)
+    (declare #'(mat-t &out out-c))
+    (set! (~ c) (* (~ m 0 0) (~ m 1 1))))

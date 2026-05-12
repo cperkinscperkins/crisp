@@ -1,0 +1,14 @@
+;; TEST-WITH[--metadata] : validate-no-sroa-grad-leak
+
+;; Locks: a multi-field record at the kernel boundary, with mixed
+;; int/float fields, destructures into per-field declared-signature
+;; entries. The backward kernel must produce exactly one _grad entry
+;; per field (pt_x_grad, pt_y_grad) -- never stray entries like
+;; pt_grad alone or extra SROA-derived names.
+
+(def-record pt (x float) (y int))
+(def-type   out-c (cell float :address-space :global))
+
+(def-kernel pt_mul (p &out c)
+    (declare #'(pt &out out-c))
+    (set! (~ c) (* (x~ p) (y~ p))))
