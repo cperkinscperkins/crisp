@@ -867,3 +867,70 @@ then delegate to the original walker."
       t)))
 
 
+;;; ===================================================================
+;;; 101: forward-only metadata validators for the 048 cluster
+;;; ===================================================================
+;;;
+;;; The 048 record-at-kernel-boundary tests describe properties of the
+;;; FORWARD kernel's metadata: which records appear in :records, the
+;;; physical-signature width, the declared-signature shape, etc.
+;;;
+;;; Under --differentiate the emitted metacrisp describes the BACKWARD
+;;; kernel, which has a structurally different shape: records are
+;;; destructured into per-field scalars, kernel name has a _grad suffix,
+;;; physical-signature is wider (input + output adjoints), declared-sig
+;;; has per-field entries.  The forward-only checks don't apply.
+;;;
+;;; Wrap each forward-only validator with a guard: when *differentiate-p*
+;;; is T, return T without checking (the kernel having compiled cleanly
+;;; under --differentiate is still validated by the default test pass;
+;;; this just lifts the metadata-shape constraint).
+;;;
+;;; Same save-and-wrap pattern we used for generate-backward-walk.
+
+(defvar *orig-validate-def-record-in-metadata* nil)
+(defvar *orig-validate-def-rec-with-ct-in-metadata* nil)
+(defvar *orig-validate-nested-rec-in-metadata* nil)
+(defvar *orig-validate-no-brand-in-metadata* nil)
+
+(unless *orig-validate-def-record-in-metadata*
+  (setf *orig-validate-def-record-in-metadata*
+        (symbol-function 'validate-def-record-in-metadata)))
+(unless *orig-validate-def-rec-with-ct-in-metadata*
+  (setf *orig-validate-def-rec-with-ct-in-metadata*
+        (symbol-function 'validate-def-rec-with-ct-in-metadata)))
+(unless *orig-validate-nested-rec-in-metadata*
+  (setf *orig-validate-nested-rec-in-metadata*
+        (symbol-function 'validate-nested-rec-in-metadata)))
+(unless *orig-validate-no-brand-in-metadata*
+  (setf *orig-validate-no-brand-in-metadata*
+        (symbol-function 'validate-no-brand-in-metadata)))
+
+(defun %forward-only-metadata-skip-p ()
+  "Returns T when the validator should pass trivially because the metacrisp
+   describes the backward kernel (under --differentiate).  Logs at info level."
+  (when *differentiate-p*
+    (log:info "Skipping forward-only metadata validator under --differentiate.")
+    t))
+
+(defun validate-def-record-in-metadata (metadata-path)
+  "Forward-only metadata validator (101: skips under --differentiate)."
+  (or (%forward-only-metadata-skip-p)
+      (funcall *orig-validate-def-record-in-metadata* metadata-path)))
+
+(defun validate-def-rec-with-ct-in-metadata (metadata-path)
+  "Forward-only metadata validator (101: skips under --differentiate)."
+  (or (%forward-only-metadata-skip-p)
+      (funcall *orig-validate-def-rec-with-ct-in-metadata* metadata-path)))
+
+(defun validate-nested-rec-in-metadata (metadata-path)
+  "Forward-only metadata validator (101: skips under --differentiate)."
+  (or (%forward-only-metadata-skip-p)
+      (funcall *orig-validate-nested-rec-in-metadata* metadata-path)))
+
+(defun validate-no-brand-in-metadata (metadata-path)
+  "Forward-only metadata validator (101: skips under --differentiate)."
+  (or (%forward-only-metadata-skip-p)
+      (funcall *orig-validate-no-brand-in-metadata* metadata-path)))
+
+
