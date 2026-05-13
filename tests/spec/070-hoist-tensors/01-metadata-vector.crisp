@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; KIP-WITH[--differentiate]: "Tensor AD not yet supported"
 ;; TEST-WITH[--metadata]: crisp.compiler::validate-070-01-vector-metadata
 
 ;; Validates the .metacrisp output for a kernel with a vector parameter:
