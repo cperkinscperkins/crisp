@@ -1,0 +1,20 @@
+;; TEST-WITH[--metadata] : validate-no-sroa-grad-leak
+
+;; Locks: a def-function with multiple record-typed parameters. Each
+;; record's per-field adjoints flow correctly through the constructor
+;; chain rule back to the kernel inputs. Verifies the call-site delta
+;; distribution (N deltas per record arg, in field-declaration order).
+
+(def-record point (x float) (y float))
+
+(def-function combined (p1 p2)
+    (declare #'(point point => float))
+    (+ (x~ p1) (x~ p2)))
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel measure (ax ay bx by &out res)
+    (declare #'(float float float float &out out-c))
+    (let ((pa (make-point :x ax :y ay))
+          (pb (make-point :x bx :y by)))
+      (set! (~ res) (combined pa pb))))

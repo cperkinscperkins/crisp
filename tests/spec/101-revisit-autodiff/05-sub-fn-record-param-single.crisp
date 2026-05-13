@@ -1,0 +1,19 @@
+;; TEST-WITH[--metadata] : validate-no-sroa-grad-leak
+
+;; Locks: a def-function with a single record-typed parameter is
+;; differentiable. The kernel constructs the record inline via make-point,
+;; passes it to the sub-function, and the backward correctly propagates
+;; per-field adjoints back through the constructor to the kernel inputs.
+
+(def-record point (x float) (y float))
+
+(def-function dot-x-y (p)
+    (declare #'(point => float))
+    (+ (x~ p) (y~ p)))
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel measure (ax ay &out res)
+    (declare #'(float float &out out-c))
+    (let ((pa (make-point :x ax :y ay)))
+      (set! (~ res) (dot-x-y pa))))

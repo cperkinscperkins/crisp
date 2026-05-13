@@ -109,3 +109,665 @@
                   (setf ok nil))))))))
     ok))
 
+
+;;; ===================================================================
+;;; 101-revisit-autodiff Part 1: record params in sub-function diff
+;;; ===================================================================
+;;;
+;;; Records auto-SROA at every function boundary (verified empirically:
+;;; `dist(point, point)` compiles to `dist_point_point(float, float, float, float)`).
+;;; The 052 sub-function diff pipeline already handles float-scalar
+;;; functions correctly. The only thing blocking record params is two
+;;; gates that filter on `%crisp-float-type-p`, which sees the declared
+;;; record type rather than the post-SROA float fields.
+;;;
+;;; This overlay widens both gates to count a record param's
+;;; runtime-field contributions toward the differentiable-param count.
+
+;; src/autodiff.lisp - helpers for the 101 part-1 sub-function record diff.
+;;
+;; Pre-registration runs BEFORE def-record macros expand and register types
+;; in *crisp-types*. To know a record's runtime-field count at pre-reg time,
+;; we scan the forms list ourselves for (def-record ...) entries and build
+;; an alist. Post-walk-code-forms code paths can fall back to *crisp-types*.
+
+(defun %scan-forms-for-record-info (forms)
+  "Walks FORMS (recursing through progn / with-template-type) and returns
+   an alist mapping (symbol-name RECORD-NAME) -> count of non-:c-t,
+   non-brand runtime fields. Used during pre-registration when *crisp-types*
+   isn't yet populated.
+
+   Also includes derived-from-record types: when a (def-derived-type NEW BASE ...)
+   form is encountered where BASE is a record already in the alist, NEW is
+   added with the same field count."
+  (let ((info nil))
+    (labels ((scan (forms)
+               (dolist (f forms)
+                 (cond
+                   ((and (consp f) (eq (car f) 'def-record))
+                    (let* ((name (second f))
+                           (members (cddr f))
+                           (rt-count
+                            (count-if
+                             (lambda (m)
+                               (and (consp m)
+                                    (not (eq (car m) 'brand))
+                                    (not (and (consp m) (eq (third m) :c-t)))))
+                             members)))
+                      (push (cons (symbol-name name) rt-count) info)))
+                   ((and (consp f) (eq (car f) 'def-derived-type)
+                         (>= (length f) 3)
+                         (symbolp (second f))
+                         (symbolp (third f)))
+                    ;; (def-derived-type NEW BASE [...])
+                    (let* ((new-name (second f))
+                           (base-name (third f))
+                           (base-entry (assoc (symbol-name base-name) info
+                                              :test #'string-equal)))
+                      (when base-entry
+                        (push (cons (symbol-name new-name) (cdr base-entry)) info))))
+                   ((and (consp f) (eq (car f) 'progn))
+                    (scan (rest f)))
+                   ((and (consp f) (eq (car f) 'with-template-type))
+                    (scan (cddr f)))))))
+      (scan forms))
+    info))
+
+(defun %resolve-to-base-type-for-records (pd-type)
+  "If PD-TYPE names a derived type whose base is a record, returns the
+   base record type symbol. Otherwise returns PD-TYPE unchanged.
+
+   Records are SROA'd at every function boundary, and derived-type wrappers
+   preserve that property. This helper lets the sub-function gate widening
+   accept derived-from-record types (e.g. `coordinate` derived from `point`)."
+  (let* ((base (if (consp pd-type) (first pd-type) pd-type)))
+    (or (cl:ignore-errors
+         (cl:let ((computed (compute-base-type pd-type)))
+           (cl:when (and (symbolp computed) (%crisp-record-type-p computed))
+             computed)))
+        base)))
+
+(defun %count-differentiable-contributions (pd-type &optional record-info)
+  "Returns the number of float-scalar contributions this parameter type
+   makes post-SROA, at the SUB-FUNCTION level (def-function).
+
+   IMPORTANT: This is the gate widening for the 052 sub-function pipeline,
+   which was previously float-scalar-only. The 101 Part 1 endeavor adds
+   record support here, leveraging that records auto-SROA at every function
+   boundary.
+
+   - Records (and derived-from-record types) contribute their runtime-field count.
+   - Float scalars contribute 1.
+   - Anything else (cells, tensors, structs, integer scalars) contributes 0.
+     Cells and tensors travel via the kernel-level differentiability path
+     (see macros.lisp:differentiable-non-rec-p), not via the sub-function
+     pipeline; counting them here would cause forward-only kernels with
+     cell params to incorrectly trigger _GRAD generation.
+
+   RECORD-INFO (optional alist of (NAME-STR . FIELD-COUNT)) bridges the
+   pre-registration ordering issue where *crisp-types* isn't yet
+   populated. When supplied, it takes priority over the runtime registry."
+  (let* ((base (if (consp pd-type) (first pd-type) pd-type))
+         (name-str (and (symbolp base) (symbol-name base)))
+         (info-hit (and record-info name-str
+                        (assoc name-str record-info :test #'string-equal)))
+         ;; Resolve derived-from-record types to their base record.
+         (resolved (%resolve-to-base-type-for-records pd-type)))
+    (cond
+      (info-hit (cdr info-hit))
+      ((%crisp-record-type-p resolved)
+       (length (or (%get-record-runtime-fields resolved) '())))
+      ((%crisp-float-type-p pd-type) 1)
+      (t 0))))
+
+;; src/analysis/core.lisp
+;; Widen pre-registration to count records via their runtime fields.
+;; HOF path is unchanged for now (open Q4 — HOF + record params deferred).
+(defun %pre-register-differentiable-fns (forms &optional record-info)
+  "When *differentiate-p* is T, walk FORMS for def-function forms and
+pre-register them in *differentiable-functions* (and *differentiable-hof-store*
+for HOF functions). Records contribute their runtime-field count
+(post-SROA shape) to the differentiable-param count.
+
+RECORD-INFO is the alist built by %scan-forms-for-record-info. At top-level
+call we build it once and pass it down through progn recursion so each
+recursive call can reuse it."
+  (let ((record-info (or record-info (%scan-forms-for-record-info forms))))
+  (when *differentiate-p*
+    (dolist (form forms)
+      (cond
+        ((and (consp form) (eq (car form) 'def-function))
+         (let* ((name (second form))
+                (params (third form))
+                (body-and-loc (cdddr form)))
+           (multiple-value-bind (declare-forms declarations fn-body)
+               (%extract-fn-body-and-declarations body-and-loc)
+             (declare (ignore declare-forms))
+             (let ((is-system (member '(crisp-system-generated) declarations :test #'equal)))
+               (unless (or is-system (%fn-name-is-grad-p name))
+                 (handler-case
+                   (multiple-value-bind (env return-types)
+                       (parse-function-declarations params declarations)
+                     (let* ((float-param-entries
+                             (loop for pd in env
+                                   when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                             (%crisp-float-type-p (parameter-def-type pd)))
+                                   collect pd))
+                            ;; Widened: count differentiable contributions including
+                            ;; records (which contribute their runtime-field count).
+                            (n-diff-params
+                             (loop for pd in env
+                                   when (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                   sum (%count-differentiable-contributions (parameter-def-type pd) record-info)))
+                            (n-return (length (remove nil return-types)))
+                            (fn-param-entries
+                             (loop for pd in env
+                                   for i from 0
+                                   when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                             (%crisp-function-type-p (parameter-def-type pd)))
+                                   collect (cons i pd)))
+                            (is-hof (consp fn-param-entries)))
+                       (when (> n-diff-params 0)
+                         (if is-hof
+                             ;; HOF path unchanged — open Q4 deferred.
+                             (let* ((fn-param-idx (car (car fn-param-entries)))
+                                    (fn-param-sym (parameter-def-name (cdr (car fn-param-entries))))
+                                    (float-param-syms (mapcar #'parameter-def-name float-param-entries))
+                                    (clean-body  (loop for f in fn-body
+                                                       unless (and (atom f) (not (symbolp f)))
+                                                       collect f))
+                                    (param-syms (loop for pd in env collect (parameter-def-name pd))))
+                               (%register-hof-entry name "definition" param-syms fn-param-idx fn-param-sym float-param-syms clean-body (length float-param-entries) n-return))
+                             (%register-standard-differentiable-entry name "definition" n-diff-params n-return)))))
+                   (error (e)
+                     (log:debug "AUTODIFF: Skipping pre-registration of ~a -- type parse error: ~a" name e))))))))
+
+        ((and (consp form) (eq (car form) 'progn))
+         (%pre-register-differentiable-fns (rest form) record-info))
+
+        ((and (consp form) (eq (car form) 'with-template-type))
+         (dolist (bform (cddr form))
+           (when (and (consp bform) (eq (car bform) 'def-function))
+             (let* ((name   (second bform))
+                    (params (third bform))
+                    (body-and-loc (cdddr bform)))
+               (multiple-value-bind (declare-forms declarations fn-body)
+                   (%extract-fn-body-and-declarations body-and-loc)
+                 (declare (ignore declare-forms declarations))
+                 (multiple-value-bind (fn-param-idx fn-param-sym float-param-syms)
+                     (%detect-hof-param-via-funcall params fn-body)
+                   (cond
+                     ((and fn-param-idx (not (gethash name *differentiable-functions*)))
+                      (%register-hof-entry name "template via with-template-type" params fn-param-idx fn-param-sym float-param-syms fn-body (1- (length params)) 1))
+                     ((not (gethash name *differentiable-functions*))
+                      (let ((n-params (count-if (lambda (p) (not (string-equal (symbol-name p) "&OUT"))) params)))
+                        (%register-standard-differentiable-entry name "template via with-template-type" n-params 1 :optimistic-p t)))))))))))))))
+
+;; src/autodiff.lisp
+;; Dynamic var: when bound during a backward walk, maps each record-typed
+;; symbol (a sub-function parameter, OR a kernel-level ANF temp bound to
+;; %construct-struct) to its per-field adjoint info.
+;;
+;; Map value shape: alist of (FIELD-NAME-STRING . FIELD-ADJ-SYM) in
+;; declaration order.  Stored as an alist (not a hash) so iteration order
+;; is portable across implementations.  Consumers:
+;;   - The accessor rule in %handle-single-value-backward routes adjoint
+;;     flow from (FIELD~ p) to the per-field synth adj.
+;;   - The %construct-struct case flows per-field adjs to constructor args.
+;;   - %emit-sub-fn-backward distributes deltas per-field when an arg is
+;;     a record-valued symbol.
+(defvar *record-param-field-adjs* nil
+  "Hash table: record-sym -> alist of (FIELD-NAME-STR . FIELD-ADJ-SYM)
+   in declaration order.  Bound during backward walk for sub-functions
+   with record params, and for kernels with record-valued ANF temps
+   (constructed via make-RECORD).  Otherwise NIL.")
+
+;; src/autodiff.lisp - override
+;; Widen the call-site delta-to-arg mapping.  Previously assumed each arg
+;; gets exactly one delta from the gradient call (matches scalar params).
+;; For record args (looked up via *record-param-field-adjs*), consume N
+;; deltas (one per field) and accumulate them into the arg's per-field
+;; adjoints in field-declaration order.
+(defun %emit-sub-fn-backward (fn args bkwd-fn t-adj-forms n-fp pkg emit-fn local-adj-fn &optional (sym-prefix "BW"))
+  "Emits the multi-value call to BKWD-FN and accumulates each returned
+   delta into the corresponding arg's adjoint slot.
+
+   For scalar args: one delta per arg, accumulated into (local-adj arg).
+   For record args (looked up via *record-param-field-adjs*): N deltas per
+   arg (N = number of fields), accumulated into each per-field synth adj
+   in declaration order."
+  (declare (ignore fn))
+  (let* ((deltas (loop for i from 0 below n-fp
+                       collect (intern (format nil "%~A_D~a" sym-prefix i) pkg)))
+         (accum-forms nil)
+         (delta-idx 0))
+    (dolist (arg args)
+      (cond
+        ;; Record arg with per-field adjs: distribute the next N deltas
+        ;; across the arg's fields in declaration order (alist iteration).
+        ((and (symbolp arg)
+              *record-param-field-adjs*
+              (gethash arg *record-param-field-adjs*))
+         (let ((field-alist (gethash arg *record-param-field-adjs*)))
+           (loop for (field-name-str . field-adj-sym) in field-alist
+                 when (< delta-idx n-fp)
+                 do (push `(set! ,field-adj-sym
+                                 (+ ,field-adj-sym ,(nth delta-idx deltas)))
+                          accum-forms)
+                    (incf delta-idx))))
+        ;; Scalar symbol arg: single delta accumulation (existing behavior).
+        ((symbolp arg)
+         (when (< delta-idx n-fp)
+           (push `(set! ,(funcall local-adj-fn arg)
+                        (+ ,(funcall local-adj-fn arg) ,(nth delta-idx deltas)))
+                 accum-forms)
+           (incf delta-idx)))
+        ;; Literal/non-symbol arg: no adjoint flow, but it still consumes
+        ;; a delta slot in the gradient call return arity if the callee
+        ;; treats it that way.  Conservative behavior: skip without
+        ;; consuming a delta (matches the pre-101 behavior).
+        (t nil)))
+    (setf accum-forms (nreverse accum-forms))
+    (when accum-forms
+      (funcall emit-fn
+               `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+                  (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adj-forms))))
+                    ,@accum-forms))))))
+
+;; src/autodiff.lisp - override
+;; Add a record-aware accessor case BEFORE the existing identity-accessor case.
+;; When (FIELD~ p) is encountered and p is a record param, route adjoint
+;; flow to the per-field synthetic adjoint instead of p_adj.
+(defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
+                                      &key hof-handler-fn (error-on-unknown t)
+                                           tensor-inputs-ht)
+  "Generates backward-pass adjoint updates for a single ANF binding (v := expr).
+TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for
+tensor inputs.  *RECORD-PARAM-FIELD-ADJS*, when bound, maps record-param
+symbols to a hash of (field-name-string -> per-field-adj-symbol); the
+accessor rule routes adjoint into that synthetic per-field adj instead of
+the record's collective adj."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (cond
+      ((and (consp expr) (eq (car expr) '+))
+        (let ((a (cadr expr)) (b (caddr expr)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
+      ((and (consp expr) (eq (car expr) '-))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
+      ((and (consp expr) (eq (car expr) '*))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
+      ((and (consp expr) (eq (car expr) '/))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
+      ((and (consp expr) (eq (car expr) 'sin))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (let* ((a-adj (local-adj a))
+                   (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
+              (setf (gethash cos-a adjoint-map) cos-a)
+              (emit `(set! ,cos-a (cos ,a)))
+              (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
+      ((and (consp expr) (eq (car expr) 'cos))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (let* ((a-adj (local-adj a))
+                   (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
+              (setf (gethash sin-a adjoint-map) sin-a)
+              (emit `(set! ,sin-a (sin ,a)))
+              (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
+      ((and (consp expr) (eq (car expr) '~))
+        (let* ((src     (cadr expr))
+               (indices (cddr expr))
+               (v-adj   (local-adj v)))
+          (when (symbolp src)
+            (cond
+              ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
+               (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
+                                       (symbol-package src))))
+                 (emit `(atomic-add! (~ ,grad-sym ,@indices) ,v-adj))))
+              (t
+               (emit `(set! ,(local-adj src) (+ ,(local-adj src) ,v-adj))))))))
+      ;; Differentiable sub-function call
+      ((and (consp expr)
+            (symbolp (car expr))
+            (gethash (car expr) *differentiable-functions*))
+        (let* ((fn   (car expr))
+               (args (cdr expr))
+               (info (gethash fn *differentiable-functions*)))
+          (if (getf info :hof)
+              (if hof-handler-fn
+                  (funcall hof-handler-fn fn args v)
+                  (error "HOF handler required for sub-function ~A but not provided" fn))
+              (%emit-sub-fn-backward fn args
+                                     (getf info :bkwd-name)
+                                     (list (local-adj v))
+                                     (getf info :n-float-params)
+                                     (symbol-package v)
+                                     emit-fn local-adj-fn
+                                     (if (symbolp v) (symbol-name v) "BW")))))
+      ;; NEW: Record-aware accessor.  (FIELD~ p) where p is a record param/temp
+      ;; in *record-param-field-adjs*.  Route adjoint into the per-field synthetic
+      ;; adj instead of p_adj.  Register the field-adj-sym in adjoint-map so the
+      ;; walker's "build local bindings" phase emits a `(<field-adj-sym> 0.0)`
+      ;; binding for it.
+      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
+            (let ((fname (symbol-name (car expr))))
+              (and (> (length fname) 1)
+                   (cl:char= (cl:char fname (1- (length fname))) #\~)))
+            *record-param-field-adjs*
+            (symbolp (cadr expr))
+            (gethash (cadr expr) *record-param-field-adjs*))
+        (let* ((accessor (symbol-name (car expr)))
+               (field-name-str (subseq accessor 0 (1- (length accessor))))
+               (record-sym (cadr expr))
+               (field-alist (gethash record-sym *record-param-field-adjs*))
+               (field-entry (assoc field-name-str field-alist :test #'string-equal))
+               (field-adj-sym (cdr field-entry))
+               (v-adj (local-adj v)))
+          (when field-adj-sym
+            (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
+            (emit `(set! ,field-adj-sym (+ ,field-adj-sym ,v-adj))))))
+      ;; NEW: Record constructor backward rule.
+      ;; `(v (%construct-struct RECORD-NAME arg1 arg2 ...))` where v is a
+      ;; record-valued ANF temp tracked in *record-param-field-adjs*.  Flow
+      ;; per-field adjs back to the constructor args in field-declaration order.
+      ((and (consp expr) (symbolp (car expr))
+            (string-equal (symbol-name (car expr)) "%CONSTRUCT-STRUCT")
+            *record-param-field-adjs*
+            (gethash v *record-param-field-adjs*))
+        (let* ((ctor-args (cddr expr))
+               (field-alist (gethash v *record-param-field-adjs*)))
+          (loop for (field-name-str . field-adj-sym) in field-alist
+                for ctor-arg in ctor-args
+                when (and (symbolp ctor-arg) field-adj-sym)
+                do (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
+                   (emit `(set! ,(local-adj ctor-arg)
+                                (+ ,(local-adj ctor-arg) ,field-adj-sym))))))
+      ;; Existing accessor rule (identity flow to record/struct symbol)
+      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
+            (let ((fname (symbol-name (car expr))))
+              (and (> (length fname) 1)
+                   (cl:char= (cl:char fname (1- (length fname))) #\~))))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
+      ((and (consp expr) (symbolp (car expr))
+            (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
+       nil)
+      ((and (consp expr) (symbolp (car expr))
+            (string= (symbol-name (car expr)) "IF"))
+       nil)
+      ((and (consp expr) (symbolp (car expr))
+            (%backward-skip-fn-p (car expr)))
+       nil)
+      ((and (consp expr) (symbolp (car expr)))
+       (when error-on-unknown
+         (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
+      (t nil))))
+
+;; src/autodiff.lisp - override
+;; Widen the second gate. By this time *crisp-types* is populated, so we can
+;; use %crisp-record-type-p directly without the forms-scan helper.
+;; For record params, allocate per-field synthetic adj symbols, bind
+;; *record-param-field-adjs* during the walk, and emit per-field return values.
+(defun %trivial-accessor-body-p (body-forms)
+  "Returns T if BODY-FORMS is a single (return (%extract-struct-member obj idx))
+   — i.e. a trivial field-extraction accessor.  Used to detect auto-generated
+   accessors that def-derived-type emits without a `(crisp-system-generated)`
+   declaration (def-record's accessors ARE marked, but def-derived-type's are
+   not).  These accessors don't need their own _GRAD: the kernel-side accessor
+   rule handles them inline."
+  (let ((real-forms (remove-if (lambda (f)
+                                 (and (consp f) (member (car f) '(declare))))
+                               body-forms)))
+    (and (= (length real-forms) 1)
+         (let ((form (first real-forms)))
+           (and (consp form) (eq (car form) 'return)
+                (consp (second form))
+                (symbolp (caadr form))
+                (string-equal (symbol-name (caadr form)) "%EXTRACT-STRUCT-MEMBER"))))))
+
+(defun %generate-backward-function-ast (name params declarations body-forms)
+  "Generates the backward companion (def-function NAME_GRAD ...) for a
+differentiable user function.
+
+101 part 1: counts record params as contributing their runtime-field count
+toward n-float-params (records auto-SROA at every function boundary).
+For record params, builds a per-field synthetic adjoint map and binds
+*record-param-field-adjs* during the backward walk.
+
+Also skips trivial-accessor bodies — def-derived-type's auto-generated
+accessors are missing the (crisp-system-generated) marker but should be
+treated equivalently."
+  (log:debug "%%GBFA called for ~a is-system=~a" name (member '(crisp-system-generated) declarations :test #'equal))
+  (when (%trivial-accessor-body-p body-forms)
+    (log:info "AUTODIFF: ~a is a trivial field-extraction accessor — skipping _GRAD generation." name)
+    (return-from %generate-backward-function-ast nil))
+  (let* ((pkg (symbol-package name)))
+    (multiple-value-bind (env return-types)
+        (parse-function-declarations params declarations)
+      (let* ((float-param-entries
+              (loop for pd in env
+                    when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                              (%crisp-float-type-p (parameter-def-type pd)))
+                    collect pd))
+             (float-param-syms (mapcar #'parameter-def-name float-param-entries))
+             ;; Record params + their field info, in declaration order.
+             ;; Each entry: (record-param-sym resolved-record-type
+             ;;              ((field-name . field-adj-sym) ...))
+             ;; Resolves derived-from-record types so coordinate (derived
+             ;; from point) is treated the same as point.
+             (record-param-info
+              (loop for pd in env
+                    for resolved = (%resolve-to-base-type-for-records (parameter-def-type pd))
+                    when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                              (%crisp-record-type-p resolved))
+                    collect
+                    (let* ((rsym (parameter-def-name pd))
+                           (fields (%get-record-runtime-fields resolved)))
+                      (list rsym resolved
+                            (loop for field-info in fields
+                                  for field-name = (first field-info)
+                                  collect (cons field-name
+                                                (intern (format nil "~a_~a_ADJ"
+                                                                (symbol-name rsym)
+                                                                (symbol-name field-name))
+                                                        pkg)))))))
+             ;; Per-field synthetic adj symbols, in declaration order.
+             (record-field-adj-syms
+              (loop for info in record-param-info
+                    append (mapcar #'cdr (third info))))
+             ;; Full ordered list of "differentiable param syms" used for
+             ;; emitting the multi-value return. Per-field adjs are listed
+             ;; in the order they appear in the parameter list.
+             (all-diff-param-syms-for-return
+              (let ((result nil))
+                (loop for pd in env
+                      do (let ((sym (parameter-def-name pd)))
+                           (when (not (string-equal (symbol-name sym) "&OUT"))
+                             (let ((rec-entry (assoc sym record-param-info :test #'eq)))
+                               (cond
+                                 (rec-entry
+                                  (setf result (append result (mapcar #'cdr (third rec-entry)))))
+                                 ((%crisp-float-type-p (parameter-def-type pd))
+                                  (setf result (append result (list sym))))
+                                 ;; Other differentiable param types (cell, tensor, int):
+                                 ;; treat as scalar — single adj.
+                                 ((> (%count-differentiable-contributions (parameter-def-type pd)) 0)
+                                  (setf result (append result (list sym)))))))))
+                result))
+             ;; Hash record-param-sym -> alist of (FIELD-NAME-STR . FIELD-ADJ-SYM)
+             ;; in declaration order.  Alist (not hash) so iteration order is
+             ;; portable across implementations.
+             (record-param-field-adjs-ht
+              (when record-param-info
+                (let ((ht (make-hash-table :test 'eq)))
+                  (dolist (info record-param-info)
+                    (let ((field-alist
+                           (loop for (fname . fadj) in (third info)
+                                 collect (cons (symbol-name fname) fadj))))
+                      (setf (gethash (first info) ht) field-alist)))
+                  ht)))
+             ;; Widened count: float + record-field counts.
+             (n-float-params
+              (loop for pd in env
+                    when (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                    sum (%count-differentiable-contributions (parameter-def-type pd))))
+             (return-types-non-void (remove nil return-types))
+             (n-return (length return-types-non-void))
+             (fn-param-entries
+              (loop for pd in env for i from 0
+                    when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                              (%crisp-function-type-p (parameter-def-type pd)))
+                    collect (cons i pd)))
+             (is-hof (consp fn-param-entries)))
+        (declare (ignorable record-field-adj-syms))
+
+        (when (zerop n-float-params)
+          (log:info "AUTODIFF: ~a has no differentiable params — skipping _GRAD generation." name)
+          (return-from %generate-backward-function-ast nil))
+
+        (when is-hof
+          (let* ((fn-param-idx (car (car fn-param-entries)))
+                 (fn-param-sym (parameter-def-name (cdr (car fn-param-entries))))
+                 (clean-body  (loop for f in body-forms
+                                    unless (and (atom f) (not (symbolp f)))
+                                    collect f)))
+            (log:info "AUTODIFF: ~a is HOF — storing for inline backward" name)
+            (setf (gethash name *differentiable-hof-store*)
+                  (list :param-syms       (loop for pd in env collect (parameter-def-name pd))
+                        :fn-param-idx     fn-param-idx
+                        :fn-param-sym     fn-param-sym
+                        :float-param-syms float-param-syms
+                        :body-forms       clean-body))
+            (setf (gethash name *differentiable-functions*)
+                  (list :hof t
+                        :n-float-params (length float-param-syms)
+                        :n-return n-return))
+            (return-from %generate-backward-function-ast nil)))
+
+        (let* ((bkwd-name  (intern (format nil "~A_GRAD" (symbol-name name)) pkg))
+               (t-grad-syms (loop for i from 0 below n-return
+                                  collect (intern (format nil "T_GRAD~A" i) pkg)))
+               (orig-param-types (mapcar #'parameter-def-type env))
+               (t-grad-types return-types-non-void)
+               (bkwd-params (append params t-grad-syms))
+               (bkwd-fn-spec
+                `(function (,@orig-param-types ,@t-grad-types
+                            => ,@(make-list n-float-params :initial-element 'float)))))
+
+          (setf (gethash name *differentiable-functions*)
+                (list :bkwd-name bkwd-name
+                      :n-float-params n-float-params
+                      :n-return n-return))
+
+          (log:info "AUTODIFF: Generating _GRAD companion ~a for ~a (n-fp=~a n-ret=~a)"
+                    bkwd-name name n-float-params n-return)
+
+          (handler-case
+            (let* ((anf-body   (mapcar #'anf-transform body-forms))
+                   (raw-flat   (flatten-anf-body anf-body))
+                   (flat-anf
+                    (let ((last-f (car (last raw-flat))))
+                      (if (or (symbolp last-f)
+                              (and (consp last-f) (eq (first last-f) 'return)))
+                          raw-flat
+                          (let ((ret-sym (intern "%RET-0" pkg)))
+                            (append (butlast raw-flat)
+                                    (list (list ret-sym last-f)
+                                          ret-sym))))))
+                   (return-vars (%extract-return-vars flat-anf))
+                   (bkwd-body
+                    (let ((*record-param-field-adjs* record-param-field-adjs-ht))
+                      (%check-fn-body-for-mutations body-forms
+                                                    (mapcar #'parameter-def-name env)
+                                                    name)
+                      ;; Pass `all-diff-param-syms-for-return` as the param-syms
+                      ;; argument so the walker's final `(return ...)` form
+                      ;; lists per-field synth adjs (for record params) and
+                      ;; scalar adjs (for float params) in declaration order.
+                      (%generate-backward-function-walk
+                       flat-anf all-diff-param-syms-for-return t-grad-syms return-vars))))
+              `(def-function ,bkwd-name ,bkwd-params
+                 (declare #'(,@(second bkwd-fn-spec)))
+                 ,bkwd-body))
+
+            (error (e)
+              (log:info "AUTODIFF: ~a — cannot generate _GRAD: ~a. Unregistering; will error if called from a differentiable kernel." name e)
+              (remhash name *differentiable-functions*)
+              nil)))))))
+
+
+;; src/autodiff.lisp — kernel-level generate-backward-walk override.
+;;
+;; Pre-scan the flat ANF for record-valued temps (bindings of the shape
+;; `(<sym> (%construct-struct <RECORD> ...))`), allocate per-field adj syms
+;; for each, and bind *record-param-field-adjs* during the walk so the
+;; overridden %handle-single-value-backward and %emit-sub-fn-backward route
+;; adjoints correctly:
+;;   - sub-function call deltas distribute per-field for record args
+;;   - constructor backward flows per-field adjs back to ctor args
+;;   - accessor backward routes adjoints to per-field syms
+;;
+;; Implementation: save the original `generate-backward-walk` to a defvar,
+;; then redefine it as a thin wrapper that does the pre-scan + dyn-bind
+;; and delegates to the original.  Avoids duplicating the 200-line walker
+;; body; the original code already calls into our overridden helpers.
+(defvar *orig-generate-backward-walk* nil
+  "Captures the original generate-backward-walk symbol-function so the
+   overlay wrapper can delegate to it.  Set on first overlay load only.")
+
+(unless *orig-generate-backward-walk*
+  (setf *orig-generate-backward-walk*
+        (symbol-function 'generate-backward-walk)))
+
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
+                               &key kernel-pkg)
+  "101 Part 1 wrapper: pre-scan flat-anf for record-valued temps bound to
+%construct-struct, build per-field adj maps, dyn-bind *record-param-field-adjs*,
+then delegate to the original walker."
+  (let* ((record-temp-entries
+          ;; Collect (temp-sym . field-alist) pairs for each record-valued temp.
+          (loop for form in flat-anf
+                when (and (consp form) (= (length form) 2)
+                          (symbolp (car form))
+                          (consp (cadr form))
+                          (symbolp (caadr form))
+                          (string-equal (symbol-name (caadr form)) "%CONSTRUCT-STRUCT"))
+                collect
+                (let* ((temp-sym (car form))
+                       (expr (cadr form))
+                       (record-name (second expr))
+                       (pkg (or kernel-pkg (symbol-package temp-sym))))
+                  ;; Build field-alist only if this is a record (not a struct).
+                  ;; Structs go through their own pathway and don't auto-SROA.
+                  (when (%crisp-record-type-p record-name)
+                    (let* ((fields (%get-record-runtime-fields record-name))
+                           (field-alist
+                            (loop for (fname ftype) in fields
+                                  collect (cons (symbol-name fname)
+                                                (intern (format nil "~a_~a_ADJ"
+                                                                (symbol-name temp-sym)
+                                                                (symbol-name fname))
+                                                        pkg)))))
+                      (cons temp-sym field-alist))))))
+         (record-temp-entries (remove nil record-temp-entries))
+         (record-param-field-adjs-ht
+          (when record-temp-entries
+            (let ((ht (make-hash-table :test 'eq)))
+              (dolist (entry record-temp-entries)
+                (setf (gethash (car entry) ht) (cdr entry)))
+              ht))))
+    (let ((*record-param-field-adjs* record-param-field-adjs-ht))
+      (funcall *orig-generate-backward-walk*
+               flat-anf inputs outputs input-types output-types
+               :kernel-pkg kernel-pkg))))
+
+
