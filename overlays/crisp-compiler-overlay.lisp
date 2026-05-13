@@ -657,7 +657,11 @@ treated equivalently."
                (t-grad-syms (loop for i from 0 below n-return
                                   collect (intern (format nil "T_GRAD~A" i) pkg)))
                (orig-param-types (mapcar #'parameter-def-type env))
-               (t-grad-types return-types-non-void)
+               ;; 101: promote return types for t_grad params.  Integer returns
+               ;; (e.g. int, long) get float-typed t_grad seeds at the call site,
+               ;; matching the kernel-level adjoint-type-promotion convention.
+               (t-grad-types (mapcar (lambda (t-spec) (%promote-to-float-adjoint t-spec))
+                                     return-types-non-void))
                (bkwd-params (append params t-grad-syms))
                (bkwd-fn-spec
                 `(function (,@orig-param-types ,@t-grad-types
@@ -769,5 +773,97 @@ then delegate to the original walker."
       (funcall *orig-generate-backward-walk*
                flat-anf inputs outputs input-types output-types
                :kernel-pkg kernel-pkg))))
+
+
+;;; ===================================================================
+;;; 101: validator scope fixes for derived-record-type tests
+;;; ===================================================================
+;;;
+;;; The 031/24 and 031/26 validators count forward-overload-dispatch calls
+;;; in the whole IR text.  Under --differentiate the backward kernel does
+;;; chain-rule recomputation of forward values, so every forward call is
+;;; mirrored in the backward kernel — counts double.
+;;;
+;;; The validators are testing forward dispatch behavior, which is a
+;;; property of the forward kernel only.  Scope the search to just the
+;;; forward kernel's function body.
+
+;; src/metadata-val.lisp - helper
+(defun %extract-fn-body-from-ir (ir-content fn-define-prefix)
+  "Returns the substring of IR-CONTENT covering the body of a function
+   whose `define` line starts with FN-DEFINE-PREFIX (e.g.
+   \"define void @measure_distance(\").  The body spans from the
+   `define` line through the matching closing `}` at column 0.
+   Returns NIL if no such function found."
+  (let ((start (search fn-define-prefix ir-content)))
+    (when start
+      ;; Find the matching `}` at start of line after START.  In LLVM IR
+      ;; the function-closing brace is the only `}` that appears at column
+      ;; 0; nested braces (e.g. struct literals) are indented.
+      (let* ((scan-start (1+ start))
+             (end (loop for pos = (search (format nil "~%}") ir-content :start2 scan-start)
+                          then (search (format nil "~%}") ir-content :start2 (1+ pos))
+                        while pos
+                        ;; Found `\n}`; include up to the `}` character.
+                        return (+ pos 2))))
+        (when end
+          (subseq ir-content start end))))))
+
+;; src/metadata-val.lisp - override
+(defun validate-descendant-distance (ir-path)
+  "Validates descendant substitution: coordinate can substitute for point.
+   Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x
+   in the FORWARD kernel body (measure_distance).  The check is scoped to
+   the forward kernel so it stays meaningful under --differentiate, where
+   the backward kernel recomputes forward values for chain-rule purposes."
+  (unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-descendant-distance nil))
+  (let* ((ir-content (uiop:read-file-string ir-path))
+         (fwd-body (or (%extract-fn-body-from-ir ir-content
+                                                 "define void @measure_distance(")
+                       (%extract-fn-body-from-ir ir-content
+                                                 "define spir_func void @measure_distance("))))
+    (unless fwd-body
+      (log:error "Forward kernel measure_distance not found in IR")
+      (return-from validate-descendant-distance nil))
+    (let ((point-calls (count-substring "call i32 @distance_point_point(" fwd-body))
+          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" fwd-body)))
+      (unless (= point-calls 2)
+        (log:error "Expected 2 calls to distance_point_point in forward kernel, got ~a" point-calls)
+        (return-from validate-descendant-distance nil))
+      (unless (= coord-calls 1)
+        (log:error "Expected 1 call to distance_coordinate_coordinate in forward kernel, got ~a" coord-calls)
+        (return-from validate-descendant-distance nil))
+      (log:info "Descendant substitution validated: forward kernel calls point overload 2x, coordinate 1x")
+      t)))
+
+;; src/metadata-val.lisp - override
+(defun validate-ancestor-distance (ir-path)
+  "Validates ancestor substitution: point can substitute for coordinate.
+   Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x
+   in the FORWARD kernel body (measure_distance).  Scoped to the forward
+   kernel for the same reason as validate-descendant-distance."
+  (unless (probe-file ir-path)
+    (log:error "IR file not found: ~a" ir-path)
+    (return-from validate-ancestor-distance nil))
+  (let* ((ir-content (uiop:read-file-string ir-path))
+         (fwd-body (or (%extract-fn-body-from-ir ir-content
+                                                 "define void @measure_distance(")
+                       (%extract-fn-body-from-ir ir-content
+                                                 "define spir_func void @measure_distance("))))
+    (unless fwd-body
+      (log:error "Forward kernel measure_distance not found in IR")
+      (return-from validate-ancestor-distance nil))
+    (let ((point-calls (count-substring "call i32 @distance_point_point(" fwd-body))
+          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" fwd-body)))
+      (unless (= coord-calls 2)
+        (log:error "Expected 2 calls to distance_coordinate_coordinate in forward kernel, got ~a" coord-calls)
+        (return-from validate-ancestor-distance nil))
+      (unless (= point-calls 1)
+        (log:error "Expected 1 call to distance_point_point in forward kernel, got ~a" point-calls)
+        (return-from validate-ancestor-distance nil))
+      (log:info "Ancestor substitution validated: forward kernel calls coordinate overload 2x, point 1x")
+      t)))
 
 
