@@ -331,10 +331,4 @@ Reasons we can't -differentiate:
 
 1 - No &out.
 
-2 - the metadata validators are looking for forward kernel, but when --differentiate we
-have a backwards one, which doesn't match their assumptions. 
-048
-;; SKIP-WITH[--differentiate] : "TODO: auto-diff needs to be extended for records at kernel boundary"
-
-031
-;; SKIP-WITH[--differentiate]: "Not supported in auto-diff yet"
+2 - structs not supported yet

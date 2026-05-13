@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: "kernel has no input param, not differentiable"
 ;; TEST-WITH[--metadata]: crisp.compiler::validate-089-01-global-size-set-to-scalar
 ;;
 ;; Metadata: (global-size :set-to 256) is stored verbatim in metacrisp.

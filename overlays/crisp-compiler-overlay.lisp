@@ -933,6 +933,71 @@ then delegate to the original walker."
   (or (%forward-only-metadata-skip-p)
       (funcall *orig-validate-no-brand-in-metadata* metadata-path)))
 
+;; 070-hoist-tensors metadata validators — same pattern.  Describe the
+;; FORWARD kernel's metadata shape (physical-signature widths, declared-
+;; signature ranges, alias forms).  Under --differentiate the metacrisp
+;; is for the BACKWARD kernel with a different shape: input + output
+;; adjoints make the physical-signature wider, kernel name has _grad,
+;; etc.  Forward-only wrap.
+(defvar *orig-validate-070-01-vector-metadata* nil)
+(defvar *orig-validate-070-03-matrix-metadata* nil)
+(unless *orig-validate-070-01-vector-metadata*
+  (setf *orig-validate-070-01-vector-metadata*
+        (symbol-function 'validate-070-01-vector-metadata)))
+(unless *orig-validate-070-03-matrix-metadata*
+  (setf *orig-validate-070-03-matrix-metadata*
+        (symbol-function 'validate-070-03-matrix-metadata)))
+
+(defun validate-070-01-vector-metadata (metadata-path)
+  "Forward-only metadata validator (101: skips under --differentiate)."
+  (or (%forward-only-metadata-skip-p)
+      (funcall *orig-validate-070-01-vector-metadata* metadata-path)))
+
+(defun validate-070-03-matrix-metadata (metadata-path)
+  "Forward-only metadata validator (101: skips under --differentiate)."
+  (or (%forward-only-metadata-skip-p)
+      (funcall *orig-validate-070-03-matrix-metadata* metadata-path)))
+
+
+;; 089-strategy metadata validators — same forward-only pattern.
+;; Each describes a property of the FORWARD kernel's metacrisp (e.g.
+;; :strategy entries, declared-signature ranges, dim-extents).  Under
+;; --differentiate the metacrisp is for the BACKWARD kernel, which has
+;; a different parameter layout.  Wrap them all uniformly via a helper
+;; that captures the original function and installs the guard wrapper.
+
+(defun %wrap-validator-as-forward-only (validator-sym)
+  "Captures VALIDATOR-SYM's current symbol-function under a generated
+   *ORIG-VALIDATOR-SYM* defvar (created once) and replaces VALIDATOR-SYM
+   with a thin wrapper that returns T under --differentiate, otherwise
+   delegates to the captured original.  Idempotent across overlay reloads.
+   This is the same save-and-wrap pattern used explicitly for the 048
+   and 070 validators, factored for the larger 089 cluster."
+  (let* ((pkg (symbol-package validator-sym))
+         (orig-sym (intern (format nil "*ORIG-~a*" (symbol-name validator-sym)) pkg)))
+    ;; Ensure the holder variable exists and is captured exactly once
+    ;; per session (across overlay reloads).  proclaim makes it special.
+    (proclaim `(special ,orig-sym))
+    (unless (and (boundp orig-sym) (symbol-value orig-sym))
+      (setf (symbol-value orig-sym) (symbol-function validator-sym)))
+    ;; Install the forward-only wrapper.
+    (setf (symbol-function validator-sym)
+          (let ((captured-orig (symbol-value orig-sym)))
+            (lambda (metadata-path)
+              (or (%forward-only-metadata-skip-p)
+                  (funcall captured-orig metadata-path)))))))
+
+(dolist (v '(validate-089-01-global-size-set-to-scalar
+             validate-089-02-global-size-set-to-dims
+             validate-089-03-global-size-one-thread-per
+             validate-089-04-local-size-set-to
+             validate-089-05-local-size-exact
+             validate-089-06-num-groups-strided
+             validate-089-07-global-and-local
+             validate-089-08-global-size-strided
+             validate-089-09-global-size-tiled))
+  (%wrap-validator-as-forward-only v))
+
 
 ;;; ===================================================================
 ;;; 101: relax the "no differentiable parameters" error

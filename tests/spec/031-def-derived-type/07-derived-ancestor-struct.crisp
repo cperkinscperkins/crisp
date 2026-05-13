@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "Not supported in auto-diff yet"
+;; SKIP-WITH[--differentiate]: "structs not supported in auto-diff yet"
 
 ;; TEST-WITH[--ir-target=llvmir] : validate-ancestor-distance
 
