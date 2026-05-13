@@ -1,5 +1,4 @@
 ;; TEST-WITH[--metadata] : validate-no-brand-in-metadata
-;; SKIP-WITH[--differentiate] : "branded record fields not yet supported in AD: gate sees brand-typed fields as non-float, reports no differentiable params"
 
 ;; branding should be elided in .metacrisp
 

@@ -934,3 +934,105 @@ then delegate to the original walker."
       (funcall *orig-validate-no-brand-in-metadata* metadata-path)))
 
 
+;;; ===================================================================
+;;; 101: relax the "no differentiable parameters" error
+;;; ===================================================================
+;;;
+;;; The original check at %generate-backward-kernel-ast errors when the
+;;; kernel has no float scalars or float tensors AND no integer tensors.
+;;; It was added when AD was float-only.  After the 101 widening, integer
+;;; scalars (including branded ints in record fields) should also bypass
+;;; the gate and emit a trivial zero-gradient backward kernel — consistent
+;;; with the principle "if there's math (or could be), do it; the gradient
+;;; for integer inputs is always zero, which is the correct answer".
+;;;
+;;; This unblocks 048/09 (branded-int record fields) without touching the
+;;; backward walk: when diff-flat-inputs is empty, the trivial-backward
+;;; emit already does the right thing (kernel returns, _GRAD slots stay
+;;; at their zero-init values).
+
+(defun %has-diff-capable-scalar-input-p (flat-input-types)
+  "Returns T if flat-input-types contains at least one integer scalar
+   (signed/unsigned), including branded int scalars.  Used by the
+   relaxed gate in %generate-backward-kernel-ast."
+  (some (lambda (t-spec)
+          (or (%crisp-integer-scalar-type-p t-spec)
+              ;; Brand types: resolve to base and re-check.
+              (let ((brand (is-brand-type-p t-spec)))
+                (and brand
+                     (%crisp-integer-scalar-type-p
+                      (brand-definition-base-type brand))))))
+        flat-input-types))
+
+;; src/macros.lisp - override
+;; This is a near-copy of the original; the only change is at the
+;; differentiable-input check (was: error unless int tensors; now: also
+;; allow int scalars including branded).
+(defun %generate-backward-kernel-ast (name params signature-types raw-body)
+  "Generates the def-kernel-exact AST for the backward (gradient) pass.
+101: widened input check to also accept integer scalars (incl. branded)
+in addition to integer tensors.  All-int-record-field kernels now emit
+the trivial zero-gradient backward instead of erroring."
+  (multiple-value-bind (inputs input-types outputs output-types)
+      (%split-kernel-inputs-outputs params signature-types)
+    (let* ((pkg (symbol-package name))
+           (bwd-name (intern (format nil "~a_GRAD" (symbol-name name)) pkg)))
+      (multiple-value-bind (flat-inputs flat-input-types record-reassembly-bindings
+                            rec-grad-out-params rec-grad-out-types
+                            record-subs-ht record-type-ht grad-cell-syms)
+          (%expand-record-kernel-inputs inputs input-types pkg)
+        (let ((subst-body
+               (mapcar (lambda (form)
+                         (%substitute-record-accessors form record-subs-ht record-type-ht))
+                       raw-body)))
+          (multiple-value-bind (bwd-params bwd-types diff-flat-inputs diff-flat-input-types)
+              (%compute-backward-kernel-params flat-inputs flat-input-types outputs output-types
+                                               record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
+            ;; 101: error only when there are truly no diff-capable inputs.
+            ;; Integer tensors AND integer scalars (incl. branded) yield trivial
+            ;; zero-gradient backward kernels — valid AD output, not user error.
+            (when (and flat-inputs
+                       (null diff-flat-inputs)
+                       (not (some #'%crisp-integer-tensor-type-p flat-input-types))
+                       (not (%has-diff-capable-scalar-input-p flat-input-types)))
+              (error 'crisp.compiler:crisp-compiler-error
+                :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types -- add (forward-only) declaration or use float element types)" name)))
+            (multiple-value-bind (exploded-params exploded-types bwd-cell-reassembly-bindings)
+                (%explode-kernel-args bwd-params bwd-types)
+              (if (null diff-flat-inputs)
+                  `(progn
+                    (eval-when (:compile-toplevel :load-toplevel :execute)
+                      (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
+                        (loop for p in ',bwd-params
+                                 for t-spec in ',bwd-types
+                                 collect (cons p t-spec))))
+                    (def-kernel-exact ,bwd-name ,exploded-params
+                                      (declare #'(,@exploded-types))
+                                      (return)))
+                  (let* ((anf-body      (mapcar #'anf-transform subst-body))
+                         (flat-anf      (flatten-anf-body anf-body))
+                         (forward-bindings
+                          (loop for form in flat-anf
+                                when (and (consp form) (= (length form) 2) (symbolp (car form)))
+                                collect form))
+                         (raw-backward-walk
+                          (generate-backward-walk flat-anf diff-flat-inputs outputs
+                                                  diff-flat-input-types output-types
+                                                  :kernel-pkg pkg))
+                         (backward-walk
+                          (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
+                         (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
+                    `(progn
+                      (eval-when (:compile-toplevel :load-toplevel :execute)
+                        (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
+                          (loop for p in ',bwd-params
+                                   for t-spec in ',bwd-types
+                                   collect (cons p t-spec))))
+                      (def-kernel-exact ,bwd-name ,exploded-params
+                                        (declare #'(,@exploded-types))
+                                        (let (,@all-reassembly)
+                                          (let (,@forward-bindings)
+                                            ,backward-walk))
+                                        (return))))))))))))
+
+
