@@ -1,5 +1,4 @@
 ;; TEST-WITH[--metadata] : validate-nested-rec-in-metadata
-;; SKIP-WITH[--differentiate] : "nested records at kernel boundary: %expand-record-kernel-inputs only destructures one level — inner v-point fields are not reached, so no differentiable params"
 
 ;; v-rect is on the kernel boundary.
 ;; by virtue of that, v-point will also appear in the metadata.

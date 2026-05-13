@@ -1036,3 +1036,154 @@ the trivial zero-gradient backward instead of erroring."
                                         (return))))))))))))
 
 
+;;; ===================================================================
+;;; 101: recursive explosion of nested records at the kernel boundary
+;;; ===================================================================
+;;;
+;;; The original %expand-record-kernel-inputs only destructures one level.
+;;; For nested records (e.g. v-rect containing two v-points), the inner
+;;; fields are never reached:
+;;;   - flat-inputs contains record-typed syms (e.g. vr_top-left:v-point)
+;;;   - no grad cells are generated for inner-record fields
+;;;   - record-subs-ht has only the top-level record's substitutions
+;;;
+;;; This override recurses: when a field is itself a record type, the
+;;; recursion registers the field's sub-record in record-subs-ht/
+;;; record-type-ht, pushes its leaves to flat-inputs, generates grad cells
+;;; for leaf scalars, and chains reassembly bindings inner-first / outer-
+;;; last so the outer (make-RECORD ...) sees its inner records already
+;;; bound.
+
+(defun %expand-record-kernel-inputs (inputs input-types pkg)
+  "Recursively expands record-typed inputs into their scalar fields,
+   chasing through nested records.  Returns the same multi-value shape
+   as the original: (flat-inputs flat-input-types reassembly-bindings
+   grad-out-params grad-out-types record-subs-ht record-type-ht
+   grad-cell-syms).
+
+   Leaf scalar fields (float or integer) produce grad cells per 101.
+   Nested-record fields produce a synthetic intermediate sym that gets
+   registered in record-subs-ht/record-type-ht so the substitution
+   machinery walks through it; their leaf fields are further exploded."
+  (let ((flat-inputs        '())
+        (flat-input-types   '())
+        (reassembly-bindings '())
+        (grad-out-params    '())
+        (grad-out-types     '())
+        (record-subs-ht     (make-hash-table :test 'eq))
+        (record-type-ht     (make-hash-table :test 'eq))
+        (grad-cell-syms     '()))
+    (labels
+        ((explode (p t-spec)
+           "Destructure parameter P of type T-SPEC.  Side effects push to
+            the closure-captured accumulators.  Returns no useful value."
+           (cond
+             ((%crisp-record-type-p t-spec)
+              (let* ((base-type (if (consp t-spec) (first t-spec) t-spec))
+                     (fields    (%get-record-runtime-fields t-spec))
+                     (make-sym  (intern (format nil "MAKE-~a" (symbol-name base-type)) pkg))
+                     (field-info-list
+                      (loop for (fname ftype) in fields
+                            collect (list fname ftype
+                                          (%record-field-param-sym p fname pkg)))))
+                ;; Register THIS record's substitution and type maps so
+                ;; (field~ p) callsites in the body resolve to fsym.
+                (setf (gethash p record-subs-ht)
+                      (loop for (fname ftype fsym) in field-info-list
+                            collect (cons fname fsym)))
+                (setf (gethash p record-type-ht) t-spec)
+                ;; Process each field: recurse for nested records, emit
+                ;; leaves + grad cells for scalar fields.
+                (loop for (fname ftype fsym) in field-info-list do
+                  (cond
+                    ((%crisp-record-type-p ftype)
+                     ;; Nested record: recurse.  This registers fsym in
+                     ;; subs/type maps, pushes its leaves, and pushes its
+                     ;; reassembly binding BEFORE we push ours below.
+                     (explode fsym ftype))
+                    ((%crisp-float-type-p ftype)
+                     (push fsym flat-inputs)
+                     (push ftype flat-input-types)
+                     (let ((grad-sym (intern (format nil "~a_GRAD" (symbol-name fsym)) pkg)))
+                       (push grad-sym grad-out-params)
+                       (push '(cell float :address-space :global) grad-out-types)
+                       (push grad-sym grad-cell-syms)))
+                    ((%crisp-integer-scalar-type-p ftype)
+                     (push fsym flat-inputs)
+                     (push ftype flat-input-types)
+                     (let* ((grad-sym (intern (format nil "~a_GRAD" (symbol-name fsym)) pkg))
+                            (float-elem (%integer-scalar-to-float-scalar ftype)))
+                       (push grad-sym grad-out-params)
+                       (push (list 'cell float-elem :address-space :global) grad-out-types)
+                       (push grad-sym grad-cell-syms)))
+                    (t
+                     ;; Other (non-diff'able) leaf: pass through as flat.
+                     ;; No grad cell.
+                     (push fsym flat-inputs)
+                     (push ftype flat-input-types))))
+                ;; After children: push THIS record's reassembly.  Because
+                ;; inner-record reassemblies have already been pushed by
+                ;; recursive `explode` calls above, and we push outer here
+                ;; LAST, the (nreverse reassembly-bindings) at function exit
+                ;; yields inner-first / outer-last order — exactly what the
+                ;; let-binding chain needs.
+                (push (list p (cons make-sym
+                                    (loop for (fname ftype fsym) in field-info-list
+                                          append (list (intern (symbol-name fname) :keyword)
+                                                       fsym))))
+                      reassembly-bindings)))
+             (t
+              ;; Non-record input: pass through as-is.
+              (push p flat-inputs)
+              (push t-spec flat-input-types)))))
+      (loop for p in inputs
+            for t-spec in input-types
+            do (explode p t-spec)))
+
+    ;; For nested records, %compute-backward-kernel-params builds
+    ;; record-exploded-syms via (mapcar #'cdr (gethash orig record-subs-ht))
+    ;; — which only sees one level deep.  Without intervention, the leaf
+    ;; syms (e.g. vr_top-left_x) wouldn't appear in record-exploded-syms,
+    ;; and non-rec-scalar-in-grad-params would generate DUPLICATE grad
+    ;; cells for them (we already produced their grad cells via the
+    ;; recursive explosion).
+    ;;
+    ;; Fix: post-process each ORIGINAL input's record-subs-ht entry to
+    ;; also include `(:%nested-leaf% . leaf-sym)` sentinels for all leaf
+    ;; descendants.  The substitution machinery uses field-name keyed
+    ;; lookup (assoc :test string-equal), and ":%nested-leaf%" doesn't
+    ;; match any real field accessor, so these sentinels are invisible
+    ;; to substitution but visible to the (mapcar #'cdr ...) consumer.
+    (labels ((collect-leaves (sym)
+               (let ((children (gethash sym record-subs-ht))
+                     (acc '()))
+                 (dolist (entry children)
+                   (let ((child-sym (cdr entry)))
+                     (cond
+                       ((gethash child-sym record-subs-ht)
+                        (setf acc (append acc (collect-leaves child-sym))))
+                       (t (push child-sym acc)))))
+                 acc)))
+      (dolist (orig inputs)
+        (when (gethash orig record-subs-ht)
+          (let ((leaves (collect-leaves orig)))
+            ;; Append `(:%nested-leaf% . leaf-sym)` for each LEAF that
+            ;; isn't already a direct field of orig.
+            (let* ((direct-syms (mapcar #'cdr (gethash orig record-subs-ht)))
+                   (deep-leaves (remove-if (lambda (s) (member s direct-syms :test #'eq))
+                                            leaves)))
+              (setf (gethash orig record-subs-ht)
+                    (append (gethash orig record-subs-ht)
+                            (mapcar (lambda (s) (cons :%nested-leaf% s))
+                                    deep-leaves))))))))
+
+    (values (nreverse flat-inputs)
+            (nreverse flat-input-types)
+            (nreverse reassembly-bindings)
+            (nreverse grad-out-params)
+            (nreverse grad-out-types)
+            record-subs-ht
+            record-type-ht
+            (nreverse grad-cell-syms))))
+
+
