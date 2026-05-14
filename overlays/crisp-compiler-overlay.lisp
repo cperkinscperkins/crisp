@@ -208,19 +208,16 @@
         base)))
 
 (defun %count-differentiable-contributions (pd-type &optional record-info)
-  "Returns the number of float-scalar contributions this parameter type
-   makes at the SUB-FUNCTION level (def-function).
+  "Returns the number of SCALAR-DELTA contributions this parameter type
+   makes at the SUB-FUNCTION level (def-function).  Used to size the
+   multi-value-return arity at the sub-fn _GRAD boundary.
 
-   - Records (and derived-from-record types) contribute their runtime-field count
-     (records auto-SROA at every function boundary).
-   - Structs (and derived-from-struct types) contribute their runtime-field count
-     (per the shadow-struct AD design: the sub-function backward returns per-field
-     deltas as multi-values, same convention as records).
-   - Float scalars contribute 1.
-   - Anything else (cells, tensors, integer scalars) contributes 0.  These
-     travel via the kernel-level differentiability path; counting them here
-     would cause forward-only kernels with cell params to incorrectly trigger
-     _GRAD generation.
+   - Records / derived-from-records  → runtime-field count (per-field deltas).
+   - Structs  / derived-from-structs → runtime-field count (same convention).
+   - Float scalars                   → 1.
+   - Tensors, cells, integer scalars → 0.  These contribute zero scalar
+     deltas; tensors flow grad via &out grad-tensor params instead
+     (see %has-tensor-diff-param-p and the tensor-sub-fn pipeline).
 
    RECORD-INFO (optional alist of (NAME-STR . FIELD-COUNT)) bridges the
    pre-registration ordering issue where *crisp-types* isn't yet
@@ -233,11 +230,96 @@
          (resolved (%resolve-to-base-type-for-structs-or-records pd-type)))
     (cond
       (info-hit (cdr info-hit))
+      ;; Tensors are internally records (storage handles).  Exclude them
+      ;; from the record path — they contribute 0 scalar deltas; their
+      ;; grad flows via the &out grad-tensor pathway.
+      ;; Handles (tensors AND cells) flow grad via &out, not via scalar
+      ;; deltas.  0 scalar deltas.
+      ((%crisp-handle-param-type-p pd-type) 0)
       ((or (%crisp-record-type-p resolved)
            (%crisp-struct-type-p resolved))
        (length (or (%get-record-runtime-fields resolved) '())))
       ((%crisp-float-type-p pd-type) 1)
       (t 0))))
+
+(defun %crisp-tensor-param-type-p (pd-type)
+  "Returns T if PD-TYPE is a tensor (float-element or integer-element)
+   at the sub-function level.  Used to decide whether a sub-fn param
+   contributes a tensor grad-out (vs a scalar delta).
+
+   Handles three forms:
+   - List form: (tensor float 1 ...) — caught by the existing helpers.
+   - Mangled-template-name symbol: TENSOR_FLOAT_1_GLOBAL_COMPACT_LAST —
+     produced by Crisp's template instantiation.  Detected by name prefix.
+   - Plain symbol naming a registered tensor type."
+  (or (%crisp-float-tensor-type-p pd-type)
+      (%crisp-integer-tensor-type-p pd-type)
+      (and (symbolp pd-type)
+           (let ((name (symbol-name pd-type)))
+             (and (>= (length name) 7)
+                  (string-equal "TENSOR_" (subseq name 0 7)))))))
+
+(defun %crisp-cell-param-type-p (pd-type)
+  "Returns T if PD-TYPE is a cell of a SCALAR element type (float or
+   integer) at the sub-function level.  Cells flow grad via &out
+   grad-cell, same pattern as tensors.
+
+   Cells of structs/records are NOT accepted here — their grad-cell
+   would need to be a cell of the corresponding shadow type, and the
+   chain rule for `(set! (field~ (~ c)) ...)` is structurally different
+   (deferred).
+
+   Recognizes three forms (mirrors %crisp-tensor-param-type-p):
+   - List form: (cell float :address-space :global ...).
+   - Mangled template name like CELL_FLOAT_GLOBAL — produced by Crisp's
+     template instantiation.  Detected by name prefix + scalar element.
+   - Plain symbol naming a registered cell type."
+  (let ((canonical (canonicalize-type-specifier pd-type)))
+    (cond
+      ;; List form with explicit scalar element.
+      ((and (consp canonical) (symbolp (first canonical))
+            (string-equal (symbol-name (first canonical)) "CELL"))
+       (let ((elem (second canonical)))
+         (or (%crisp-float-type-p elem)
+             (%crisp-integer-scalar-type-p elem))))
+      ;; Mangled symbol form: parse element from name (e.g. CELL_FLOAT_GLOBAL).
+      ((and (symbolp pd-type)
+            (let ((name (symbol-name pd-type)))
+              (and (>= (length name) 5)
+                   (string-equal "CELL_" (subseq name 0 5)))))
+       (let ((name (symbol-name pd-type)))
+         ;; Heuristic: second segment is the element type.  Common cases:
+         ;; CELL_FLOAT_*, CELL_INT_*, CELL_LONG_*, CELL_DOUBLE_*, etc.
+         ;; Reject if it starts with CELL_<struct-name>_ or CELL_<record-name>_.
+         (let* ((after-cell (subseq name 5))
+                (underscore (position #\_ after-cell))
+                (elem-str (if underscore
+                              (subseq after-cell 0 underscore)
+                              after-cell)))
+           (member elem-str '("FLOAT" "DOUBLE" "HALF" "BFLOAT16"
+                              "INT" "LONG" "SHORT" "CHAR"
+                              "UINT" "ULONG" "USHORT" "UCHAR")
+                   :test #'string-equal))))
+      (t nil))))
+
+(defun %crisp-handle-param-type-p (pd-type)
+  "Returns T for any sub-fn param type that flows grad via &out grad-handle:
+   tensors AND cells.  Both go through the same convention — paired with
+   an &out grad-handle of matching shape, body atomic-adds into it."
+  (or (%crisp-tensor-param-type-p pd-type)
+      (%crisp-cell-param-type-p pd-type)))
+
+(defun %has-tensor-diff-param-p (env)
+  "Returns T if ENV contains at least one non-&OUT parameter that flows
+   grad via a paired &out grad-handle (tensor OR cell).  Used by the
+   sub-function pre-reg + _GRAD generator gates: a sub-fn with such
+   params is differentiable even when its scalar-delta count is zero.
+
+   Name is historical (originally tensor-only); now covers cells too."
+  (some (lambda (pd)
+          (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+               (%crisp-handle-param-type-p (parameter-def-type pd))))
+        env))
 
 ;; src/analysis/core.lisp
 ;; Widen pre-registration to count records via their runtime fields.
@@ -286,7 +368,11 @@ recursive call can reuse it."
                                              (%crisp-function-type-p (parameter-def-type pd)))
                                    collect (cons i pd)))
                             (is-hof (consp fn-param-entries)))
-                       (when (> n-diff-params 0)
+                       ;; Gate: register if any scalar-delta contribution
+                       ;; OR any tensor param (tensors flow grad via &out
+                       ;; grad-tensor params at the sub-fn boundary).
+                       (when (or (> n-diff-params 0)
+                                 (%has-tensor-diff-param-p env))
                          (if is-hof
                              ;; HOF path unchanged — open Q4 deferred.
                              (let* ((fn-param-idx (car (car fn-param-entries)))
@@ -348,15 +434,25 @@ recursive call can reuse it."
 ;; deltas (one per field) and accumulate them into the arg's per-field
 ;; adjoints in field-declaration order.
 (defun %emit-sub-fn-backward (fn args bkwd-fn t-adj-forms n-fp pkg emit-fn local-adj-fn &optional (sym-prefix "BW"))
-  "Emits the multi-value call to BKWD-FN and accumulates each returned
-   delta into the corresponding arg's adjoint slot.
+  "Emits the call to BKWD-FN and routes returned deltas / passed-through
+   &out grad-tensors per the AD convention.
 
-   For scalar args: one delta per arg, accumulated into (local-adj arg).
-   For record args (looked up via *record-param-field-adjs*): N deltas per
-   arg (N = number of fields), accumulated into each per-field synth adj
-   in declaration order."
-  (declare (ignore fn))
-  (let* ((deltas (loop for i from 0 below n-fp
+   - Scalar arg: one delta from multi-value return → accumulated into
+     (local-adj arg).
+   - Record/struct arg (looked up via *record-param-field-adjs*): N deltas
+     in declaration order → accumulated into each per-field synth adj.
+   - Tensor arg (identified via fn's :tensor-param-indices registry slot):
+     pairs with an &out arg in the call.  The kernel's corresponding
+     `<arg>_GRAD` is passed; the chain rule's atomic-add happens inside
+     the sub-fn body.  No scalar delta to accumulate.
+
+   The call is emitted whenever there's any accumulation OR any tensor
+   arg (the tensor case writes via &out, not via accumulation, but the
+   call itself still needs to happen)."
+  (let* ((info (and fn (gethash fn *differentiable-functions*)))
+         (tensor-indices (and info (getf info :tensor-param-indices)))
+         (has-tensor-args (consp tensor-indices))
+         (deltas (loop for i from 0 below n-fp
                        collect (intern (format nil "%~A_D~a" sym-prefix i) pkg)))
          (accum-forms nil)
          (delta-idx 0))
@@ -381,17 +477,37 @@ recursive call can reuse it."
                         (+ ,(funcall local-adj-fn arg) ,(nth delta-idx deltas)))
                  accum-forms)
            (incf delta-idx)))
-        ;; Literal/non-symbol arg: no adjoint flow, but it still consumes
-        ;; a delta slot in the gradient call return arity if the callee
-        ;; treats it that way.  Conservative behavior: skip without
-        ;; consuming a delta (matches the pre-101 behavior).
         (t nil)))
     (setf accum-forms (nreverse accum-forms))
-    (when accum-forms
-      (funcall emit-fn
-               `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
-                  (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adj-forms))))
-                    ,@accum-forms))))))
+    (cond
+      ;; Tensor-arg case: emit the call with grad-tensors appended.
+      ;; The grad-tensor for each tensor arg is the kernel-side `<arg>_GRAD`
+      ;; symbol (convention used at the kernel level for grad-out cells).
+      ;; `&out` appears in the signature, not the call form.
+      (has-tensor-args
+       (let* ((grad-args
+               (loop for i in tensor-indices
+                     for arg = (nth i args)
+                     when (symbolp arg)
+                     collect (intern (format nil "~A_GRAD" (symbol-name arg))
+                                     (symbol-package arg))))
+              (call-form `(,bkwd-fn ,@args ,@t-adj-forms ,@grad-args)))
+         (cond
+           ;; Has scalar deltas too: multi-value bind, then accumulate, plus call.
+           ((or accum-forms (> n-fp 0))
+            (funcall emit-fn
+                     `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+                        (let (,(append deltas (list call-form)))
+                          ,@accum-forms))))
+           ;; Tensor-only: just emit the call as a statement.
+           (t (funcall emit-fn call-form)))))
+      ;; No tensors, has scalar accumulations: existing multi-value-bind path.
+      (accum-forms
+       (funcall emit-fn
+                `(let (,@(mapcar (lambda (d) `(,d 0.0)) deltas))
+                   (let (,(append deltas (list `(,bkwd-fn ,@args ,@t-adj-forms))))
+                     ,@accum-forms))))
+      (t nil))))
 
 ;; src/autodiff.lisp - override
 ;; Add a record-aware accessor case BEFORE the existing identity-accessor case.
@@ -447,10 +563,21 @@ the record's collective adj."
                (v-adj   (local-adj v)))
           (when (symbolp src)
             (cond
+              ;; Tensor read with indices, src in tensor-inputs-ht: atomic-add
+              ;; at the indexed slot in the paired grad-tensor.
               ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
                (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
                                        (symbol-package src))))
                  (emit `(atomic-add! (~ ,grad-sym ,@indices) ,v-adj))))
+              ;; Cell read (no indices), src in tensor-inputs-ht: atomic-add
+              ;; into the paired grad-cell.  Same convention as tensors but
+              ;; without indices.  Used for cell sub-fn params at the sub-fn-
+              ;; backward layer (kernel-level cell reads fall to the t-branch
+              ;; below because their tensor-inputs-ht filters to float tensors).
+              ((and (null indices) tensor-inputs-ht (gethash src tensor-inputs-ht))
+               (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
+                                       (symbol-package src))))
+                 (emit `(atomic-add! (~ ,grad-sym) ,v-adj))))
               (t
                (emit `(set! ,(local-adj src) (+ ,(local-adj src) ,v-adj))))))))
       ;; Differentiable sub-function call
@@ -627,10 +754,17 @@ treated equivalently."
              ;; SROA, structs don't) doesn't matter for sub-function AD because
              ;; the chain rule operates on source-level ANF.  Backward returns
              ;; per-field deltas as multi-values regardless.
+             ;;
+             ;; HANDLES (tensors + cells) are EXCLUDED here — they're internally
+             ;; stored as records in *crisp-structs* (the storage handle layout),
+             ;; so %crisp-record-type-p would erroneously include them.  Handles
+             ;; go through their own tensor-param-info path with &out grad-handle
+             ;; handling.
              (record-param-info
               (loop for pd in env
                     for resolved = (%resolve-to-base-type-for-structs-or-records (parameter-def-type pd))
                     when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                              (not (%crisp-handle-param-type-p (parameter-def-type pd)))
                               (or (%crisp-record-type-p resolved)
                                   (%crisp-struct-type-p resolved)))
                     collect
@@ -694,7 +828,8 @@ treated equivalently."
              (is-hof (consp fn-param-entries)))
         (declare (ignorable record-field-adj-syms))
 
-        (when (zerop n-float-params)
+        (when (and (zerop n-float-params)
+                   (not (%has-tensor-diff-param-p env)))
           (log:info "AUTODIFF: ~a has no differentiable params — skipping _GRAD generation." name)
           (return-from %generate-backward-function-ast nil))
 
@@ -726,18 +861,62 @@ treated equivalently."
                ;; matching the kernel-level adjoint-type-promotion convention.
                (t-grad-types (mapcar (lambda (t-spec) (%promote-to-float-adjoint t-spec))
                                      return-types-non-void))
-               (bkwd-params (append params t-grad-syms))
+               ;; Handle params (tensors + cells) + their grad-out info,
+               ;; in declaration order.
+               ;; Each entry: (PARAM-SYM PARAM-TYPE GRAD-OUT-SYM GRAD-OUT-TYPE).
+               ;; Both tensors and cells flow grad via &out grad-handle.
+               (tensor-param-info
+                (loop for pd in env
+                      for ptype = (parameter-def-type pd)
+                      when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                (%crisp-handle-param-type-p ptype))
+                      collect
+                      (let* ((psym (parameter-def-name pd))
+                             (grad-sym (intern (format nil "~A_GRAD" (symbol-name psym)) pkg))
+                             ;; Grad-out type:
+                             ;; - integer tensor → float-element promotion.
+                             ;; - float tensor   → ensure RW handle.
+                             ;; - cell           → pass through (already a writeable handle).
+                             (grad-type (cond
+                                          ((%crisp-integer-tensor-type-p ptype)
+                                           (%integer-tensor-elem-to-float ptype))
+                                          ((%crisp-tensor-param-type-p ptype)
+                                           (%ensure-tensor-read-write ptype))
+                                          (t ptype))))
+                        (list psym ptype grad-sym grad-type))))
+               (tensor-grad-out-syms (mapcar #'third tensor-param-info))
+               (tensor-grad-out-types (mapcar #'fourth tensor-param-info))
+               ;; The `&out` marker must be in the same package the user
+               ;; sees (crisp-language).  Defaulting to '&out from this
+               ;; overlay's :crisp.compiler package would mismatch the
+               ;; reader's symbol.
+               (out-marker (intern "&OUT" :crisp-language))
+               ;; Bkwd-params: forward params + t_grad inputs.  If tensor params
+               ;; exist, append &out grad-tensors.
+               (bkwd-params (append params t-grad-syms
+                                    (when tensor-param-info (cons out-marker tensor-grad-out-syms))))
                (bkwd-fn-spec
                 `(function (,@orig-param-types ,@t-grad-types
+                            ,@(when tensor-param-info (cons out-marker tensor-grad-out-types))
                             => ,@(make-list n-float-params :initial-element 'float)))))
 
           (setf (gethash name *differentiable-functions*)
                 (list :bkwd-name bkwd-name
                       :n-float-params n-float-params
-                      :n-return n-return))
+                      :n-return n-return
+                      ;; Indices (within params) of handle args (tensors+cells).
+                      ;; Used by %emit-sub-fn-backward at the call site to pass
+                      ;; the corresponding kernel-level grad-handle symbols as
+                      ;; the &out args.
+                      :tensor-param-indices
+                      (loop for pd in env
+                            for i from 0
+                            when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                      (%crisp-handle-param-type-p (parameter-def-type pd)))
+                            collect i)))
 
-          (log:info "AUTODIFF: Generating _GRAD companion ~a for ~a (n-fp=~a n-ret=~a)"
-                    bkwd-name name n-float-params n-return)
+          (log:info "AUTODIFF: Generating _GRAD companion ~a for ~a (n-fp=~a n-ret=~a n-tensor=~a)"
+                    bkwd-name name n-float-params n-return (length tensor-param-info))
 
           (handler-case
             (let* ((anf-body   (mapcar #'anf-transform body-forms))
@@ -752,6 +931,15 @@ treated equivalently."
                                     (list (list ret-sym last-f)
                                           ret-sym))))))
                    (return-vars (%extract-return-vars flat-anf))
+                   ;; Build tensor-inputs-ht from tensor-param-info so the
+                   ;; walker's tensor-read backward case emits atomic-add
+                   ;; into the &out grad-tensor.
+                   (tensor-inputs-ht
+                    (when tensor-param-info
+                      (let ((ht (make-hash-table :test 'eq)))
+                        (dolist (entry tensor-param-info)
+                          (setf (gethash (first entry) ht) (second entry)))
+                        ht)))
                    (bkwd-body
                     (let ((*record-param-field-adjs* record-param-field-adjs-ht))
                       (%check-fn-body-for-mutations body-forms
@@ -762,7 +950,8 @@ treated equivalently."
                       ;; lists per-field synth adjs (for record params) and
                       ;; scalar adjs (for float params) in declaration order.
                       (%generate-backward-function-walk
-                       flat-anf all-diff-param-syms-for-return t-grad-syms return-vars))))
+                       flat-anf all-diff-param-syms-for-return t-grad-syms return-vars
+                       tensor-inputs-ht))))
               `(def-function ,bkwd-name ,bkwd-params
                  (declare #'(,@(second bkwd-fn-spec)))
                  ,bkwd-body))
@@ -1764,5 +1953,151 @@ the trivial zero-gradient backward instead of erroring."
                ((consp f) (mapcar #'rewrite f))
                (t f))))
     (rewrite form)))
+
+
+;;; ===================================================================
+;;; 101: %generate-backward-function-walk extended to accept
+;;; tensor-inputs-ht (for tensor-sub-fn-param AD).
+;;; ===================================================================
+;;;
+;;; The original signature is (flat-anf float-param-syms t-grad-syms
+;;; return-vars).  We add an optional TENSOR-INPUTS-HT that gets threaded
+;;; into %handle-single-value-backward so the tensor-read case fires for
+;;; (~ v idx) on tensor sub-fn params, emitting atomic-add into the
+;;; corresponding &out grad-tensor.
+;;;
+;;; The body is otherwise identical to the original.  Re-defined fully
+;;; rather than save-and-wrap because the change is inside the inner walk.
+
+(defun %generate-backward-function-walk (flat-anf float-param-syms t-grad-syms return-vars
+                                         &optional tensor-inputs-ht)
+  "Generates the backward-pass body for a def-function.
+
+   101 extension: TENSOR-INPUTS-HT (optional hash-table mapping each
+   tensor-sub-fn-param symbol to its tensor type) is threaded into
+   %handle-single-value-backward so tensor reads inside the body emit
+   atomic-add into the corresponding &out grad-tensor."
+  (let ((backward-forms nil)
+        (adjoint-map (make-hash-table :test 'equal))
+        (return-var-seeds (make-hash-table :test 'eq)))
+
+    (loop for rv in return-vars
+          for tg in t-grad-syms do
+            (setf (gethash rv return-var-seeds) tg))
+
+    (labels ((local-adj (v)
+               (or (gethash v adjoint-map)
+                   (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
+                                      (symbol-package v))))
+                     (setf (gethash v adjoint-map) adv)
+                     adv)))
+             (emit (form)
+               (push form backward-forms)))
+
+      (let ((reversed-body (reverse flat-anf)))
+        (dolist (form reversed-body)
+          (cond
+            ((and (listp form) (= (length form) 2) (symbolp (car form)))
+             (let ((v    (car form))
+                   (expr (cadr form)))
+               (%handle-single-value-backward v expr adjoint-map #'emit #'local-adj
+                                              :error-on-unknown t
+                                              :tensor-inputs-ht tensor-inputs-ht)))
+            ((and (listp form) (>= (length form) 3)
+                  (symbolp (car form))
+                  (every #'symbolp (butlast form)))
+             (let* ((result-vars (butlast form))
+                    (expr        (car (last form))))
+               (when (and (consp expr)
+                          (symbolp (car expr))
+                          (gethash (car expr) *differentiable-functions*))
+                 (let* ((fn      (car expr))
+                        (args    (cdr expr))
+                        (info    (gethash fn *differentiable-functions*))
+                        (bkwd-fn (getf info :bkwd-name))
+                        (n-fp    (getf info :n-float-params))
+                        (n-ret   (getf info :n-return))
+                        (pkg     (symbol-package fn)))
+                   (declare (ignore n-ret))
+                   (%emit-sub-fn-backward fn args bkwd-fn (mapcar #'local-adj result-vars) n-fp pkg #'emit #'local-adj "MV")))))
+            (t nil))))
+
+      (emit `(return ,@(mapcar #'local-adj float-param-syms)))
+
+      (let* ((forward-bindings
+              (loop for form in flat-anf
+                    when (and (consp form)
+                              (= (length form) 2)
+                              (symbolp (car form))
+                              (not (gethash (car form) return-var-seeds)))
+                    collect form))
+             (adjoint-bindings
+              (loop for v being the hash-keys of adjoint-map
+                    using (hash-value adv)
+                    collect (let ((seed (gethash v return-var-seeds)))
+                              `(,adv ,(if seed seed 0.0)))))
+             (all-bindings (append forward-bindings adjoint-bindings)))
+        `(let ,all-bindings
+           ,@(nreverse backward-forms))))))
+
+
+;;; ===================================================================
+;;; 101: atomic-RMW analyzer set write-mode on target
+;;; ===================================================================
+;;;
+;;; The atomic-add! analyzer calls `analyze-expression` on its target,
+;;; which fires the "read from &out" check in analyze-aref-expression
+;;; because *analysis-access-mode* defaults to :read.  But atomic RMW
+;;; operations write to their target — the read is part of the read-
+;;; modify-write — so :write is the correct mode.
+;;;
+;;; Surfaced by sub-function tensor AD: the backward body for a tensor-
+;;; param sub-function emits `(atomic-add! (~ v_grad idx) t_adj)` where
+;;; `v_grad` is an &out grad-tensor.  Without this fix, the analyzer
+;;; rejects with "Cannot read from Output Parameter".
+;;;
+;;; Override binds *analysis-access-mode* to :write around the target
+;;; analysis, matching the set! analyzer's behavior (analysis/structs.lisp:516).
+
+(defun %analyze-atomic-rmw-expression (op expr env context location &key no-delta)
+  "Shared helper for all atomic RMW analyzers.
+OP is a keyword (:add :sub :min :max :xchg).
+Target (second element of EXPR) must be an aref expression like (~ vec idx).
+When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta.
+
+101 override: target analysis runs with *analysis-access-mode* = :write
+so &out params can serve as atomic-RMW targets (the read is part of the
+write)."
+  (let ((expected-args (if no-delta 1 2))
+        (actual-args   (1- (length expr))))
+    (unless (= actual-args expected-args)
+      (error 'crisp-type-error
+        :message (format nil "~a: expected ~a argument~:p, got ~a"
+                         (first expr) expected-args actual-args)
+        :source-location location)))
+  (let* ((target-form (second expr))
+         ;; 101: write-mode for the target — atomic RMW writes.
+         (target-node (let ((*analysis-access-mode* :write))
+                        (analyze-expression target-form env context (append location '(1))))))
+    (unless (semantic-aref-p target-node)
+      (error 'crisp-type-error
+        :message (format nil "~a: target must be a memory location like (~~ vec idx), got ~a"
+                         (first expr) target-form)
+        :source-location location))
+    (let* ((elem-type  (semantic-aref-type target-node))
+           (delta-node (if no-delta
+                           (let* ((ct  (gethash elem-type *crisp-types*))
+                                  (one (if (and ct (eq (crisp-type-category ct) :float))
+                                           1.0d0 1)))
+                             (make-semantic-literal :value-type elem-type
+                                                    :value one
+                                                    :source-location location))
+                           (analyze-expression (third expr) env context
+                                               (append location '(2))))))
+      (make-semantic-atomic-rmw :type elem-type
+                                :op op
+                                :target-node target-node
+                                :delta-node delta-node
+                                :source-location location))))
 
 
