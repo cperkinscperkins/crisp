@@ -2101,3 +2101,382 @@ write)."
                                 :source-location location))))
 
 
+;;; =====================================================================
+;;; UNWRAPPED COMPLETE-FUNCTION REPLACEMENTS (101 endeavor wrap collapse)
+;;; =====================================================================
+;;;
+;;; These two defuns are the merged equivalents of the save-and-wrap blocks
+;;; earlier in this file.  Because they come AFTER the wraps in load order,
+;;; their definitions shadow the wrapped ones (late-binding wins).
+;;;
+;;; INTENT: drop-in replacements for `compile-module` (in
+;;; src/analysis/core.lisp) and `generate-backward-walk` (in
+;;; src/autodiff.lisp).  Text-replace these whole defuns over the originals.
+;;;
+;;; After applying these to src, the following overlay regions can be
+;;; deleted entirely:
+;;;
+;;;   - The `*orig-generate-backward-walk*` defvar + unless-setf +
+;;;     wrapping `generate-backward-walk` (around lines 980-1039).
+;;;   - The `*orig-compile-module*` defvar + unless-setf + wrapping
+;;;     `compile-module` (around lines 1726-1741).
+;;;
+;;; For the 19 forward-only metadata validators, see the in-place guard
+;;; recipe at the bottom of this file.
+;;; =====================================================================
+
+
+;; src/analysis/core.lisp
+(defun compile-module (forms module builder di-builder di-compile-unit location-map)
+  "Orchestrates the multi-pass compilation of a list of top-level forms.
+   When --differentiate is enabled, pre-injects shadow def-struct forms for
+   AD support before any of the passes see the forms list."
+  (log:debug "*crisp-types*: ~s~%*expression-analyzers*: ~s"
+             (alexandria:hash-table-keys *crisp-types*)
+             (alexandria:hash-table-keys *expression-analyzers*))
+
+  (let ((forms (if *differentiate-p*
+                   (%inject-shadow-struct-forms forms)
+                   forms)))
+    ;; Pass 1: Gather all function signatures and build the call graph.
+    (let ((*call-graph* (make-hash-table))
+          (*originator-functions* (make-hash-table))
+          (*implicit-arg-map* (make-hash-table)) ; Rebind for a clean state per module.
+          (*scratch-cell-counter* 0)) ; Reset counter for deterministic naming
+      (let ((*defer-struct-validation* t)
+            (*pending-struct-definitions* nil))
+        (analyze-signatures-pass forms)
+        ;; Now finalize any structs that were deferred
+        (finalize-struct-definitions))
+
+      ;; Pass 1.5: Propagate implicit argument requirements up the call graph.
+      (propagate-implicit-arguments)
+
+      ;; Pass 2: Now that all signatures are known, compile the function bodies.
+      ;; Reset counter so codegen (Pass 2) generates the same unique IDs as Pass 1
+      (setf *scratch-cell-counter* 0)
+      (log:info "Reset *scratch-cell-counter* to 0 for Pass 2 Codegen")
+      (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
+      (check-for-recursion-cycles))))
+
+
+;; src/autodiff.lisp
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
+                               &key kernel-pkg)
+  "Walks a flattened ANF body backwards to accumulate adjoints.
+Returns a backward ANF body (a let form).
+Extended for feature 052: handles differentiable sub-function calls (B1/B2),
+multi-value bindings, HOF inline backward, errors for non-differentiable
+functions (B3), and mutation errors (B4).
+Extended for feature 080: tensor/vector/matrix inputs — element-wise gradient
+accumulation via indexed (~ src_GRAD idx...) writes.
+KERNEL-PKG (101 endeavor): when supplied, used to intern _GRAD output symbols
+in the kernel's home package, matching the bwd-params declaration.  Falls
+back to the input symbol's own package when unsupplied (preserves prior
+behaviour for sub-function backward bodies).
+
+101 PART 1 PRE-SCAN: also scans FLAT-ANF for record-valued AND struct-valued
+temps bound to %construct-struct, builds per-field adj maps, and dyn-binds
+*record-param-field-adjs* around the walk.  For both records and structs the
+constructor backward rule in %handle-single-value-backward fires when the
+constructed temp is in *record-param-field-adjs* — it accumulates per-field
+adjs back into the constructor args."
+  (let* ((record-temp-entries
+          ;; Collect (temp-sym . field-alist) pairs for each record/struct-
+          ;; valued temp.  Records and structs are handled symmetrically:
+          ;; both auto-mint per-field adj syms so the existing %construct-
+          ;; struct backward rule routes the chain correctly.
+          (loop for form in flat-anf
+                when (and (consp form) (= (length form) 2)
+                          (symbolp (car form))
+                          (consp (cadr form))
+                          (symbolp (caadr form))
+                          (string-equal (symbol-name (caadr form)) "%CONSTRUCT-STRUCT"))
+                collect
+                (let* ((temp-sym (car form))
+                       (expr (cadr form))
+                       (record-name (second expr))
+                       (pkg (or kernel-pkg (symbol-package temp-sym))))
+                  (when (or (%crisp-record-type-p record-name)
+                            (%crisp-struct-type-p record-name))
+                    (let* ((fields (%get-record-runtime-fields record-name))
+                           (field-alist
+                            (loop for (fname ftype) in fields
+                                  collect (cons (symbol-name fname)
+                                                (intern (format nil "~a_~a_ADJ"
+                                                                (symbol-name temp-sym)
+                                                                (symbol-name fname))
+                                                        pkg)))))
+                      (cons temp-sym field-alist))))))
+         (record-temp-entries (remove nil record-temp-entries))
+         (record-param-field-adjs-ht
+          (when record-temp-entries
+            (let ((ht (make-hash-table :test 'eq)))
+              (dolist (entry record-temp-entries)
+                (setf (gethash (car entry) ht) (cdr entry)))
+              ht))))
+    (let ((*record-param-field-adjs* record-param-field-adjs-ht))
+      (let ((backward-forms nil)
+            (adjoint-map (make-hash-table :test 'equal))
+            ;; Build tensor-inputs-ht: maps each tensor-typed input symbol to its type.
+            ;; Used by %handle-single-value-backward to distinguish tensor reads from
+            ;; cell reads and emit element-wise gradient accumulation.
+            (tensor-inputs-ht
+             (let ((ht (make-hash-table :test 'eq)))
+               (loop for sym in inputs
+                     for typ in input-types
+                     when (%crisp-float-tensor-type-p typ)
+                     do (setf (gethash sym ht) typ))
+               ht)))
+
+        (labels ((local-adj (v)
+                   (or (gethash v adjoint-map)
+                       (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
+                                          ;; 101: prefer kernel-pkg so adj refs
+                                          ;; match the corresponding _GRAD param
+                                          ;; in bwd-params (which lives in the
+                                          ;; kernel's home package).
+                                          (or kernel-pkg (symbol-package v)))))
+                         (setf (gethash v adjoint-map) adv)
+                         adv)))
+                 (emit (form)
+                   (push form backward-forms))
+
+                 ;; HOF inline backward: substitute concrete fn, remove funcall,
+                 ;; ANF-transform the concrete body, process backwards using
+                 ;; the kernel's own closures.
+                 (hof-inline-backward (fn args v)
+                   (let* ((hof-data (gethash fn *differentiable-hof-store*)))
+                     (unless hof-data
+                       (error "HOF ~A not found in *differentiable-hof-store*" fn))
+                     (let* ((param-syms   (getf hof-data :param-syms))
+                            (fn-param-idx (getf hof-data :fn-param-idx))
+                            (body-forms   (getf hof-data :body-forms))
+                            (fn-arg       (nth fn-param-idx args))
+                            (concrete-fn  (cond
+                                            ((and (consp fn-arg) (eq (car fn-arg) 'function))
+                                             (cadr fn-arg))
+                                            ((symbolp fn-arg) fn-arg)
+                                            (t nil))))
+                       (unless concrete-fn
+                         (error "Cannot inline-differentiate HOF ~A:  could not resolve concrete fn from arg ~A" fn fn-arg))
+                       (let* ((fn-param      (nth fn-param-idx param-syms))
+                              (subst-alist
+                               (loop for p in param-syms
+                                     for a in args
+                                     for i from 0
+                                     unless (= i fn-param-idx)
+                                     collect (cons p a)))
+                              (subst-body    (mapcar (lambda (f) (%subst-form f subst-alist)) body-forms))
+                              (concrete-body (mapcar (lambda (f) (%remove-funcall f fn-param concrete-fn))
+                                                     subst-body))
+                              (anf-body      (mapcar #'anf-transform concrete-body))
+                              (hof-flat      (flatten-anf-body anf-body))
+                              (hof-flat-norm
+                               (let ((last-f (car (last hof-flat))))
+                                 (if (or (symbolp last-f)
+                                         (and (consp last-f) (eq (first last-f) 'return)))
+                                     hof-flat
+                                     (let ((ret-sym (intern (format nil "%HOF_RET_~A" (symbol-name v))
+                                                            (symbol-package v))))
+                                       (append (butlast hof-flat)
+                                               (list (list ret-sym last-f) ret-sym))))))
+                              (return-vars   (%extract-return-vars hof-flat-norm)))
+                         (dolist (rv return-vars)
+                           (setf (gethash rv adjoint-map) (local-adj v)))
+                         ;; HOF body has no tensor kernel inputs — pass nil for tensor-inputs-ht.
+                         (dolist (hf-form (reverse hof-flat-norm))
+                           (when (and (consp hf-form) (= (length hf-form) 2) (symbolp (car hf-form)))
+                             (let ((hv    (car hf-form))
+                                   (hexpr (cadr hf-form)))
+                               (%handle-single-value-backward hv hexpr adjoint-map #'emit #'local-adj
+                                                              :hof-handler-fn #'hof-inline-backward
+                                                              :error-on-unknown t
+                                                              :tensor-inputs-ht nil))))))))
+
+                 ) ; end labels binding list
+
+          (let ((reversed-body (reverse flat-anf)))
+            (dolist (form reversed-body)
+              (cond
+                ;; ---- Single-value binding: (v expr) -------------------
+                ((and (listp form) (= (length form) 2) (symbolp (car form)))
+                 (let ((v    (car form))
+                       (expr (cadr form)))
+                   (%handle-single-value-backward v expr adjoint-map #'emit #'local-adj
+                                                  :hof-handler-fn #'hof-inline-backward
+                                                  :error-on-unknown t
+                                                  :tensor-inputs-ht tensor-inputs-ht)))
+
+                ;; ---- Multi-value binding: (v0 v1 ... expr) -----------
+                ((and (listp form) (>= (length form) 3)
+                      (symbolp (car form))
+                      (every #'symbolp (butlast form)))
+                 (let* ((result-vars (butlast form))
+                        (expr        (car (last form))))
+                   (when (and (consp expr)
+                              (symbolp (car expr))
+                              (gethash (car expr) *differentiable-functions*))
+                     (let* ((fn   (car expr))
+                            (args (cdr expr))
+                            (info (gethash fn *differentiable-functions*))
+                            (bkwd (getf info :bkwd-name))
+                            (n-fp (getf info :n-float-params))
+                            (pkg  (symbol-package (car result-vars)))
+                            (t-adjs (mapcar #'local-adj result-vars)))
+                       (%emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg #'emit #'local-adj "BW")))))
+
+                ;; ---- B4: set! on a storage handle ----------------------
+                ;; Handles both cell writes (~ target) and tensor writes (~ target idx...).
+                ;; For outputs: seed adj(val) from the output gradient tensor/cell.
+                ;; For inputs:  error — inputs may not be mutated in a differentiable kernel.
+                ((and (consp form) (eq (car form) 'set!))
+                 (let ((place (cadr form))
+                       (val   (caddr form)))
+                   (when (and (consp place) (eq (car place) '~) (symbolp val))
+                     (let ((target  (cadr place))
+                           (indices (cddr place)))   ; nil for cell, (i...) for tensor
+                       (cond
+                         ((member target outputs)
+                          (let ((tgt-grad (intern (format nil "~A_GRAD" (symbol-name target))
+                                                  (symbol-package target))))
+                            ;; Seed adj(val) from the output gradient at the same indices.
+                            ;; For cells: (~ tgt-grad) — no indices.
+                            ;; For tensors: (~ tgt-grad idx...) — same indices as forward write.
+                            (emit `(set! ,(local-adj val)
+                                         (+ ,(local-adj val) (~ ,tgt-grad ,@indices))))))
+                         ((member target inputs)
+                          (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
+                                 target target))
+                         (t nil))))))
+
+                ;; ---- Everything else: skip ----------------------------
+                (t nil))))
+
+          ;; Emit gradient output writes for all inputs.
+          ;; Tensor inputs:        SKIP — per-element writes already emitted in the
+          ;;                       ~ case of %handle-single-value-backward.
+          ;; Cell inputs:          (set! (~ in_GRAD) adj(in))   — original cell
+          ;; Wrapped-scalar grads: (set! (~ in_GRAD) adj(in))   — scalars wrapped in
+          ;;                       (cell <float> :address-space :global) per the 101
+          ;;                       endeavor.  Branch on the GRAD-OUTPUT type, not
+          ;;                       the input type.
+          ;; Bare scalar fallback: (set! in_GRAD adj(in)) — unused at kernel level
+          ;;                       once 101 wrapping is in effect; preserved for
+          ;;                       compatibility with sub-function backward bodies
+          ;;                       (which do return-by-value).
+          (loop for in in inputs
+                for in-type in input-types do
+                  (let* ((in-grad    (intern (format nil "~A_GRAD" (symbol-name in))
+                                             ;; 101: prefer kernel-pkg so the
+                                             ;; emitted reference matches the
+                                             ;; bwd-params declaration.
+                                             (or kernel-pkg (symbol-package in))))
+                         (canon-type (canonicalize-type-specifier
+                                      (if (listp in-type) in-type (list in-type))))
+                         (is-cell-input
+                          (and (consp canon-type)
+                               (string-equal (symbol-name (first canon-type)) "CELL")))
+                         (is-tensor-input
+                          (or (%crisp-float-tensor-type-p in-type)
+                              (%crisp-integer-tensor-type-p in-type)))
+                         ;; New 101 path: scalar inputs are wrapped to a cell
+                         ;; in the grad-output signature; emit the cell write.
+                         (is-scalar-wrapped
+                          (and (not is-cell-input) (not is-tensor-input)
+                               (or (%crisp-integer-scalar-type-p in-type)
+                                   (%crisp-float-type-p in-type)))))
+                    (cond
+                      (is-tensor-input nil)  ; per-element writes already done
+                      (is-cell-input     (emit `(set! (~ ,in-grad) ,(local-adj in))))
+                      (is-scalar-wrapped (emit `(set! (~ ,in-grad) ,(local-adj in))))
+                      (t                 (emit `(set! ,in-grad ,(local-adj in)))))))
+
+          ;; 101 endeavor: per-adjoint type-aware zero-init.
+          ;;   - Input adjoints: init based on the corresponding input's promoted
+          ;;     type — long/ulong scalar or long-element handle → (as double 0.0);
+          ;;     others → 0.0.
+          ;;   - Intermediate adjoints: init based on the kernel's output adjoint
+          ;;     width — if any output is double-promoted, the chain-rule seeds
+          ;;     are double and intermediates must match → (as double 0.0).
+          ;;     Otherwise → 0.0.
+          ;; Crisp's analyzer hard-codes floatp literals to 'float, so we use
+          ;; the explicit (as double 0.0) cast form to get the let-binding to
+          ;; infer double for those slots.
+          (cl:flet ((promotes-to-double-p (t-spec)
+                      (let ((promoted (%promote-to-float-adjoint t-spec)))
+                        (or (eq promoted 'double)
+                            (and (consp promoted) (eq (second promoted) 'double))))))
+            (let* ((any-output-double
+                    (some #'promotes-to-double-p output-types))
+                   (typed-zero-for
+                    (lambda (orig-sym)
+                      (let* ((idx (position orig-sym inputs))
+                             (in-type (when idx (nth idx input-types))))
+                        (cond
+                          ;; Input adjoint: type from the input
+                          (in-type
+                           (if (promotes-to-double-p in-type) '(as double 0.0) 0.0))
+                          ;; Intermediate adjoint: type from kernel-wide output width
+                          (any-output-double '(as double 0.0))
+                          (t 0.0)))))
+                   (local-bindings (loop for v being the hash-keys of adjoint-map
+                                         using (hash-value adv)
+                                         collect `(,adv ,(funcall typed-zero-for v))))
+                   (result `(let ,local-bindings
+                              ,@(nreverse backward-forms))))
+              result)))))))
+
+
+;;; =====================================================================
+;;; FORWARD-ONLY METADATA VALIDATORS: in-place guard recipe
+;;; =====================================================================
+;;;
+;;; These 19 functions in src/metadata-val.lisp each need a one-line guard
+;;; at the top.  No body recombination, no save-and-wrap.  Paste this at
+;;; the start of each defun body (right after the docstring), replacing
+;;; <NAME> with the actual function name:
+;;;
+;;;     (when *differentiate-p*
+;;;       (log:info "Skipping forward-only metadata validator under --differentiate.")
+;;;       (return-from <NAME> t))
+;;;
+;;; The 19 validators:
+;;;
+;;;   ;; 048 record/brand cluster (src/metadata-val.lisp ~624-835)
+;;;   validate-def-record-in-metadata
+;;;   validate-def-rec-with-ct-in-metadata
+;;;   validate-nested-rec-in-metadata
+;;;   validate-no-brand-in-metadata
+;;;
+;;;   ;; 056 struct cluster (src/metadata-val.lisp ~1100-1316)
+;;;   validate-def-struct-in-metadata
+;;;   validate-def-struct-with-ct-in-metadata
+;;;   validate-nested-struct-in-metadata
+;;;   validate-struct-no-brand-in-metadata
+;;;
+;;;   ;; 070 vector/matrix cluster (src/metadata-val.lisp ~1364, ~1399)
+;;;   validate-070-03-matrix-metadata
+;;;   validate-070-01-vector-metadata
+;;;
+;;;   ;; 089 strategy cluster (src/metadata-val.lisp ~2321-2419)
+;;;   validate-089-01-global-size-set-to-scalar
+;;;   validate-089-02-global-size-set-to-dims
+;;;   validate-089-03-global-size-one-thread-per
+;;;   validate-089-04-local-size-set-to
+;;;   validate-089-05-local-size-exact
+;;;   validate-089-06-num-groups-strided
+;;;   validate-089-07-global-and-local
+;;;   validate-089-08-global-size-strided
+;;;   validate-089-09-global-size-tiled
+;;;
+;;; After applying these in-place edits, delete from this overlay:
+;;;
+;;;   - *orig-validate-def-record-in-metadata* (and 5 siblings)         (lines ~1155-1198)
+;;;   - *orig-validate-070-01-vector-metadata* (and 1 sibling)          (lines ~1206-1223)
+;;;   - %wrap-validator-as-forward-only helper + its dolist driver      (lines ~1233-1268)
+;;;   - %forward-only-metadata-skip-p helper                            (line ~1173)
+;;;
+;;; All wraps will be cleanly retired.
+;;; =====================================================================
+
