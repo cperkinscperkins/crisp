@@ -1647,24 +1647,6 @@ the trivial zero-gradient backward instead of erroring."
         (push (%generate-shadow-def-struct-form f struct-names) result)))
     (nreverse result)))
 
-(defvar *orig-compile-module* nil
-  "Captures the original compile-module for the overlay wrapper.")
-
-(unless *orig-compile-module*
-  (setf *orig-compile-module*
-        (symbol-function 'compile-module)))
-
-(defun compile-module (forms module builder di-builder di-compile-unit location-map)
-  "Pre-injects shadow def-struct forms for AD support, then delegates
-   to the original compile-module.  See shadow-struct-plan.md."
-  (let ((augmented-forms
-         (if *differentiate-p*
-             (%inject-shadow-struct-forms forms)
-             forms)))
-    (funcall *orig-compile-module*
-             augmented-forms module builder di-builder di-compile-unit location-map)))
-
-
 ;;; ===================================================================
 ;;; 101: Struct kernel-param AD machinery (Shadow Struct, part 2 of 3)
 ;;; ===================================================================
