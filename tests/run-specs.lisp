@@ -542,12 +542,20 @@
             (atol (getf spec :atol))
             (h (getf spec :h))
             (seed-grad (getf spec :seed-grad))
+            (at-points (getf spec :at-points))
             (expected-grads (getf spec :expected-grads))
             (kernel-name (%vad-find-kernel-name file))
-            ;; Coerce all directive values to single-floats up front so the
-            ;; runner sees consistent float types regardless of reader output.
-            (float-inputs
-             (mapcar (lambda (entry) (cons (car entry) (cl:float (cdr entry) 1.0)))
+            ;; Coerce numeric values to single-floats, but preserve integer
+            ;; scalars (the runner uses INTEGERP to classify scalar-ulong)
+            ;; and pass list values through unchanged for vector inputs.
+            (coerced-inputs
+             (mapcar (lambda (entry)
+                       (let ((v (cdr entry)))
+                         (cons (car entry)
+                               (cond
+                                ((listp v)    (mapcar (lambda (x) (cl:float x 1.0)) v))
+                                ((integerp v) v)
+                                (t            (cl:float v 1.0))))))
                      inputs)))
        (cond
         ((null kernel-name)
@@ -570,7 +578,8 @@
                       (uiop:native-namestring fwd-spv)
                       (uiop:native-namestring bwd-spv)
                       kernel-name
-                      :inputs float-inputs
+                      :inputs coerced-inputs
+                      :at-points at-points
                       :seed-grad (cl:float seed-grad 1.0)
                       :h (cl:float h 1.0)
                       :atol atol

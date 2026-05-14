@@ -175,48 +175,227 @@
     (check-cl (cl-enqueue-ndrange-kernel queue kernel 1 (cffi:null-pointer) gs (cffi:null-pointer) 0 (cffi:null-pointer) (cffi:null-pointer))))
   (check-cl (cl-finish queue)))
 
+;;; --- Phase 5b helpers: vectors + plain scalars -----------------------
+
+(defun create-float-buffer (context n-elements)
+  "Creates a read/write cl_mem buffer holding N-ELEMENTS single-float values."
+  (cffi:with-foreign-object (err :int)
+    (let ((buffer (cl-create-buffer context +CL-MEM-READ-WRITE+
+                                    (* 4 n-elements)
+                                    (cffi:null-pointer) err)))
+      (check-cl (cffi:mem-ref err :int))
+      buffer)))
+
+(defun write-float-vector (queue buffer values)
+  "Writes a list of float VALUES into BUFFER (one float per element)."
+  (let ((n (length values)))
+    (cffi:with-foreign-object (data :float n)
+      (loop for v in values
+            for i from 0
+            do (setf (cffi:mem-aref data :float i) (cl:float v 1.0)))
+      (check-cl (cl-enqueue-write-buffer queue buffer 1 0 (* 4 n) data
+                                         0 (cffi:null-pointer) (cffi:null-pointer))))))
+
+(defun read-float-vector (queue buffer n)
+  "Reads N single-floats from BUFFER and returns them as a list."
+  (cffi:with-foreign-object (data :float n)
+    (check-cl (cl-enqueue-read-buffer queue buffer 1 0 (* 4 n) data
+                                      0 (cffi:null-pointer) (cffi:null-pointer)))
+    (loop for i from 0 below n
+          collect (cffi:mem-aref data :float i))))
+
+(defun read-float-vector-elem (queue buffer i)
+  "Reads a single float at index I from BUFFER."
+  (cffi:with-foreign-object (data :float 1)
+    (check-cl (cl-enqueue-read-buffer queue buffer 1 (* 4 i) 4 data
+                                      0 (cffi:null-pointer) (cffi:null-pointer)))
+    (cffi:mem-aref data :float 0)))
+
+(defun bind-vector-arg (kernel base-index buffer length)
+  "Binds a 1D contiguous-compact float vector to KERNEL starting at BASE-INDEX.
+   6 args: parent ptr, parent byte_size, offset, stride[0], extent[0], length.
+   Sizes use :uint64 to match the kernel's i64 params on Windows."
+  (cffi:with-foreign-objects ((arg0 :pointer)
+                              (arg1 :uint64) (arg2 :uint64)
+                              (arg3 :uint64) (arg4 :uint64) (arg5 :uint64))
+    (setf (cffi:mem-ref arg0 :pointer) buffer
+          (cffi:mem-ref arg1 :uint64) (* 4 length)  ; parent byte_size
+          (cffi:mem-ref arg2 :uint64) 0             ; offset
+          (cffi:mem-ref arg3 :uint64) 1             ; stride[0]
+          (cffi:mem-ref arg4 :uint64) length        ; extent[0]
+          (cffi:mem-ref arg5 :uint64) length)       ; length
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 0) (cffi:foreign-type-size :pointer) arg0))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 1) (cffi:foreign-type-size :uint64) arg1))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 2) (cffi:foreign-type-size :uint64) arg2))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 3) (cffi:foreign-type-size :uint64) arg3))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 4) (cffi:foreign-type-size :uint64) arg4))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 5) (cffi:foreign-type-size :uint64) arg5))))
+
+(defun bind-uint64-scalar-arg (kernel arg-index value)
+  "Binds a plain i64 / uint64 scalar at ARG-INDEX."
+  (cffi:with-foreign-object (arg :uint64)
+    (setf (cffi:mem-ref arg :uint64) value)
+    (check-cl (cl-set-kernel-arg kernel arg-index (cffi:foreign-type-size :uint64) arg))))
+
 ;;; === Entry Point =======================================================
+
+;;; --- Input descriptor (phase 5b) -------------------------------------
+;;;
+;;; Each input is classified into one of three kinds, controlling buffer
+;;; allocation, arg-width, and FD strategy:
+;;;
+;;;   :scalar-float  -- wrapped (cell float), 3 fwd args, FD perturbs full value
+;;;   :scalar-ulong  -- plain i64,           1 fwd arg,  no FD (gradient = 0)
+;;;   :vector-float  -- 1D compact tensor,   6 fwd args, FD perturbs at :perturb-i
+;;;
+;;; The backward kernel layout follows declaration order, then output cell,
+;;; then output gradient cell, then per-input outgoing gradient (cell or
+;;; vector, matching the input shape).  See %vad-make-descriptors below.
+
+(defun %vad-classify-input (value at-points name)
+  "Returns plist describing input kind given the parsed VALUE.
+   AT-POINTS is the parser's at-points alist; used to attach :perturb-i."
+  (cond
+    ((listp value)
+     (let ((at (cdr (assoc name at-points :test #'string=))))
+       (list :kind :vector-float
+             :length (length value)
+             :perturb-i at
+             :arg-width 6
+             :grad-arg-width 6)))
+    ((integerp value)
+     (list :kind :scalar-ulong
+           :perturb-i nil
+           :arg-width 1
+           :grad-arg-width 3))   ; cell-of-double grad
+    ((realp value)
+     (list :kind :scalar-float
+           :perturb-i nil
+           :arg-width 3
+           :grad-arg-width 3))
+    (t
+     (error "VERIFY-AUTODIFF: cannot classify input ~A with value ~A"
+            name value))))
+
+(defun %vad-make-descriptors (inputs at-points)
+  "Builds the per-input descriptor list, threading cumulative arg offsets.
+   Forward arg layout is just the inputs in declaration order, followed by
+   the output cell (3 args).  Backward layout adds: incoming grad cell (3),
+   then each input's outgoing gradient slot (width per-input).
+
+   Each descriptor is a plist with these keys pre-allocated (so
+   subsequent (setf (getf desc KEY) VAL) calls modify the existing cons in
+   place rather than building a new list that the caller never sees):
+
+     :name :value :kind :length :perturb-i
+     :arg-width :arg-base
+     :grad-arg-width :grad-arg-base
+     :buffer :grad-buffer
+
+   Returns (values DESCRIPTORS OUTPUT-FWD-BASE OUTPUT-BWD-BASE
+                   GRAD-OUTPUT-BWD-BASE)."
+  (let ((descs nil)
+        (fwd-base 0)
+        (bwd-base 0))
+    (dolist (entry inputs)
+      (let* ((name (car entry))
+             (value (cdr entry))
+             (cls (%vad-classify-input value at-points name)))
+        ;; Pre-allocate every mutable slot so subsequent setf-getf works.
+        (push (list :name name
+                    :value value
+                    :kind (getf cls :kind)
+                    :length (getf cls :length)
+                    :perturb-i (getf cls :perturb-i)
+                    :arg-width (getf cls :arg-width)
+                    :arg-base fwd-base
+                    :grad-arg-width (getf cls :grad-arg-width)
+                    :grad-arg-base nil
+                    :buffer nil
+                    :grad-buffer nil)
+              descs)
+        (incf fwd-base (getf cls :arg-width))
+        (incf bwd-base (getf cls :arg-width))))
+    (setf descs (nreverse descs))
+    (let* ((output-fwd-base fwd-base)
+           (output-bwd-base bwd-base)
+           (grad-output-bwd-base (+ output-bwd-base 3)) ; output cell width = 3
+           (grad-input-base     (+ grad-output-bwd-base 3)))
+      ;; In-place fill of :grad-arg-base.  Each descriptor already has the
+      ;; slot, so setf-getf modifies the existing cons.
+      (let ((cur grad-input-base))
+        (dolist (d descs)
+          (setf (getf d :grad-arg-base) cur)
+          (incf cur (getf d :grad-arg-width))))
+      (values descs output-fwd-base output-bwd-base grad-output-bwd-base))))
+
+(defun %vad-output-length-for-input (desc)
+  "Returns the buffer element count needed for a forward input buffer."
+  (case (getf desc :kind)
+    (:scalar-float 1)
+    (:vector-float (getf desc :length))
+    (:scalar-ulong nil)))
+
+(defun %vad-grad-bytes-for (desc)
+  "Returns byte-size for the gradient buffer for input DESC."
+  (case (getf desc :kind)
+    (:scalar-float 4)                                 ; cell of float
+    (:scalar-ulong 8)                                 ; cell of double
+    (:vector-float (* 4 (getf desc :length)))))       ; vector of float
+
 
 (defun verify-autodiff (fwd-spv-path bwd-spv-path fwd-kernel-name
                        &key
                          (bwd-kernel-name (concatenate 'string fwd-kernel-name "_grad"))
                          inputs
+                         at-points
                          (seed-grad 1.0)
                          (h 1e-3)
                          (atol 1e-2)
                          verbose)
-  "On-metal AD verification for an N-scalar-cell-in / single-scalar-cell-out
-   kernel.
+  "On-metal AD verification for a Crisp differentiable kernel.
 
-   INPUTS is an alist of (NAME-STRING . FLOAT-VALUE) for each kernel input,
-   in declaration order.  For each input the runner does a central-difference
-   FD pass (perturbing only that input).  The backward kernel is then run
-   once with all primals + SEED-GRAD, and the per-input analytical gradients
-   are compared with their numerical FD counterparts using tolerance ATOL.
+   INPUTS is an alist (NAME-STRING . VALUE) in declaration order.  VALUE is:
+     - a real number      -> scalar cell-of-float input (kernel takes 3 args)
+     - an integer         -> scalar ulong input         (kernel takes 1 arg)
+     - a list of reals    -> 1D contiguous-compact      (kernel takes 6 args)
 
-   Returns (values PASS-P RESULTS) where:
-     PASS-P  -- T iff every input's |analytical - numerical| < ATOL.
-     RESULTS -- list of per-input plists, in declaration order:
-                  (:name <string>
-                   :analytical <float>
-                   :numerical <float>
-                   :diff <float>)
+   AT-POINTS is an alist (NAME-STRING . INDEX) giving the perturbation /
+   comparison index for each vector input.
 
-   Phase 5a scope (endeavor 103): all inputs are
-   (cell float :address-space :global); output is one cell of the same.
-   Tensor / record / struct inputs come in later phases."
+   Output is assumed to be a single (cell float) at the kernel boundary.
+
+   For each PERTURBABLE input (scalar-float or vector-float-with-at):
+     - Run forward at +h / -h perturbation -> central-difference FD.
+   Then one backward run with all primals + seed-grad reads analytical
+   gradients (scalar inputs: full cell; vector inputs: value at at-index).
+   Per-input |analytical - numerical| is compared against ATOL.
+
+   Returns (values PASS-P RESULTS).  RESULTS is a list of plists, one per
+   perturbable input, in declaration order:
+       (:name <string>
+        :analytical <float>
+        :numerical <float>
+        :diff <float>)
+
+   Phase 5b scope (endeavor 103): single (cell float) output; 1D compact
+   vectors only.  Multi-dim tensors / records / structs are later phases."
   (flet ((vlog (control &rest args)
            (when verbose (apply #'format t control args))))
-    (let* ((n (length inputs))
-           (platform nil) (device nil) (context nil) (queue nil)
+    (let* ((platform nil) (device nil) (context nil) (queue nil)
            (fwd-program nil) (fwd-kernel nil)
            (bwd-program nil) (bwd-kernel nil)
-           (input-bufs nil) (output-buf nil) (output-grad-buf nil) (input-grad-bufs nil)
+           (descs nil) (output-fwd-base nil) (output-bwd-base nil)
+           (grad-output-bwd-base nil)
+           (output-buf nil) (output-grad-buf nil)
            (pass-p nil) (results nil))
       (unwind-protect
           (progn
-           (when (zerop n)
+           (when (null inputs)
              (error "VERIFY-AUTODIFF: no inputs supplied"))
+
+           (multiple-value-setq (descs output-fwd-base output-bwd-base grad-output-bwd-base)
+             (%vad-make-descriptors inputs at-points))
 
            (cffi:with-foreign-objects ((platforms :pointer 1)
                                        (devices :pointer 1))
@@ -232,7 +411,7 @@
              (setf queue (cl-create-command-queue context device 0 err)))
 
            (vlog "~&;   Loading kernels: ~a / ~a (~a input~:p)~%"
-                 fwd-kernel-name bwd-kernel-name n)
+                 fwd-kernel-name bwd-kernel-name (length inputs))
            (let ((fwd-spv (read-spv-file fwd-spv-path))
                  (bwd-spv (read-spv-file bwd-spv-path)))
              (multiple-value-bind (p k) (create-program-and-kernel context fwd-spv fwd-kernel-name)
@@ -240,93 +419,178 @@
              (multiple-value-bind (p k) (create-program-and-kernel context bwd-spv bwd-kernel-name)
                (setf bwd-program p bwd-kernel k)))
 
-           ;; Buffers: N inputs + Y + Y_grad + N input-grads.
-           (setf input-bufs (loop repeat n collect (create-float-cell-buffer context))
-                 output-buf      (create-float-cell-buffer context)
-                 output-grad-buf (create-float-cell-buffer context)
-                 input-grad-bufs (loop repeat n collect (create-float-cell-buffer context)))
+           ;; --- Allocate input/grad buffers per descriptor.
+           (dolist (d descs)
+             (let ((n (%vad-output-length-for-input d)))
+               (when n
+                 (setf (getf d :buffer) (create-float-buffer context n))))
+             ;; Grad buffer is always a single allocation; its byte-size depends
+             ;; on kind (4 for float-cell, 8 for double-cell, 4*len for vector).
+             (setf (getf d :grad-buffer)
+                   (let ((bytes (%vad-grad-bytes-for d)))
+                     (cffi:with-foreign-object (err :int)
+                       (let ((buf (cl-create-buffer context +CL-MEM-READ-WRITE+
+                                                    bytes (cffi:null-pointer) err)))
+                         (check-cl (cffi:mem-ref err :int))
+                         buf)))))
+           (setf output-buf      (create-float-cell-buffer context)
+                 output-grad-buf (create-float-cell-buffer context))
 
-           (labels ((write-primals (perturb-i delta)
-                      "Writes all input cells.  When PERTURB-I is non-nil,
-                       input at that index is shifted by DELTA."
-                      (loop for entry in inputs
-                            for buf in input-bufs
-                            for i from 0
-                            do (let* ((v (cl:float (cdr entry) 1.0))
-                                      (vv (if (eql i perturb-i)
-                                              (cl:float (+ v delta) 1.0)
-                                              v)))
-                                 (write-float-cell queue buf vv))))
-                    (bind-forward-args ()
-                      (loop for buf in input-bufs
-                            for i from 0
-                            do (bind-cell-arg fwd-kernel (* 3 i) buf))
-                      (bind-cell-arg fwd-kernel (* 3 n) output-buf))
-                    (bind-backward-args ()
-                      (loop for buf in input-bufs
-                            for i from 0
-                            do (bind-cell-arg bwd-kernel (* 3 i) buf))
-                      (bind-cell-arg bwd-kernel (* 3 n) output-buf)
-                      (bind-cell-arg bwd-kernel (* 3 (1+ n)) output-grad-buf)
-                      (loop for buf in input-grad-bufs
-                            for i from 0
-                            do (bind-cell-arg bwd-kernel (* 3 (+ n 2 i)) buf))))
+           (labels
+               ((write-primals (perturb-desc delta)
+                  "Writes every input.  When PERTURB-DESC is non-NIL, perturbs
+                   that one input by DELTA:
+                     scalar-float:  shifts the value
+                     vector-float:  shifts only element at :perturb-i"
+                  (dolist (d descs)
+                    (case (getf d :kind)
+                      (:scalar-float
+                       (let* ((v (cl:float (getf d :value) 1.0))
+                              (vv (if (eq d perturb-desc)
+                                      (cl:float (+ v delta) 1.0) v)))
+                         (write-float-cell queue (getf d :buffer) vv)))
+                      (:vector-float
+                       (let* ((vals (getf d :value))
+                              (i    (getf d :perturb-i))
+                              (perturbed
+                               (if (eq d perturb-desc)
+                                   (loop for v in vals
+                                         for k from 0
+                                         collect (if (eql k i)
+                                                     (+ (cl:float v 1.0) delta)
+                                                     v))
+                                   vals)))
+                         (write-float-vector queue (getf d :buffer) perturbed)))
+                      (:scalar-ulong nil))))
+                (bind-input-args (kernel)
+                  (dolist (d descs)
+                    (let ((base (getf d :arg-base)))
+                      (case (getf d :kind)
+                        (:scalar-float (bind-cell-arg kernel base (getf d :buffer)))
+                        (:vector-float (bind-vector-arg kernel base (getf d :buffer) (getf d :length)))
+                        (:scalar-ulong (bind-uint64-scalar-arg kernel base (getf d :value)))))))
+                (bind-grad-args ()
+                  (dolist (d descs)
+                    (let ((base (getf d :grad-arg-base)))
+                      (case (getf d :kind)
+                        (:scalar-float
+                         (bind-cell-arg bwd-kernel base (getf d :grad-buffer)))
+                        (:scalar-ulong
+                         ;; Cell-of-double grad: same 3-arg shape, byte_size = 8.
+                         (bind-cell-arg bwd-kernel base (getf d :grad-buffer)
+                                        :byte-size 8))
+                        (:vector-float
+                         (bind-vector-arg bwd-kernel base (getf d :grad-buffer)
+                                          (getf d :length)))))))
+                (zero-grads ()
+                  (dolist (d descs)
+                    (case (getf d :kind)
+                      (:scalar-float (write-float-cell queue (getf d :grad-buffer) 0.0))
+                      (:vector-float (write-float-vector queue (getf d :grad-buffer)
+                                                         (make-list (getf d :length)
+                                                                    :initial-element 0.0)))
+                      (:scalar-ulong
+                       ;; cell-of-double, write 8 zero bytes
+                       (cffi:with-foreign-object (data :uint64 1)
+                         (setf (cffi:mem-aref data :uint64 0) 0)
+                         (check-cl (cl-enqueue-write-buffer queue (getf d :grad-buffer)
+                                                            1 0 8 data
+                                                            0 (cffi:null-pointer)
+                                                            (cffi:null-pointer)))))))))
 
-             ;; --- Forward at unperturbed primals, to capture Y for backward.
+             ;; Bind once -- buffers are reused across forward/backward runs.
+             (bind-input-args fwd-kernel)
+             (bind-cell-arg fwd-kernel output-fwd-base output-buf)
+             (bind-input-args bwd-kernel)
+             (bind-cell-arg bwd-kernel output-bwd-base       output-buf)
+             (bind-cell-arg bwd-kernel grad-output-bwd-base  output-grad-buf)
+             (bind-grad-args)
+
+             ;; --- Forward at unperturbed primals, capture Y.
              (write-primals nil 0.0)
              (write-float-cell queue output-buf 0.0)
-             (bind-forward-args)
              (launch-kernel-1d queue fwd-kernel)
-             (let ((y-at-primals (read-float-cell queue output-buf))
-                   (numerical-grads nil))
+             (let ((y-at-primals (read-float-cell queue output-buf)))
                (vlog "~&;   y(primals) = ~a~%" y-at-primals)
 
-               ;; --- Per-input central-difference FD ---------------------
-               (loop for entry in inputs
-                     for perturbed-i from 0
-                     do (write-primals perturbed-i h)
+               ;; --- Per-input central-difference FD --------------------
+               ;; Only :scalar-float and :vector-float (with :perturb-i) contribute.
+               (let ((fd-rows nil))
+                 (dolist (d descs)
+                   (case (getf d :kind)
+                     (:scalar-ulong nil) ; skip
+                     (:scalar-float
+                      (write-primals d h)
+                      (write-float-cell queue output-buf 0.0)
+                      (launch-kernel-1d queue fwd-kernel)
+                      (let ((y-plus (read-float-cell queue output-buf)))
+                        (write-primals d (- h))
                         (write-float-cell queue output-buf 0.0)
                         (launch-kernel-1d queue fwd-kernel)
-                        (let ((y-plus (read-float-cell queue output-buf)))
-                          (write-primals perturbed-i (- h))
+                        (let* ((y-minus (read-float-cell queue output-buf))
+                               (grad (/ (- y-plus y-minus) (* 2.0 h))))
+                          (push (cons (getf d :name) grad) fd-rows)
+                          (vlog "~&;   d/d~a: y+=~a y-=~a num=~a~%"
+                                (getf d :name) y-plus y-minus grad))))
+                     (:vector-float
+                      (let ((at (getf d :perturb-i)))
+                        (when at
+                          (write-primals d h)
                           (write-float-cell queue output-buf 0.0)
                           (launch-kernel-1d queue fwd-kernel)
-                          (let* ((y-minus (read-float-cell queue output-buf))
-                                 (grad (/ (- y-plus y-minus) (* 2.0 h))))
-                            (push grad numerical-grads)
-                            (vlog "~&;   d/d~a: y+=~a y-=~a num=~a~%"
-                                  (car entry) y-plus y-minus grad))))
-               (setf numerical-grads (nreverse numerical-grads))
+                          (let ((y-plus (read-float-cell queue output-buf)))
+                            (write-primals d (- h))
+                            (write-float-cell queue output-buf 0.0)
+                            (launch-kernel-1d queue fwd-kernel)
+                            (let* ((y-minus (read-float-cell queue output-buf))
+                                   (grad (/ (- y-plus y-minus) (* 2.0 h))))
+                              (push (cons (getf d :name) grad) fd-rows)
+                              (vlog "~&;   d/d~a[~a]: y+=~a y-=~a num=~a~%"
+                                    (getf d :name) at y-plus y-minus grad))))))))
 
-               ;; --- Backward with primals + seed ------------------------
-               (write-primals nil 0.0)
-               (write-float-cell queue output-buf y-at-primals)
-               (write-float-cell queue output-grad-buf (cl:float seed-grad 1.0))
-               (dolist (buf input-grad-bufs)
-                 (write-float-cell queue buf 0.0))
-               (bind-backward-args)
-               (launch-kernel-1d queue bwd-kernel)
+                 ;; --- Backward with primals + seed.
+                 (write-primals nil 0.0)
+                 (write-float-cell queue output-buf y-at-primals)
+                 (write-float-cell queue output-grad-buf (cl:float seed-grad 1.0))
+                 (zero-grads)
+                 (launch-kernel-1d queue bwd-kernel)
 
-               (let ((analytical-grads
-                      (loop for buf in input-grad-bufs
-                            collect (read-float-cell queue buf))))
-                 (setf results
-                       (loop for entry in inputs
-                             for num  in numerical-grads
-                             for ana  in analytical-grads
-                             collect (list :name (car entry)
-                                           :analytical ana
-                                           :numerical num
-                                           :diff (abs (- ana num)))))
-                 (setf pass-p (every (lambda (r) (< (getf r :diff) atol))
-                                     results))
-                 (vlog "~&;   pass-p = ~a~%" pass-p)))))
+                 ;; --- Read analytical grads per perturbable input.
+                 (let ((ana-rows nil))
+                   (dolist (d descs)
+                     (case (getf d :kind)
+                       (:scalar-ulong nil)
+                       (:scalar-float
+                        (push (cons (getf d :name)
+                                    (read-float-cell queue (getf d :grad-buffer)))
+                              ana-rows))
+                       (:vector-float
+                        (let ((at (getf d :perturb-i)))
+                          (when at
+                            (push (cons (getf d :name)
+                                        (read-float-vector-elem queue
+                                                                (getf d :grad-buffer)
+                                                                at))
+                                  ana-rows))))))
+
+                   (setf fd-rows  (nreverse fd-rows)
+                         ana-rows (nreverse ana-rows))
+                   (setf results
+                         (loop for (name . num) in fd-rows
+                               for ana = (cdr (assoc name ana-rows :test #'string=))
+                               collect (list :name name
+                                             :analytical ana
+                                             :numerical num
+                                             :diff (abs (- ana num)))))
+                   (setf pass-p (every (lambda (r) (< (getf r :diff) atol)) results))
+                   (vlog "~&;   pass-p = ~a~%" pass-p))))))
 
         ;; Cleanup
-        (dolist (b input-bufs)      (when b (cl-release-mem-object b)))
-        (dolist (b input-grad-bufs) (when b (cl-release-mem-object b)))
         (when output-buf      (cl-release-mem-object output-buf))
         (when output-grad-buf (cl-release-mem-object output-grad-buf))
+        (dolist (d descs)
+          (when (getf d :buffer)      (cl-release-mem-object (getf d :buffer)))
+          (when (getf d :grad-buffer) (cl-release-mem-object (getf d :grad-buffer))))
         (when fwd-kernel  (cl-release-kernel fwd-kernel))
         (when fwd-program (cl-release-program fwd-program))
         (when bwd-kernel  (cl-release-kernel bwd-kernel))

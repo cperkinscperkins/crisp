@@ -12,12 +12,21 @@
 ;;; === Internal token / value helpers ===================================
 
 (defun %vad-tokenize (body)
-  "Splits BODY on Space/Tab whitespace into a list of non-empty tokens."
+  "Splits BODY on Space/Tab whitespace into a list of non-empty tokens.
+   Whitespace inside `[...]` is preserved -- a bracketed group is one token,
+   so vector literals like `A=[1.0 2.0 3.0]` survive intact."
   (let ((tokens nil)
-        (start nil))
+        (start nil)
+        (in-brackets nil))
     (loop for i from 0 below (length body)
           for c = (aref body i)
           do (cond
+               (in-brackets
+                (when (char= c #\])
+                  (setf in-brackets nil)))
+               ((char= c #\[)
+                (unless start (setf start i))
+                (setf in-brackets t))
                ((or (char= c #\Space) (char= c #\Tab))
                 (when start
                   (push (subseq body start i) tokens)
@@ -25,6 +34,32 @@
                (t (unless start (setf start i))))
           finally (when start (push (subseq body start) tokens)))
     (nreverse tokens)))
+
+(defun %vad-parse-vector-literal (str token)
+  "Parses STR of the form `[v0 v1 v2 ...]` into a list of real numbers.
+   STR must start with `[` and end with `]`."
+  (unless (and (> (length str) 1)
+               (char= (aref str 0) #\[)
+               (char= (aref str (1- (length str))) #\]))
+    (error "VERIFY-AUTODIFF: vector literal must be `[v0 v1 ...]`, got ~A" str))
+  (let* ((inner (string-trim '(#\Space #\Tab #\Return #\Newline)
+                             (subseq str 1 (1- (length str)))))
+         (parts (loop with parts = nil
+                      with start = nil
+                      for i from 0 below (length inner)
+                      for c = (aref inner i)
+                      do (cond
+                           ((or (char= c #\Space) (char= c #\Tab))
+                            (when start
+                              (push (subseq inner start i) parts)
+                              (setf start nil)))
+                           (t (unless start (setf start i))))
+                      finally (when start
+                                (push (subseq inner start) parts))
+                              (return (nreverse parts)))))
+    (when (null parts)
+      (error "VERIFY-AUTODIFF: empty vector literal in token ~A" token))
+    (mapcar (lambda (p) (%vad-parse-float p token)) parts)))
 
 (defun %vad-parse-float (str token)
   "Reads STR as a real number, or signals a clear error citing TOKEN.
@@ -69,20 +104,27 @@
 
    Body grammar (whitespace-separated key=value tokens):
 
-     <name>=<float>           Input value for kernel scalar input <name>.
-                              Required: at least one input.
+     <name>=<float>           Scalar input value.
+     <name>=[v0 v1 ...]       Vector input (1D, contiguous-compact).  Phase 5b.
      atol=<float>             Mandatory absolute tolerance for FD-vs-analytical.
      h=<float>                Optional FD step size (default 1e-3).
      seed-grad=<float>        Optional output gradient seed (default 1.0).
-     expect.<name>=<float>    Optional expected analytical gradient for
-                              input <name>.  Multiple allowed.
+     at.<name>=<int>          Index in vector input <name> to perturb / compare.
+                              Required for vector inputs that the FD pass touches.
+     expect.<name>=<float>    Expected analytical gradient.  For scalar inputs
+                              this is the full gradient; for vector inputs it
+                              is the gradient at the at.<name> index.
 
    Return value, when a directive is present:
-     (:inputs         ((<name-string> . <float>) ...)
+     (:inputs         ((<name-string> . <scalar-or-list>) ...)
       :atol           <float>
       :h              <float>
       :seed-grad      <float>
-      :expected-grads ((<name-string> . <float>) ...))"
+      :at-points      ((<name-string> . <integer>) ...)
+      :expected-grads ((<name-string> . <float>) ...))
+
+   In :inputs, the value is a real number for scalar inputs and a list of
+   real numbers for vector inputs."
   (let ((matching nil))
     (dolist (line directive-lines)
       (let ((trimmed (string-left-trim '(#\Space #\Tab #\; #\Return #\Newline) line)))
@@ -98,6 +140,7 @@
                                  (subseq line (length *vad-prefix*))))
               (tokens (%vad-tokenize body))
               (inputs nil)
+              (at-points nil)
               (expected-grads nil)
               (atol nil)
               (h 1e-3)
@@ -107,22 +150,37 @@
          (dolist (token tokens)
            (let* ((kv (%vad-split-kv token))
                   (key (car kv))
-                  (val (%vad-parse-float (cdr kv) token)))
+                  (val-str (cdr kv)))
              (cond
-               ((string= key "atol")      (setf atol val))
-               ((string= key "h")         (setf h val))
-               ((string= key "seed-grad") (setf seed-grad val))
+               ((string= key "atol")
+                (setf atol (%vad-parse-float val-str token)))
+               ((string= key "h")
+                (setf h (%vad-parse-float val-str token)))
+               ((string= key "seed-grad")
+                (setf seed-grad (%vad-parse-float val-str token)))
                ((and (>= (length key) 7)
                      (string= "expect." (subseq key 0 7)))
-                (push (cons (subseq key 7) val) expected-grads))
+                (push (cons (subseq key 7) (%vad-parse-float val-str token))
+                      expected-grads))
+               ((and (>= (length key) 3)
+                     (string= "at." (subseq key 0 3)))
+                (let ((v (%vad-parse-float val-str token)))
+                  (unless (and (integerp v) (>= v 0))
+                    (error "VERIFY-AUTODIFF: at.~A must be a non-negative integer, got ~A"
+                           (subseq key 3) val-str))
+                  (push (cons (subseq key 3) v) at-points)))
+               ((and (> (length val-str) 0) (char= (aref val-str 0) #\[))
+                (push (cons key (%vad-parse-vector-literal val-str token))
+                      inputs))
                (t
-                (push (cons key val) inputs)))))
+                (push (cons key (%vad-parse-float val-str token)) inputs)))))
          (unless atol
            (error "VERIFY-AUTODIFF: missing mandatory atol=<float>"))
          (when (null inputs)
-           (error "VERIFY-AUTODIFF: no input values provided (need at least one <name>=<float>)"))
+           (error "VERIFY-AUTODIFF: no input values provided (need at least one <name>=<value>)"))
          (list :inputs (nreverse inputs)
                :atol atol
                :h h
                :seed-grad seed-grad
+               :at-points (nreverse at-points)
                :expected-grads (nreverse expected-grads)))))))
