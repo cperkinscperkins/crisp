@@ -298,7 +298,11 @@
   "Shared helper for all atomic RMW analyzers.
 OP is a keyword (:add :sub :min :max :xchg).
 Target (second element of EXPR) must be an aref expression like (~ vec idx).
-When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta."
+When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta.
+
+Target analysis runs with *analysis-access-mode* = :write so &out params can
+serve as atomic-RMW targets — the read is part of the write.  Matches the
+set!  analyzer's behavior in analysis/structs.lisp."
   ;; Validate argument count: inc!/dec! take 1 arg (target only); others take 2 (target + delta).
   (let ((expected-args (if no-delta 1 2))
         (actual-args   (1- (length expr))))
@@ -308,7 +312,8 @@ When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta.
                          (first expr) expected-args actual-args)
         :source-location location)))
   (let* ((target-form (second expr))
-         (target-node (analyze-expression target-form env context (append location '(1)))))
+         (target-node (let ((*analysis-access-mode* :write))
+                        (analyze-expression target-form env context (append location '(1))))))
     (unless (semantic-aref-p target-node)
       (error 'crisp-type-error
         :message (format nil "~a: target must be a memory location like (~~ vec idx), got ~a"

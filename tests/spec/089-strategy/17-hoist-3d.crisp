@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: "strategy hoist not yet differentiated"
 ;; TEST-HOIST[L0]: validate-l0-strategy-content
 ;; STRATEGY-EXPECT: zeKernelSetGroupSize(kernel, 1, 1, 1)
 ;; STRATEGY-EXPECT: (uint32_t)w_arg, (uint32_t)h_arg, (uint32_t)d_arg

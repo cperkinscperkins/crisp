@@ -1,6 +1,5 @@
 ;; TEST-HOIST[L0] : validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER c: 0 42 2 3
-;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
 
 ;; Cell whose element type is (array long 4).
 ;; Host allocates 4 * sizeof(long) bytes, initialized iota-style (c[i]=i).

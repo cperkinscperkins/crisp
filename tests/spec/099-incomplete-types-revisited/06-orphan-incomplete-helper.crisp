@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
 ;; Probe: a helper with incomplete (tensor float 1) that uses (~ v idx), but is
 ;; NEVER called from a kernel (or any complete-typed call site).
 ;;

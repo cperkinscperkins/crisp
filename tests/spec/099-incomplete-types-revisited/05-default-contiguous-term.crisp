@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
 ;; Helper signature omits :contiguous-term.  Per the design, :contiguous-term
 ;; defaults to :last (the only Storage Handle property with an explicit default).
 ;; Kernel passes a complete tensor that includes :contiguous-term :last.

@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: "kernel has no differentiable float parameters"
 ;; TEST-WITH[--metadata]: crisp.compiler::validate-089-08-global-size-strided
 ;;
 ;; Metadata: (global-size :derive-from (n) :strategy :strided).

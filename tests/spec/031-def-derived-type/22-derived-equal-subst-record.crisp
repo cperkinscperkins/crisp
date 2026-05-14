@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: "Not supported in auto-diff yet"
 
 ;; does this need a validator?
 

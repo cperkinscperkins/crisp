@@ -1,0 +1,14 @@
+;; TEST-WITH[--metadata] : validate-no-sroa-grad-leak
+
+;; Locks: a rank-3 tensor at the kernel boundary destructures into ~12 ulong
+;; scalar fields under SROA (3 offsets, 3 strides, 3 extents, length, parent
+;; ptr+size). This is the most leakage-prone shape -- if SROA grad-cells
+;; could leak anywhere, they would leak here. None of those 12 ulongs should
+;; surface as standalone _grad cells in the backward kernel signature.
+
+(def-type vol-t (tensor float 3 :address-space :global :align :compact))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel vol_corner_sum (vol &out c)
+    (declare #'(vol-t &out out-c))
+    (set! (~ c) (+ (~ vol 0 0 0) (~ vol 1 1 1))))

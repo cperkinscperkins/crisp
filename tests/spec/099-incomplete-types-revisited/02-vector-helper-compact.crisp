@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
 ;; Helper function takes incomplete (tensor float 1) — no :address-space, no :align.
 ;; Kernel passes complete tensor with :align :compact.
 ;;

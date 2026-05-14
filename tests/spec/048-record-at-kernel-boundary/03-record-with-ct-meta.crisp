@@ -1,5 +1,4 @@
 ;; TEST-WITH[--metadata] : validate-def-rec-with-ct-in-metadata
-;; SKIP-WITH[--differentiate] : "TODO: auto-diff needs to be extended for records at kernel boundary"
 
 ;; the :earnestness is kernel compile time property. It can't be set by the host.
 ;; It's fine for it to appear in the .metacrisp, but should NOT effect

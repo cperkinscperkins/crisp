@@ -4,7 +4,7 @@
 
 ;; "not unreasonable error message"
 ;; 
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 ;; only def-kernel-exact can take voidp arguments.  def-kernel cannot, and will need 
 ;; custom screening for them

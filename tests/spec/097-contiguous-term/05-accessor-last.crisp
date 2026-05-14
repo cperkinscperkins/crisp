@@ -2,7 +2,7 @@
 ;; TEST-WITH[--ir-target=spv]
 ;; TEST-HOIST[L0]: validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER out: 1
-;; SKIP-WITH[--differentiate]: "integer output, no differentiable params"
+
 ;; contiguous-term~ returns the compile-time :last constant.
 ;; The kernel sets out[0]=1 if contiguous-term~ equals :last, else 0.
 

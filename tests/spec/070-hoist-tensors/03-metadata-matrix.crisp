@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; TEST-WITH[--metadata]: crisp.compiler::validate-070-03-matrix-metadata
 
 ;; Validates the .metacrisp for a matrix (N=2) kernel parameter:

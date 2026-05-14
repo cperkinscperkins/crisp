@@ -231,30 +231,36 @@
          MUST BE RESET TO 0 BETWEEN PASSES.")
 
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
-  "Orchestrates the multi-pass compilation of a list of top-level forms."
-  (log:debug "*crisp-types*: ~s~%*expression-analyzers*: ~s" (alexandria:hash-table-keys *crisp-types*) (alexandria:hash-table-keys *expression-analyzers*))
+  "Orchestrates the multi-pass compilation of a list of top-level forms.
+   When --differentiate is enabled, pre-injects shadow def-struct forms for
+   AD support before any of the passes see the forms list."
+  (log:debug "*crisp-types*: ~s~%*expression-analyzers*: ~s"
+             (alexandria:hash-table-keys *crisp-types*)
+             (alexandria:hash-table-keys *expression-analyzers*))
 
-  ;; Pass 1: Gather all function signatures and build the call graph.
-  (let ((*call-graph* (make-hash-table))
-        (*originator-functions* (make-hash-table))
-        (*implicit-arg-map* (make-hash-table)) ; Rebind for a clean state per module.
-        (*scratch-cell-counter* 0)) ; Reset counter for deterministic naming
-    (let ((*defer-struct-validation* t)
-          (*pending-struct-definitions* nil))
-      (analyze-signatures-pass forms)
+  (let ((forms (if *differentiate-p*
+                   (%inject-shadow-struct-forms forms)
+                   forms)))
+    ;; Pass 1: Gather all function signatures and build the call graph.
+    (let ((*call-graph* (make-hash-table))
+          (*originator-functions* (make-hash-table))
+          (*implicit-arg-map* (make-hash-table)) ; Rebind for a clean state per module.
+          (*scratch-cell-counter* 0)) ; Reset counter for deterministic naming
+      (let ((*defer-struct-validation* t)
+            (*pending-struct-definitions* nil))
+        (analyze-signatures-pass forms)
+        ;; Now finalize any structs that were deferred
+        (finalize-struct-definitions))
 
-      ;; Now finalize any structs that were deferred
-      (finalize-struct-definitions))
+      ;; Pass 1.5: Propagate implicit argument requirements up the call graph.
+      (propagate-implicit-arguments)
 
-    ;; Pass 1.5: Propagate implicit argument requirements up the call graph.
-    (propagate-implicit-arguments)
-
-    ;; Pass 2: Now that all signatures are known, compile the function bodies.
-    ;; Reset counter so codegen (Pass 2) generates the same unique IDs as Pass 1
-    (setf *scratch-cell-counter* 0)
-    (log:info "Reset *scratch-cell-counter* to 0 for Pass 2 Codegen")
-    (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
-    (check-for-recursion-cycles)))
+      ;; Pass 2: Now that all signatures are known, compile the function bodies.
+      ;; Reset counter so codegen (Pass 2) generates the same unique IDs as Pass 1
+      (setf *scratch-cell-counter* 0)
+      (log:info "Reset *scratch-cell-counter* to 0 for Pass 2 Codegen")
+      (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
+      (check-for-recursion-cycles))))
 
 
 (defun propagate-implicit-arguments ()
@@ -1557,84 +1563,102 @@ Extended for 092-dotimes."
                 :n-float-params n-float-params
                 :n-return n-return))))
 
-(defun %pre-register-differentiable-fns (forms)
+(defun %pre-register-differentiable-fns (forms &optional record-info)
   "When *differentiate-p* is T, walk FORMS for def-function forms and
 pre-register them in *differentiable-functions* (and *differentiable-hof-store*
 for HOF functions). Handles top-level def-function, progn, and with-template-type.
 Guards parse-function-declarations against unknown-type errors from brand types
-that are not yet registered at pre-registration time."
-  (when *differentiate-p*
-    (dolist (form forms)
-      (cond
-        ;; Top-level def-function: existing HOF-aware logic
-        ((and (consp form) (eq (car form) 'def-function))
-         (let* ((name (second form))
-                   (params (third form))
-                   (body-and-loc (cdddr form)))
-           (multiple-value-bind (declare-forms declarations fn-body)
-               (%extract-fn-body-and-declarations body-and-loc)
-             (declare (ignore declare-forms))
-             (let ((is-system (member '(crisp-system-generated) declarations :test #'equal)))
-               (unless (or is-system (%fn-name-is-grad-p name))
-                 (handler-case
-                   (multiple-value-bind (env return-types)
-                       (parse-function-declarations params declarations)
-                     (let* ((float-param-entries
-                                (loop for pd in env
-                                         when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                                                   (%crisp-float-type-p (parameter-def-type pd)))
-                                         collect pd))
-                               (n-float-params (length float-param-entries))
-                               (n-return (length (remove nil return-types)))
-                               (fn-param-entries
-                                (loop for pd in env
-                                         for i from 0
-                                         when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                                                   (%crisp-function-type-p (parameter-def-type pd)))
-                                         collect (cons i pd)))
-                               (is-hof (consp fn-param-entries)))
-                       (when (> n-float-params 0)
-                         (if is-hof
-                             (let* ((fn-param-idx (car (car fn-param-entries)))
-                                       (fn-param-sym (parameter-def-name (cdr (car fn-param-entries))))
-                                       (float-param-syms (mapcar #'parameter-def-name float-param-entries))
-                                       (clean-body  (loop for f in fn-body
-                                                             unless (and (atom f) (not (symbolp f)))
-                                                             collect f))
-                                       (param-syms (loop for pd in env collect (parameter-def-name pd))))
-                               (%register-hof-entry name "definition" param-syms fn-param-idx fn-param-sym float-param-syms clean-body n-float-params n-return))
-                             (%register-standard-differentiable-entry name "definition" n-float-params n-return)))))
-                   (error (e)
-                     (log:debug "AUTODIFF: Skipping pre-registration of ~a -- type parse error: ~a" name e))))))))
+that are not yet registered at pre-registration time.
 
-        ;; progn: recurse
-        ((and (consp form) (eq (car form) 'progn))
-         (%pre-register-differentiable-fns (rest form)))
+101 widening: records / structs / derived-from-record-or-struct contribute
+their runtime-field count to the differentiable-param count, and a function
+with any tensor or cell parameter is differentiable (handle-grad pathway).
 
-        ;; with-template-type: walk body for def-functions using funcall scanning.
-        ;; Cannot use parse-function-declarations here -- types contain T placeholder.
-        ;; HOF branch: funcall detected -> register in *differentiable-hof-store*.
-        ;; Non-HOF branch: register optimistically; concrete instantiation will update
-        ;;   the entry with accurate counts before the backward walk runs.
-        ((and (consp form) (eq (car form) 'with-template-type))
-         (dolist (bform (cddr form))   ; skip 'with-template-type' and params list
-           (when (and (consp bform) (eq (car bform) 'def-function))
-             (let* ((name   (second bform))
-                       (params (third bform))
-                       (body-and-loc (cdddr bform)))
-               (multiple-value-bind (declare-forms declarations fn-body)
-                   (%extract-fn-body-and-declarations body-and-loc)
-                 (declare (ignore declare-forms declarations))
-                 (multiple-value-bind (fn-param-idx fn-param-sym float-param-syms)
-                     (%detect-hof-param-via-funcall params fn-body)
-                   (cond
-                     ;; HOF template: register in hof-store (existing behavior)
-                     ((and fn-param-idx (not (gethash name *differentiable-functions*)))
-                      (%register-hof-entry name "template via with-template-type" params fn-param-idx fn-param-sym float-param-syms fn-body (1- (length params)) 1))
-                     ;; Non-HOF template: register optimistically.
-                     ((not (gethash name *differentiable-functions*))
-                      (let ((n-params (count-if (lambda (p) (not (string-equal (symbol-name p) "&OUT"))) params)))
-                        (%register-standard-differentiable-entry name "template via with-template-type" n-params 1 :optimistic-p t))))))))))))))
+RECORD-INFO is an alist of (NAME-STR . FIELD-COUNT) built by
+%scan-forms-for-record-info at top-level call.  Recursive calls reuse it."
+  (let ((record-info (or record-info (%scan-forms-for-record-info forms))))
+    (when *differentiate-p*
+      (dolist (form forms)
+        (cond
+          ;; Top-level def-function: existing HOF-aware logic, widened gate.
+          ((and (consp form) (eq (car form) 'def-function))
+           (let* ((name (second form))
+                  (params (third form))
+                  (body-and-loc (cdddr form)))
+             (multiple-value-bind (declare-forms declarations fn-body)
+                 (%extract-fn-body-and-declarations body-and-loc)
+               (declare (ignore declare-forms))
+               (let ((is-system (member '(crisp-system-generated) declarations :test #'equal)))
+                 (unless (or is-system (%fn-name-is-grad-p name))
+                   (handler-case
+                       (multiple-value-bind (env return-types)
+                           (parse-function-declarations params declarations)
+                         (let* ((float-param-entries
+                                 (loop for pd in env
+                                       when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                                 (%crisp-float-type-p (parameter-def-type pd)))
+                                       collect pd))
+                                ;; 101: widened — counts record/struct field
+                                ;; contributions and float scalars; handle types
+                                ;; (tensors, cells) contribute 0 here and flow
+                                ;; grad via the &out grad-handle pathway instead.
+                                (n-diff-params
+                                 (loop for pd in env
+                                       when (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                       sum (%count-differentiable-contributions
+                                            (parameter-def-type pd) record-info)))
+                                (n-return (length (remove nil return-types)))
+                                (fn-param-entries
+                                 (loop for pd in env
+                                       for i from 0
+                                       when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                                 (%crisp-function-type-p (parameter-def-type pd)))
+                                       collect (cons i pd)))
+                                (is-hof (consp fn-param-entries)))
+                           ;; Gate: register if any scalar-delta contribution
+                           ;; OR any handle (tensor/cell) param.
+                           (when (or (> n-diff-params 0)
+                                     (%has-tensor-diff-param-p env))
+                             (if is-hof
+                                 ;; HOF path unchanged — open Q4 deferred.
+                                 (let* ((fn-param-idx (car (car fn-param-entries)))
+                                        (fn-param-sym (parameter-def-name (cdr (car fn-param-entries))))
+                                        (float-param-syms (mapcar #'parameter-def-name float-param-entries))
+                                        (clean-body  (loop for f in fn-body
+                                                           unless (and (atom f) (not (symbolp f)))
+                                                           collect f))
+                                        (param-syms (loop for pd in env collect (parameter-def-name pd))))
+                                   (%register-hof-entry name "definition" param-syms fn-param-idx fn-param-sym float-param-syms clean-body (length float-param-entries) n-return))
+                                 (%register-standard-differentiable-entry name "definition" n-diff-params n-return)))))
+                     (error (e)
+                       (log:debug "AUTODIFF: Skipping pre-registration of ~a -- type parse error: ~a" name e))))))))
+
+          ;; progn: recurse, passing record-info through
+          ((and (consp form) (eq (car form) 'progn))
+           (%pre-register-differentiable-fns (rest form) record-info))
+
+          ;; with-template-type: walk body for def-functions using funcall scanning.
+          ;; Cannot use parse-function-declarations here -- types contain T placeholder.
+          ;; HOF branch: funcall detected -> register in *differentiable-hof-store*.
+          ;; Non-HOF branch: register optimistically; concrete instantiation will update
+          ;;   the entry with accurate counts before the backward walk runs.
+          ((and (consp form) (eq (car form) 'with-template-type))
+           (dolist (bform (cddr form))
+             (when (and (consp bform) (eq (car bform) 'def-function))
+               (let* ((name   (second bform))
+                      (params (third bform))
+                      (body-and-loc (cdddr bform)))
+                 (multiple-value-bind (declare-forms declarations fn-body)
+                     (%extract-fn-body-and-declarations body-and-loc)
+                   (declare (ignore declare-forms declarations))
+                   (multiple-value-bind (fn-param-idx fn-param-sym float-param-syms)
+                       (%detect-hof-param-via-funcall params fn-body)
+                     (cond
+                       ((and fn-param-idx (not (gethash name *differentiable-functions*)))
+                        (%register-hof-entry name "template via with-template-type" params fn-param-idx fn-param-sym float-param-syms fn-body (1- (length params)) 1))
+                       ((not (gethash name *differentiable-functions*))
+                        (let ((n-params (count-if (lambda (p) (not (string-equal (symbol-name p) "&OUT"))) params)))
+                          (%register-standard-differentiable-entry name "template via with-template-type" n-params 1 :optimistic-p t)))))))))))))))
 
 (defun %pre-register-hof-templates ()
   "When *differentiate-p* is T, scan *template-registry* for def-function templates

@@ -1,4 +1,5 @@
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+
 (def-kernel no_arrow_rt_elided (x y z)
     (declare (type x y float) (type z int))
     (+ x y)) ;; return value ignored. 

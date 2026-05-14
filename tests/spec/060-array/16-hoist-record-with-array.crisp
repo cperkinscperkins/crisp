@@ -1,6 +1,5 @@
 ;; TEST-HOIST[L0] : validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER c: 3
-;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
 
 ;; def-record with an (array int 4) member, at kernel boundary.
 ;; The array field is SROA'd to 4 individual i32 scalar parameters — valid OpenCL/SPIR-V.

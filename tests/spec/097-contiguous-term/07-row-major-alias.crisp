@@ -2,7 +2,7 @@
 ;; TEST-WITH[--ir-target=spv]
 ;; TEST-HOIST[L0]: validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER out: 1
-;; SKIP-WITH[--differentiate]: "integer output, no differentiable params"
+
 ;; :contiguous-term :row-major is a matrix-only alias for :last.
 ;; Normalized at parse time; contiguous-term~ must return :last.
 

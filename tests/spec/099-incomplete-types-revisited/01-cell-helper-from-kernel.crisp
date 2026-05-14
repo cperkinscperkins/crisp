@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: 'polymorphism test, not relevant to autodiff'
 ;; Helper function takes incomplete (cell float) — no :address-space.
 ;; Kernel passes complete (cell float :address-space :global).
 ;;

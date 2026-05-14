@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-08T05:24:55.427725Z
+Generated on 2026-05-14T19:01:20.327098Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -251,7 +251,7 @@ Generated on 2026-05-08T05:24:55.427725Z
 ### DEFUN `COMPILE-MODULE`
 - **Args**: `(FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)`
 
-  > Orchestrates the multi-pass compilation of a list of top-level forms.
+  > Orchestrates the multi-pass compilation of a list of top-level forms.  >    When --differentiate is enabled, pre-injects shadow def-struct forms for  >    AD support before any of the passes see the forms list.
 
 
 ---
@@ -546,9 +546,9 @@ Generated on 2026-05-08T05:24:55.427725Z
 
 ---
 ### DEFUN `%PRE-REGISTER-DIFFERENTIABLE-FNS`
-- **Args**: `(FORMS)`
+- **Args**: `(FORMS &OPTIONAL RECORD-INFO)`
 
-  > When *differentiate-p* is T, walk FORMS for def-function forms and  > pre-register them in *differentiable-functions* (and *differentiable-hof-store*  > for HOF functions). Handles top-level def-function, progn, and with-template-type.  > Guards parse-function-declarations against unknown-type errors from brand types  > that are not yet registered at pre-registration time.
+  > When *differentiate-p* is T, walk FORMS for def-function forms and  > pre-register them in *differentiable-functions* (and *differentiable-hof-store*  > for HOF functions). Handles top-level def-function, progn, and with-template-type.  > Guards parse-function-declarations against unknown-type errors from brand types  > that are not yet registered at pre-registration time.  >   > 101 widening: records / structs / derived-from-record-or-struct contribute  > their runtime-field count to the differentiable-param count, and a function  > with any tensor or cell parameter is differentiable (handle-grad pathway).  >   > RECORD-INFO is an alist of (NAME-STR . FIELD-COUNT) built by  > %scan-forms-for-record-info at top-level call.  Recursive calls reuse it.
 
 
 ---
@@ -667,7 +667,7 @@ Generated on 2026-05-08T05:24:55.427725Z
 ### DEFUN `%ANALYZE-ATOMIC-RMW-EXPRESSION`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)`
 
-  > Shared helper for all atomic RMW analyzers.  > OP is a keyword (:add :sub :min :max :xchg).  > Target (second element of EXPR) must be an aref expression like (~ vec idx).  > When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta.
+  > Shared helper for all atomic RMW analyzers.  > OP is a keyword (:add :sub :min :max :xchg).  > Target (second element of EXPR) must be an aref expression like (~ vec idx).  > When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta.  >   > Target analysis runs with *analysis-access-mode* = :write so &out params can  > serve as atomic-RMW targets — the read is part of the write.  Matches the  > set!  analyzer's behavior in analysis/structs.lisp.
 
 
 ---
@@ -1119,6 +1119,9 @@ Generated on 2026-05-08T05:24:55.427725Z
 - **Args**: `(FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN
               &OPTIONAL (SYM-PREFIX BW))`
 
+  > Emits the call to BKWD-FN and routes returned deltas / passed-through  >    &out grad-tensors per the AD convention.  >   >    - Scalar arg: one delta from multi-value return → accumulated into  >      (local-adj arg).  >    - Record/struct arg (looked up via *record-param-field-adjs*): N deltas  >      in declaration order → accumulated into each per-field synth adj.  >    - Tensor arg (identified via fn's :tensor-param-indices registry slot):  >      pairs with an &out arg in the call.  The kernel's corresponding  >      `<arg>_GRAD` is passed; the chain rule's atomic-add happens inside  >      the sub-fn body.  No scalar delta to accumulate.  >   >    The call is emitted whenever there's any accumulation OR any tensor  >    arg (the tensor case writes via &out, not via accumulation, but the  >    call itself still needs to happen).
+
+
 ---
 ### DEFUN `%CRISP-TENSOR-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
@@ -1145,21 +1148,21 @@ Generated on 2026-05-08T05:24:55.427725Z
 - **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
               (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT)`
 
-  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  > TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for  > tensor inputs. When (~ src idx...) is encountered and src has an entry in this  > table, gradient accumulation is emitted as atomic-add! (atomicrmw fadd) to  > avoid race conditions in parallel GPU threads (082-atomics).
+  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  >   > TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for  > tensor inputs.  *RECORD-PARAM-FIELD-ADJS*, when bound, maps record-param  > symbols to a hash of (field-name-string -> per-field-adj-symbol); the  > accessor rule routes adjoint into that synthetic per-field adj instead of  > the record's collective adj.  >   > *STRUCT-KERNEL-PARAM-SHADOWS*, when bound, similarly maps struct-kernel-param  > symbols (plus their nested-struct ANF intermediates registered by  > %register-shadow-anf-intermediates) to per-field shadow adj entries.
 
 
 ---
 ### DEFUN `GENERATE-BACKWARD-WALK`
-- **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)`
+- **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks a flattened ANF body backwards to accumulate adjoints.  > Returns a backward ANF body (a let form).  > Extended for feature 052: handles differentiable sub-function calls (B1/B2),  > multi-value bindings, HOF inline backward, errors for non-differentiable  > functions (B3), and mutation errors (B4).  > Extended for feature 080: tensor/vector/matrix inputs — element-wise gradient  > accumulation via indexed (~ src_GRAD idx...) writes.
+  > Walks a flattened ANF body backwards to accumulate adjoints.  > Returns a backward ANF body (a let form).  > Extended for feature 052: handles differentiable sub-function calls (B1/B2),  > multi-value bindings, HOF inline backward, errors for non-differentiable  > functions (B3), and mutation errors (B4).  > Extended for feature 080: tensor/vector/matrix inputs — element-wise gradient  > accumulation via indexed (~ src_GRAD idx...) writes.  > KERNEL-PKG (101 endeavor): when supplied, used to intern _GRAD output symbols  > in the kernel's home package, matching the bwd-params declaration.  Falls  > back to the input symbol's own package when unsupplied (preserves prior  > behaviour for sub-function backward bodies).  >   > 101 PART 1 PRE-SCAN: also scans FLAT-ANF for record-valued AND struct-valued  > temps bound to %construct-struct, builds per-field adj maps, and dyn-binds  > *record-param-field-adjs* around the walk.  For both records and structs the  > constructor backward rule in %handle-single-value-backward fires when the  > constructed temp is in *record-param-field-adjs* — it accumulates per-field  > adjs back into the constructor args.
 
 
 ---
 ### DEFUN `%CRISP-FLOAT-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a Crisp  > float-category scalar type (float, double, half, bfloat16).  > Checks *crisp-types* directly first (for primitives like 'float),  > then falls back to compute-base-type for derived/alias types.
+  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a Crisp  > float-category scalar type (float, double, half, bfloat16).  > Resolves def-type aliases via *crisp-type-aliases* first, then checks  > *crisp-types* directly (for primitives like 'float), then falls back  > to compute-base-type for derived types.
 
 
 ---
@@ -1208,25 +1211,29 @@ Generated on 2026-05-08T05:24:55.427725Z
 ### DEFUN `%EXPAND-RECORD-KERNEL-INPUTS`
 - **Args**: `(INPUTS INPUT-TYPES PKG)`
 
-  > Expands record-typed inputs into their scalar fields.  >    Returns (values flat-inputs flat-input-types  >                    reassembly-bindings  >                    grad-out-params grad-out-types  >                    record-subs-ht record-type-ht  >                    grad-cell-syms).  >   >    flat-inputs / flat-input-types : record params replaced by scalar field params.  >    reassembly-bindings : let-bindings to reconstruct each record from its fields.  >    grad-out-params / grad-out-types : gradient cell output params (float fields only).  >    record-subs-ht : param-sym -> alist (field-sym . exploded-sym).  >    record-type-ht  : param-sym -> rec-type-spec.  >    grad-cell-syms  : list of _GRAD symbols that need (set! (~ ..) adj) emission.
+  > Recursively expands record-typed inputs into their scalar fields,  >    chasing through nested records.  Also handles struct kernel inputs  >    per the Shadow Struct design: structs are NOT exploded; instead a  >    single shadow-grad-cell is paired with each struct param.  >   >    Returns 9 values: (flat-inputs flat-input-types reassembly-bindings  >    grad-out-params grad-out-types record-subs-ht record-type-ht  >    grad-cell-syms struct-shadow-info).  >   >    The 9th value, struct-shadow-info, is an alist:  >      ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)  >    used by %fix-struct-shadow-writes to emit the final shadow-write.  >   >    Leaf scalar fields (float or integer) produce grad cells per 101.  >    Nested-record fields produce a synthetic intermediate sym that gets  >    registered in record-subs-ht/record-type-ht so the substitution  >    machinery walks through it; their leaf fields are further exploded.
 
 
 ---
 ### DEFUN `%BACKWARD-SKIP-FN-P`
 - **Args**: `(FN-SYM)`
 
-  > Returns T if FN-SYM should be silently skipped in the AD backward walk.  > Skips: system-generated functions (name contains %), AS/AS-* type casts and  > derived-type coercions, and TO-<int-type> integer conversions.
+  > Returns T if FN-SYM should be silently skipped in the AD backward walk.  > Skips:  >   - System-generated functions (name contains %)  >   - AS / AS-* type casts and derived-type coercions  >   - TO-<int-type> integer conversions  >   - 101 endeavor: built-in metadata helpers and view constructors.  >     For metadata helpers (num-rows, num-cols, get-layout, length~, extents~,  >     strides~, parent~, bytes~, contiguous-term~) the result is independent  >     of the input's data values — gradient is zero, sink-style.  >     For view constructors (make-matrix, make-vector, make-cell, make-tensor)  >     the result is a view of the same underlying storage — for chain-rule  >     purposes we treat them as sinks (gradient does not flow back through  >     the constructor).  This is correct when the view is used only for  >     metadata extraction; it is conservative (loses gradient signal) when  >     the view is used to read/write the underlying data.  A future extension  >     could add a pass-through gradient rule for that case.
 
 
 ---
 ### DEFUN `%GENERATE-BACKWARD-FUNCTION-AST`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY-FORMS)`
 
+  > Generates the backward companion (def-function NAME_GRAD ...) for a  > differentiable user function.  >   > 101 part 1: counts record/struct params as contributing their runtime-field  > count toward n-float-params.  For record/struct params, builds a per-field  > synthetic adjoint map and binds *record-param-field-adjs* during the  > backward walk.  Handle (tensor + cell) params flow grad via &out grad-handles.  >   > Also skips trivial-accessor bodies — def-derived-type's auto-generated  > accessors are missing the (crisp-system-generated) marker but should be  > treated equivalently.
+
+
 ---
 ### DEFUN `%GENERATE-BACKWARD-FUNCTION-WALK`
-- **Args**: `(FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS)`
+- **Args**: `(FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL
+              TENSOR-INPUTS-HT)`
 
-  > Generates the backward-pass body for a def-function.  > FLAT-ANF         : flattened ANF of the forward function body.  > FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).  > T-GRAD-SYMS      : symbols for the incoming gradient inputs (one per return value).  > RETURN-VARS      : symbols of the return variables (identified from FLAT-ANF last element).  > Returns a (let (...) ...) form suitable as the body of the _GRAD companion function.
+  > Generates the backward-pass body for a def-function.  > FLAT-ANF         : flattened ANF of the forward function body.  > FLOAT-PARAM-SYMS : parameter symbols whose types are float (get delta outputs).  > T-GRAD-SYMS      : symbols for the incoming gradient inputs (one per return value).  > RETURN-VARS      : symbols of the return variables (identified from FLAT-ANF last element).  >   > 101 extension: TENSOR-INPUTS-HT (optional hash-table mapping each tensor-sub-  > fn-param symbol to its tensor type) is threaded into %handle-single-value-  > backward so tensor reads inside the body emit atomic-add into the corresponding  > &out grad-tensor.  >   > Returns a (let (...) ...) form suitable as the body of the _GRAD companion function.
 
 
 ---
@@ -1286,9 +1293,217 @@ Generated on 2026-05-08T05:24:55.427725Z
 
 
 ---
+### DEFUN `%CRISP-INTEGER-SCALAR-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC (possibly a type alias) resolves to an integer  > scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints.
+
+
+---
+### DEFUN `%INTEGER-SCALAR-TO-FLOAT-SCALAR`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns the float-analog scalar type for an integer scalar:  >    64-bit (long, ulong) → double; smaller ints → float.  Type aliases are  >    resolved.  Returns TYPE-SPEC unchanged if it is not an integer scalar.
+
+
+---
+### DEFUN `%CRISP-INTEGER-CELL-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC is a cell whose element type is an integer scalar.
+
+
+---
+### DEFUN `%INTEGER-CELL-ELEM-TO-FLOAT`
+- **Args**: `(TYPE-SPEC)`
+
+  > Replaces the element type of an integer cell with its float analog.  >    Returns the keyword form (cell float-elem :address-space addr) — length 4 —  >    to satisfy downstream consumers like marshall-cell that reject the canonical  >    3-tuple positional form.  Returns TYPE-SPEC unchanged if it is not an  >    integer cell.
+
+
+---
+### DEFUN `%PROMOTE-TO-FLOAT-ADJOINT`
+- **Args**: `(TYPE-SPEC)`
+
+  > Generalised float-adjoint type promotion for AD output gradient slots.  >    - integer scalar      → float / double scalar  >    - integer tensor      → float / double tensor (element-type promoted)  >    - integer cell        → cell of float / double  >    - everything else     → unchanged (already float, or non-numeric)  >    Used to produce caller-supplied _GRAD seed types and input _GRAD output  >    types that mirror the input shape with float adjoint values.
+
+
+---
 ### DEFUN `%AUTODIFF-GRAD-CELL-TYPE`
 
   > Returns the canonical cell type used for gradient output parameters.
+
+
+---
+### DEFVAR `*RECORD-PARAM-FIELD-ADJS*`
+
+  > Hash table: record-sym -> alist of (FIELD-NAME-STR . FIELD-ADJ-SYM)  >    in declaration order.  Bound during backward walk for sub-functions  >    with record params, and for kernels with record-valued ANF temps  >    (constructed via make-RECORD).  Otherwise NIL.  >   >    Consumers:  >      - The accessor rule in %handle-single-value-backward routes adjoint  >        flow from (FIELD~ p) to the per-field synth adj.  >      - The %construct-struct case flows per-field adjs to constructor args.  >      - %emit-sub-fn-backward distributes deltas per-field when an arg is  >        a record-valued symbol.
+
+
+---
+### DEFVAR `*STRUCT-KERNEL-PARAM-SHADOWS*`
+
+  > Hash table: struct-kernel-param-sym -> (cons SHADOW-GRAD-SYM FIELD-ADJ-ALIST).  >    FIELD-ADJ-ALIST is an alist of (FIELD-NAME-STR . FIELD-ADJ-SYM) in  >    declaration order.  Bound by %generate-backward-kernel-ast around  >    the backward walk when struct kernel params are present.  Used by:  >      - The accessor rule in %handle-single-value-backward.  >      - The shadow-write postprocessor.
+
+
+---
+### DEFUN `%SCAN-FORMS-FOR-RECORD-INFO`
+- **Args**: `(FORMS)`
+
+  > Walks FORMS (recursing through progn / with-template-type) and returns  >    an alist mapping (symbol-name TYPE-NAME) -> count of non-:c-t,  >    non-brand runtime fields. Used during pre-registration when *crisp-types*  >    isn't yet populated.  >   >    Includes BOTH def-record AND def-struct (records and structs at the  >    sub-function AD level both contribute their field count toward the  >    differentiability gate).  Also includes derived-from-{record,struct}  >    types: when (def-derived-type NEW BASE ...) is encountered and BASE is  >    already in the alist, NEW is added with the same field count.  >   >    The name `record-info` is historical; the alist now tracks structs too.
+
+
+---
+### DEFUN `%RESOLVE-TO-BASE-TYPE-FOR-RECORDS`
+- **Args**: `(PD-TYPE)`
+
+  > If PD-TYPE names a derived type whose base is a record, returns the  >    base record type symbol. Otherwise returns PD-TYPE unchanged.  >   >    Records are SROA'd at every function boundary, and derived-type wrappers  >    preserve that property. This helper lets the sub-function gate widening  >    accept derived-from-record types (e.g. `coordinate` derived from `point`).
+
+
+---
+### DEFUN `%RESOLVE-TO-BASE-TYPE-FOR-STRUCTS-OR-RECORDS`
+- **Args**: `(PD-TYPE)`
+
+  > If PD-TYPE names a derived type whose base is a struct OR a record,  >    returns the base type symbol.  Otherwise returns PD-TYPE unchanged.  >    Used by sub-function gate widening to accept derived-from-struct types  >    in addition to derived-from-record types.
+
+
+---
+### DEFUN `%COUNT-DIFFERENTIABLE-CONTRIBUTIONS`
+- **Args**: `(PD-TYPE &OPTIONAL RECORD-INFO)`
+
+  > Returns the number of SCALAR-DELTA contributions this parameter type  >    makes at the SUB-FUNCTION level (def-function).  Used to size the  >    multi-value-return arity at the sub-fn _GRAD boundary.  >   >    - Records / derived-from-records  -> runtime-field count (per-field deltas).  >    - Structs  / derived-from-structs -> runtime-field count (same convention).  >    - Float scalars                   -> 1.  >    - Tensors, cells, integer scalars -> 0.  These contribute zero scalar  >      deltas; tensors flow grad via &out grad-tensor params instead  >      (see %has-tensor-diff-param-p and the tensor-sub-fn pipeline).  >   >    RECORD-INFO (optional alist of (NAME-STR . FIELD-COUNT)) bridges the  >    pre-registration ordering issue where *crisp-types* isn't yet  >    populated. When supplied, it takes priority over the runtime registry.
+
+
+---
+### DEFUN `%CRISP-TENSOR-PARAM-TYPE-P`
+- **Args**: `(PD-TYPE)`
+
+  > Returns T if PD-TYPE is a tensor (float-element or integer-element)  >    at the sub-function level.  Used to decide whether a sub-fn param  >    contributes a tensor grad-out (vs a scalar delta).  >   >    Handles three forms:  >    - List form: (tensor float 1 ...) — caught by the existing helpers.  >    - Mangled-template-name symbol: TENSOR_FLOAT_1_GLOBAL_COMPACT_LAST —  >      produced by Crisp's template instantiation.  Detected by name prefix.  >    - Plain symbol naming a registered tensor type.
+
+
+---
+### DEFUN `%CRISP-CELL-PARAM-TYPE-P`
+- **Args**: `(PD-TYPE)`
+
+  > Returns T if PD-TYPE is a cell of a SCALAR element type (float or  >    integer) at the sub-function level.  Cells flow grad via &out  >    grad-cell, same pattern as tensors.  >   >    Cells of structs/records are NOT accepted here — their grad-cell  >    would need to be a cell of the corresponding shadow type, and the  >    chain rule for `(set! (field~ (~ c)) ...)` is structurally different  >    (deferred).  >   >    Recognizes three forms (mirrors %crisp-tensor-param-type-p):  >    - List form: (cell float :address-space :global ...).  >    - Mangled template name like CELL_FLOAT_GLOBAL — produced by Crisp's  >      template instantiation.  Detected by name prefix + scalar element.  >    - Plain symbol naming a registered cell type.
+
+
+---
+### DEFUN `%CRISP-HANDLE-PARAM-TYPE-P`
+- **Args**: `(PD-TYPE)`
+
+  > Returns T for any sub-fn param type that flows grad via &out grad-handle:  >    tensors AND cells.  Both go through the same convention — paired with  >    an &out grad-handle of matching shape, body atomic-adds into it.
+
+
+---
+### DEFUN `%HAS-TENSOR-DIFF-PARAM-P`
+- **Args**: `(ENV)`
+
+  > Returns T if ENV contains at least one non-&OUT parameter that flows  >    grad via a paired &out grad-handle (tensor OR cell).  Used by the  >    sub-function pre-reg + _GRAD generator gates: a sub-fn with such  >    params is differentiable even when its scalar-delta count is zero.  >   >    Name is historical (originally tensor-only); now covers cells too.
+
+
+---
+### DEFUN `%TRIVIAL-ACCESSOR-BODY-P`
+- **Args**: `(BODY-FORMS)`
+
+  > Returns T if BODY-FORMS is a single (return (%extract-struct-member obj idx))  >    — i.e. a trivial field-extraction accessor.  Used to detect auto-generated  >    accessors that def-derived-type emits without a `(crisp-system-generated)`  >    declaration (def-record's accessors ARE marked, but def-derived-type's are  >    not).  These accessors don't need their own _GRAD: the kernel-side accessor  >    rule handles them inline.
+
+
+---
+### DEFUN `%ADJ-TYPE-FOR-FIELD`
+- **Args**: `(FORWARD-TYPE &OPTIONAL STRUCT-NAME-SET)`
+
+  > Returns the adjoint type for a forward struct field's TYPE, per  >    the 101 promotion rules.  >   >    STRUCT-NAME-SET (optional hash table, symbol->T) covers struct types  >    that will be defined by upcoming def-struct forms in the same  >    compilation unit but haven't been registered in *crisp-types* yet.  >    At shadow-injection time (before any macro expansion), this is the  >    only way to know which symbols are struct types.
+
+
+---
+### DEFUN `%GENERATE-SHADOW-DEF-STRUCT-FORM`
+- **Args**: `(DEF-STRUCT-FORM &OPTIONAL STRUCT-NAME-SET)`
+
+  > Given (def-struct NAME (f0 t0) (f1 t1) ... brand-decls...), returns  >    the matching (def-struct NAME_ADJ (f0 adj_t0) (f1 adj_t1) ...) form.  >    Brand declarations are dropped.  :c-t members are preserved (their  >    value is a forward-time constant; not differentiable but harmless).  >    STRUCT-NAME-SET enables recognizing nested struct field types whose  >    def-struct forms appear elsewhere in the compilation unit.
+
+
+---
+### DEFUN `%COLLECT-STRUCT-NAMES-FROM-FORMS`
+- **Args**: `(FORMS)`
+
+  > Walks FORMS at the top level and returns a hash table mapping each  >    (def-struct NAME ...) NAME (and only structs, not records) to T.  >    Used by shadow-injection to recognize struct field types when  >    *crisp-types* isn't yet populated.
+
+
+---
+### DEFUN `%INJECT-SHADOW-STRUCT-FORMS`
+- **Args**: `(FORMS)`
+
+  > Walks FORMS at the top level.  After each (def-struct NAME ...) that  >    defines a NON-shadow struct, appends (def-struct NAME_ADJ ...).  >    Already-shadow structs (name ends with _ADJ) are passed through.  >    def-record forms are left untouched (records SROA, no shadow needed).  >    Other forms unchanged.  >   >    First pass collects all struct names so the shadow generator can  >    recognize nested struct field types.
+
+
+---
+### DEFUN `%CRISP-STRUCT-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Returns T if TYPE-SPEC names a registered def-struct (category :struct).  >    Distinct from %crisp-record-type-p (which checks category :record).
+
+
+---
+### DEFUN `%SHADOW-TYPE-NAME-FOR`
+- **Args**: `(STRUCT-TYPE-NAME)`
+
+  > Returns the shadow struct's type symbol for STRUCT-TYPE-NAME.
+
+
+---
+### DEFUN `%MAKE-SHADOW-CONSTRUCTOR-NAME-FOR`
+- **Args**: `(STRUCT-TYPE-NAME)`
+
+  > Returns the MAKE-<TYPE>_ADJ constructor symbol for STRUCT-TYPE-NAME.
+
+
+---
+### DEFUN `%NESTED-FIELD-INFO-P`
+- **Args**: `(FIELD-INFO)`
+
+  > T if FIELD-INFO from a struct-shadow alist refers to a nested struct  >    (an alist), as opposed to a scalar leaf (a symbol).
+
+
+---
+### DEFUN `%REGISTER-SHADOW-ANF-INTERMEDIATES`
+- **Args**: `(FLAT-ANF SHADOW-HT)`
+
+  > Pre-scans FLAT-ANF for bindings of the shape (TEMP (FIELD~ SHADOW-TRACKED-SYM))  >    where SHADOW-TRACKED-SYM is in SHADOW-HT and the field's info is a  >    nested-struct alist.  Registers TEMP in SHADOW-HT (with the nested  >    alist as TEMP's field-adj-alist) so subsequent accessor calls on TEMP  >    can route deeper.  Mutates SHADOW-HT in place.  >   >    Must run BEFORE the backward walk so the accessor case can consult  >    the augmented map.
+
+
+---
+### DEFUN `%BUILD-STRUCT-FIELD-ADJ-ALIST`
+- **Args**: `(PARAM-SYM STRUCT-TYPE PKG)`
+
+  > Recursively builds a field-adj-alist for a struct kernel param of  >    STRUCT-TYPE.  Each entry is (FIELD-NAME-STR . FIELD-INFO) where:  >   >    - For scalar fields: FIELD-INFO is the per-field adj symbol  >      (e.g. r_top-left_x_adj).  >    - For nested struct fields: FIELD-INFO is itself an alist of the  >      same shape, recursively descended.  >   >    PARAM-SYM is the prefix used when generating leaf adj sym names  >    (so leaves nested under r.top-left get names like r_top-left_x_adj).
+
+
+---
+### DEFUN `%BUILD-SHADOW-CTOR-FORM`
+- **Args**: `(STRUCT-TYPE-NAME FIELD-ADJ-ALIST PKG)`
+
+  > Builds a (MAKE-<S>_ADJ :field1 val1 :field2 val2 ...) form recursively.  >    For scalar leaf fields, val is the adj sym.  For nested struct fields,  >    val is a recursive (MAKE-<INNER>_ADJ ...) form.
+
+
+---
+### DEFUN `%COLLECT-ALL-LEAF-ADJ-SYMS`
+- **Args**: `(FIELD-ADJ-ALIST)`
+
+  > Collects all leaf adj syms (scalars at the bottom of a nested alist)  >    recursively.
+
+
+---
+### DEFUN `%ENSURE-LEAF-ADJ-BINDINGS`
+- **Args**: `(FORM LEAF-ADJ-SYMS)`
+
+  > If FORM is `(let (bindings) body...)`, augments the bindings list with  >    `(sym 0.0)` for each sym in LEAF-ADJ-SYMS not already bound.  Used to  >    ensure that leaf adj syms referenced ONLY by the shadow-write  >    postprocessor (i.e. unused in the kernel body) have valid zero-init  >    bindings.
+
+
+---
+### DEFUN `%FIX-STRUCT-SHADOW-WRITES`
+- **Args**: `(FORM STRUCT-SHADOW-INFO)`
+
+  > Postprocesses the kernel backward walk's output.  For each struct  >    kernel input S in STRUCT-SHADOW-INFO, replaces the default scalar  >    input-grad-write `(set! S_GRAD S_ADJ)` with the correct shadow-  >    struct write `(set! (~ S_GRAD) (MAKE-<S>_ADJ ...))` — building  >    the shadow constructor recursively for nested struct fields.  >   >    STRUCT-SHADOW-INFO is the alist returned as the 9th value of  >    %expand-record-kernel-inputs:  >      ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)  >   >    Other (set! ...) forms are passed through unchanged.
 
 
 ---
@@ -2557,10 +2772,17 @@ Generated on 2026-05-08T05:24:55.427725Z
 
 
 ---
+### DEFUN `%HAS-DIFF-CAPABLE-SCALAR-INPUT-P`
+- **Args**: `(FLAT-INPUT-TYPES)`
+
+  > Returns T if flat-input-types contains at least one integer scalar  >    (signed/unsigned), including branded int scalars.  Used by the  >    relaxed gate in %generate-backward-kernel-ast.
+
+
+---
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
 - **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
 
-  > Generates the def-kernel-exact AST for the backward (gradient) pass.  > 085: when diff-flat-inputs is empty but integer tensor inputs exist, emits a  > trivial backward kernel (just return). The float-typed _GRAD tensors declared  > in the signature remain zero — the correct gradient for integer arithmetic.
+  > Generates the def-kernel-exact AST for the backward (gradient) pass.  > 101: widened input check to also accept integer scalars (incl. branded) in  > addition to integer tensors.  All-int-record-field kernels now emit the  > trivial zero-gradient backward instead of erroring.  Struct inputs with  > shadow grads also bypass the gate.  > 085: when diff-flat-inputs is empty but integer tensor inputs exist, emits a  > trivial backward kernel (just return). The float-typed _GRAD tensors declared  > in the signature remain zero — the correct gradient for integer arithmetic.
 
 
 ---
@@ -2854,6 +3076,13 @@ Generated on 2026-05-08T05:24:55.427725Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\metadata-val.lisp`
 
+### DEFMACRO `DEFINE-FORWARD-ONLY-VALIDATOR`
+- **Args**: `(NAME ARGS &BODY BODY)`
+
+  > Like defun, but the resulting function returns T trivially when  >    *differentiate-p* is set.  Use for metadata validators that describe  >    forward-kernel structure — under --differentiate the metacrisp describes  >    the backward kernel with a different shape, so the forward-only check  >    doesn't apply.
+
+
+---
 ### DEFUN `VALIDATE-KERNEL-METADATA`
 - **Args**: `(METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL TARGETS-P))`
 
@@ -2978,17 +3207,24 @@ Generated on 2026-05-08T05:24:55.427725Z
 
 
 ---
+### DEFUN `%EXTRACT-FN-BODY-FROM-IR`
+- **Args**: `(IR-CONTENT FN-DEFINE-PREFIX)`
+
+  > Returns the substring of IR-CONTENT covering the body of a function  >    whose `define` line starts with FN-DEFINE-PREFIX (e.g.  >    "define void @measure_distance(").  The body spans from the  >    `define` line through the matching closing `}` at column 0.  >    Returns NIL if no such function found.  >   >    In LLVM IR the function-closing brace is the only `}` that appears at  >    column 0; nested braces (e.g. struct literals) are indented.
+
+
+---
 ### DEFUN `VALIDATE-DESCENDANT-DISTANCE`
 - **Args**: `(IR-PATH)`
 
-  > Validates descendant substitution: coordinate can substitute for point.  >    Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x.
+  > Validates descendant substitution: coordinate can substitute for point.  >    Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x  >    in the FORWARD kernel body (measure_distance).  The check is scoped to  >    the forward kernel so it stays meaningful under --differentiate, where  >    the backward kernel recomputes forward values for chain-rule purposes.
 
 
 ---
 ### DEFUN `VALIDATE-ANCESTOR-DISTANCE`
 - **Args**: `(IR-PATH)`
 
-  > Validates ancestor substitution: point can substitute for coordinate.  >    Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x.
+  > Validates ancestor substitution: point can substitute for coordinate.  >    Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x  >    in the FORWARD kernel body (measure_distance).  Scoped to the forward  >    kernel for the same reason as validate-descendant-distance.
 
 
 ---
@@ -3094,34 +3330,6 @@ Generated on 2026-05-08T05:24:55.427725Z
 
 
 ---
-### DEFUN `VALIDATE-DEF-RECORD-IN-METADATA`
-- **Args**: `(METADATA-PATH)`
-
-  > Validates 01-basic-rec-meta: v-point at kernel boundary.  >    Checks :records section, physical width (2+3=5), and declared sig.
-
-
----
-### DEFUN `VALIDATE-DEF-REC-WITH-CT-IN-METADATA`
-- **Args**: `(METADATA-PATH)`
-
-  > Validates 03-record-with-ct-meta: v-point with :c-t earnestness at kernel boundary.  >    Checks :records shows only 2 runtime members, physical width is 2+2+3=7,  >    and declared sig shows the full (v-point :earnestness 3.0) type for vp-2.
-
-
----
-### DEFUN `VALIDATE-NESTED-REC-IN-METADATA`
-- **Args**: `(METADATA-PATH)`
-
-  > Validates 04-nested-records-meta: v-rect (containing v-point) at kernel boundary.  >    Checks both records in :records section, physical width is 4+3=7,  >    and declared sig shows vr with type v-rect and range (0 3).
-
-
----
-### DEFUN `VALIDATE-NO-BRAND-IN-METADATA`
-- **Args**: `(METADATA-PATH)`
-
-  > Validates 09-branded-rec-elide: branded def-record at kernel boundary.  >    Checks that the :records section shows the base type (ulong) for branded  >    fields, not the brand type (token-t), and no brand declarations appear.
-
-
----
 ### DEFUN `%USER-RECORD-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
@@ -3153,7 +3361,7 @@ Generated on 2026-05-08T05:24:55.427725Z
 ### DEFUN `VALIDATE-REC-KB-NOT-FLOAT`
 - **Args**: `(IR-PATH)`
 
-  > Validates backward kernel for 05-not-float.  >    x field is int (no grad), y is float.  >    Expects: (VP_X VP_Y C C_GRAD &out VP_Y_GRAD) = 11 params = 10 commas.
+  > Validates backward kernel for 05-not-float.  >    Post 101 endeavor: integer fields are also differentiable (with float-typed  >    _GRAD slots).  x (int) and y (float) both get gradient outputs.  >    Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas.
 
 
 ---
@@ -3189,48 +3397,6 @@ Generated on 2026-05-08T05:24:55.427725Z
 - **Args**: `(STRUCTS-SECTION NAME)`
 
   > Finds (def-struct NAME ...) in a list of forms from a :structs section.  > Returns the form or NIL.
-
-
----
-### DEFUN `VALIDATE-DEF-STRUCT-IN-METADATA`
-- **Args**: `(METADATA-PATH)`
-
-  > Validates 056/01-basic-struct-meta: point at kernel boundary.  >    Checks :structs contains POINT (2 members) but NOT RECT,  >    physical-signature has 4 entries (1 struct + 3 cell), and  >    declared-signature shows p :in with type point.
-
-
----
-### DEFUN `VALIDATE-DEF-STRUCT-WITH-CT-IN-METADATA`
-- **Args**: `(METADATA-PATH)`
-
-  > Validates 056/03-struct-with-ct-meta: point with :c-t earnestness.  >    Checks :structs shows 2 runtime members only (c-t earnestness excluded),  >    physical-signature has 5 entries (2 struct + 3 cell), and  >    declared-sig shows (point earnestness 3.0) for p2.
-
-
----
-### DEFUN `VALIDATE-NESTED-STRUCT-IN-METADATA`
-- **Args**: `(METADATA-PATH)`
-
-  > Validates 056/04-nested-structs-meta: rect (containing point) at kernel boundary.  >    Checks :structs contains both RECT and POINT (dependency),  >    physical-signature has 4 entries (1 struct + 3 cell), and  >    declared-sig shows r :in rect.
-
-
----
-### DEFUN `VALIDATE-STRUCT-NO-BRAND-IN-METADATA`
-- **Args**: `(METADATA-PATH)`
-
-  > Validates 056/09-branded-struct-elide: branded def-struct at kernel boundary.  >    Checks that the :structs section shows the base type (ulong) for branded  >    fields (not token-t), no brand declarations appear, and the kernel is present.
-
-
----
-### DEFUN `VALIDATE-070-03-MATRIX-METADATA`
-- **Args**: `(META-PATH)`
-
-  > Validates .metacrisp for test 03-metadata-matrix.  >    Matrix (N=2): 3*2+3=9 slots for v (indices 0-8), then val at index 9.  >    :physical-signature — 10 entries  >    :declared-signature — v :rank 2 :align :compact :range (0 8); val :range (9 9)
-
-
----
-### DEFUN `VALIDATE-070-01-VECTOR-METADATA`
-- **Args**: `(META-PATH)`
-
-  > Validates .metacrisp for test 01-metadata-vector.  >    Checks:  >      - physical-signature: (0 LONG) (1 (C-POINTER...)) (2 ULONG) x 5 = 7 slots  >      - declared-signature: val :range (0 0), v :range (1 6) :rank 1 :align :compact  >      - aliases: OUT-VEC-T with keyword-form type spec
 
 
 ---
@@ -3536,66 +3702,24 @@ Generated on 2026-05-08T05:24:55.427725Z
 
 
 ---
-### DEFUN `VALIDATE-089-01-GLOBAL-SIZE-SET-TO-SCALAR`
-- **Args**: `(PATH)`
+### DEFUN `%ENDS-WITH-GRAD-P`
+- **Args**: `(NAME)`
 
-  > Validates :global-size (global-size :set-to 256) in metacrisp.
-
-
----
-### DEFUN `VALIDATE-089-02-GLOBAL-SIZE-SET-TO-DIMS`
-- **Args**: `(PATH)`
-
-  > Validates :global-size (global-size :set-to (width height)) in metacrisp.
+  > Returns T if NAME (a string) ends with '_grad' (case-insensitive).
 
 
 ---
-### DEFUN `VALIDATE-089-03-GLOBAL-SIZE-ONE-THREAD-PER`
-- **Args**: `(PATH)`
+### DEFUN `%STRIP-GRAD-SUFFIX`
+- **Args**: `(NAME)`
 
-  > Validates :global-size with :strategy :one-thread-per in metacrisp.
-
-
----
-### DEFUN `VALIDATE-089-04-LOCAL-SIZE-SET-TO`
-- **Args**: `(PATH)`
-
-  > Validates :local-size (local-size :set-to 64) in metacrisp.
+  > Returns NAME with the trailing 5-character '_grad' suffix removed.
 
 
 ---
-### DEFUN `VALIDATE-089-05-LOCAL-SIZE-EXACT`
-- **Args**: `(PATH)`
+### DEFUN `VALIDATE-NO-SROA-GRAD-LEAK`
+- **Args**: `(METADATA-PATH)`
 
-  > Validates :local-size with :strategy :exact in metacrisp.
-
-
----
-### DEFUN `VALIDATE-089-06-NUM-GROUPS-STRIDED`
-- **Args**: `(PATH)`
-
-  > Validates :num-groups (num-groups :derive-from (n) :strategy :strided) in metacrisp.
-
-
----
-### DEFUN `VALIDATE-089-07-GLOBAL-AND-LOCAL`
-- **Args**: `(PATH)`
-
-  > Validates both :global-size and :local-size present in metacrisp.
-
-
----
-### DEFUN `VALIDATE-089-08-GLOBAL-SIZE-STRIDED`
-- **Args**: `(PATH)`
-
-  > Validates :global-size with :strategy :strided in metacrisp.
-
-
----
-### DEFUN `VALIDATE-089-09-GLOBAL-SIZE-TILED`
-- **Args**: `(PATH)`
-
-  > Validates :global-size with :strategy :tiled and :tile-shape (16 16) in metacrisp.
+  > Locks the no-SROA-grad-leak invariant for backward kernels.  >   >    For every entry in the kernel's :declared-signature whose :name ends in  >    '_grad', the name stripped of '_grad' must also appear as an entry's  >    :name in the same declared-signature.  >   >    This catches the failure mode where SROA-expanded scalar components of a  >    compound type (e.g. a tensor's offset/stride/extent/length/parent/byte-size)  >    leak as standalone _grad cells in the backward kernel signature, rather  >    than riding along inside the single logical _grad companion of the  >    compound parameter.  >   >    In the forward (non --differentiate) suite, no _grad entries exist in  >    declared-signature at all, so the validator passes trivially. The same  >    test file therefore locks the invariant under both passes.
 
 
 ---

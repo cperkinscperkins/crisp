@@ -1,5 +1,6 @@
 
 ;; FAIL-WITH[--ir-target=ptx --hoist=L0]: "--hoist=L0 requires --ir-target=spv. Found targets: (PTX)"
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+
 (def-kernel noop ()
   (declare #'(=> nil)))

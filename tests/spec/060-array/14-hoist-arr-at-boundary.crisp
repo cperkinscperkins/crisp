@@ -1,5 +1,4 @@
 ;; TEST-HOIST[L0] : validate-l0-compile-only
-;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
 
 ;; This test will never work with L0.  It will not support the fixed array 
 ;; directly at the kernel boundary. It MUST be wrapped in a struct ( see test 15 ).

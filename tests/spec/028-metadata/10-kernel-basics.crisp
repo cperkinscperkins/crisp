@@ -1,7 +1,7 @@
 ;; TEST-WITH[--metadata] : validate-10-basics-meta
 ;; TEST-WITH[--metadata --ir-target=spv] : validate-10-basics-spv
 ;; TEST-WITH[--metadata --ir-target=spv --ir-target=ptx] : validate-10-basics-multi
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 #|
 This first kernel metadata test only validates the most basic information.

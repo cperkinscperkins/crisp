@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-071-01-compact-vector-get-ir
 
 ;; Verifies that a compact vector GET with a runtime index produces no stride multiply.

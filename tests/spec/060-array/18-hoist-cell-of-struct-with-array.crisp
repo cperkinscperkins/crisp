@@ -1,5 +1,4 @@
 ;; TEST-HOIST[L0] : validate-l0-compile-only
-;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
 
 ;; Cell wrapping a def-struct that has an (array int 4) member.
 ;; Kernel writes 42 to values[2] via: (set! (~ (values~ (~ c)) 2) 42).

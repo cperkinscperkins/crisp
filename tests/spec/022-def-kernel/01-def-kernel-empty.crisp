@@ -1,6 +1,6 @@
 ;;  def-kernel expands to the def-kernel-exact.  Though, in this case
 ;;  there is very little to expand.
 
-;; SKIP-WITH[--differentiate]: "fails without lax mode"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 (def-kernel empty_kernel ()
     (declare #'()))

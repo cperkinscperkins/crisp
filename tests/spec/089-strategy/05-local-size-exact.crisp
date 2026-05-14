@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: "kernel has no differentiable float parameters"
 ;; TEST-WITH[--metadata]: crisp.compiler::validate-089-05-local-size-exact
 ;;
 ;; Metadata: (local-size :derive-from (width height) :strategy :exact).

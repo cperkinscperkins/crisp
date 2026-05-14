@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-074-04-scratch-matrix-propagation-ir
 ;; matrix is (tensor T 2), kernel_A implicit: ptr addrspace(3) + 8 x i64

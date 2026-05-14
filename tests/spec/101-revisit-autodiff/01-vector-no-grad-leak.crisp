@@ -1,0 +1,14 @@
+;; TEST-WITH[--metadata] : validate-no-sroa-grad-leak
+
+;; Locks: a rank-1 tensor (vector) at the kernel boundary destructures into
+;; ~6 ulong scalar fields (offset, stride, extent, length, parent ptr+size)
+;; under SROA. The backward kernel signature must NOT surface those as
+;; standalone _grad cells; the vector should map to one logical _grad
+;; companion of the same shape.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel vec_sum_two (v &out c)
+    (declare #'(vec-t &out out-c))
+    (set! (~ c) (+ (~ v 0) (~ v 1))))

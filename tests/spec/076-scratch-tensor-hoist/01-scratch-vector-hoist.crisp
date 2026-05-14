@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
 ;; TEST-HOIST[L0] : validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER c: 43
 ;;

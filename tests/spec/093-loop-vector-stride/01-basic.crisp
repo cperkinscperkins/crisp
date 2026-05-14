@@ -1,6 +1,6 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
-;; SKIP-WITH[--differentiate]: "integer-only kernel, no differentiable params"
+
 ;; Basic loop-vector-stride: copy every element of A into B.
 ;; Validates that the macro expands correctly and generates valid IR.
 

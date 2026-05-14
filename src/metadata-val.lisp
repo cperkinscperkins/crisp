@@ -3,6 +3,29 @@
 
 ;;; Validation
 ;;; ----------
+;;;
+;;; Forward-only validator decorator
+;;;
+;;; Many metadata validators describe the FORWARD kernel's metacrisp shape
+;;; (records section, physical-signature widths, declared-signature entries,
+;;; strategy keys, etc).  Under --differentiate the emitted metacrisp
+;;; describes the BACKWARD kernel — different parameter layout, _grad-suffixed
+;;; name, wider physical-signature.  The forward-only checks don't apply.
+;;;
+;;; Wrap such validators with `define-forward-only-validator` instead of
+;;; `defun` to short-circuit them to T when *differentiate-p* is set.
+
+(defmacro define-forward-only-validator (name args &body body)
+  "Like defun, but the resulting function returns T trivially when
+   *differentiate-p* is set.  Use for metadata validators that describe
+   forward-kernel structure — under --differentiate the metacrisp describes
+   the backward kernel with a different shape, so the forward-only check
+   doesn't apply."
+  `(defun ,name ,args
+     (when *differentiate-p*
+       (log:info "Skipping forward-only metadata validator ~A under --differentiate." ',name)
+       (return-from ,name t))
+     ,@body))
 
 (defun validate-kernel-metadata (metadata-path kernel-name &key (targets nil targets-p))
   (let* ((forms (uiop:read-file-forms metadata-path))
@@ -365,41 +388,79 @@
              do (incf count) (incf pos)
              finally (cl:return count))))
 
+(defun %extract-fn-body-from-ir (ir-content fn-define-prefix)
+  "Returns the substring of IR-CONTENT covering the body of a function
+   whose `define` line starts with FN-DEFINE-PREFIX (e.g.
+   \"define void @measure_distance(\").  The body spans from the
+   `define` line through the matching closing `}` at column 0.
+   Returns NIL if no such function found.
+
+   In LLVM IR the function-closing brace is the only `}` that appears at
+   column 0; nested braces (e.g. struct literals) are indented."
+  (let ((start (search fn-define-prefix ir-content)))
+    (when start
+      (let* ((scan-start (1+ start))
+             (end (loop for pos = (search (format nil "~%}") ir-content :start2 scan-start)
+                          then (search (format nil "~%}") ir-content :start2 (1+ pos))
+                        while pos
+                        return (+ pos 2))))
+        (when end
+          (subseq ir-content start end))))))
+
 (defun validate-descendant-distance (ir-path)
   "Validates descendant substitution: coordinate can substitute for point.
-   Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x."
+   Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x
+   in the FORWARD kernel body (measure_distance).  The check is scoped to
+   the forward kernel so it stays meaningful under --differentiate, where
+   the backward kernel recomputes forward values for chain-rule purposes."
   (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-descendant-distance nil))
   (let* ((ir-content (uiop:read-file-string ir-path))
-         (point-calls (count-substring "call i32 @distance_point_point(" ir-content))
-         (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" ir-content)))
-    (unless (= point-calls 2)
-      (log:error "Expected 2 calls to distance_point_point, got ~a" point-calls)
+         (fwd-body (or (%extract-fn-body-from-ir ir-content
+                                                 "define void @measure_distance(")
+                       (%extract-fn-body-from-ir ir-content
+                                                 "define spir_func void @measure_distance("))))
+    (unless fwd-body
+      (log:error "Forward kernel measure_distance not found in IR")
       (return-from validate-descendant-distance nil))
-    (unless (= coord-calls 1)
-      (log:error "Expected 1 call to distance_coordinate_coordinate, got ~a" coord-calls)
-      (return-from validate-descendant-distance nil))
-    (log:info "Descendant substitution validated: point overload called 2x, coordinate 1x")
-    t))
+    (let ((point-calls (count-substring "call i32 @distance_point_point(" fwd-body))
+          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" fwd-body)))
+      (unless (= point-calls 2)
+        (log:error "Expected 2 calls to distance_point_point in forward kernel, got ~a" point-calls)
+        (return-from validate-descendant-distance nil))
+      (unless (= coord-calls 1)
+        (log:error "Expected 1 call to distance_coordinate_coordinate in forward kernel, got ~a" coord-calls)
+        (return-from validate-descendant-distance nil))
+      (log:info "Descendant substitution validated: forward kernel calls point overload 2x, coordinate 1x")
+      t)))
 
 (defun validate-ancestor-distance (ir-path)
   "Validates ancestor substitution: point can substitute for coordinate.
-   Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x."
+   Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x
+   in the FORWARD kernel body (measure_distance).  Scoped to the forward
+   kernel for the same reason as validate-descendant-distance."
   (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-ancestor-distance nil))
   (let* ((ir-content (uiop:read-file-string ir-path))
-         (point-calls (count-substring "call i32 @distance_point_point(" ir-content))
-         (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" ir-content)))
-    (unless (= coord-calls 2)
-      (log:error "Expected 2 calls to distance_coordinate_coordinate, got ~a" coord-calls)
+         (fwd-body (or (%extract-fn-body-from-ir ir-content
+                                                 "define void @measure_distance(")
+                       (%extract-fn-body-from-ir ir-content
+                                                 "define spir_func void @measure_distance("))))
+    (unless fwd-body
+      (log:error "Forward kernel measure_distance not found in IR")
       (return-from validate-ancestor-distance nil))
-    (unless (= point-calls 1)
-      (log:error "Expected 1 call to distance_point_point, got ~a" point-calls)
-      (return-from validate-ancestor-distance nil))
-    (log:info "Ancestor substitution validated: coordinate overload called 2x, point 1x")
-    t))
+    (let ((point-calls (count-substring "call i32 @distance_point_point(" fwd-body))
+          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" fwd-body)))
+      (unless (= coord-calls 2)
+        (log:error "Expected 2 calls to distance_coordinate_coordinate in forward kernel, got ~a" coord-calls)
+        (return-from validate-ancestor-distance nil))
+      (unless (= point-calls 1)
+        (log:error "Expected 1 call to distance_point_point in forward kernel, got ~a" point-calls)
+        (return-from validate-ancestor-distance nil))
+      (log:info "Ancestor substitution validated: forward kernel calls coordinate overload 2x, point 1x")
+      t)))
 
 (defun validate-derived-accessors (ir-path)
   "Validates that all five x~ accessor overloads are defined and called:
@@ -621,7 +682,7 @@
 ;;; Tests that a flat def-record at the kernel boundary appears in :records,
 ;;; has the correct physical width, and shows up correctly in the declared sig.
 
-(defun validate-def-record-in-metadata (metadata-path)
+(define-forward-only-validator validate-def-record-in-metadata (metadata-path)
   "Validates 01-basic-rec-meta: v-point at kernel boundary.
    Checks :records section, physical width (2+3=5), and declared sig."
   (unless (probe-file metadata-path)
@@ -697,7 +758,7 @@
 ;;; Tests that a record with :c-t members shows only runtime members in :records,
 ;;; and that the c-t spec appears in the declared signature type.
 
-(defun validate-def-rec-with-ct-in-metadata (metadata-path)
+(define-forward-only-validator validate-def-rec-with-ct-in-metadata (metadata-path)
   "Validates 03-record-with-ct-meta: v-point with :c-t earnestness at kernel boundary.
    Checks :records shows only 2 runtime members, physical width is 2+2+3=7,
    and declared sig shows the full (v-point :earnestness 3.0) type for vp-2."
@@ -766,7 +827,7 @@
 ;;; cause both records to appear in :records, and that the physical sig is
 ;;; fully flattened to primitive types.
 
-(defun validate-nested-rec-in-metadata (metadata-path)
+(define-forward-only-validator validate-nested-rec-in-metadata (metadata-path)
   "Validates 04-nested-records-meta: v-rect (containing v-point) at kernel boundary.
    Checks both records in :records section, physical width is 4+3=7,
    and declared sig shows vr with type v-rect and range (0 3)."
@@ -832,7 +893,7 @@
 ;;; Tests that brand declarations are elided when a def-record with branding
 ;;; appears in the :records section -- only the base type is shown.
 
-(defun validate-no-brand-in-metadata (metadata-path)
+(define-forward-only-validator validate-no-brand-in-metadata (metadata-path)
   "Validates 09-branded-rec-elide: branded def-record at kernel boundary.
    Checks that the :records section shows the base type (ulong) for branded
    fields, not the brand type (token-t), and no brand declarations appear."
@@ -944,9 +1005,10 @@
 
 (defun validate-rec-kb-not-float (ir-path)
   "Validates backward kernel for 05-not-float.
-   x field is int (no grad), y is float.
-   Expects: (VP_X VP_Y C C_GRAD &out VP_Y_GRAD) = 11 params = 10 commas."
-  (validate-generic-grad-signature ir-path "x_not_float_k" 10))
+   Post 101 endeavor: integer fields are also differentiable (with float-typed
+   _GRAD slots).  x (int) and y (float) both get gradient outputs.
+   Expects: (VP_X VP_Y C C_GRAD &out VP_X_GRAD VP_Y_GRAD) = 14 params = 13 commas."
+  (validate-generic-grad-signature ir-path "x_not_float_k" 13))
 
 (defun validate-rec-kb-unused-field (ir-path)
   "Validates backward kernel for 07-unused-field.
@@ -1096,7 +1158,7 @@ Returns the form or NIL."
 ;;; has the correct 2 members, and shows up as a single physical slot.
 
 ;; src/metadata-val.lisp
-(defun validate-def-struct-in-metadata (metadata-path)
+(define-forward-only-validator validate-def-struct-in-metadata (metadata-path)
   "Validates 056/01-basic-struct-meta: point at kernel boundary.
    Checks :structs contains POINT (2 members) but NOT RECT,
    physical-signature has 4 entries (1 struct + 3 cell), and
@@ -1183,7 +1245,7 @@ Returns the form or NIL."
 ;;; The parameterized type (point :earnestness 3.0) still appears in declared-sig.
 
 ;; src/metadata-val.lisp
-(defun validate-def-struct-with-ct-in-metadata (metadata-path)
+(define-forward-only-validator validate-def-struct-with-ct-in-metadata (metadata-path)
   "Validates 056/03-struct-with-ct-meta: point with :c-t earnestness.
    Checks :structs shows 2 runtime members only (c-t earnestness excluded),
    physical-signature has 5 entries (2 struct + 3 cell), and
@@ -1243,7 +1305,7 @@ Returns the form or NIL."
 ;;; boundary, BOTH structs appear in :structs via dependency collection.
 
 ;; src/metadata-val.lisp
-(defun validate-nested-struct-in-metadata (metadata-path)
+(define-forward-only-validator validate-nested-struct-in-metadata (metadata-path)
   "Validates 056/04-nested-structs-meta: rect (containing point) at kernel boundary.
    Checks :structs contains both RECT and POINT (dependency),
    physical-signature has 4 entries (1 struct + 3 cell), and
@@ -1312,7 +1374,7 @@ Returns the form or NIL."
 ;;; -----------------------------------------------------------------------
 
 ;; src/metadata-val.lisp
-(defun validate-struct-no-brand-in-metadata (metadata-path)
+(define-forward-only-validator validate-struct-no-brand-in-metadata (metadata-path)
   "Validates 056/09-branded-struct-elide: branded def-struct at kernel boundary.
    Checks that the :structs section shows the base type (ulong) for branded
    fields (not token-t), no brand declarations appear, and the kernel is present."
@@ -1360,7 +1422,7 @@ Returns the form or NIL."
     t))
 
 
-(defun validate-070-03-matrix-metadata (meta-path)
+(define-forward-only-validator validate-070-03-matrix-metadata (meta-path)
   "Validates .metacrisp for test 03-metadata-matrix.
    Matrix (N=2): 3*2+3=9 slots for v (indices 0-8), then val at index 9.
    :physical-signature — 10 entries
@@ -1395,7 +1457,7 @@ Returns the form or NIL."
     (log:info "validate-070-03-matrix-metadata: PASS")
     t))
 
-(defun validate-070-01-vector-metadata (meta-path)
+(define-forward-only-validator validate-070-01-vector-metadata (meta-path)
   "Validates .metacrisp for test 01-metadata-vector.
    Checks:
      - physical-signature: (0 LONG) (1 (C-POINTER...)) (2 ULONG) x 5 = 7 slots
@@ -2317,7 +2379,7 @@ Checks:
       (return-from %089-check-dispatch-key nil))
     val))
 
-(defun validate-089-01-global-size-set-to-scalar (path)
+(define-forward-only-validator validate-089-01-global-size-set-to-scalar (path)
   "Validates :global-size (global-size :set-to 256) in metacrisp."
   (let ((k (or (%089-find-kernel path) (return-from validate-089-01-global-size-set-to-scalar nil))))
     (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
@@ -2329,7 +2391,7 @@ Checks:
       (log:info "validate-089-01: PASS")
       t)))
 
-(defun validate-089-02-global-size-set-to-dims (path)
+(define-forward-only-validator validate-089-02-global-size-set-to-dims (path)
   "Validates :global-size (global-size :set-to (width height)) in metacrisp."
   (let ((k (or (%089-find-kernel path) (return-from validate-089-02-global-size-set-to-dims nil))))
     (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
@@ -2345,7 +2407,7 @@ Checks:
       (log:info "validate-089-02: PASS")
       t)))
 
-(defun validate-089-03-global-size-one-thread-per (path)
+(define-forward-only-validator validate-089-03-global-size-one-thread-per (path)
   "Validates :global-size with :strategy :one-thread-per in metacrisp."
   (let ((k (or (%089-find-kernel path) (return-from validate-089-03-global-size-one-thread-per nil))))
     (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
@@ -2360,7 +2422,7 @@ Checks:
       (log:info "validate-089-03: PASS")
       t)))
 
-(defun validate-089-04-local-size-set-to (path)
+(define-forward-only-validator validate-089-04-local-size-set-to (path)
   "Validates :local-size (local-size :set-to 64) in metacrisp."
   (let ((k (or (%089-find-kernel path) (return-from validate-089-04-local-size-set-to nil))))
     (let ((ls (%089-check-dispatch-key k :local-size "LOCAL-SIZE")))
@@ -2372,7 +2434,7 @@ Checks:
       (log:info "validate-089-04: PASS")
       t)))
 
-(defun validate-089-05-local-size-exact (path)
+(define-forward-only-validator validate-089-05-local-size-exact (path)
   "Validates :local-size with :strategy :exact in metacrisp."
   (let ((k (or (%089-find-kernel path) (return-from validate-089-05-local-size-exact nil))))
     (let ((ls (%089-check-dispatch-key k :local-size "LOCAL-SIZE")))
@@ -2383,7 +2445,7 @@ Checks:
       (log:info "validate-089-05: PASS")
       t)))
 
-(defun validate-089-06-num-groups-strided (path)
+(define-forward-only-validator validate-089-06-num-groups-strided (path)
   "Validates :num-groups (num-groups :derive-from (n) :strategy :strided) in metacrisp."
   (let ((k (or (%089-find-kernel path) (return-from validate-089-06-num-groups-strided nil))))
     (let ((ng (%089-check-dispatch-key k :num-groups "NUM-GROUPS")))
@@ -2394,7 +2456,7 @@ Checks:
       (log:info "validate-089-06: PASS")
       t)))
 
-(defun validate-089-07-global-and-local (path)
+(define-forward-only-validator validate-089-07-global-and-local (path)
   "Validates both :global-size and :local-size present in metacrisp."
   (let ((k (or (%089-find-kernel path) (return-from validate-089-07-global-and-local nil))))
     (unless (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")
@@ -2404,7 +2466,7 @@ Checks:
     (log:info "validate-089-07: PASS")
     t))
 
-(defun validate-089-08-global-size-strided (path)
+(define-forward-only-validator validate-089-08-global-size-strided (path)
   "Validates :global-size with :strategy :strided in metacrisp."
   (let ((k (or (%089-find-kernel path) (return-from validate-089-08-global-size-strided nil))))
     (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
@@ -2415,7 +2477,7 @@ Checks:
       (log:info "validate-089-08: PASS")
       t)))
 
-(defun validate-089-09-global-size-tiled (path)
+(define-forward-only-validator validate-089-09-global-size-tiled (path)
   "Validates :global-size with :strategy :tiled and :tile-shape (16 16) in metacrisp."
   (let ((k (or (%089-find-kernel path) (return-from validate-089-09-global-size-tiled nil))))
     (let ((gs (%089-check-dispatch-key k :global-size "GLOBAL-SIZE")))
@@ -2432,3 +2494,64 @@ Checks:
           (return-from validate-089-09-global-size-tiled nil)))
       (log:info "validate-089-09: PASS")
       t)))
+
+
+;;; ============================================================
+;;; 101-revisit-autodiff: no-SROA-grad-leak invariant validator
+;;; ============================================================
+;;;
+;;; Locks the invariant that SROA-destructured compound-type fields
+;;; (offset, stride, extent, length, parent, byte-size) never surface
+;;; as standalone _grad cells in the backward kernel signature.  Each
+;;; logical declared parameter gets at most one logical _grad companion
+;;; of the same shape.
+
+(defun %ends-with-grad-p (name)
+  "Returns T if NAME (a string) ends with '_grad' (case-insensitive)."
+  (and (stringp name)
+       (>= (length name) 5)
+       (string-equal "_grad" (subseq name (- (length name) 5)))))
+
+(defun %strip-grad-suffix (name)
+  "Returns NAME with the trailing 5-character '_grad' suffix removed."
+  (subseq name 0 (- (length name) 5)))
+
+(defun validate-no-sroa-grad-leak (metadata-path)
+  "Locks the no-SROA-grad-leak invariant for backward kernels.
+
+   For every entry in the kernel's :declared-signature whose :name ends in
+   '_grad', the name stripped of '_grad' must also appear as an entry's
+   :name in the same declared-signature.
+
+   This catches the failure mode where SROA-expanded scalar components of a
+   compound type (e.g. a tensor's offset/stride/extent/length/parent/byte-size)
+   leak as standalone _grad cells in the backward kernel signature, rather
+   than riding along inside the single logical _grad companion of the
+   compound parameter.
+
+   In the forward (non --differentiate) suite, no _grad entries exist in
+   declared-signature at all, so the validator passes trivially. The same
+   test file therefore locks the invariant under both passes."
+  (unless (probe-file metadata-path)
+    (log:error "validate-no-sroa-grad-leak: file not found: ~a" metadata-path)
+    (return-from validate-no-sroa-grad-leak nil))
+  (let* ((forms (%read-metacrisp-forms metadata-path))
+         (kernels (%metacrisp-section forms :kernels))
+         (ok t))
+    (unless kernels
+      (log:error "validate-no-sroa-grad-leak: no :kernels section in ~a" metadata-path)
+      (return-from validate-no-sroa-grad-leak nil))
+    (dolist (k kernels)
+      (let ((k-name (getf k :name))
+            (decl   (getf k :declared-signature)))
+        (dolist (entry decl)
+          (let ((nm (getf entry :name)))
+            (when (%ends-with-grad-p nm)
+              (let* ((stripped (%strip-grad-suffix nm))
+                     (twin (%find-decl-entry decl stripped)))
+                (unless twin
+                  (log:error "validate-no-sroa-grad-leak: kernel ~a has stray _grad entry ~a -- no forward twin ~a in declared-signature ~a"
+                             k-name nm stripped
+                             (mapcar (lambda (e) (getf e :name)) decl))
+                  (setf ok nil))))))))
+    ok))

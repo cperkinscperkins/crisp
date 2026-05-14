@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "scratch tensor not yet differentiated"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; TEST-WITH[--metadata]: crisp.compiler::validate-075-01-scratch-vector-implicit-meta
 ;;
 ;; Validates the .metacrisp output for a kernel that carries a scratch vector

@@ -281,19 +281,72 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp
 - - - - - (%GENERATE-BACKWARD-FUNCTION-AST NAME PARAMS DECLARATIONS BODY-FORMS)  autodiff.lisp
+- - - - - - (%TRIVIAL-ACCESSOR-BODY-P BODY-FORMS)  autodiff.lisp
 - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
 - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
 - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
+- - - - - - (%RESOLVE-TO-BASE-TYPE-FOR-STRUCTS-OR-RECORDS PD-TYPE)  autodiff.lisp
+- - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
+- - - - - - - (%CRISP-TENSOR-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
+- - - - - - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - (%CRISP-CELL-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
+- - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp
+- - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - (%COUNT-DIFFERENTIABLE-CONTRIBUTIONS PD-TYPE &OPTIONAL RECORD-INFO)  autodiff.lisp
+- - - - - - - (%RESOLVE-TO-BASE-TYPE-FOR-STRUCTS-OR-RECORDS PD-TYPE)  autodiff.lisp [See above]
+- - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
+- - - - - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - - - - (%CRISP-FUNCTION-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - (%HAS-TENSOR-DIFF-PARAM-P ENV)  autodiff.lisp
+- - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
+- - - - - - (%PROMOTE-TO-FLOAT-ADJOINT TYPE-SPEC)  autodiff.lisp
+- - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - (%INTEGER-TENSOR-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp
+- - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp
+- - - - - - - (%CRISP-INTEGER-CELL-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - (%INTEGER-CELL-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp
+- - - - - - - - (%CRISP-INTEGER-CELL-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%INTEGER-TENSOR-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%CRISP-TENSOR-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
+- - - - - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp
 - - - - - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp
 - - - - - - (%EXTRACT-RETURN-VARS FLAT-ANF)  autodiff.lisp
 - - - - - - (%CHECK-FN-BODY-FOR-MUTATIONS BODY-FORMS PARAM-NAMES FN-NAME)  autodiff.lisp
-- - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS)  autodiff.lisp
+- - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL TENSOR-INPUTS-HT)  autodiff.lisp
 - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
                                                                                                           T) TENSOR-INPUTS-HT)  autodiff.lisp
 - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                             BW))  autodiff.lisp
+- - - - - - - - (%NESTED-FIELD-INFO-P FIELD-INFO)  autodiff.lisp
 - - - - - - - - (%BACKWARD-SKIP-FN-P FN-SYM)  autodiff.lisp
 - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                           BW))  autodiff.lisp [See above]
@@ -390,16 +443,63 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp
 - - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp [RECURSION]
 - - - (COMPILE-MODULE FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - (%INJECT-SHADOW-STRUCT-FORMS FORMS)  autodiff.lisp
+- - - - - (%COLLECT-STRUCT-NAMES-FROM-FORMS FORMS)  autodiff.lisp
+- - - - - (%GENERATE-SHADOW-DEF-STRUCT-FORM DEF-STRUCT-FORM &OPTIONAL STRUCT-NAME-SET)  autodiff.lisp
+- - - - - - (%ADJ-TYPE-FOR-FIELD FORWARD-TYPE &OPTIONAL STRUCT-NAME-SET)  autodiff.lisp
+- - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - (BRAND &REST ARGS)  macros.lisp
+- - - - - - (DEF-STRUCT NAME &REST MEMBERS)  macros.lisp
+- - - - - - - (BRAND &REST ARGS)  macros.lisp [See above]
+- - - - - - - (REGISTER-BRAND-DEFINITION STRUCT-NAME BRAND-FORM)  types/brand.lisp
+- - - - - - - - (PARSE-BRAND-DECLARATION BRAND-FORM)  types/brand.lisp
+- - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
+- - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp [See above]
+- - - - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY
+                                                                  STRUCT))  structs.lisp
+- - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - (COMPUTE-RECORD-LAYOUT MEMBERS)  structs.lisp
+- - - - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp
+- - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp [RECURSION]
+- - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - (COMPUTE-NATIVE-LAYOUT MEMBERS)  structs.lisp
+- - - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp
+- - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp [RECURSION]
+- - - - - - - - - - (%STRUCT-NATIVE-ALIGNMENT STRUCT-NAME)  structs.lisp
+- - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp [RECURSION]
+- - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp [See above]
+- - - - - - - - - (CALCULATE-NATIVE-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp
+- - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - (VALIDATE-AND-REORDER-STRUCT-ARGS STRUCT-NAME DEFINED-MEMBERS ARGS)  structs.lisp
 - - - - (ANALYZE-SIGNATURES-PASS FORMS)  analysis/core.lisp
-- - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS)  analysis/core.lisp
+- - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS &OPTIONAL RECORD-INFO)  analysis/core.lisp
+- - - - - - (%SCAN-FORMS-FOR-RECORD-INFO FORMS)  autodiff.lisp
 - - - - - - (%EXTRACT-FN-BODY-AND-DECLARATIONS BODY-AND-LOC)  analysis/core.lisp [See above]
 - - - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp [See above]
 - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
 - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%COUNT-DIFFERENTIABLE-CONTRIBUTIONS PD-TYPE &OPTIONAL RECORD-INFO)  autodiff.lisp [See above]
 - - - - - - (%CRISP-FUNCTION-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - (%HAS-TENSOR-DIFF-PARAM-P ENV)  autodiff.lisp [See above]
 - - - - - - (%REGISTER-HOF-ENTRY NAME TYPE-DESC PARAMS FN-PARAM-IDX FN-PARAM-SYM FLOAT-PARAM-SYMS CLEAN-BODY N-FLOAT-PARAMS N-RETURN)  analysis/core.lisp [See above]
 - - - - - - (%REGISTER-STANDARD-DIFFERENTIABLE-ENTRY NAME TYPE-DESC N-FLOAT-PARAMS N-RETURN &KEY OPTIMISTIC-P)  analysis/core.lisp
-- - - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS)  analysis/core.lisp [RECURSION]
+- - - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS &OPTIONAL RECORD-INFO)  analysis/core.lisp [RECURSION]
 - - - - - - (%DETECT-HOF-PARAM-VIA-FUNCALL PARAMS FN-BODY)  analysis/core.lisp [See above]
 - - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp
 - - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [See above]
@@ -407,31 +507,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp [See above]
 - - - - - (%PRE-REGISTER-HOF-TEMPLATES)  analysis/core.lisp [See above]
 - - - - (FINALIZE-STRUCT-DEFINITIONS)  structs.lisp
-- - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp
-- - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - (COMPUTE-RECORD-LAYOUT MEMBERS)  structs.lisp
-- - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp
-- - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp [RECURSION]
-- - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - (COMPUTE-NATIVE-LAYOUT MEMBERS)  structs.lisp
-- - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp
-- - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp [RECURSION]
-- - - - - - - - (%STRUCT-NATIVE-ALIGNMENT STRUCT-NAME)  structs.lisp
-- - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp [RECURSION]
-- - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp [See above]
-- - - - - - - (CALCULATE-NATIVE-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp
-- - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
 - - - - (PROPAGATE-IMPLICIT-ARGUMENTS)  analysis/core.lisp
 - - - - (COMPILE-FORMS-PASS FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
 - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
@@ -510,6 +586,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%074-HAS-LOCAL-PTR-PARAM DEFINE-LINE)  metadata-val.lisp
 
+- (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp
+
+- (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp
+
+- (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp
+
 - (%AUTODIFF-GRAD-CELL-TYPE)  autodiff.lisp
 
 - (%CRISP-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
@@ -517,31 +599,45 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%CT-RESOLVE-VALUE VALUE)  macros.lisp
 
+- (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp
+
+- (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp
+
 - (%GENERATE-BACKWARD-KERNEL-AST NAME PARAMS SIGNATURE-TYPES RAW-BODY)  macros.lisp
 - - (%SPLIT-KERNEL-INPUTS-OUTPUTS PARAMS SIGNATURE-TYPES)  macros.lisp
 - - (%EXPAND-RECORD-KERNEL-INPUTS INPUTS INPUT-TYPES PKG)  autodiff.lisp
-- - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp
-- - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%RECORD-FIELD-PARAM-SYM PARAM-SYM FIELD-NAME PKG)  autodiff.lisp
 - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%SHADOW-TYPE-NAME-FOR STRUCT-TYPE-NAME)  autodiff.lisp
+- - - (%BUILD-STRUCT-FIELD-ADJ-ALIST PARAM-SYM STRUCT-TYPE PKG)  autodiff.lisp
+- - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp [See above]
+- - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - (%BUILD-STRUCT-FIELD-ADJ-ALIST PARAM-SYM STRUCT-TYPE PKG)  autodiff.lisp [RECURSION]
 - - (%SUBSTITUTE-RECORD-ACCESSORS FORM RECORD-SUBS-HT RECORD-TYPE-HT)  autodiff.lisp
 - - - (%SUBSTITUTE-RECORD-ACCESSORS FORM RECORD-SUBS-HT RECORD-TYPE-HT)  autodiff.lisp [RECURSION]
 - - - (%RECORD-ACCESSOR-SYSTEM-GENERATED-P ACCESSOR-SYM REC-TYPE)  autodiff.lisp
 - - (%COMPUTE-BACKWARD-KERNEL-PARAMS FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)  macros.lisp
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - (%INTEGER-TENSOR-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp
-- - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp
-- - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp
+- - - (%INTEGER-TENSOR-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-INTEGER-CELL-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%INTEGER-CELL-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%PROMOTE-TO-FLOAT-ADJOINT TYPE-SPEC)  autodiff.lisp [See above]
+- - (%HAS-DIFF-CAPABLE-SCALAR-INPUT-P FLAT-INPUT-TYPES)  macros.lisp
+- - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (BRAND &REST ARGS)  macros.lisp [See above]
+- - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
 - - (%EXPLODE-KERNEL-ARGS PARAMS SIGNATURE)  macros.lisp
 - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -560,7 +656,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
-- - (GENERATE-BACKWARD-WALK FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES)  autodiff.lisp
+- - (%REGISTER-SHADOW-ANF-INTERMEDIATES FLAT-ANF SHADOW-HT)  autodiff.lisp
+- - - (%NESTED-FIELD-INFO-P FIELD-INFO)  autodiff.lisp [See above]
+- - (GENERATE-BACKWARD-WALK FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)  autodiff.lisp
+- - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp
 - - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp [RECURSION]
@@ -573,8 +674,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                   BW))  autodiff.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%PROMOTE-TO-FLOAT-ADJOINT TYPE-SPEC)  autodiff.lisp [See above]
 - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp
 - - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp [RECURSION]
+- - (%COLLECT-ALL-LEAF-ADJ-SYMS FIELD-ADJ-ALIST)  autodiff.lisp
+- - - (%NESTED-FIELD-INFO-P FIELD-INFO)  autodiff.lisp [See above]
+- - - (%COLLECT-ALL-LEAF-ADJ-SYMS FIELD-ADJ-ALIST)  autodiff.lisp [RECURSION]
+- - (%ENSURE-LEAF-ADJ-BINDINGS FORM LEAF-ADJ-SYMS)  autodiff.lisp
+- - (%FIX-STRUCT-SHADOW-WRITES FORM STRUCT-SHADOW-INFO)  autodiff.lisp
 
 - (%GENERATE-RAW-ACCESSOR MEMBER-SPEC NAME PKG RUNTIME-INDEX)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
@@ -583,8 +693,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%PARSE-CT-LITERAL VALUE)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
+- (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp
+- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp
+
 - (%MV-SOURCE-ACCESS CANON)  analysis/structs.lisp
 - - (%MV-SOURCE-HEAD CANON)  analysis/structs.lisp [See above]
+
+- (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp
+
+- (%RESOLVE-TO-BASE-TYPE-FOR-RECORDS PD-TYPE)  autodiff.lisp
+- - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 
 - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp
 
@@ -975,24 +1094,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (DEF-KERNEL-EXACT NAME PARAMS &REST BODY)  macros.lisp [See above]
 
 - (DEF-RECORD NAME &REST MEMBERS)  macros.lisp
-- - (BRAND &REST ARGS)  macros.lisp
-- - (REGISTER-BRAND-DEFINITION STRUCT-NAME BRAND-FORM)  types/brand.lisp
-- - - (PARSE-BRAND-DECLARATION BRAND-FORM)  types/brand.lisp
-- - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
-- - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp [See above]
-- - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
-- - (VALIDATE-AND-REORDER-STRUCT-ARGS STRUCT-NAME DEFINED-MEMBERS ARGS)  structs.lisp
-
-- (DEF-SETTER NAME ARGS &BODY BODY)  macros.lisp
-- - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
-
-- (DEF-STRUCT NAME &REST MEMBERS)  macros.lisp
 - - (BRAND &REST ARGS)  macros.lisp [See above]
 - - (REGISTER-BRAND-DEFINITION STRUCT-NAME BRAND-FORM)  types/brand.lisp [See above]
 - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
 - - (VALIDATE-AND-REORDER-STRUCT-ARGS STRUCT-NAME DEFINED-MEMBERS ARGS)  structs.lisp [See above]
+
+- (DEF-SETTER NAME ARGS &BODY BODY)  macros.lisp
+- - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
 - (DEF-TYPE NAME TYPE-SPEC)  macros.lisp
 - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
@@ -1006,6 +1114,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+
+- (DEFINE-FORWARD-ONLY-VALIDATOR NAME ARGS &BODY BODY)  metadata-val.lisp
 
 - (DUMP-ENV ENV &KEY (TITLE Environment Dump)) :CRISP.UTILS  utils.lisp
 
@@ -1085,10 +1195,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (VALIDATE-STRUCT-PRESENCE METADATA-PATH EXPECTED-STRUCTS &KEY (UNEXPECTED-STRUCTS
                                                                    NIL))  metadata.lisp [See above]
 
-- (VALIDATE-070-01-VECTOR-METADATA META-PATH)  metadata-val.lisp
-
-- (VALIDATE-070-03-MATRIX-METADATA META-PATH)  metadata-val.lisp
-
 - (VALIDATE-071-01-COMPACT-VECTOR-GET-IR IR-PATH)  metadata-val.lisp
 - - (%071-KERNEL-BODY IR FUNCTION-NAME)  metadata-val.lisp
 - - (%071-HAS-STRIDE-MUL BODY)  metadata-val.lisp
@@ -1143,47 +1249,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%075-FIND-KERNEL METACRISP-PATH KERNEL-NAME)  metadata-val.lisp [See above]
 - - (%075-VALIDATE-TENSOR-IMPLICIT TAG K-DEF EXPECTED-TYPE-HEAD EXPECTED-N EXPECTED-SLOTS EXPECTED-ADDR-SPACE EXPECTED-SIZE-EXPR)  metadata-val.lisp [See above]
 
-- (VALIDATE-089-01-GLOBAL-SIZE-SET-TO-SCALAR PATH)  metadata-val.lisp
-- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp
-- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp
-
-- (VALIDATE-089-02-GLOBAL-SIZE-SET-TO-DIMS PATH)  metadata-val.lisp
-- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
-- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
-
-- (VALIDATE-089-03-GLOBAL-SIZE-ONE-THREAD-PER PATH)  metadata-val.lisp
-- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
-- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
-- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp
-
-- (VALIDATE-089-04-LOCAL-SIZE-SET-TO PATH)  metadata-val.lisp
-- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
-- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
-
-- (VALIDATE-089-05-LOCAL-SIZE-EXACT PATH)  metadata-val.lisp
-- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
-- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
-- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp [See above]
-
-- (VALIDATE-089-06-NUM-GROUPS-STRIDED PATH)  metadata-val.lisp
-- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
-- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
-- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp [See above]
-
-- (VALIDATE-089-07-GLOBAL-AND-LOCAL PATH)  metadata-val.lisp
-- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
-- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
-
-- (VALIDATE-089-08-GLOBAL-SIZE-STRIDED PATH)  metadata-val.lisp
-- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
-- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
-- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp [See above]
-
-- (VALIDATE-089-09-GLOBAL-SIZE-TILED PATH)  metadata-val.lisp
-- - (%089-FIND-KERNEL METACRISP-PATH)  metadata-val.lisp [See above]
-- - (%089-CHECK-DISPATCH-KEY K-DEF KEY EXPECTED-HEAD)  metadata-val.lisp [See above]
-- - (%089-DECL-STRATEGY= DECL-VALUE EXPECTED-STRATEGY)  metadata-val.lisp [See above]
-
 - (VALIDATE-10-BASICS-META PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-METADATA METADATA-PATH KERNEL-NAME &KEY (TARGETS NIL
                                                               TARGETS-P))  metadata-val.lisp
@@ -1206,6 +1271,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp
 
 - (VALIDATE-ANCESTOR-DISTANCE IR-PATH)  metadata-val.lisp
+- - (%EXTRACT-FN-BODY-FROM-IR IR-CONTENT FN-DEFINE-PREFIX)  metadata-val.lisp
 - - (COUNT-SUBSTRING NEEDLE HAYSTACK)  metadata-val.lisp
 
 - (VALIDATE-ATOMICRMW-ADD IR-PATH)  metadata-val.lisp
@@ -1238,48 +1304,16 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-CELL-ADD-I-IR IR-PATH)  metadata-val.lisp
 - - (VALIDATE-KERNEL-NAME-EXACT-IR IR-PATH EXPECTED-NAME)  metadata-val.lisp [See above]
 
-- (VALIDATE-DEF-REC-WITH-CT-IN-METADATA METADATA-PATH)  metadata-val.lisp
-- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp
-- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp
-- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp
-- - - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
-- - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp
-- - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp
-- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp
-
 - (VALIDATE-DEF-RECORD-EXPLODE-IR IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-DEF-RECORD-EXPLOSION METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-DEF-RECORD-EXPLOSION-IR IR-PATH)  metadata-val.lisp
 
-- (VALIDATE-DEF-RECORD-IN-METADATA METADATA-PATH)  metadata-val.lisp
-- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
-- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
-- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
-- - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp [See above]
-- - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp [See above]
-- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
-
-- (VALIDATE-DEF-STRUCT-IN-METADATA METADATA-PATH)  metadata-val.lisp
-- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
-- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
-- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
-- - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp
-- - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp [See above]
-- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
-
-- (VALIDATE-DEF-STRUCT-WITH-CT-IN-METADATA METADATA-PATH)  metadata-val.lisp
-- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
-- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
-- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
-- - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp [See above]
-- - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp [See above]
-- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
-
 - (VALIDATE-DERIVED-ACCESSORS IR-PATH)  metadata-val.lisp
 
 - (VALIDATE-DESCENDANT-DISTANCE IR-PATH)  metadata-val.lisp
+- - (%EXTRACT-FN-BODY-FROM-IR IR-CONTENT FN-DEFINE-PREFIX)  metadata-val.lisp [See above]
 - - (COUNT-SUBSTRING NEEDLE HAYSTACK)  metadata-val.lisp [See above]
 
 - (VALIDATE-DIVISION-CHAIN-RULE IR-PATH)  metadata-val.lisp
@@ -1305,25 +1339,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-NESTED-CHAIN-RULE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
 
-- (VALIDATE-NESTED-REC-IN-METADATA METADATA-PATH)  metadata-val.lisp
-- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
+- (VALIDATE-NO-SROA-GRAD-LEAK METADATA-PATH)  metadata-val.lisp
+- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp
 - - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
-- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
-- - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp [See above]
-- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
-
-- (VALIDATE-NESTED-STRUCT-IN-METADATA METADATA-PATH)  metadata-val.lisp
-- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
-- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
-- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
-- - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp [See above]
-- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp [See above]
-
-- (VALIDATE-NO-BRAND-IN-METADATA METADATA-PATH)  metadata-val.lisp
-- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
-- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
-- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
-- - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp [See above]
+- - (%ENDS-WITH-GRAD-P NAME)  metadata-val.lisp
+- - (%STRIP-GRAD-SUFFIX NAME)  metadata-val.lisp
+- - (%FIND-DECL-ENTRY DECL-SIG NAME)  metadata-val.lisp
 
 - (VALIDATE-NO-SUBST-OVERLOADS IR-PATH)  metadata-val.lisp
 
@@ -1352,12 +1373,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-SCRATCH-CELL-EXPLOSION METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-SCRATCH-CELL-EXPLOSION-IR IR-PATH)  metadata-val.lisp
-
-- (VALIDATE-STRUCT-NO-BRAND-IN-METADATA METADATA-PATH)  metadata-val.lisp
-- - (%READ-METACRISP-FORMS PATH)  metadata-val.lisp [See above]
-- - (%METACRISP-SECTION FORMS KEY)  metadata-val.lisp [See above]
-- - (%METACRISP-FIND-KERNEL FORMS KERNEL-NAME)  metadata-val.lisp [See above]
-- - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp [See above]
 
 - (VALIDATE-SUBTRACTION-CHAIN-RULE IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]

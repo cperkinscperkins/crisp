@@ -1,5 +1,4 @@
 ;; TEST-HOIST[L0] : validate-l0-compile-only
-;; SKIP-WITH[--differentiate] : "hoist has no support for differentiate pass (yet)"
 
 ;; def-struct with an (array long 4) member, passed directly at kernel boundary.
 ;; Host initializes array elements iota-style (values[i]=i); kernel sums first and last.
