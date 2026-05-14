@@ -29,22 +29,25 @@
 (defun main ()
   (compile-square-kernels)
   (format t "~%=== 2. Running verify-autodiff for cell_square ===~%")
-  (multiple-value-bind (pass-p analytical numerical diff)
+  (multiple-value-bind (pass-p results)
       (verify-autodiff (concatenate 'string *spec-dir* "01-square.spv")
                        (concatenate 'string *spec-dir* "01-square_grad.spv")
                        *fwd-name*
-                       :x 3.0
+                       :inputs '(("x" . 3.0))
                        :seed-grad 1.0
                        :h 1e-3
                        :atol 1e-2
                        :verbose t)
     (format t "~%=== 3. Result ===~%")
-    (format t "   Numerical Gradient (Central Difference): ~a~%" numerical)
-    (format t "   Analytical Gradient (Backward kernel):   ~a~%" analytical)
-    (format t "   Difference: ~a~%" diff)
+    (dolist (r results)
+      (format t "   ~A: analytical=~a numerical=~a diff=~a~%"
+              (getf r :name)
+              (getf r :analytical)
+              (getf r :numerical)
+              (getf r :diff)))
     (if pass-p
         (format t "~%~%  VERIFICATION SUCCESSFUL!  The backward kernel computes the correct gradient.~%")
-        (error "VERIFICATION FAILED! Output deviation of ~a exceeds tolerance" diff))))
+        (error "VERIFICATION FAILED! See per-input differences above."))))
 
 (main)
 (uiop:quit 0)

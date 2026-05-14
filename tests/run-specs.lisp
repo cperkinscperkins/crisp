@@ -489,14 +489,50 @@
         nil)
        (t out-path)))))
 
+(defun %vad-format-results (results)
+  "Renders RESULTS (per-input plists) as a single human-readable string."
+  (with-output-to-string (s)
+    (loop for r in results
+          for first-p = t then nil
+          do (unless first-p (write-string "; " s))
+             (format s "~A: analytical=~a numerical=~a diff=~a"
+                     (getf r :name)
+                     (getf r :analytical)
+                     (getf r :numerical)
+                     (getf r :diff)))))
+
+(defun %vad-check-expected (expected-grads results atol)
+  "Returns a list of failure-message strings (NIL on full match).  Each
+   EXPECTED-GRADS entry (NAME . VALUE) must have a corresponding RESULTS
+   entry, and |expected - analytical| < ATOL."
+  (let ((failures nil))
+    (dolist (e expected-grads)
+      (let* ((name (car e))
+             (expected (cdr e))
+             (result (find name results
+                           :key (lambda (r) (getf r :name))
+                           :test #'string=)))
+        (cond
+         ((null result)
+          (push (format nil "no analytical result for ~A" name) failures))
+         (t
+          (let ((expect-diff (abs (- expected (getf result :analytical)))))
+            (unless (< expect-diff atol)
+              (push (format nil
+                            "~A: analytical=~a expected=~a diff=~a > atol=~a"
+                            name (getf result :analytical) expected
+                            expect-diff atol)
+                    failures)))))))
+    (nreverse failures)))
+
 (defun run-verify-autodiff-pass (file spec)
   "Runs an on-metal VERIFY-AUTODIFF pass for FILE with SPEC (a plist
    produced by CL-USER::PARSE-VERIFY-AUTODIFF).  Returns T on PASS,
    NIL on FAIL.  Treats a missing OpenCL runner as SKIP (returns T)
    so non-GPU CI doesn't fail.
 
-   Phase 3 scope: single scalar input, single scalar output cell.
-   Wider shapes will require expanding the runner."
+   Phase 5a scope (endeavor 103): N scalar cell inputs, one scalar cell
+   output.  Tensor / record / struct inputs come in later phases."
   (case (%vad-ensure-runner-loaded)
     (:unavailable
      (format t "SKIP (OpenCL runner unavailable)~%")
@@ -507,15 +543,18 @@
             (h (getf spec :h))
             (seed-grad (getf spec :seed-grad))
             (expected-grads (getf spec :expected-grads))
-            (kernel-name (%vad-find-kernel-name file)))
+            (kernel-name (%vad-find-kernel-name file))
+            ;; Coerce all directive values to single-floats up front so the
+            ;; runner sees consistent float types regardless of reader output.
+            (float-inputs
+             (mapcar (lambda (entry) (cons (car entry) (cl:float (cdr entry) 1.0)))
+                     inputs)))
        (cond
         ((null kernel-name)
          (format *error-output* "FAIL (No def-kernel found in ~a)~%" file)
          nil)
-        ((not (= (length inputs) 1))
-         (format *error-output*
-                 "FAIL (Phase 3 supports a single scalar input; got ~a)~%"
-                 (length inputs))
+        ((null inputs)
+         (format *error-output* "FAIL (No inputs in directive)~%")
          nil)
         (t
          (let* ((fwd-spv (%vad-compile-spv file :differentiate nil))
@@ -525,45 +564,38 @@
              (format *error-output* "FAIL (Compile step failed)~%")
              nil)
             (t
-             (let ((input-value (cdr (first inputs))))
-               (handler-case
-                   (multiple-value-bind (pass-p analytical numerical diff)
-                       (cl-user::verify-autodiff
-                        (uiop:native-namestring fwd-spv)
-                        (uiop:native-namestring bwd-spv)
-                        kernel-name
-                        :x (cl:float input-value 1.0)
-                        :seed-grad (cl:float seed-grad 1.0)
-                        :h (cl:float h 1.0)
-                        :atol atol
-                        :verbose nil)
-                     (cond
-                      ((not pass-p)
-                       (format *error-output*
-                               "FAIL (FD vs analytical: analytical=~a numerical=~a diff=~a atol=~a)~%"
-                               analytical numerical diff atol)
-                       nil)
-                      (expected-grads
-                       ;; Spec also gave an explicit expected — check it too.
-                       (let* ((expected (cdr (first expected-grads)))
-                              (expect-diff (abs (- expected analytical))))
-                         (cond
-                          ((< expect-diff atol)
-                           (format t "PASS (analytical=~a expected=~a diff=~a)~%"
-                                   analytical expected expect-diff)
-                           t)
-                          (t
-                           (format *error-output*
-                                   "FAIL (analytical=~a expected=~a diff=~a > atol=~a)~%"
-                                   analytical expected expect-diff atol)
-                           nil))))
-                      (t
-                       (format t "PASS (analytical=~a numerical=~a diff=~a)~%"
-                               analytical numerical diff)
-                       t)))
-                 (error (e)
-                   (format *error-output* "FAIL (Runner error: ~a)~%" e)
-                   nil))))))))))))
+             (handler-case
+                 (multiple-value-bind (pass-p results)
+                     (cl-user::verify-autodiff
+                      (uiop:native-namestring fwd-spv)
+                      (uiop:native-namestring bwd-spv)
+                      kernel-name
+                      :inputs float-inputs
+                      :seed-grad (cl:float seed-grad 1.0)
+                      :h (cl:float h 1.0)
+                      :atol atol
+                      :verbose nil)
+                   (cond
+                    ((not pass-p)
+                     (format *error-output*
+                             "FAIL (FD vs analytical | atol=~a): ~A~%"
+                             atol (%vad-format-results results))
+                     nil)
+                    (expected-grads
+                     (let ((failures (%vad-check-expected expected-grads results atol)))
+                       (cond
+                        ((null failures)
+                         (format t "PASS (~A)~%" (%vad-format-results results))
+                         t)
+                        (t
+                         (format *error-output* "FAIL (~{~A~^; ~})~%" failures)
+                         nil))))
+                    (t
+                     (format t "PASS (~A)~%" (%vad-format-results results))
+                     t)))
+               (error (e)
+                 (format *error-output* "FAIL (Runner error: ~a)~%" e)
+                 nil)))))))))))
 
 ;;; ======================================================================
 

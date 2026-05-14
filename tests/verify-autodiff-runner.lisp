@@ -180,33 +180,44 @@
 (defun verify-autodiff (fwd-spv-path bwd-spv-path fwd-kernel-name
                        &key
                          (bwd-kernel-name (concatenate 'string fwd-kernel-name "_grad"))
-                         (x 3.0)
+                         inputs
                          (seed-grad 1.0)
                          (h 1e-3)
                          (atol 1e-2)
                          verbose)
-  "On-metal AD verification for a scalar-cell-in / scalar-cell-out kernel.
+  "On-metal AD verification for an N-scalar-cell-in / single-scalar-cell-out
+   kernel.
 
-   Runs the forward kernel at X+H and X-H to compute a central-difference
-   numerical gradient.  Then runs the backward kernel with the output
-   gradient seeded to SEED-GRAD, and reads back the analytical input
-   gradient.  Compares with absolute tolerance ATOL.
+   INPUTS is an alist of (NAME-STRING . FLOAT-VALUE) for each kernel input,
+   in declaration order.  For each input the runner does a central-difference
+   FD pass (perturbing only that input).  The backward kernel is then run
+   once with all primals + SEED-GRAD, and the per-input analytical gradients
+   are compared with their numerical FD counterparts using tolerance ATOL.
 
-   Returns (values PASS-P ANALYTICAL NUMERICAL DIFF).  When VERBOSE,
-   prints progress to *standard-output*; otherwise stays silent.
+   Returns (values PASS-P RESULTS) where:
+     PASS-P  -- T iff every input's |analytical - numerical| < ATOL.
+     RESULTS -- list of per-input plists, in declaration order:
+                  (:name <string>
+                   :analytical <float>
+                   :numerical <float>
+                   :diff <float>)
 
-   Phase 1 scope (endeavor 103): assumes the kernel has exactly one cell
-   input and one cell output, both (cell float :address-space :global).
-   Wider shapes (tensors, records, structs) come in later phases."
+   Phase 5a scope (endeavor 103): all inputs are
+   (cell float :address-space :global); output is one cell of the same.
+   Tensor / record / struct inputs come in later phases."
   (flet ((vlog (control &rest args)
            (when verbose (apply #'format t control args))))
-    (let (platform device context queue
-                   fwd-program fwd-kernel
-                   bwd-program bwd-kernel
-                   buf-x buf-y buf-y-grad buf-x-grad
-                   (pass-p nil) (analytical nil) (numerical nil) (diff nil))
+    (let* ((n (length inputs))
+           (platform nil) (device nil) (context nil) (queue nil)
+           (fwd-program nil) (fwd-kernel nil)
+           (bwd-program nil) (bwd-kernel nil)
+           (input-bufs nil) (output-buf nil) (output-grad-buf nil) (input-grad-bufs nil)
+           (pass-p nil) (results nil))
       (unwind-protect
           (progn
+           (when (zerop n)
+             (error "VERIFY-AUTODIFF: no inputs supplied"))
+
            (cffi:with-foreign-objects ((platforms :pointer 1)
                                        (devices :pointer 1))
              (check-cl (cl-get-platform-ids 1 platforms (cffi:null-pointer)))
@@ -220,7 +231,8 @@
                                               (cffi:null-pointer) (cffi:null-pointer) err))
              (setf queue (cl-create-command-queue context device 0 err)))
 
-           (vlog "~&;   Loading kernels: ~a / ~a~%" fwd-kernel-name bwd-kernel-name)
+           (vlog "~&;   Loading kernels: ~a / ~a (~a input~:p)~%"
+                 fwd-kernel-name bwd-kernel-name n)
            (let ((fwd-spv (read-spv-file fwd-spv-path))
                  (bwd-spv (read-spv-file bwd-spv-path)))
              (multiple-value-bind (p k) (create-program-and-kernel context fwd-spv fwd-kernel-name)
@@ -228,57 +240,93 @@
              (multiple-value-bind (p k) (create-program-and-kernel context bwd-spv bwd-kernel-name)
                (setf bwd-program p bwd-kernel k)))
 
-           (setf buf-x      (create-float-cell-buffer context)
-                 buf-y      (create-float-cell-buffer context)
-                 buf-y-grad (create-float-cell-buffer context)
-                 buf-x-grad (create-float-cell-buffer context))
+           ;; Buffers: N inputs + Y + Y_grad + N input-grads.
+           (setf input-bufs (loop repeat n collect (create-float-cell-buffer context))
+                 output-buf      (create-float-cell-buffer context)
+                 output-grad-buf (create-float-cell-buffer context)
+                 input-grad-bufs (loop repeat n collect (create-float-cell-buffer context)))
 
-           ;; --- Numerical gradient via central difference -------------
-           (let ((y-plus  (progn (write-float-cell queue buf-x (+ x h))
-                                 (write-float-cell queue buf-y 0.0)
-                                 (bind-cell-arg fwd-kernel 0 buf-x)
-                                 (bind-cell-arg fwd-kernel 3 buf-y)
-                                 (launch-kernel-1d queue fwd-kernel)
-                                 (read-float-cell queue buf-y)))
-                 (y-minus (progn (write-float-cell queue buf-x (- x h))
-                                 (write-float-cell queue buf-y 0.0)
-                                 (bind-cell-arg fwd-kernel 0 buf-x)
-                                 (bind-cell-arg fwd-kernel 3 buf-y)
-                                 (launch-kernel-1d queue fwd-kernel)
-                                 (read-float-cell queue buf-y))))
-             (setf numerical (/ (- y-plus y-minus) (* 2.0 h)))
-             (vlog "~&;   f(x+h) = ~a, f(x-h) = ~a, numerical grad = ~a~%"
-                   y-plus y-minus numerical))
+           (labels ((write-primals (perturb-i delta)
+                      "Writes all input cells.  When PERTURB-I is non-nil,
+                       input at that index is shifted by DELTA."
+                      (loop for entry in inputs
+                            for buf in input-bufs
+                            for i from 0
+                            do (let* ((v (cl:float (cdr entry) 1.0))
+                                      (vv (if (eql i perturb-i)
+                                              (cl:float (+ v delta) 1.0)
+                                              v)))
+                                 (write-float-cell queue buf vv))))
+                    (bind-forward-args ()
+                      (loop for buf in input-bufs
+                            for i from 0
+                            do (bind-cell-arg fwd-kernel (* 3 i) buf))
+                      (bind-cell-arg fwd-kernel (* 3 n) output-buf))
+                    (bind-backward-args ()
+                      (loop for buf in input-bufs
+                            for i from 0
+                            do (bind-cell-arg bwd-kernel (* 3 i) buf))
+                      (bind-cell-arg bwd-kernel (* 3 n) output-buf)
+                      (bind-cell-arg bwd-kernel (* 3 (1+ n)) output-grad-buf)
+                      (loop for buf in input-grad-bufs
+                            for i from 0
+                            do (bind-cell-arg bwd-kernel (* 3 (+ n 2 i)) buf))))
 
-           ;; --- Analytical gradient via backward kernel ---------------
-           ;; Seed primals at x (X, Y), output grad (Y_GRAD), zero input grad (X_GRAD).
-           (write-float-cell queue buf-x x)
-           ;; Y can be re-derived; do it in Lisp to keep this layer simple.
-           ;; The current scalar-cell kernels don't use Y in the backward
-           ;; chain rule (e.g. d(x^2)/dx = 2x doesn't need y), but kernels
-           ;; whose grad expressions reference the forward output would.
-           (write-float-cell queue buf-y (* x x))
-           (write-float-cell queue buf-y-grad seed-grad)
-           (write-float-cell queue buf-x-grad 0.0)
+             ;; --- Forward at unperturbed primals, to capture Y for backward.
+             (write-primals nil 0.0)
+             (write-float-cell queue output-buf 0.0)
+             (bind-forward-args)
+             (launch-kernel-1d queue fwd-kernel)
+             (let ((y-at-primals (read-float-cell queue output-buf))
+                   (numerical-grads nil))
+               (vlog "~&;   y(primals) = ~a~%" y-at-primals)
 
-           (bind-cell-arg bwd-kernel 0 buf-x)
-           (bind-cell-arg bwd-kernel 3 buf-y)
-           (bind-cell-arg bwd-kernel 6 buf-y-grad)
-           (bind-cell-arg bwd-kernel 9 buf-x-grad)
+               ;; --- Per-input central-difference FD ---------------------
+               (loop for entry in inputs
+                     for perturbed-i from 0
+                     do (write-primals perturbed-i h)
+                        (write-float-cell queue output-buf 0.0)
+                        (launch-kernel-1d queue fwd-kernel)
+                        (let ((y-plus (read-float-cell queue output-buf)))
+                          (write-primals perturbed-i (- h))
+                          (write-float-cell queue output-buf 0.0)
+                          (launch-kernel-1d queue fwd-kernel)
+                          (let* ((y-minus (read-float-cell queue output-buf))
+                                 (grad (/ (- y-plus y-minus) (* 2.0 h))))
+                            (push grad numerical-grads)
+                            (vlog "~&;   d/d~a: y+=~a y-=~a num=~a~%"
+                                  (car entry) y-plus y-minus grad))))
+               (setf numerical-grads (nreverse numerical-grads))
 
-           (launch-kernel-1d queue bwd-kernel)
-           (setf analytical (read-float-cell queue buf-x-grad))
+               ;; --- Backward with primals + seed ------------------------
+               (write-primals nil 0.0)
+               (write-float-cell queue output-buf y-at-primals)
+               (write-float-cell queue output-grad-buf (cl:float seed-grad 1.0))
+               (dolist (buf input-grad-bufs)
+                 (write-float-cell queue buf 0.0))
+               (bind-backward-args)
+               (launch-kernel-1d queue bwd-kernel)
 
-           (setf diff (abs (- numerical analytical)))
-           (setf pass-p (< diff atol))
-           (vlog "~&;   analytical grad = ~a, diff = ~a, atol = ~a => ~a~%"
-                 analytical diff atol (if pass-p "PASS" "FAIL")))
+               (let ((analytical-grads
+                      (loop for buf in input-grad-bufs
+                            collect (read-float-cell queue buf))))
+                 (setf results
+                       (loop for entry in inputs
+                             for num  in numerical-grads
+                             for ana  in analytical-grads
+                             collect (list :name (car entry)
+                                           :analytical ana
+                                           :numerical num
+                                           :diff (abs (- ana num)))))
+                 (setf pass-p (every (lambda (r) (< (getf r :diff) atol))
+                                     results))
+                 (vlog "~&;   pass-p = ~a~%" pass-p)))))
 
         ;; Cleanup
-        (when buf-x      (cl-release-mem-object buf-x))
-        (when buf-y      (cl-release-mem-object buf-y))
-        (when buf-y-grad (cl-release-mem-object buf-y-grad))
-        (when buf-x-grad (cl-release-mem-object buf-x-grad))
+        (dolist (b input-bufs)      (when b (cl-release-mem-object b)))
+        (dolist (b input-grad-bufs) (when b (cl-release-mem-object b)))
+        (when output-buf      (cl-release-mem-object output-buf))
+        (when output-grad-buf (cl-release-mem-object output-grad-buf))
         (when fwd-kernel  (cl-release-kernel fwd-kernel))
         (when fwd-program (cl-release-program fwd-program))
         (when bwd-kernel  (cl-release-kernel bwd-kernel))
@@ -286,4 +334,4 @@
         (when queue   (cl-release-command-queue queue))
         (when context (cl-release-context context)))
 
-      (values pass-p analytical numerical diff))))
+      (values pass-p results))))
