@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "Tensor AD not yet supported"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; TEST-WITH[--ir-target=llvmir]: crisp.compiler::validate-072-04-compact-no-offset-ir
 
 ;; Regression guard: verifies that :compact vector GET still skips BOTH the

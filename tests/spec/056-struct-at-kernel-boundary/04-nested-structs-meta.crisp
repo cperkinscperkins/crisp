@@ -1,5 +1,4 @@
 ;; TEST-WITH[--metadata] : validate-nested-struct-in-metadata
-;; SKIP-WITH[--differentiate] : "nested structs: shadow-struct AD needs recursive per-field-of-nested-shadow adj tracking. Records work via SROA recursion (048/04) but structs don't SROA, so this needs separate recursive shadow handling."
 
 ;; rect is on the kernel boundary.
 ;; by virtue of that, point will also appear in the metadata.

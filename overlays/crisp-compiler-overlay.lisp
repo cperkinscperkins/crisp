@@ -475,10 +475,14 @@ the record's collective adj."
             (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
             (emit `(set! ,field-adj-sym (+ ,field-adj-sym ,v-adj))))))
       ;; NEW: Struct-kernel-param accessor.  (FIELD~ s) where s is a struct
-      ;; kernel param tracked in *struct-kernel-param-shadows*.  Route
-      ;; adjoint into the per-field synth adj (which the shadow-write
-      ;; postprocessor will pack into the shadow-struct constructor at the
-      ;; end of the backward kernel).
+      ;; kernel param tracked in *struct-kernel-param-shadows*.  Three cases
+      ;; based on the field-info type:
+      ;;   - Leaf scalar field (sym): route adj into the per-field synth adj.
+      ;;   - Nested struct field (alist): no scalar adj at this level — skip.
+      ;;     The pre-scan (%register-shadow-anf-intermediates) registered the
+      ;;     ANF-temp bound to this accessor in *struct-kernel-param-shadows*
+      ;;     so its OWN accessor calls route deeper.
+      ;;   - Unknown field: skip silently.
       ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
             (let ((fname (symbol-name (car expr))))
               (and (> (length fname) 1)
@@ -490,13 +494,25 @@ the record's collective adj."
                (field-name-str (subseq accessor 0 (1- (length accessor))))
                (struct-sym (cadr expr))
                (entry (gethash struct-sym *struct-kernel-param-shadows*))
-               (field-alist (cdr entry))
+               ;; Entry shape depends on whether struct-sym is a top-level
+               ;; kernel param (entry is (cons shadow-grad-sym field-alist))
+               ;; or a registered ANF intermediate (entry is just field-alist).
+               (field-alist (if (and (consp entry) (symbolp (car entry)))
+                                (cdr entry)
+                                entry))
                (field-entry (assoc field-name-str field-alist :test #'string-equal))
-               (field-adj-sym (cdr field-entry))
+               (field-info (cdr field-entry))
                (v-adj (local-adj v)))
-          (when field-adj-sym
-            (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
-            (emit `(set! ,field-adj-sym (+ ,field-adj-sym ,v-adj))))))
+          (cond
+            ;; Nested-struct field — skip (the leaves under it accumulate
+            ;; via their own accessor rules; %anf-t-i would have been
+            ;; registered as a shadow-tracked intermediate by the pre-scan).
+            ((%nested-field-info-p field-info) nil)
+            ;; Leaf scalar field — route adj.
+            ((symbolp field-info)
+             (setf (gethash field-info adjoint-map) field-info)
+             (emit `(set! ,field-info (+ ,field-info ,v-adj))))
+            (t nil))))
       ;; NEW: Record constructor backward rule.
       ;; `(v (%construct-struct RECORD-NAME arg1 arg2 ...))` where v is a
       ;; record-valued ANF temp tracked in *record-param-field-adjs*.  Flow
@@ -1135,6 +1151,10 @@ the trivial zero-gradient backward instead of erroring."
                                 (setf (gethash (first entry) ht)
                                       (cons (second entry)  ; shadow-grad-sym
                                             (fourth entry)))) ; field-adj-alist
+                              ;; Pre-scan ANF for synthetic temps bound to
+                              ;; nested-struct accessors, so their own
+                              ;; accessor calls route deeper into the shadow.
+                              (%register-shadow-anf-intermediates flat-anf ht)
                               ht)))
                          (raw-backward-walk
                           (let ((*struct-kernel-param-shadows* struct-shadow-ht))
@@ -1144,8 +1164,19 @@ the trivial zero-gradient backward instead of erroring."
                                                     :kernel-pkg pkg)))
                          (backward-walk-1
                           (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
+                         (backward-walk-2
+                          ;; Ensure all leaf adj syms from struct-shadow-info
+                          ;; have zero-init bindings, even if the body didn't
+                          ;; reference them (the shadow-write postprocessor
+                          ;; below WILL reference them).
+                          (if struct-shadow-info
+                              (let ((all-leaves
+                                     (loop for entry in struct-shadow-info
+                                           append (%collect-all-leaf-adj-syms (fourth entry)))))
+                                (%ensure-leaf-adj-bindings backward-walk-1 all-leaves))
+                              backward-walk-1))
                          (backward-walk
-                          (%fix-struct-shadow-writes backward-walk-1 struct-shadow-info))
+                          (%fix-struct-shadow-writes backward-walk-2 struct-shadow-info))
                          (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
                     `(progn
                       (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -1270,29 +1301,21 @@ the trivial zero-gradient backward instead of erroring."
               ;; shadow-grad-cell.  Field-adj synth syms are allocated for
               ;; the backward walk's accessor rule to accumulate into.
               ;; Shadow writeout is emitted later by the postprocessor.
+              ;;
+              ;; For nested struct fields, recursively build a hierarchical
+              ;; field-adj-alist.  Leaf scalar fields → sym.  Nested struct
+              ;; fields → recursive (cons NESTED-TYPE NESTED-ALIST).
               (let* ((base-type (if (consp t-spec) (first t-spec) t-spec))
-                     (fields (or (%get-record-runtime-fields t-spec)
-                                 ;; %get-record-runtime-fields works for both
-                                 ;; records and structs (it reads *crisp-structs*).
-                                 nil))
                      (shadow-type (%shadow-type-name-for base-type))
                      (shadow-grad-sym (intern (format nil "~A_GRAD" (symbol-name p)) pkg))
                      (field-adj-alist
-                      (loop for (fname ftype) in fields
-                            collect (cons (symbol-name fname)
-                                          (intern (format nil "~A_~A_ADJ"
-                                                          (symbol-name p)
-                                                          (symbol-name fname))
-                                                  pkg)))))
+                      (%build-struct-field-adj-alist p t-spec pkg)))
                 ;; Struct stays as a flat input (by-value).
                 (push p flat-inputs)
                 (push t-spec flat-input-types)
                 ;; Shadow grad cell — single cell-of-shadow-struct.
                 (push shadow-grad-sym grad-out-params)
                 (push (list 'cell shadow-type :address-space :global) grad-out-types)
-                ;; Mark shadow-grad-sym for cell-style emission in
-                ;; %fix-record-grad-cell-emissions IF it ever shows up as a
-                ;; (set! sym ...) target — but we'll do our own postprocess.
                 ;; Record entry for the shadow-write postprocessor.
                 (push (list p shadow-grad-sym shadow-type field-adj-alist)
                       struct-shadow-info)))
@@ -1384,9 +1407,15 @@ the trivial zero-gradient backward instead of erroring."
 ;;; when that's lifted, the metacrisp needs to expose both sizes and
 ;;; the hoist code generator must allocate the right one.
 
-(defun %adj-type-for-field (forward-type)
+(defun %adj-type-for-field (forward-type &optional struct-name-set)
   "Returns the adjoint type for a forward struct field's TYPE, per
-   the 101 promotion rules."
+   the 101 promotion rules.
+
+   STRUCT-NAME-SET (optional hash table, symbol→T) covers struct types
+   that will be defined by upcoming def-struct forms in the same
+   compilation unit but haven't been registered in *crisp-types* yet.
+   At shadow-injection time (before any macro expansion), this is the
+   only way to know which symbols are struct types."
   (cond
     ((%crisp-float-type-p forward-type) forward-type)
     ((%crisp-integer-scalar-type-p forward-type)
@@ -1401,20 +1430,26 @@ the trivial zero-gradient backward instead of erroring."
          ((%crisp-integer-scalar-type-p base)
           (%integer-scalar-to-float-scalar base))
          (t forward-type))))
-    ;; Nested struct → its shadow.
+    ;; Nested struct → its shadow.  Check both the runtime registry AND
+    ;; the forms-list struct-name-set (for shadows generated before
+    ;; *crisp-types* is populated).
     ((and (symbolp forward-type)
-          (let ((info (gethash forward-type *crisp-types*)))
-            (and info (eq (crisp-type-category info) :struct))))
+          (or (let ((info (gethash forward-type *crisp-types*)))
+                (and info (eq (crisp-type-category info) :struct)))
+              (and struct-name-set
+                   (gethash forward-type struct-name-set))))
      (intern (format nil "~A_ADJ" (symbol-name forward-type))
              (symbol-package forward-type)))
     ;; Anything else (cons-typed members, unknown, etc.) → unchanged.
     (t forward-type)))
 
-(defun %generate-shadow-def-struct-form (def-struct-form)
+(defun %generate-shadow-def-struct-form (def-struct-form &optional struct-name-set)
   "Given (def-struct NAME (f0 t0) (f1 t1) ... brand-decls...), returns
    the matching (def-struct NAME_ADJ (f0 adj_t0) (f1 adj_t1) ...) form.
    Brand declarations are dropped.  :c-t members are preserved (their
-   value is a forward-time constant; not differentiable but harmless)."
+   value is a forward-time constant; not differentiable but harmless).
+   STRUCT-NAME-SET enables recognizing nested struct field types whose
+   def-struct forms appear elsewhere in the compilation unit."
   (let* ((name (second def-struct-form))
          (members (cddr def-struct-form))
          (shadow-name (intern (format nil "~A_ADJ" (symbol-name name))
@@ -1425,18 +1460,33 @@ the trivial zero-gradient backward instead of erroring."
                 collect (cond
                           ((and (consp m) (>= (length m) 2))
                            (list* (first m)
-                                  (%adj-type-for-field (second m))
+                                  (%adj-type-for-field (second m) struct-name-set)
                                   (cddr m)))
                           (t m)))))
     `(def-struct ,shadow-name ,@shadow-members)))
+
+(defun %collect-struct-names-from-forms (forms)
+  "Walks FORMS at the top level and returns a hash table mapping each
+   (def-struct NAME ...) NAME (and only structs, not records) to T.
+   Used by shadow-injection to recognize struct field types when
+   *crisp-types* isn't yet populated."
+  (let ((set (make-hash-table :test 'eq)))
+    (dolist (f forms)
+      (when (and (consp f) (eq (car f) 'def-struct) (symbolp (second f)))
+        (setf (gethash (second f) set) t)))
+    set))
 
 (defun %inject-shadow-struct-forms (forms)
   "Walks FORMS at the top level.  After each (def-struct NAME ...) that
    defines a NON-shadow struct, appends (def-struct NAME_ADJ ...).
    Already-shadow structs (name ends with _ADJ) are passed through.
    def-record forms are left untouched (records SROA, no shadow needed).
-   Other forms unchanged."
-  (let ((result nil))
+   Other forms unchanged.
+
+   First pass collects all struct names so the shadow generator can
+   recognize nested struct field types."
+  (let ((struct-names (%collect-struct-names-from-forms forms))
+        (result nil))
     (dolist (f forms)
       (push f result)
       (when (and (consp f)
@@ -1445,7 +1495,7 @@ the trivial zero-gradient backward instead of erroring."
                  (let ((n (symbol-name (second f))))
                    (or (< (length n) 4)
                        (not (string-equal "_ADJ" (subseq n (- (length n) 4)))))))
-        (push (%generate-shadow-def-struct-form f) result)))
+        (push (%generate-shadow-def-struct-form f struct-names) result)))
     (nreverse result)))
 
 (defvar *orig-compile-module* nil
@@ -1507,20 +1557,150 @@ the trivial zero-gradient backward instead of erroring."
   (intern (format nil "MAKE-~A_ADJ" (symbol-name struct-type-name))
           (symbol-package struct-type-name)))
 
+(defun %register-shadow-anf-intermediates (flat-anf shadow-ht)
+  "Pre-scans FLAT-ANF for bindings of the shape (TEMP (FIELD~ SHADOW-TRACKED-SYM))
+   where SHADOW-TRACKED-SYM is in SHADOW-HT and the field's info is a
+   nested-struct alist.  Registers TEMP in SHADOW-HT (with the nested
+   alist as TEMP's field-adj-alist) so subsequent accessor calls on TEMP
+   can route deeper.  Mutates SHADOW-HT in place.
+
+   Must run BEFORE the backward walk so the accessor case can consult
+   the augmented map."
+  (dolist (form flat-anf)
+    (when (and (consp form)
+               (= (length form) 2)
+               (symbolp (car form))
+               (consp (cadr form))
+               (symbolp (caadr form))
+               (let ((fname (symbol-name (caadr form))))
+                 (and (> (length fname) 1)
+                      (cl:char= (cl:char fname (1- (length fname))) #\~)))
+               (= (length (cadr form)) 2)
+               (symbolp (cadadr form))
+               (gethash (cadadr form) shadow-ht))
+      (let* ((temp (car form))
+             (expr (cadr form))
+             (accessor-name (symbol-name (car expr)))
+             (field-name-str (subseq accessor-name 0 (1- (length accessor-name))))
+             (parent-sym (cadr expr))
+             (parent-entry (gethash parent-sym shadow-ht))
+             (parent-field-alist (if (and (consp parent-entry) (symbolp (car parent-entry)))
+                                     (cdr parent-entry)
+                                     parent-entry))
+             (field-entry (assoc field-name-str parent-field-alist :test #'string-equal))
+             (field-info (cdr field-entry)))
+        (when (%nested-field-info-p field-info)
+          ;; TEMP represents a sub-struct.  Register so accessors on TEMP
+          ;; route into FIELD-INFO (the nested alist).
+          (setf (gethash temp shadow-ht) field-info))))))
+
+(defun %build-struct-field-adj-alist (param-sym struct-type pkg)
+  "Recursively builds a field-adj-alist for a struct kernel param of
+   STRUCT-TYPE.  Each entry is (FIELD-NAME-STR . FIELD-INFO) where:
+
+   - For scalar fields: FIELD-INFO is the per-field adj symbol
+     (e.g. r_top-left_x_adj).
+   - For nested struct fields: FIELD-INFO is itself an alist of the
+     same shape, recursively descended.
+
+   PARAM-SYM is the prefix used when generating leaf adj sym names
+   (so leaves nested under r.top-left get names like r_top-left_x_adj)."
+  (let ((fields (%get-record-runtime-fields struct-type)))
+    (loop for (fname ftype) in fields
+          for fname-str = (symbol-name fname)
+          collect
+          (cons fname-str
+                (cond
+                  ((%crisp-struct-type-p ftype)
+                   ;; Nested struct field: recurse, prefix names with
+                   ;; <param>_<field>.
+                   (let ((nested-prefix
+                          (intern (format nil "~A_~A"
+                                          (symbol-name param-sym)
+                                          (symbol-name fname))
+                                  pkg)))
+                     (%build-struct-field-adj-alist nested-prefix ftype pkg)))
+                  (t
+                   ;; Scalar leaf: allocate per-field adj sym.
+                   (intern (format nil "~A_~A_ADJ"
+                                   (symbol-name param-sym)
+                                   (symbol-name fname))
+                           pkg)))))))
+
+(defun %nested-field-info-p (field-info)
+  "T if FIELD-INFO from a struct-shadow alist refers to a nested struct
+   (an alist), as opposed to a scalar leaf (a symbol)."
+  (and (listp field-info)
+       field-info
+       (consp (first field-info))
+       (stringp (caar field-info))))
+
+(defun %build-shadow-ctor-form (struct-type-name field-adj-alist pkg)
+  "Builds a (MAKE-<S>_ADJ :field1 val1 :field2 val2 ...) form recursively.
+   For scalar leaf fields, val is the adj sym.  For nested struct fields,
+   val is a recursive (MAKE-<INNER>_ADJ ...) form."
+  (let ((ctor (%make-shadow-constructor-name-for struct-type-name)))
+    (cons ctor
+          (loop for (fname-str . field-info) in field-adj-alist
+                append
+                (list (intern fname-str :keyword)
+                      (cond
+                        ((%nested-field-info-p field-info)
+                         ;; Recurse: need the inner struct's type name.
+                         ;; The struct definition gives us the field types.
+                         (let* ((fields (%get-record-runtime-fields struct-type-name))
+                                (fentry (find fname-str fields
+                                              :key (lambda (f) (symbol-name (first f)))
+                                              :test #'string-equal))
+                                (inner-type (when fentry (second fentry))))
+                           (if (and inner-type (%crisp-struct-type-p inner-type))
+                               (%build-shadow-ctor-form inner-type field-info pkg)
+                               ;; Shouldn't happen, but fall through to skipping.
+                               0)))
+                        (t
+                         ;; Scalar leaf: just the adj sym.
+                         field-info)))))))
+
+(defun %collect-all-leaf-adj-syms (field-adj-alist)
+  "Collects all leaf adj syms (scalars at the bottom of a nested alist)
+   recursively."
+  (loop for (fname-str . field-info) in field-adj-alist
+        append (if (%nested-field-info-p field-info)
+                   (%collect-all-leaf-adj-syms field-info)
+                   (list field-info))))
+
+(defun %ensure-leaf-adj-bindings (form leaf-adj-syms)
+  "If FORM is `(let (bindings) body...)`, augments the bindings list with
+   `(sym 0.0)` for each sym in LEAF-ADJ-SYMS not already bound.  Used to
+   ensure that leaf adj syms referenced ONLY by the shadow-write
+   postprocessor (i.e. unused in the kernel body) have valid zero-init
+   bindings."
+  (cond
+    ((and (consp form) (eq (first form) 'let))
+     (let* ((existing-bindings (second form))
+            (existing-syms (mapcar (lambda (b)
+                                     (if (consp b) (first b) b))
+                                   existing-bindings))
+            (missing (remove-if (lambda (s)
+                                  (member s existing-syms :test #'eq))
+                                leaf-adj-syms))
+            (additions (mapcar (lambda (s) (list s 0.0)) missing)))
+       (if additions
+           `(let ,(append existing-bindings additions)
+              ,@(cddr form))
+           form)))
+    (t form)))
+
 (defun %fix-struct-shadow-writes (form struct-shadow-info)
   "Postprocesses the kernel backward walk's output.  For each struct
    kernel input S in STRUCT-SHADOW-INFO, replaces the default scalar
    input-grad-write `(set! S_GRAD S_ADJ)` with the correct shadow-
-   struct write `(set! (~ S_GRAD) (MAKE-<S>_ADJ :x S_X_ADJ :y S_Y_ADJ ...))`.
+   struct write `(set! (~ S_GRAD) (MAKE-<S>_ADJ ...))` — building
+   the shadow constructor recursively for nested struct fields.
 
    STRUCT-SHADOW-INFO is the alist returned as the 9th value of
    %expand-record-kernel-inputs:
      ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)
-
-   The walker's default writeout for a non-cell, non-tensor input is
-   `(set! IN-GRAD (LOCAL-ADJ IN))` — a bare-scalar write of the
-   form `(set! S_GRAD S_ADJ)`.  We replace it with the shadow-cell
-   construction.
 
    Other (set! ...) forms are passed through unchanged."
   (labels ((rewrite (f)
@@ -1534,16 +1714,16 @@ the trivial zero-gradient backward instead of erroring."
                   (if entry
                       (let* ((shadow-type (third entry))
                              (field-alist (fourth entry))
-                             (ctor (%make-shadow-constructor-name-for
-                                    ;; shadow-type ends in _ADJ; strip for ctor name.
-                                    (intern (subseq (symbol-name shadow-type)
-                                                    0 (- (length (symbol-name shadow-type)) 4))
-                                            (symbol-package shadow-type)))))
-                        ;; emit (set! (~ S_GRAD) (MAKE-S_ADJ :x s_x_adj :y s_y_adj))
+                             ;; Reconstruct the FORWARD struct type from the
+                             ;; shadow name (shadow ends in _ADJ; strip).
+                             (forward-type
+                              (intern (subseq (symbol-name shadow-type)
+                                              0 (- (length (symbol-name shadow-type)) 4))
+                                      (symbol-package shadow-type))))
+                        ;; emit (set! (~ S_GRAD) <recursive-ctor-form>)
                         `(set! (~ ,(second f))
-                               (,ctor ,@(loop for (fname-str . adj-sym) in field-alist
-                                              append (list (intern fname-str :keyword)
-                                                           adj-sym)))))
+                               ,(%build-shadow-ctor-form forward-type field-alist
+                                                         (symbol-package (second f)))))
                       f)))
                ((consp f) (mapcar #'rewrite f))
                (t f))))
