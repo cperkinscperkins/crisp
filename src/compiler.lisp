@@ -304,8 +304,15 @@ Returns modified IR text with metadata."
        :log-prefix "[SPIR-V] "))
 
     ;; 3. llvm-spirv (BC -> SPV)
-    (let ((tool (resolve-tool-executable "llvm-spirv"))
-          (flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil)))
+    ;; Backward kernels emit `atomicrmw fadd` for thread-safe gradient
+    ;; accumulation into tensor _grad cells.  Under --differentiate, request
+    ;; the SPV_EXT_shader_atomic_float_add extension so translation succeeds.
+    (let* ((tool (resolve-tool-executable "llvm-spirv"))
+           (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
+           (ad-flags (if *differentiate-p*
+                         '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
+                         nil))
+           (flags (append debug-flags ad-flags)))
       (run-tool-command
        (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
        :log-prefix "[SPIR-V] "))

@@ -365,41 +365,79 @@
              do (incf count) (incf pos)
              finally (cl:return count))))
 
+(defun %extract-fn-body-from-ir (ir-content fn-define-prefix)
+  "Returns the substring of IR-CONTENT covering the body of a function
+   whose `define` line starts with FN-DEFINE-PREFIX (e.g.
+   \"define void @measure_distance(\").  The body spans from the
+   `define` line through the matching closing `}` at column 0.
+   Returns NIL if no such function found.
+
+   In LLVM IR the function-closing brace is the only `}` that appears at
+   column 0; nested braces (e.g. struct literals) are indented."
+  (let ((start (search fn-define-prefix ir-content)))
+    (when start
+      (let* ((scan-start (1+ start))
+             (end (loop for pos = (search (format nil "~%}") ir-content :start2 scan-start)
+                          then (search (format nil "~%}") ir-content :start2 (1+ pos))
+                        while pos
+                        return (+ pos 2))))
+        (when end
+          (subseq ir-content start end))))))
+
 (defun validate-descendant-distance (ir-path)
   "Validates descendant substitution: coordinate can substitute for point.
-   Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x."
+   Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x
+   in the FORWARD kernel body (measure_distance).  The check is scoped to
+   the forward kernel so it stays meaningful under --differentiate, where
+   the backward kernel recomputes forward values for chain-rule purposes."
   (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-descendant-distance nil))
   (let* ((ir-content (uiop:read-file-string ir-path))
-         (point-calls (count-substring "call i32 @distance_point_point(" ir-content))
-         (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" ir-content)))
-    (unless (= point-calls 2)
-      (log:error "Expected 2 calls to distance_point_point, got ~a" point-calls)
+         (fwd-body (or (%extract-fn-body-from-ir ir-content
+                                                 "define void @measure_distance(")
+                       (%extract-fn-body-from-ir ir-content
+                                                 "define spir_func void @measure_distance("))))
+    (unless fwd-body
+      (log:error "Forward kernel measure_distance not found in IR")
       (return-from validate-descendant-distance nil))
-    (unless (= coord-calls 1)
-      (log:error "Expected 1 call to distance_coordinate_coordinate, got ~a" coord-calls)
-      (return-from validate-descendant-distance nil))
-    (log:info "Descendant substitution validated: point overload called 2x, coordinate 1x")
-    t))
+    (let ((point-calls (count-substring "call i32 @distance_point_point(" fwd-body))
+          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" fwd-body)))
+      (unless (= point-calls 2)
+        (log:error "Expected 2 calls to distance_point_point in forward kernel, got ~a" point-calls)
+        (return-from validate-descendant-distance nil))
+      (unless (= coord-calls 1)
+        (log:error "Expected 1 call to distance_coordinate_coordinate in forward kernel, got ~a" coord-calls)
+        (return-from validate-descendant-distance nil))
+      (log:info "Descendant substitution validated: forward kernel calls point overload 2x, coordinate 1x")
+      t)))
 
 (defun validate-ancestor-distance (ir-path)
   "Validates ancestor substitution: point can substitute for coordinate.
-   Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x."
+   Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x
+   in the FORWARD kernel body (measure_distance).  Scoped to the forward
+   kernel for the same reason as validate-descendant-distance."
   (unless (probe-file ir-path)
     (log:error "IR file not found: ~a" ir-path)
     (return-from validate-ancestor-distance nil))
   (let* ((ir-content (uiop:read-file-string ir-path))
-         (point-calls (count-substring "call i32 @distance_point_point(" ir-content))
-         (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" ir-content)))
-    (unless (= coord-calls 2)
-      (log:error "Expected 2 calls to distance_coordinate_coordinate, got ~a" coord-calls)
+         (fwd-body (or (%extract-fn-body-from-ir ir-content
+                                                 "define void @measure_distance(")
+                       (%extract-fn-body-from-ir ir-content
+                                                 "define spir_func void @measure_distance("))))
+    (unless fwd-body
+      (log:error "Forward kernel measure_distance not found in IR")
       (return-from validate-ancestor-distance nil))
-    (unless (= point-calls 1)
-      (log:error "Expected 1 call to distance_point_point, got ~a" point-calls)
-      (return-from validate-ancestor-distance nil))
-    (log:info "Ancestor substitution validated: coordinate overload called 2x, point 1x")
-    t))
+    (let ((point-calls (count-substring "call i32 @distance_point_point(" fwd-body))
+          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" fwd-body)))
+      (unless (= coord-calls 2)
+        (log:error "Expected 2 calls to distance_coordinate_coordinate in forward kernel, got ~a" coord-calls)
+        (return-from validate-ancestor-distance nil))
+      (unless (= point-calls 1)
+        (log:error "Expected 1 call to distance_point_point in forward kernel, got ~a" point-calls)
+        (return-from validate-ancestor-distance nil))
+      (log:info "Ancestor substitution validated: forward kernel calls coordinate overload 2x, point 1x")
+      t)))
 
 (defun validate-derived-accessors (ir-path)
   "Validates that all five x~ accessor overloads are defined and called:
@@ -2433,3 +2471,64 @@ Checks:
           (return-from validate-089-09-global-size-tiled nil)))
       (log:info "validate-089-09: PASS")
       t)))
+
+
+;;; ============================================================
+;;; 101-revisit-autodiff: no-SROA-grad-leak invariant validator
+;;; ============================================================
+;;;
+;;; Locks the invariant that SROA-destructured compound-type fields
+;;; (offset, stride, extent, length, parent, byte-size) never surface
+;;; as standalone _grad cells in the backward kernel signature.  Each
+;;; logical declared parameter gets at most one logical _grad companion
+;;; of the same shape.
+
+(defun %ends-with-grad-p (name)
+  "Returns T if NAME (a string) ends with '_grad' (case-insensitive)."
+  (and (stringp name)
+       (>= (length name) 5)
+       (string-equal "_grad" (subseq name (- (length name) 5)))))
+
+(defun %strip-grad-suffix (name)
+  "Returns NAME with the trailing 5-character '_grad' suffix removed."
+  (subseq name 0 (- (length name) 5)))
+
+(defun validate-no-sroa-grad-leak (metadata-path)
+  "Locks the no-SROA-grad-leak invariant for backward kernels.
+
+   For every entry in the kernel's :declared-signature whose :name ends in
+   '_grad', the name stripped of '_grad' must also appear as an entry's
+   :name in the same declared-signature.
+
+   This catches the failure mode where SROA-expanded scalar components of a
+   compound type (e.g. a tensor's offset/stride/extent/length/parent/byte-size)
+   leak as standalone _grad cells in the backward kernel signature, rather
+   than riding along inside the single logical _grad companion of the
+   compound parameter.
+
+   In the forward (non --differentiate) suite, no _grad entries exist in
+   declared-signature at all, so the validator passes trivially. The same
+   test file therefore locks the invariant under both passes."
+  (unless (probe-file metadata-path)
+    (log:error "validate-no-sroa-grad-leak: file not found: ~a" metadata-path)
+    (return-from validate-no-sroa-grad-leak nil))
+  (let* ((forms (%read-metacrisp-forms metadata-path))
+         (kernels (%metacrisp-section forms :kernels))
+         (ok t))
+    (unless kernels
+      (log:error "validate-no-sroa-grad-leak: no :kernels section in ~a" metadata-path)
+      (return-from validate-no-sroa-grad-leak nil))
+    (dolist (k kernels)
+      (let ((k-name (getf k :name))
+            (decl   (getf k :declared-signature)))
+        (dolist (entry decl)
+          (let ((nm (getf entry :name)))
+            (when (%ends-with-grad-p nm)
+              (let* ((stripped (%strip-grad-suffix nm))
+                     (twin (%find-decl-entry decl stripped)))
+                (unless twin
+                  (log:error "validate-no-sroa-grad-leak: kernel ~a has stray _grad entry ~a -- no forward twin ~a in declared-signature ~a"
+                             k-name nm stripped
+                             (mapcar (lambda (e) (getf e :name)) decl))
+                  (setf ok nil))))))))
+    ok))

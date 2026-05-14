@@ -6,110 +6,6 @@
 (in-package :crisp.compiler)
 
 
-;; src/compiler.lisp
-;; Backward kernels emit `atomicrmw fadd` for thread-safe gradient accumulation
-;; into tensor _grad cells. The default SPIR-V translator rejects this with
-;; "Feature requires the following SPIR-V extension: SPV_EXT_shader_atomic_float_add".
-;; When --differentiate is active, request the extension so translation succeeds.
-;; Forward-mode invocations are unchanged.
-(defun compile-to-spirv (module output-path &key debug-p)
-  "Compiles an LLVM Module to SPIR-V using the external toolchain.
-   Runs %remove-dead-array-returning-functions before translation to
-   prevent IGC from miscompiling dead TypeArray-returning functions
-   (bug 028 workaround Part 2)."
-  (let* ((base-path (uiop:pathname-directory-pathname output-path))
-         (name (pathname-name output-path))
-         (ll-file (merge-pathnames (format nil "~a.temp.ll" name) base-path))
-         (bc-file (merge-pathnames (format nil "~a.temp.bc" name) base-path))
-         (spv-file output-path))
-
-    (%remove-dead-array-returning-functions module)
-    (llvm-set-target module "spir64-unknown-unknown")
-
-    (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
-           (ir-with-metadata (inject-spir-kernel-metadata ir)))
-      (with-open-file (stream ll-file :direction :output :if-exists :supersede)
-        (write-string ir-with-metadata stream)))
-
-    (let ((tool (resolve-tool-executable "llvm-as")))
-      (run-tool-command
-       (list tool (namestring ll-file) "-o" (namestring bc-file))
-       :log-prefix "[SPIR-V] "))
-
-    (let* ((tool (resolve-tool-executable "llvm-spirv"))
-           (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
-           (ad-flags (if *differentiate-p*
-                         '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
-                         nil))
-           (flags (append debug-flags ad-flags)))
-      (run-tool-command
-       (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
-       :log-prefix "[SPIR-V] "))
-
-    (unless debug-p
-      (when (probe-file ll-file) (delete-file ll-file))
-      (when (probe-file bc-file) (delete-file bc-file)))
-
-    (log:info "Generated SPIR-V: ~a" spv-file)))
-
-
-;; src/metadata-val.lisp
-;; New validator for the 101-revisit-autodiff endeavor: locks the invariant
-;; that SROA-destructured compound-type fields (offset, stride, extent, length,
-;; parent, byte-size) never surface as standalone _grad cells in the backward
-;; kernel signature. Each logical declared parameter gets at most one logical
-;; _grad companion of the same shape.
-(defun %ends-with-grad-p (name)
-  "Returns T if NAME (a string) ends with '_grad' (case-insensitive)."
-  (and (stringp name)
-       (>= (length name) 5)
-       (string-equal "_grad" (subseq name (- (length name) 5)))))
-
-(defun %strip-grad-suffix (name)
-  "Returns NAME with the trailing 5-character '_grad' suffix removed."
-  (subseq name 0 (- (length name) 5)))
-
-(defun validate-no-sroa-grad-leak (metadata-path)
-  "Locks the no-SROA-grad-leak invariant for backward kernels.
-
-   For every entry in the kernel's :declared-signature whose :name ends in
-   '_grad', the name stripped of '_grad' must also appear as an entry's
-   :name in the same declared-signature.
-
-   This catches the failure mode where SROA-expanded scalar components of a
-   compound type (e.g. a tensor's offset/stride/extent/length/parent/byte-size)
-   leak as standalone _grad cells in the backward kernel signature, rather
-   than riding along inside the single logical _grad companion of the
-   compound parameter.
-
-   In the forward (non --differentiate) suite, no _grad entries exist in
-   declared-signature at all, so the validator passes trivially. The same
-   test file therefore locks the invariant under both passes."
-  (unless (probe-file metadata-path)
-    (log:error "validate-no-sroa-grad-leak: file not found: ~a" metadata-path)
-    (return-from validate-no-sroa-grad-leak nil))
-  (let* ((forms (%read-metacrisp-forms metadata-path))
-         (kernels (%metacrisp-section forms :kernels))
-         (ok t))
-    (unless kernels
-      (log:error "validate-no-sroa-grad-leak: no :kernels section in ~a" metadata-path)
-      (return-from validate-no-sroa-grad-leak nil))
-    (dolist (k kernels)
-      (let ((k-name (getf k :name))
-            (decl   (getf k :declared-signature)))
-        (dolist (entry decl)
-          (let ((nm (getf entry :name)))
-            (when (%ends-with-grad-p nm)
-              (let* ((stripped (%strip-grad-suffix nm))
-                     (twin (%find-decl-entry decl stripped)))
-                (unless twin
-                  (log:error "validate-no-sroa-grad-leak: kernel ~a has stray _grad entry ~a -- no forward twin ~a in declared-signature ~a"
-                             k-name nm stripped
-                             (mapcar (lambda (e) (getf e :name)) decl))
-                  (setf ok nil))))))))
-    ok))
-
-
 ;;; ===================================================================
 ;;; 101-revisit-autodiff Part 1: record params in sub-function diff
 ;;; ===================================================================
@@ -130,7 +26,7 @@
 ;; in *crisp-types*. To know a record's runtime-field count at pre-reg time,
 ;; we scan the forms list ourselves for (def-record ...) entries and build
 ;; an alist. Post-walk-code-forms code paths can fall back to *crisp-types*.
-
+#|
 (defun %scan-forms-for-record-info (forms)
   "Walks FORMS (recursing through progn / with-template-type) and returns
    an alist mapping (symbol-name TYPE-NAME) -> count of non-:c-t,
@@ -320,10 +216,9 @@
           (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
                (%crisp-handle-param-type-p (parameter-def-type pd))))
         env))
+|#
 
-;; src/analysis/core.lisp
-;; Widen pre-registration to count records via their runtime fields.
-;; HOF path is unchanged for now (open Q4 — HOF + record params deferred).
+#|
 (defun %pre-register-differentiable-fns (forms &optional record-info)
   "When *differentiate-p* is T, walk FORMS for def-function forms and
 pre-register them in *differentiable-functions* (and *differentiable-hof-store*
@@ -407,20 +302,9 @@ recursive call can reuse it."
                      ((not (gethash name *differentiable-functions*))
                       (let ((n-params (count-if (lambda (p) (not (string-equal (symbol-name p) "&OUT"))) params)))
                         (%register-standard-differentiable-entry name "template via with-template-type" n-params 1 :optimistic-p t)))))))))))))))
+|#
 
-;; src/autodiff.lisp
-;; Dynamic var: when bound during a backward walk, maps each record-typed
-;; symbol (a sub-function parameter, OR a kernel-level ANF temp bound to
-;; %construct-struct) to its per-field adjoint info.
-;;
-;; Map value shape: alist of (FIELD-NAME-STRING . FIELD-ADJ-SYM) in
-;; declaration order.  Stored as an alist (not a hash) so iteration order
-;; is portable across implementations.  Consumers:
-;;   - The accessor rule in %handle-single-value-backward routes adjoint
-;;     flow from (FIELD~ p) to the per-field synth adj.
-;;   - The %construct-struct case flows per-field adjs to constructor args.
-;;   - %emit-sub-fn-backward distributes deltas per-field when an arg is
-;;     a record-valued symbol.
+#|
 (defvar *record-param-field-adjs* nil
   "Hash table: record-sym -> alist of (FIELD-NAME-STR . FIELD-ADJ-SYM)
    in declaration order.  Bound during backward walk for sub-functions
@@ -960,99 +844,7 @@ treated equivalently."
               (log:info "AUTODIFF: ~a — cannot generate _GRAD: ~a. Unregistering; will error if called from a differentiable kernel." name e)
               (remhash name *differentiable-functions*)
               nil)))))))
-
-
-
-;;; ===================================================================
-;;; 101: validator scope fixes for derived-record-type tests
-;;; ===================================================================
-;;;
-;;; The 031/24 and 031/26 validators count forward-overload-dispatch calls
-;;; in the whole IR text.  Under --differentiate the backward kernel does
-;;; chain-rule recomputation of forward values, so every forward call is
-;;; mirrored in the backward kernel — counts double.
-;;;
-;;; The validators are testing forward dispatch behavior, which is a
-;;; property of the forward kernel only.  Scope the search to just the
-;;; forward kernel's function body.
-
-;; src/metadata-val.lisp - helper
-(defun %extract-fn-body-from-ir (ir-content fn-define-prefix)
-  "Returns the substring of IR-CONTENT covering the body of a function
-   whose `define` line starts with FN-DEFINE-PREFIX (e.g.
-   \"define void @measure_distance(\").  The body spans from the
-   `define` line through the matching closing `}` at column 0.
-   Returns NIL if no such function found."
-  (let ((start (search fn-define-prefix ir-content)))
-    (when start
-      ;; Find the matching `}` at start of line after START.  In LLVM IR
-      ;; the function-closing brace is the only `}` that appears at column
-      ;; 0; nested braces (e.g. struct literals) are indented.
-      (let* ((scan-start (1+ start))
-             (end (loop for pos = (search (format nil "~%}") ir-content :start2 scan-start)
-                          then (search (format nil "~%}") ir-content :start2 (1+ pos))
-                        while pos
-                        ;; Found `\n}`; include up to the `}` character.
-                        return (+ pos 2))))
-        (when end
-          (subseq ir-content start end))))))
-
-;; src/metadata-val.lisp - override
-(defun validate-descendant-distance (ir-path)
-  "Validates descendant substitution: coordinate can substitute for point.
-   Expected: distance_point_point called 2x, distance_coordinate_coordinate called 1x
-   in the FORWARD kernel body (measure_distance).  The check is scoped to
-   the forward kernel so it stays meaningful under --differentiate, where
-   the backward kernel recomputes forward values for chain-rule purposes."
-  (unless (probe-file ir-path)
-    (log:error "IR file not found: ~a" ir-path)
-    (return-from validate-descendant-distance nil))
-  (let* ((ir-content (uiop:read-file-string ir-path))
-         (fwd-body (or (%extract-fn-body-from-ir ir-content
-                                                 "define void @measure_distance(")
-                       (%extract-fn-body-from-ir ir-content
-                                                 "define spir_func void @measure_distance("))))
-    (unless fwd-body
-      (log:error "Forward kernel measure_distance not found in IR")
-      (return-from validate-descendant-distance nil))
-    (let ((point-calls (count-substring "call i32 @distance_point_point(" fwd-body))
-          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" fwd-body)))
-      (unless (= point-calls 2)
-        (log:error "Expected 2 calls to distance_point_point in forward kernel, got ~a" point-calls)
-        (return-from validate-descendant-distance nil))
-      (unless (= coord-calls 1)
-        (log:error "Expected 1 call to distance_coordinate_coordinate in forward kernel, got ~a" coord-calls)
-        (return-from validate-descendant-distance nil))
-      (log:info "Descendant substitution validated: forward kernel calls point overload 2x, coordinate 1x")
-      t)))
-
-;; src/metadata-val.lisp - override
-(defun validate-ancestor-distance (ir-path)
-  "Validates ancestor substitution: point can substitute for coordinate.
-   Expected: distance_coordinate_coordinate called 2x, distance_point_point called 1x
-   in the FORWARD kernel body (measure_distance).  Scoped to the forward
-   kernel for the same reason as validate-descendant-distance."
-  (unless (probe-file ir-path)
-    (log:error "IR file not found: ~a" ir-path)
-    (return-from validate-ancestor-distance nil))
-  (let* ((ir-content (uiop:read-file-string ir-path))
-         (fwd-body (or (%extract-fn-body-from-ir ir-content
-                                                 "define void @measure_distance(")
-                       (%extract-fn-body-from-ir ir-content
-                                                 "define spir_func void @measure_distance("))))
-    (unless fwd-body
-      (log:error "Forward kernel measure_distance not found in IR")
-      (return-from validate-ancestor-distance nil))
-    (let ((point-calls (count-substring "call i32 @distance_point_point(" fwd-body))
-          (coord-calls (count-substring "call i32 @distance_coordinate_coordinate(" fwd-body)))
-      (unless (= coord-calls 2)
-        (log:error "Expected 2 calls to distance_coordinate_coordinate in forward kernel, got ~a" coord-calls)
-        (return-from validate-ancestor-distance nil))
-      (unless (= point-calls 1)
-        (log:error "Expected 1 call to distance_point_point in forward kernel, got ~a" point-calls)
-        (return-from validate-ancestor-distance nil))
-      (log:info "Ancestor substitution validated: forward kernel calls coordinate overload 2x, point 1x")
-      t)))
+|#
 
 
 ;;; ===================================================================
@@ -1192,40 +984,7 @@ treated equivalently."
   (%wrap-validator-as-forward-only v))
 
 
-;;; ===================================================================
-;;; 101: relax the "no differentiable parameters" error
-;;; ===================================================================
-;;;
-;;; The original check at %generate-backward-kernel-ast errors when the
-;;; kernel has no float scalars or float tensors AND no integer tensors.
-;;; It was added when AD was float-only.  After the 101 widening, integer
-;;; scalars (including branded ints in record fields) should also bypass
-;;; the gate and emit a trivial zero-gradient backward kernel — consistent
-;;; with the principle "if there's math (or could be), do it; the gradient
-;;; for integer inputs is always zero, which is the correct answer".
-;;;
-;;; This unblocks 048/09 (branded-int record fields) without touching the
-;;; backward walk: when diff-flat-inputs is empty, the trivial-backward
-;;; emit already does the right thing (kernel returns, _GRAD slots stay
-;;; at their zero-init values).
-
-(defun %has-diff-capable-scalar-input-p (flat-input-types)
-  "Returns T if flat-input-types contains at least one integer scalar
-   (signed/unsigned), including branded int scalars.  Used by the
-   relaxed gate in %generate-backward-kernel-ast."
-  (some (lambda (t-spec)
-          (or (%crisp-integer-scalar-type-p t-spec)
-              ;; Brand types: resolve to base and re-check.
-              (let ((brand (is-brand-type-p t-spec)))
-                (and brand
-                     (%crisp-integer-scalar-type-p
-                      (brand-definition-base-type brand))))))
-        flat-input-types))
-
-;; src/macros.lisp - override
-;; This is a near-copy of the original; the only change is at the
-;; differentiable-input check (was: error unless int tensors; now: also
-;; allow int scalars including branded).
+#|
 (defun %generate-backward-kernel-ast (name params signature-types raw-body)
   "Generates the def-kernel-exact AST for the backward (gradient) pass.
 101: widened input check to also accept integer scalars (incl. branded)
@@ -1339,6 +1098,7 @@ the trivial zero-gradient backward instead of erroring."
                                           (let (,@forward-bindings)
                                             ,backward-walk))
                                         (return)))))))))))))
+|#
 
 
 ;;; ===================================================================
@@ -1358,7 +1118,7 @@ the trivial zero-gradient backward instead of erroring."
 ;;; for leaf scalars, and chains reassembly bindings inner-first / outer-
 ;;; last so the outer (make-RECORD ...) sees its inner records already
 ;;; bound.
-
+#|
 (defun %expand-record-kernel-inputs (inputs input-types pkg)
   "Recursively expands record-typed inputs into their scalar fields,
    chasing through nested records.  Also handles struct kernel inputs
@@ -1945,66 +1705,7 @@ the trivial zero-gradient backward instead of erroring."
              (all-bindings (append forward-bindings adjoint-bindings)))
         `(let ,all-bindings
            ,@(nreverse backward-forms))))))
-
-
-;;; ===================================================================
-;;; 101: atomic-RMW analyzer set write-mode on target
-;;; ===================================================================
-;;;
-;;; The atomic-add! analyzer calls `analyze-expression` on its target,
-;;; which fires the "read from &out" check in analyze-aref-expression
-;;; because *analysis-access-mode* defaults to :read.  But atomic RMW
-;;; operations write to their target — the read is part of the read-
-;;; modify-write — so :write is the correct mode.
-;;;
-;;; Surfaced by sub-function tensor AD: the backward body for a tensor-
-;;; param sub-function emits `(atomic-add! (~ v_grad idx) t_adj)` where
-;;; `v_grad` is an &out grad-tensor.  Without this fix, the analyzer
-;;; rejects with "Cannot read from Output Parameter".
-;;;
-;;; Override binds *analysis-access-mode* to :write around the target
-;;; analysis, matching the set! analyzer's behavior (analysis/structs.lisp:516).
-
-(defun %analyze-atomic-rmw-expression (op expr env context location &key no-delta)
-  "Shared helper for all atomic RMW analyzers.
-OP is a keyword (:add :sub :min :max :xchg).
-Target (second element of EXPR) must be an aref expression like (~ vec idx).
-When NO-DELTA is T (for atomic-inc!/atomic-dec!), synthesizes a literal-1 delta.
-
-101 override: target analysis runs with *analysis-access-mode* = :write
-so &out params can serve as atomic-RMW targets (the read is part of the
-write)."
-  (let ((expected-args (if no-delta 1 2))
-        (actual-args   (1- (length expr))))
-    (unless (= actual-args expected-args)
-      (error 'crisp-type-error
-        :message (format nil "~a: expected ~a argument~:p, got ~a"
-                         (first expr) expected-args actual-args)
-        :source-location location)))
-  (let* ((target-form (second expr))
-         ;; 101: write-mode for the target — atomic RMW writes.
-         (target-node (let ((*analysis-access-mode* :write))
-                        (analyze-expression target-form env context (append location '(1))))))
-    (unless (semantic-aref-p target-node)
-      (error 'crisp-type-error
-        :message (format nil "~a: target must be a memory location like (~~ vec idx), got ~a"
-                         (first expr) target-form)
-        :source-location location))
-    (let* ((elem-type  (semantic-aref-type target-node))
-           (delta-node (if no-delta
-                           (let* ((ct  (gethash elem-type *crisp-types*))
-                                  (one (if (and ct (eq (crisp-type-category ct) :float))
-                                           1.0d0 1)))
-                             (make-semantic-literal :value-type elem-type
-                                                    :value one
-                                                    :source-location location))
-                           (analyze-expression (third expr) env context
-                                               (append location '(2))))))
-      (make-semantic-atomic-rmw :type elem-type
-                                :op op
-                                :target-node target-node
-                                :delta-node delta-node
-                                :source-location location))))
+|#
 
 
 ;;; =====================================================================
@@ -2032,41 +1733,29 @@ write)."
 ;;; =====================================================================
 
 
-;; src/analysis/core.lisp
+#|
 (defun compile-module (forms module builder di-builder di-compile-unit location-map)
-  "Orchestrates the multi-pass compilation of a list of top-level forms.
-   When --differentiate is enabled, pre-injects shadow def-struct forms for
-   AD support before any of the passes see the forms list."
+  "Migrated to src/analysis/core.lisp."
   (log:debug "*crisp-types*: ~s~%*expression-analyzers*: ~s"
              (alexandria:hash-table-keys *crisp-types*)
              (alexandria:hash-table-keys *expression-analyzers*))
-
-  (let ((forms (if *differentiate-p*
-                   (%inject-shadow-struct-forms forms)
-                   forms)))
-    ;; Pass 1: Gather all function signatures and build the call graph.
+  (let ((forms (if *differentiate-p* (%inject-shadow-struct-forms forms) forms)))
     (let ((*call-graph* (make-hash-table))
           (*originator-functions* (make-hash-table))
-          (*implicit-arg-map* (make-hash-table)) ; Rebind for a clean state per module.
-          (*scratch-cell-counter* 0)) ; Reset counter for deterministic naming
+          (*implicit-arg-map* (make-hash-table))
+          (*scratch-cell-counter* 0))
       (let ((*defer-struct-validation* t)
             (*pending-struct-definitions* nil))
         (analyze-signatures-pass forms)
-        ;; Now finalize any structs that were deferred
         (finalize-struct-definitions))
-
-      ;; Pass 1.5: Propagate implicit argument requirements up the call graph.
       (propagate-implicit-arguments)
-
-      ;; Pass 2: Now that all signatures are known, compile the function bodies.
-      ;; Reset counter so codegen (Pass 2) generates the same unique IDs as Pass 1
       (setf *scratch-cell-counter* 0)
-      (log:info "Reset *scratch-cell-counter* to 0 for Pass 2 Codegen")
       (compile-forms-pass forms module builder di-builder di-compile-unit location-map)
       (check-for-recursion-cycles))))
+|#
 
 
-;; src/autodiff.lisp
+#|
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                &key kernel-pkg)
   "Walks a flattened ANF body backwards to accumulate adjoints.
@@ -2332,6 +2021,7 @@ adjs back into the constructor args."
                    (result `(let ,local-bindings
                               ,@(nreverse backward-forms))))
               result)))))))
+|#
 
 
 ;;; =====================================================================

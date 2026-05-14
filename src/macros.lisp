@@ -650,8 +650,25 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                       collect t-spec)))
     (values bwd-params bwd-types diff-flat-inputs diff-flat-input-types)))
 
+(defun %has-diff-capable-scalar-input-p (flat-input-types)
+  "Returns T if flat-input-types contains at least one integer scalar
+   (signed/unsigned), including branded int scalars.  Used by the
+   relaxed gate in %generate-backward-kernel-ast."
+  (some (lambda (t-spec)
+          (or (%crisp-integer-scalar-type-p t-spec)
+              ;; Brand types: resolve to base and re-check.
+              (let ((brand (is-brand-type-p t-spec)))
+                (and brand
+                     (%crisp-integer-scalar-type-p
+                      (brand-definition-base-type brand))))))
+        flat-input-types))
+
 (defun %generate-backward-kernel-ast (name params signature-types raw-body)
   "Generates the def-kernel-exact AST for the backward (gradient) pass.
+101: widened input check to also accept integer scalars (incl. branded) in
+addition to integer tensors.  All-int-record-field kernels now emit the
+trivial zero-gradient backward instead of erroring.  Struct inputs with
+shadow grads also bypass the gate.
 085: when diff-flat-inputs is empty but integer tensor inputs exist, emits a
 trivial backward kernel (just return). The float-typed _GRAD tensors declared
 in the signature remain zero — the correct gradient for integer arithmetic."
@@ -661,7 +678,8 @@ in the signature remain zero — the correct gradient for integer arithmetic."
            (bwd-name (intern (format nil "~a_GRAD" (symbol-name name)) pkg)))
       (multiple-value-bind (flat-inputs flat-input-types record-reassembly-bindings
                             rec-grad-out-params rec-grad-out-types
-                            record-subs-ht record-type-ht grad-cell-syms)
+                            record-subs-ht record-type-ht grad-cell-syms
+                            struct-shadow-info)
           (%expand-record-kernel-inputs inputs input-types pkg)
         (let ((subst-body
                (mapcar (lambda (form)
@@ -670,20 +688,36 @@ in the signature remain zero — the correct gradient for integer arithmetic."
           (multiple-value-bind (bwd-params bwd-types diff-flat-inputs diff-flat-input-types)
               (%compute-backward-kernel-params flat-inputs flat-input-types outputs output-types
                                                record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
-            ;; 085: only error when there are truly no grad outputs at all —
-            ;; i.e. no float inputs AND no integer tensor inputs.
-            ;; Integer tensor inputs produce float-typed _GRAD outputs (zero gradient).
+            ;; 101: error only when there are truly no diff-capable inputs.
+            ;; Integer tensors AND integer scalars (incl. branded) yield trivial
+            ;; zero-gradient backward kernels — valid AD output, not user error.
+            ;; Struct inputs (with shadow grads) also bypass the gate.
             (when (and flat-inputs
                        (null diff-flat-inputs)
-                       (not (some #'%crisp-integer-tensor-type-p flat-input-types)))
+                       (null struct-shadow-info)
+                       (not (some #'%crisp-integer-tensor-type-p flat-input-types))
+                       (not (%has-diff-capable-scalar-input-p flat-input-types)))
               (error 'crisp.compiler:crisp-compiler-error
                 :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types -- add (forward-only) declaration or use float element types)" name)))
             (multiple-value-bind (exploded-params exploded-types bwd-cell-reassembly-bindings)
                 (%explode-kernel-args bwd-params bwd-types)
-              ;; 085: when diff-flat-inputs is empty (all-integer-tensor case), emit a
-              ;; trivial backward kernel. Avoids generating an ill-formed empty (let ())
-              ;; from generate-backward-walk. The _GRAD tensors stay zero (correct).
-              (if (null diff-flat-inputs)
+              ;; Augment diff-flat-inputs with struct kernel inputs (which the
+              ;; compute-backward-kernel-params filter excludes).  This ensures
+              ;; the walker's input-grad-write loop emits a placeholder write
+              ;; for each struct param, which the shadow-write postprocessor
+              ;; will then replace with the correct shadow-struct constructor
+              ;; emit.
+              (let* ((augmented-diff-flat-inputs
+                      (append diff-flat-inputs
+                              (mapcar #'first struct-shadow-info)))
+                     (augmented-diff-flat-input-types
+                      (append diff-flat-input-types
+                              (loop for entry in struct-shadow-info
+                                    for p = (first entry)
+                                    collect (nth (position p flat-inputs :test #'eq)
+                                                 flat-input-types)))))
+              (if (and (null augmented-diff-flat-inputs)
+                       (null struct-shadow-info))
                   `(progn
                     (eval-when (:compile-toplevel :load-toplevel :execute)
                       (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
@@ -693,19 +727,46 @@ in the signature remain zero — the correct gradient for integer arithmetic."
                     (def-kernel-exact ,bwd-name ,exploded-params
                                       (declare #'(,@exploded-types))
                                       (return)))
-                  ;; Normal path: generate ANF and backward walk.
                   (let* ((anf-body      (mapcar #'anf-transform subst-body))
                          (flat-anf      (flatten-anf-body anf-body))
                          (forward-bindings
                           (loop for form in flat-anf
                                 when (and (consp form) (= (length form) 2) (symbolp (car form)))
                                 collect form))
+                         ;; Build the struct-shadow ht used during walk + postprocess.
+                         (struct-shadow-ht
+                          (when struct-shadow-info
+                            (let ((ht (make-hash-table :test 'eq)))
+                              (dolist (entry struct-shadow-info)
+                                (setf (gethash (first entry) ht)
+                                      (cons (second entry)  ; shadow-grad-sym
+                                            (fourth entry)))) ; field-adj-alist
+                              ;; Pre-scan ANF for synthetic temps bound to
+                              ;; nested-struct accessors, so their own
+                              ;; accessor calls route deeper into the shadow.
+                              (%register-shadow-anf-intermediates flat-anf ht)
+                              ht)))
                          (raw-backward-walk
-                          (generate-backward-walk flat-anf diff-flat-inputs outputs
-                                                  diff-flat-input-types output-types
-                                                  :kernel-pkg pkg))
-                         (backward-walk
+                          (let ((*struct-kernel-param-shadows* struct-shadow-ht))
+                            (generate-backward-walk flat-anf
+                                                    augmented-diff-flat-inputs outputs
+                                                    augmented-diff-flat-input-types output-types
+                                                    :kernel-pkg pkg)))
+                         (backward-walk-1
                           (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
+                         (backward-walk-2
+                          ;; Ensure all leaf adj syms from struct-shadow-info
+                          ;; have zero-init bindings, even if the body didn't
+                          ;; reference them (the shadow-write postprocessor
+                          ;; below WILL reference them).
+                          (if struct-shadow-info
+                              (let ((all-leaves
+                                     (loop for entry in struct-shadow-info
+                                           append (%collect-all-leaf-adj-syms (fourth entry)))))
+                                (%ensure-leaf-adj-bindings backward-walk-1 all-leaves))
+                              backward-walk-1))
+                         (backward-walk
+                          (%fix-struct-shadow-writes backward-walk-2 struct-shadow-info))
                          (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
                     `(progn
                       (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -718,7 +779,7 @@ in the signature remain zero — the correct gradient for integer arithmetic."
                                         (let (,@all-reassembly)
                                           (let (,@forward-bindings)
                                             ,backward-walk))
-                                        (return))))))))))))
+                                        (return)))))))))))))
 
 (defun parse-kernel-signature (name params body)
   "Parses kernel parameters and body, performing validation and type extraction.
