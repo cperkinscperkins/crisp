@@ -1,4 +1,4 @@
-;; SKIP-WITH[--differentiate]: "structs not supported in auto-diff yet"
+;; SKIP-WITH[--differentiate]: "sub-function with struct param — deferred per shadow-struct-plan.md"
 
 ;; TEST-WITH[--ir-target=llvmir] : validate-ancestor-distance
 

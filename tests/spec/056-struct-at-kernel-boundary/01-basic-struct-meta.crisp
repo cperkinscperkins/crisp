@@ -1,6 +1,5 @@
 
 ;; TEST-WITH[--metadata] : validate-def-struct-in-metadata
-;; SKIP-WITH[--differentiate] : "TODO: auto-diff needs to be extended for structs at kernel boundary"
 
 
 

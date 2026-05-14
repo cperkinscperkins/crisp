@@ -474,6 +474,29 @@ the record's collective adj."
           (when field-adj-sym
             (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
             (emit `(set! ,field-adj-sym (+ ,field-adj-sym ,v-adj))))))
+      ;; NEW: Struct-kernel-param accessor.  (FIELD~ s) where s is a struct
+      ;; kernel param tracked in *struct-kernel-param-shadows*.  Route
+      ;; adjoint into the per-field synth adj (which the shadow-write
+      ;; postprocessor will pack into the shadow-struct constructor at the
+      ;; end of the backward kernel).
+      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
+            (let ((fname (symbol-name (car expr))))
+              (and (> (length fname) 1)
+                   (cl:char= (cl:char fname (1- (length fname))) #\~)))
+            *struct-kernel-param-shadows*
+            (symbolp (cadr expr))
+            (gethash (cadr expr) *struct-kernel-param-shadows*))
+        (let* ((accessor (symbol-name (car expr)))
+               (field-name-str (subseq accessor 0 (1- (length accessor))))
+               (struct-sym (cadr expr))
+               (entry (gethash struct-sym *struct-kernel-param-shadows*))
+               (field-alist (cdr entry))
+               (field-entry (assoc field-name-str field-alist :test #'string-equal))
+               (field-adj-sym (cdr field-entry))
+               (v-adj (local-adj v)))
+          (when field-adj-sym
+            (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
+            (emit `(set! ,field-adj-sym (+ ,field-adj-sym ,v-adj))))))
       ;; NEW: Record constructor backward rule.
       ;; `(v (%construct-struct RECORD-NAME arg1 arg2 ...))` where v is a
       ;; record-valued ANF temp tracked in *record-param-field-adjs*.  Flow
@@ -995,7 +1018,12 @@ then delegate to the original walker."
              validate-089-06-num-groups-strided
              validate-089-07-global-and-local
              validate-089-08-global-size-strided
-             validate-089-09-global-size-tiled))
+             validate-089-09-global-size-tiled
+             ;; 056-struct-at-kernel-boundary: same forward-only pattern.
+             validate-def-struct-in-metadata
+             validate-def-struct-with-ct-in-metadata
+             validate-nested-struct-in-metadata
+             validate-struct-no-brand-in-metadata))
   (%wrap-validator-as-forward-only v))
 
 
@@ -1044,7 +1072,8 @@ the trivial zero-gradient backward instead of erroring."
            (bwd-name (intern (format nil "~a_GRAD" (symbol-name name)) pkg)))
       (multiple-value-bind (flat-inputs flat-input-types record-reassembly-bindings
                             rec-grad-out-params rec-grad-out-types
-                            record-subs-ht record-type-ht grad-cell-syms)
+                            record-subs-ht record-type-ht grad-cell-syms
+                            struct-shadow-info)
           (%expand-record-kernel-inputs inputs input-types pkg)
         (let ((subst-body
                (mapcar (lambda (form)
@@ -1056,15 +1085,33 @@ the trivial zero-gradient backward instead of erroring."
             ;; 101: error only when there are truly no diff-capable inputs.
             ;; Integer tensors AND integer scalars (incl. branded) yield trivial
             ;; zero-gradient backward kernels — valid AD output, not user error.
+            ;; Struct inputs (with shadow grads) also bypass the gate.
             (when (and flat-inputs
                        (null diff-flat-inputs)
+                       (null struct-shadow-info)
                        (not (some #'%crisp-integer-tensor-type-p flat-input-types))
                        (not (%has-diff-capable-scalar-input-p flat-input-types)))
               (error 'crisp.compiler:crisp-compiler-error
                 :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types -- add (forward-only) declaration or use float element types)" name)))
             (multiple-value-bind (exploded-params exploded-types bwd-cell-reassembly-bindings)
                 (%explode-kernel-args bwd-params bwd-types)
-              (if (null diff-flat-inputs)
+              ;; Augment diff-flat-inputs with struct kernel inputs (which the
+              ;; compute-backward-kernel-params filter excludes).  This ensures
+              ;; the walker's input-grad-write loop emits a placeholder write
+              ;; for each struct param, which the shadow-write postprocessor
+              ;; will then replace with the correct shadow-struct constructor
+              ;; emit.
+              (let* ((augmented-diff-flat-inputs
+                      (append diff-flat-inputs
+                              (mapcar #'first struct-shadow-info)))
+                     (augmented-diff-flat-input-types
+                      (append diff-flat-input-types
+                              (loop for entry in struct-shadow-info
+                                    for p = (first entry)
+                                    collect (nth (position p flat-inputs :test #'eq)
+                                                 flat-input-types)))))
+              (if (and (null augmented-diff-flat-inputs)
+                       (null struct-shadow-info))
                   `(progn
                     (eval-when (:compile-toplevel :load-toplevel :execute)
                       (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
@@ -1080,12 +1127,25 @@ the trivial zero-gradient backward instead of erroring."
                           (loop for form in flat-anf
                                 when (and (consp form) (= (length form) 2) (symbolp (car form)))
                                 collect form))
+                         ;; Build the struct-shadow ht used during walk + postprocess.
+                         (struct-shadow-ht
+                          (when struct-shadow-info
+                            (let ((ht (make-hash-table :test 'eq)))
+                              (dolist (entry struct-shadow-info)
+                                (setf (gethash (first entry) ht)
+                                      (cons (second entry)  ; shadow-grad-sym
+                                            (fourth entry)))) ; field-adj-alist
+                              ht)))
                          (raw-backward-walk
-                          (generate-backward-walk flat-anf diff-flat-inputs outputs
-                                                  diff-flat-input-types output-types
-                                                  :kernel-pkg pkg))
-                         (backward-walk
+                          (let ((*struct-kernel-param-shadows* struct-shadow-ht))
+                            (generate-backward-walk flat-anf
+                                                    augmented-diff-flat-inputs outputs
+                                                    augmented-diff-flat-input-types output-types
+                                                    :kernel-pkg pkg)))
+                         (backward-walk-1
                           (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
+                         (backward-walk
+                          (%fix-struct-shadow-writes backward-walk-1 struct-shadow-info))
                          (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
                     `(progn
                       (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -1098,7 +1158,7 @@ the trivial zero-gradient backward instead of erroring."
                                         (let (,@all-reassembly)
                                           (let (,@forward-bindings)
                                             ,backward-walk))
-                                        (return))))))))))))
+                                        (return)))))))))))))
 
 
 ;;; ===================================================================
@@ -1121,10 +1181,17 @@ the trivial zero-gradient backward instead of erroring."
 
 (defun %expand-record-kernel-inputs (inputs input-types pkg)
   "Recursively expands record-typed inputs into their scalar fields,
-   chasing through nested records.  Returns the same multi-value shape
-   as the original: (flat-inputs flat-input-types reassembly-bindings
+   chasing through nested records.  Also handles struct kernel inputs
+   per the Shadow Struct design: structs are NOT exploded; instead a
+   single shadow-grad-cell is paired with each struct param.
+
+   Returns 9 values: (flat-inputs flat-input-types reassembly-bindings
    grad-out-params grad-out-types record-subs-ht record-type-ht
-   grad-cell-syms).
+   grad-cell-syms struct-shadow-info).
+
+   The 9th value, struct-shadow-info, is an alist:
+     ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)
+   used by %fix-struct-shadow-writes to emit the final shadow-write.
 
    Leaf scalar fields (float or integer) produce grad cells per 101.
    Nested-record fields produce a synthetic intermediate sym that gets
@@ -1137,7 +1204,8 @@ the trivial zero-gradient backward instead of erroring."
         (grad-out-types     '())
         (record-subs-ht     (make-hash-table :test 'eq))
         (record-type-ht     (make-hash-table :test 'eq))
-        (grad-cell-syms     '()))
+        (grad-cell-syms     '())
+        (struct-shadow-info '()))
     (labels
         ((explode (p t-spec)
            "Destructure parameter P of type T-SPEC.  Side effects push to
@@ -1197,6 +1265,37 @@ the trivial zero-gradient backward instead of erroring."
                                           append (list (intern (symbol-name fname) :keyword)
                                                        fsym))))
                       reassembly-bindings)))
+             ((%crisp-struct-type-p t-spec)
+              ;; Struct kernel input: keep as struct value, pair with a single
+              ;; shadow-grad-cell.  Field-adj synth syms are allocated for
+              ;; the backward walk's accessor rule to accumulate into.
+              ;; Shadow writeout is emitted later by the postprocessor.
+              (let* ((base-type (if (consp t-spec) (first t-spec) t-spec))
+                     (fields (or (%get-record-runtime-fields t-spec)
+                                 ;; %get-record-runtime-fields works for both
+                                 ;; records and structs (it reads *crisp-structs*).
+                                 nil))
+                     (shadow-type (%shadow-type-name-for base-type))
+                     (shadow-grad-sym (intern (format nil "~A_GRAD" (symbol-name p)) pkg))
+                     (field-adj-alist
+                      (loop for (fname ftype) in fields
+                            collect (cons (symbol-name fname)
+                                          (intern (format nil "~A_~A_ADJ"
+                                                          (symbol-name p)
+                                                          (symbol-name fname))
+                                                  pkg)))))
+                ;; Struct stays as a flat input (by-value).
+                (push p flat-inputs)
+                (push t-spec flat-input-types)
+                ;; Shadow grad cell — single cell-of-shadow-struct.
+                (push shadow-grad-sym grad-out-params)
+                (push (list 'cell shadow-type :address-space :global) grad-out-types)
+                ;; Mark shadow-grad-sym for cell-style emission in
+                ;; %fix-record-grad-cell-emissions IF it ever shows up as a
+                ;; (set! sym ...) target — but we'll do our own postprocess.
+                ;; Record entry for the shadow-write postprocessor.
+                (push (list p shadow-grad-sym shadow-type field-adj-alist)
+                      struct-shadow-info)))
              (t
               ;; Non-record input: pass through as-is.
               (push p flat-inputs)
@@ -1249,6 +1348,205 @@ the trivial zero-gradient backward instead of erroring."
             (nreverse grad-out-types)
             record-subs-ht
             record-type-ht
-            (nreverse grad-cell-syms))))
+            (nreverse grad-cell-syms)
+            (nreverse struct-shadow-info))))
+
+
+;;; ===================================================================
+;;; 101: Shadow struct generation for AD
+;;; ===================================================================
+;;;
+;;; Per the shadow-struct-plan.md: every (def-struct NAME ...) at top
+;;; level gets a paired (def-struct NAME_ADJ ...) injected into the
+;;; forms list before compile-module processes them.  The shadow has
+;;; the same field NAMES, with adjoint-promoted field TYPES:
+;;;
+;;;   - float scalar          → same
+;;;   - integer scalar (small)→ float
+;;;   - integer scalar (64)   → double
+;;;   - nested struct         → <INNER>_ADJ
+;;;   - branded primitive     → base type, then promote
+;;;   - other / unknown       → passed through unchanged
+;;;
+;;; Brand declarations on the forward are NOT copied to the shadow
+;;; (gradients of brands aren't meaningful).
+;;;
+;;; The shadow accessors / constructor / etc. are emitted by the
+;;; def-struct macro's normal expansion.  The shadow lives in the same
+;;; package as the forward.
+;;;
+;;; NOTE — IMPORTANT for future hoist work: the shadow struct's byte
+;;; layout DIVERGES from the forward's whenever the forward has a
+;;; sub-32-bit integer field.  `char` (1B) -> `float` (4B) is the most
+;;; pathological case.  Host-side shadow buffer allocation MUST use
+;;; sizeof(<NAME>_ADJ), not sizeof(<NAME>).  This is currently fine
+;;; because we don't generate hoist code under --differentiate, but
+;;; when that's lifted, the metacrisp needs to expose both sizes and
+;;; the hoist code generator must allocate the right one.
+
+(defun %adj-type-for-field (forward-type)
+  "Returns the adjoint type for a forward struct field's TYPE, per
+   the 101 promotion rules."
+  (cond
+    ((%crisp-float-type-p forward-type) forward-type)
+    ((%crisp-integer-scalar-type-p forward-type)
+     (%integer-scalar-to-float-scalar forward-type))
+    ;; Brand: resolve to base, then promote.
+    ((and (symbolp forward-type)
+          (is-brand-type-p forward-type))
+     (let* ((brand (is-brand-type-p forward-type))
+            (base  (brand-definition-base-type brand)))
+       (cond
+         ((%crisp-float-type-p base) base)
+         ((%crisp-integer-scalar-type-p base)
+          (%integer-scalar-to-float-scalar base))
+         (t forward-type))))
+    ;; Nested struct → its shadow.
+    ((and (symbolp forward-type)
+          (let ((info (gethash forward-type *crisp-types*)))
+            (and info (eq (crisp-type-category info) :struct))))
+     (intern (format nil "~A_ADJ" (symbol-name forward-type))
+             (symbol-package forward-type)))
+    ;; Anything else (cons-typed members, unknown, etc.) → unchanged.
+    (t forward-type)))
+
+(defun %generate-shadow-def-struct-form (def-struct-form)
+  "Given (def-struct NAME (f0 t0) (f1 t1) ... brand-decls...), returns
+   the matching (def-struct NAME_ADJ (f0 adj_t0) (f1 adj_t1) ...) form.
+   Brand declarations are dropped.  :c-t members are preserved (their
+   value is a forward-time constant; not differentiable but harmless)."
+  (let* ((name (second def-struct-form))
+         (members (cddr def-struct-form))
+         (shadow-name (intern (format nil "~A_ADJ" (symbol-name name))
+                              (symbol-package name)))
+         (shadow-members
+          (loop for m in members
+                unless (and (consp m) (eq (car m) 'brand))
+                collect (cond
+                          ((and (consp m) (>= (length m) 2))
+                           (list* (first m)
+                                  (%adj-type-for-field (second m))
+                                  (cddr m)))
+                          (t m)))))
+    `(def-struct ,shadow-name ,@shadow-members)))
+
+(defun %inject-shadow-struct-forms (forms)
+  "Walks FORMS at the top level.  After each (def-struct NAME ...) that
+   defines a NON-shadow struct, appends (def-struct NAME_ADJ ...).
+   Already-shadow structs (name ends with _ADJ) are passed through.
+   def-record forms are left untouched (records SROA, no shadow needed).
+   Other forms unchanged."
+  (let ((result nil))
+    (dolist (f forms)
+      (push f result)
+      (when (and (consp f)
+                 (eq (car f) 'def-struct)
+                 (symbolp (second f))
+                 (let ((n (symbol-name (second f))))
+                   (or (< (length n) 4)
+                       (not (string-equal "_ADJ" (subseq n (- (length n) 4)))))))
+        (push (%generate-shadow-def-struct-form f) result)))
+    (nreverse result)))
+
+(defvar *orig-compile-module* nil
+  "Captures the original compile-module for the overlay wrapper.")
+
+(unless *orig-compile-module*
+  (setf *orig-compile-module*
+        (symbol-function 'compile-module)))
+
+(defun compile-module (forms module builder di-builder di-compile-unit location-map)
+  "Pre-injects shadow def-struct forms for AD support, then delegates
+   to the original compile-module.  See shadow-struct-plan.md."
+  (let ((augmented-forms
+         (if *differentiate-p*
+             (%inject-shadow-struct-forms forms)
+             forms)))
+    (funcall *orig-compile-module*
+             augmented-forms module builder di-builder di-compile-unit location-map)))
+
+
+;;; ===================================================================
+;;; 101: Struct kernel-param AD machinery (Shadow Struct, part 2 of 3)
+;;; ===================================================================
+;;;
+;;; Building on the shadow-struct generation pass above:
+;;;
+;;; - %crisp-struct-type-p: predicate for struct-category types (not records).
+;;; - *struct-kernel-param-shadows*: dyn-bound map from struct kernel param
+;;;   symbol to (cons SHADOW-GRAD-SYM FIELD-ADJ-ALIST).  Consulted by:
+;;;     - The accessor rule in %handle-single-value-backward (for adj routing).
+;;;     - The shadow-write postprocessor (for final emit).
+;;; - %fix-struct-shadow-writes: postprocesses the backward-walk output to
+;;;   replace the default (set! s_grad s_adj) input-grad-write — which is
+;;;   wrong shape (writes a scalar into a cell-of-struct slot) — with the
+;;;   correct shadow-struct constructor write.
+
+(defun %crisp-struct-type-p (type-spec)
+  "Returns T if TYPE-SPEC names a registered def-struct (category :struct).
+   Distinct from %crisp-record-type-p (which checks category :record)."
+  (let* ((base (if (consp type-spec) (first type-spec) type-spec))
+         (info (and (symbolp base) (gethash base *crisp-types*))))
+    (and info (eq (crisp-type-category info) :struct))))
+
+(defvar *struct-kernel-param-shadows* nil
+  "Hash table: struct-kernel-param-sym -> (cons SHADOW-GRAD-SYM FIELD-ADJ-ALIST).
+   FIELD-ADJ-ALIST is an alist of (FIELD-NAME-STR . FIELD-ADJ-SYM) in
+   declaration order.  Bound by %generate-backward-kernel-ast around
+   the backward walk when struct kernel params are present.  Used by:
+     - The accessor rule in %handle-single-value-backward.
+     - The shadow-write postprocessor.")
+
+(defun %shadow-type-name-for (struct-type-name)
+  "Returns the shadow struct's type symbol for STRUCT-TYPE-NAME."
+  (intern (format nil "~A_ADJ" (symbol-name struct-type-name))
+          (symbol-package struct-type-name)))
+
+(defun %make-shadow-constructor-name-for (struct-type-name)
+  "Returns the MAKE-<TYPE>_ADJ constructor symbol for STRUCT-TYPE-NAME."
+  (intern (format nil "MAKE-~A_ADJ" (symbol-name struct-type-name))
+          (symbol-package struct-type-name)))
+
+(defun %fix-struct-shadow-writes (form struct-shadow-info)
+  "Postprocesses the kernel backward walk's output.  For each struct
+   kernel input S in STRUCT-SHADOW-INFO, replaces the default scalar
+   input-grad-write `(set! S_GRAD S_ADJ)` with the correct shadow-
+   struct write `(set! (~ S_GRAD) (MAKE-<S>_ADJ :x S_X_ADJ :y S_Y_ADJ ...))`.
+
+   STRUCT-SHADOW-INFO is the alist returned as the 9th value of
+   %expand-record-kernel-inputs:
+     ((STRUCT-PARAM-SYM SHADOW-GRAD-SYM SHADOW-TYPE FIELD-ADJ-ALIST) ...)
+
+   The walker's default writeout for a non-cell, non-tensor input is
+   `(set! IN-GRAD (LOCAL-ADJ IN))` — a bare-scalar write of the
+   form `(set! S_GRAD S_ADJ)`.  We replace it with the shadow-cell
+   construction.
+
+   Other (set! ...) forms are passed through unchanged."
+  (labels ((rewrite (f)
+             (cond
+               ((atom f) f)
+               ;; (set! S_GRAD anything) where S_GRAD is in struct-shadow-info
+               ((and (consp f) (eq (first f) 'set!) (= (length f) 3)
+                     (symbolp (second f)))
+                (let ((entry (find (second f) struct-shadow-info
+                                   :key #'second :test #'eq)))
+                  (if entry
+                      (let* ((shadow-type (third entry))
+                             (field-alist (fourth entry))
+                             (ctor (%make-shadow-constructor-name-for
+                                    ;; shadow-type ends in _ADJ; strip for ctor name.
+                                    (intern (subseq (symbol-name shadow-type)
+                                                    0 (- (length (symbol-name shadow-type)) 4))
+                                            (symbol-package shadow-type)))))
+                        ;; emit (set! (~ S_GRAD) (MAKE-S_ADJ :x s_x_adj :y s_y_adj))
+                        `(set! (~ ,(second f))
+                               (,ctor ,@(loop for (fname-str . adj-sym) in field-alist
+                                              append (list (intern fname-str :keyword)
+                                                           adj-sym)))))
+                      f)))
+               ((consp f) (mapcar #'rewrite f))
+               (t f))))
+    (rewrite form)))
 
 
