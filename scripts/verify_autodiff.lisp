@@ -25,7 +25,7 @@
               (num-entries :uint) (platforms :pointer) (num-platforms :pointer))
 
 (cffi:defcfun ("clGetDeviceIDs" cl-get-device-ids) :int
-              (platform :pointer) (device-type :ulong) (num-entries :uint)
+              (platform :pointer) (device-type :uint64) (num-entries :uint)
               (devices :pointer) (num-devices :pointer))
 
 (cffi:defcfun ("clCreateContext" cl-create-context) :pointer
@@ -33,7 +33,7 @@
               (pfn-notify :pointer) (user-data :pointer) (errcode-ret :pointer))
 
 (cffi:defcfun ("clCreateCommandQueue" cl-create-command-queue) :pointer
-              (context :pointer) (device :pointer) (properties :ulong) (errcode-ret :pointer))
+              (context :pointer) (device :pointer) (properties :uint64) (errcode-ret :pointer))
 
 (cffi:defcfun ("clCreateProgramWithIL" cl-create-program-with-il) :pointer
               (context :pointer) (il :pointer) (length :size) (errcode-ret :pointer))
@@ -46,7 +46,7 @@
               (program :pointer) (kernel-name :string) (errcode-ret :pointer))
 
 (cffi:defcfun ("clCreateBuffer" cl-create-buffer) :pointer
-              (context :pointer) (flags :ulong) (size :size)
+              (context :pointer) (flags :uint64) (size :size)
               (host-ptr :pointer) (errcode-ret :pointer))
 
 (cffi:defcfun ("clSetKernelArg" cl-set-kernel-arg) :int
@@ -139,13 +139,13 @@
                             (cffi:mem-aref result :float 0)))
 
 (defun bind-cell-arg (kernel arg-index base-index buffer)
-  (cffi:with-foreign-objects ((arg0 :pointer) (arg1 :ulong) (arg2 :ulong))
+  (cffi:with-foreign-objects ((arg0 :pointer) (arg1 :uint64) (arg2 :uint64))
                              (setf (cffi:mem-ref arg0 :pointer) buffer)
-                             (setf (cffi:mem-ref arg1 :ulong) 4) ; byte_size = 4
-                             (setf (cffi:mem-ref arg2 :ulong) 0) ; offset = 0
+                             (setf (cffi:mem-ref arg1 :uint64) 4) ; byte_size = 4
+                             (setf (cffi:mem-ref arg2 :uint64) 0) ; offset = 0
                              (check-cl (cl-set-kernel-arg kernel (+ base-index 0) (cffi:foreign-type-size :pointer) arg0))
-                             (check-cl (cl-set-kernel-arg kernel (+ base-index 1) (cffi:foreign-type-size :ulong) arg1))
-                             (check-cl (cl-set-kernel-arg kernel (+ base-index 2) (cffi:foreign-type-size :ulong) arg2))))
+                             (check-cl (cl-set-kernel-arg kernel (+ base-index 1) (cffi:foreign-type-size :uint64) arg1))
+                             (check-cl (cl-set-kernel-arg kernel (+ base-index 2) (cffi:foreign-type-size :uint64) arg2))))
 
 (defun run-forward-evaluation (queue kernel buf-x buf-y input-x)
   (write-buffer queue buf-x input-x)
