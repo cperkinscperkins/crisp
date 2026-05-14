@@ -1,4 +1,3 @@
-;; SKIP-WITH[--differentiate]: "sub-function with struct param — deferred per shadow-struct-plan.md"
 
 ;; TEST-WITH[--ir-target=llvmir] : validate-no-subst-overloads
 

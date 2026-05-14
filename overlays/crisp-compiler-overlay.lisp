@@ -133,18 +133,24 @@
 
 (defun %scan-forms-for-record-info (forms)
   "Walks FORMS (recursing through progn / with-template-type) and returns
-   an alist mapping (symbol-name RECORD-NAME) -> count of non-:c-t,
+   an alist mapping (symbol-name TYPE-NAME) -> count of non-:c-t,
    non-brand runtime fields. Used during pre-registration when *crisp-types*
    isn't yet populated.
 
-   Also includes derived-from-record types: when a (def-derived-type NEW BASE ...)
-   form is encountered where BASE is a record already in the alist, NEW is
-   added with the same field count."
+   Includes BOTH def-record AND def-struct (records and structs at the
+   sub-function AD level both contribute their field count toward the
+   differentiability gate).  Also includes derived-from-{record,struct}
+   types: when (def-derived-type NEW BASE ...) is encountered and BASE is
+   already in the alist, NEW is added with the same field count.
+
+   The name `record-info` is historical; the alist now tracks structs too."
   (let ((info nil))
     (labels ((scan (forms)
                (dolist (f forms)
                  (cond
-                   ((and (consp f) (eq (car f) 'def-record))
+                   ((and (consp f)
+                         (or (eq (car f) 'def-record)
+                             (eq (car f) 'def-struct)))
                     (let* ((name (second f))
                            (members (cddr f))
                            (rt-count
@@ -187,22 +193,34 @@
              computed)))
         base)))
 
+(defun %resolve-to-base-type-for-structs-or-records (pd-type)
+  "If PD-TYPE names a derived type whose base is a struct OR a record,
+   returns the base type symbol.  Otherwise returns PD-TYPE unchanged.
+   Used by sub-function gate widening to accept derived-from-struct types
+   in addition to derived-from-record types."
+  (let* ((base (if (consp pd-type) (first pd-type) pd-type)))
+    (or (cl:ignore-errors
+         (cl:let ((computed (compute-base-type pd-type)))
+           (cl:when (and (symbolp computed)
+                         (or (%crisp-record-type-p computed)
+                             (%crisp-struct-type-p computed)))
+             computed)))
+        base)))
+
 (defun %count-differentiable-contributions (pd-type &optional record-info)
   "Returns the number of float-scalar contributions this parameter type
-   makes post-SROA, at the SUB-FUNCTION level (def-function).
+   makes at the SUB-FUNCTION level (def-function).
 
-   IMPORTANT: This is the gate widening for the 052 sub-function pipeline,
-   which was previously float-scalar-only. The 101 Part 1 endeavor adds
-   record support here, leveraging that records auto-SROA at every function
-   boundary.
-
-   - Records (and derived-from-record types) contribute their runtime-field count.
+   - Records (and derived-from-record types) contribute their runtime-field count
+     (records auto-SROA at every function boundary).
+   - Structs (and derived-from-struct types) contribute their runtime-field count
+     (per the shadow-struct AD design: the sub-function backward returns per-field
+     deltas as multi-values, same convention as records).
    - Float scalars contribute 1.
-   - Anything else (cells, tensors, structs, integer scalars) contributes 0.
-     Cells and tensors travel via the kernel-level differentiability path
-     (see macros.lisp:differentiable-non-rec-p), not via the sub-function
-     pipeline; counting them here would cause forward-only kernels with
-     cell params to incorrectly trigger _GRAD generation.
+   - Anything else (cells, tensors, integer scalars) contributes 0.  These
+     travel via the kernel-level differentiability path; counting them here
+     would cause forward-only kernels with cell params to incorrectly trigger
+     _GRAD generation.
 
    RECORD-INFO (optional alist of (NAME-STR . FIELD-COUNT)) bridges the
    pre-registration ordering issue where *crisp-types* isn't yet
@@ -211,11 +229,12 @@
          (name-str (and (symbolp base) (symbol-name base)))
          (info-hit (and record-info name-str
                         (assoc name-str record-info :test #'string-equal)))
-         ;; Resolve derived-from-record types to their base record.
-         (resolved (%resolve-to-base-type-for-records pd-type)))
+         ;; Resolve derived-from-struct-or-record types to their base.
+         (resolved (%resolve-to-base-type-for-structs-or-records pd-type)))
     (cond
       (info-hit (cdr info-hit))
-      ((%crisp-record-type-p resolved)
+      ((or (%crisp-record-type-p resolved)
+           (%crisp-struct-type-p resolved))
        (length (or (%get-record-runtime-fields resolved) '())))
       ((%crisp-float-type-p pd-type) 1)
       (t 0))))
@@ -598,16 +617,22 @@ treated equivalently."
                               (%crisp-float-type-p (parameter-def-type pd)))
                     collect pd))
              (float-param-syms (mapcar #'parameter-def-name float-param-entries))
-             ;; Record params + their field info, in declaration order.
-             ;; Each entry: (record-param-sym resolved-record-type
+             ;; Record/struct params + their field info, in declaration order.
+             ;; Each entry: (param-sym resolved-type
              ;;              ((field-name . field-adj-sym) ...))
-             ;; Resolves derived-from-record types so coordinate (derived
-             ;; from point) is treated the same as point.
+             ;;
+             ;; Resolves derived-from-{record,struct} types so coordinate (derived
+             ;; from point) is treated the same as point.  Both records and
+             ;; structs use this same path — the IR-level difference (records
+             ;; SROA, structs don't) doesn't matter for sub-function AD because
+             ;; the chain rule operates on source-level ANF.  Backward returns
+             ;; per-field deltas as multi-values regardless.
              (record-param-info
               (loop for pd in env
-                    for resolved = (%resolve-to-base-type-for-records (parameter-def-type pd))
+                    for resolved = (%resolve-to-base-type-for-structs-or-records (parameter-def-type pd))
                     when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                              (%crisp-record-type-p resolved))
+                              (or (%crisp-record-type-p resolved)
+                                  (%crisp-struct-type-p resolved)))
                     collect
                     (let* ((rsym (parameter-def-name pd))
                            (fields (%get-record-runtime-fields resolved)))
@@ -773,11 +798,21 @@ treated equivalently."
 
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                &key kernel-pkg)
-  "101 Part 1 wrapper: pre-scan flat-anf for record-valued temps bound to
-%construct-struct, build per-field adj maps, dyn-bind *record-param-field-adjs*,
-then delegate to the original walker."
+  "101 Part 1 wrapper: pre-scan flat-anf for record-valued AND struct-valued
+temps bound to %construct-struct, build per-field adj maps, dyn-bind
+*record-param-field-adjs*, then delegate to the original walker.
+
+For both records and structs, the constructor backward rule in
+%handle-single-value-backward fires when the constructed temp is in
+*record-param-field-adjs* — it accumulates per-field adjs back into the
+constructor args (e.g. ax_adj += pa.x_adj after `(pa (make-point ax ay))`).
+The map is the same; the only difference is which compile-time predicate
+recognizes the type."
   (let* ((record-temp-entries
-          ;; Collect (temp-sym . field-alist) pairs for each record-valued temp.
+          ;; Collect (temp-sym . field-alist) pairs for each record/struct-
+          ;; valued temp.  Records and structs are handled symmetrically
+          ;; here: both auto-mint per-field adj syms so the existing
+          ;; %construct-struct backward rule routes the chain correctly.
           (loop for form in flat-anf
                 when (and (consp form) (= (length form) 2)
                           (symbolp (car form))
@@ -789,9 +824,10 @@ then delegate to the original walker."
                        (expr (cadr form))
                        (record-name (second expr))
                        (pkg (or kernel-pkg (symbol-package temp-sym))))
-                  ;; Build field-alist only if this is a record (not a struct).
-                  ;; Structs go through their own pathway and don't auto-SROA.
-                  (when (%crisp-record-type-p record-name)
+                  ;; Build field-alist for records OR structs.  The
+                  ;; %construct-struct backward rule treats both uniformly.
+                  (when (or (%crisp-record-type-p record-name)
+                            (%crisp-struct-type-p record-name))
                     (let* ((fields (%get-record-runtime-fields record-name))
                            (field-alist
                             (loop for (fname ftype) in fields

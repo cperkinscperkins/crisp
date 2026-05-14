@@ -1,5 +1,3 @@
-;; SKIP-WITH[--differentiate]: "structs not supported in auto-diff yet"
-
 ;; TEST-EXPECT: PASS  
 ;;
 
