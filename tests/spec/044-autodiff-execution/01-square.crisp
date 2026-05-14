@@ -1,4 +1,4 @@
-
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3 expect.x=6.0
 
 (def-type in-ish (cell float :address-space :global))
 (def-type out-ish (cell float :address-space :global))

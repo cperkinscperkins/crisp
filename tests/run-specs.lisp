@@ -28,6 +28,11 @@
 ;; Load the LLVM foreign library (defined in src/llvm-bindings.lisp but not auto-loaded)
 (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
 
+;; Endeavor 103 (phase 2): pure CL parser, no foreign deps -- safe to load
+;; unconditionally.  The OpenCL runner that consumes parsed specs is loaded
+;; lazily via %vad-ensure-runner-loaded when --verify-autodiff is active.
+(load (merge-pathnames "tests/verify-autodiff-parse.lisp" (uiop:getcwd)))
+
 (defpackage :crisp.spec-runner
   (:use :cl :crisp.compiler :uiop)
   (:shadowing-import-from :crisp.compiler
@@ -77,6 +82,14 @@
 (defvar *only-unit-tests* nil)
 (defvar *skip-unit-tests* nil)
 (defvar *keep-work* nil)
+
+(defvar *vad-runner-status* nil
+  "Cached load state of tests/verify-autodiff-runner.lisp.
+   NIL -> not yet attempted; :ready -> runner loaded;
+   :unavailable -> load failed (likely no OpenCL ICD).
+   Endeavor 103.  VERIFY-AUTODIFF directives are processed during the
+   --differentiate pass; this caches the load result so OpenCL-less hosts
+   skip cleanly after one warning.")
 
 
 (defvar *compile-runtime-checks* nil
@@ -204,6 +217,18 @@
                       (when (and (stringp (pathname-name f))
                                  (uiop:string-prefix-p base-name (pathname-name f)))
                             (delete-file f))))))))
+
+    ;; 4. Verify-Autodiff (VERIFY-AUTODIFF: ...) -- endeavor 103
+    ;; Runs only when --differentiate is the active pass: the directive is
+    ;; one more check layered onto the AD machinery, so it fires when AD is
+    ;; being exercised.  Untagged specs skip the check at parse time (nil).
+    (when *compile-differentiate*
+      (let ((vad-spec (cl-user::parse-verify-autodiff directives)))
+        (when vad-spec
+          (format t "~&Running Spec: ~a (Verify-Autodiff)... " (pathname-name file))
+          (finish-output)
+          (unless (run-verify-autodiff-pass file vad-spec)
+            (setf all-passed nil)))))
 
     all-passed))
 
@@ -387,6 +412,160 @@
     (if (probe-file out-path)
         (values out-path meta-paths)
         nil)))
+
+;;; === Endeavor 103: Verify-Autodiff on-metal pass ======================
+
+(defun %vad-ensure-runner-loaded ()
+  "Lazy-loads the OpenCL runner.  Returns :READY if available,
+   :UNAVAILABLE if the load fails (e.g. no OpenCL ICD on host).
+   Caches the result in *VAD-RUNNER-STATUS*."
+  (unless *vad-runner-status*
+    (setf *vad-runner-status*
+          (handler-case
+              (progn
+               (load (merge-pathnames "tests/verify-autodiff-runner.lisp"
+                                      (uiop:getcwd)))
+               :ready)
+            (error (e)
+              (format *error-output*
+                      "~&VERIFY-AUTODIFF: runner load failed (~a) -- on-metal tests will skip.~%"
+                      e)
+              :unavailable))))
+  *vad-runner-status*)
+
+(defun %vad-find-kernel-name (file)
+  "Scans FILE for the first (def-kernel <name> ...) form and returns
+   <name> as a string.  Returns NIL if no def-kernel is found.
+
+   Uses literal text scanning (not the Crisp reader) so this works on
+   files that contain reader macros / typed literals that would require
+   the full Crisp loader to parse."
+  (with-open-file (s file :direction :input)
+    (let ((content (make-string (file-length s))))
+      (read-sequence content s)
+      (let ((idx (search "def-kernel" content :test #'char-equal)))
+        (when idx
+          (let ((start (+ idx (length "def-kernel"))))
+            ;; Skip whitespace
+            (loop while (and (< start (length content))
+                             (member (aref content start)
+                                     '(#\Space #\Tab #\Newline #\Return)))
+                  do (incf start))
+            ;; Read identifier chars (kernel names are C-style: no dashes).
+            (let ((end start))
+              (loop while (and (< end (length content))
+                               (or (alphanumericp (aref content end))
+                                   (char= (aref content end) #\_)))
+                    do (incf end))
+              (when (> end start)
+                (subseq content start end)))))))))
+
+(defun %vad-compile-spv (file &key differentiate)
+  "Compiles FILE to SPV via the crisp-compile binary.
+   When DIFFERENTIATE is T, passes --differentiate and expects
+   <basename>_grad.spv.  Returns the output pathname on success, NIL on
+   error (logging the compiler's stderr to *error-output*)."
+  (let* ((bin (get-binary-path))
+         (base-name (if differentiate
+                        (format nil "~a_grad" (pathname-name file))
+                        (pathname-name file)))
+         (out-path (make-pathname :name base-name :type "spv" :defaults file))
+         (args (list (uiop:native-namestring file) "--ir-target=spv"
+                     (format nil "--log-level=~a" cl-user::*log-level*))))
+    (when differentiate (push "--differentiate" args))
+    (when (probe-file out-path) (delete-file out-path))
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (cons (uiop:native-namestring bin) args)
+          :output :string :error-output :string :ignore-error-status t)
+      (declare (ignore output))
+      (cond
+       ((not (zerop exit-code))
+        (format *error-output* "~&VERIFY-AUTODIFF: ~a compile failed (exit ~a)~%~a~%"
+                (if differentiate "backward" "forward") exit-code error-output)
+        nil)
+       ((not (probe-file out-path))
+        (format *error-output* "~&VERIFY-AUTODIFF: ~a SPV not produced at ~a~%"
+                (if differentiate "backward" "forward") out-path)
+        nil)
+       (t out-path)))))
+
+(defun run-verify-autodiff-pass (file spec)
+  "Runs an on-metal VERIFY-AUTODIFF pass for FILE with SPEC (a plist
+   produced by CL-USER::PARSE-VERIFY-AUTODIFF).  Returns T on PASS,
+   NIL on FAIL.  Treats a missing OpenCL runner as SKIP (returns T)
+   so non-GPU CI doesn't fail.
+
+   Phase 3 scope: single scalar input, single scalar output cell.
+   Wider shapes will require expanding the runner."
+  (case (%vad-ensure-runner-loaded)
+    (:unavailable
+     (format t "SKIP (OpenCL runner unavailable)~%")
+     t)
+    (:ready
+     (let* ((inputs (getf spec :inputs))
+            (atol (getf spec :atol))
+            (h (getf spec :h))
+            (seed-grad (getf spec :seed-grad))
+            (expected-grads (getf spec :expected-grads))
+            (kernel-name (%vad-find-kernel-name file)))
+       (cond
+        ((null kernel-name)
+         (format *error-output* "FAIL (No def-kernel found in ~a)~%" file)
+         nil)
+        ((not (= (length inputs) 1))
+         (format *error-output*
+                 "FAIL (Phase 3 supports a single scalar input; got ~a)~%"
+                 (length inputs))
+         nil)
+        (t
+         (let* ((fwd-spv (%vad-compile-spv file :differentiate nil))
+                (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t))))
+           (cond
+            ((not (and fwd-spv bwd-spv))
+             (format *error-output* "FAIL (Compile step failed)~%")
+             nil)
+            (t
+             (let ((input-value (cdr (first inputs))))
+               (handler-case
+                   (multiple-value-bind (pass-p analytical numerical diff)
+                       (cl-user::verify-autodiff
+                        (uiop:native-namestring fwd-spv)
+                        (uiop:native-namestring bwd-spv)
+                        kernel-name
+                        :x (cl:float input-value 1.0)
+                        :seed-grad (cl:float seed-grad 1.0)
+                        :h (cl:float h 1.0)
+                        :atol atol
+                        :verbose nil)
+                     (cond
+                      ((not pass-p)
+                       (format *error-output*
+                               "FAIL (FD vs analytical: analytical=~a numerical=~a diff=~a atol=~a)~%"
+                               analytical numerical diff atol)
+                       nil)
+                      (expected-grads
+                       ;; Spec also gave an explicit expected — check it too.
+                       (let* ((expected (cdr (first expected-grads)))
+                              (expect-diff (abs (- expected analytical))))
+                         (cond
+                          ((< expect-diff atol)
+                           (format t "PASS (analytical=~a expected=~a diff=~a)~%"
+                                   analytical expected expect-diff)
+                           t)
+                          (t
+                           (format *error-output*
+                                   "FAIL (analytical=~a expected=~a diff=~a > atol=~a)~%"
+                                   analytical expected expect-diff atol)
+                           nil))))
+                      (t
+                       (format t "PASS (analytical=~a numerical=~a diff=~a)~%"
+                               analytical numerical diff)
+                       t)))
+                 (error (e)
+                   (format *error-output* "FAIL (Runner error: ~a)~%" e)
+                   nil))))))))))))
+
+;;; ======================================================================
 
 (defun run-spec-with-hoist (file backend)
   "Compiles .crisp file with --hoist=backend flag and returns list of generated .cpp files."
