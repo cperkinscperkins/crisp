@@ -566,53 +566,56 @@
          nil)
         (t
          (let* ((fwd-spv (%vad-compile-spv file :differentiate nil))
-                (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t))))
+                (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t)))
+                (result nil))
            (unwind-protect
-           (cond
-            ((not (and fwd-spv bwd-spv))
-             (format *error-output* "FAIL (Compile step failed)~%")
-             nil)
-            (t
-             (handler-case
-                 (multiple-value-bind (pass-p results)
-                     (cl-user::verify-autodiff
-                      (uiop:native-namestring fwd-spv)
-                      (uiop:native-namestring bwd-spv)
-                      kernel-name
-                      :inputs coerced-inputs
-                      :at-points at-points
-                      :seed-grad (cl:float seed-grad 1.0)
-                      :h (cl:float h 1.0)
-                      :atol atol
-                      :verbose nil)
-                   (cond
-                    ((not pass-p)
-                     (format *error-output*
-                             "FAIL (FD vs analytical | atol=~a): ~A~%"
-                             atol (%vad-format-results results))
-                     nil)
-                    (expected-grads
-                     (let ((failures (%vad-check-expected expected-grads results atol)))
-                       (cond
-                        ((null failures)
-                         (format t "PASS (~A)~%" (%vad-format-results results))
-                         t)
-                        (t
-                         (format *error-output* "FAIL (~{~A~^; ~})~%" failures)
-                         nil))))
-                    (t
-                     (format t "PASS (~A)~%" (%vad-format-results results))
-                     t)))
-               (error (e)
-                 (format *error-output* "FAIL (Runner error: ~a)~%" e)
-                 nil)))))
-            ;; Cleanup: VERIFY-AUTODIFF produces fwd/bwd .spv files in the
-            ;; spec's directory.  Delete them on completion (success OR
-            ;; failure) so stale outputs can't mask later runs.  Skipped
-            ;; under --keep-work.
-            (unless *keep-work*
-              (when (and fwd-spv (probe-file fwd-spv)) (delete-file fwd-spv))
-              (when (and bwd-spv (probe-file bwd-spv)) (delete-file bwd-spv))))))))))
+                (setf result
+                      (cond
+                       ((not (and fwd-spv bwd-spv))
+                        (format *error-output* "FAIL (Compile step failed)~%")
+                        nil)
+                       (t
+                        (handler-case
+                            (multiple-value-bind (pass-p results)
+                                (cl-user::verify-autodiff
+                                 (uiop:native-namestring fwd-spv)
+                                 (uiop:native-namestring bwd-spv)
+                                 kernel-name
+                                 :inputs coerced-inputs
+                                 :at-points at-points
+                                 :seed-grad (cl:float seed-grad 1.0)
+                                 :h (cl:float h 1.0)
+                                 :atol atol
+                                 :verbose nil)
+                              (cond
+                               ((not pass-p)
+                                (format *error-output*
+                                        "FAIL (FD vs analytical | atol=~a): ~A~%"
+                                        atol (%vad-format-results results))
+                                nil)
+                               (expected-grads
+                                (let ((failures (%vad-check-expected expected-grads results atol)))
+                                  (cond
+                                   ((null failures)
+                                    (format t "PASS (~A)~%" (%vad-format-results results))
+                                    t)
+                                   (t
+                                    (format *error-output* "FAIL (~{~A~^; ~})~%" failures)
+                                    nil))))
+                               (t
+                                (format t "PASS (~A)~%" (%vad-format-results results))
+                                t)))
+                          (error (e)
+                            (format *error-output* "FAIL (Runner error: ~a)~%" e)
+                            nil)))))
+             ;; Cleanup: VERIFY-AUTODIFF produces fwd/bwd .spv files in the
+             ;; spec's directory.  Delete them on completion (success OR
+             ;; failure) so stale outputs can't mask later runs.  Skipped
+             ;; under --keep-work.
+             (unless *keep-work*
+               (when (and fwd-spv (probe-file fwd-spv)) (delete-file fwd-spv))
+               (when (and bwd-spv (probe-file bwd-spv)) (delete-file bwd-spv))))
+           result)))))))
 
 ;;; ======================================================================
 

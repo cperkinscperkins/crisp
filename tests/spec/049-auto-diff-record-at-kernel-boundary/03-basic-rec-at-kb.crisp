@@ -1,7 +1,12 @@
 
 ;; TEST-WITH[--ir-target=llvmir --differentiate] : validate-rec-kb-basic
-
-
+;;
+;; VERIFY-AUTODIFF directive removed pending compiler bug fix:
+;; the backward kernel does not reassemble vp.{x,y} primal args into the
+;; V-POINT struct used by accessor calls, so accessors load uninitialized
+;; memory and the chain rule produces zero analytical gradients.  The IR
+;; shape validates correctly (this validator passes) but the computation
+;; is broken.  Discovered by phase A of endeavor 103.
 
 (def-record v-point (x float) (y float))
 

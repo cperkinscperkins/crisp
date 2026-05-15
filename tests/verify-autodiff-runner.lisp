@@ -237,20 +237,29 @@
     (setf (cffi:mem-ref arg :uint64) value)
     (check-cl (cl-set-kernel-arg kernel arg-index (cffi:foreign-type-size :uint64) arg))))
 
+(defun bind-float-scalar-arg (kernel arg-index value)
+  "Binds a plain (unboxed) float32 scalar at ARG-INDEX.  Used for record
+   field inputs that SROA into bare floats at the kernel boundary."
+  (cffi:with-foreign-object (arg :float)
+    (setf (cffi:mem-ref arg :float) (cl:float value 1.0))
+    (check-cl (cl-set-kernel-arg kernel arg-index (cffi:foreign-type-size :float) arg))))
+
 ;;; === Entry Point =======================================================
 
-;;; --- Input descriptor (phase 5b) -------------------------------------
+;;; --- Input descriptor (phase 5b / phase A) ---------------------------
 ;;;
-;;; Each input is classified into one of three kinds, controlling buffer
+;;; Each input is classified into one of four kinds, controlling buffer
 ;;; allocation, arg-width, and FD strategy:
 ;;;
-;;;   :scalar-float  -- wrapped (cell float), 3 fwd args, FD perturbs full value
-;;;   :scalar-ulong  -- plain i64,           1 fwd arg,  no FD (gradient = 0)
-;;;   :vector-float  -- 1D compact tensor,   6 fwd args, FD perturbs at :perturb-i
+;;;   :scalar-float        -- wrapped (cell float), 3 fwd args, FD perturbs cell
+;;;   :scalar-float-plain  -- plain float32,        1 fwd arg,  FD perturbs value
+;;;                           (used for record-field inputs that SROA at boundary)
+;;;   :scalar-ulong        -- plain i64,            1 fwd arg,  no FD (grad = 0)
+;;;   :vector-float        -- 1D compact tensor,    6 fwd args, FD perturbs at :perturb-i
 ;;;
-;;; The backward kernel layout follows declaration order, then output cell,
-;;; then output gradient cell, then per-input outgoing gradient (cell or
-;;; vector, matching the input shape).  See %vad-make-descriptors below.
+;;; The dot-in-name heuristic distinguishes :scalar-float-plain from
+;;; :scalar-float: dotted names (e.g. \"P.x\") are taken to be record
+;;; fields and bind as plain floats; bare names (\"x\") bind as cells.
 
 (defun %vad-classify-input (value at-points name)
   "Returns plist describing input kind given the parsed VALUE.
@@ -269,10 +278,18 @@
            :arg-width 1
            :grad-arg-width 3))   ; cell-of-double grad
     ((realp value)
-     (list :kind :scalar-float
-           :perturb-i nil
-           :arg-width 3
-           :grad-arg-width 3))
+     (cond
+       ;; Dotted name (e.g. "P.x") => record field, plain float at boundary.
+       ((find #\. name)
+        (list :kind :scalar-float-plain
+              :perturb-i nil
+              :arg-width 1
+              :grad-arg-width 3))   ; cell-of-float grad
+       (t
+        (list :kind :scalar-float
+              :perturb-i nil
+              :arg-width 3
+              :grad-arg-width 3))))
     (t
      (error "VERIFY-AUTODIFF: cannot classify input ~A with value ~A"
             name value))))
@@ -330,18 +347,21 @@
       (values descs output-fwd-base output-bwd-base grad-output-bwd-base))))
 
 (defun %vad-output-length-for-input (desc)
-  "Returns the buffer element count needed for a forward input buffer."
+  "Returns the buffer element count needed for a forward input buffer,
+   or NIL when no buffer is needed (plain scalars are bound directly)."
   (case (getf desc :kind)
-    (:scalar-float 1)
-    (:vector-float (getf desc :length))
-    (:scalar-ulong nil)))
+    (:scalar-float       1)
+    (:vector-float       (getf desc :length))
+    (:scalar-float-plain nil)   ; no forward buffer; bound on each launch
+    (:scalar-ulong       nil)))
 
 (defun %vad-grad-bytes-for (desc)
   "Returns byte-size for the gradient buffer for input DESC."
   (case (getf desc :kind)
-    (:scalar-float 4)                                 ; cell of float
-    (:scalar-ulong 8)                                 ; cell of double
-    (:vector-float (* 4 (getf desc :length)))))       ; vector of float
+    (:scalar-float       4)                            ; cell of float
+    (:scalar-float-plain 4)                            ; cell of float
+    (:scalar-ulong       8)                            ; cell of double
+    (:vector-float       (* 4 (getf desc :length)))))  ; vector of float
 
 
 (defun verify-autodiff (fwd-spv-path bwd-spv-path fwd-kernel-name
@@ -437,11 +457,15 @@
                  output-grad-buf (create-float-cell-buffer context))
 
            (labels
-               ((write-primals (perturb-desc delta)
-                  "Writes every input.  When PERTURB-DESC is non-NIL, perturbs
-                   that one input by DELTA:
-                     scalar-float:  shifts the value
-                     vector-float:  shifts only element at :perturb-i"
+               ((apply-primals (kernel perturb-desc delta)
+                  "Stages every input for the next launch of KERNEL.  Cell and
+                   vector inputs write their backing buffer (already bound);
+                   plain-float and ulong inputs bind their kernel arg directly
+                   (no buffer).  When PERTURB-DESC is non-NIL, perturbs that
+                   one input by DELTA:
+                     :scalar-float        shifts cell value
+                     :scalar-float-plain  shifts bound float value
+                     :vector-float        shifts only element at :perturb-i"
                   (dolist (d descs)
                     (case (getf d :kind)
                       (:scalar-float
@@ -449,6 +473,13 @@
                               (vv (if (eq d perturb-desc)
                                       (cl:float (+ v delta) 1.0) v)))
                          (write-float-cell queue (getf d :buffer) vv)))
+                      (:scalar-float-plain
+                       (let* ((v (cl:float (getf d :value) 1.0))
+                              (vv (if (eq d perturb-desc)
+                                      (cl:float (+ v delta) 1.0) v)))
+                         (bind-float-scalar-arg kernel (getf d :arg-base) vv)))
+                      (:scalar-ulong
+                       (bind-uint64-scalar-arg kernel (getf d :arg-base) (getf d :value)))
                       (:vector-float
                        (let* ((vals (getf d :value))
                               (i    (getf d :perturb-i))
@@ -460,20 +491,21 @@
                                                      (+ (cl:float v 1.0) delta)
                                                      v))
                                    vals)))
-                         (write-float-vector queue (getf d :buffer) perturbed)))
-                      (:scalar-ulong nil))))
-                (bind-input-args (kernel)
+                         (write-float-vector queue (getf d :buffer) perturbed))))))
+                (bind-static-input-args (kernel)
+                  "Binds the inputs that have a persistent backing buffer
+                   (cells and vectors).  Plain floats and ulongs are bound
+                   on every iteration by APPLY-PRIMALS."
                   (dolist (d descs)
                     (let ((base (getf d :arg-base)))
                       (case (getf d :kind)
                         (:scalar-float (bind-cell-arg kernel base (getf d :buffer)))
-                        (:vector-float (bind-vector-arg kernel base (getf d :buffer) (getf d :length)))
-                        (:scalar-ulong (bind-uint64-scalar-arg kernel base (getf d :value)))))))
+                        (:vector-float (bind-vector-arg kernel base (getf d :buffer) (getf d :length)))))))
                 (bind-grad-args ()
                   (dolist (d descs)
                     (let ((base (getf d :grad-arg-base)))
                       (case (getf d :kind)
-                        (:scalar-float
+                        ((:scalar-float :scalar-float-plain)
                          (bind-cell-arg bwd-kernel base (getf d :grad-buffer)))
                         (:scalar-ulong
                          ;; Cell-of-double grad: same 3-arg shape, byte_size = 8.
@@ -485,7 +517,8 @@
                 (zero-grads ()
                   (dolist (d descs)
                     (case (getf d :kind)
-                      (:scalar-float (write-float-cell queue (getf d :grad-buffer) 0.0))
+                      ((:scalar-float :scalar-float-plain)
+                       (write-float-cell queue (getf d :grad-buffer) 0.0))
                       (:vector-float (write-float-vector queue (getf d :grad-buffer)
                                                          (make-list (getf d :length)
                                                                     :initial-element 0.0)))
@@ -498,33 +531,32 @@
                                                             0 (cffi:null-pointer)
                                                             (cffi:null-pointer)))))))))
 
-             ;; Bind once -- buffers are reused across forward/backward runs.
-             (bind-input-args fwd-kernel)
+             ;; Static binds: buffer-backed inputs bound once.
+             (bind-static-input-args fwd-kernel)
              (bind-cell-arg fwd-kernel output-fwd-base output-buf)
-             (bind-input-args bwd-kernel)
+             (bind-static-input-args bwd-kernel)
              (bind-cell-arg bwd-kernel output-bwd-base       output-buf)
              (bind-cell-arg bwd-kernel grad-output-bwd-base  output-grad-buf)
              (bind-grad-args)
 
              ;; --- Forward at unperturbed primals, capture Y.
-             (write-primals nil 0.0)
+             (apply-primals fwd-kernel nil 0.0)
              (write-float-cell queue output-buf 0.0)
              (launch-kernel-1d queue fwd-kernel)
              (let ((y-at-primals (read-float-cell queue output-buf)))
                (vlog "~&;   y(primals) = ~a~%" y-at-primals)
 
                ;; --- Per-input central-difference FD --------------------
-               ;; Only :scalar-float and :vector-float (with :perturb-i) contribute.
                (let ((fd-rows nil))
                  (dolist (d descs)
                    (case (getf d :kind)
                      (:scalar-ulong nil) ; skip
-                     (:scalar-float
-                      (write-primals d h)
+                     ((:scalar-float :scalar-float-plain)
+                      (apply-primals fwd-kernel d h)
                       (write-float-cell queue output-buf 0.0)
                       (launch-kernel-1d queue fwd-kernel)
                       (let ((y-plus (read-float-cell queue output-buf)))
-                        (write-primals d (- h))
+                        (apply-primals fwd-kernel d (- h))
                         (write-float-cell queue output-buf 0.0)
                         (launch-kernel-1d queue fwd-kernel)
                         (let* ((y-minus (read-float-cell queue output-buf))
@@ -535,11 +567,11 @@
                      (:vector-float
                       (let ((at (getf d :perturb-i)))
                         (when at
-                          (write-primals d h)
+                          (apply-primals fwd-kernel d h)
                           (write-float-cell queue output-buf 0.0)
                           (launch-kernel-1d queue fwd-kernel)
                           (let ((y-plus (read-float-cell queue output-buf)))
-                            (write-primals d (- h))
+                            (apply-primals fwd-kernel d (- h))
                             (write-float-cell queue output-buf 0.0)
                             (launch-kernel-1d queue fwd-kernel)
                             (let* ((y-minus (read-float-cell queue output-buf))
@@ -549,7 +581,7 @@
                                     (getf d :name) at y-plus y-minus grad))))))))
 
                  ;; --- Backward with primals + seed.
-                 (write-primals nil 0.0)
+                 (apply-primals bwd-kernel nil 0.0)
                  (write-float-cell queue output-buf y-at-primals)
                  (write-float-cell queue output-grad-buf (cl:float seed-grad 1.0))
                  (zero-grads)
@@ -560,7 +592,7 @@
                    (dolist (d descs)
                      (case (getf d :kind)
                        (:scalar-ulong nil)
-                       (:scalar-float
+                       ((:scalar-float :scalar-float-plain)
                         (push (cons (getf d :name)
                                     (read-float-cell queue (getf d :grad-buffer)))
                               ana-rows))
