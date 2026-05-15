@@ -567,6 +567,7 @@
         (t
          (let* ((fwd-spv (%vad-compile-spv file :differentiate nil))
                 (bwd-spv (and fwd-spv (%vad-compile-spv file :differentiate t))))
+           (unwind-protect
            (cond
             ((not (and fwd-spv bwd-spv))
              (format *error-output* "FAIL (Compile step failed)~%")
@@ -604,7 +605,14 @@
                      t)))
                (error (e)
                  (format *error-output* "FAIL (Runner error: ~a)~%" e)
-                 nil)))))))))))
+                 nil)))))
+            ;; Cleanup: VERIFY-AUTODIFF produces fwd/bwd .spv files in the
+            ;; spec's directory.  Delete them on completion (success OR
+            ;; failure) so stale outputs can't mask later runs.  Skipped
+            ;; under --keep-work.
+            (unless *keep-work*
+              (when (and fwd-spv (probe-file fwd-spv)) (delete-file fwd-spv))
+              (when (and bwd-spv (probe-file bwd-spv)) (delete-file bwd-spv))))))))))
 
 ;;; ======================================================================
 

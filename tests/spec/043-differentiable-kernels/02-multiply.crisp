@@ -1,4 +1,7 @@
 ;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-multiply-chain-rule
+;; VERIFY-AUTODIFF: A=2.0 B=3.0 atol=1e-3 expect.A=3.0 expect.B=2.0
+;;
+;; C = A * B  =>  df/dA = B,  df/dB = A
 
 (def-type in-ish (cell float :address-space :global))
 (def-type out-ish (cell float :address-space :global))
