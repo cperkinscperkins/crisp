@@ -346,11 +346,20 @@ adjs back into the constructor args."
                       (cons temp-sym field-alist))))))
          (record-temp-entries (remove nil record-temp-entries))
          (record-param-field-adjs-ht
-          (when record-temp-entries
-            (let ((ht (make-hash-table :test 'eq)))
+          ;; Endeavor 103 Phase A: merge with any outer binding rather than
+          ;; shadowing it.  Outer binding may have been set by
+          ;; %generate-backward-kernel-ast for record-at-boundary kernel
+          ;; params; inner record-temp-entries is for record-valued ANF
+          ;; temps bound to %construct-struct.  Both are valid sources.
+          (let ((ht (when (or record-temp-entries *record-param-field-adjs*)
+                      (make-hash-table :test 'eq))))
+            (when ht
+              (when *record-param-field-adjs*
+                (maphash (lambda (k v) (setf (gethash k ht) v))
+                         *record-param-field-adjs*))
               (dolist (entry record-temp-entries)
-                (setf (gethash (car entry) ht) (cdr entry)))
-              ht))))
+                (setf (gethash (car entry) ht) (cdr entry))))
+            ht)))
     (let ((*record-param-field-adjs* record-param-field-adjs-ht))
       (let ((backward-forms nil)
             (adjoint-map (make-hash-table :test 'equal))

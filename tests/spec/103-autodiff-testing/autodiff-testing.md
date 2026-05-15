@@ -46,6 +46,56 @@ I'd start with point-FD with an explicit element index in the directive: ;; VERI
 
 Phase 6 — Record / struct / sub-function cases. Pick representative tests from 049, 056, 052. The runner mostly doesn't care about the source shape — it sees flat SPV args. Mostly a matter of expressing the eval point correctly in the directive (per-field for records, struct constructor for structs).
 
+Status (2026-05-14)
+===================
+- Phases 1-3 done.  Spec-runner integration runs under --differentiate.
+- Phase 4 deferred (no obvious tagging candidates at the time).
+- Phase 5a (multi-scalar-input) done.  044/02-product validates two-input case.
+- Phase 5b (1D vector input + atomic-fadd backward) done.  103/01-vec-sq-lit validates.
+- Cleanup: tagged-spec compile artifacts (.spv) are now deleted on completion.
+- Documentation: harness described in docs/tests.md.
+- Phase-4-light tagging round done: six 043/* tests tagged.  All pass on metal.
+- Phase A (records-at-boundary, phase 6 partial): runner support landed
+  (:scalar-float-plain kind, bind-float-scalar-arg, dot-in-name heuristic,
+  apply-primals rebind).  But the on-metal pass on 049/03 surfaced a real
+  Crisp AD compiler bug -- see findings below.
+- Bug fix: silent-pass propagation in run-verify-autodiff-pass (unwind-protect
+  cleanup form's return leaked through).  Fixed by capturing result into an
+  explicit binding before unwind-protect.
+
+Fixed Bug: record-at-boundary backward kernel adj routing
+=========================================================
+The backward kernel for `(def-kernel f (vp &out c) (declare #'(v-point ...)) ...)`
+was routing accessor-call adjoints into the collective `vp_adj` rather than
+the per-field SROA'd adjs (`vp_x_adj`, `vp_y_adj`).  The collective never
+propagated to per-field, so the input-grad-write step wrote 0s.
+
+Root cause: `%generate-backward-kernel-ast` (src/macros.lisp) never bound
+`*record-param-field-adjs*` for record-at-boundary kernel inputs, even though
+the equivalent sub-function path (`%generate-backward-function-ast` in
+src/autodiff.lisp) does set it.  Without the binding, the record-aware
+accessor rule in `%handle-single-value-backward` falls through to the generic
+accessor rule (which routes to `vp_adj`).
+
+A second, related issue: `generate-backward-walk` was unconditionally
+re-binding `*record-param-field-adjs*` from its own flat-anf %construct-struct
+scan, shadowing any outer binding.
+
+Fix (2026-05-14):
+  - Overlay: `%generate-backward-kernel-ast` builds a kernel-record-param-
+    field-adjs-ht from `record-subs-ht` (filtering `:%nested-leaf%`
+    sentinels) and dyn-binds `*record-param-field-adjs*` around the call to
+    `generate-backward-walk`.
+  - src/autodiff.lisp: `generate-backward-walk` now MERGES its construct-
+    struct-derived entries with the outer binding instead of shadowing it.
+
+Result: 049/03 now produces analytical = 4.0 / 3.0 (correct), matching the
+finite-difference numerical gradient within 3e-4.  All 6 specs in 049 pass
+under --differentiate.  Default suite still 649/649 green.
+
+049 cluster is now a rich source of on-metal coverage; phase 4 record-tagging
+follow-on can proceed.
+
 A few open questions before I'd start writing:
 
 Where does the runner live? I'd say tests/runners/verify-autodiff.lisp (a sibling of the existing spec-runner machinery) rather than scripts/, since it's now part of the test apparatus. scripts/verify_autodiff.lisp becomes a thin wrapper that calls into it for ad-hoc runs.
