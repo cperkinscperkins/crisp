@@ -1,4 +1,13 @@
 
+;; VERIFY-AUTODIFF directive omitted pending a separate compiler bug.
+;;
+;; For this kernel: C = (x~ vp) * (y~ vp) where x~ is user-overloaded to
+;; (- 0 vp.x).  Expected: df/dvp.x = -vp.y = -4.0, df/dvp.y = -vp.x = -3.0.
+;; On-metal verification gives vp.x analytical = 0.0 (wrong; should be -4.0),
+;; vp.y analytical = -3.0 (correct).  The backward kernel for an overloaded
+;; accessor doesn't route chain-rule through the user's function body --
+;; that's a separate path from records-at-boundary (which was fixed in
+;; endeavor 103 phase A).  Tag this back once that's addressed.
 
 (def-record v-point (x float) (y float))
 

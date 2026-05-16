@@ -244,22 +244,34 @@
     (setf (cffi:mem-ref arg :float) (cl:float value 1.0))
     (check-cl (cl-set-kernel-arg kernel arg-index (cffi:foreign-type-size :float) arg))))
 
+(defun bind-int32-scalar-arg (kernel arg-index value)
+  "Binds a plain (unboxed) i32 scalar at ARG-INDEX.  Used for record
+   field inputs declared `int` that SROA into bare i32 at the kernel boundary."
+  (cffi:with-foreign-object (arg :int32)
+    (setf (cffi:mem-ref arg :int32) value)
+    (check-cl (cl-set-kernel-arg kernel arg-index (cffi:foreign-type-size :int32) arg))))
+
 ;;; === Entry Point =======================================================
 
 ;;; --- Input descriptor (phase 5b / phase A) ---------------------------
 ;;;
-;;; Each input is classified into one of four kinds, controlling buffer
+;;; Each input is classified into one of five kinds, controlling buffer
 ;;; allocation, arg-width, and FD strategy:
 ;;;
-;;;   :scalar-float        -- wrapped (cell float), 3 fwd args, FD perturbs cell
-;;;   :scalar-float-plain  -- plain float32,        1 fwd arg,  FD perturbs value
-;;;                           (used for record-field inputs that SROA at boundary)
-;;;   :scalar-ulong        -- plain i64,            1 fwd arg,  no FD (grad = 0)
-;;;   :vector-float        -- 1D compact tensor,    6 fwd args, FD perturbs at :perturb-i
+;;;   :scalar-float        -- wrapped (cell float),  3 fwd args, FD perturbs cell
+;;;   :scalar-float-plain  -- plain float32,         1 fwd arg,  FD perturbs value
+;;;                           (used for float record fields that SROA at boundary)
+;;;   :scalar-int32-plain  -- plain i32,             1 fwd arg,  no FD (int grad = 0)
+;;;                           (used for int record fields that SROA at boundary)
+;;;   :scalar-ulong        -- plain i64,             1 fwd arg,  no FD (grad = 0)
+;;;   :vector-float        -- 1D compact tensor,     6 fwd args, FD perturbs at :perturb-i
 ;;;
-;;; The dot-in-name heuristic distinguishes :scalar-float-plain from
-;;; :scalar-float: dotted names (e.g. \"P.x\") are taken to be record
-;;; fields and bind as plain floats; bare names (\"x\") bind as cells.
+;;; Heuristics from directive value + name:
+;;;   - List value                          => :vector-float
+;;;   - Integer value, dot in name          => :scalar-int32-plain (record field)
+;;;   - Integer value, no dot               => :scalar-ulong (top-level scalar)
+;;;   - Real value, dot in name             => :scalar-float-plain (record field)
+;;;   - Real value, no dot                  => :scalar-float (cell-wrapped)
 
 (defun %vad-classify-input (value at-points name)
   "Returns plist describing input kind given the parsed VALUE.
@@ -273,10 +285,19 @@
              :arg-width 6
              :grad-arg-width 6)))
     ((integerp value)
-     (list :kind :scalar-ulong
-           :perturb-i nil
-           :arg-width 1
-           :grad-arg-width 3))   ; cell-of-double grad
+     (cond
+       ;; Dotted name (e.g. "P.x") + integer value => record field of `int`
+       ;; type, plain i32 at boundary; cell-of-float grad (4 bytes).
+       ((find #\. name)
+        (list :kind :scalar-int32-plain
+              :perturb-i nil
+              :arg-width 1
+              :grad-arg-width 3))   ; cell-of-float grad
+       (t
+        (list :kind :scalar-ulong
+              :perturb-i nil
+              :arg-width 1
+              :grad-arg-width 3))))   ; cell-of-double grad
     ((realp value)
      (cond
        ;; Dotted name (e.g. "P.x") => record field, plain float at boundary.
@@ -353,6 +374,7 @@
     (:scalar-float       1)
     (:vector-float       (getf desc :length))
     (:scalar-float-plain nil)   ; no forward buffer; bound on each launch
+    (:scalar-int32-plain nil)   ; no forward buffer; bound on each launch
     (:scalar-ulong       nil)))
 
 (defun %vad-grad-bytes-for (desc)
@@ -360,6 +382,7 @@
   (case (getf desc :kind)
     (:scalar-float       4)                            ; cell of float
     (:scalar-float-plain 4)                            ; cell of float
+    (:scalar-int32-plain 4)                            ; cell of float (int->float-grad)
     (:scalar-ulong       8)                            ; cell of double
     (:vector-float       (* 4 (getf desc :length)))))  ; vector of float
 
@@ -478,6 +501,9 @@
                               (vv (if (eq d perturb-desc)
                                       (cl:float (+ v delta) 1.0) v)))
                          (bind-float-scalar-arg kernel (getf d :arg-base) vv)))
+                      (:scalar-int32-plain
+                       ;; Integers are not perturbed (no continuous derivative).
+                       (bind-int32-scalar-arg kernel (getf d :arg-base) (getf d :value)))
                       (:scalar-ulong
                        (bind-uint64-scalar-arg kernel (getf d :arg-base) (getf d :value)))
                       (:vector-float
@@ -505,7 +531,7 @@
                   (dolist (d descs)
                     (let ((base (getf d :grad-arg-base)))
                       (case (getf d :kind)
-                        ((:scalar-float :scalar-float-plain)
+                        ((:scalar-float :scalar-float-plain :scalar-int32-plain)
                          (bind-cell-arg bwd-kernel base (getf d :grad-buffer)))
                         (:scalar-ulong
                          ;; Cell-of-double grad: same 3-arg shape, byte_size = 8.
@@ -517,7 +543,7 @@
                 (zero-grads ()
                   (dolist (d descs)
                     (case (getf d :kind)
-                      ((:scalar-float :scalar-float-plain)
+                      ((:scalar-float :scalar-float-plain :scalar-int32-plain)
                        (write-float-cell queue (getf d :grad-buffer) 0.0))
                       (:vector-float (write-float-vector queue (getf d :grad-buffer)
                                                          (make-list (getf d :length)
@@ -551,6 +577,12 @@
                  (dolist (d descs)
                    (case (getf d :kind)
                      (:scalar-ulong nil) ; skip
+                     (:scalar-int32-plain
+                      ;; Int has no continuous derivative; canonical num = 0.0.
+                      ;; Analytical read step compares against this; expect.<name>=0.0
+                      ;; gives an explicit check that the int grad cell is zero.
+                      (push (cons (getf d :name) 0.0) fd-rows)
+                      (vlog "~&;   d/d~a: skipped (int); num=0.0~%" (getf d :name)))
                      ((:scalar-float :scalar-float-plain)
                       (apply-primals fwd-kernel d h)
                       (write-float-cell queue output-buf 0.0)
@@ -592,7 +624,7 @@
                    (dolist (d descs)
                      (case (getf d :kind)
                        (:scalar-ulong nil)
-                       ((:scalar-float :scalar-float-plain)
+                       ((:scalar-float :scalar-float-plain :scalar-int32-plain)
                         (push (cons (getf d :name)
                                     (read-float-cell queue (getf d :grad-buffer)))
                               ana-rows))

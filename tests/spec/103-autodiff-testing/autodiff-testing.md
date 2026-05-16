@@ -93,8 +93,25 @@ Result: 049/03 now produces analytical = 4.0 / 3.0 (correct), matching the
 finite-difference numerical gradient within 3e-4.  All 6 specs in 049 pass
 under --differentiate.  Default suite still 649/649 green.
 
-049 cluster is now a rich source of on-metal coverage; phase 4 record-tagging
-follow-on can proceed.
+Tagged after the fix (all PASS on metal under --differentiate):
+  - 049/01-non-overloadable-accessor (raw ~x~ accessor)
+  - 049/03-basic-rec-at-kb
+  - 049/05-not-float (int field; grad must be zero)
+  - 049/07-unused-field (unused field grad must be zero)
+  - 049/09-compile-time-prop (2 records + c-t field, 4 inputs)
+
+New runner kind added during this work: :scalar-int32-plain.  Dotted name
+plus integer value (e.g. vp.x=3) triggers it.  Binds as i32, no FD, grad
+cell is cell-of-float (4 bytes) per the 101 int->float-grad promotion.
+
+Open follow-on bug: overloaded accessors
+========================================
+049/11-overloaded has a user-defined x~ that wraps the raw accessor with
+a negation.  Forward is correct (FD shows expected -4.0 / -3.0).  Backward
+gives vp.x analytical = 0 (should be -4.0).  This is a separate compiler
+bug from records-at-boundary -- the AD walker for overloaded user
+accessors doesn't propagate the chain rule through the user's function
+body.  Tag re-instated when fixed.
 
 A few open questions before I'd start writing:
 

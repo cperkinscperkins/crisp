@@ -1,6 +1,11 @@
 ;; TEST-WITH[--ir-target=llvmir --differentiate] : validate-rec-kb-not-float
-
-
+;; VERIFY-AUTODIFF: vp.x=3 vp.y=4.0 atol=1e-3 expect.vp.x=0.0 expect.vp.y=3.0
+;;
+;; C = vp.x * vp.y  where vp.x is INT, vp.y is FLOAT.
+;;   df/dvp.x: int has no continuous derivative; per endeavor 101 the grad
+;;             cell is float-typed and must contain 0.0 after backward.
+;;   df/dvp.y: vp.x = 3.0
+;; vp.x=3 (no decimal) tells the runner this is an int field => binds as i32.
 
 (def-record v-point (x int) (y float))
 
