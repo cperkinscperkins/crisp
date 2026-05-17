@@ -7,6 +7,6 @@
 (def-type vec-t (vector int :address-space :global :align :compact))
 
 (def-kernel vector_add (A B &out C)
-  (declare #'(vec-t vec-t &out vec-t => nil) forward-only)
+  (declare #'(vec-t vec-t &out vec-t => nil))
   (loop-vector-stride A (i)
     (set! (~ C i) (+ (~ A i) (~ B i)))))

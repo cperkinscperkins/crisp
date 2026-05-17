@@ -7,6 +7,6 @@
 (def-type vec-t (vector int :address-space :global :align :compact))
 
 (def-kernel vec_copy (A &out B)
-  (declare #'(vec-t &out vec-t => nil) forward-only)
+  (declare #'(vec-t &out vec-t => nil))
   (loop-vector-stride A (i)
     (set! (~ B i) (~ A i))))

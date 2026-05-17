@@ -8,6 +8,6 @@
 (def-type ten3-t (tensor int 3 :address-space :global :align :compact :contiguous-term :last))
 
 (def-kernel ten3_fill_cl (&out T3)
-  (declare #'(&out ten3-t => nil) forward-only)
+  (declare #'(&out ten3-t => nil))
   (tensor-stride T3 :contiguous-last (z y x)
     (set! (~ T3 z y x) 11)))

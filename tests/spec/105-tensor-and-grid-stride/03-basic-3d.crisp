@@ -8,6 +8,6 @@
 (def-type ten3-t (tensor int 3 :address-space :global :align :compact))
 
 (def-kernel ten_fill_3d (&out T3)
-  (declare #'(&out ten3-t => nil) forward-only)
+  (declare #'(&out ten3-t => nil))
   (tensor-stride T3 (z y x)
     (set! (~ T3 z y x) 9)))

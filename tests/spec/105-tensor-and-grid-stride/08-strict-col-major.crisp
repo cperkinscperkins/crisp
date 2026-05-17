@@ -7,6 +7,6 @@
 
 (def-kernel mat_fill_cm (&out M)
   (declare #'(&out (matrix int :address-space :global :align :compact :contiguous-term :first) => nil)
-           forward-only)
+          )
   (tensor-stride M :col-major (row-y col-x)
     (set! (~ M row-y col-x) 2)))
