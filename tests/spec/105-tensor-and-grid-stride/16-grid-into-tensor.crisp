@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; grid-stride driving writes into a real 2D tensor.  The size-list is taken
+;; from explicit dimensions (4 4); the kernel writes value = y*4+x into M[y,x].
+;; Validates that grid-stride composes with tensor AREF in the body.
+
+(def-type mat4-t (matrix int :address-space :global :align :compact))
+
+(def-kernel grid_into_mat (&out M)
+  (declare #'(&out mat4-t => nil) forward-only)
+  (grid-stride (4 4) (y x)
+    (set! (~ M y x) (to-int (+ (* y 4ul) x)))))

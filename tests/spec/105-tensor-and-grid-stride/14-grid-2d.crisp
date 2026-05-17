@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; 2D grid-stride.  Iterates over a 4x8 virtual grid; on iteration (3, 7)
+;; writes the sentinel value 42 to C.  Validates the 2D decode.
+
+(def-type out-c (cell int :address-space :global))
+
+(def-kernel grid_2d_smoke (&out C)
+  (declare #'(&out out-c => nil) forward-only)
+  (grid-stride (4 8) (row col)
+    (set! (~ C) (to-int (+ (* row 8ul) col)))))

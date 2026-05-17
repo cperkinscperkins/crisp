@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Strict tensor-stride with :col-major.  First binding (row-y) varies along
+;; the warp lane.  Tensor's static CT is :first to match the tag — disagreement
+;; would be a compile-time error (see errors/04-strict-contradicts-ct).
+
+(def-kernel mat_fill_cm (&out M)
+  (declare #'(&out (matrix int :address-space :global :align :compact :contiguous-term :first) => nil)
+           forward-only)
+  (tensor-stride M :col-major (row-y col-x)
+    (set! (~ M row-y col-x) 2)))

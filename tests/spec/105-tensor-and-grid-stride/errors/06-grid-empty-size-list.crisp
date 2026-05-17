@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "Malformed grid-stride: expected (grid-stride (SIZE ...) (BINDING ...) BODY...) with size and binding arity matching and >= 1"
+;; Empty size-list and bindings — not allowed (arity must be >= 1).
+
+(def-type out-c (cell int :address-space :global))
+
+(def-kernel grid_empty (&out C)
+  (declare #'(&out out-c => nil) forward-only)
+  (grid-stride () ()
+    (set! (~ C) 0)))

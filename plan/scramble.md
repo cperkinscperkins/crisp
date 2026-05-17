@@ -599,6 +599,10 @@ Preperatory
 changed to :descendant to make the tests pass at some point. Or not. Check though.
 - - according to Gemini, we aren't actually using the branding for provenance, and instead the ANF-transform is enough. The branding could be dropped!
 - [x] auto-diff needs "on metal" testing. add new directives etc.
+- [ ] double check with Claude that the "volatile" hack we use to get around bug 030
+      only affects the differentiating kernels. If it affects the forward kernels ... oof.
+      Also, see if it's sequested to --ir-target=spv only. NVidia doesn't have the same bug
+      so when --ir-target is .ptx we don't need the "volatile" workaround. Check to make sure.
 
 Grid vs Thread Context
 =======================

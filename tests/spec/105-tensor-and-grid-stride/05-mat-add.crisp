@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Classic matrix_add using tensor-stride.  Each thread strides over
+;; A and B and writes A[i,j]+B[i,j] to C[i,j].  Exercises decode +
+;; multiple tensor accesses in the body.
+
+(def-type mat-t (matrix int :address-space :global :align :compact))
+
+(def-kernel matrix_add (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t => nil) forward-only)
+  (tensor-stride A (y x)
+    (set! (~ C y x) (+ (~ A y x) (~ B y x)))))

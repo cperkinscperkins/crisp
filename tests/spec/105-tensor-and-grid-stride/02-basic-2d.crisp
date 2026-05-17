@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Basic 2D tensor-stride: fill every element of M with 7.
+;; Two-binding form exercises the flat-to-(row, col) decode using
+;; integer division.  CT defaults to :last so col-x varies along
+;; the warp lane.
+
+(def-type mat-t (matrix int :address-space :global :align :compact))
+
+(def-kernel mat_fill_2d (&out M)
+  (declare #'(&out mat-t => nil) forward-only)
+  (tensor-stride M (row-y col-x)
+    (set! (~ M row-y col-x) 7)))

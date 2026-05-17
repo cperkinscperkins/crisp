@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Basic 3D tensor-stride: fill every element of T with 9.
+;; Three-binding form exercises the multi-step flat-to-(z, y, x) decode.
+;; CT defaults to :last so x varies along the warp lane; z is outermost.
+
+(def-type ten3-t (tensor int 3 :address-space :global :align :compact))
+
+(def-kernel ten_fill_3d (&out T3)
+  (declare #'(&out ten3-t => nil) forward-only)
+  (tensor-stride T3 (z y x)
+    (set! (~ T3 z y x) 9)))

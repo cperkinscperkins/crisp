@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "Grid-level contexts cannot be nested"
+;; Nested tensor-stride is forbidden (grid-level contexts cannot nest).
+
+(def-type vec-t (tensor int 1 :address-space :global :align :compact))
+
+(def-kernel nested_stride (A &out B)
+  (declare #'(vec-t &out vec-t => nil))
+  (tensor-stride A (i)
+    (tensor-stride B (j)
+      (set! (~ B j) (~ A i)))))
