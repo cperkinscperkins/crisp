@@ -692,11 +692,17 @@
                    (case (getf d :kind)
                      (:scalar-ulong nil) ; skip
                      (:scalar-int32-plain
-                      ;; Int has no continuous derivative; canonical num = 0.0.
-                      ;; Analytical read step compares against this; expect.<name>=0.0
-                      ;; gives an explicit check that the int grad cell is zero.
-                      (push (cons (getf d :name) 0.0) fd-rows)
-                      (vlog "~&;   d/d~a: skipped (int); num=0.0~%" (getf d :name)))
+                      ;; Int has no continuous derivative.  Mark numerical as
+                      ;; :skipped so the FD-vs-analytical comparison ignores
+                      ;; this field.  Authors should use expect.<name>=<value>
+                      ;; in the directive to verify the analytical grad
+                      ;; against whatever the AD machinery's known result is
+                      ;; (e.g. 0.0 for record-at-boundary int fields; the
+                      ;; chain-rule value for struct-at-boundary int fields
+                      ;; via the shadow-struct mechanism).
+                      (push (cons (getf d :name) :skipped) fd-rows)
+                      (vlog "~&;   d/d~a: skipped (int — no FD comparison)~%"
+                            (getf d :name)))
                      ((:scalar-float :scalar-float-plain)
                       (apply-primals fwd-kernel d h)
                       (write-float-cell queue output-buf 0.0)
@@ -726,13 +732,14 @@
                               (vlog "~&;   d/d~a[~a]: y+=~a y-=~a num=~a~%"
                                     (getf d :name) at y-plus y-minus grad))))))
                      (:struct-by-value
-                      ;; FD per float field; int fields get canonical num=0.
+                      ;; FD per float field; int fields mark numerical as
+                      ;; :skipped (see :scalar-int32-plain comment above).
                       (dolist (f (getf d :fields))
                         (let ((fname (getf f :name)))
                           (case (getf f :ftype)
                             (:int32
-                             (push (cons fname 0.0) fd-rows)
-                             (vlog "~&;   d/d~a: skipped (int field); num=0.0~%" fname))
+                             (push (cons fname :skipped) fd-rows)
+                             (vlog "~&;   d/d~a: skipped (int field — no FD comparison)~%" fname))
                             (:float
                              (apply-primals fwd-kernel d h fname)
                              (write-float-cell queue output-buf 0.0)
@@ -794,14 +801,23 @@
 
                    (setf fd-rows  (nreverse fd-rows)
                          ana-rows (nreverse ana-rows))
+                   ;; Build per-field results.  When FD was skipped (int
+                   ;; fields), :numerical and :diff are :skipped and pass-p
+                   ;; ignores those entries; expect.<name> still verifies
+                   ;; :analytical against the directive's value.
                    (setf results
                          (loop for (name . num) in fd-rows
                                for ana = (cdr (assoc name ana-rows :test #'string=))
                                collect (list :name name
                                              :analytical ana
                                              :numerical num
-                                             :diff (abs (- ana num)))))
-                   (setf pass-p (every (lambda (r) (< (getf r :diff) atol)) results))
+                                             :diff (if (eq num :skipped)
+                                                       :skipped
+                                                       (abs (- ana num))))))
+                   (setf pass-p (every (lambda (r)
+                                         (or (eq (getf r :diff) :skipped)
+                                             (< (getf r :diff) atol)))
+                                       results))
                    (vlog "~&;   pass-p = ~a~%" pass-p))))))
 
         ;; Cleanup

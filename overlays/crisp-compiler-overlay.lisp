@@ -297,3 +297,185 @@
                                (%build-shadow-ctor-form inner-type field-info pkg)
                                0)))
                         (t (list '%volatile-read field-info))))))))
+
+
+;; ==========================================================================
+;; 049/11 fix: AD accessor rule must handle the raw `~X~` accessor form
+;; in addition to the user-overloadable `X~` form.
+;;
+;; src/autodiff.lisp — %handle-single-value-backward
+;;
+;; The accessor rule already gates on `last char = ~` which matches both
+;; `X~` and `~X~`, but the field-name extractor only stripped the trailing
+;; tilde, yielding `"~X"` for the raw form.  That string never matched the
+;; field-alist key `"X"`, so the chain rule didn't fire — vp_x_adj stayed 0.
+;;
+;; Manifests in 049/11-overloaded.crisp: the user-overloaded `x~` body calls
+;; `(~x~ vp)` (raw accessor, non-overloadable).  Sub-function backward walk
+;; should route adj into vp_x's per-field synth adj but didn't.
+;;
+;; Fix: strip both leading and trailing tilde when present.  X~ → "X" still
+;; works (no leading tilde to strip).  ~X~ → "X" now matches.
+
+(defun %strip-accessor-tildes (accessor)
+  "Strips trailing tilde, and leading tilde if present, from an accessor
+   name string.  X~ → X, ~X~ → X."
+  (let* ((no-trail (subseq accessor 0 (1- (length accessor)))))
+    (if (and (> (length no-trail) 0)
+             (cl:char= (cl:char no-trail 0) #\~))
+        (subseq no-trail 1)
+        no-trail)))
+
+(defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
+                                      &key hof-handler-fn (error-on-unknown t)
+                                           tensor-inputs-ht)
+  "Generates backward-pass adjoint updates for a single ANF binding (v := expr).
+   Overlay change (049/11 fix): field-name extraction in the accessor rules
+   strips both leading and trailing tildes so the raw `~X~` form routes
+   correctly."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (cond
+      ((and (consp expr) (eq (car expr) '+))
+        (let ((a (cadr expr)) (b (caddr expr)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
+      ((and (consp expr) (eq (car expr) '-))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
+      ((and (consp expr) (eq (car expr) '*))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
+      ((and (consp expr) (eq (car expr) '/))
+        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
+          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
+      ((and (consp expr) (eq (car expr) 'sin))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (let* ((a-adj (local-adj a))
+                   (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
+              (setf (gethash cos-a adjoint-map) cos-a)
+              (emit `(set! ,cos-a (cos ,a)))
+              (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
+      ((and (consp expr) (eq (car expr) 'cos))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (let* ((a-adj (local-adj a))
+                   (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
+              (setf (gethash sin-a adjoint-map) sin-a)
+              (emit `(set! ,sin-a (sin ,a)))
+              (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
+      ((and (consp expr) (eq (car expr) '~))
+        (let* ((src     (cadr expr))
+               (indices (cddr expr))
+               (v-adj   (local-adj v)))
+          (when (symbolp src)
+            (cond
+              ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
+               (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
+                                       (symbol-package src))))
+                 (emit `(atomic-add! (~ ,grad-sym ,@indices) ,v-adj))))
+              ((and (null indices) tensor-inputs-ht (gethash src tensor-inputs-ht))
+               (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
+                                       (symbol-package src))))
+                 (emit `(atomic-add! (~ ,grad-sym) ,v-adj))))
+              (t
+               (emit `(set! ,(local-adj src) (+ ,(local-adj src) ,v-adj))))))))
+      ;; Differentiable sub-function call
+      ((and (consp expr)
+            (symbolp (car expr))
+            (gethash (car expr) *differentiable-functions*))
+        (let* ((fn   (car expr))
+               (args (cdr expr))
+               (info (gethash fn *differentiable-functions*)))
+          (if (getf info :hof)
+              (if hof-handler-fn
+                  (funcall hof-handler-fn fn args v)
+                  (error "HOF handler required for sub-function ~A but not provided" fn))
+              (%emit-sub-fn-backward fn args
+                                     (getf info :bkwd-name)
+                                     (list (local-adj v))
+                                     (getf info :n-float-params)
+                                     (symbol-package v)
+                                     emit-fn local-adj-fn
+                                     (if (symbolp v) (symbol-name v) "BW")))))
+      ;; Record-aware accessor.  Field-name extraction trims both tildes
+      ;; (049/11 fix) so X~ and ~X~ both yield the field name "X".
+      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
+            (let ((fname (symbol-name (car expr))))
+              (and (> (length fname) 1)
+                   (cl:char= (cl:char fname (1- (length fname))) #\~)))
+            *record-param-field-adjs*
+            (symbolp (cadr expr))
+            (gethash (cadr expr) *record-param-field-adjs*))
+        (let* ((accessor (symbol-name (car expr)))
+               (field-name-str (%strip-accessor-tildes accessor))
+               (record-sym (cadr expr))
+               (field-alist (gethash record-sym *record-param-field-adjs*))
+               (field-entry (assoc field-name-str field-alist :test #'string-equal))
+               (field-adj-sym (cdr field-entry))
+               (v-adj (local-adj v)))
+          (when field-adj-sym
+            (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
+            (emit `(set! ,field-adj-sym (+ ,field-adj-sym ,v-adj))))))
+      ;; Struct-kernel-param accessor.  Same tilde-strip fix applies.
+      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
+            (let ((fname (symbol-name (car expr))))
+              (and (> (length fname) 1)
+                   (cl:char= (cl:char fname (1- (length fname))) #\~)))
+            *struct-kernel-param-shadows*
+            (symbolp (cadr expr))
+            (gethash (cadr expr) *struct-kernel-param-shadows*))
+        (let* ((accessor (symbol-name (car expr)))
+               (field-name-str (%strip-accessor-tildes accessor))
+               (struct-sym (cadr expr))
+               (entry (gethash struct-sym *struct-kernel-param-shadows*))
+               (field-alist (if (and (consp entry) (symbolp (car entry)))
+                                (cdr entry)
+                                entry))
+               (field-entry (assoc field-name-str field-alist :test #'string-equal))
+               (field-info (cdr field-entry))
+               (v-adj (local-adj v)))
+          (cond
+            ((%nested-field-info-p field-info) nil)
+            ((symbolp field-info)
+             (setf (gethash field-info adjoint-map) field-info)
+             (emit `(set! ,field-info (+ ,field-info ,v-adj))))
+            (t nil))))
+      ;; Record constructor backward rule.
+      ((and (consp expr) (symbolp (car expr))
+            (string-equal (symbol-name (car expr)) "%CONSTRUCT-STRUCT")
+            *record-param-field-adjs*
+            (gethash v *record-param-field-adjs*))
+        (let* ((ctor-args (cddr expr))
+               (field-alist (gethash v *record-param-field-adjs*)))
+          (loop for (field-name-str . field-adj-sym) in field-alist
+                for ctor-arg in ctor-args
+                when (and (symbolp ctor-arg) field-adj-sym)
+                do (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
+                   (emit `(set! ,(local-adj ctor-arg)
+                                (+ ,(local-adj ctor-arg) ,field-adj-sym))))))
+      ;; Existing accessor rule (identity flow to record/struct symbol)
+      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
+            (let ((fname (symbol-name (car expr))))
+              (and (> (length fname) 1)
+                   (cl:char= (cl:char fname (1- (length fname))) #\~))))
+        (let* ((a (cadr expr)) (v-adj (local-adj v)))
+          (when (symbolp a)
+            (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
+      ((and (consp expr) (symbolp (car expr))
+            (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
+       nil)
+      ((and (consp expr) (symbolp (car expr))
+            (string= (symbol-name (car expr)) "IF"))
+       nil)
+      ((and (consp expr) (symbolp (car expr))
+            (%backward-skip-fn-p (car expr)))
+       nil)
+      ((and (consp expr) (symbolp (car expr)))
+       (when error-on-unknown
+         (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
+      (t nil))))

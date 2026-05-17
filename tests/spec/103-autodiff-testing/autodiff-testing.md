@@ -104,14 +104,99 @@ New runner kind added during this work: :scalar-int32-plain.  Dotted name
 plus integer value (e.g. vp.x=3) triggers it.  Binds as i32, no FD, grad
 cell is cell-of-float (4 bytes) per the 101 int->float-grad promotion.
 
-Open follow-on bug: overloaded accessors
-========================================
+Phase B (struct-at-kernel-boundary) — partial, 2026-05-16
+==========================================================
+
+103/02-struct-mul tagged earlier as the all-float baseline — passes
+cleanly via the shadow-struct mechanism.
+
+Tagging 056/01-basic-struct-meta (mixed-type point: x float, y int)
+surfaced two issues:
+
+  1. An IGC SROA-aliasing miscompilation on Intel Arc / Level Zero:
+     the shadow-struct write's two leaf-adj reads were being coalesced
+     into a single alloca slot, so both grad fields read back as the
+     same value (e.g. {4.0, 4.0} instead of the IR-correct {4.0, 3.0}).
+     The same LLVM IR compiles correctly via the NVPTX backend, so the
+     bug is downstream of Crisp.  Minimal stripped reproducer + L0
+     loader + NVPTX cross-check captured in
+     put_temp_files_here/igc-bug-report/ — to be filed with IGC.
+
+     Crisp-side workaround (overlays only): a new compiler-internal
+     pseudo-op `(crisp.compiler::%volatile-read SYM)`; the AD pass'
+     `%build-shadow-ctor-form` wraps each leaf adj sym in this op; the
+     analyzer tags the underlying var-read in `*volatile-var-reads*`;
+     the var-read codegen calls `LLVMSetVolatile` on the load when
+     tagged.  Surgical: only the leaf reads at the shadow-write get
+     `load volatile`, not the chain-rule intermediates.  Remove when
+     IGC ships the fix.
+
+  2. The runner's FD-on-int-fields handling was previously `num=0.0`,
+     which coincidentally matched record-at-boundary semantics (int
+     field grad = 0) but not the struct-at-boundary shadow-struct
+     semantics (int field grad = chain-rule value through promoted
+     adj).  Runner now marks `numerical = :skipped` for int fields,
+     and the FD-vs-analytical comparison excludes those entries.
+     `expect.<field>` still verifies the analytical value.  Old 049/05
+     keeps passing (analytical=0 matches expect=0); new 056/01 also
+     passes (analytical=3.0 matches expect=3.0).
+
+Tagged after both fixes:
+  - 056/01-basic-struct-meta (mixed float+int struct)
+
+Remaining 056 candidates and their blockers:
+
+  - 056/03-struct-with-ct-meta: 7 chain-rule intermediate adj allocas
+    on top of the 4 per-struct-field leaves; the IGC SROA bug recurs
+    through the intermediates which `%volatile-read` doesn't cover.
+    Note left in the spec file; re-tag when IGC ships the fix.
+  - 056/04-nested-structs-meta: kernel returns int cell (runner reads
+    float cells) AND uses nested struct fields (`r.top-left.x`) the
+    descriptor builder doesn't yet support.
+  - 056/05/07/08: TEST-HOIST only — no AD code path.
+  - 056/09-branded-struct-elide: already `SKIP-WITH[--differentiate]`.
+  - 056/11-cell-of-struct-mutable: `forward-only` kernel.
+  - 056/13-boundary-record-mutable: mutates a boundary record inside
+    the kernel; AD on mutable boundary records is its own design
+    question.
+
+So Phase B leaves 1 test tagged (056/01) and 1 noted-deferred (056/03)
+in the 056 directory.  The shadow-struct mechanism itself is now
+exercised on metal via 103/02-struct-mul and 056/01.
+
+Fixed Bug: AD accessor rule on raw `~X~` form (2026-05-16)
+==========================================================
 049/11-overloaded has a user-defined x~ that wraps the raw accessor with
-a negation.  Forward is correct (FD shows expected -4.0 / -3.0).  Backward
-gives vp.x analytical = 0 (should be -4.0).  This is a separate compiler
-bug from records-at-boundary -- the AD walker for overloaded user
-accessors doesn't propagate the chain rule through the user's function
-body.  Tag re-instated when fixed.
+a negation: `(def-function x~ (vp) (- 0f (~x~ vp)))`.  Forward was correct.
+Backward gave vp.x analytical = 0 (should be -4.0).
+
+Root cause: `%handle-single-value-backward` in src/autodiff.lisp had two
+accessor-rule branches (record-aware and struct-kernel-param-aware).  Both
+extracted the field name from the accessor symbol by stripping the trailing
+tilde — so `X~` → `"X"` (correct) but `~X~` → `"~X"` (wrong; no match in
+the field-adj alist, so no routing emitted).  Sub-function backward walks
+through the overloaded x~ body never propagated adj into vp_x.
+
+Fix: overlay `%handle-single-value-backward` to strip both leading and
+trailing tildes via `%strip-accessor-tildes`.  X~ → "X" still works; ~X~
+now correctly resolves to "X".
+
+Tagged after the fix:
+  - 049/11-overloaded (overloaded x~ accessor)
+
+What remains
+============
+
+  - Phase 5 multi-dim: only 1D contiguous-compact tensors covered (103/01).
+    Multi-dim, strided, non-compact tensor inputs untested on metal.
+    Point-FD scheme drafted but not implemented.
+  - Phase 6 sub-function diff: endeavor 101 added AD across sub-function
+    boundaries (records/structs/tensors/cells with mixed _GRAD convention)
+    but no on-metal verification yet.
+  - Trivial-backward kernel (all-non-diff inputs): no on-metal coverage.
+  - When IGC ships the SROA fix: re-tag 056/03, remove the
+    `%volatile-read` workaround in overlays/crisp-compiler-overlay.lisp
+    and the corresponding `LLVMSetVolatile` binding.
 
 A few open questions before I'd start writing:
 
