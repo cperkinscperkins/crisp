@@ -251,11 +251,34 @@
     (setf (cffi:mem-ref arg :int32) value)
     (check-cl (cl-set-kernel-arg kernel arg-index (cffi:foreign-type-size :int32) arg))))
 
+(defun bind-struct-by-value-arg (kernel arg-index fields total-bytes)
+  "Binds a struct passed by value at ARG-INDEX.  FIELDS is a list of plists,
+   each `(:value V :ftype :float|:int32 :offset BYTE-OFFSET)` in declaration
+   order.  Packs the fields into TOTAL-BYTES of host memory and submits via
+   clSetKernelArg.  Used for `def-struct` parameters at the kernel boundary
+   (which are NOT SROA'd -- they cross the boundary as one struct value)."
+  (cffi:with-foreign-object (data :uint8 total-bytes)
+    ;; Zero initialise so any padding bytes are well-defined.
+    (loop for i from 0 below total-bytes
+          do (setf (cffi:mem-aref data :uint8 i) 0))
+    (dolist (f fields)
+      (let ((offset (getf f :offset))
+            (ftype  (getf f :ftype))
+            (value  (getf f :value)))
+        (case ftype
+          (:float
+           (setf (cffi:mem-ref (cffi:inc-pointer data offset) :float)
+                 (cl:float value 1.0)))
+          (:int32
+           (setf (cffi:mem-ref (cffi:inc-pointer data offset) :int32) value))
+          (t (error "bind-struct-by-value-arg: unsupported ftype ~A" ftype)))))
+    (check-cl (cl-set-kernel-arg kernel arg-index total-bytes data))))
+
 ;;; === Entry Point =======================================================
 
-;;; --- Input descriptor (phase 5b / phase A) ---------------------------
+;;; --- Input descriptor (phase 5b / phase A / phase B) ----------------
 ;;;
-;;; Each input is classified into one of five kinds, controlling buffer
+;;; Each input is classified into one of six kinds, controlling buffer
 ;;; allocation, arg-width, and FD strategy:
 ;;;
 ;;;   :scalar-float        -- wrapped (cell float),  3 fwd args, FD perturbs cell
@@ -265,9 +288,13 @@
 ;;;                           (used for int record fields that SROA at boundary)
 ;;;   :scalar-ulong        -- plain i64,             1 fwd arg,  no FD (grad = 0)
 ;;;   :vector-float        -- 1D compact tensor,     6 fwd args, FD perturbs at :perturb-i
+;;;   :struct-by-value     -- struct passed by value, 1 fwd arg,  FD perturbs each
+;;;                           float field; grad is a single cell-of-shadow-struct
+;;;                           with N*4 bytes of float fields (phase B).
 ;;;
 ;;; Heuristics from directive value + name:
 ;;;   - List value                          => :vector-float
+;;;   - Dotted name + parent in :structs    => folded into :struct-by-value desc
 ;;;   - Integer value, dot in name          => :scalar-int32-plain (record field)
 ;;;   - Integer value, no dot               => :scalar-ulong (top-level scalar)
 ;;;   - Real value, dot in name             => :scalar-float-plain (record field)
@@ -315,52 +342,113 @@
      (error "VERIFY-AUTODIFF: cannot classify input ~A with value ~A"
             name value))))
 
-(defun %vad-make-descriptors (inputs at-points)
+(defun %vad-ftype-for-value (value)
+  "Returns the host-side scalar type for a directive value: :float for reals,
+   :int32 for integers.  Used when packing struct-by-value fields."
+  (cond ((integerp value) :int32)
+        ((realp value)    :float)
+        (t (error "%vad-ftype-for-value: cannot classify value ~A" value))))
+
+(defun %vad-dotted-parent (name)
+  "If NAME contains a dot, returns the substring before the first dot.
+   Otherwise returns NIL."
+  (let ((dot (position #\. name)))
+    (and dot (subseq name 0 dot))))
+
+(defun %vad-make-descriptors (inputs at-points &optional structs)
   "Builds the per-input descriptor list, threading cumulative arg offsets.
-   Forward arg layout is just the inputs in declaration order, followed by
-   the output cell (3 args).  Backward layout adds: incoming grad cell (3),
-   then each input's outgoing gradient slot (width per-input).
 
-   Each descriptor is a plist with these keys pre-allocated (so
-   subsequent (setf (getf desc KEY) VAL) calls modify the existing cons in
-   place rather than building a new list that the caller never sees):
+   STRUCTS is a list of parent-name strings declared as `struct=...` in
+   the directive.  Any input whose dotted-name parent appears in STRUCTS
+   is folded into a single :struct-by-value descriptor (one kernel arg
+   carrying the packed struct value, plus a single shadow-struct grad
+   cell as &out).  Inputs not folded keep their normal classification.
 
+   Each descriptor is a plist with these keys pre-allocated:
      :name :value :kind :length :perturb-i
      :arg-width :arg-base
      :grad-arg-width :grad-arg-base
      :buffer :grad-buffer
+   And for :struct-by-value also:
+     :fields :total-bytes :grad-bytes
 
    Returns (values DESCRIPTORS OUTPUT-FWD-BASE OUTPUT-BWD-BASE
                    GRAD-OUTPUT-BWD-BASE)."
   (let ((descs nil)
         (fwd-base 0)
-        (bwd-base 0))
+        (bwd-base 0)
+        (struct-descs-by-name (make-hash-table :test 'equal)))
     (dolist (entry inputs)
       (let* ((name (car entry))
              (value (cdr entry))
-             (cls (%vad-classify-input value at-points name)))
-        ;; Pre-allocate every mutable slot so subsequent setf-getf works.
-        (push (list :name name
-                    :value value
-                    :kind (getf cls :kind)
-                    :length (getf cls :length)
-                    :perturb-i (getf cls :perturb-i)
-                    :arg-width (getf cls :arg-width)
-                    :arg-base fwd-base
-                    :grad-arg-width (getf cls :grad-arg-width)
-                    :grad-arg-base nil
-                    :buffer nil
-                    :grad-buffer nil)
-              descs)
-        (incf fwd-base (getf cls :arg-width))
-        (incf bwd-base (getf cls :arg-width))))
+             (parent (%vad-dotted-parent name))
+             (is-struct-field (and parent (member parent structs :test #'string=))))
+        (cond
+          (is-struct-field
+           ;; Either start a new struct descriptor or extend an existing one.
+           (let* ((field-name name)
+                  (field-only-name (subseq name (1+ (length parent))))
+                  (ftype (%vad-ftype-for-value value))
+                  (existing (gethash parent struct-descs-by-name)))
+             (cond
+               (existing
+                (let* ((fields (getf existing :fields))
+                       (next-offset (* 4 (length fields)))
+                       (new-field (list :name field-name
+                                        :field field-only-name
+                                        :value value
+                                        :ftype ftype
+                                        :offset next-offset)))
+                  (setf (getf existing :fields)
+                        (append fields (list new-field)))
+                  (setf (getf existing :total-bytes)
+                        (+ 4 (getf existing :total-bytes)))
+                  (setf (getf existing :grad-bytes)
+                        (+ 4 (getf existing :grad-bytes)))))
+               (t
+                (let ((sd (list :name parent
+                                :value nil
+                                :kind :struct-by-value
+                                :length nil
+                                :perturb-i nil
+                                :arg-width 1
+                                :arg-base fwd-base
+                                :grad-arg-width 3
+                                :grad-arg-base nil
+                                :buffer nil
+                                :grad-buffer nil
+                                :fields (list (list :name field-name
+                                                    :field field-only-name
+                                                    :value value
+                                                    :ftype ftype
+                                                    :offset 0))
+                                :total-bytes 4
+                                :grad-bytes 4)))
+                  (setf (gethash parent struct-descs-by-name) sd)
+                  (push sd descs)
+                  (incf fwd-base 1)
+                  (incf bwd-base 1))))))
+          (t
+           (let ((cls (%vad-classify-input value at-points name)))
+             (push (list :name name
+                         :value value
+                         :kind (getf cls :kind)
+                         :length (getf cls :length)
+                         :perturb-i (getf cls :perturb-i)
+                         :arg-width (getf cls :arg-width)
+                         :arg-base fwd-base
+                         :grad-arg-width (getf cls :grad-arg-width)
+                         :grad-arg-base nil
+                         :buffer nil
+                         :grad-buffer nil)
+                   descs)
+             (incf fwd-base (getf cls :arg-width))
+             (incf bwd-base (getf cls :arg-width)))))))
     (setf descs (nreverse descs))
     (let* ((output-fwd-base fwd-base)
            (output-bwd-base bwd-base)
            (grad-output-bwd-base (+ output-bwd-base 3)) ; output cell width = 3
            (grad-input-base     (+ grad-output-bwd-base 3)))
-      ;; In-place fill of :grad-arg-base.  Each descriptor already has the
-      ;; slot, so setf-getf modifies the existing cons.
       (let ((cur grad-input-base))
         (dolist (d descs)
           (setf (getf d :grad-arg-base) cur)
@@ -369,13 +457,14 @@
 
 (defun %vad-output-length-for-input (desc)
   "Returns the buffer element count needed for a forward input buffer,
-   or NIL when no buffer is needed (plain scalars are bound directly)."
+   or NIL when no buffer is needed (plain scalars / struct-by-value bound directly)."
   (case (getf desc :kind)
     (:scalar-float       1)
     (:vector-float       (getf desc :length))
     (:scalar-float-plain nil)   ; no forward buffer; bound on each launch
     (:scalar-int32-plain nil)   ; no forward buffer; bound on each launch
-    (:scalar-ulong       nil)))
+    (:scalar-ulong       nil)
+    (:struct-by-value    nil))) ; no fwd buffer; bytes packed each launch
 
 (defun %vad-grad-bytes-for (desc)
   "Returns byte-size for the gradient buffer for input DESC."
@@ -384,7 +473,8 @@
     (:scalar-float-plain 4)                            ; cell of float
     (:scalar-int32-plain 4)                            ; cell of float (int->float-grad)
     (:scalar-ulong       8)                            ; cell of double
-    (:vector-float       (* 4 (getf desc :length)))))  ; vector of float
+    (:vector-float       (* 4 (getf desc :length)))    ; vector of float
+    (:struct-by-value    (getf desc :grad-bytes))))    ; shadow struct bytes
 
 
 (defun verify-autodiff (fwd-spv-path bwd-spv-path fwd-kernel-name
@@ -392,6 +482,7 @@
                          (bwd-kernel-name (concatenate 'string fwd-kernel-name "_grad"))
                          inputs
                          at-points
+                         structs
                          (seed-grad 1.0)
                          (h 1e-3)
                          (atol 1e-2)
@@ -438,7 +529,7 @@
              (error "VERIFY-AUTODIFF: no inputs supplied"))
 
            (multiple-value-setq (descs output-fwd-base output-bwd-base grad-output-bwd-base)
-             (%vad-make-descriptors inputs at-points))
+             (%vad-make-descriptors inputs at-points structs))
 
            (cffi:with-foreign-objects ((platforms :pointer 1)
                                        (devices :pointer 1))
@@ -480,15 +571,12 @@
                  output-grad-buf (create-float-cell-buffer context))
 
            (labels
-               ((apply-primals (kernel perturb-desc delta)
-                  "Stages every input for the next launch of KERNEL.  Cell and
-                   vector inputs write their backing buffer (already bound);
-                   plain-float and ulong inputs bind their kernel arg directly
-                   (no buffer).  When PERTURB-DESC is non-NIL, perturbs that
-                   one input by DELTA:
-                     :scalar-float        shifts cell value
-                     :scalar-float-plain  shifts bound float value
-                     :vector-float        shifts only element at :perturb-i"
+               ((apply-primals (kernel perturb-desc delta &optional perturb-field)
+                  "Stages every input for the next launch of KERNEL.
+                   When PERTURB-DESC is non-NIL, perturbs that input by DELTA.
+                   PERTURB-FIELD names the specific :struct-by-value field to
+                   perturb (the field-name string, e.g. \"P.x\"); ignored for
+                   non-struct inputs."
                   (dolist (d descs)
                     (case (getf d :kind)
                       (:scalar-float
@@ -502,7 +590,6 @@
                                       (cl:float (+ v delta) 1.0) v)))
                          (bind-float-scalar-arg kernel (getf d :arg-base) vv)))
                       (:scalar-int32-plain
-                       ;; Integers are not perturbed (no continuous derivative).
                        (bind-int32-scalar-arg kernel (getf d :arg-base) (getf d :value)))
                       (:scalar-ulong
                        (bind-uint64-scalar-arg kernel (getf d :arg-base) (getf d :value)))
@@ -517,11 +604,26 @@
                                                      (+ (cl:float v 1.0) delta)
                                                      v))
                                    vals)))
-                         (write-float-vector queue (getf d :buffer) perturbed))))))
+                         (write-float-vector queue (getf d :buffer) perturbed)))
+                      (:struct-by-value
+                       (let* ((fields-raw (getf d :fields))
+                              (perturbed-fields
+                               (if (and (eq d perturb-desc) perturb-field)
+                                   (loop for f in fields-raw
+                                         collect (if (string= (getf f :name) perturb-field)
+                                                     (let ((f2 (copy-list f)))
+                                                       (setf (getf f2 :value)
+                                                             (+ (cl:float (getf f :value) 1.0) delta))
+                                                       f2)
+                                                     f))
+                                   fields-raw)))
+                         (bind-struct-by-value-arg kernel (getf d :arg-base)
+                                                   perturbed-fields
+                                                   (getf d :total-bytes)))))))
                 (bind-static-input-args (kernel)
                   "Binds the inputs that have a persistent backing buffer
-                   (cells and vectors).  Plain floats and ulongs are bound
-                   on every iteration by APPLY-PRIMALS."
+                   (cells and vectors).  Plain floats, ulongs, and structs
+                   are bound on every iteration by APPLY-PRIMALS."
                   (dolist (d descs)
                     (let ((base (getf d :arg-base)))
                       (case (getf d :kind)
@@ -534,12 +636,16 @@
                         ((:scalar-float :scalar-float-plain :scalar-int32-plain)
                          (bind-cell-arg bwd-kernel base (getf d :grad-buffer)))
                         (:scalar-ulong
-                         ;; Cell-of-double grad: same 3-arg shape, byte_size = 8.
                          (bind-cell-arg bwd-kernel base (getf d :grad-buffer)
                                         :byte-size 8))
                         (:vector-float
                          (bind-vector-arg bwd-kernel base (getf d :grad-buffer)
-                                          (getf d :length)))))))
+                                          (getf d :length)))
+                        (:struct-by-value
+                         ;; Shadow grad cell: cell-of-shadow-struct (byte_size = sum
+                         ;; of shadow-promoted field sizes, 4 per field for phase B).
+                         (bind-cell-arg bwd-kernel base (getf d :grad-buffer)
+                                        :byte-size (getf d :grad-bytes)))))))
                 (zero-grads ()
                   (dolist (d descs)
                     (case (getf d :kind)
@@ -549,13 +655,21 @@
                                                          (make-list (getf d :length)
                                                                     :initial-element 0.0)))
                       (:scalar-ulong
-                       ;; cell-of-double, write 8 zero bytes
                        (cffi:with-foreign-object (data :uint64 1)
                          (setf (cffi:mem-aref data :uint64 0) 0)
                          (check-cl (cl-enqueue-write-buffer queue (getf d :grad-buffer)
                                                             1 0 8 data
                                                             0 (cffi:null-pointer)
-                                                            (cffi:null-pointer)))))))))
+                                                            (cffi:null-pointer)))))
+                      (:struct-by-value
+                       (let ((nbytes (getf d :grad-bytes)))
+                         (cffi:with-foreign-object (data :uint8 nbytes)
+                           (loop for i from 0 below nbytes
+                                 do (setf (cffi:mem-aref data :uint8 i) 0))
+                           (check-cl (cl-enqueue-write-buffer queue (getf d :grad-buffer)
+                                                              1 0 nbytes data
+                                                              0 (cffi:null-pointer)
+                                                              (cffi:null-pointer))))))))))
 
              ;; Static binds: buffer-backed inputs bound once.
              (bind-static-input-args fwd-kernel)
@@ -610,7 +724,28 @@
                                    (grad (/ (- y-plus y-minus) (* 2.0 h))))
                               (push (cons (getf d :name) grad) fd-rows)
                               (vlog "~&;   d/d~a[~a]: y+=~a y-=~a num=~a~%"
-                                    (getf d :name) at y-plus y-minus grad))))))))
+                                    (getf d :name) at y-plus y-minus grad))))))
+                     (:struct-by-value
+                      ;; FD per float field; int fields get canonical num=0.
+                      (dolist (f (getf d :fields))
+                        (let ((fname (getf f :name)))
+                          (case (getf f :ftype)
+                            (:int32
+                             (push (cons fname 0.0) fd-rows)
+                             (vlog "~&;   d/d~a: skipped (int field); num=0.0~%" fname))
+                            (:float
+                             (apply-primals fwd-kernel d h fname)
+                             (write-float-cell queue output-buf 0.0)
+                             (launch-kernel-1d queue fwd-kernel)
+                             (let ((y-plus (read-float-cell queue output-buf)))
+                               (apply-primals fwd-kernel d (- h) fname)
+                               (write-float-cell queue output-buf 0.0)
+                               (launch-kernel-1d queue fwd-kernel)
+                               (let* ((y-minus (read-float-cell queue output-buf))
+                                      (grad (/ (- y-plus y-minus) (* 2.0 h))))
+                                 (push (cons fname grad) fd-rows)
+                                 (vlog "~&;   d/d~a (struct field): y+=~a y-=~a num=~a~%"
+                                       fname y-plus y-minus grad))))))))))
 
                  ;; --- Backward with primals + seed.
                  (apply-primals bwd-kernel nil 0.0)
@@ -635,7 +770,27 @@
                                         (read-float-vector-elem queue
                                                                 (getf d :grad-buffer)
                                                                 at))
-                                  ana-rows))))))
+                                  ana-rows))))
+                       (:struct-by-value
+                        ;; Read N floats from the shadow grad cell, in field
+                        ;; declaration order (offsets 0, 4, 8, ...).
+                        (let ((nbytes (getf d :grad-bytes)))
+                          (cffi:with-foreign-object (raw :uint8 nbytes)
+                            (check-cl (cl-enqueue-read-buffer queue (getf d :grad-buffer)
+                                                              1 0 nbytes raw
+                                                              0 (cffi:null-pointer)
+                                                              (cffi:null-pointer)))
+                            (format *error-output* "~&[DBG] struct ~A grad raw bytes:" (getf d :name))
+                            (loop for i from 0 below nbytes
+                                  do (format *error-output* " ~2,'0X" (cffi:mem-aref raw :uint8 i)))
+                            (format *error-output* "~%")))
+                        (loop for f in (getf d :fields)
+                              for i from 0
+                              do (push (cons (getf f :name)
+                                             (read-float-vector-elem queue
+                                                                     (getf d :grad-buffer)
+                                                                     i))
+                                       ana-rows)))))
 
                    (setf fd-rows  (nreverse fd-rows)
                          ana-rows (nreverse ana-rows))

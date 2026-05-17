@@ -1,7 +1,12 @@
 
 ;; TEST-WITH[--metadata] : validate-def-struct-in-metadata
-
-
+;;
+;; C = p.x * p.y  where p.x is float, p.y is int.
+;; Forward struct layout: %POINT = type { float, i32 }, 8 bytes.
+;; Shadow grad layout:   %POINT_ADJ = type { float, float }, 8 bytes
+;;   (int field promoted to float per endeavor 101).
+;;   df/dp.x = p.y = 4.0
+;;   df/dp.y: int field => 0 (no continuous derivative).
 
 ;; aliasing
 (def-type fff float)

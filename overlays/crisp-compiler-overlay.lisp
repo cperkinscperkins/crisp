@@ -141,3 +141,159 @@
                                             ,backward-walk))
                                         (return)))))))))))))
 
+
+;; ==========================================================================
+;; IGC SROA-aliasing workaround (endeavor 103 phase B, 2026-05-16):
+;;   %volatile-read pseudo-op
+;;
+;; Symptom: when the shadow-struct write at the end of a backward kernel reads
+;; two (or more) sibling float adjoint allocas (e.g. P_X_ADJ and P_Y_ADJ) into
+;; a {float, float} aggregate that is then stored to addrspace(1), Intel/IGC
+;; coalesces the allocas — both reads return the value of one of them.  E.g.
+;; the canonical 056/01 case wrote {4.0, 4.0} instead of the IR-correct
+;; {4.0, 3.0}.  The same LLVM IR translated to PTX (NVPTX backend) produces
+;; the correct output, so the IR itself is well-formed — see
+;; put_temp_files_here/igc-bug-report/ for the minimal reproducer.
+;;
+;; Workaround: emit each leaf adjoint read in the shadow-write as
+;; `load volatile`, which inhibits SROA promotion of the alloca and avoids
+;; the miscompilation.  We do this surgically — only the loads that feed the
+;; shadow constructor — not all loads in the backward kernel.
+;;
+;; Implementation:
+;;   1. A new Crisp pseudo-op `%volatile-read` whose analyzer is a no-op on
+;;      semantics but records the underlying semantic-var-read in a side
+;;      table (*volatile-var-reads*).
+;;   2. The var-read codegen consults that side table and, if present,
+;;      calls LLVMSetVolatile on the emitted load.
+;;   3. %build-shadow-ctor-form wraps each leaf adj-sym in (%volatile-read ...).
+;;
+;; Remove the wrap (and ideally this whole block) once IGC ships the fix.
+
+(defvar *volatile-var-reads*
+  (make-hash-table :test 'eq :weakness :key)
+  "Set of semantic-var-read nodes whose load should be emitted as volatile.
+   Weak-keyed so entries vanish when the kernel's AST is GC'd.")
+
+(defun analyze-%volatile-read-expression (expr env context location)
+  "Analyzes (%volatile-read SYM): produces the same semantic node as a plain
+   var-read for SYM, but tags the node in *volatile-var-reads* so codegen
+   emits the load as volatile.  IGC SROA-aliasing workaround."
+  (let ((inner (analyze-expression (second expr) env context
+                                   (append location '(1)))))
+    (setf (gethash inner *volatile-var-reads*) t)
+    inner))
+
+;; src/analysis/core.lisp — initialize-expression-analyzers.
+;; Whole-function replacement (mirroring the full original) with one
+;; extra registration at the end for %volatile-read (IGC workaround).
+(defun initialize-expression-analyzers ()
+  "Registers all expression analyzers; extended for 087-gpu-builtins.
+   Endeavor 103 phase B: adds %volatile-read for the IGC workaround."
+  (clrhash *expression-analyzers*)
+  (register-ops-analyzers)
+  (register-control-analyzers)
+  (register-struct-analyzers)
+  ;; ##(...) device vector literal
+  (setf (gethash 'crisp-vec-literal *expression-analyzers*)
+        #'analyze-crisp-dvec-literal)
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    ;; Component accessors x~ / y~ / z~ / w~
+    (dolist (name '("X~" "Y~" "Z~" "W~"))
+      (let ((sym-cl (intern name cl-pkg))
+            (sym-cc (intern name cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) #'analyze-dvec-component-ref)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) #'analyze-dvec-component-ref))))
+    ;; 083 matrix helpers: transpose, col, row, transpose!
+    (dolist (entry `(("TRANSPOSE"  . ,#'analyze-transpose-expression)
+                     ("COL"        . ,#'analyze-col-expression)
+                     ("ROW"        . ,#'analyze-row-expression)
+                     ("TRANSPOSE!" . ,#'analyze-transpose-bang-expression)))
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg))
+            (fn     (cdr entry)))
+        (setf (gethash sym-cl *expression-analyzers*) fn)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) fn))))
+    ;; 087 GPU built-in functions
+    (dolist (entry '(("GET-GLOBAL-ID"          :get-global-id)
+                     ("GET-LOCAL-ID"            :get-local-id)
+                     ("GET-WORKGROUP-ID"        :get-workgroup-id)
+                     ("GET-NUM-GROUPS"          :get-num-groups)
+                     ("GET-LOCAL-WORK-SIZE"     :get-local-work-size)
+                     ("GET-GLOBAL-WORK-SIZE"    :get-global-work-size)
+                     ("GET-GLOBAL-OFFSET"       :get-global-offset)
+                     ("GET-GLOBAL-ID-ABS"       :get-global-id-abs)
+                     ("GET-WORK-DIM"            :get-work-dim)
+                     ("GET-LOCAL-LINEAR-ID"     :get-local-linear-id)
+                     ("GET-LOCAL-LINEAR-SIZE"   :get-local-linear-size)
+                     ("GET-GLOBAL-LINEAR-ID"    :get-global-linear-id)
+                     ("GET-GLOBAL-LINEAR-SIZE"  :get-global-linear-size)
+                     ("GET-TOTAL-THREADS"       :get-total-threads)
+                     ("GET-TOTAL-GROUPS"        :get-total-groups)
+                     ("LOCAL-BARRIER"           :local-barrier)
+                     ("MEM-FENCE"               :mem-fence)))
+      (let* ((name-str (first entry))
+             (kw       (second entry))
+             (fn       (let ((kw0 kw) (ns0 name-str))
+                         (lambda (expr env context location)
+                           (%analyze-gpu-builtin kw0 ns0 expr env context location)))))
+        (let ((sym-cl (intern name-str cl-pkg))
+              (sym-cc (intern name-str cc-pkg)))
+          (setf (gethash sym-cl *expression-analyzers*) fn)
+          (unless (eq sym-cl sym-cc)
+            (setf (gethash sym-cc *expression-analyzers*) fn)))))
+    ;; IGC SROA-aliasing workaround (endeavor 103 phase B): %volatile-read
+    (setf (gethash '%volatile-read *expression-analyzers*)
+          #'analyze-%volatile-read-expression)))
+
+;; src/codegen.lisp — generate-node-ir on semantic-var-read.
+;; Whole-method replacement; only addition is the LLVMSetVolatile call when
+;; the node is tagged in *volatile-var-reads*.
+(defmethod generate-node-ir ((node semantic-var-read) builder module var-env
+                              di-builder di-scope location-map)
+  "Generates IR for reading a variable.
+   IGC workaround: emits a volatile load when NODE is tagged in
+   *volatile-var-reads*."
+  (declare (ignore di-builder di-scope location-map))
+  (log:debug "Generating IR for var-read: ~s" (semantic-var-read-name node))
+  (let* ((var-name (semantic-var-read-name node))
+         (alloca (gethash var-name var-env)))
+    (when (null alloca)
+      (log:error "CRITICAL: Var ~a not found in var-env!" var-name)
+      (log:error "Var-env keys: ~a" (alexandria:hash-table-keys var-env)))
+    (let* ((type (crisp-type-to-llvm-type (semantic-var-read-type node) module))
+           (loaded-name (string-downcase (format nil "~a" var-name)))
+           (load-inst (llvm-build-load2 builder type alloca loaded-name)))
+      (log:info "Var-read: ~a. Alloca: ~a. Type: ~a" var-name alloca type)
+      (when (gethash node *volatile-var-reads*)
+        (log:debug "Var-read ~a marked volatile (IGC workaround)" var-name)
+        (crisp.llvm-bindings::llvm-set-volatile load-inst 1))
+      (values load-inst nil))))
+
+;; src/autodiff.lisp — %build-shadow-ctor-form.
+;; Whole-function replacement; the only change is wrapping each leaf adj
+;; sym in (%volatile-read ...) so the var-read codegen emits a volatile
+;; load.  Nested-struct fields recurse as before (their leaves get wrapped).
+(defun %build-shadow-ctor-form (struct-type-name field-adj-alist pkg)
+  "Builds a (MAKE-<S>_ADJ :field1 val1 :field2 val2 ...) form recursively.
+   For scalar leaf fields, val is wrapped in (%volatile-read SYM) — see
+   IGC SROA-aliasing workaround commentary above."
+  (let ((ctor (%make-shadow-constructor-name-for struct-type-name)))
+    (cons ctor
+          (loop for (fname-str . field-info) in field-adj-alist
+                append
+                (list (intern fname-str :keyword)
+                      (cond
+                        ((%nested-field-info-p field-info)
+                         (let* ((fields (%get-record-runtime-fields struct-type-name))
+                                (fentry (find fname-str fields
+                                              :key (lambda (f) (symbol-name (first f)))
+                                              :test #'string-equal))
+                                (inner-type (when fentry (second fentry))))
+                           (if (and inner-type (%crisp-struct-type-p inner-type))
+                               (%build-shadow-ctor-form inner-type field-info pkg)
+                               0)))
+                        (t (list '%volatile-read field-info))))))))

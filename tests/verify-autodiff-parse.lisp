@@ -114,6 +114,11 @@
      expect.<name>=<float>    Expected analytical gradient.  For scalar inputs
                               this is the full gradient; for vector inputs it
                               is the gradient at the at.<name> index.
+     struct=<name,name,...>   Comma-separated list of dotted-name parents that
+                              are struct inputs (passed by value as one kernel
+                              arg, with a shadow-struct grad cell as &out).
+                              Without this, dotted-name parents are treated as
+                              records (SROA'd into per-field plain args).
 
    Return value, when a directive is present:
      (:inputs         ((<name-string> . <scalar-or-list>) ...)
@@ -121,7 +126,8 @@
       :h              <float>
       :seed-grad      <float>
       :at-points      ((<name-string> . <integer>) ...)
-      :expected-grads ((<name-string> . <float>) ...))
+      :expected-grads ((<name-string> . <float>) ...)
+      :structs        (<name-string> ...))
 
    In :inputs, the value is a real number for scalar inputs and a list of
    real numbers for vector inputs."
@@ -142,6 +148,7 @@
               (inputs nil)
               (at-points nil)
               (expected-grads nil)
+              (structs nil)
               (atol nil)
               (h 1e-3)
               (seed-grad 1.0))
@@ -158,6 +165,20 @@
                 (setf h (%vad-parse-float val-str token)))
                ((string= key "seed-grad")
                 (setf seed-grad (%vad-parse-float val-str token)))
+               ((string= key "struct")
+                ;; Comma-separated list of struct-input parent names.
+                (let ((parts (loop with parts = nil
+                                   with start = 0
+                                   for i from 0 below (length val-str)
+                                   when (char= (aref val-str i) #\,)
+                                     do (push (subseq val-str start i) parts)
+                                        (setf start (1+ i))
+                                   finally (push (subseq val-str start) parts)
+                                           (return (nreverse parts)))))
+                  (dolist (p parts)
+                    (let ((trimmed (string-trim '(#\Space #\Tab) p)))
+                      (when (> (length trimmed) 0)
+                        (push trimmed structs))))))
                ((and (>= (length key) 7)
                      (string= "expect." (subseq key 0 7)))
                 (push (cons (subseq key 7) (%vad-parse-float val-str token))
@@ -183,4 +204,5 @@
                :h h
                :seed-grad seed-grad
                :at-points (nreverse at-points)
-               :expected-grads (nreverse expected-grads)))))))
+               :expected-grads (nreverse expected-grads)
+               :structs (nreverse structs)))))))
