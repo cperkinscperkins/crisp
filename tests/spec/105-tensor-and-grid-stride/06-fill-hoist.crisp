@@ -1,0 +1,13 @@
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 0 1 2 3
+;; Fill a 4-element 1D tensor with its indices using tensor-stride.
+;; Mirrors 093/03-fill-hoist but uses tensor-stride (N=1) instead of
+;; loop-vector-stride.  Each of 4 threads writes its index into out[i].
+
+(def-type vec4 (tensor int 1 :address-space :global :align :compact))
+
+(def-kernel ten_fill_iota (&out out)
+  (declare #'(&out vec4 => nil)
+           (global-size :set-to 4))
+  (tensor-stride out (i)
+    (set! (~ out i) (to-int i))))

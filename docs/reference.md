@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-17T02:40:53.309726Z
+Generated on 2026-05-17T18:20:48.139841Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -152,9 +152,51 @@ Generated on 2026-05-17T02:40:53.309726Z
 
 
 ---
+### DEFUN `%TS-BUILD-DECODE-BINDINGS`
+- **Args**: `(FLAT-SYM BINDING-SYMS STRIDE-SYMS CT)`
+
+  > Builds the let* binding list that decodes FLAT-SYM into BINDING-SYMS using  >    STRIDE-SYMS (per-iteration-strides for each dim, length N or N-1) under  >    contiguous-term CT (:last or :first).  >   >    For CT :last:  i0 = flat/s0; rem1 = flat - i0*s0; i1 = rem1/s1; ...; i_{N-1} = rem_{N-1}  >    For CT :first: i_{N-1} = flat/s_{N-1}; rem1 = flat - i_{N-1}*s_{N-1}; ...; i_0 = rem_{N-1}
+
+
+---
+### DEFUN `%TS-BUILD-STRIDE-BINDINGS`
+- **Args**: `(EXTENTS-SYMS CT)`
+
+  > Returns a list of (stride-sym stride-form) bindings for the per-iteration  >    strides, in dim-index order (s_0 .. s_{N-2}).  For N=1, returns NIL.  >   >    For CT :last:  s_k = product(E_{k+1} .. E_{N-1})  >    For CT :first: s_k = product(E_0     .. E_{k-1})  but iteration uses these  >                   in reverse, so we build s_{N-1} .. s_1 instead.  >    Returned bindings have the same indexing convention as %ts-build-decode-bindings.
+
+
+---
+### DEFUN `%TS-CANONICALIZE-TENSOR-TYPE`
+- **Args**: `(RAW-TYPE)`
+
+  > Resolves RAW-TYPE down to the canonical 6-tuple (TENSOR elem N addr aln ct).  >    Mirrors %083-require-2d-tensor's normalisation but is arity-agnostic.  >    Returns the 6-tuple, or NIL when RAW-TYPE isn't a tensor.
+
+
+---
+### DEFUN `%TS-LAYOUT-TAG-TO-CT`
+- **Args**: `(TAG N LOCATION)`
+
+  > Maps a strict layout-tag to its effective contiguous-term (:last or :first).  >    Validates the tag and (for :row-major / :col-major) the 2D restriction.
+
+
+---
+### DEFUN `ANALYZE-TENSOR-STRIDE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes the tensor-stride form, both variants:  >      safe:   (tensor-stride T (BINDINGS...) BODY...)  >      strict: (tensor-stride T LAYOUT-TAG (BINDINGS...) BODY...)  >   >    For an N-D tensor with contiguous-term CT, expands to a single linear  >    dotimes over total length, then decodes multi-D coords from the flat  >    index.  Strict variant: validates LAYOUT-TAG against the tensor's static  >    CT — disagreement is a compile-time error.  >   >    The (declare (grid-level)) enforces dispatch context and prevents nesting.
+
+
+---
+### DEFUN `ANALYZE-GRID-STRIDE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  >    Both lists must have the same arity (>= 1).  Expands to a single linear  >    dotimes over the total iteration count (product of sizes), then decodes  >    multi-D coords with rightmost-binding-gets-warp ordering.
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including loop-vector-stride.
+  > Registers all control flow expression analyzers, including loop-vector-stride  >    and (endeavor 105) tensor-stride.
 
 
 ---
@@ -1238,7 +1280,7 @@ Generated on 2026-05-17T02:40:53.309726Z
 ### DEFUN `%BACKWARD-SKIP-FN-P`
 - **Args**: `(FN-SYM)`
 
-  > Returns T if FN-SYM should be silently skipped in the AD backward walk.  > Skips:  >   - System-generated functions (name contains %)  >   - AS / AS-* type casts and derived-type coercions  >   - TO-<int-type> integer conversions  >   - 101 endeavor: built-in metadata helpers and view constructors.  >     For metadata helpers (num-rows, num-cols, get-layout, length~, extents~,  >     strides~, parent~, bytes~, contiguous-term~) the result is independent  >     of the input's data values — gradient is zero, sink-style.  >     For view constructors (make-matrix, make-vector, make-cell, make-tensor)  >     the result is a view of the same underlying storage — for chain-rule  >     purposes we treat them as sinks (gradient does not flow back through  >     the constructor).  This is correct when the view is used only for  >     metadata extraction; it is conservative (loses gradient signal) when  >     the view is used to read/write the underlying data.  A future extension  >     could add a pass-through gradient rule for that case.
+  > Returns T if FN-SYM should be silently skipped in the AD backward walk.  > Skips:  >   - System-generated functions (name contains %)  >   - AS / AS-* type casts and derived-type coercions  >   - TO-<int-type> integer conversions  >   - 101 endeavor: built-in metadata helpers and view constructors.  >   - 105 endeavor: 087 GPU built-ins (per-launch constants and sync primitives).
 
 
 ---

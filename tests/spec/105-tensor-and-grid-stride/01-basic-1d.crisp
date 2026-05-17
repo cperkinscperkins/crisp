@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Basic 1D tensor-stride: copy every element of A into B.
+;; Validates the analyzer expands a single-binding tensor-stride form
+;; correctly and generates valid IR.  Mirrors 093/01 but uses
+;; tensor-stride (with N=1) instead of loop-vector-stride.
+
+(def-type vec-t (vector int :address-space :global :align :compact))
+
+(def-kernel ten_copy_1d (A &out B)
+  (declare #'(vec-t &out vec-t => nil) forward-only)
+  (tensor-stride A (i)
+    (set! (~ B i) (~ A i))))

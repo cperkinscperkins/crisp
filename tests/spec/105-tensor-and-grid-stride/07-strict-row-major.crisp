@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Strict tensor-stride with :row-major.  Last binding (col-x) varies along
+;; the warp lane.  :row-major is the 2D-only synonym of :contiguous-last;
+;; tensor's static CT is :last so the tag agrees.
+
+(def-type mat-t (matrix int :address-space :global :align :compact))
+
+(def-kernel mat_fill_rm (&out M)
+  (declare #'(&out mat-t => nil) forward-only)
+  (tensor-stride M :row-major (row-y col-x)
+    (set! (~ M row-y col-x) 1)))

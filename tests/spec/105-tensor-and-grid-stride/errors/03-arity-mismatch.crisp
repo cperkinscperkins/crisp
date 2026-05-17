@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "tensor-stride: tensor has 2 dimension(s) but 3 binding(s) provided"
+;; Binding count must match the tensor's declared rank.
+
+(def-type mat-t (matrix int :address-space :global :align :compact))
+
+(def-kernel arity_mismatch (&out M)
+  (declare #'(&out mat-t => nil) forward-only)
+  (tensor-stride M (y x z)
+    (set! (~ M y x) (to-int z))))

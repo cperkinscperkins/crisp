@@ -163,6 +163,21 @@ I usually prefer that we follow a Test Driven Development (TDD) approach.  The t
 I made a little document @crisp/plan/definition-of-done.md that lists the little tasks we
 shouldn't overlook as we finish any given feature.
 
+### Avoid 'forward-only'
+For our TDD tests if there is a non-differentiable kernel, we have two options to prevent it
+from failing the --differentiate pass of the spec runner.  We can add a `forward-only` declaration
+to the kernel, or we can use a directive: `;; SKIP-WITH[--differentiate]: "reason"`
+
+Let's try to make the practice of NOT using `forward-only` and instead use the directive.
+Also, the A|D system is quite powerful now and has far fewer exceptions than in the past, most
+kernels SHOULD be differentiable. 
+
+### Don't forget to test 'on metal'
+Most of the TDD tests just need to compile correctly and many have additional validators that
+can be called. But for some endeavors it's important to remember to test on actual GPU hardware.
+Use the `TEST-HOIST[L0]` and `HOIST-EXPECT` for that.
+Additionally, the `--differentiate` pass can ALSO be tested on metal using the `VERIFY-AUTODIFF` directive (and its expectation)
+
 
 Exploiting Lisp MCP
 -------------------

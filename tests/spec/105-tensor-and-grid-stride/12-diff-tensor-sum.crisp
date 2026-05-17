@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;;
+;; Forward-only kernel exercising tensor-stride.  Placeholder for a future
+;; AD-of-tensor-stride test once the AD machinery learns to walk
+;; `(dotimes ...)` bodies.
+;;
+;; Status (2026-05-17): Crisp's AD backward walker (src/autodiff.lisp's
+;; %handle-single-value-backward) operates on the kernel body's ANF and has
+;; no case for `dotimes`, `if`/`when`, or `set!` to a cell.  Trying to
+;; differentiate the previous formulation of this test raised
+;; "Function SET! / WHEN / DOTIMES is not differentiable."  AD-of-loops
+;; would let the chain rule flow through every iteration of a tensor-stride;
+;; that's a substantial extension to AD and lives outside endeavor 105.
+
+(def-type vec-t (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel ten_double_a2 (A &out C)
+    (declare #'(vec-t &out out-c) forward-only)
+  (tensor-stride A (i)
+    (set! (~ C) (* 2.0f (~ A 2)))))

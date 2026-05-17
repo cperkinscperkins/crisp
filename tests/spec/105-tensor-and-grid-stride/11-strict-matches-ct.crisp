@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Strict tag matches the tensor's static contiguous-term explicitly.
+;; Asserts the agreement path compiles clean (no error, no runtime branch).
+;; Mirrors 02-basic-2d but uses the strict form to lock in the layout.
+
+(def-type mat-t (matrix int :address-space :global :align :compact :contiguous-term :last))
+
+(def-kernel mat_fill_strict_match (&out M)
+  (declare #'(&out mat-t => nil) forward-only)
+  (tensor-stride M :contiguous-last (row-y col-x)
+    (set! (~ M row-y col-x) 17)))

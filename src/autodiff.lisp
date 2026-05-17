@@ -883,6 +883,7 @@ to compute-base-type for derived types."
 
 
 
+
 (defun %backward-skip-fn-p (fn-sym)
   "Returns T if FN-SYM should be silently skipped in the AD backward walk.
 Skips:
@@ -890,19 +891,9 @@ Skips:
   - AS / AS-* type casts and derived-type coercions
   - TO-<int-type> integer conversions
   - 101 endeavor: built-in metadata helpers and view constructors.
-    For metadata helpers (num-rows, num-cols, get-layout, length~, extents~,
-    strides~, parent~, bytes~, contiguous-term~) the result is independent
-    of the input's data values — gradient is zero, sink-style.
-    For view constructors (make-matrix, make-vector, make-cell, make-tensor)
-    the result is a view of the same underlying storage — for chain-rule
-    purposes we treat them as sinks (gradient does not flow back through
-    the constructor).  This is correct when the view is used only for
-    metadata extraction; it is conservative (loses gradient signal) when
-    the view is used to read/write the underlying data.  A future extension
-    could add a pass-through gradient rule for that case."
+  - 105 endeavor: 087 GPU built-ins (per-launch constants and sync primitives)."
   (let ((name (symbol-name fn-sym)))
     (cl:flet ((prefix-or-mangled-p (prefix)
-                ;; Matches PREFIX exactly or PREFIX_<mangle-suffix>.
                 (let ((plen (length prefix)))
                   (or (string= name prefix)
                       (and (> (length name) plen)
@@ -922,7 +913,18 @@ Skips:
                              "CONTIGUOUS-TERM~" "ELEMENT-TYPE~" "ADDRESS-SPACE~"
                              "ALIGN~" "NUM-DIMS~" "OFFSET~"
                              "MAKE-MATRIX" "MAKE-VECTOR" "MAKE-CELL" "MAKE-TENSOR"
-                             "TRANSPOSE" "TRANSPOSE!" "ROW" "COL" "SLICE")
+                             "TRANSPOSE" "TRANSPOSE!" "ROW" "COL" "SLICE"
+                             ;; 105 follow-up: 087 GPU built-ins.  All 17 return
+                             ;; per-launch constants (sizes, indices) or are
+                             ;; synchronization primitives; none carry gradient.
+                             "GET-GLOBAL-ID" "GET-LOCAL-ID" "GET-WORKGROUP-ID"
+                             "GET-NUM-GROUPS" "GET-LOCAL-WORK-SIZE"
+                             "GET-GLOBAL-WORK-SIZE" "GET-GLOBAL-OFFSET"
+                             "GET-GLOBAL-ID-ABS" "GET-WORK-DIM"
+                             "GET-LOCAL-LINEAR-ID" "GET-LOCAL-LINEAR-SIZE"
+                             "GET-GLOBAL-LINEAR-ID" "GET-GLOBAL-LINEAR-SIZE"
+                             "GET-TOTAL-THREADS" "GET-TOTAL-GROUPS"
+                             "LOCAL-BARRIER" "MEM-FENCE")
              when (prefix-or-mangled-p prefix) return t)))))
 
 

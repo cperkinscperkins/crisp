@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "Grid-level context cannot appear in a thread-level function"
+;; tensor-stride requires a dispatch context (def-kernel / def-grid-function).
+;; Using it inside a plain def-function must error.
+
+(def-type vec-t (tensor int 1 :address-space :global :align :compact))
+
+(def-function bad_stride (v)
+  (declare #'(vec-t => nil))
+  (tensor-stride v (i)
+    (set! (~ v i) (to-int i))))
