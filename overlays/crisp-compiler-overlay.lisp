@@ -358,6 +358,60 @@
                        dotimes-form))))
     (analyze-expression outer-let env context location)))
 
+;; src/autodiff.lisp — %backward-skip-fn-p.
+;;
+;; Endeavor 105 follow-up: the AD backward walker had no skip entries for the
+;; 17 GPU built-ins added in endeavor 087 (get-global-id, get-global-work-size,
+;; etc.).  These return per-launch constants — gradient is zero, sink-style —
+;; so they should be silently skipped, the same way other metadata helpers
+;; (length~, extents~, etc.) are.  Without this, any kernel that uses
+;; tensor-stride / grid-stride / loop-vector-stride could not differentiate
+;; even when its body's chain rule was otherwise valid.
+;;
+;; Whole-function replacement (preserves all original cases + adds GPU builtins).
+(defun %backward-skip-fn-p (fn-sym)
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
+Skips:
+  - System-generated functions (name contains %)
+  - AS / AS-* type casts and derived-type coercions
+  - TO-<int-type> integer conversions
+  - 101 endeavor: built-in metadata helpers and view constructors.
+  - 105 endeavor: 087 GPU built-ins (per-launch constants and sync primitives)."
+  (let ((name (symbol-name fn-sym)))
+    (cl:flet ((prefix-or-mangled-p (prefix)
+                (let ((plen (length prefix)))
+                  (or (string= name prefix)
+                      (and (> (length name) plen)
+                           (string= (subseq name 0 plen) prefix)
+                           (cl:char= (cl:char name plen) #\_))))))
+      (or
+       (find #\% name)
+       (string= name "AS")
+       (and (>= (length name) 3) (string= (subseq name 0 3) "AS-"))
+       (loop for suffix in '("ULONG" "LONG" "UINT" "INT" "USHORT" "SHORT" "UCHAR" "CHAR" "BOOL")
+                when (and (>= (length name) (+ 3 (length suffix)))
+                          (string= (subseq name 0 3) "TO-")
+                          (string= (subseq name (- (length name) (length suffix))) suffix))
+                return t)
+       (loop for prefix in '("NUM-ROWS" "NUM-COLS" "GET-LAYOUT" "BYTES~"
+                             "LENGTH~" "EXTENTS~" "STRIDES~" "PARENT~"
+                             "CONTIGUOUS-TERM~" "ELEMENT-TYPE~" "ADDRESS-SPACE~"
+                             "ALIGN~" "NUM-DIMS~" "OFFSET~"
+                             "MAKE-MATRIX" "MAKE-VECTOR" "MAKE-CELL" "MAKE-TENSOR"
+                             "TRANSPOSE" "TRANSPOSE!" "ROW" "COL" "SLICE"
+                             ;; 105 follow-up: 087 GPU built-ins.  All 17 return
+                             ;; per-launch constants (sizes, indices) or are
+                             ;; synchronization primitives; none carry gradient.
+                             "GET-GLOBAL-ID" "GET-LOCAL-ID" "GET-WORKGROUP-ID"
+                             "GET-NUM-GROUPS" "GET-LOCAL-WORK-SIZE"
+                             "GET-GLOBAL-WORK-SIZE" "GET-GLOBAL-OFFSET"
+                             "GET-GLOBAL-ID-ABS" "GET-WORK-DIM"
+                             "GET-LOCAL-LINEAR-ID" "GET-LOCAL-LINEAR-SIZE"
+                             "GET-GLOBAL-LINEAR-ID" "GET-GLOBAL-LINEAR-SIZE"
+                             "GET-TOTAL-THREADS" "GET-TOTAL-GROUPS"
+                             "LOCAL-BARRIER" "MEM-FENCE")
+             when (prefix-or-mangled-p prefix) return t)))))
+
 ;; src/analysis/control.lisp — register-control-analyzers.
 ;; Whole-function replacement (mirroring the full original) with one extra
 ;; registration block at the end for tensor-stride (endeavor 105 Phase A).
