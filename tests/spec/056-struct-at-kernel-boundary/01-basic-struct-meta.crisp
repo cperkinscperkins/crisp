@@ -1,7 +1,19 @@
 
 ;; TEST-WITH[--metadata] : validate-def-struct-in-metadata
-
-
+;; VERIFY-AUTODIFF: p.x=3.0 p.y=4 struct=p atol=1e-3 expect.p.x=4.0 expect.p.y=3.0
+;;
+;; Why expect.p.y=3.0 (not 0.0): p.y is an int field of POINT.  The shadow-
+;; struct AD mechanism (endeavor 101) promotes int adjoints to float, so the
+;; chain rule flows through and produces df/dp.y = p.x = 3.0.  FD perturbation
+;; of an int input is skipped by the runner (no continuous derivative), so
+;; expect.p.y is the only check on this field.
+;;
+;; C = p.x * p.y  where p.x is float, p.y is int.
+;; Forward struct layout: %POINT = type { float, i32 }, 8 bytes.
+;; Shadow grad layout:   %POINT_ADJ = type { float, float }, 8 bytes
+;;   (int field promoted to float per endeavor 101).
+;;   df/dp.x = p.y = 4.0
+;;   df/dp.y: int field => 0 (no continuous derivative).
 
 ;; aliasing
 (def-type fff float)

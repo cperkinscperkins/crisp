@@ -1,0 +1,18 @@
+;; VERIFY-AUTODIFF: p.x=3.0 p.y=4.0 struct=p atol=1e-3 expect.p.x=4.0 expect.p.y=3.0
+;;
+;; f(p) = p.x * p.y.  At p={3.0, 4.0}:
+;;   df/dp.x = p.y = 4.0
+;;   df/dp.y = p.x = 3.0
+;;
+;; First on-metal test for the struct-at-boundary / shadow-struct path.
+;; The directive uses `struct=p` to tell the runner that `p` is a
+;; def-struct (passed by value as one kernel arg with a shadow-grad
+;; cell as &out), not a record (which would SROA into per-field cells).
+
+(def-struct simple-pt (x float) (y float))
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel struct_mul (p &out c)
+  (declare #'(simple-pt &out out-c))
+  (set! (~ c) (* (x~ p) (y~ p))))

@@ -1,0 +1,10 @@
+;; VERIFY-AUTODIFF: x=3.0 y=4.0 atol=1e-3 expect.x=4.0 expect.y=3.0
+;;
+;; f(x,y) = x*y  =>  df/dx = y = 4.0,  df/dy = x = 3.0
+
+(def-type in-ish (cell float :address-space :global))
+(def-type out-ish (cell float :address-space :global))
+
+(def-kernel cell_product (x y &out z)
+  (declare #'(in-ish in-ish &out out-ish))
+  (set! (~ z) (* (~ x) (~ y))))

@@ -346,6 +346,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                                                           T) TENSOR-INPUTS-HT)  autodiff.lisp
 - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                             BW))  autodiff.lisp
+- - - - - - - - (%STRIP-ACCESSOR-TILDES ACCESSOR)  autodiff.lisp
 - - - - - - - - (%NESTED-FIELD-INFO-P FIELD-INFO)  autodiff.lisp
 - - - - - - - - (%BACKWARD-SKIP-FN-P FN-SYM)  autodiff.lisp
 - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
@@ -724,6 +725,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%TYPE-SPEC-EQUAL-P T1 T2)  types/validation.lisp [RECURSION]
 - - - - (%TYPE-ATOM-EQUAL-P A B)  types/validation.lisp
 - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+
+- (ANALYZE-%VOLATILE-READ-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-AREF-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]

@@ -1,8 +1,15 @@
 ;; TEST-WITH[--ir-target=llvmir --differentiate] : validate-rec-kb-ct-prop
+;; VERIFY-AUTODIFF: vp-1.x=1.0 vp-1.y=2.0 vp-2.x=3.0 vp-2.y=4.0 atol=1e-3 expect.vp-1.x=3.0 expect.vp-1.y=4.0 expect.vp-2.x=1.0 expect.vp-2.y=2.0
+;;
+;; C = vp-1.x*vp-2.x + vp-1.y*vp-2.y  (dot product)
+;;   df/dvp-1.x = vp-2.x = 3.0    df/dvp-1.y = vp-2.y = 4.0
+;;   df/dvp-2.x = vp-1.x = 1.0    df/dvp-2.y = vp-1.y = 2.0
+;; The :c-t earnestness field is invisible to the physical ABI; the runner
+;; only sees x, y per record.
 
 ;; the :earnestness is kernel compile time property. It can't be set by the host.
 ;; It's fine for it to appear in the .metacrisp, but should NOT effect
-;; the kernel submission signature.  
+;; the kernel submission signature.
 
 
 

@@ -205,3 +205,48 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     The subsequent element write targets that local copy, not the original addrspace(1) pointer.
     A proper fix requires a store-back through the original pointer after the element mutation,
     similar to how a C++ reference or pointer-based write would work.
+
+[/] 030 - IGC (Intel Graphics Compiler) SROA-aliases sibling float allocas in differentiable kernels.
+    Affected tests: 056/01-basic-struct-meta (was failing on metal as part of endeavor 103 phase B,
+                    now passes via the workaround below);
+                    056/03-struct-with-ct-meta (still blocked — broader form of the same bug,
+                    workaround not sufficient; directive omitted with a note pending Intel fix).
+
+    Symptom: A differentiable kernel whose shadow-struct write builds a {float, float} aggregate
+    from two (or more) sibling per-field-adj allocas writes the SAME value to every slot of the
+    aggregate.  E.g. on 056/01 with point={x float, y int}, the chain rule produces
+    p_x_adj=4.0 and p_y_adj=3.0 (verified by reading the LLVM IR), but the grad cell reads back
+    as {4.0, 4.0} on Intel Arc B580 / IGC driver 32.0.101.8737.
+
+    Cross-check: the same LLVM IR translated to PTX via the NVPTX backend produces correct
+    output (two distinct register sources feed the two stores).  So the IR is well-formed; the
+    bug is downstream of Crisp, in either the LLVM-SPIRV translator's optimizer or IGC's JIT.
+
+    Minimal reproducer: put_temp_files_here/igc-bug-report/ contains
+      - bug.ll      : 108-line LLVM IR with no Crisp-specific types
+      - bug.spv     : translated via the bundled llvm-spirv (LLVM 22.0.0git)
+      - bug.ptx    : NVPTX output proving the IR is correct
+      - loader.cpp  : Level Zero host that runs bug.spv and prints the 8 output bytes
+      - README.md   : description, system info, reproduce steps
+    Bug to be reported to Intel 2026-05-18 (Monday).
+
+    Compiler workaround (2026-05-16, overlays/):
+      - overlays/crisp-llvm-bindings-overlay.lisp: bind LLVMSetVolatile.
+      - overlays/crisp-compiler-overlay.lisp: new compiler-internal pseudo-op
+        (crisp.compiler::%volatile-read SYM), an analyzer that tags the underlying
+        var-read in *volatile-var-reads*, a generate-node-ir override on semantic-var-read
+        that calls LLVMSetVolatile on the load when tagged, and an updated
+        %build-shadow-ctor-form that wraps each leaf adj sym in (%volatile-read ...).
+      Surgical: only the shadow-write's leaf-adj loads emit `load volatile`; chain-rule
+      intermediates remain non-volatile.  This is enough for 056/01.
+
+    Workaround insufficiency (2026-05-16): 056/03 has 7 chain-rule intermediate adj allocas
+    plus the 4 per-field leaves.  The workaround leaves the intermediates non-volatile, and
+    IGC SROA-aliases THEM too — the chain rule breaks before reaching the leaves.  Symptom:
+    p1.x analytical reads back as 1.0 (= seed_grad) instead of 5.0.  Broadening the
+    workaround to mark every adj load volatile is feasible but more invasive; deferred
+    pending the Intel fix.
+
+    When IGC ships the fix:
+      - Remove the %volatile-read pseudo-op and LLVMSetVolatile binding from the overlays.
+      - Re-tag 056/03-struct-with-ct-meta with its full VERIFY-AUTODIFF directive.

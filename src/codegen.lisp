@@ -618,20 +618,27 @@
 
 
 ;; -- reading a variable --
-(defmethod generate-node-ir ((node semantic-var-read) builder module var-env di-builder di-scope location-map)
-  "Generates IR for reading a variable."
+
+(defmethod generate-node-ir ((node semantic-var-read) builder module var-env
+                              di-builder di-scope location-map)
+  "Generates IR for reading a variable.
+   IGC workaround: emits a volatile load when NODE is tagged in
+   *volatile-var-reads*."
   (declare (ignore di-builder di-scope location-map))
   (log:debug "Generating IR for var-read: ~s" (semantic-var-read-name node))
   (let* ((var-name (semantic-var-read-name node))
          (alloca (gethash var-name var-env)))
     (when (null alloca)
-          (log:error "CRITICAL: Var ~a not found in var-env!" var-name)
-          (log:error "Var-env keys: ~a" (alexandria:hash-table-keys var-env)))
+      (log:error "CRITICAL: Var ~a not found in var-env!" var-name)
+      (log:error "Var-env keys: ~a" (alexandria:hash-table-keys var-env)))
     (let* ((type (crisp-type-to-llvm-type (semantic-var-read-type node) module))
-           (loaded-name (string-downcase (format nil "~a" var-name))))
+           (loaded-name (string-downcase (format nil "~a" var-name)))
+           (load-inst (llvm-build-load2 builder type alloca loaded-name)))
       (log:info "Var-read: ~a. Alloca: ~a. Type: ~a" var-name alloca type)
-      (values (llvm-build-load2 builder type alloca loaded-name)
-        nil))))
+      (when (gethash node *volatile-var-reads*)
+        (log:debug "Var-read ~a marked volatile (IGC workaround)" var-name)
+        (crisp.llvm-bindings::llvm-set-volatile load-inst 1))
+      (values load-inst nil))))
 
 ;; -- addition --
 (defun get-type-cat-safe (type-name type-obj)

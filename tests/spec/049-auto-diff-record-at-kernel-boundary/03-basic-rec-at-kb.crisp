@@ -1,7 +1,11 @@
 
 ;; TEST-WITH[--ir-target=llvmir --differentiate] : validate-rec-kb-basic
-
-
+;; VERIFY-AUTODIFF: vp.x=3.0 vp.y=4.0 atol=1e-3 expect.vp.x=4.0 expect.vp.y=3.0
+;;
+;; C = vp.x * vp.y  =>  df/dvp.x = vp.y = 4.0,  df/dvp.y = vp.x = 3.0
+;; Record fields SROA at the kernel boundary into plain floats (1 arg
+;; each), not cells.  Dotted input names (vp.x) tell the runner to bind
+;; them as plain floats; grad-outs are still cell-of-float.
 
 (def-record v-point (x float) (y float))
 

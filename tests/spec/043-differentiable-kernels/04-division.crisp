@@ -1,4 +1,7 @@
 ;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-division-chain-rule
+;; VERIFY-AUTODIFF: A=6.0 B=2.0 atol=1e-3 expect.A=0.5 expect.B=-1.5
+;;
+;; C = A / B  =>  df/dA = 1/B = 0.5,  df/dB = -A/B^2 = -6/4 = -1.5
 
 (def-type in-ish (cell float :address-space :global))
 (def-type out-ish (cell float :address-space :global))

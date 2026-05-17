@@ -1,6 +1,8 @@
 ;; TEST-WITH[--ir-target=llvmir --differentiate] : validate-rec-kb-unused-field
-
-
+;; VERIFY-AUTODIFF: vp.x=3.0 vp.y=4.0 atol=1e-3 expect.vp.x=0.0 expect.vp.y=2.0
+;;
+;; C = 2.0 * vp.y  =>  df/dvp.x = 0 (unused),  df/dvp.y = 2.0
+;; The vp.x field is declared but unused -- its gradient must be zero.
 
 (def-record v-point (x float) (y float))
 

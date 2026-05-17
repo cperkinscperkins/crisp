@@ -1,5 +1,21 @@
 ;; TEST-WITH[--metadata] : validate-def-struct-with-ct-in-metadata
 
+;; VERIFY-AUTODIFF directive omitted pending broader IGC SROA workaround.
+;;
+;; The backward kernel here has 7 chain-rule intermediate adj allocas
+;; (anf-t-1_adj .. anf-t-7_adj) on top of the four per-struct-field leaf adjs
+;; (p1_x/y_adj, p2_x/y_adj).  Crisp's IGC SROA-aliasing workaround currently
+;; marks only the leaf-adj reads at the shadow-struct write as `load volatile`,
+;; which is enough for 056/01 (3 chain-rule intermediates) but not for this
+;; test: the intermediates still alias under IGC SROA, breaking the chain
+;; rule before it reaches the leaves.  Symptom: p1.x analytical reads back as
+;; 1.0 (= seed_grad) instead of 5.0, and p2's grad cell is garbage.
+;;
+;; The same Crisp IR compiles correctly via NVPTX (verified by translating
+;; the .ll with `llc -mtriple=nvptx64-...`).  See
+;; put_temp_files_here/igc-bug-report/ for the minimal reproducer.
+;; Re-tag when IGC ships the fix.
+
 ;; the :earnestness is kernel compile time property. It can't be set by the host.
 ;; It's fine for it to appear in the .metacrisp, but should NOT effect
 ;; the kernel submission signature.  

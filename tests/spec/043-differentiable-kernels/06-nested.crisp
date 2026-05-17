@@ -1,4 +1,9 @@
 ;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-nested-chain-rule
+;; VERIFY-AUTODIFF: A=1.0 B=2.0 atol=1e-3 expect.A=2.4624 expect.B=0.8415
+;;
+;; C = (A + B) * sin(A)
+;;   df/dA = sin(A) + (A+B)*cos(A) = sin(1) + 3*cos(1) ~= 0.8415 + 1.6209 = 2.4624
+;;   df/dB = sin(A) = sin(1) ~= 0.8415
 
 (def-type in-ish (cell float :address-space :global))
 (def-type out-ish (cell float :address-space :global))

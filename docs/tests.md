@@ -224,6 +224,7 @@ Header comment directives for test expectations:
 ;; FAIL-WITH[--single-pass]: "Unsupported form"
 ;; TEST-WITH[--metadata] : validate-metacrisp
 ;; TEST-HOIST[L0]: validate-l0-compile-only
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3      <-- on-metal AD check; see below
 ;; CHECK-FAIL: "message"   <-- for the negative tests in errors
 ;; SKIP-WITH[--flag]: "reason for skipping" <-- for tests that should be skipped
 
@@ -234,6 +235,111 @@ Header comment directives for test expectations:
 ```
 
 See `docs/plan/scramble.md` section "Better Spine Testing" for details.
+
+## On-Metal AD Verification (`VERIFY-AUTODIFF`)
+
+The `;; VERIFY-AUTODIFF: …` directive (endeavor 103) runs a tagged spec's
+backward kernel on a real OpenCL device and checks that the analytical
+gradient matches a central-difference numerical gradient computed by
+running the forward kernel at `x ± h`. This catches arithmetic bugs that
+IR-level and metadata-level checks miss.
+
+### When it runs
+
+Only under `--differentiate`. The directive is parsed but skipped during
+the default pass, so the cost is opt-in.
+
+```bash
+# Tagged tests get a (Verify-Autodiff) extra check appended:
+sbcl --script tests/run-specs.lisp --filter=044-autodiff-execution --differentiate
+```
+
+### Directive grammar
+
+Body is whitespace-separated `key=value` tokens. Reserved keys:
+
+| Key                       | Meaning                                                            |
+| ------------------------- | ------------------------------------------------------------------ |
+| `atol=<float>`            | **Required.** Absolute tolerance for FD vs analytical comparison.  |
+| `h=<float>`               | Optional FD step size (default 1e-3).                              |
+| `seed-grad=<float>`       | Optional output gradient seed (default 1.0).                       |
+| `<name>=<float>`          | Scalar input value (kernel takes a `cell float`).                  |
+| `<name>=<integer>`        | Scalar input value (kernel takes a plain `ulong`).                 |
+| `<name>=[v0 v1 v2 ...]`   | 1D vector input (kernel takes a `vector float`).                   |
+| `at.<name>=<int>`         | Index in vector `<name>` to perturb / compare.                     |
+| `expect.<name>=<float>`   | Optional explicit expected analytical gradient. Compared with same `atol`. |
+
+Examples:
+
+```lisp
+;; Scalar in/out
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3 expect.x=6.0
+
+;; Two scalar inputs
+;; VERIFY-AUTODIFF: x=3.0 y=4.0 atol=1e-3 expect.x=4.0 expect.y=3.0
+
+;; 1D vector input, compare gradient at element 2
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] atol=1e-3 at.A=2 expect.A=6.0
+```
+
+Per-spec there is at most one `VERIFY-AUTODIFF:` line. Missing `atol`,
+malformed tokens, or duplicate directives all produce clear parse errors.
+
+### What gets verified
+
+For each *perturbable* input (`<name>=<float>` scalars and vector inputs
+that have an `at.<name>=<int>`):
+
+1. The forward kernel is run at `x ± h` to produce a central-difference
+   numerical gradient.
+2. The backward kernel is run once with all primals + `seed-grad`, and the
+   per-input analytical gradient is read back (full cell for scalar inputs,
+   `at.<name>` element for vector inputs).
+3. `|analytical − numerical| < atol` is required.
+4. If `expect.<name>=<float>` is given, the analytical gradient is *also*
+   compared against the explicit expected value with the same tolerance.
+
+Plain `ulong` scalar inputs participate in the kernel call but are not
+finite-differenced (integer indices have no meaningful gradient).
+
+Output looks like:
+
+```
+Running Spec: 01-square (Verify-Autodiff)... PASS (x: analytical=6.0 numerical=5.9995646 diff=4.35e-4)
+Running Spec: 02-product (Verify-Autodiff)... PASS (x: analytical=4.0 numerical=3.9997 diff=2.9e-4; y: analytical=3.0 numerical=3.0003 diff=2.6e-4)
+```
+
+### Requirements
+
+- An OpenCL ICD on `PATH` (`OpenCL.dll` on Windows, `libOpenCL.so` on
+  Linux). If loading fails, the check reports `SKIP (OpenCL runner
+  unavailable)` and counts as a pass — non-GPU CI does not fail.
+- The kernel must compile under `--differentiate` (otherwise the verify
+  step fails at the compile sub-step before reaching the device).
+
+### Output file cleanup
+
+The verify pass compiles fresh `<basename>.spv` and `<basename>_grad.spv`
+into the spec's directory, then deletes them on completion (success or
+failure). `--keep-work` preserves them for inspection.
+
+### Current scope
+
+- Inputs: scalar `cell float`, plain `ulong`, and 1D contiguous-compact
+  `vector float`.
+- Output: a single `cell float`.
+- Multi-dim tensors, records, structs, and multi-output kernels are not
+  yet supported.
+
+### Implementation pointers
+
+- Directive parser: `tests/verify-autodiff-parse.lisp` (pure CL, no
+  foreign deps; safe to load on hosts without OpenCL).
+- OpenCL runner: `tests/verify-autodiff-runner.lisp` (loaded lazily on
+  first use; load failure cached and reported once).
+- Spec-runner integration: see `run-verify-autodiff-pass` in
+  `tests/run-specs.lisp`.
+- Ad-hoc one-off run: `scripts/verify_autodiff.lisp`.
 
 ## Best Practices
 

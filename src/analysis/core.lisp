@@ -154,8 +154,52 @@
        (error "GPU built-in '~a' takes 0 or 1 arguments, got ~a" name-str (length args))))))
 
 
+
+;; ==========================================================================
+;; IGC SROA-aliasing workaround (endeavor 103 phase B, 2026-05-16):
+;;   %volatile-read pseudo-op
+;;
+;; Symptom: when the shadow-struct write at the end of a backward kernel reads
+;; two (or more) sibling float adjoint allocas (e.g. P_X_ADJ and P_Y_ADJ) into
+;; a {float, float} aggregate that is then stored to addrspace(1), Intel/IGC
+;; coalesces the allocas — both reads return the value of one of them.  E.g.
+;; the canonical 056/01 case wrote {4.0, 4.0} instead of the IR-correct
+;; {4.0, 3.0}.  The same LLVM IR translated to PTX (NVPTX backend) produces
+;; the correct output, so the IR itself is well-formed — see
+;; put_temp_files_here/igc-bug-report/ for the minimal reproducer.
+;;
+;; Workaround: emit each leaf adjoint read in the shadow-write as
+;; `load volatile`, which inhibits SROA promotion of the alloca and avoids
+;; the miscompilation.  We do this surgically — only the loads that feed the
+;; shadow constructor — not all loads in the backward kernel.
+;;
+;; Implementation:
+;;   1. A new Crisp pseudo-op `%volatile-read` whose analyzer is a no-op on
+;;      semantics but records the underlying semantic-var-read in a side
+;;      table (*volatile-var-reads*).
+;;   2. The var-read codegen consults that side table and, if present,
+;;      calls LLVMSetVolatile on the emitted load.
+;;   3. %build-shadow-ctor-form wraps each leaf adj-sym in (%volatile-read ...).
+;;
+;; Remove the wrap (and ideally this whole block) once IGC ships the fix.
+
+(defvar *volatile-var-reads*
+  (make-hash-table :test 'eq :weakness :key)
+  "Set of semantic-var-read nodes whose load should be emitted as volatile.
+   Weak-keyed so entries vanish when the kernel's AST is GC'd.")
+
+(defun analyze-%volatile-read-expression (expr env context location)
+  "Analyzes (%volatile-read SYM): produces the same semantic node as a plain
+   var-read for SYM, but tags the node in *volatile-var-reads* so codegen
+   emits the load as volatile.  IGC SROA-aliasing workaround."
+  (let ((inner (analyze-expression (second expr) env context
+                                   (append location '(1)))))
+    (setf (gethash inner *volatile-var-reads*) t)
+    inner))
+
 (defun initialize-expression-analyzers ()
-  "Registers all expression analyzers; extended for 087-gpu-builtins."
+  "Registers all expression analyzers; extended for 087-gpu-builtins.
+   Endeavor 103 phase B: adds %volatile-read for the IGC workaround."
   (clrhash *expression-analyzers*)
   (register-ops-analyzers)
   (register-control-analyzers)
@@ -210,7 +254,10 @@
               (sym-cc (intern name-str cc-pkg)))
           (setf (gethash sym-cl *expression-analyzers*) fn)
           (unless (eq sym-cl sym-cc)
-            (setf (gethash sym-cc *expression-analyzers*) fn)))))))
+            (setf (gethash sym-cc *expression-analyzers*) fn)))))
+    ;; IGC SROA-aliasing workaround (endeavor 103 phase B): %volatile-read
+    (setf (gethash '%volatile-read *expression-analyzers*)
+          #'analyze-%volatile-read-expression)))
 
 ;; ---------------------------------
 ;; The Brain (Semantic Analyzer)

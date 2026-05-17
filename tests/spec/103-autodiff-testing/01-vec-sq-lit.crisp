@@ -1,0 +1,15 @@
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] atol=1e-3 at.A=2 expect.A=6.0
+;;
+;; f(A) = A[2]^2.  At A=[1, 2, 3, 4], A[2]=3, so:
+;;   df/dA[2] = 2 * A[2] = 6.0
+;;   df/dA[k] = 0 for k != 2
+;;
+;; Phase 5b: simplest tensor-input / scalar-output AD case.
+;; Exercises the atomic-fadd path in the backward kernel.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel vec_sq_lit (A &out C)
+  (declare #'(in-vec &out out-c))
+  (set! (~ C) (* (~ A 2) (~ A 2))))

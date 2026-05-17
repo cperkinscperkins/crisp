@@ -579,10 +579,10 @@ Preperatory
 - - [x] document :num-groups in ref.metacrisp
 - - [ ] some strategy choices can result in `reqd_work_group_size` being in LLVM-IR
 - - [ ] Check single-task!  It should be a strategy, no?  Strategy helps set the relationship to some input data.  I think the original (declare single-task) might be better.
-- [ ] REVISIT 085.  We are apparently STILL refusing kernels with long/int input args or whatever.
+- [x] REVISIT 085.  We are apparently STILL refusing kernels with long/int input args or whatever.
       Look at 092, 089, possibly others that seem like they should be differentiable, but are being
       refused. 
-- - [ ] improve errors: should have "kernel does not have input params: cannot differentiate"
+- - [x] improve errors: should have "kernel does not have input params: cannot differentiate"
                  and   "no &out params, cannot differentiate"
 - [x] revisit incomplete types. Too many defaults in Storage Handles.  Might be difficult.
 - [x] drop :access.  It has zero bearing on any of the kernel code that is generated.
@@ -598,6 +598,7 @@ Preperatory
 - [x] should the branded storage handles be :subst :descendant or :ancestor?  I think it got 
 changed to :descendant to make the tests pass at some point. Or not. Check though.
 - - according to Gemini, we aren't actually using the branding for provenance, and instead the ANF-transform is enough. The branding could be dropped!
+- [x] auto-diff needs "on metal" testing. add new directives etc.
 
 Grid vs Thread Context
 =======================

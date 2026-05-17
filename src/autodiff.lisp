@@ -114,20 +114,22 @@
 
 
 
+(defun %strip-accessor-tildes (accessor)
+  "Strips trailing tilde, and leading tilde if present, from an accessor
+   name string.  X~ → X, ~X~ → X."
+  (let* ((no-trail (subseq accessor 0 (1- (length accessor)))))
+    (if (and (> (length no-trail) 0)
+             (cl:char= (cl:char no-trail 0) #\~))
+        (subseq no-trail 1)
+        no-trail)))
+
 (defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
                                       &key hof-handler-fn (error-on-unknown t)
                                            tensor-inputs-ht)
   "Generates backward-pass adjoint updates for a single ANF binding (v := expr).
-
-TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for
-tensor inputs.  *RECORD-PARAM-FIELD-ADJS*, when bound, maps record-param
-symbols to a hash of (field-name-string -> per-field-adj-symbol); the
-accessor rule routes adjoint into that synthetic per-field adj instead of
-the record's collective adj.
-
-*STRUCT-KERNEL-PARAM-SHADOWS*, when bound, similarly maps struct-kernel-param
-symbols (plus their nested-struct ANF intermediates registered by
-%register-shadow-anf-intermediates) to per-field shadow adj entries."
+   Overlay change (049/11 fix): field-name extraction in the accessor rules
+   strips both leading and trailing tildes so the raw `~X~` form routes
+   correctly."
   (flet ((local-adj (x) (funcall local-adj-fn x))
          (emit (x) (funcall emit-fn x)))
     (cond
@@ -169,17 +171,10 @@ symbols (plus their nested-struct ANF intermediates registered by
                (v-adj   (local-adj v)))
           (when (symbolp src)
             (cond
-              ;; Tensor read with indices, src in tensor-inputs-ht: atomic-add
-              ;; at the indexed slot in the paired grad-tensor.
               ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
                (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
                                        (symbol-package src))))
                  (emit `(atomic-add! (~ ,grad-sym ,@indices) ,v-adj))))
-              ;; Cell read (no indices), src in tensor-inputs-ht: atomic-add
-              ;; into the paired grad-cell.  Same convention as tensors but
-              ;; without indices.  Used for cell sub-fn params at the sub-fn-
-              ;; backward layer (kernel-level cell reads fall to the t-branch
-              ;; below because their tensor-inputs-ht filters to float tensors).
               ((and (null indices) tensor-inputs-ht (gethash src tensor-inputs-ht))
                (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
                                        (symbol-package src))))
@@ -204,9 +199,8 @@ symbols (plus their nested-struct ANF intermediates registered by
                                      (symbol-package v)
                                      emit-fn local-adj-fn
                                      (if (symbolp v) (symbol-name v) "BW")))))
-      ;; Record-aware accessor.  (FIELD~ p) where p is a record param/temp
-      ;; in *record-param-field-adjs*.  Route adjoint into the per-field synthetic
-      ;; adj instead of p_adj.
+      ;; Record-aware accessor.  Field-name extraction trims both tildes
+      ;; (049/11 fix) so X~ and ~X~ both yield the field name "X".
       ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
             (let ((fname (symbol-name (car expr))))
               (and (> (length fname) 1)
@@ -215,7 +209,7 @@ symbols (plus their nested-struct ANF intermediates registered by
             (symbolp (cadr expr))
             (gethash (cadr expr) *record-param-field-adjs*))
         (let* ((accessor (symbol-name (car expr)))
-               (field-name-str (subseq accessor 0 (1- (length accessor))))
+               (field-name-str (%strip-accessor-tildes accessor))
                (record-sym (cadr expr))
                (field-alist (gethash record-sym *record-param-field-adjs*))
                (field-entry (assoc field-name-str field-alist :test #'string-equal))
@@ -224,14 +218,7 @@ symbols (plus their nested-struct ANF intermediates registered by
           (when field-adj-sym
             (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
             (emit `(set! ,field-adj-sym (+ ,field-adj-sym ,v-adj))))))
-      ;; Struct-kernel-param accessor.  (FIELD~ s) where s is a struct
-      ;; kernel param tracked in *struct-kernel-param-shadows*.  Three cases
-      ;; based on the field-info type:
-      ;;   - Leaf scalar field (sym): route adj into the per-field synth adj.
-      ;;   - Nested struct field (alist): no scalar adj at this level — skip.
-      ;;     The pre-scan registered the ANF-temp bound to this accessor in
-      ;;     *struct-kernel-param-shadows* so its OWN accessor calls route deeper.
-      ;;   - Unknown field: skip silently.
+      ;; Struct-kernel-param accessor.  Same tilde-strip fix applies.
       ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
             (let ((fname (symbol-name (car expr))))
               (and (> (length fname) 1)
@@ -240,7 +227,7 @@ symbols (plus their nested-struct ANF intermediates registered by
             (symbolp (cadr expr))
             (gethash (cadr expr) *struct-kernel-param-shadows*))
         (let* ((accessor (symbol-name (car expr)))
-               (field-name-str (subseq accessor 0 (1- (length accessor))))
+               (field-name-str (%strip-accessor-tildes accessor))
                (struct-sym (cadr expr))
                (entry (gethash struct-sym *struct-kernel-param-shadows*))
                (field-alist (if (and (consp entry) (symbolp (car entry)))
@@ -256,9 +243,6 @@ symbols (plus their nested-struct ANF intermediates registered by
              (emit `(set! ,field-info (+ ,field-info ,v-adj))))
             (t nil))))
       ;; Record constructor backward rule.
-      ;; `(v (%construct-struct RECORD-NAME arg1 arg2 ...))` where v is a
-      ;; record-valued ANF temp tracked in *record-param-field-adjs*.  Flow
-      ;; per-field adjs back to the constructor args in field-declaration order.
       ((and (consp expr) (symbolp (car expr))
             (string-equal (symbol-name (car expr)) "%CONSTRUCT-STRUCT")
             *record-param-field-adjs*
@@ -346,11 +330,20 @@ adjs back into the constructor args."
                       (cons temp-sym field-alist))))))
          (record-temp-entries (remove nil record-temp-entries))
          (record-param-field-adjs-ht
-          (when record-temp-entries
-            (let ((ht (make-hash-table :test 'eq)))
+          ;; Endeavor 103 Phase A: merge with any outer binding rather than
+          ;; shadowing it.  Outer binding may have been set by
+          ;; %generate-backward-kernel-ast for record-at-boundary kernel
+          ;; params; inner record-temp-entries is for record-valued ANF
+          ;; temps bound to %construct-struct.  Both are valid sources.
+          (let ((ht (when (or record-temp-entries *record-param-field-adjs*)
+                      (make-hash-table :test 'eq))))
+            (when ht
+              (when *record-param-field-adjs*
+                (maphash (lambda (k v) (setf (gethash k ht) v))
+                         *record-param-field-adjs*))
               (dolist (entry record-temp-entries)
-                (setf (gethash (car entry) ht) (cdr entry)))
-              ht))))
+                (setf (gethash (car entry) ht) (cdr entry))))
+            ht)))
     (let ((*record-param-field-adjs* record-param-field-adjs-ht))
       (let ((backward-forms nil)
             (adjoint-map (make-hash-table :test 'equal))
@@ -1856,11 +1849,12 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                                    (symbol-name param-sym)
                                    (symbol-name fname))
                            pkg)))))))
+  
 
 (defun %build-shadow-ctor-form (struct-type-name field-adj-alist pkg)
   "Builds a (MAKE-<S>_ADJ :field1 val1 :field2 val2 ...) form recursively.
-   For scalar leaf fields, val is the adj sym.  For nested struct fields,
-   val is a recursive (MAKE-<INNER>_ADJ ...) form."
+   For scalar leaf fields, val is wrapped in (%volatile-read SYM) — see
+   IGC SROA-aliasing workaround commentary above."
   (let ((ctor (%make-shadow-constructor-name-for struct-type-name)))
     (cons ctor
           (loop for (fname-str . field-info) in field-adj-alist
@@ -1876,7 +1870,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                            (if (and inner-type (%crisp-struct-type-p inner-type))
                                (%build-shadow-ctor-form inner-type field-info pkg)
                                0)))
-                        (t field-info)))))))
+                        (t (list '%volatile-read field-info))))))))
 
 (defun %collect-all-leaf-adj-syms (field-adj-alist)
   "Collects all leaf adj syms (scalars at the bottom of a nested alist)

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-14T19:01:20.327098Z
+Generated on 2026-05-17T02:40:53.309726Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -230,9 +230,22 @@ Generated on 2026-05-14T19:01:20.327098Z
 
 
 ---
+### DEFVAR `*VOLATILE-VAR-READS*`
+
+  > Set of semantic-var-read nodes whose load should be emitted as volatile.  >    Weak-keyed so entries vanish when the kernel's AST is GC'd.
+
+
+---
+### DEFUN `ANALYZE-%VOLATILE-READ-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (%volatile-read SYM): produces the same semantic node as a plain  >    var-read for SYM, but tags the node in *volatile-var-reads* so codegen  >    emits the load as volatile.  IGC SROA-aliasing workaround.
+
+
+---
 ### DEFUN `INITIALIZE-EXPRESSION-ANALYZERS`
 
-  > Registers all expression analyzers; extended for 087-gpu-builtins.
+  > Registers all expression analyzers; extended for 087-gpu-builtins.  >    Endeavor 103 phase B: adds %volatile-read for the IGC workaround.
 
 
 ---
@@ -1144,11 +1157,18 @@ Generated on 2026-05-14T19:01:20.327098Z
 
 
 ---
+### DEFUN `%STRIP-ACCESSOR-TILDES`
+- **Args**: `(ACCESSOR)`
+
+  > Strips trailing tilde, and leading tilde if present, from an accessor  >    name string.  X~ → X, ~X~ → X.
+
+
+---
 ### DEFUN `%HANDLE-SINGLE-VALUE-BACKWARD`
 - **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
               (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT)`
 
-  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  >   > TENSOR-INPUTS-HT, when provided, maps kernel-input symbols to their types for  > tensor inputs.  *RECORD-PARAM-FIELD-ADJS*, when bound, maps record-param  > symbols to a hash of (field-name-string -> per-field-adj-symbol); the  > accessor rule routes adjoint into that synthetic per-field adj instead of  > the record's collective adj.  >   > *STRUCT-KERNEL-PARAM-SHADOWS*, when bound, similarly maps struct-kernel-param  > symbols (plus their nested-struct ANF intermediates registered by  > %register-shadow-anf-intermediates) to per-field shadow adj entries.
+  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  >    Overlay change (049/11 fix): field-name extraction in the accessor rules  >    strips both leading and trailing tildes so the raw `~X~` form routes  >    correctly.
 
 
 ---
@@ -1482,7 +1502,7 @@ Generated on 2026-05-14T19:01:20.327098Z
 ### DEFUN `%BUILD-SHADOW-CTOR-FORM`
 - **Args**: `(STRUCT-TYPE-NAME FIELD-ADJ-ALIST PKG)`
 
-  > Builds a (MAKE-<S>_ADJ :field1 val1 :field2 val2 ...) form recursively.  >    For scalar leaf fields, val is the adj sym.  For nested struct fields,  >    val is a recursive (MAKE-<INNER>_ADJ ...) form.
+  > Builds a (MAKE-<S>_ADJ :field1 val1 :field2 val2 ...) form recursively.  >    For scalar leaf fields, val is wrapped in (%volatile-read SYM) — see  >    IGC SROA-aliasing workaround commentary above.
 
 
 ---
@@ -2782,7 +2802,7 @@ Generated on 2026-05-14T19:01:20.327098Z
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
 - **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
 
-  > Generates the def-kernel-exact AST for the backward (gradient) pass.  > 101: widened input check to also accept integer scalars (incl. branded) in  > addition to integer tensors.  All-int-record-field kernels now emit the  > trivial zero-gradient backward instead of erroring.  Struct inputs with  > shadow grads also bypass the gate.  > 085: when diff-flat-inputs is empty but integer tensor inputs exist, emits a  > trivial backward kernel (just return). The float-typed _GRAD tensors declared  > in the signature remain zero — the correct gradient for integer arithmetic.
+  > Generates the def-kernel-exact AST for the backward (gradient) pass.  >    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-  >    boundary accessor calls route adj into the SROA'd field's adj sym.
 
 
 ---

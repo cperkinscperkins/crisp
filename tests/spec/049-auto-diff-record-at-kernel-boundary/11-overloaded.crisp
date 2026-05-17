@@ -1,4 +1,14 @@
-
+;; VERIFY-AUTODIFF: vp.x=3.0 vp.y=4.0 atol=1e-3 expect.vp.x=-4.0 expect.vp.y=-3.0
+;;
+;; C = (x~ vp) * (y~ vp) where x~ is user-overloaded to (- 0f (~x~ vp)).
+;; df/dvp.x = -vp.y = -4.0, df/dvp.y = -vp.x = -3.0.
+;;
+;; Bug fixed 2026-05-16: the sub-function AD walker's accessor rule was
+;; extracting field names by stripping only the trailing tilde, so the raw
+;; (~x~ vp) form inside the overloaded x~ body yielded "~X" instead of "X"
+;; and never matched the field-adj alist.  Fix in
+;; overlays/crisp-compiler-overlay.lisp strips both leading and trailing
+;; tildes.
 
 (def-record v-point (x float) (y float))
 

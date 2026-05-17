@@ -1,4 +1,7 @@
 ;; TEST-WITH[--ir-target=llvmir --differentiate]: validate-transcendental-chain-rule
+;; VERIFY-AUTODIFF: A=1.0 atol=1e-3 expect.A=0.5403
+;;
+;; C = sin(A)  =>  df/dA = cos(A);  cos(1.0) ~= 0.5403
 
 (def-type in-ish (cell float :address-space :global))
 (def-type out-ish (cell float :address-space :global))
