@@ -83,7 +83,7 @@
           (subseq token (1+ eq-pos)))))
 
 (defparameter *vad-reserved-keys*
-  '("atol" "h" "seed-grad")
+  '("atol" "h" "seed-grad" "output-vec")
   "Option keys that are not input names.")
 
 (defparameter *vad-prefix* "VERIFY-AUTODIFF:")
@@ -151,7 +151,8 @@
               (structs nil)
               (atol nil)
               (h 1e-3)
-              (seed-grad 1.0))
+              (seed-grad 1.0)
+              (output-vec nil))
          (when (null tokens)
            (error "VERIFY-AUTODIFF: empty body; need at least one input and atol=<float>"))
          (dolist (token tokens)
@@ -165,6 +166,16 @@
                 (setf h (%vad-parse-float val-str token)))
                ((string= key "seed-grad")
                 (setf seed-grad (%vad-parse-float val-str token)))
+               ((string= key "output-vec")
+                ;; Output is a 1D float vector of LENGTH elements (107).
+                ;; Without this, the runner assumes a scalar (cell float)
+                ;; output.  f(A) for vector outputs is the sum of elements
+                ;; (equivalent to dot with all-ones seed).
+                (let ((v (%vad-parse-float val-str token)))
+                  (unless (and (integerp v) (> v 0))
+                    (error "VERIFY-AUTODIFF: output-vec must be a positive integer, got ~A"
+                           val-str))
+                  (setf output-vec v)))
                ((string= key "struct")
                 ;; Comma-separated list of struct-input parent names.
                 (let ((parts (loop with parts = nil
@@ -205,4 +216,5 @@
                :seed-grad seed-grad
                :at-points (nreverse at-points)
                :expected-grads (nreverse expected-grads)
-               :structs (nreverse structs)))))))
+               :structs (nreverse structs)
+               :output-vec output-vec))))))

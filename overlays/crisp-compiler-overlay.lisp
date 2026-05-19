@@ -382,6 +382,308 @@
   (analyze-expression (%expand-loop-vector-stride-form expr location)
                       env context location))
 
+;; ==========================================================================
+;; 107 — structure-preserving AD walker.
+;;
+;; Whole-function replacement of generate-backward-walk.  Previously the
+;; dispatch loop only handled flat-anf bindings + set! forms; control-flow
+;; forms (dotimes, if, let) fell through to (t nil) and their bodies were
+;; never AD-walked.  That meant a kernel body wrapped in tensor-stride /
+;; loop-vector-stride / grid-stride had its inner chain rule silently
+;; dropped — backward kernel compiled but produced zero gradients.
+;;
+;; New version: process-form recursively dispatches.  For each control-flow
+;; form it captures the inner backward emissions, then wraps them in a
+;; mirrored construct so the backward kernel's structure matches the
+;; forward's.  E.g.  forward `(dotimes (k N) BODY)` becomes backward
+;; `(dotimes (k N) BACKWARD-OF-BODY)`, with the same iteration count.  Let
+;; bindings are preserved verbatim so primals remain available in scope.
+
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
+                               &key kernel-pkg)
+  "Walks an ANF body backwards to accumulate adjoints.
+   107: now structure-preserving — recursively handles dotimes/if/let
+   forms encountered in flat-anf, emitting backward constructs that mirror
+   the forward structure.  Single-value bindings, multi-value bindings, and
+   set! handling unchanged from the original implementation."
+  (let* ((record-temp-entries
+          (loop for form in flat-anf
+                when (and (consp form) (= (length form) 2)
+                          (symbolp (car form))
+                          (consp (cadr form))
+                          (symbolp (caadr form))
+                          (string-equal (symbol-name (caadr form)) "%CONSTRUCT-STRUCT"))
+                collect
+                (let* ((temp-sym (car form))
+                       (expr (cadr form))
+                       (record-name (second expr))
+                       (pkg (or kernel-pkg (symbol-package temp-sym))))
+                  (when (or (%crisp-record-type-p record-name)
+                            (%crisp-struct-type-p record-name))
+                    (let* ((fields (%get-record-runtime-fields record-name))
+                           (field-alist
+                            (loop for (fname ftype) in fields
+                                  collect (cons (symbol-name fname)
+                                                (intern (format nil "~a_~a_ADJ"
+                                                                (symbol-name temp-sym)
+                                                                (symbol-name fname))
+                                                        pkg)))))
+                      (cons temp-sym field-alist))))))
+         (record-temp-entries (remove nil record-temp-entries))
+         (record-param-field-adjs-ht
+          (let ((ht (when (or record-temp-entries *record-param-field-adjs*)
+                      (make-hash-table :test 'eq))))
+            (when ht
+              (when *record-param-field-adjs*
+                (maphash (lambda (k v) (setf (gethash k ht) v))
+                         *record-param-field-adjs*))
+              (dolist (entry record-temp-entries)
+                (setf (gethash (car entry) ht) (cdr entry))))
+            ht)))
+    (let ((*record-param-field-adjs* record-param-field-adjs-ht))
+      (let ((backward-forms nil)
+            (adjoint-map (make-hash-table :test 'equal))
+            (tensor-inputs-ht
+             (let ((ht (make-hash-table :test 'eq)))
+               (loop for sym  in inputs
+                     for typ  in input-types
+                     when (%crisp-float-tensor-type-p typ)
+                     do (setf (gethash sym ht) typ))
+               ht)))
+
+        (labels ((local-adj (v)
+                   (or (gethash v adjoint-map)
+                       (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
+                                          (or kernel-pkg (symbol-package v)))))
+                         (setf (gethash v adjoint-map) adv)
+                         adv)))
+                 (emit (form)
+                   (push form backward-forms))
+
+                 (hof-inline-backward (fn args v)
+                   (let* ((hof-data (gethash fn *differentiable-hof-store*)))
+                     (unless hof-data
+                       (error "HOF ~A not found in *differentiable-hof-store*" fn))
+                     (let* ((param-syms   (getf hof-data :param-syms))
+                            (fn-param-idx (getf hof-data :fn-param-idx))
+                            (body-forms   (getf hof-data :body-forms))
+                            (fn-arg       (nth fn-param-idx args))
+                            (concrete-fn  (cond
+                                            ((and (consp fn-arg) (eq (car fn-arg) 'function))
+                                             (cadr fn-arg))
+                                            ((symbolp fn-arg) fn-arg)
+                                            (t nil))))
+                       (unless concrete-fn
+                         (error "Cannot inline-differentiate HOF ~A:  could not resolve concrete fn from arg ~A" fn fn-arg))
+                       (let* ((fn-param      (nth fn-param-idx param-syms))
+                              (subst-alist
+                               (loop for p in param-syms
+                                     for a in args
+                                     for i from 0
+                                     unless (= i fn-param-idx)
+                                     collect (cons p a)))
+                              (subst-body    (mapcar (lambda (f) (%subst-form f subst-alist)) body-forms))
+                              (concrete-body (mapcar (lambda (f) (%remove-funcall f fn-param concrete-fn))
+                                                     subst-body))
+                              (anf-body      (mapcar #'anf-transform concrete-body))
+                              (hof-flat      (flatten-anf-body anf-body))
+                              (hof-flat-norm
+                               (let ((last-f (car (last hof-flat))))
+                                 (if (or (symbolp last-f)
+                                         (and (consp last-f) (eq (first last-f) 'return)))
+                                     hof-flat
+                                     (let ((ret-sym (intern (format nil "%HOF_RET_~A" (symbol-name v))
+                                                            (symbol-package v))))
+                                       (append (butlast hof-flat)
+                                               (list (list ret-sym last-f) ret-sym))))))
+                              (return-vars   (%extract-return-vars hof-flat-norm)))
+                         (dolist (rv return-vars)
+                           (setf (gethash rv adjoint-map) (local-adj v)))
+                         (dolist (hf-form (reverse hof-flat-norm))
+                           (when (and (consp hf-form) (= (length hf-form) 2) (symbolp (car hf-form)))
+                             (let ((hv    (car hf-form))
+                                   (hexpr (cadr hf-form)))
+                               (%handle-single-value-backward hv hexpr adjoint-map #'emit #'local-adj
+                                                              :hof-handler-fn #'hof-inline-backward
+                                                              :error-on-unknown t
+                                                              :tensor-inputs-ht nil))))))))
+
+                 ;; 107: process a single form, dispatching on shape.
+                 ;; EMIT-FN receives each emitted backward form.  Recurses on
+                 ;; let/dotimes/if bodies.
+                 (process-form (form emit-fn)
+                   (cond
+                     ;; (declare ...) — skip silently
+                     ((and (consp form) (symbolp (car form))
+                           (string-equal (symbol-name (car form)) "DECLARE")) nil)
+
+                     ;; set! — must come BEFORE the single/multi-value cases
+                     ;; (set! is a list with first element a symbol)
+                     ((and (consp form) (symbolp (car form))
+                           (string-equal (symbol-name (car form)) "SET!"))
+                      (let ((place (cadr form))
+                            (val   (caddr form)))
+                        (when (and (consp place) (eq (car place) '~) (symbolp val))
+                          (let ((target  (cadr place))
+                                (indices (cddr place)))
+                            (cond
+                              ((member target outputs)
+                               (let ((tgt-grad (intern (format nil "~A_GRAD" (symbol-name target))
+                                                       (symbol-package target))))
+                                 (funcall emit-fn `(set! ,(local-adj val)
+                                                         (+ ,(local-adj val) (~ ,tgt-grad ,@indices))))))
+                              ((member target inputs)
+                               (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
+                                      target target))
+                              (t nil))))))
+
+                     ;; let — preserve bindings, recurse into body, emit chain
+                     ;; rule for each binding after body.  Bindings stay scoped
+                     ;; so primals remain available to the chain rule inside.
+                     ((and (consp form) (symbolp (car form))
+                           (string-equal (symbol-name (car form)) "LET"))
+                      (let* ((bindings (cadr form))
+                             (body (cddr form))
+                             (local-forms nil))
+                        (cl:flet ((local-emit (f) (push f local-forms)))
+                          ;; Walk body backwards
+                          (dolist (b (reverse body))
+                            (process-form b #'local-emit))
+                          ;; Walk bindings backwards: each is a (v expr)
+                          ;; treated as a single-value binding for chain rule.
+                          (dolist (b (reverse bindings))
+                            (when (and (consp b) (= (length b) 2) (symbolp (car b)))
+                              (process-form b #'local-emit))))
+                        (funcall emit-fn `(let ,bindings ,@(nreverse local-forms)))))
+
+                     ;; dotimes — same iteration in backward.  No chain rule on
+                     ;; the binding (k is an induction variable, not data-dependent).
+                     ((and (consp form) (symbolp (car form))
+                           (string-equal (symbol-name (car form)) "DOTIMES"))
+                      (let* ((binding (cadr form))
+                             (body (cddr form))
+                             (local-forms nil))
+                        (cl:flet ((local-emit (f) (push f local-forms)))
+                          (dolist (b (reverse body))
+                            (process-form b #'local-emit)))
+                        (funcall emit-fn `(dotimes ,binding ,@(nreverse local-forms)))))
+
+                     ;; if — recurse on then/else branches, preserve condition.
+                     ((and (consp form) (symbolp (car form))
+                           (string-equal (symbol-name (car form)) "IF"))
+                      (let* ((cond-form (cadr form))
+                             (then-form (caddr form))
+                             (else-form (cadddr form))
+                             (then-local nil)
+                             (else-local nil))
+                        (when then-form
+                          (process-form then-form (lambda (f) (push f then-local))))
+                        (when (and else-form (not (null else-form)))
+                          (process-form else-form (lambda (f) (push f else-local))))
+                        (let ((then-body (cond
+                                           ((null then-local) nil)
+                                           ((= (length then-local) 1) (first then-local))
+                                           (t `(progn ,@(nreverse then-local)))))
+                              (else-body (cond
+                                           ((null else-local) nil)
+                                           ((= (length else-local) 1) (first else-local))
+                                           (t `(progn ,@(nreverse else-local))))))
+                          (funcall emit-fn
+                                   (if else-body
+                                       `(if ,cond-form ,(or then-body 'nil) ,else-body)
+                                       `(if ,cond-form ,(or then-body 'nil)))))))
+
+                     ;; progn — recurse on body
+                     ((and (consp form) (symbolp (car form))
+                           (string-equal (symbol-name (car form)) "PROGN"))
+                      (dolist (sub (reverse (cdr form)))
+                        (process-form sub emit-fn)))
+
+                     ;; Single-value binding: (v expr).  Must come AFTER the
+                     ;; control-flow cases (otherwise a 2-element form like
+                     ;; `(if cond)` would match this — though that's not a
+                     ;; well-formed if; the real conflict is multi-value
+                     ;; matching IF-shaped 3-element forms).
+                     ((and (listp form) (= (length form) 2) (symbolp (car form)))
+                      (%handle-single-value-backward (car form) (cadr form)
+                                                     adjoint-map emit-fn #'local-adj
+                                                     :hof-handler-fn #'hof-inline-backward
+                                                     :error-on-unknown t
+                                                     :tensor-inputs-ht tensor-inputs-ht))
+
+                     ;; Multi-value binding: (v0 v1 ... expr).  AFTER control
+                     ;; flow.
+                     ((and (listp form) (>= (length form) 3)
+                           (symbolp (car form))
+                           (every #'symbolp (butlast form)))
+                      (let* ((result-vars (butlast form))
+                             (expr        (car (last form))))
+                        (when (and (consp expr)
+                                   (symbolp (car expr))
+                                   (gethash (car expr) *differentiable-functions*))
+                          (let* ((fn   (car expr))
+                                 (args (cdr expr))
+                                 (info (gethash fn *differentiable-functions*))
+                                 (bkwd (getf info :bkwd-name))
+                                 (n-fp (getf info :n-float-params))
+                                 (pkg  (symbol-package (car result-vars)))
+                                 (t-adjs (mapcar #'local-adj result-vars)))
+                            (%emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg
+                                                   emit-fn #'local-adj "BW")))))
+
+                     ;; Everything else: skip
+                     (t nil))))
+
+          (let ((reversed-body (reverse flat-anf)))
+            (dolist (form reversed-body)
+              (process-form form #'emit)))
+
+          ;; Emit gradient output writes for all inputs.  Unchanged from src.
+          (loop for in in inputs
+                for in-type in input-types do
+                  (let* ((in-grad    (intern (format nil "~A_GRAD" (symbol-name in))
+                                             (or kernel-pkg (symbol-package in))))
+                         (canon-type (canonicalize-type-specifier
+                                      (if (listp in-type) in-type (list in-type))))
+                         (is-cell-input
+                          (and (consp canon-type)
+                               (string-equal (symbol-name (first canon-type)) "CELL")))
+                         (is-tensor-input
+                          (or (%crisp-float-tensor-type-p in-type)
+                              (%crisp-integer-tensor-type-p in-type)))
+                         (is-scalar-wrapped
+                          (and (not is-cell-input) (not is-tensor-input)
+                               (or (%crisp-integer-scalar-type-p in-type)
+                                   (%crisp-float-type-p in-type)))))
+                    (cond
+                      (is-tensor-input nil)
+                      (is-cell-input     (emit `(set! (~ ,in-grad) ,(local-adj in))))
+                      (is-scalar-wrapped (emit `(set! (~ ,in-grad) ,(local-adj in))))
+                      (t                 (emit `(set! ,in-grad ,(local-adj in)))))))
+
+          ;; Zero-init bindings.  Unchanged from src.
+          (cl:flet ((promotes-to-double-p (t-spec)
+                      (let ((promoted (%promote-to-float-adjoint t-spec)))
+                        (or (eq promoted 'double)
+                            (and (consp promoted) (eq (second promoted) 'double))))))
+            (let* ((any-output-double
+                    (some #'promotes-to-double-p output-types))
+                   (typed-zero-for
+                    (lambda (orig-sym)
+                      (let* ((idx (position orig-sym inputs))
+                             (in-type (when idx (nth idx input-types))))
+                        (cond
+                          (in-type
+                           (if (promotes-to-double-p in-type) '(as double 0.0) 0.0))
+                          (any-output-double '(as double 0.0))
+                          (t 0.0)))))
+                   (local-bindings (loop for v being the hash-keys of adjoint-map
+                                         using (hash-value adv)
+                                         collect `(,adv ,(funcall typed-zero-for v))))
+                   (result `(let ,local-bindings
+                              ,@(nreverse backward-forms))))
+              result)))))))
+
 ;; --------------------------------------------------------------------------
 ;; %generate-backward-kernel-ast — whole-function replacement.  Only addition
 ;; is the AD pre-pass that rewrites stride macros in the kernel body BEFORE
@@ -512,3 +814,364 @@
                                           (let (,@forward-bindings)
                                             ,backward-walk))
                                         (return)))))))))))))
+
+;; --------------------------------------------------------------------------
+;; src/autodiff.lisp
+;; 107 iteration-local adjoint reset fix.
+;;
+;; Bug: the structure-preserving walker mirrored forward (dotimes ...) into
+;; backward (dotimes ...) correctly, but did not re-zero adjoint allocas that
+;; belong to variables bound INSIDE the loop body.  The chain rule emits
+;; `(set! adj (+ adj ...))` (accumulate), and the adj allocas are hoisted to
+;; the function entry block with a one-time store-of-zero — so across
+;; iterations they accumulate stale per-iteration contributions and produce
+;; wrong gradients whenever a thread executes more than one iteration of the
+;; backward dotimes (e.g. any grid-stride / tensor-stride kernel run with
+;; gsize < len, which is the normal case).
+;;
+;; Fix: at the top of the backward dotimes body, store the appropriately-
+;; typed zero into every adj that corresponds to a variable bound somewhere
+;; inside the iteration body.  Vars bound outside the loop (kernel params,
+;; outer let* bindings) are NOT iter-local — their adjoints are real
+;; gradient accumulators and must persist across iterations.
+;;
+;; %collect-locally-bound-vars walks a list of body forms and returns the
+;; set of symbols introduced by single-/multi-value bindings, the dotimes
+;; induction var, and any let bindings inside (recurses through let,
+;; dotimes, if, progn).
+;;
+;; The DOTIMES case in process-form runs the body walk first (so chain
+;; rule populates adjoint-map), then emits a `(set! adv ZERO)` for each
+;; iter-local var whose adj is actually used.  any-output-double is
+;; precomputed once at the top of the function (used to pick `0.0` vs
+;; `(as double 0.0)`) instead of being computed only at the post-walk
+;; let-wrap stage.
+
+(defun %collect-locally-bound-vars (body-forms)
+  "Returns a list of distinct symbols introduced as bindings anywhere
+   inside BODY-FORMS (a list of forms).  Includes single-value bindings
+   `(v expr)`, multi-value bindings `(v0 v1 ... expr)`, the induction var
+   of nested DOTIMES, and the bound vars of nested LET.  Recurses through
+   LET / DOTIMES / IF / PROGN bodies.  SET! and DECLARE introduce no
+   bindings, so they are not scanned.  Used by the AD walker to identify
+   adjoint allocas that must be reset at the top of each backward
+   loop iteration."
+  (let ((vars nil))
+    (labels ((push-var (v)
+               (when (and (symbolp v) (not (member v vars :test #'eq)))
+                 (push v vars)))
+             (scan (form)
+               (cond
+                 ((or (null form) (symbolp form) (not (consp form))) nil)
+                 ((not (symbolp (car form))) nil)
+                 ((or (string-equal (symbol-name (car form)) "DECLARE")
+                      (string-equal (symbol-name (car form)) "SET!")) nil)
+                 ((string-equal (symbol-name (car form)) "LET")
+                  (dolist (b (cadr form))
+                    (when (and (consp b) (symbolp (car b)))
+                      (push-var (car b))))
+                  (dolist (b (cddr form)) (scan b)))
+                 ((string-equal (symbol-name (car form)) "DOTIMES")
+                  (let ((binding (cadr form)))
+                    (when (and (consp binding) (symbolp (car binding)))
+                      (push-var (car binding))))
+                  (dolist (b (cddr form)) (scan b)))
+                 ((string-equal (symbol-name (car form)) "IF")
+                  (when (caddr form) (scan (caddr form)))
+                  (when (cadddr form) (scan (cadddr form))))
+                 ((string-equal (symbol-name (car form)) "PROGN")
+                  (dolist (sub (cdr form)) (scan sub)))
+                 ;; Single-value binding: (v expr)
+                 ((and (= (length form) 2) (symbolp (car form)))
+                  (push-var (car form)))
+                 ;; Multi-value binding: (v0 v1 ... expr) where all but last are syms
+                 ((and (>= (length form) 3)
+                       (every #'symbolp (butlast form)))
+                  (dolist (v (butlast form)) (push-var v)))
+                 (t nil))))
+      (dolist (f body-forms) (scan f)))
+    (nreverse vars)))
+
+;; src/autodiff.lisp
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types
+                               &key kernel-pkg)
+  "Walks an ANF body backwards to accumulate adjoints.
+   107: structure-preserving — recursively handles dotimes/if/let forms
+   encountered in flat-anf, emitting backward constructs that mirror the
+   forward structure.  Now also re-zeroes iteration-local adjoints at the
+   top of each backward dotimes body, so the chain-rule `adj += ...`
+   pattern does not accumulate across iterations of a grid-stride /
+   tensor-stride loop."
+  (let* ((record-temp-entries
+          (loop for form in flat-anf
+                when (and (consp form) (= (length form) 2)
+                          (symbolp (car form))
+                          (consp (cadr form))
+                          (symbolp (caadr form))
+                          (string-equal (symbol-name (caadr form)) "%CONSTRUCT-STRUCT"))
+                collect
+                (let* ((temp-sym (car form))
+                       (expr (cadr form))
+                       (record-name (second expr))
+                       (pkg (or kernel-pkg (symbol-package temp-sym))))
+                  (when (or (%crisp-record-type-p record-name)
+                            (%crisp-struct-type-p record-name))
+                    (let* ((fields (%get-record-runtime-fields record-name))
+                           (field-alist
+                            (loop for (fname ftype) in fields
+                                  collect (cons (symbol-name fname)
+                                                (intern (format nil "~a_~a_ADJ"
+                                                                (symbol-name temp-sym)
+                                                                (symbol-name fname))
+                                                        pkg)))))
+                      (cons temp-sym field-alist))))))
+         (record-temp-entries (remove nil record-temp-entries))
+         (record-param-field-adjs-ht
+          (let ((ht (when (or record-temp-entries *record-param-field-adjs*)
+                      (make-hash-table :test 'eq))))
+            (when ht
+              (when *record-param-field-adjs*
+                (maphash (lambda (k v) (setf (gethash k ht) v))
+                         *record-param-field-adjs*))
+              (dolist (entry record-temp-entries)
+                (setf (gethash (car entry) ht) (cdr entry))))
+            ht)))
+    (let ((*record-param-field-adjs* record-param-field-adjs-ht))
+      (let ((backward-forms nil)
+            (adjoint-map (make-hash-table :test 'equal))
+            (tensor-inputs-ht
+             (let ((ht (make-hash-table :test 'eq)))
+               (loop for sym  in inputs
+                     for typ  in input-types
+                     when (%crisp-float-tensor-type-p typ)
+                     do (setf (gethash sym ht) typ))
+               ht)))
+
+        ;; 107: precompute any-output-double so the DOTIMES iter-zero-reset
+        ;; case can pick the correctly-typed literal.  Same logic the
+        ;; post-walk let-wrap uses for intermediate adjoints (anything not
+        ;; an input gets `(as double 0.0)` if any kernel output is double-
+        ;; promoted, else `0.0`).
+        (cl:flet ((promotes-to-double-p (t-spec)
+                    (let ((promoted (%promote-to-float-adjoint t-spec)))
+                      (or (eq promoted 'double)
+                          (and (consp promoted) (eq (second promoted) 'double))))))
+          (let* ((any-output-double (some #'promotes-to-double-p output-types))
+                 (intermediate-zero (if any-output-double '(as double 0.0) 0.0)))
+
+            (labels ((local-adj (v)
+                       (or (gethash v adjoint-map)
+                           (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
+                                              (or kernel-pkg (symbol-package v)))))
+                             (setf (gethash v adjoint-map) adv)
+                             adv)))
+                     (emit (form)
+                       (push form backward-forms))
+
+                     (hof-inline-backward (fn args v)
+                       (let* ((hof-data (gethash fn *differentiable-hof-store*)))
+                         (unless hof-data
+                           (error "HOF ~A not found in *differentiable-hof-store*" fn))
+                         (let* ((param-syms   (getf hof-data :param-syms))
+                                (fn-param-idx (getf hof-data :fn-param-idx))
+                                (body-forms   (getf hof-data :body-forms))
+                                (fn-arg       (nth fn-param-idx args))
+                                (concrete-fn  (cond
+                                                ((and (consp fn-arg) (eq (car fn-arg) 'function))
+                                                 (cadr fn-arg))
+                                                ((symbolp fn-arg) fn-arg)
+                                                (t nil))))
+                           (unless concrete-fn
+                             (error "Cannot inline-differentiate HOF ~A:  could not resolve concrete fn from arg ~A" fn fn-arg))
+                           (let* ((fn-param      (nth fn-param-idx param-syms))
+                                  (subst-alist
+                                   (loop for p in param-syms
+                                         for a in args
+                                         for i from 0
+                                         unless (= i fn-param-idx)
+                                         collect (cons p a)))
+                                  (subst-body    (mapcar (lambda (f) (%subst-form f subst-alist)) body-forms))
+                                  (concrete-body (mapcar (lambda (f) (%remove-funcall f fn-param concrete-fn))
+                                                         subst-body))
+                                  (anf-body      (mapcar #'anf-transform concrete-body))
+                                  (hof-flat      (flatten-anf-body anf-body))
+                                  (hof-flat-norm
+                                   (let ((last-f (car (last hof-flat))))
+                                     (if (or (symbolp last-f)
+                                             (and (consp last-f) (eq (first last-f) 'return)))
+                                         hof-flat
+                                         (let ((ret-sym (intern (format nil "%HOF_RET_~A" (symbol-name v))
+                                                                (symbol-package v))))
+                                           (append (butlast hof-flat)
+                                                   (list (list ret-sym last-f) ret-sym))))))
+                                  (return-vars   (%extract-return-vars hof-flat-norm)))
+                             (dolist (rv return-vars)
+                               (setf (gethash rv adjoint-map) (local-adj v)))
+                             (dolist (hf-form (reverse hof-flat-norm))
+                               (when (and (consp hf-form) (= (length hf-form) 2) (symbolp (car hf-form)))
+                                 (let ((hv    (car hf-form))
+                                       (hexpr (cadr hf-form)))
+                                   (%handle-single-value-backward hv hexpr adjoint-map #'emit #'local-adj
+                                                                  :hof-handler-fn #'hof-inline-backward
+                                                                  :error-on-unknown t
+                                                                  :tensor-inputs-ht nil))))))))
+
+                     (process-form (form emit-fn)
+                       (cond
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "DECLARE")) nil)
+
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "SET!"))
+                          (let ((place (cadr form))
+                                (val   (caddr form)))
+                            (when (and (consp place) (eq (car place) '~) (symbolp val))
+                              (let ((target  (cadr place))
+                                    (indices (cddr place)))
+                                (cond
+                                  ((member target outputs)
+                                   (let ((tgt-grad (intern (format nil "~A_GRAD" (symbol-name target))
+                                                           (symbol-package target))))
+                                     (funcall emit-fn `(set! ,(local-adj val)
+                                                             (+ ,(local-adj val) (~ ,tgt-grad ,@indices))))))
+                                  ((member target inputs)
+                                   (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
+                                          target target))
+                                  (t nil))))))
+
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "LET"))
+                          (let* ((bindings (cadr form))
+                                 (body (cddr form))
+                                 (local-forms nil))
+                            (cl:flet ((local-emit (f) (push f local-forms)))
+                              (dolist (b (reverse body))
+                                (process-form b #'local-emit))
+                              (dolist (b (reverse bindings))
+                                (when (and (consp b) (= (length b) 2) (symbolp (car b)))
+                                  (process-form b #'local-emit))))
+                            (funcall emit-fn `(let ,bindings ,@(nreverse local-forms)))))
+
+                         ;; 107 iter-local fix: after walking the body, emit a
+                         ;; (set! adj ZERO) at the top of the backward body for
+                         ;; each iteration-local variable whose adjoint is
+                         ;; actually used by the chain rule.  Without this,
+                         ;; adjoints leak across iterations and grad values
+                         ;; scale with iteration count.
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "DOTIMES"))
+                          (let* ((binding (cadr form))
+                                 (body (cddr form))
+                                 (local-vars (%collect-locally-bound-vars body))
+                                 (local-forms nil))
+                            (cl:flet ((local-emit (f) (push f local-forms)))
+                              (dolist (b (reverse body))
+                                (process-form b #'local-emit)))
+                            (let ((zero-resets
+                                   (loop for v in local-vars
+                                         for adv = (gethash v adjoint-map)
+                                         when adv
+                                         collect `(set! ,adv ,intermediate-zero))))
+                              (funcall emit-fn
+                                       `(dotimes ,binding
+                                          ,@zero-resets
+                                          ,@(nreverse local-forms))))))
+
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "IF"))
+                          (let* ((cond-form (cadr form))
+                                 (then-form (caddr form))
+                                 (else-form (cadddr form))
+                                 (then-local nil)
+                                 (else-local nil))
+                            (when then-form
+                              (process-form then-form (lambda (f) (push f then-local))))
+                            (when (and else-form (not (null else-form)))
+                              (process-form else-form (lambda (f) (push f else-local))))
+                            (let ((then-body (cond
+                                               ((null then-local) nil)
+                                               ((= (length then-local) 1) (first then-local))
+                                               (t `(progn ,@(nreverse then-local)))))
+                                  (else-body (cond
+                                               ((null else-local) nil)
+                                               ((= (length else-local) 1) (first else-local))
+                                               (t `(progn ,@(nreverse else-local))))))
+                              (funcall emit-fn
+                                       (if else-body
+                                           `(if ,cond-form ,(or then-body 'nil) ,else-body)
+                                           `(if ,cond-form ,(or then-body 'nil)))))))
+
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "PROGN"))
+                          (dolist (sub (reverse (cdr form)))
+                            (process-form sub emit-fn)))
+
+                         ((and (listp form) (= (length form) 2) (symbolp (car form)))
+                          (%handle-single-value-backward (car form) (cadr form)
+                                                         adjoint-map emit-fn #'local-adj
+                                                         :hof-handler-fn #'hof-inline-backward
+                                                         :error-on-unknown t
+                                                         :tensor-inputs-ht tensor-inputs-ht))
+
+                         ((and (listp form) (>= (length form) 3)
+                               (symbolp (car form))
+                               (every #'symbolp (butlast form)))
+                          (let* ((result-vars (butlast form))
+                                 (expr        (car (last form))))
+                            (when (and (consp expr)
+                                       (symbolp (car expr))
+                                       (gethash (car expr) *differentiable-functions*))
+                              (let* ((fn   (car expr))
+                                     (args (cdr expr))
+                                     (info (gethash fn *differentiable-functions*))
+                                     (bkwd (getf info :bkwd-name))
+                                     (n-fp (getf info :n-float-params))
+                                     (pkg  (symbol-package (car result-vars)))
+                                     (t-adjs (mapcar #'local-adj result-vars)))
+                                (%emit-sub-fn-backward fn args bkwd t-adjs n-fp pkg
+                                                       emit-fn #'local-adj "BW")))))
+
+                         (t nil))))
+
+              (let ((reversed-body (reverse flat-anf)))
+                (dolist (form reversed-body)
+                  (process-form form #'emit)))
+
+              (loop for in in inputs
+                    for in-type in input-types do
+                      (let* ((in-grad    (intern (format nil "~A_GRAD" (symbol-name in))
+                                                 (or kernel-pkg (symbol-package in))))
+                             (canon-type (canonicalize-type-specifier
+                                          (if (listp in-type) in-type (list in-type))))
+                             (is-cell-input
+                              (and (consp canon-type)
+                                   (string-equal (symbol-name (first canon-type)) "CELL")))
+                             (is-tensor-input
+                              (or (%crisp-float-tensor-type-p in-type)
+                                  (%crisp-integer-tensor-type-p in-type)))
+                             (is-scalar-wrapped
+                              (and (not is-cell-input) (not is-tensor-input)
+                                   (or (%crisp-integer-scalar-type-p in-type)
+                                       (%crisp-float-type-p in-type)))))
+                        (cond
+                          (is-tensor-input nil)
+                          (is-cell-input     (emit `(set! (~ ,in-grad) ,(local-adj in))))
+                          (is-scalar-wrapped (emit `(set! (~ ,in-grad) ,(local-adj in))))
+                          (t                 (emit `(set! ,in-grad ,(local-adj in)))))))
+
+              (let* ((typed-zero-for
+                      (lambda (orig-sym)
+                        (let* ((idx (position orig-sym inputs))
+                               (in-type (when idx (nth idx input-types))))
+                          (cond
+                            (in-type
+                             (if (promotes-to-double-p in-type) '(as double 0.0) 0.0))
+                            (any-output-double '(as double 0.0))
+                            (t 0.0)))))
+                     (local-bindings (loop for v being the hash-keys of adjoint-map
+                                           using (hash-value adv)
+                                           collect `(,adv ,(funcall typed-zero-for v))))
+                     (result `(let ,local-bindings
+                                ,@(nreverse backward-forms))))
+                result))))))))
+
