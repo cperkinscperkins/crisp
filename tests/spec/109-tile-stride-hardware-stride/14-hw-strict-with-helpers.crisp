@@ -18,4 +18,4 @@
   (hardware-stride M :row-major :workgroup-idx (row-y col-x)
     (let ((t-y t-x     (tile-coords  row-y col-x))
           (idx-y idx-x (tile-indices row-y col-x)))
-      (set! (~ M row-y col-x) (+ (* idx-x 10) t-x)))))
+      (set! (~ M row-y col-x) (+ (* idx-x (to-ulong 10)) t-x)))))

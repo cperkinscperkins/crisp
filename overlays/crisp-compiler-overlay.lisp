@@ -302,28 +302,22 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                          (or (string-equal n "LET")
                              (string-equal n "LET*"))))
                   (walk-let form))
-                 ((let ((kind (%tile-helper-name-p (car form))))
-                    (when kind
-                      ;; Standalone helper expression: must be single-value (n-tile = 1)
-                      (cond
-                        ((eq kind :tensor-coords)
-                         (let ((expanded (%tile-helper-call-expansion
-                                          kind (cdr form) tile-size-fn n-tile cl-pkg)))
-                           (if (= (length expanded) 1)
-                               (walk-form (first expanded))
-                               (error 'crisp-compiler-error
-                                      :message "tensor-coords used in single-value context but stride is multi-dim — use in a multi-value let binding"
-                                      :source-location nil))))
-                        (t
-                         (let ((expanded (%tile-helper-call-expansion
-                                          kind (cdr form) tile-size-fn n-tile cl-pkg)))
-                           (if (= (length expanded) 1)
-                               (walk-form (first expanded))
-                               (error 'crisp-compiler-error
-                                      :message (format nil "~A used in single-value context but stride is multi-dim — use in a multi-value let binding"
-                                                       (symbol-name (car form)))
-                                      :source-location nil))))))))
-                 (t (mapcar #'walk-form form))))
+                 (t
+                  ;; Detect helper call OR walk subforms.  Done as a single
+                  ;; default clause to avoid a `cond` test-only quirk in the
+                  ;; crisp.compiler `cond` macro (simplified vs cl:cond).
+                  (let ((kind (%tile-helper-name-p (car form))))
+                    (if kind
+                        ;; Standalone helper expression: must be single-value.
+                        (let ((expanded (%tile-helper-call-expansion
+                                         kind (cdr form) tile-size-fn n-tile cl-pkg)))
+                          (if (= (length expanded) 1)
+                              (walk-form (first expanded))
+                              (error 'crisp-compiler-error
+                                     :message (format nil "~A used in single-value context but stride is multi-dim — use in a multi-value let binding"
+                                                      (symbol-name (car form)))
+                                     :source-location nil)))
+                        (mapcar #'walk-form form))))))
              (walk-let (form)
                (let* ((binding-forms (second form))
                       (body-forms-let (cddr form))
@@ -537,7 +531,13 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
         (sym-cc (intern "TILE-STRIDE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-tile-stride-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-tile-stride-expression))))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-tile-stride-expression)))
+  ;; 109 Passes 5-7: hardware-stride
+  (let ((sym-cl (intern "HARDWARE-STRIDE" (find-package :crisp-language)))
+        (sym-cc (intern "HARDWARE-STRIDE" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-hardware-stride-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-hardware-stride-expression))))
 
 
 ;; src/macros.lisp -- extend AD pre-pass to expand tile-stride too (109 Pass 1).
@@ -585,9 +585,201 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                                    (list ts-sym (second walked) bindings)))
                  (ct (%tensor-stride-resolve-ct synth-for-ct type-resolver-fn location)))
             (%expand-tile-stride-form walked ct location)))
+         ((string-equal op-name "HARDWARE-STRIDE")
+          (let* ((walked (cons (car form)
+                               (mapcar (lambda (sub)
+                                         (%expand-stride-macros-in-form sub type-resolver-fn location))
+                                       (cdr form))))
+                 (cl-pkg (find-package :crisp-language))
+                 (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
+                 ;; Detect strict variant: 3rd is layout-tag, 4th is hw-tag.
+                 (third (third walked))
+                 (strict-p (and (keywordp third)
+                                (member third '(:row-major :col-major :contiguous-last :contiguous-first))))
+                 (hw-pos (if strict-p 3 2))
+                 (bindings (nth (1+ hw-pos) walked))
+                 (synth-for-ct (if strict-p
+                                   (list ts-sym (second walked) (third walked) bindings)
+                                   (list ts-sym (second walked) bindings)))
+                 (ct (%tensor-stride-resolve-ct synth-for-ct type-resolver-fn location)))
+            (%expand-hardware-stride-form walked ct location)))
          (t
           (cons (car form)
                 (mapcar (lambda (sub)
                           (%expand-stride-macros-in-form sub type-resolver-fn location))
                         (cdr form)))))))))
+
+
+;; ============================================================================
+;; Endeavor 109 — hardware-stride (Passes 5-7).
+;;
+;; hardware-stride chunks the iteration by workgroup (:workgroup-idx) or by
+;; warp (:warp-idx).  Per the chapter doc implementation note, the actual
+;; stride loop is identical to tensor-stride; chunking only changes the
+;; tile-size source consumed by the helper macros:
+;;
+;;   :workgroup-idx → tile size per dim = (get-local-work-size k)
+;;   :warp-idx      → tile size = warp size; binding count must be 1
+;;                     (warp iteration is always linear over the flattened
+;;                      global execution space, regardless of global-size arity)
+;;
+;; Form variants:
+;;   (hardware-stride T <HW-TAG> (BINDINGS) BODY...)             ; safe
+;;   (hardware-stride T <LAYOUT-TAG> <HW-TAG> (BINDINGS) BODY...) ; strict
+;;
+;; Note: :warp-idx currently uses (to-ulong 32) as a placeholder for the warp
+;; size.  When (get-warp-size) is added (SPIR-V SubgroupSize builtin), this
+;; should switch to the real runtime call.  The placeholder is correct on
+;; NVIDIA and Intel GPUs, incorrect on AMD (warp size 64).
+
+;; src/analysis/control.lisp
+(defun %hardware-stride-parse (expr)
+  "Returns (values strict-p layout-tag hw-tag bindings body-forms tensor-form)
+   for a hardware-stride EXPR.  Form-shape validation only — does not check
+   arity vs tensor."
+  (let* ((tensor-form (second expr))
+         (third       (third expr))
+         (strict-p    (and (keywordp third)
+                           (member third '(:row-major :col-major :contiguous-last :contiguous-first))))
+         (layout-tag  (when strict-p third))
+         (hw-tag-pos  (if strict-p 3 2))
+         (hw-tag      (nth hw-tag-pos expr))
+         (bind-pos    (1+ hw-tag-pos))
+         (bindings    (nth bind-pos expr))
+         (body-forms  (nthcdr (1+ bind-pos) expr)))
+    (unless (member hw-tag '(:workgroup-idx :warp-idx))
+      (error 'crisp-compiler-error
+             :message (format nil "hardware-stride: unknown hw-tag ~S (expected :workgroup-idx or :warp-idx)" hw-tag)
+             :source-location nil))
+    (values strict-p layout-tag hw-tag bindings body-forms tensor-form)))
+
+;; src/analysis/control.lisp
+;;
+;; Custom expansion for :warp-idx.  Unlike :workgroup-idx (which can delegate
+;; to tensor-stride because dim-0 iteration aligns with single-dim global-size),
+;; :warp-idx must iterate linearly over the FLATTENED global execution space.
+;; This matters when global-size has arity > 1 — tensor-stride's gid/gsize
+;; would only see dim 0, missing the rest of the enqueue.
+(defun %expand-warp-idx-form (tensor-form bindings body-forms location)
+  "Linear-flatten expansion for hardware-stride :warp-idx.  Always 1 binding."
+  (declare (ignore location))
+  (let* ((var-name (first bindings))
+         (gid-sym (gensym "GID"))
+         (gsize-sym (gensym "GSIZE"))
+         (len-sym (gensym "LEN"))
+         (k-sym (gensym "K"))
+         (cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (declare-sym (intern "DECLARE" cl-pkg))
+         (grid-level-sym (intern "GRID-LEVEL" cl-pkg))
+         (dotimes-sym (intern "DOTIMES" cl-pkg))
+         (if-sym (intern "IF" cl-pkg))
+         (progn-sym (intern "PROGN" cl-pkg))
+         (get-glid-sym   (intern "GET-GLOBAL-LINEAR-ID"   cl-pkg))
+         (get-glsize-sym (intern "GET-GLOBAL-LINEAR-SIZE" cl-pkg))
+         (len-tilde-sym  (intern "LENGTH~" cl-pkg))
+         (plus-sym (intern "+" cl-pkg))
+         (lt-sym   (intern "<" cl-pkg))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
+         (inner-if  (list if-sym (list lt-sym var-name len-sym) inner-body))
+         (inner-let (list let-sym
+                          (list (list var-name (list plus-sym k-sym gid-sym)))
+                          inner-if))
+         (dotimes-form (list dotimes-sym
+                             (list k-sym len-sym gsize-sym)
+                             inner-let))
+         (expansion (list let-sym
+                          (list (list gid-sym   (list get-glid-sym))
+                                (list gsize-sym (list get-glsize-sym))
+                                (list len-sym   (list len-tilde-sym tensor-form)))
+                          (list declare-sym (list grid-level-sym))
+                          dotimes-form)))
+    expansion))
+
+;; src/analysis/control.lisp
+(defun %expand-hardware-stride-form (expr ct location)
+  "Pure expansion of (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).
+   Rewrites helper macros using the hw-tag-derived tile-size source, then
+   dispatches by hw-tag:
+     :workgroup-idx delegates to tensor-stride (chunking is implicit in the
+                    workgroup scheduler; same N-D stride loop)
+     :warp-idx      uses a custom linear-flatten expansion over the
+                    global execution space (always 1 binding)."
+  (multiple-value-bind (strict-p layout-tag hw-tag bindings body-forms tensor-form)
+      (%hardware-stride-parse expr)
+    (unless (and (listp bindings) (every #'symbolp bindings) (>= (length bindings) 1))
+      (error 'crisp-compiler-error
+             :message "Malformed hardware-stride: expected (hardware-stride TENSOR [LAYOUT-TAG] <HW-TAG> (BINDING ...) BODY...)"
+             :source-location location))
+    (when (and (eq hw-tag :warp-idx) (/= (length bindings) 1))
+      (error 'crisp-compiler-error
+             :message "hardware-stride :warp-idx must have exactly 1 binding — warp iteration is always linear over the flattened global execution space"
+             :source-location location))
+    (let* ((n-tile (length bindings))
+           (cl-pkg (find-package :crisp-language))
+           (tile-size-fn
+            (ecase hw-tag
+              (:workgroup-idx
+               (let ((get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg)))
+                 (lambda (k) (list get-lws-sym k))))
+              (:warp-idx
+               ;; Placeholder: should be (get-warp-size) once available.
+               (let ((to-ulong-sym (intern "TO-ULONG" cl-pkg)))
+                 (lambda (k) (declare (ignore k)) (list to-ulong-sym 32))))))
+           (rewritten-body (%tile-helpers-rewrite body-forms n-tile tile-size-fn)))
+      (ecase hw-tag
+        (:workgroup-idx
+         (let* ((ts-sym (intern "TENSOR-STRIDE" cl-pkg))
+                (synth  (if strict-p
+                            (cons ts-sym (cons tensor-form (cons layout-tag (cons bindings rewritten-body))))
+                            (cons ts-sym (cons tensor-form (cons bindings rewritten-body))))))
+           (%expand-tensor-stride-form synth ct location)))
+        (:warp-idx
+         ;; Layout-tag (if present) is irrelevant under :warp-idx — iteration
+         ;; is already linear, so CT-driven decode doesn't apply.  Accepted
+         ;; at parse time for syntactic regularity, dropped here.
+         (%expand-warp-idx-form tensor-form bindings rewritten-body location))))))
+
+;; src/analysis/control.lisp
+(defun analyze-hardware-stride-expression (expr env context location)
+  "Analyzes (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).
+   Validates arity (:warp-idx must be 1 binding, :workgroup-idx must match
+   tensor arity) and delegates codegen via %expand-hardware-stride-form."
+  (multiple-value-bind (strict-p layout-tag hw-tag bindings body-forms tensor-form)
+      (%hardware-stride-parse expr)
+    (declare (ignore layout-tag body-forms))
+    (let* ((env-resolver
+            (lambda (sym)
+              (when (symbolp sym)
+                (handler-case
+                    (let ((node (analyze-expression sym env context (append location '(1)))))
+                      (semantic-node-type node))
+                  (error () nil)))))
+           (cl-pkg (find-package :crisp-language))
+           (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
+           (synth-for-ct (if strict-p
+                             (list ts-sym tensor-form (third expr) bindings)
+                             (list ts-sym tensor-form bindings)))
+           (ct (%tensor-stride-resolve-ct synth-for-ct env-resolver location))
+           (n (length bindings))
+           (canon (and (symbolp tensor-form)
+                       (let ((ty (funcall env-resolver tensor-form)))
+                         (and ty (%ts-canonicalize-tensor-type ty)))))
+           (declared-n (when (and (listp canon) (>= (length canon) 3))
+                         (third canon))))
+      (when (and (eq hw-tag :warp-idx) (/= n 1))
+        (error 'crisp-compiler-error
+               :message "hardware-stride :warp-idx must have exactly 1 binding — warp iteration is always linear over the flattened global execution space"
+               :source-location location))
+      (when (and (eq hw-tag :workgroup-idx)
+                 (integerp declared-n) (/= declared-n n))
+        (error 'crisp-compiler-error
+               :message (format nil
+                                "hardware-stride :workgroup-idx: tensor has ~A dimension(s) but ~A binding(s) provided"
+                                declared-n n)
+               :source-location location))
+      (analyze-expression (%expand-hardware-stride-form expr ct location)
+                          env context location))))
 

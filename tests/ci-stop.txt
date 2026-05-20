@@ -1,1 +1,1 @@
-﻿107-differentiate-loop-and-stride
+109-tile-stride-hardware-stride
