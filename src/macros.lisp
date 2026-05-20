@@ -724,12 +724,11 @@ processes float inputs — integer tensor inputs contribute zero gradient."
           when (symbolp p) do (setf (gethash p map) ty))
     (lambda (sym) (and (symbolp sym) (gethash sym map)))))
 
+
+
 (defun %expand-stride-macros-in-form (form type-resolver-fn location)
-  "Recursively walks FORM and rewrites any tensor-stride / grid-stride /
-   loop-vector-stride forms into their expansions.  TYPE-RESOLVER-FN is
-   used to determine tensor-stride's CT (a closure from
-   %make-kernel-param-type-resolver, or NIL).  Inserts the expansion in
-   place — the result is fed to anf-transform by %generate-backward-kernel-ast."
+  "Recursively walks FORM and rewrites tensor-stride / grid-stride /
+   loop-vector-stride / tile-stride forms into their expansions."
   (cond
     ((atom form) form)
     ((not (and (consp form) (symbolp (car form))))
@@ -756,11 +755,45 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                                         (%expand-stride-macros-in-form sub type-resolver-fn location))
                                       (cdr form)))))
             (%expand-loop-vector-stride-form walked location)))
+         ((string-equal op-name "TILE-STRIDE")
+          (let* ((walked (cons (car form)
+                               (mapcar (lambda (sub)
+                                         (%expand-stride-macros-in-form sub type-resolver-fn location))
+                                       (cdr form))))
+                 (cl-pkg (find-package :crisp-language))
+                 (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
+                 (strict-p (keywordp (third walked)))
+                 (tile-pos (if strict-p 3 2))
+                 (bindings (nth (1+ tile-pos) walked))
+                 (synth-for-ct (if strict-p
+                                   (list ts-sym (second walked) (third walked) bindings)
+                                   (list ts-sym (second walked) bindings)))
+                 (ct (%tensor-stride-resolve-ct synth-for-ct type-resolver-fn location)))
+            (%expand-tile-stride-form walked ct location)))
+         ((string-equal op-name "HARDWARE-STRIDE")
+          (let* ((walked (cons (car form)
+                               (mapcar (lambda (sub)
+                                         (%expand-stride-macros-in-form sub type-resolver-fn location))
+                                       (cdr form))))
+                 (cl-pkg (find-package :crisp-language))
+                 (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
+                 ;; Detect strict variant: 3rd is layout-tag, 4th is hw-tag.
+                 (third (third walked))
+                 (strict-p (and (keywordp third)
+                                (member third '(:row-major :col-major :contiguous-last :contiguous-first))))
+                 (hw-pos (if strict-p 3 2))
+                 (bindings (nth (1+ hw-pos) walked))
+                 (synth-for-ct (if strict-p
+                                   (list ts-sym (second walked) (third walked) bindings)
+                                   (list ts-sym (second walked) bindings)))
+                 (ct (%tensor-stride-resolve-ct synth-for-ct type-resolver-fn location)))
+            (%expand-hardware-stride-form walked ct location)))
          (t
           (cons (car form)
                 (mapcar (lambda (sub)
                           (%expand-stride-macros-in-form sub type-resolver-fn location))
                         (cdr form)))))))))
+
 
 (defun %generate-backward-kernel-ast (name params signature-types raw-body)
   "Generates the def-kernel-exact AST for the backward (gradient) pass.

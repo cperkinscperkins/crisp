@@ -370,9 +370,66 @@ set!  analyzer's behavior in analysis/structs.lisp."
   (%analyze-atomic-rmw-expression :xchg expr env context location))
 
 
+
+  
+;; ============================================================================
+;; Endeavor 109 — mod / rem operators.
+;;
+;; Crisp had `/` for integer/float division but no companion modulo operator.
+;; Added here as expansion-based analyzers: (mod x y) and (rem x y) both
+;; rewrite to (- x (* (/ x y) y)) via gensym'd let bindings (so x and y are
+;; evaluated once even if they're side-effecting expressions).  LLVM's
+;; peephole optimisation folds this idiom back to a native srem / urem / frem
+;; instruction, so there is no runtime cost.
+;;
+;; Currently mod and rem have identical semantics — both match C's % and
+;; LLVM's srem (sign of result follows the dividend).  This is the variant
+;; that matters for GPU coordinate work where operands are non-negative.
+;; The two names can be split later if a use case demands the Common-Lisp
+;; mod-vs-rem distinction.
+
+;; src/analysis/ops.lisp
+(defun analyze-mod-expression (expr env context location)
+  "Analyzes (mod x y).  Expands to (- x (* (/ x y) y)) with x and y bound
+   to gensyms first, then delegates to analyze-expression.  Works for any
+   numeric type via the standard +/-/*/ analyzers."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+           :message (format nil "mod: expected (mod x y), got ~A arg(s)" (1- (length expr)))
+           :source-location location))
+  (let* ((x-form (second expr))
+         (y-form (third expr))
+         (cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (sub-sym (intern "-" cl-pkg))
+         (mul-sym (intern "*" cl-pkg))
+         (div-sym (intern "/" cl-pkg))
+         (x-tmp (gensym "MOD-X"))
+         (y-tmp (gensym "MOD-Y"))
+         (expansion (list let-sym
+                          (list (list x-tmp x-form)
+                                (list y-tmp y-form))
+                          (list sub-sym x-tmp
+                                (list mul-sym (list div-sym x-tmp y-tmp) y-tmp)))))
+    (analyze-expression expansion env context location)))
+
+;; src/analysis/ops.lisp
+(defun analyze-rem-expression (expr env context location)
+  "Analyzes (rem x y).  Currently identical to mod — both match C % / LLVM
+   srem.  Split semantics later if needed."
+  (let* ((x-form (second expr))
+         (y-form (third expr))
+         (cl-pkg (find-package :crisp-language))
+         (mod-sym (intern "MOD" cl-pkg)))
+    (analyze-mod-expression (list mod-sym x-form y-form) env context location)))
+
+
+;; src/analysis/ops.lisp -- whole-function replacement of register-ops-analyzers
+;; adding mod and rem registrations.
 (defun register-ops-analyzers ()
   "Registers all expression analyzer functions.
-Redefined for 082-atomics to add atomic RMW op analyzers."
+Redefined for 082-atomics to add atomic RMW op analyzers.
+Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
   (def-expression-analyzer + analyze-add-expression)
   (def-expression-analyzer - analyze-sub-expression)
   (def-expression-analyzer * analyze-mul-expression)
@@ -397,8 +454,6 @@ Redefined for 082-atomics to add atomic RMW op analyzers."
   (def-expression-analyzer atomic-set!  analyze-atomic-set!-expression)
 
   ;; 082-atomics: also register under crisp-language package symbols.
-  ;; Source files are read in crisp-language context, so atomic-add! etc.
-  ;; from source are crisp-language::atomic-add!, not crisp.compiler::atomic-add!.
   (let ((lang (find-package :crisp-language)))
     (when lang
       (dolist (pair '(("ATOMIC-ADD!"  analyze-atomic-add!-expression)
@@ -411,6 +466,21 @@ Redefined for 082-atomics to add atomic RMW op analyzers."
                       ("ATOMIC-SET!"  analyze-atomic-set!-expression)))
         (setf (gethash (intern (first pair) lang) *expression-analyzers*)
               (second pair)))))
+
+  ;; 109: mod / rem.  Register under both packages.  In :crisp-language
+  ;; these names are fresh symbols (the package :uses nothing).  In
+  ;; :crisp.compiler they shadow cl:mod / cl:rem.
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (entry '(("MOD" . analyze-mod-expression)
+                     ("REM" . analyze-rem-expression)))
+      (let* ((name (car entry))
+             (fn-name (cdr entry))
+             (sym-cl (intern name cl-pkg))
+             (sym-cc (intern name cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) fn-name)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) fn-name)))))
 
   (def-expression-analyzer to  analyze-value-cast-expression)
   (def-expression-analyzer as  analyze-generic-as-expression)

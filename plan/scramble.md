@@ -614,9 +614,9 @@ Grid Stride
 - [x] loop-vector-stride
 - [x] tensor-stride
 - [x] grid-stride
-- [ ] tile-stride
-- [ ] hardware-stride
-- [ ] A|D of all above
+- [x] tile-stride
+- [x] hardware-stride
+- [x] A|D of all above
 - [ ] load-tile / store-tile
 - - [ ] async variations of same
 - [ ] :strategy :tiled and :tile-shape declarations. 

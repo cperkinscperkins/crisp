@@ -103,3 +103,11 @@ Doc updates that should accompany the implementation
 - Add "Ragged edges" subsection to chapter 14/11
 - Cross-reference 14/07 (`:tiled` strategy) ↔ 14/11 (tile-stride)
 - Confirm plural helper naming everywhere in 14/11 (in progress)
+
+
+Known limitations carried forward:
+----------------------------------
+
+- :warp-idx warp size is hardcoded (to-ulong 32) — should become (get-warp-size) (SPIR-V SubgroupSize) when that builtin is implemented. Correct on NVIDIA/Intel, incorrect on AMD (warp size 64).
+- :tiled hoist strategy still not implemented in the hoist generator (109/16 uses :set-to 4 for now).
+- Negative test 02 expects tensor-stride: prefix because tile-stride delegates layout-tag-vs-CT checks. Cosmetic; can be fixed later by replicating the check in tile-stride.
