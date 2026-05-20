@@ -135,6 +135,7 @@ strategy could also be used with the `:set-to` key.
 size isn't based on the total number of elements, but on the number of tiles needed to cover the input data.
 The host code generator would calculate the grid dimensions based on the input matrix/tensor dimensions and the tile dimensions.
 When using this strategy, be sure to also use the `:tile-shape` key so the hoisting code can calculate accordingly.
+This declaration should always be used when using the `tile-stride` macro.  See [`tile-stride`](#tile-stride) for more information. 
 
 
 

@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; tensor-coords helper: maps (tile-indices, tile-coords) back to the
+;; problem-space coordinate.  Round-trip identity:
+;;   tensor-coords( tile-indices(x), tile-coords(x) ) == x
+;;
+;; tensor-coords takes TWO lists — first list is the tile indices,
+;; second is the tile coords — and returns multiple values matching
+;; the original binding arity.
+;;
+;; This test writes the round-tripped col-x value back into M.
+;; If the round-trip works, every cell M[row-y][col-x] = col-x:
+;;   row 0: [0 1 2 3]
+;;   row 1: [0 1 2 3]
+;;   row 2: [0 1 2 3]
+;;   row 3: [0 1 2 3]
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel mat_round_trip_x (&out M)
+  (declare #'(&out mat-t => nil))
+  (tile-stride M (2 2) (row-y col-x)
+    (let ((t-y t-x     (tile-coords  row-y col-x))
+          (idx-y idx-x (tile-indices row-y col-x)))
+      (let ((rt-y rt-x (tensor-coords (idx-y idx-x) (t-y t-x))))
+        (set! (~ M row-y col-x) rt-x)))))

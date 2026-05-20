@@ -612,7 +612,16 @@ Grid vs Thread Context
 Grid Stride
 ===========
 - [x] loop-vector-stride
-- [ ] thread-stride  ( revisit first, for possible async considerations. )
+- [x] tensor-stride
+- [x] grid-stride
+- [x] tile-stride
+- [x] hardware-stride
+- [x] A|D of all above
+- [ ] load-tile / store-tile
+- - [ ] async variations of same
+- [ ] :strategy :tiled and :tile-shape declarations. 
+- - [ ] metadata
+- - [ ] hoisting
 
 Looping Constructs
 ==================

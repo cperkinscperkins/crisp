@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "tile-stride: tile size-list has 3 dimension(s) but tensor has 2 dimension(s)"
+;; The tile size-list arity must match both the tensor's rank and the
+;; binding count.
+
+(def-type mat-t (matrix int :address-space :global :align :compact))
+
+(def-kernel tile_arity_mismatch (&out M)
+  (declare #'(&out mat-t => nil) forward-only)
+  (tile-stride M (2 2 2) (row-y col-x)
+    (set! (~ M row-y col-x) 0)))

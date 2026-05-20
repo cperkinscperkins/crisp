@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Strict tile-stride with :contiguous-first on a 3D tensor.
+;; First binding (z) varies along the warp lane.  Tensor's static CT
+;; is :first so the tag agrees.
+
+(def-type ten3-t (tensor int 3 :address-space :global :align :compact :contiguous-term :first))
+
+(def-kernel ten3_fill_tile_cf (&out T3)
+  (declare #'(&out ten3-t => nil))
+  (tile-stride T3 :contiguous-first (2 2 2) (z y x)
+    (set! (~ T3 z y x) 13)))

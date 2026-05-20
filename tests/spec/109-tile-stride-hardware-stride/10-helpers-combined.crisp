@@ -1,0 +1,33 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; All three helpers in one kernel.  Computes a tile-aware encoding for
+;; each element so that the result identifies both the tile and the
+;; intra-tile position:
+;;
+;;   M[y][x] = (idx-y * 1000) + (idx-x * 100) + (t-y * 10) + t-x
+;;
+;; On a 4x4 matrix with tile (2 2):
+;;   M[0][0]= 0    M[0][1]=    1   M[0][2]=  100  M[0][3]=  101
+;;   M[1][0]=10    M[1][1]=   11   M[1][2]=  110  M[1][3]=  111
+;;   M[2][0]=1000  M[2][1]= 1001   M[2][2]= 1100  M[2][3]= 1101
+;;   M[3][0]=1010  M[3][1]= 1011   M[3][2]= 1110  M[3][3]= 1111
+;;
+;; Exercises tile-coords + tile-indices in the same scope (no shadowing
+;; conflicts), and verifies that the two helpers' results can be combined
+;; in arithmetic with no type-promotion friction.
+;;
+;; Ragged-edge coverage via check-thread-bounds is deferred — needs the
+;; hoist harness to allow non-default-extent tensor params.
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel mat_tile_encoding (&out M)
+  (declare #'(&out mat-t => nil))
+  (tile-stride M (2 2) (row-y col-x)
+    (let ((t-y   t-x   (tile-coords  row-y col-x))
+          (idx-y idx-x (tile-indices row-y col-x)))
+      (set! (~ M row-y col-x)
+            (+ (* idx-y (to-ulong 1000))
+               (+ (* idx-x (to-ulong 100))
+                  (+ (* t-y (to-ulong 10)) t-x)))))))

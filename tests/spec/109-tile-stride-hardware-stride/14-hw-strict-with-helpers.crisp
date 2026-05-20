@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Strict hardware-stride: layout-tag goes between the tensor and the
+;; hw-tag.  Combines :row-major static layout with :workgroup-idx
+;; chunking, plus all the coordinate helpers in the body.
+;;
+;; Writes a workgroup-aware encoding so the result identifies both
+;; which workgroup the lane is in (idx-x) and where in the workgroup
+;; (t-x).  Encoding: idx_x * 10 + t_x.
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel mat_hw_strict (&out M)
+  (declare #'(&out mat-t => nil)
+           (global-size :set-to '(4 4))
+           (local-size  :set-to '(2 2)))
+  (hardware-stride M :row-major :workgroup-idx (row-y col-x)
+    (let ((t-y t-x     (tile-coords  row-y col-x))
+          (idx-y idx-x (tile-indices row-y col-x)))
+      (set! (~ M row-y col-x) (+ (* idx-x (to-ulong 10)) t-x)))))

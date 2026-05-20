@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv --differentiate]
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=2 atol=5e-3 expect.A=3.0 output-vec=4
+;;
+;; Per-element tile-stride: C[i] = 3*A[i].  df/dA[k] = 3.0 for each k.
+;; Direct analog of 107/01 but exercising tile-stride pre-expansion
+;; before the AD pass instead of tensor-stride.
+;;
+;; First on-metal AD test for tile-stride.
+
+(def-type vec-t (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
+
+(def-kernel tile_scale_3x (A &out C)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4))
+  (tile-stride A (2) (i)
+    (set! (~ C i) (* 3.0f (~ A i)))))

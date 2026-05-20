@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; hardware-stride with :warp-idx — 1D only.  Each warp gets one tile,
+;; so the tile size for the helpers comes from the warp size.
+;;
+;; Critical constraint (per chapter doc): local_work_size MUST be a
+;; multiple of (get-warp-size).  Here we declare local-size 32 which
+;; matches the conventional warp size on most hardware.
+;;
+;; tile-indices(x) here = which warp this lane is in.
+;; tile-coords(x)  here = which lane within that warp.
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel vec_hw_warp_1d (&out V)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 32))
+  (hardware-stride V :warp-idx (x)
+    (let ((which-warp (tile-indices x)))
+      (set! (~ V x) which-warp))))

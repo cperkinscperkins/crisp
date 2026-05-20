@@ -1,0 +1,13 @@
+;; CHECK-FAIL: "tensor-stride: layout-tag :ROW-MAJOR implies contiguous-term :LAST but the tensor's static type has contiguous-term :FIRST"
+;; Strict layout-tag that disagrees with the tensor's static
+;; contiguous-term must error at compile time.  Mirror of 105's
+;; tensor-stride equivalent.  Note: tile-stride delegates the
+;; layout-tag-vs-CT check to tensor-stride, so the error message
+;; is prefixed `tensor-stride:` rather than `tile-stride:`.
+
+(def-type mat-cf-t (matrix int :address-space :global :align :compact :contiguous-term :first))
+
+(def-kernel tile_strict_contradict (&out M)
+  (declare #'(&out mat-cf-t => nil) forward-only)
+  (tile-stride M :row-major (2 2) (row-y col-x)
+    (set! (~ M row-y col-x) 0)))

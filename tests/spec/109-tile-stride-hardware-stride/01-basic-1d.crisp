@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Basic 1D tile-stride: fill every element of V with 3.
+;; The body doesn't use the helpers yet — this test just verifies
+;; that the macro parses the size-list and emits a stride loop
+;; equivalent to (tensor-stride V (i) ...).
+
+(def-type vec-t (vector int :address-space :global :align :compact))
+
+(def-kernel vec_fill_tile_1d (&out V)
+  (declare #'(&out vec-t => nil))
+  (tile-stride V (2) (i)
+    (set! (~ V i) 3)))

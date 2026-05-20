@@ -66,7 +66,7 @@ THe `request-XXXX` variants return a `request-token` which can be awaited on wit
     (let ((token (request-load-tile big-vector my-tile))
            ;; we can do OTHER operations before we await.
            ;; just don't touch the data behind big-vector or my-tile.
-          (idx (tile-index x)))
+          (idx (tile-indices x)))
         (await-request token)
         ;; now we can touch my-tile
         (workgroup-stride my-tile (wx)
