@@ -8,6 +8,6 @@
 (def-type mat-t (matrix int :address-space :global :align :compact :contiguous-term :last))
 
 (def-kernel mat_fill_strict_match (&out M)
-  (declare #'(&out mat-t => nil) forward-only)
+  (declare #'(&out mat-t => nil))
   (tensor-stride M :contiguous-last (row-y col-x)
     (set! (~ M row-y col-x) 17)))

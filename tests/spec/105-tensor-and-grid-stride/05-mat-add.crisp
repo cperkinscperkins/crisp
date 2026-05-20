@@ -8,6 +8,6 @@
 (def-type mat-t (matrix int :address-space :global :align :compact))
 
 (def-kernel matrix_add (A B &out C)
-  (declare #'(mat-t mat-t &out mat-t => nil) forward-only)
+  (declare #'(mat-t mat-t &out mat-t => nil))
   (tensor-stride A (y x)
     (set! (~ C y x) (+ (~ A y x) (~ B y x)))))

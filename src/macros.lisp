@@ -666,10 +666,108 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 
 
 
+;; --------------------------------------------------------------------------
+;; CT resolution helpers — used by both analyzer (env-based) and AD pre-pass
+;; (signature-types-based).
+
+(defun %resolve-tensor-form-ct (tensor-form type-resolver-fn)
+  "Returns the static :contiguous-term keyword (:last/:first) of TENSOR-FORM,
+   or NIL when it can't be determined.  TYPE-RESOLVER-FN: (sym -> static-type-or-nil).
+   Only works when TENSOR-FORM is a bare symbol (the common case)."
+  (when (and tensor-form (symbolp tensor-form) type-resolver-fn)
+    (let ((ty (funcall type-resolver-fn tensor-form)))
+      (when ty
+        (let* ((canon (%ts-canonicalize-tensor-type ty))
+               (raw (when (listp canon) (%get-tensor-ct canon))))
+          (cond
+            ((keywordp raw) raw)
+            ((symbolp raw) (intern (symbol-name raw) :keyword))
+            (t nil)))))))
+
+(defun %tensor-stride-resolve-ct (expr type-resolver-fn location)
+  "Determines the effective CT for expanding a tensor-stride EXPR.
+   Handles both safe and strict variants:
+     - Safe: returns the tensor's static CT, or :last with log:warn if
+       it can't be resolved.
+     - Strict: validates LAYOUT-TAG agrees with the tensor's static CT
+       (when known) and returns the tag-implied CT."
+  (let* ((strict-p (keywordp (third expr)))
+         (layout-tag (when strict-p (third expr)))
+         (bindings (if strict-p (fourth expr) (third expr)))
+         (n (length bindings))
+         (tensor-form (second expr))
+         (static-ct (%resolve-tensor-form-ct tensor-form type-resolver-fn))
+         (tag-ct (when strict-p (%ts-layout-tag-to-ct layout-tag n location))))
+    (cond
+      ((not strict-p)
+       (or static-ct
+           (progn
+             (log:warn "tensor-stride: cannot statically determine contiguous-term for ~S; defaulting to :last (use the strict variant to make the layout explicit)"
+                       tensor-form)
+             :last)))
+      ((null static-ct) tag-ct)
+      ((eq tag-ct static-ct) tag-ct)
+      (t (error 'crisp-compiler-error
+                :message (format nil "tensor-stride: layout-tag ~S implies contiguous-term ~S but the tensor's static type has contiguous-term ~S"
+                                 layout-tag tag-ct static-ct)
+                :source-location location)))))
+
+;; --------------------------------------------------------------------------
+;; Recursive walker — used by the AD pre-pass.
+
+(defun %make-kernel-param-type-resolver (params types)
+  "Returns a closure (sym -> static-type-or-nil) built from the kernel's
+   PARAMS and their declared TYPES.  Used by the AD pre-pass to resolve
+   tensor-stride CT without an env."
+  (let ((map (make-hash-table :test 'eq)))
+    (loop for p in params for ty in types
+          when (symbolp p) do (setf (gethash p map) ty))
+    (lambda (sym) (and (symbolp sym) (gethash sym map)))))
+
+(defun %expand-stride-macros-in-form (form type-resolver-fn location)
+  "Recursively walks FORM and rewrites any tensor-stride / grid-stride /
+   loop-vector-stride forms into their expansions.  TYPE-RESOLVER-FN is
+   used to determine tensor-stride's CT (a closure from
+   %make-kernel-param-type-resolver, or NIL).  Inserts the expansion in
+   place — the result is fed to anf-transform by %generate-backward-kernel-ast."
+  (cond
+    ((atom form) form)
+    ((not (and (consp form) (symbolp (car form))))
+     (mapcar (lambda (sub) (%expand-stride-macros-in-form sub type-resolver-fn location)) form))
+    (t
+     (let ((op-name (symbol-name (car form))))
+       (cond
+         ((string-equal op-name "TENSOR-STRIDE")
+          (let* ((walked (cons (car form)
+                               (mapcar (lambda (sub)
+                                         (%expand-stride-macros-in-form sub type-resolver-fn location))
+                                       (cdr form))))
+                 (ct (%tensor-stride-resolve-ct walked type-resolver-fn location)))
+            (%expand-tensor-stride-form walked ct location)))
+         ((string-equal op-name "GRID-STRIDE")
+          (let ((walked (cons (car form)
+                              (mapcar (lambda (sub)
+                                        (%expand-stride-macros-in-form sub type-resolver-fn location))
+                                      (cdr form)))))
+            (%expand-grid-stride-form walked location)))
+         ((string-equal op-name "LOOP-VECTOR-STRIDE")
+          (let ((walked (cons (car form)
+                              (mapcar (lambda (sub)
+                                        (%expand-stride-macros-in-form sub type-resolver-fn location))
+                                      (cdr form)))))
+            (%expand-loop-vector-stride-form walked location)))
+         (t
+          (cons (car form)
+                (mapcar (lambda (sub)
+                          (%expand-stride-macros-in-form sub type-resolver-fn location))
+                        (cdr form)))))))))
+
 (defun %generate-backward-kernel-ast (name params signature-types raw-body)
   "Generates the def-kernel-exact AST for the backward (gradient) pass.
    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-
-   boundary accessor calls route adj into the SROA'd field's adj sym."
+   boundary accessor calls route adj into the SROA'd field's adj sym.
+   Endeavor 107: pre-expands stride macros (tensor-stride / grid-stride /
+   loop-vector-stride) in the kernel body so AD walks the expansion."
   (multiple-value-bind (inputs input-types outputs output-types)
       (%split-kernel-inputs-outputs params signature-types)
     (let* ((pkg (symbol-package name))
@@ -679,10 +777,22 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                             record-subs-ht record-type-ht grad-cell-syms
                             struct-shadow-info)
           (%expand-record-kernel-inputs inputs input-types pkg)
-        (let ((subst-body
-               (mapcar (lambda (form)
-                         (%substitute-record-accessors form record-subs-ht record-type-ht))
-                       raw-body)))
+        (let* ((subst-body
+                (mapcar (lambda (form)
+                          (%substitute-record-accessors form record-subs-ht record-type-ht))
+                        raw-body))
+               ;; 107: AD pre-pass — rewrite stride macros into their expansions
+               ;; using a kernel-param-based type resolver for tensor-stride CT.
+               ;; The resolver is built from the ORIGINAL inputs/input-types
+               ;; (not flat-inputs) so tensor-stride forms over a record param
+               ;; resolve against the record's type before SROA renaming.  In
+               ;; practice the tensor expression is a bare param name; the
+               ;; resolver handles that cleanly.
+               (kernel-type-resolver (%make-kernel-param-type-resolver inputs input-types))
+               (expanded-body
+                (mapcar (lambda (form)
+                          (%expand-stride-macros-in-form form kernel-type-resolver nil))
+                        subst-body)))
           (multiple-value-bind (bwd-params bwd-types diff-flat-inputs diff-flat-input-types)
               (%compute-backward-kernel-params flat-inputs flat-input-types outputs output-types
                                                record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
@@ -715,7 +825,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                     (def-kernel-exact ,bwd-name ,exploded-params
                                       (declare #'(,@exploded-types))
                                       (return)))
-                  (let* ((anf-body      (mapcar #'anf-transform subst-body))
+                  (let* ((anf-body      (mapcar #'anf-transform expanded-body))
                          (flat-anf      (flatten-anf-body anf-body))
                          (forward-bindings
                           (loop for form in flat-anf
@@ -730,10 +840,6 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                                             (fourth entry))))
                               (%register-shadow-anf-intermediates flat-anf ht)
                               ht)))
-                         ;; --- Phase A: record-param-field-adjs for record kernel inputs ----
-                         ;; record-subs-ht maps RECORD-SYM -> ((field-sym . exploded-scalar-sym) ...)
-                         ;; with possible (:%nested-leaf% . leaf-sym) sentinels we filter out.
-                         ;; The field adj is the SROA'd field's <SYM>_ADJ name.
                          (kernel-record-param-field-adjs-ht
                           (when (> (hash-table-count record-subs-ht) 0)
                             (let ((ht (make-hash-table :test 'eq)))

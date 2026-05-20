@@ -140,7 +140,7 @@ like any record var when being passed to functions or kernels.
 
 # Vectors, Tensors, and Matrices
 
-So ALL Storage Hnadles (not just cell) are realized via def-struct, so they are "virtual" structs, just
+So ALL Storage Hnadles (not just cell) are realized via def-record, so they are "virtual" structs, just
 collections of registers.  Moreover, vectors, tensors, and matrices have several (array ulong N) internal
 entries: `extents`, `offsets` and `strides`.  These are each VIRTUAL arrays and are mutable collections of
 registers.

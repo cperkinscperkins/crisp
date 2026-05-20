@@ -611,19 +611,191 @@
 
 
 
-(defun analyze-loop-vector-stride-expression (expr env context location)
-  "Analyzes (loop-vector-stride VEC (VAR) BODY...).
-   VEC must be a vector/matrix/tensor expression; VAR is bound to the element index (ulong).
-   Expands at analysis time to:
-     (let ((gid   (get-global-id 0))
-           (gsize (get-global-work-size 0))
-           (len   (length~ VEC)))
-       (declare (grid-level))
-       (dotimes (k len gsize)
-         (let ((VAR (+ k gid)))
-           (when (< VAR len)
-             BODY...))))
-   The (declare (grid-level)) enforces dispatch context and prevents nesting."
+
+;; ==========================================================================
+;; Endeavor 107 — make stride macros AD-able by expanding them BEFORE the
+;; AD pipeline walks the kernel body.
+;;
+;; Background
+;; ----------
+;; loop-vector-stride / tensor-stride / grid-stride were implemented as
+;; expression analyzers (run during the analysis phase of forward
+;; compilation).  But %generate-backward-kernel-ast in src/macros.lisp
+;; walks the kernel's RAW source body through `anf-transform` BEFORE the
+;; analyzer phase runs.  When the AD pass sees `(tensor-stride A (i) ...)`,
+;; it never expands the macro — it falls through to "Function X is not
+;; differentiable" once the walk reaches some opcode inside the unexpanded
+;; body.  Result: every test that used a stride macro had to be tagged
+;; `forward-only`, even when its chain rule was otherwise well-defined.
+;;
+;; Fix
+;; ---
+;; Extract the analyzer-time expansion logic into source-to-source helper
+;; functions:
+;;   %expand-tensor-stride-form         (form ct location)        → expansion
+;;   %expand-grid-stride-form           (form location)           → expansion
+;;   %expand-loop-vector-stride-form    (form location)           → expansion
+;;
+;; The analyzers call these helpers (passing the env-resolved CT).  A new
+;; AD pre-pass — %expand-stride-macros-in-form — walks the kernel body and
+;; rewrites every stride form into its expansion before anf-transform sees
+;; it.  The pre-pass resolves CT statically via the kernel's signature-types
+;; (no env needed for the bare-symbol case which covers all of 092/093/105).
+;;
+;; Forward IR is unchanged in shape (the analyzers still drive the forward
+;; compile).  Backward IR sees an `if + dotimes + let + set!` tree which AD
+;; already knows how to walk.
+
+;; --------------------------------------------------------------------------
+;; Source-to-source expansion helpers.  Pure: no env, no analyze-expression.
+;; Each takes the source form + (for tensor-stride) the resolved CT, and
+;; returns the expanded source form ready for either analyze-expression
+;; (forward path) or anf-transform (backward path).
+
+(defun %expand-tensor-stride-form (expr ct location)
+  "Pure expansion of (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).
+   CT must be :last or :first (already resolved by caller).  Returns the
+   expanded let+dotimes+if+let tree.  Validates form shape only — strict-
+   tag vs CT agreement and tensor-arity checks are the caller's job."
+  (let* ((strict-p   (keywordp (third expr)))
+         (bindings   (if strict-p (fourth expr) (third expr)))
+         (body-forms (if strict-p (cddddr expr) (cdddr expr)))
+         (tensor-form (second expr)))
+    (unless (and bindings (listp bindings) (every #'symbolp bindings)
+                 (>= (length bindings) 1))
+      (error 'crisp-compiler-error
+             :message (if strict-p
+                          "Malformed tensor-stride: expected (tensor-stride TENSOR LAYOUT-TAG (BINDING ...) BODY...)"
+                          "Malformed tensor-stride: expected (tensor-stride TENSOR (BINDING ...) BODY...)")
+             :source-location location))
+    (let* ((n (length bindings))
+           (t-sym (gensym "T"))
+           (gid-sym (gensym "GID"))
+           (gsize-sym (gensym "GSIZE"))
+           (len-sym (gensym "LEN"))
+           (k-sym (gensym "K"))
+           (flat-sym (gensym "FLAT"))
+           (extents-syms (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
+           (cl-pkg (find-package :crisp-language))
+           (let-sym (intern "LET" cl-pkg))
+           (declare-sym (intern "DECLARE" cl-pkg))
+           (grid-level-sym (intern "GRID-LEVEL" cl-pkg))
+           (dotimes-sym (intern "DOTIMES" cl-pkg))
+           (if-sym (intern "IF" cl-pkg))
+           (progn-sym (intern "PROGN" cl-pkg))
+           (get-gid-sym (intern "GET-GLOBAL-ID" cl-pkg))
+           (get-gsize-sym (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+           (len-tilde-sym (intern "LENGTH~" cl-pkg))
+           (extents-tilde (intern "EXTENTS~" cl-pkg))
+           (aref-sym (intern "~" cl-pkg))
+           (plus-sym (intern "+" cl-pkg))
+           (lt-sym (intern "<" cl-pkg))
+           (extent-bindings
+            (loop for esym in extents-syms
+                  for i from 0
+                  collect (list esym (list aref-sym (list extents-tilde t-sym) i))))
+           (stride-bindings (%ts-build-stride-bindings extents-syms ct))
+           (decode-bindings (if (= n 1)
+                                (list (list (first bindings) flat-sym))
+                                (%ts-build-decode-bindings flat-sym bindings
+                                                           (mapcar #'first stride-bindings)
+                                                           ct))))
+      (let* ((inner-body
+              (if (= (length body-forms) 1)
+                  (first body-forms)
+                  (cons progn-sym body-forms)))
+             (inner-let (list let-sym decode-bindings inner-body))
+             (inner-if (list if-sym (list lt-sym flat-sym len-sym) inner-let))
+             (flat-let (list let-sym
+                             (list (list flat-sym (list plus-sym k-sym gid-sym)))
+                             inner-if))
+             (dotimes-form (list dotimes-sym
+                                 (list k-sym len-sym gsize-sym)
+                                 flat-let))
+             (outer-let
+              (list* let-sym
+                     (append (list (list t-sym tensor-form)
+                                   (list gid-sym (list get-gid-sym 0))
+                                   (list gsize-sym (list get-gsize-sym 0))
+                                   (list len-sym (list len-tilde-sym t-sym)))
+                             extent-bindings
+                             stride-bindings)
+                     (list (list declare-sym (list grid-level-sym))
+                           dotimes-form))))
+        outer-let))))
+
+(defun %expand-grid-stride-form (expr location)
+  "Pure expansion of (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  No type
+   info needed — grid-stride is always rightmost-binding-gets-warp."
+  (unless (and (>= (length expr) 4)
+               (listp (second expr)) (listp (third expr))
+               (every #'symbolp (third expr))
+               (>= (length (second expr)) 1)
+               (= (length (second expr)) (length (third expr))))
+    (error 'crisp-compiler-error
+           :message "Malformed grid-stride: expected (grid-stride (SIZE ...) (BINDING ...) BODY...) with size and binding arity matching and >= 1"
+           :source-location location))
+  (let* ((size-forms (second expr))
+         (bindings (third expr))
+         (body-forms (cdddr expr))
+         (n (length bindings))
+         (cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (declare-sym (intern "DECLARE" cl-pkg))
+         (grid-level-sym (intern "GRID-LEVEL" cl-pkg))
+         (dotimes-sym (intern "DOTIMES" cl-pkg))
+         (if-sym (intern "IF" cl-pkg))
+         (progn-sym (intern "PROGN" cl-pkg))
+         (get-gid-sym (intern "GET-GLOBAL-ID" cl-pkg))
+         (get-gsize-sym (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+         (plus-sym (intern "+" cl-pkg))
+         (mul-sym (intern "*" cl-pkg))
+         (lt-sym (intern "<" cl-pkg))
+         (to-ulong-sym (intern "TO-ULONG" cl-pkg))
+         (gid-sym (gensym "GID"))
+         (gsize-sym (gensym "GSIZE"))
+         (len-sym (gensym "LEN"))
+         (k-sym (gensym "K"))
+         (flat-sym (gensym "FLAT"))
+         (extents-syms (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
+         (size-bindings (loop for esym in extents-syms
+                              for form in size-forms
+                              collect (list esym (list to-ulong-sym form))))
+         (len-form (if (= n 1)
+                       (first extents-syms)
+                       (reduce (lambda (a b) (list mul-sym a b)) extents-syms)))
+         (stride-bindings (%ts-build-stride-bindings extents-syms :last))
+         (decode-bindings (if (= n 1)
+                              (list (list (first bindings) flat-sym))
+                              (%ts-build-decode-bindings flat-sym bindings
+                                                         (mapcar #'first stride-bindings)
+                                                         :last)))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
+         (inner-let (list let-sym decode-bindings inner-body))
+         (inner-if (list if-sym (list lt-sym flat-sym len-sym) inner-let))
+         (flat-let (list let-sym
+                         (list (list flat-sym (list plus-sym k-sym gid-sym)))
+                         inner-if))
+         (dotimes-form (list dotimes-sym
+                             (list k-sym len-sym gsize-sym)
+                             flat-let))
+         (outer-let
+          (list* let-sym
+                 (append (list (list gid-sym (list get-gid-sym 0))
+                               (list gsize-sym (list get-gsize-sym 0)))
+                         size-bindings
+                         (list (list len-sym len-form))
+                         stride-bindings)
+                 (list (list declare-sym (list grid-level-sym))
+                       dotimes-form))))
+    outer-let))
+
+(defun %expand-loop-vector-stride-form (expr location)
+  "Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  Mirrors the
+   original analyzer expansion but uses IF instead of WHEN so the AD
+   backward walker recognises the conditional (107 fix)."
   (unless (and (>= (length expr) 3)
                (listp (third expr))
                (= (length (third expr)) 1)
@@ -631,52 +803,48 @@
     (error 'crisp-compiler-error
            :message "Malformed loop-vector-stride: expected (loop-vector-stride VEC (VAR) BODY...)"
            :source-location location))
-  (let* ((vec-form   (second expr))
-         (var-name   (first (third expr)))
+  (let* ((vec-form (second expr))
+         (var-name (first (third expr)))
          (body-forms (cdddr expr))
-         ;; Gensym internal names to prevent variable capture
-         (gid-sym   (gensym "GID"))
+         (gid-sym (gensym "GID"))
          (gsize-sym (gensym "GSIZE"))
-         (len-sym   (gensym "LEN"))
-         (k-sym     (gensym "K"))
-         ;; Use crisp-language symbols so the analyzer dispatch table recognises them
-         (cl-pkg         (find-package :crisp-language))
-         (let-sym        (intern "LET"                  cl-pkg))
-         (declare-sym    (intern "DECLARE"              cl-pkg))
-         (grid-level-sym (intern "GRID-LEVEL"           cl-pkg))
-         (dotimes-sym    (intern "DOTIMES"              cl-pkg))
-         (when-sym       (intern "WHEN"                 cl-pkg))
-         (get-gid-sym    (intern "GET-GLOBAL-ID"        cl-pkg))
-         (get-gsize-sym  (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
-         (len-tilde-sym  (intern "LENGTH~"              cl-pkg))
-         (plus-sym       (intern "+"                    cl-pkg))
-         (lt-sym         (intern "<"                    cl-pkg)))
-    (let* ((inner-when
-            ;; (when (< VAR len__) body...)
-            (list* when-sym
-                   (list lt-sym var-name len-sym)
-                   body-forms))
-           (inner-let
-            ;; (let ((VAR (+ k__ gid__))) <inner-when>)
-            (list let-sym
-                  (list (list var-name (list plus-sym k-sym gid-sym)))
-                  inner-when))
-           (dotimes-form
-            ;; (dotimes (k__ len__ gsize__) <inner-let>)
-            (list dotimes-sym
-                  (list k-sym len-sym gsize-sym)
-                  inner-let))
-           (expansion
-            ;; (let ((gid__ ...) (gsize__ ...) (len__ ...))
-            ;;   (declare (grid-level))
-            ;;   <dotimes-form>)
-            (list let-sym
-                  (list (list gid-sym   (list get-gid-sym 0))
-                        (list gsize-sym (list get-gsize-sym 0))
-                        (list len-sym   (list len-tilde-sym vec-form)))
-                  (list declare-sym (list grid-level-sym))
-                  dotimes-form)))
-      (analyze-expression expansion env context location))))
+         (len-sym (gensym "LEN"))
+         (k-sym (gensym "K"))
+         (cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (declare-sym (intern "DECLARE" cl-pkg))
+         (grid-level-sym (intern "GRID-LEVEL" cl-pkg))
+         (dotimes-sym (intern "DOTIMES" cl-pkg))
+         (if-sym (intern "IF" cl-pkg))
+         (progn-sym (intern "PROGN" cl-pkg))
+         (get-gid-sym (intern "GET-GLOBAL-ID" cl-pkg))
+         (get-gsize-sym (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+         (len-tilde-sym (intern "LENGTH~" cl-pkg))
+         (plus-sym (intern "+" cl-pkg))
+         (lt-sym (intern "<" cl-pkg))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
+         (inner-if (list if-sym (list lt-sym var-name len-sym) inner-body))
+         (inner-let (list let-sym
+                          (list (list var-name (list plus-sym k-sym gid-sym)))
+                          inner-if))
+         (dotimes-form (list dotimes-sym
+                             (list k-sym len-sym gsize-sym)
+                             inner-let))
+         (expansion (list let-sym
+                          (list (list gid-sym (list get-gid-sym 0))
+                                (list gsize-sym (list get-gsize-sym 0))
+                                (list len-sym (list len-tilde-sym vec-form)))
+                          (list declare-sym (list grid-level-sym))
+                          dotimes-form)))
+    expansion))
+
+(defun analyze-loop-vector-stride-expression (expr env context location)
+  "Analyzes (loop-vector-stride VEC (VAR) BODY...).  Delegates to
+   %expand-loop-vector-stride-form."
+  (analyze-expression (%expand-loop-vector-stride-form expr location)
+                      env context location))
 
 
 
@@ -819,141 +987,45 @@
             :message (format nil "tensor-stride: unknown layout-tag ~S (expected :row-major, :col-major, :contiguous-last, or :contiguous-first)" tag)
             :source-location location))))
 
+
+
+
 (defun analyze-tensor-stride-expression (expr env context location)
-  "Analyzes the tensor-stride form, both variants:
-     safe:   (tensor-stride T (BINDINGS...) BODY...)
-     strict: (tensor-stride T LAYOUT-TAG (BINDINGS...) BODY...)
-
-   For an N-D tensor with contiguous-term CT, expands to a single linear
-   dotimes over total length, then decodes multi-D coords from the flat
-   index.  Strict variant: validates LAYOUT-TAG against the tensor's static
-   CT — disagreement is a compile-time error.
-
-   The (declare (grid-level)) enforces dispatch context and prevents nesting."
-  ;; Distinguish safe vs strict by whether (third expr) is a keyword.
-  (let* ((strict-p   (keywordp (third expr)))
-         (layout-tag (when strict-p (third expr)))
-         (bindings   (if strict-p (fourth expr) (third expr)))
-         (body-forms (if strict-p (cddddr expr) (cdddr expr)))
-         (tensor-form (second expr)))
-    (unless (and bindings
-                 (listp bindings)
-                 (every #'symbolp bindings)
-                 (>= (length bindings) 1))
-      (error 'crisp-compiler-error
-             :message (if strict-p
-                          "Malformed tensor-stride: expected (tensor-stride TENSOR LAYOUT-TAG (BINDING ...) BODY...)"
-                          "Malformed tensor-stride: expected (tensor-stride TENSOR (BINDING ...) BODY...)")
-             :source-location location))
-  (let* ((n           (length bindings))
-         ;; Pre-analyze tensor expression to read its static type — only the
-         ;; type info is used; the form will be re-analyzed inside the let.
-         (probe-node  (analyze-expression tensor-form env context (append location '(1))))
-         (raw-type    (semantic-node-type probe-node))
-         (canon-type  (%ts-canonicalize-tensor-type raw-type))
-         (declared-n  (when (and (listp canon-type) (>= (length canon-type) 3))
-                        (third canon-type)))
-         ;; %get-tensor-ct may return the CT slot as a non-keyword symbol
-         ;; (when canon-type came from unmangling).  Normalise to keyword.
-         (static-ct-raw (if (listp canon-type)
-                            (%get-tensor-ct canon-type)
-                            :last))
-         (static-ct   (cond
-                        ((keywordp static-ct-raw) static-ct-raw)
-                        ((symbolp static-ct-raw)
-                         (intern (symbol-name static-ct-raw) :keyword))
-                        (t :last)))
-         (tag-ct      (when strict-p
-                        (%ts-layout-tag-to-ct layout-tag n location)))
-         ;; Strict variant: validate tag agrees with the tensor's static CT.
-         (ct          (cond
-                        ((not strict-p) static-ct)
-                        ((null static-ct) tag-ct)
-                        ((eq tag-ct static-ct) tag-ct)
-                        (t
-                         (error 'crisp-compiler-error
-                                :message (format nil
-                                                 "tensor-stride: layout-tag ~S implies contiguous-term ~S but the tensor's static type has contiguous-term ~S"
-                                                 layout-tag tag-ct static-ct)
-                                :source-location location)))))
-    ;; Validate: declared-N must match bindings count when known.
+  "Analyzes (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).
+   Delegates expansion to %expand-tensor-stride-form (shared with the AD
+   pre-pass).  Env-based CT resolution: pre-analyzes the tensor form to
+   read its static type."
+  (let* ((tensor-form (second expr))
+         (env-resolver
+          (lambda (sym)
+            (when (symbolp sym)
+              (handler-case
+                  (let ((node (analyze-expression sym env context (append location '(1)))))
+                    (semantic-node-type node))
+                (error () nil)))))
+         (static-ct (%resolve-tensor-form-ct tensor-form env-resolver))
+         ;; Strict variant validation reuses %tensor-stride-resolve-ct.  For the
+         ;; safe variant fall back to %tensor-stride-resolve-ct's default chain.
+         (ct (%tensor-stride-resolve-ct expr env-resolver location))
+         ;; Bindings-arity vs declared-N check (env path only — pre-pass relies
+         ;; on the type-resolver miss for non-symbol tensor forms).
+         (strict-p (keywordp (third expr)))
+         (bindings (if strict-p (fourth expr) (third expr)))
+         (n (length bindings))
+         (canon (and (symbolp tensor-form)
+                     (let ((ty (funcall env-resolver tensor-form)))
+                       (and ty (%ts-canonicalize-tensor-type ty)))))
+         (declared-n (when (and (listp canon) (>= (length canon) 3))
+                       (third canon))))
+    (declare (ignore static-ct))
     (when (and (integerp declared-n) (/= declared-n n))
       (error 'crisp-compiler-error
              :message (format nil
                               "tensor-stride: tensor has ~A dimension(s) but ~A binding(s) provided"
                               declared-n n)
              :source-location location))
-    ;; Gensym names for internal vars
-    (let* ((t-sym     (gensym "T"))
-           (gid-sym   (gensym "GID"))
-           (gsize-sym (gensym "GSIZE"))
-           (len-sym   (gensym "LEN"))
-           (k-sym     (gensym "K"))
-           (flat-sym  (gensym "FLAT"))
-           (extents-syms (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
-           ;; Use crisp-language symbols for the recognised operators
-           (cl-pkg         (find-package :crisp-language))
-           (let-sym        (intern "LET"                  cl-pkg))
-           (let*-sym       (intern "LET"                  cl-pkg))
-           (declare-sym    (intern "DECLARE"              cl-pkg))
-           (grid-level-sym (intern "GRID-LEVEL"           cl-pkg))
-           (dotimes-sym    (intern "DOTIMES"              cl-pkg))
-           (if-sym         (intern "IF"                   cl-pkg))
-           (progn-sym      (intern "PROGN"                cl-pkg))
-           (get-gid-sym    (intern "GET-GLOBAL-ID"        cl-pkg))
-           (get-gsize-sym  (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
-           (len-tilde-sym  (intern "LENGTH~"              cl-pkg))
-           (extents-tilde  (intern "EXTENTS~"             cl-pkg))
-           (aref-sym       (intern "~"                    cl-pkg))
-           (plus-sym       (intern "+"                    cl-pkg))
-           (lt-sym         (intern "<"                    cl-pkg))
-           ;; extent reads: (~ (extents~ T) i)
-           (extent-bindings
-            (loop for esym in extents-syms
-                  for i from 0
-                  collect (list esym (list aref-sym
-                                           (list extents-tilde t-sym)
-                                           i))))
-           (stride-bindings (%ts-build-stride-bindings extents-syms ct))
-           (decode-bindings (if (= n 1)
-                                ;; 1D: single binding gets the flat directly
-                                (list (list (first bindings) flat-sym))
-                                (%ts-build-decode-bindings
-                                 flat-sym bindings
-                                 (mapcar #'first stride-bindings)
-                                 ct))))
-      (let* ((inner-let
-              ;; (let* (<decode-bindings>) BODY...)
-              (list* let*-sym decode-bindings body-forms))
-             (inner-when
-              ;; (if (< flat len) <inner-let>) — using IF instead of WHEN so
-              ;; the AD backward walker recognises the conditional (it has
-              ;; an IF branch but no WHEN branch in %handle-single-value-backward).
-              (list if-sym (list lt-sym flat-sym len-sym) inner-let))
-             (flat-let
-              ;; (let ((flat (+ k gid))) <inner-when>)
-              (list let-sym
-                    (list (list flat-sym (list plus-sym k-sym gid-sym)))
-                    inner-when))
-             (dotimes-form
-              ;; (dotimes (k len gsize) <flat-let>)
-              (list dotimes-sym
-                    (list k-sym len-sym gsize-sym)
-                    flat-let))
-             (outer-let
-              ;; (let* ((__t T) (gid ...) (gsize ...) (len ...) <extents> <strides>)
-              ;;   (declare (grid-level))
-              ;;   <dotimes-form>)
-              (list* let*-sym
-                     (append (list (list t-sym tensor-form)
-                                   (list gid-sym   (list get-gid-sym 0))
-                                   (list gsize-sym (list get-gsize-sym 0))
-                                   (list len-sym   (list len-tilde-sym t-sym)))
-                             extent-bindings
-                             stride-bindings)
-                     (list (list declare-sym (list grid-level-sym))
-                           dotimes-form))))
-        (analyze-expression outer-let env context location))))))
+    (analyze-expression (%expand-tensor-stride-form expr ct location)
+                        env context location)))
 
 ;; ==========================================================================
 ;; Phase C — grid-stride.  No tensor: a size-list and a bindings-list.
@@ -963,75 +1035,12 @@
 ;;
 ;;   (grid-stride (<size-list>) (<bindings>) BODY...)
 
+
 (defun analyze-grid-stride-expression (expr env context location)
-  "Analyzes (grid-stride (SIZE-LIST) (BINDINGS) BODY...).
-   Both lists must have the same arity (>= 1).  Expands to a single linear
-   dotimes over the total iteration count (product of sizes), then decodes
-   multi-D coords with rightmost-binding-gets-warp ordering."
-  (unless (and (>= (length expr) 4)
-               (listp (second expr))
-               (listp (third expr))
-               (every #'symbolp (third expr))
-               (>= (length (second expr)) 1)
-               (= (length (second expr)) (length (third expr))))
-    (error 'crisp-compiler-error
-           :message "Malformed grid-stride: expected (grid-stride (SIZE ...) (BINDING ...) BODY...) with size and binding arity matching and >= 1"
-           :source-location location))
-  (let* ((size-forms  (second expr))
-         (bindings    (third expr))
-         (body-forms  (cdddr expr))
-         (n           (length bindings))
-         (cl-pkg      (find-package :crisp-language))
-         (let-sym         (intern "LET"                  cl-pkg))
-         (let*-sym        (intern "LET"                  cl-pkg))
-         (declare-sym     (intern "DECLARE"              cl-pkg))
-         (grid-level-sym  (intern "GRID-LEVEL"           cl-pkg))
-         (dotimes-sym     (intern "DOTIMES"              cl-pkg))
-         (if-sym          (intern "IF"                   cl-pkg))
-         (get-gid-sym     (intern "GET-GLOBAL-ID"        cl-pkg))
-         (get-gsize-sym   (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
-         (plus-sym        (intern "+"                    cl-pkg))
-         (mul-sym         (intern "*"                    cl-pkg))
-         (lt-sym          (intern "<"                    cl-pkg))
-         (to-ulong-sym    (intern "TO-ULONG"             cl-pkg))
-         (gid-sym         (gensym "GID"))
-         (gsize-sym       (gensym "GSIZE"))
-         (len-sym         (gensym "LEN"))
-         (k-sym           (gensym "K"))
-         (flat-sym        (gensym "FLAT"))
-         (extents-syms    (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
-         (size-bindings   (loop for esym in extents-syms
-                                for form in size-forms
-                                collect (list esym (list to-ulong-sym form))))
-         (len-form        (if (= n 1)
-                              (first extents-syms)
-                              (reduce (lambda (a b) (list mul-sym a b))
-                                      extents-syms)))
-         (stride-bindings (%ts-build-stride-bindings extents-syms :last))
-         (decode-bindings (if (= n 1)
-                              (list (list (first bindings) flat-sym))
-                              (%ts-build-decode-bindings
-                               flat-sym bindings
-                               (mapcar #'first stride-bindings)
-                               :last)))
-         (inner-let       (list* let*-sym decode-bindings body-forms))
-         (inner-if        (list if-sym (list lt-sym flat-sym len-sym) inner-let))
-         (flat-let        (list let-sym
-                                (list (list flat-sym (list plus-sym k-sym gid-sym)))
-                                inner-if))
-         (dotimes-form    (list dotimes-sym
-                                (list k-sym len-sym gsize-sym)
-                                flat-let))
-         (outer-let
-          (list* let*-sym
-                 (append (list (list gid-sym   (list get-gid-sym 0))
-                               (list gsize-sym (list get-gsize-sym 0)))
-                         size-bindings
-                         (list (list len-sym len-form))
-                         stride-bindings)
-                 (list (list declare-sym (list grid-level-sym))
-                       dotimes-form))))
-    (analyze-expression outer-let env context location)))
+  "Analyzes (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  Delegates to
+   %expand-grid-stride-form."
+  (analyze-expression (%expand-grid-stride-form expr location)
+                      env context location))
 
 
 

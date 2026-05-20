@@ -1,1 +1,1 @@
-﻿105-tensor-and-grid-stride
+﻿107-differentiate-loop-and-stride

@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv --differentiate]
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=2.0 output-vec=4
+;;
+;; Per-element tensor-stride: C[i] = 2*A[i].
+;; f(A) (for VERIFY-AUTODIFF) is sum_i C[i] = 2*sum_i A[i].
+;; df/dA[k] = 2.0 for each k.
+;;
+;; First end-to-end on-metal AD test for an array-output kernel.  Exercises:
+;;  - tensor-stride pre-expansion before AD (107 phase A/B)
+;;  - structure-preserving backward walk through dotimes + inner if
+;;  - per-iteration adjoint reset in backward dotimes body
+;;  - VERIFY-AUTODIFF runner support for vector outputs (output-vec=N)
+
+(def-type vec-t (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
+
+(def-kernel ten_scale_2x (A &out C)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4))
+  (tensor-stride A (i)
+    (set! (~ C i) (* 2.0f (~ A i)))))

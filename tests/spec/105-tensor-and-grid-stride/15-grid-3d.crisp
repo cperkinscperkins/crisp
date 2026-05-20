@@ -7,6 +7,6 @@
 (def-type out-c (cell int :address-space :global))
 
 (def-kernel grid_3d_smoke (&out C)
-  (declare #'(&out out-c => nil) forward-only)
+  (declare #'(&out out-c => nil))
   (grid-stride (2 3 4) (z y x)
     (set! (~ C) (to-int (+ (* z 12ul) (+ (* y 4ul) x))))))

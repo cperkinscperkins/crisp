@@ -544,6 +544,7 @@
             (seed-grad (getf spec :seed-grad))
             (at-points (getf spec :at-points))
             (structs (getf spec :structs))
+            (output-vec (getf spec :output-vec))
             (expected-grads (getf spec :expected-grads))
             (kernel-name (%vad-find-kernel-name file))
             ;; Coerce numeric values to single-floats, but preserve integer
@@ -585,6 +586,7 @@
                                  :inputs coerced-inputs
                                  :at-points at-points
                                  :structs structs
+                                 :output-vec-length output-vec
                                  :seed-grad (cl:float seed-grad 1.0)
                                  :h (cl:float h 1.0)
                                  :atol atol

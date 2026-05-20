@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-17T18:20:48.139841Z
+Generated on 2026-05-19T06:04:20.229312Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -145,10 +145,31 @@ Generated on 2026-05-17T18:20:48.139841Z
 
 
 ---
+### DEFUN `%EXPAND-TENSOR-STRIDE-FORM`
+- **Args**: `(EXPR CT LOCATION)`
+
+  > Pure expansion of (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).  >    CT must be :last or :first (already resolved by caller).  Returns the  >    expanded let+dotimes+if+let tree.  Validates form shape only — strict-  >    tag vs CT agreement and tensor-arity checks are the caller's job.
+
+
+---
+### DEFUN `%EXPAND-GRID-STRIDE-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Pure expansion of (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  No type  >    info needed — grid-stride is always rightmost-binding-gets-warp.
+
+
+---
+### DEFUN `%EXPAND-LOOP-VECTOR-STRIDE-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  Mirrors the  >    original analyzer expansion but uses IF instead of WHEN so the AD  >    backward walker recognises the conditional (107 fix).
+
+
+---
 ### DEFUN `ANALYZE-LOOP-VECTOR-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (loop-vector-stride VEC (VAR) BODY...).  >    VEC must be a vector/matrix/tensor expression; VAR is bound to the element index (ulong).  >    Expands at analysis time to:  >      (let ((gid   (get-global-id 0))  >            (gsize (get-global-work-size 0))  >            (len   (length~ VEC)))  >        (declare (grid-level))  >        (dotimes (k len gsize)  >          (let ((VAR (+ k gid)))  >            (when (< VAR len)  >              BODY...))))  >    The (declare (grid-level)) enforces dispatch context and prevents nesting.
+  > Analyzes (loop-vector-stride VEC (VAR) BODY...).  Delegates to  >    %expand-loop-vector-stride-form.
 
 
 ---
@@ -183,14 +204,14 @@ Generated on 2026-05-17T18:20:48.139841Z
 ### DEFUN `ANALYZE-TENSOR-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes the tensor-stride form, both variants:  >      safe:   (tensor-stride T (BINDINGS...) BODY...)  >      strict: (tensor-stride T LAYOUT-TAG (BINDINGS...) BODY...)  >   >    For an N-D tensor with contiguous-term CT, expands to a single linear  >    dotimes over total length, then decodes multi-D coords from the flat  >    index.  Strict variant: validates LAYOUT-TAG against the tensor's static  >    CT — disagreement is a compile-time error.  >   >    The (declare (grid-level)) enforces dispatch context and prevents nesting.
+  > Analyzes (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).  >    Delegates expansion to %expand-tensor-stride-form (shared with the AD  >    pre-pass).  Env-based CT resolution: pre-analyzes the tensor form to  >    read its static type.
 
 
 ---
 ### DEFUN `ANALYZE-GRID-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  >    Both lists must have the same arity (>= 1).  Expands to a single linear  >    dotimes over the total iteration count (product of sizes), then decodes  >    multi-D coords with rightmost-binding-gets-warp ordering.
+  > Analyzes (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  Delegates to  >    %expand-grid-stride-form.
 
 
 ---
@@ -1214,10 +1235,17 @@ Generated on 2026-05-17T18:20:48.139841Z
 
 
 ---
+### DEFUN `%COLLECT-LOCALLY-BOUND-VARS`
+- **Args**: `(BODY-FORMS)`
+
+  > Returns a list of distinct symbols introduced as bindings anywhere  >    inside BODY-FORMS (a list of forms).  Includes single-value bindings  >    `(v expr)`, multi-value bindings `(v0 v1 ... expr)`, the induction var  >    of nested DOTIMES, and the bound vars of nested LET.  Recurses through  >    LET / DOTIMES / IF / PROGN bodies.  SET! and DECLARE introduce no  >    bindings, so they are not scanned.  Used by the AD walker to identify  >    adjoint allocas that must be reset at the top of each backward  >    loop iteration.
+
+
+---
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks a flattened ANF body backwards to accumulate adjoints.  > Returns a backward ANF body (a let form).  > Extended for feature 052: handles differentiable sub-function calls (B1/B2),  > multi-value bindings, HOF inline backward, errors for non-differentiable  > functions (B3), and mutation errors (B4).  > Extended for feature 080: tensor/vector/matrix inputs — element-wise gradient  > accumulation via indexed (~ src_GRAD idx...) writes.  > KERNEL-PKG (101 endeavor): when supplied, used to intern _GRAD output symbols  > in the kernel's home package, matching the bwd-params declaration.  Falls  > back to the input symbol's own package when unsupplied (preserves prior  > behaviour for sub-function backward bodies).  >   > 101 PART 1 PRE-SCAN: also scans FLAT-ANF for record-valued AND struct-valued  > temps bound to %construct-struct, builds per-field adj maps, and dyn-binds  > *record-param-field-adjs* around the walk.  For both records and structs the  > constructor backward rule in %handle-single-value-backward fires when the  > constructed temp is in *record-param-field-adjs* — it accumulates per-field  > adjs back into the constructor args.
+  > Walks an ANF body backwards to accumulate adjoints.  >    107: structure-preserving — recursively handles dotimes/if/let forms  >    encountered in flat-anf, emitting backward constructs that mirror the  >    forward structure.  Now also re-zeroes iteration-local adjoints at the  >    top of each backward dotimes body, so the chain-rule `adj += ...`  >    pattern does not accumulate across iterations of a grid-stride /  >    tensor-stride loop.
 
 
 ---
@@ -2841,10 +2869,38 @@ Generated on 2026-05-17T18:20:48.139841Z
 
 
 ---
+### DEFUN `%RESOLVE-TENSOR-FORM-CT`
+- **Args**: `(TENSOR-FORM TYPE-RESOLVER-FN)`
+
+  > Returns the static :contiguous-term keyword (:last/:first) of TENSOR-FORM,  >    or NIL when it can't be determined.  TYPE-RESOLVER-FN: (sym -> static-type-or-nil).  >    Only works when TENSOR-FORM is a bare symbol (the common case).
+
+
+---
+### DEFUN `%TENSOR-STRIDE-RESOLVE-CT`
+- **Args**: `(EXPR TYPE-RESOLVER-FN LOCATION)`
+
+  > Determines the effective CT for expanding a tensor-stride EXPR.  >    Handles both safe and strict variants:  >      - Safe: returns the tensor's static CT, or :last with log:warn if  >        it can't be resolved.  >      - Strict: validates LAYOUT-TAG agrees with the tensor's static CT  >        (when known) and returns the tag-implied CT.
+
+
+---
+### DEFUN `%MAKE-KERNEL-PARAM-TYPE-RESOLVER`
+- **Args**: `(PARAMS TYPES)`
+
+  > Returns a closure (sym -> static-type-or-nil) built from the kernel's  >    PARAMS and their declared TYPES.  Used by the AD pre-pass to resolve  >    tensor-stride CT without an env.
+
+
+---
+### DEFUN `%EXPAND-STRIDE-MACROS-IN-FORM`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Recursively walks FORM and rewrites any tensor-stride / grid-stride /  >    loop-vector-stride forms into their expansions.  TYPE-RESOLVER-FN is  >    used to determine tensor-stride's CT (a closure from  >    %make-kernel-param-type-resolver, or NIL).  Inserts the expansion in  >    place — the result is fed to anf-transform by %generate-backward-kernel-ast.
+
+
+---
 ### DEFUN `%GENERATE-BACKWARD-KERNEL-AST`
 - **Args**: `(NAME PARAMS SIGNATURE-TYPES RAW-BODY)`
 
-  > Generates the def-kernel-exact AST for the backward (gradient) pass.  >    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-  >    boundary accessor calls route adj into the SROA'd field's adj sym.
+  > Generates the def-kernel-exact AST for the backward (gradient) pass.  >    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-  >    boundary accessor calls route adj into the SROA'd field's adj sym.  >    Endeavor 107: pre-expands stride macros (tensor-stride / grid-stride /  >    loop-vector-stride) in the kernel body so AD walks the expansion.
 
 
 ---

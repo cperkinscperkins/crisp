@@ -355,7 +355,36 @@
   (let ((dot (position #\. name)))
     (and dot (subseq name 0 dot))))
 
-(defun %vad-make-descriptors (inputs at-points &optional structs)
+(defun %vad-read-y (queue output-buf output-vec-length)
+  "Reads the kernel's output as a scalar y value.  For cell outputs this is
+   just the cell value.  For vector outputs (107) it is the sum of all
+   elements — equivalent to dot(output, all-ones-seed), which makes f(A)
+   scalar and matches the backward's all-ones gradient seed."
+  (if output-vec-length
+      (cffi:with-foreign-object (data :float output-vec-length)
+        (check-cl (cl-enqueue-read-buffer queue output-buf 1 0
+                                          (* 4 output-vec-length) data
+                                          0 (cffi:null-pointer) (cffi:null-pointer)))
+        (loop for i from 0 below output-vec-length
+              sum (cffi:mem-aref data :float i)))
+      (read-float-cell queue output-buf)))
+
+(defun %vad-zero-output (queue output-buf output-vec-length)
+  "Zeros the output buffer (cell or vector)."
+  (if output-vec-length
+      (write-float-vector queue output-buf
+                          (make-list output-vec-length :initial-element 0.0))
+      (write-float-cell queue output-buf 0.0)))
+
+(defun %vad-seed-grad-output (queue grad-buf output-vec-length seed-value)
+  "Writes the backward gradient seed: SEED-VALUE for a cell output, or
+   SEED-VALUE replicated across all elements for a vector output."
+  (if output-vec-length
+      (write-float-vector queue grad-buf
+                          (make-list output-vec-length :initial-element seed-value))
+      (write-float-cell queue grad-buf seed-value)))
+
+(defun %vad-make-descriptors (inputs at-points &optional structs output-vec-length)
   "Builds the per-input descriptor list, threading cumulative arg offsets.
 
    STRUCTS is a list of parent-name strings declared as `struct=...` in
@@ -445,10 +474,15 @@
              (incf fwd-base (getf cls :arg-width))
              (incf bwd-base (getf cls :arg-width)))))))
     (setf descs (nreverse descs))
-    (let* ((output-fwd-base fwd-base)
+    ;; Output is either a cell (3 args: ptr, byte-size, offset) or a
+    ;; 1D-compact vector (6 args: ptr, byte-size, offset, stride, extent, length).
+    ;; output-vec-length non-nil triggers the vector ABI for the output AND
+    ;; its grad (107: per-element kernels need a vector seed).
+    (let* ((output-width (if output-vec-length 6 3))
+           (output-fwd-base fwd-base)
            (output-bwd-base bwd-base)
-           (grad-output-bwd-base (+ output-bwd-base 3)) ; output cell width = 3
-           (grad-input-base     (+ grad-output-bwd-base 3)))
+           (grad-output-bwd-base (+ output-bwd-base output-width))
+           (grad-input-base     (+ grad-output-bwd-base output-width)))
       (let ((cur grad-input-base))
         (dolist (d descs)
           (setf (getf d :grad-arg-base) cur)
@@ -483,6 +517,7 @@
                          inputs
                          at-points
                          structs
+                         output-vec-length
                          (seed-grad 1.0)
                          (h 1e-3)
                          (atol 1e-2)
@@ -529,7 +564,7 @@
              (error "VERIFY-AUTODIFF: no inputs supplied"))
 
            (multiple-value-setq (descs output-fwd-base output-bwd-base grad-output-bwd-base)
-             (%vad-make-descriptors inputs at-points structs))
+             (%vad-make-descriptors inputs at-points structs output-vec-length))
 
            (cffi:with-foreign-objects ((platforms :pointer 1)
                                        (devices :pointer 1))
@@ -567,8 +602,16 @@
                                                     bytes (cffi:null-pointer) err)))
                          (check-cl (cffi:mem-ref err :int))
                          buf)))))
-           (setf output-buf      (create-float-cell-buffer context)
-                 output-grad-buf (create-float-cell-buffer context))
+           ;; Output buffer: 1 element for scalar-cell output, N for vector.
+           ;; Grad output (seed) buffer: same shape as output.
+           (setf output-buf
+                 (if output-vec-length
+                     (create-float-buffer context output-vec-length)
+                     (create-float-cell-buffer context))
+                 output-grad-buf
+                 (if output-vec-length
+                     (create-float-buffer context output-vec-length)
+                     (create-float-cell-buffer context)))
 
            (labels
                ((apply-primals (kernel perturb-desc delta &optional perturb-field)
@@ -673,17 +716,32 @@
 
              ;; Static binds: buffer-backed inputs bound once.
              (bind-static-input-args fwd-kernel)
-             (bind-cell-arg fwd-kernel output-fwd-base output-buf)
+             (if output-vec-length
+                 (bind-vector-arg fwd-kernel output-fwd-base output-buf output-vec-length)
+                 (bind-cell-arg fwd-kernel output-fwd-base output-buf))
              (bind-static-input-args bwd-kernel)
-             (bind-cell-arg bwd-kernel output-bwd-base       output-buf)
-             (bind-cell-arg bwd-kernel grad-output-bwd-base  output-grad-buf)
+             (if output-vec-length
+                 (progn
+                   (bind-vector-arg bwd-kernel output-bwd-base       output-buf      output-vec-length)
+                   (bind-vector-arg bwd-kernel grad-output-bwd-base  output-grad-buf output-vec-length))
+                 (progn
+                   (bind-cell-arg bwd-kernel output-bwd-base       output-buf)
+                   (bind-cell-arg bwd-kernel grad-output-bwd-base  output-grad-buf)))
              (bind-grad-args)
 
              ;; --- Forward at unperturbed primals, capture Y.
+             ;; Y is scalar for cell output, sum-of-elements for vector output.
+             ;; The vector case treats f(A) = sum_i C[i] = dot(C, all-ones-seed);
+             ;; df/dA[k] = sum_i (dC[i]/dA[k]) which is exactly the per-element
+             ;; gradient summed across the output vector — the same value that
+             ;; AD writes into A_grad[k].
              (apply-primals fwd-kernel nil 0.0)
-             (write-float-cell queue output-buf 0.0)
+             (if output-vec-length
+                 (write-float-vector queue output-buf
+                                     (make-list output-vec-length :initial-element 0.0))
+                 (%vad-zero-output queue output-buf output-vec-length))
              (launch-kernel-1d queue fwd-kernel)
-             (let ((y-at-primals (read-float-cell queue output-buf)))
+             (let ((y-at-primals (%vad-read-y queue output-buf output-vec-length)))
                (vlog "~&;   y(primals) = ~a~%" y-at-primals)
 
                ;; --- Per-input central-difference FD --------------------
@@ -705,13 +763,13 @@
                             (getf d :name)))
                      ((:scalar-float :scalar-float-plain)
                       (apply-primals fwd-kernel d h)
-                      (write-float-cell queue output-buf 0.0)
+                      (%vad-zero-output queue output-buf output-vec-length)
                       (launch-kernel-1d queue fwd-kernel)
-                      (let ((y-plus (read-float-cell queue output-buf)))
+                      (let ((y-plus (%vad-read-y queue output-buf output-vec-length)))
                         (apply-primals fwd-kernel d (- h))
-                        (write-float-cell queue output-buf 0.0)
+                        (%vad-zero-output queue output-buf output-vec-length)
                         (launch-kernel-1d queue fwd-kernel)
-                        (let* ((y-minus (read-float-cell queue output-buf))
+                        (let* ((y-minus (%vad-read-y queue output-buf output-vec-length))
                                (grad (/ (- y-plus y-minus) (* 2.0 h))))
                           (push (cons (getf d :name) grad) fd-rows)
                           (vlog "~&;   d/d~a: y+=~a y-=~a num=~a~%"
@@ -720,13 +778,13 @@
                       (let ((at (getf d :perturb-i)))
                         (when at
                           (apply-primals fwd-kernel d h)
-                          (write-float-cell queue output-buf 0.0)
+                          (%vad-zero-output queue output-buf output-vec-length)
                           (launch-kernel-1d queue fwd-kernel)
-                          (let ((y-plus (read-float-cell queue output-buf)))
+                          (let ((y-plus (%vad-read-y queue output-buf output-vec-length)))
                             (apply-primals fwd-kernel d (- h))
-                            (write-float-cell queue output-buf 0.0)
+                            (%vad-zero-output queue output-buf output-vec-length)
                             (launch-kernel-1d queue fwd-kernel)
-                            (let* ((y-minus (read-float-cell queue output-buf))
+                            (let* ((y-minus (%vad-read-y queue output-buf output-vec-length))
                                    (grad (/ (- y-plus y-minus) (* 2.0 h))))
                               (push (cons (getf d :name) grad) fd-rows)
                               (vlog "~&;   d/d~a[~a]: y+=~a y-=~a num=~a~%"
@@ -742,22 +800,33 @@
                              (vlog "~&;   d/d~a: skipped (int field — no FD comparison)~%" fname))
                             (:float
                              (apply-primals fwd-kernel d h fname)
-                             (write-float-cell queue output-buf 0.0)
+                             (%vad-zero-output queue output-buf output-vec-length)
                              (launch-kernel-1d queue fwd-kernel)
-                             (let ((y-plus (read-float-cell queue output-buf)))
+                             (let ((y-plus (%vad-read-y queue output-buf output-vec-length)))
                                (apply-primals fwd-kernel d (- h) fname)
-                               (write-float-cell queue output-buf 0.0)
+                               (%vad-zero-output queue output-buf output-vec-length)
                                (launch-kernel-1d queue fwd-kernel)
-                               (let* ((y-minus (read-float-cell queue output-buf))
+                               (let* ((y-minus (%vad-read-y queue output-buf output-vec-length))
                                       (grad (/ (- y-plus y-minus) (* 2.0 h))))
                                  (push (cons fname grad) fd-rows)
                                  (vlog "~&;   d/d~a (struct field): y+=~a y-=~a num=~a~%"
                                        fname y-plus y-minus grad))))))))))
 
                  ;; --- Backward with primals + seed.
+                 ;; The FD loop's last forward perturbation left output-buf in
+                 ;; a perturbed state.  For cell outputs we restore y-at-primals
+                 ;; directly; for vector outputs we re-run the unperturbed
+                 ;; forward to repopulate the buffer with the correct per-element
+                 ;; primals (we never saved the vector, only its scalar sum).
                  (apply-primals bwd-kernel nil 0.0)
-                 (write-float-cell queue output-buf y-at-primals)
-                 (write-float-cell queue output-grad-buf (cl:float seed-grad 1.0))
+                 (if output-vec-length
+                     (progn
+                       (apply-primals fwd-kernel nil 0.0)
+                       (%vad-zero-output queue output-buf output-vec-length)
+                       (launch-kernel-1d queue fwd-kernel))
+                     (write-float-cell queue output-buf y-at-primals))
+                 (%vad-seed-grad-output queue output-grad-buf output-vec-length
+                                        (cl:float seed-grad 1.0))
                  (zero-grads)
                  (launch-kernel-1d queue bwd-kernel)
 

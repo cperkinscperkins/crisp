@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv --differentiate]
+;; VERIFY-AUTODIFF: x=3.0 n=5 atol=5e-3 expect.x=5.0
+;;
+;; Single-thread float accumulator: n iterations of result += (~ x).
+;; f(x) = n*x.  With n=5, x=3.0 → result=15.0; df/dx = 5.0.
+;;
+;; Note on input shapes: VERIFY-AUTODIFF classifies top-level scalar
+;; reals as cell-wrapped float (3 args) and top-level scalar integers
+;; as ulong (1 arg, no analytical row).  Hence x is (cell float) and
+;; n is ulong here.  No expect.n because the runner doesn't track
+;; ulong inputs.
+;;
+;; First on-metal AD test for dotimes proper.  Exercises:
+;;  - structure-preserving backward walk through dotimes
+;;  - per-iteration adjoint reset in backward dotimes body
+;;  - accumulation into a cell (read-modify-write of (~ result))
+
+(def-type in-cell  (cell float :address-space :global))
+(def-type out-cell (cell float :address-space :global))
+
+(def-kernel dotimes_accum_x (x n &out result)
+  (declare #'(in-cell ulong &out out-cell => nil)
+           (global-size :set-to 1))
+  (dotimes (i n)
+    (set! (~ result) (+ (~ result) (~ x)))))

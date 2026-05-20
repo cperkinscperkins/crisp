@@ -12,5 +12,5 @@
     (set! (~ result) i)))
 
 (def-kernel call_write_last (n &out result)
-  (declare #'(int &out cell-t => nil) forward-only)
+  (declare #'(int &out cell-t => nil))
   (write-last n result))

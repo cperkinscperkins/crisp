@@ -8,6 +8,6 @@
 (def-type mat-t (matrix int :address-space :global :align :compact))
 
 (def-kernel mat_fill_rm (&out M)
-  (declare #'(&out mat-t => nil) forward-only)
+  (declare #'(&out mat-t => nil))
   (tensor-stride M :row-major (row-y col-x)
     (set! (~ M row-y col-x) 1)))

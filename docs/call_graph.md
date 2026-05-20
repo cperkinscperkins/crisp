@@ -622,6 +622,24 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%SUBSTITUTE-RECORD-ACCESSORS FORM RECORD-SUBS-HT RECORD-TYPE-HT)  autodiff.lisp
 - - - (%SUBSTITUTE-RECORD-ACCESSORS FORM RECORD-SUBS-HT RECORD-TYPE-HT)  autodiff.lisp [RECURSION]
 - - - (%RECORD-ACCESSOR-SYSTEM-GENERATED-P ACCESSOR-SYM REC-TYPE)  autodiff.lisp
+- - (%MAKE-KERNEL-PARAM-TYPE-RESOLVER PARAMS TYPES)  macros.lisp
+- - (%EXPAND-STRIDE-MACROS-IN-FORM FORM TYPE-RESOLVER-FN LOCATION)  macros.lisp
+- - - (%EXPAND-STRIDE-MACROS-IN-FORM FORM TYPE-RESOLVER-FN LOCATION)  macros.lisp [RECURSION]
+- - - (%TENSOR-STRIDE-RESOLVE-CT EXPR TYPE-RESOLVER-FN LOCATION)  macros.lisp
+- - - - (%RESOLVE-TENSOR-FORM-CT TENSOR-FORM TYPE-RESOLVER-FN)  macros.lisp
+- - - - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp
+- - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp [See above]
+- - - - (%TS-LAYOUT-TAG-TO-CT TAG N LOCATION)  analysis/control.lisp
+- - - (%EXPAND-TENSOR-STRIDE-FORM EXPR CT LOCATION)  analysis/control.lisp
+- - - - (%TS-BUILD-STRIDE-BINDINGS EXTENTS-SYMS CT)  analysis/control.lisp
+- - - - (%TS-BUILD-DECODE-BINDINGS FLAT-SYM BINDING-SYMS STRIDE-SYMS CT)  analysis/control.lisp
+- - - (%EXPAND-GRID-STRIDE-FORM EXPR LOCATION)  analysis/control.lisp
+- - - - (%TS-BUILD-STRIDE-BINDINGS EXTENTS-SYMS CT)  analysis/control.lisp [See above]
+- - - - (%TS-BUILD-DECODE-BINDINGS FLAT-SYM BINDING-SYMS STRIDE-SYMS CT)  analysis/control.lisp [See above]
+- - - (%EXPAND-LOOP-VECTOR-STRIDE-FORM EXPR LOCATION)  analysis/control.lisp
 - - (%COMPUTE-BACKWARD-KERNEL-PARAMS FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)  macros.lisp
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
@@ -664,6 +682,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - (%PROMOTE-TO-FLOAT-ADJOINT TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp
 - - - - (%SUBST-FORM FORM SUBST-ALIST)  autodiff.lisp [RECURSION]
 - - - (%REMOVE-FUNCALL FORM FN-PARAM-SYM CONCRETE-FN-SYM)  autodiff.lisp
@@ -672,13 +691,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%EXTRACT-RETURN-VARS FLAT-ANF)  autodiff.lisp [See above]
 - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
                                                                                                   T) TENSOR-INPUTS-HT)  autodiff.lisp [See above]
+- - - (%COLLECT-LOCALLY-BOUND-VARS BODY-FORMS)  autodiff.lisp
 - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                   BW))  autodiff.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - (%PROMOTE-TO-FLOAT-ADJOINT TYPE-SPEC)  autodiff.lisp [See above]
 - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp
 - - - (%FIX-RECORD-GRAD-CELL-EMISSIONS FORM GRAD-CELL-SYMS)  autodiff.lisp [RECURSION]
 - - (%COLLECT-ALL-LEAF-ADJ-SYMS FIELD-ADJ-ALIST)  autodiff.lisp
@@ -835,9 +854,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 
 - (ANALYZE-GRID-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - (%TS-BUILD-STRIDE-BINDINGS EXTENTS-SYMS CT)  analysis/control.lisp
-- - (%TS-BUILD-DECODE-BINDINGS FLAT-SYM BINDING-SYMS STRIDE-SYMS CT)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%EXPAND-GRID-STRIDE-FORM EXPR LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-INC!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 
@@ -874,6 +892,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-LOOP-VECTOR-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%EXPAND-LOOP-VECTOR-STRIDE-FORM EXPR LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-MAKE-VIEW-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -987,14 +1006,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-TENSOR-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp
-- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
-- - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - (%GET-TENSOR-CT CANON)  analysis/structs.lisp [See above]
-- - (%TS-LAYOUT-TAG-TO-CT TAG N LOCATION)  analysis/control.lisp
-- - (%TS-BUILD-STRIDE-BINDINGS EXTENTS-SYMS CT)  analysis/control.lisp [See above]
-- - (%TS-BUILD-DECODE-BINDINGS FLAT-SYM BINDING-SYMS STRIDE-SYMS CT)  analysis/control.lisp [See above]
+- - (%RESOLVE-TENSOR-FORM-CT TENSOR-FORM TYPE-RESOLVER-FN)  macros.lisp [See above]
+- - (%TENSOR-STRIDE-RESOLVE-CT EXPR TYPE-RESOLVER-FN LOCATION)  macros.lisp [See above]
+- - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp [See above]
+- - (%EXPAND-TENSOR-STRIDE-FORM EXPR CT LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-TRANSPOSE-BANG-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]

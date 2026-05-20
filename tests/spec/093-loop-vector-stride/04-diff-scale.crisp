@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv --differentiate]
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=2 atol=5e-3 expect.A=3.0 output-vec=4
+;;
+;; Per-element loop-vector-stride: C[i] = 3*A[i].
+;; df/dA[k] = 3.0 for each k.  Structural twin of 107/01 but exercising
+;; loop-vector-stride pre-expansion before the AD pass, rather than
+;; tensor-stride.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel vec_scale_3x (A &out C)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (* 3.0f (~ A i)))))

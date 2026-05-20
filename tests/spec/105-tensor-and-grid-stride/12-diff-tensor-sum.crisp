@@ -1,22 +1,20 @@
 ;; TEST-EXPECT: PASS
-;; TEST-WITH[--ir-target=spv]
+;; TEST-WITH[--ir-target=spv --differentiate]
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=2 atol=5e-3 expect.A=1.0
 ;;
-;; Forward-only kernel exercising tensor-stride.  Placeholder for a future
-;; AD-of-tensor-stride test once the AD machinery learns to walk
-;; `(dotimes ...)` bodies.
+;; Single-thread sum reduction over A via tensor-stride.
+;; f(A) = sum_i A[i].  df/dA[k] = 1.0 for each k.
 ;;
-;; Status (2026-05-17): Crisp's AD backward walker (src/autodiff.lisp's
-;; %handle-single-value-backward) operates on the kernel body's ANF and has
-;; no case for `dotimes`, `if`/`when`, or `set!` to a cell.  Trying to
-;; differentiate the previous formulation of this test raised
-;; "Function SET! / WHEN / DOTIMES is not differentiable."  AD-of-loops
-;; would let the chain rule flow through every iteration of a tensor-stride;
-;; that's a substantial extension to AD and lives outside endeavor 105.
+;; Complement to 107/01 (per-element vector output): this is the
+;; tensor-stride / SCALAR-output AD path.  Endeavor 107 made the
+;; backward walk structure-preserving, so AD now walks INTO the
+;; dotimes body emitted by the stride macro.
 
 (def-type vec-t (tensor float 1 :address-space :global :align :compact :contiguous-term :last))
 (def-type out-c (cell float :address-space :global))
 
-(def-kernel ten_double_a2 (A &out C)
-    (declare #'(vec-t &out out-c) forward-only)
+(def-kernel ten_sum (A &out C)
+    (declare #'(vec-t &out out-c)
+             (global-size :set-to 1))
   (tensor-stride A (i)
-    (set! (~ C) (* 2.0f (~ A 2)))))
+    (set! (~ C) (+ (~ C) (~ A i)))))
