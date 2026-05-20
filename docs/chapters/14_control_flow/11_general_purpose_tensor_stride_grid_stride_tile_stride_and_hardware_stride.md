@@ -109,6 +109,9 @@ Note that there are "safe" and "strict" variants of `tile-stride`. See the descr
 
 These variants of `tile-stride` DO set up helper macros. They are discussed below.
 
+Note that `tile-stride` should nearly always be used with the `:strategy :tiled` declaration.  See [:strategy](#strategy) for a discussion. The strategy declaration
+is how you communicate your tiling expections out to the metadata or hoisting code that runs host side. 
+
 ### hardware-stride - stride by workgroup or warp.
 ```
 (hardware-stride <tensor>  <hw-tag> (<bindings>) ...)
@@ -137,7 +140,7 @@ The arity of the tensor and the bindings MUST match the arity of the workgroup e
 (harware-stride someMatrix :row-major :workgroup-idx (row-y col-x) 
    (let ((idx-y idx-x (tile-indices row-y col-x))     ;; which workgroup 
          (local-y local-x (tile-coords row-y col-x))) ;; where are we in it
-        ...))
+       ...))
 ```
 
 #### `:warp-idx`

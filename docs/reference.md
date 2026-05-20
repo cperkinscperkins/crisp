@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-19T06:04:20.229312Z
+Generated on 2026-05-20T06:29:38.110063Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -215,9 +215,100 @@ Generated on 2026-05-19T06:04:20.229312Z
 
 
 ---
+### DEFUN `%TILE-STRIDE-PARSE`
+- **Args**: `(EXPR)`
+
+  > Returns (values strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)  >    for a tile-stride EXPR.  TILE-SPEC-KIND is one of :size-list or :tile-tensor.  >    Form-shape validation only — does not check arity vs tensor.
+
+
+---
+### DEFUN `%TILE-HELPER-NAME-P`
+- **Args**: `(SYM)`
+
+  > Returns the helper keyword (:coords :indices :tensor-coords) if SYM is  >    a tile-stride helper macro name, else NIL.  Matches by string.
+
+
+---
+### DEFUN `%TILE-HELPER-BUILD-COORDS`
+- **Args**: `(ARG-FORMS TILE-SIZE-FN CL-PKG)`
+
+  > Builds (mod arg_k TILE_k) forms for tile-coords.
+
+
+---
+### DEFUN `%TILE-HELPER-BUILD-INDICES`
+- **Args**: `(ARG-FORMS TILE-SIZE-FN CL-PKG)`
+
+  > Builds (/ arg_k TILE_k) forms for tile-indices.
+
+
+---
+### DEFUN `%TILE-HELPER-BUILD-TENSOR-COORDS`
+- **Args**: `(IDX-FORMS T-FORMS TILE-SIZE-FN CL-PKG)`
+
+  > Builds (+ (* idx_k TILE_k) t_k) forms for tensor-coords.
+
+
+---
+### DEFUN `%TILE-HELPER-CALL-EXPANSION`
+- **Args**: `(HELPER-KIND HELPER-ARGS TILE-SIZE-FN N-TILE CL-PKG)`
+
+  > Returns a list of N expansion forms for a helper call, where N matches the  >    helper's expected arity.  Caller decides whether to use it in single-value  >    position (N=1) or multi-value let-binding (N>1).
+
+
+---
+### DEFUN `%TILE-HELPERS-REWRITE`
+- **Args**: `(BODY-FORMS N-TILE TILE-SIZE-FN)`
+
+  > Walks BODY-FORMS and rewrites tile-coords / tile-indices / tensor-coords  >    calls.  Multi-value uses in let-bindings (flat MVB form) become multiple  >    single-value bindings; standalone single-value uses are replaced inline.  >    N-TILE is the stride/tile arity; TILE-SIZE-FN takes dim index k and  >    returns a Crisp form for that dim's tile size.
+
+
+---
+### DEFUN `%EXPAND-TILE-STRIDE-FORM`
+- **Args**: `(EXPR CT LOCATION)`
+
+  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    For the stride loop, tile-stride is identical to tensor-stride.  Pass 4:  >    the body is first walked to rewrite tile-stride helper macros (tile-coords,  >    tile-indices, tensor-coords) using the tile spec as the per-dim size source.
+
+
+---
+### DEFUN `ANALYZE-TILE-STRIDE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Validates tensor-arity-vs-bindings and tile-arity-vs-bindings, then  >    delegates codegen via %expand-tile-stride-form.
+
+
+---
+### DEFUN `%HARDWARE-STRIDE-PARSE`
+- **Args**: `(EXPR)`
+
+  > Returns (values strict-p layout-tag hw-tag bindings body-forms tensor-form)  >    for a hardware-stride EXPR.  Form-shape validation only — does not check  >    arity vs tensor.
+
+
+---
+### DEFUN `%EXPAND-WARP-IDX-FORM`
+- **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
+
+  > Linear-flatten expansion for hardware-stride :warp-idx.  Always 1 binding.
+
+
+---
+### DEFUN `%EXPAND-HARDWARE-STRIDE-FORM`
+- **Args**: `(EXPR CT LOCATION)`
+
+  > Pure expansion of (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).  >    Rewrites helper macros using the hw-tag-derived tile-size source, then  >    dispatches by hw-tag:  >      :workgroup-idx delegates to tensor-stride (chunking is implicit in the  >                     workgroup scheduler; same N-D stride loop)  >      :warp-idx      uses a custom linear-flatten expansion over the  >                     global execution space (always 1 binding).
+
+
+---
+### DEFUN `ANALYZE-HARDWARE-STRIDE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).  >    Validates arity (:warp-idx must be 1 binding, :workgroup-idx must match  >    tensor arity) and delegates codegen via %expand-hardware-stride-form.
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including loop-vector-stride  >    and (endeavor 105) tensor-stride.
+  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride (105), grid-stride (105), and tile-stride (109).
 
 
 ---
@@ -803,9 +894,23 @@ Generated on 2026-05-19T06:04:20.229312Z
 
 
 ---
+### DEFUN `ANALYZE-MOD-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (mod x y).  Expands to (- x (* (/ x y) y)) with x and y bound  >    to gensyms first, then delegates to analyze-expression.  Works for any  >    numeric type via the standard +/-/*/ analyzers.
+
+
+---
+### DEFUN `ANALYZE-REM-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (rem x y).  Currently identical to mod — both match C % / LLVM  >    srem.  Split semantics later if needed.
+
+
+---
 ### DEFUN `REGISTER-OPS-ANALYZERS`
 
-  > Registers all expression analyzer functions.  > Redefined for 082-atomics to add atomic RMW op analyzers.
+  > Registers all expression analyzer functions.  > Redefined for 082-atomics to add atomic RMW op analyzers.  > Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler.
 
 
 ---
@@ -2893,7 +2998,7 @@ Generated on 2026-05-19T06:04:20.229312Z
 ### DEFUN `%EXPAND-STRIDE-MACROS-IN-FORM`
 - **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
 
-  > Recursively walks FORM and rewrites any tensor-stride / grid-stride /  >    loop-vector-stride forms into their expansions.  TYPE-RESOLVER-FN is  >    used to determine tensor-stride's CT (a closure from  >    %make-kernel-param-type-resolver, or NIL).  Inserts the expansion in  >    place — the result is fed to anf-transform by %generate-backward-kernel-ast.
+  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride forms into their expansions.
 
 
 ---
