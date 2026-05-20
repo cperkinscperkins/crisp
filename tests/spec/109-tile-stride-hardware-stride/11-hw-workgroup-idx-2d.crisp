@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; hardware-stride with :workgroup-idx on a 2D matrix.
+;; The tile size for the helpers comes implicitly from the
+;; declared local-size — each workgroup is one tile.
+;;
+;; Per the chapter doc: "the chunking variants are pretty much exactly
+;; the same as their non-chunking brethren ... The chunking doesn't
+;; change how the stride is executed - it changes how the helper
+;; functions convert coordinates."  So this kernel's body sees
+;; every (row-y, col-x) in the problem space exactly once, just
+;; as tile-stride / tensor-stride would.
+;;
+;; With local-size (2 2) and global-size (4 4), the workgroup arity
+;; is 2D matching the bindings; idx-y/idx-x identify the workgroup,
+;; t-y/t-x identify the lane within it.
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel mat_hw_wg_2d (&out M)
+  (declare #'(&out mat-t => nil)
+           (global-size :set-to '(4 4))
+           (local-size  :set-to '(2 2)))
+  (hardware-stride M :workgroup-idx (row-y col-x)
+    (let ((idx-y idx-x (tile-indices row-y col-x)))
+      (set! (~ M row-y col-x) idx-x))))

@@ -4504,6 +4504,7 @@ strategy could also be used with the `:set-to` key.
 size isn't based on the total number of elements, but on the number of tiles needed to cover the input data.
 The host code generator would calculate the grid dimensions based on the input matrix/tensor dimensions and the tile dimensions.
 When using this strategy, be sure to also use the `:tile-shape` key so the hoisting code can calculate accordingly.
+This declaration should always be used when using the `tile-stride` macro.  See [`tile-stride`](#tile-stride) for more information. 
 
 
 
@@ -4881,11 +4882,11 @@ It is how you tell Crisp to "Forget about physical memory for a second. Just gen
 (tile-stride <tensor> <layout-tag> <tile-tensor> (<bindings>) ...)
 
 (tile-stride someMatrix (8 4) (row-y col-x)
-  (let ((t-y t-x (tile-coords row-y col-x)))) ;;coordinate within the tile.
-        (idx-y idx-x  (tile-index row-y col-x))) ;; which of the tiles is it?
+  (let ((t-y t-x (tile-coords row-y col-x)) ;;coordinate within the tile.
+        (idx-y idx-x  (tile-indices row-y col-x)) ;; which of the tiles is it?
         ;; let's get location of the neighbor next tile over (this example skips bounds checking)
         (neighbor-y neighbor-x (tensor-coords (idx-y (1+ idx)) (t-y (1+ t-x)))))
-        ...))
+    ...))
 
 ```
 `tile-stride` breaks up a `tensor` into tiles (of any arity, not just 2D) 
@@ -4900,6 +4901,9 @@ its arity must match as well.
 Note that there are "safe" and "strict" variants of `tile-stride`. See the descriptions of `tensor-stride` above for that discussion
 
 These variants of `tile-stride` DO set up helper macros. They are discussed below.
+
+Note that `tile-stride` should nearly always be used with the `:strategy :tiled` declaration.  See [:strategy](#strategy) for a discussion. The strategy declaration
+is how you communicate your tiling expections out to the metadata or hoisting code that runs host side. 
 
 ### hardware-stride - stride by workgroup or warp.
 ```
@@ -4927,18 +4931,20 @@ The arity of the tensor and the bindings MUST match the arity of the workgroup e
 ```
 ;; 2D enqueue
 (harware-stride someMatrix :row-major :workgroup-idx (row-y col-x) 
-   (let ((idx-y idx-x (tile-index row-y col-x))     ;; which workgroup 
-         (local-y local-x (tile-coord row-y col-x)) ;; where are we in it
-         ...)
+   (let ((idx-y idx-x (tile-indices row-y col-x))     ;; which workgroup 
+         (local-y local-x (tile-coords row-y col-x))) ;; where are we in it
+       ...))
 ```
 
 #### `:warp-idx`
 - `:warp-idx` is just like `:workgroup-idx` except the threads are grouped by warp and it is 1D only. Note that if using `:warp-idx` that it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(get-warp-size)`. Otherwise operations like warp level reductions could end up deadlocking.
 
+Note that `hardware-stride :warp-idx` can be used with any global size arity, but it iterates over the flattened, global execution space by the hardware warp width.
+
 ```
 (hardware-stride someVector :warp-idx (x) ;; x is a coordinate in someVector
-  (let ((which-warp (tile-index x))
-        (which-lane (tile-coord x)))
+  (let ((which-warp (tile-indices x))
+        (which-lane (tile-coords x)))
       ...))
 ```
 
@@ -4965,11 +4971,11 @@ These coordinates are within the tile `<size-list>`/`<tile-tensor>`
 
 
 #### `tensor-coords` 
-`tensor-coord` macro takes two arguments. A list of the tile indices followed by a list of the tile coordinates.
+`tensor-coords` macro takes two arguments. A list of the tile indices followed by a list of the tile coordinates.
 It returns mapping coordinates into the problem space tensor.
 
 ```
-(let ((row-y col-x (tensor-coord (idx-y idx-x) (t-y t-x)))))
+(let ((row-y col-x (tensor-coords (idx-y idx-x) (t-y t-x)))))
 ```
 
 #### `load-tile` / `store-tile`
@@ -5070,7 +5076,7 @@ THe `request-XXXX` variants return a `request-token` which can be awaited on wit
     (let ((token (request-load-tile big-vector my-tile))
            ;; we can do OTHER operations before we await.
            ;; just don't touch the data behind big-vector or my-tile.
-          (idx (tile-index x)))
+          (idx (tile-indices x)))
         (await-request token)
         ;; now we can touch my-tile
         (workgroup-stride my-tile (wx)

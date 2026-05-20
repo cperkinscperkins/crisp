@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Strict tile-stride with :row-major.  Tag goes between the tensor
+;; and the size-list.  col-x (last binding) varies along the warp lane;
+;; the matrix's static CT is :last so the tag agrees.
+
+(def-type mat-t (matrix int :address-space :global :align :compact))
+
+(def-kernel mat_fill_tile_rm (&out M)
+  (declare #'(&out mat-t => nil))
+  (tile-stride M :row-major (2 2) (row-y col-x)
+    (set! (~ M row-y col-x) 1)))

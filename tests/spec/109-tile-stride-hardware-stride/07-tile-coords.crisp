@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; tile-coords helper: returns the coordinate WITHIN the tile.
+;; Semantics: tile-coords(x) = (mod x tile-size).
+;;
+;; With tile (2 2) on a 4x4 matrix, the t-x value at each
+;; (row-y, col-x) position should be col-x mod 2.  Writing t-x
+;; into each cell yields the pattern:
+;;   row 0: [0 1 0 1]
+;;   row 1: [0 1 0 1]
+;;   row 2: [0 1 0 1]
+;;   row 3: [0 1 0 1]
+;;
+;; Exercises the scoped tile-coords macro injection inside the
+;; tile-stride body, and Crisp's multi-value let binding.
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel mat_write_tile_coords_x (&out M)
+  (declare #'(&out mat-t => nil))
+  (tile-stride M (2 2) (row-y col-x)
+    (let ((t-y t-x (tile-coords row-y col-x)))
+      (set! (~ M row-y col-x) t-x))))

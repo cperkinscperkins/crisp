@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 0 1 2 3
+;;
+;; Fill a 4-element 1D tensor with its indices using tile-stride.
+;; Mirrors 105/06-fill-hoist but uses tile-stride.  Each of 4 threads
+;; writes its index into out[i].
+;;
+;; Note: the canonical host-side enqueue for a tile-stride kernel
+;; would declare `(global-size :strategy :tiled :tile-shape '(2))`.
+;; The `:tiled` strategy is not yet implemented in the hoist generator,
+;; so this test uses `:set-to 4` for now to get a working hoist; the
+;; declaration should be revisited when `:tiled` lands.
+
+(def-type vec4 (tensor int 1 :address-space :global :align :compact))
+
+(def-kernel tile_fill_iota (&out out)
+  (declare #'(&out vec4 => nil)
+           (global-size :set-to 4))
+  (tile-stride out (2) (i)
+    (set! (~ out i) (to-int i))))

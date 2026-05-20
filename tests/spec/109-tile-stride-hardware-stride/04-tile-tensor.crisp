@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; tile-stride variant that takes a <tile-tensor> argument instead of a
+;; size-list.  The tile's extents are used as the tile shape — same arity
+;; required as the problem tensor.  Here we use a scratch matrix sized
+;; :match-warp-tile as the tile-shape source.
+;;
+;; Body doesn't use the helpers yet, and doesn't actually load/store
+;; from the scratch tile — that's the load-tile/store-tile feature
+;; that's deferred to a follow-on endeavor.  This test only verifies
+;; the tile-tensor form parses and emits a valid stride loop.
+
+(def-type mat-t (matrix int :address-space :global :align :compact))
+
+(def-kernel mat_fill_tile_tensor (&out M)
+  (declare #'(&out mat-t => nil))
+  (let ((tile (make-scratch-matrix int :match-warp-tile)))
+    (tile-stride M tile (row-y col-x)
+      (set! (~ M row-y col-x) 11))))

@@ -1,0 +1,15 @@
+;; CHECK-FAIL: "hardware-stride :warp-idx must have exactly 1 binding — warp iteration is always linear over the flattened global execution space"
+;; Per chapter 14/11: :warp-idx iterates the FLATTENED global execution
+;; space by warp width, regardless of the global-size arity.  The
+;; binding count is therefore always exactly 1, even when the kernel
+;; itself is multi-dimensional.  Using 2 bindings with :warp-idx
+;; must error.
+
+(def-type mat-t (matrix int :address-space :global :align :compact))
+
+(def-kernel hw_warp_two_bindings_illegal (&out M)
+  (declare #'(&out mat-t => nil) forward-only
+           (global-size :set-to '(4 4))
+           (local-size  :set-to '(2 2)))
+  (hardware-stride M :warp-idx (row-y col-x)
+    (set! (~ M row-y col-x) 0)))
