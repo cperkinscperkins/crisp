@@ -728,7 +728,8 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 
 (defun %expand-stride-macros-in-form (form type-resolver-fn location)
   "Recursively walks FORM and rewrites tensor-stride / grid-stride /
-   loop-vector-stride / tile-stride forms into their expansions."
+   loop-vector-stride / tile-stride / hardware-stride / workgroup-stride
+   forms into their expansions."
   (cond
     ((atom form) form)
     ((not (and (consp form) (symbolp (car form))))
@@ -788,6 +789,12 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                                    (list ts-sym (second walked) bindings)))
                  (ct (%tensor-stride-resolve-ct synth-for-ct type-resolver-fn location)))
             (%expand-hardware-stride-form walked ct location)))
+         ((string-equal op-name "WORKGROUP-STRIDE")
+          (let ((walked (cons (car form)
+                              (mapcar (lambda (sub)
+                                        (%expand-stride-macros-in-form sub type-resolver-fn location))
+                                      (cdr form)))))
+            (%expand-workgroup-stride-form walked location)))
          (t
           (cons (car form)
                 (mapcar (lambda (sub)

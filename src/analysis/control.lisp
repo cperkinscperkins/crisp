@@ -1090,39 +1090,97 @@
                     :source-location nil)))))
     (values strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)))
 
-;; src/analysis/control.lisp
-;;
-;; Pass 4: helper macro rewriter.
-;;
-;; tile-coords / tile-indices / tensor-coords are source-level macros that
-;; are scoped to the tile-stride body.  Since Crisp has no first-class
-;; (values ...) form, we rewrite their uses at expansion time:
-;;
-;;   (let ((a b (tile-coords x y)) ...)  →  (let ((a (mod x TY)) (b (mod y TX)) ...))
-;;   (let ((a b (tile-indices x y)) ...) →  (let ((a (/ x TY))   (b (/ y TX))   ...))
-;;   (let ((a b (tensor-coords (ix iy) (tx ty))) ...)
-;;      →  (let ((a (+ (* ix TY) tx)) (b (+ (* iy TX) ty)) ...))
-;;
-;; In 1D contexts the helpers can also appear as standalone expressions:
-;;
-;;   (tile-coords i)        →  (mod i T0)
-;;   (tile-indices i)       →  (/ i T0)
-;;   (tensor-coords (ix) (t)) →  (+ (* ix T0) t)
-;;
-;; The tile-size-fn argument supplies the per-dim size form (literal int
-;; for size-list variants, ulong-extent reads for tile-tensor variants,
-;; declared local-size dims for hardware-stride :workgroup-idx, etc.).
+
+
+
+(defun %expand-hw-workgroup-idx-form (tensor-form bindings body-forms location)
+  "Outer-loop expansion for hardware-stride :workgroup-idx.  Chunk-size per
+   dim = (get-local-size k).  Helpers get rewritten with the bound LS gensyms
+   so tile-indices uses a single point of evaluation."
+  (let* ((n (length bindings))
+         (cl-pkg (find-package :crisp-language))
+         (get-local-size-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+         (ts-syms (loop for i from 0 below n
+                        collect (gensym (format nil "LS~A" i))))
+         (size-expr-fn (lambda (k) (list get-local-size-sym k)))
+         (rewritten-body (%tile-helpers-rewrite body-forms n
+                                                 (lambda (k) (nth k ts-syms)))))
+    (%expand-workgroup-strided-outer-loop-with-ts-syms
+     tensor-form n bindings rewritten-body ts-syms size-expr-fn location)))
+
+(defun %expand-hw-warp-idx-form (tensor-form bindings body-forms location)
+  "Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.
+
+   Iteration model: each warp processes warp-sized chunks of the flattened
+   global execution space.  Warps stride over chunks with stride =
+   warp-size * total-warps.
+
+   Currently uses a placeholder warp-size of 32 — should switch to
+   (get-warp-size) once that builtin is implemented (then NVIDIA/Intel
+   stay correct, AMD's 64-wide wavefronts also become correct)."
+  (declare (ignore location))
+  (let* ((cl-pkg (find-package :crisp-language))
+         (let-sym             (intern "LET" cl-pkg))
+         (declare-sym         (intern "DECLARE" cl-pkg))
+         (grid-level-sym      (intern "GRID-LEVEL" cl-pkg))
+         (dotimes-sym         (intern "DOTIMES" cl-pkg))
+         (when-sym            (intern "WHEN" cl-pkg))
+         (progn-sym           (intern "PROGN" cl-pkg))
+         (to-ulong-sym        (intern "TO-ULONG" cl-pkg))
+         (len-tilde-sym       (intern "LENGTH~" cl-pkg))
+         (get-glid-sym        (intern "GET-GLOBAL-LINEAR-ID" cl-pkg))
+         (get-glsize-sym      (intern "GET-GLOBAL-LINEAR-SIZE" cl-pkg))
+         (plus-sym            (intern "+" cl-pkg))
+         (mul-sym             (intern "*" cl-pkg))
+         (div-sym             (intern "/" cl-pkg))
+         (lt-sym              (intern "<" cl-pkg))
+         (t-sym         (gensym "T"))
+         (ws-sym        (gensym "WSIZE"))
+         (len-sym       (gensym "LEN"))
+         (glid-sym      (gensym "GLID"))
+         (glsize-sym    (gensym "GLSIZE"))
+         (mywarp-sym    (gensym "MYWARP"))
+         (numwarps-sym  (gensym "NUMWARPS"))
+         (k-sym         (gensym "K"))
+         (var-name      (first bindings))
+         ;; Rewrite tile-indices in the body using the bound WS gensym so
+         ;; (tile-indices warp-orig) → (/ warp-orig WS).
+         (rewritten-body (%tile-helpers-rewrite body-forms 1
+                                                 (lambda (k)
+                                                   (declare (ignore k))
+                                                   ws-sym)))
+         (inner-body (if (= (length rewritten-body) 1)
+                         (first rewritten-body)
+                         (cons progn-sym rewritten-body)))
+         (inner-when (list when-sym
+                           (list lt-sym var-name len-sym)
+                           inner-body))
+         (inner-let (list let-sym
+                          (list (list var-name
+                                      (list plus-sym k-sym
+                                            (list mul-sym mywarp-sym ws-sym))))
+                          inner-when))
+         (dotimes-form (list dotimes-sym
+                             (list k-sym len-sym (list mul-sym ws-sym numwarps-sym))
+                             inner-let))
+         (outer-let (list let-sym
+                          (list (list t-sym       tensor-form)
+                                (list ws-sym      (list to-ulong-sym 32))
+                                (list len-sym     (list len-tilde-sym t-sym))
+                                (list glid-sym    (list get-glid-sym))
+                                (list glsize-sym  (list get-glsize-sym))
+                                (list mywarp-sym  (list div-sym glid-sym ws-sym))
+                                (list numwarps-sym (list div-sym glsize-sym ws-sym)))
+                          (list declare-sym (list grid-level-sym))
+                          dotimes-form)))
+    outer-let))
 
 (defun %tile-helper-name-p (sym)
-  "Returns the helper keyword (:coords :indices :tensor-coords) if SYM is
-   a tile-stride helper macro name, else NIL.  Matches by string."
+  "Returns :indices if SYM is the tile-indices helper macro name, else NIL.
+   tile-coords and tensor-coords were removed in endeavor 111 Phase 0."
   (when (symbolp sym)
-    (let ((n (symbol-name sym)))
-      (cond
-        ((string-equal n "TILE-COORDS")   :coords)
-        ((string-equal n "TILE-INDICES")  :indices)
-        ((string-equal n "TENSOR-COORDS") :tensor-coords)
-        (t nil)))))
+    (when (string-equal (symbol-name sym) "TILE-INDICES")
+      :indices)))
 
 (defun %tile-helper-build-coords (arg-forms tile-size-fn cl-pkg)
   "Builds (mod arg_k TILE_k) forms for tile-coords."
@@ -1152,18 +1210,12 @@
           for k from 0
           collect (list plus-sym (list mul-sym idx (funcall tile-size-fn k)) tc))))
 
+
+
 (defun %tile-helper-call-expansion (helper-kind helper-args tile-size-fn n-tile cl-pkg)
-  "Returns a list of N expansion forms for a helper call, where N matches the
-   helper's expected arity.  Caller decides whether to use it in single-value
-   position (N=1) or multi-value let-binding (N>1)."
+  "Returns a list of N expansion forms for a tile-indices helper call.
+   Only :indices is supported under outer-loop tile-stride semantics."
   (case helper-kind
-    (:coords
-     (unless (= (length helper-args) n-tile)
-       (error 'crisp-compiler-error
-              :message (format nil "tile-coords: expected ~A argument(s) to match tile arity, got ~A"
-                               n-tile (length helper-args))
-              :source-location nil))
-     (%tile-helper-build-coords helper-args tile-size-fn cl-pkg))
     (:indices
      (unless (= (length helper-args) n-tile)
        (error 'crisp-compiler-error
@@ -1171,23 +1223,10 @@
                                n-tile (length helper-args))
               :source-location nil))
      (%tile-helper-build-indices helper-args tile-size-fn cl-pkg))
-    (:tensor-coords
-     (unless (= (length helper-args) 2)
-       (error 'crisp-compiler-error
-              :message "tensor-coords: expected exactly 2 list arguments (indices and coords)"
-              :source-location nil))
-     (let ((idx-forms (first  helper-args))
-           (t-forms   (second helper-args)))
-       (unless (and (listp idx-forms) (listp t-forms))
-         (error 'crisp-compiler-error
-                :message "tensor-coords: both arguments must be lists, e.g. (tensor-coords (idx-y idx-x) (t-y t-x))"
-                :source-location nil))
-       (unless (= (length idx-forms) n-tile)
-         (error 'crisp-compiler-error
-                :message (format nil "tensor-coords: index list has ~A element(s), expected ~A"
-                                 (length idx-forms) n-tile)
-                :source-location nil))
-       (%tile-helper-build-tensor-coords idx-forms t-forms tile-size-fn cl-pkg)))))
+    (t
+     (error 'crisp-compiler-error
+            :message (format nil "Unknown tile-stride helper kind: ~S" helper-kind)
+            :source-location nil))))
 
 (defun %tile-helpers-rewrite (body-forms n-tile tile-size-fn)
   "Walks BODY-FORMS and rewrites tile-coords / tile-indices / tensor-coords
@@ -1290,46 +1329,51 @@
                  (t (list binding)))))
       (mapcar #'walk-form body-forms))))
 
-;; src/analysis/control.lisp
+
+
 (defun %expand-tile-stride-form (expr ct location)
   "Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
-   For the stride loop, tile-stride is identical to tensor-stride.  Pass 4:
-   the body is first walked to rewrite tile-stride helper macros (tile-coords,
-   tile-indices, tensor-coords) using the tile spec as the per-dim size source."
+   Outer loop over tile origins, workgroup-strided.  Body executes once per
+   workgroup per tile-origin; each binding is bound to the tile's global
+   origin coord in its dim.  CT is currently ignored at expansion time —
+   layout-tag validation against the tensor's static CT still happens in
+   analyze-tile-stride-expression."
+  (declare (ignore ct))
   (multiple-value-bind (strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)
       (%tile-stride-parse expr)
-    (declare (ignore layout-tag))
+    (declare (ignore strict-p layout-tag))
     (unless (and (listp bindings)
                  (every #'symbolp bindings)
                  (>= (length bindings) 1))
       (error 'crisp-compiler-error
              :message "Malformed tile-stride: expected (tile-stride TENSOR [LAYOUT-TAG] <TILE-SPEC> (BINDING ...) BODY...)"
              :source-location location))
-    (let* ((n-tile (length bindings))
+    (let* ((n (length bindings))
            (cl-pkg (find-package :crisp-language))
-           ;; Build the per-dim tile-size form supplier.
-           ;; Stride binding values are ulong (per tensor-stride coord decode),
-           ;; so size forms must also be ulong to keep arithmetic type-consistent.
-           ;; For size-list (int literals) we wrap in (to-ulong ...).  For
-           ;; tile-tensor (extents read), the values are already ulong.
-           (tile-size-fn
+           (to-ulong-sym      (intern "TO-ULONG" cl-pkg))
+           (aref-sym          (intern "~" cl-pkg))
+           (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
+           ;; Capture the size source expressions before helper rewrite so
+           ;; tile-indices can use the gensym-bound TS-k vars built by the
+           ;; shared outer-loop helper.  We pre-allocate the TS-k syms here
+           ;; and pass them down to both the helper rewriter and the loop
+           ;; builder, ensuring a single point of evaluation.
+           (ts-syms (loop for i from 0 below n
+                          collect (gensym (format nil "TS~A" i))))
+           (tile-size-expr-fn
             (ecase tile-spec-kind
               (:size-list
-               (let ((sizes tile-spec)
-                     (to-ulong-sym (intern "TO-ULONG" cl-pkg)))
+               (let ((sizes tile-spec))
                  (lambda (k) (list to-ulong-sym (nth k sizes)))))
               (:tile-tensor
-               (let ((aref-sym    (intern "~" cl-pkg))
-                     (extents-sym (intern "EXTENTS~" cl-pkg))
-                     (tile-form   tile-spec))
+               (let ((tile-form tile-spec))
                  (lambda (k)
-                   (list aref-sym (list extents-sym tile-form) k))))))
-           (rewritten-body (%tile-helpers-rewrite body-forms n-tile tile-size-fn))
-           (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
-           (synth  (if strict-p
-                       (cons ts-sym (cons tensor-form (cons (third expr) (cons bindings rewritten-body))))
-                       (cons ts-sym (cons tensor-form (cons bindings rewritten-body))))))
-      (%expand-tensor-stride-form synth ct location))))
+                   (list aref-sym (list extents-tilde-sym tile-form) k))))))
+           ;; tile-indices(b_k) → (/ b_k TS_k), referencing the shared ts gensym.
+           (rewritten-body (%tile-helpers-rewrite body-forms n
+                                                  (lambda (k) (nth k ts-syms)))))
+      (%expand-workgroup-strided-outer-loop-with-ts-syms
+       tensor-form n bindings rewritten-body ts-syms tile-size-expr-fn location))))
 
 ;; src/analysis/control.lisp
 (defun analyze-tile-stride-expression (expr env context location)
@@ -1439,16 +1483,88 @@
     expansion))
 
 
+
+(defun %expand-workgroup-strided-outer-loop-with-ts-syms
+    (tensor-form n bindings body-forms ts-syms tile-size-expr-fn location)
+  "Variant of %expand-workgroup-strided-outer-loop that takes a pre-allocated
+   list of TS gensyms (so the caller's body rewriter can refer to them by
+   name).  Otherwise identical in shape."
+  (declare (ignore location))
+  (let* ((cl-pkg (find-package :crisp-language))
+         (let-sym             (intern "LET" cl-pkg))
+         (declare-sym         (intern "DECLARE" cl-pkg))
+         (workgroup-level-sym (intern "WORKGROUP-LEVEL" cl-pkg))
+         (dotimes-sym         (intern "DOTIMES" cl-pkg))
+         (when-sym            (intern "WHEN" cl-pkg))
+         (progn-sym           (intern "PROGN" cl-pkg))
+         (aref-sym            (intern "~" cl-pkg))
+         (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
+         (get-wg-id-sym       (intern "GET-WORKGROUP-ID" cl-pkg))
+         (get-num-groups-sym  (intern "GET-NUM-GROUPS" cl-pkg))
+         (plus-sym            (intern "+" cl-pkg))
+         (mul-sym             (intern "*" cl-pkg))
+         (lt-sym              (intern "<" cl-pkg))
+         (t-sym (gensym "T"))
+         (e-syms   (loop for i from 0 below n collect (gensym (format nil "E~A"    i))))
+         (gid-syms (loop for i from 0 below n collect (gensym (format nil "WGID~A" i))))
+         (ng-syms  (loop for i from 0 below n collect (gensym (format nil "NG~A"   i))))
+         (k-syms   (loop for i from 0 below n collect (gensym (format nil "K~A"    i))))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
+         (nest
+          (let ((acc inner-body))
+            (loop for i from (1- n) downto 0
+                  for b-sym  = (nth i bindings)
+                  for ts-sym = (nth i ts-syms)
+                  for e-sym  = (nth i e-syms)
+                  for gid-sym = (nth i gid-syms)
+                  for ng-sym = (nth i ng-syms)
+                  for k-sym  = (nth i k-syms)
+                  do (setf acc
+                           (list dotimes-sym
+                                 (list k-sym e-sym (list mul-sym ts-sym ng-sym))
+                                 (list let-sym
+                                       (list (list b-sym
+                                                   (list plus-sym k-sym
+                                                         (list mul-sym gid-sym ts-sym))))
+                                       (list when-sym
+                                             (list lt-sym b-sym e-sym)
+                                             acc)))))
+            acc))
+         (outer-bindings
+          (append
+           (list (list t-sym tensor-form))
+           (loop for i from 0 below n
+                 for ts-sym in ts-syms
+                 collect (list ts-sym (funcall tile-size-expr-fn i)))
+           (loop for i from 0 below n
+                 for e-sym in e-syms
+                 collect (list e-sym (list aref-sym (list extents-tilde-sym t-sym) i)))
+           (loop for i from 0 below n
+                 for gid-sym in gid-syms
+                 collect (list gid-sym (list get-wg-id-sym i)))
+           (loop for i from 0 below n
+                 for ng-sym in ng-syms
+                 collect (list ng-sym (list get-num-groups-sym i))))))
+    (list let-sym outer-bindings
+          (list declare-sym (list workgroup-level-sym))
+          nest)))
+
 (defun %expand-hardware-stride-form (expr ct location)
   "Pure expansion of (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).
-   Rewrites helper macros using the hw-tag-derived tile-size source, then
-   dispatches by hw-tag:
-     :workgroup-idx delegates to tensor-stride (chunking is implicit in the
-                    workgroup scheduler; same N-D stride loop)
-     :warp-idx      uses a custom linear-flatten expansion over the
-                    global execution space (always 1 binding)."
+
+   :workgroup-idx — N-dim outer loop with chunk-size = (get-local-size k)
+                    per dim.  Shares structure with tile-stride; body runs
+                    once per workgroup per chunk.
+   :warp-idx       — 1D outer loop with chunk-size = warp width (currently
+                     hardcoded to 32 as a placeholder for (get-warp-size)).
+                     Body runs once per warp per chunk.  Iteration is
+                     warp-strided over the flattened global execution space."
+  (declare (ignore ct))
   (multiple-value-bind (strict-p layout-tag hw-tag bindings body-forms tensor-form)
       (%hardware-stride-parse expr)
+    (declare (ignore strict-p layout-tag))
     (unless (and (listp bindings) (every #'symbolp bindings) (>= (length bindings) 1))
       (error 'crisp-compiler-error
              :message "Malformed hardware-stride: expected (hardware-stride TENSOR [LAYOUT-TAG] <HW-TAG> (BINDING ...) BODY...)"
@@ -1457,30 +1573,11 @@
       (error 'crisp-compiler-error
              :message "hardware-stride :warp-idx must have exactly 1 binding — warp iteration is always linear over the flattened global execution space"
              :source-location location))
-    (let* ((n-tile (length bindings))
-           (cl-pkg (find-package :crisp-language))
-           (tile-size-fn
-            (ecase hw-tag
-              (:workgroup-idx
-               (let ((get-lws-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg)))
-                 (lambda (k) (list get-lws-sym k))))
-              (:warp-idx
-               ;; Placeholder: should be (get-warp-size) once available.
-               (let ((to-ulong-sym (intern "TO-ULONG" cl-pkg)))
-                 (lambda (k) (declare (ignore k)) (list to-ulong-sym 32))))))
-           (rewritten-body (%tile-helpers-rewrite body-forms n-tile tile-size-fn)))
-      (ecase hw-tag
-        (:workgroup-idx
-         (let* ((ts-sym (intern "TENSOR-STRIDE" cl-pkg))
-                (synth  (if strict-p
-                            (cons ts-sym (cons tensor-form (cons layout-tag (cons bindings rewritten-body))))
-                            (cons ts-sym (cons tensor-form (cons bindings rewritten-body))))))
-           (%expand-tensor-stride-form synth ct location)))
-        (:warp-idx
-         ;; Layout-tag (if present) is irrelevant under :warp-idx — iteration
-         ;; is already linear, so CT-driven decode doesn't apply.  Accepted
-         ;; at parse time for syntactic regularity, dropped here.
-         (%expand-warp-idx-form tensor-form bindings rewritten-body location))))))
+    (ecase hw-tag
+      (:workgroup-idx
+       (%expand-hw-workgroup-idx-form tensor-form bindings body-forms location))
+      (:warp-idx
+       (%expand-hw-warp-idx-form tensor-form bindings body-forms location)))))
 
 (defun analyze-hardware-stride-expression (expr env context location)
   "Analyzes (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).
@@ -1524,10 +1621,132 @@
 
 
 
+;; Endeavor 110: workgroup-stride
+;;
+;; Cooperative inner loop for a workgroup to walk a tile's coordinates.
+;; The body executes once per (thread × visit), with each binding bound to
+;; the local coord within the tile's dim.  Threads step by local-work-size
+;; per dim, starting at their local-id, until the dim's extent is reached.
+;;
+;; Scenarios handled by the bounds check:
+;;   A. tile > workgroup: each thread iterates multiple times.
+;;   B. tile < workgroup: threads with local-id beyond extent skip.
+;;
+;; Does NOT inject an end barrier (per chapter 13).  Caller inserts
+;; (local-barrier) explicitly when needed.
+
+(defun %workgroup-stride-parse (expr)
+  "Returns (values bindings body-forms tensor-form) for a workgroup-stride EXPR.
+   Form-shape validation only — does not check tensor arity vs bindings arity."
+  (let* ((tensor-form (second expr))
+         (bindings    (third expr))
+         (body-forms  (cdddr expr)))
+    (values bindings body-forms tensor-form)))
+
+
+(defun %expand-workgroup-stride-form (expr location)
+  "Pure expansion of (workgroup-stride T (BINDINGS) BODY...).  N-dim nested
+   dotimes where each thread strides by local-work-size starting at its
+   local-id.  Returns a let/dotimes/when tree suitable for analysis."
+  (multiple-value-bind (bindings body-forms tensor-form)
+      (%workgroup-stride-parse expr)
+    (unless (and (listp bindings)
+                 (every #'symbolp bindings)
+                 (>= (length bindings) 1))
+      (error 'crisp-compiler-error
+             :message "Malformed workgroup-stride: expected (workgroup-stride TENSOR (BINDING ...) BODY...)"
+             :source-location location))
+    (let* ((n (length bindings))
+           (cl-pkg (find-package :crisp-language))
+           (let-sym             (intern "LET" cl-pkg))
+           (dotimes-sym         (intern "DOTIMES" cl-pkg))
+           (when-sym            (intern "WHEN" cl-pkg))
+           (progn-sym           (intern "PROGN" cl-pkg))
+           (aref-sym            (intern "~" cl-pkg))
+           (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym    (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (plus-sym            (intern "+" cl-pkg))
+           (lt-sym              (intern "<" cl-pkg))
+           (t-sym (gensym "T"))
+           (e-syms   (loop for i from 0 below n collect (gensym (format nil "E~A"    i))))
+           (lid-syms (loop for i from 0 below n collect (gensym (format nil "LID~A"  i))))
+           (lws-syms (loop for i from 0 below n collect (gensym (format nil "LWS~A"  i))))
+           (k-syms   (loop for i from 0 below n collect (gensym (format nil "K~A"    i))))
+           (inner-body (if (= (length body-forms) 1)
+                           (first body-forms)
+                           (cons progn-sym body-forms)))
+           ;; Build the nest from innermost out.  At each level:
+           ;;   (dotimes (K_k E_k LWS_k)
+           ;;     (let ((b_k (+ K_k LID_k)))
+           ;;       (when (< b_k E_k)
+           ;;         <inner>)))
+           (nest
+            (let ((acc inner-body))
+              (loop for i from (1- n) downto 0
+                    for b-sym  = (nth i bindings)
+                    for e-sym  = (nth i e-syms)
+                    for lid-sym = (nth i lid-syms)
+                    for lws-sym = (nth i lws-syms)
+                    for k-sym  = (nth i k-syms)
+                    do (setf acc
+                             (list dotimes-sym
+                                   (list k-sym e-sym lws-sym)
+                                   (list let-sym
+                                         (list (list b-sym
+                                                     (list plus-sym k-sym lid-sym)))
+                                         (list when-sym
+                                               (list lt-sym b-sym e-sym)
+                                               acc)))))
+              acc))
+           (outer-bindings
+            (append
+             (list (list t-sym tensor-form))
+             (loop for i from 0 below n
+                   for e-sym in e-syms
+                   collect (list e-sym (list aref-sym (list extents-tilde-sym t-sym) i)))
+             (loop for i from 0 below n
+                   for lid-sym in lid-syms
+                   collect (list lid-sym (list get-local-id-sym i)))
+             (loop for i from 0 below n
+                   for lws-sym in lws-syms
+                   collect (list lws-sym (list get-lws-sym i))))))
+      (list let-sym outer-bindings nest))))
+
+
+(defun analyze-workgroup-stride-expression (expr env context location)
+  "Analyzes (workgroup-stride T (BINDINGS) BODY...).  Validates arity-vs-tensor
+   then delegates codegen via %expand-workgroup-stride-form."
+  (multiple-value-bind (bindings body-forms tensor-form)
+      (%workgroup-stride-parse expr)
+    (declare (ignore body-forms))
+    (let* ((env-resolver
+            (lambda (sym)
+              (when (symbolp sym)
+                (handler-case
+                    (let ((node (analyze-expression sym env context (append location '(1)))))
+                      (semantic-node-type node))
+                  (error () nil)))))
+           (n (length bindings))
+           (canon (and (symbolp tensor-form)
+                       (let ((ty (funcall env-resolver tensor-form)))
+                         (and ty (%ts-canonicalize-tensor-type ty)))))
+           (declared-n (when (and (listp canon) (>= (length canon) 3))
+                         (third canon))))
+      (when (and (integerp declared-n) (/= declared-n n))
+        (error 'crisp-compiler-error
+               :message (format nil
+                                "workgroup-stride: tensor has ~A dimension(s) but ~A binding(s) provided"
+                                declared-n n)
+               :source-location location))
+      (analyze-expression (%expand-workgroup-stride-form expr location)
+                          env context location))))
+
 
 (defun register-control-analyzers ()
   "Registers all control flow expression analyzers, including loop-vector-stride,
-   tensor-stride (105), grid-stride (105), and tile-stride (109)."
+   tensor-stride (105), grid-stride (105), tile-stride (109), hardware-stride
+   (109), and workgroup-stride (110)."
   (def-expression-analyzer function analyze-function-literal)
   (def-expression-analyzer common-lisp:function analyze-function-literal)
   (def-expression-analyzer funcall analyze-funcall-expression)
@@ -1588,5 +1807,15 @@
         (sym-cc (intern "HARDWARE-STRIDE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-hardware-stride-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-hardware-stride-expression))))
-
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-hardware-stride-expression)))
+  ;; 110: workgroup-stride
+  (let ((sym-cl (intern "WORKGROUP-STRIDE" (find-package :crisp-language)))
+        (sym-cc (intern "WORKGROUP-STRIDE" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-workgroup-stride-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-workgroup-stride-expression)))
+  ;; 110: warp helper builtins.  Registered here (rather than in the GPU-builtin
+  ;; dolist in initialize-expression-analyzers) because that dolist is part of
+  ;; a long defun we'd rather not whole-replace.  These setf entries survive
+  ;; the subsequent GPU-builtin dolist since it touches different keys.
+  (register-warp-builtins))

@@ -2220,7 +2220,25 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (values nil nil)))
 
 ;;; ----- generate-node-ir for semantic-gpu-builtin -----
-;; src/codegen.lisp
+
+;; L0-safe scalar SPIR-V builtin: load from an addrspace(1) i32 global
+;; @__spirv_BuiltIn<NAME> with zeroinitializer.  Mirrors the vec3 helper
+;; (%call-spirv-vec3-builtin) so the LLVM-SPIRV translator emits a
+;; SPIR-V OpVariable BuiltIn decoration rather than an import-linkage
+;; function declaration (which causes ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED
+;; on Level Zero).
+(defun %call-spirv-uint-global-builtin (builder module spirv-name)
+  "Loads from an addrspace(1) i32 global @__spirv_BuiltIn<SPIRV-NAME>."
+  (let* ((gvar-name (format nil "__spirv_BuiltIn~a" spirv-name))
+         (i32-type  (crisp.llvm-bindings::llvm-int32-type))
+         (existing  (crisp.llvm-bindings::llvm-get-named-global module gvar-name))
+         (gvar      (if (cffi:null-pointer-p existing)
+                        (let ((g (crisp.llvm-bindings::llvm-add-global-in-addrspace module i32-type gvar-name 1)))
+                          (crisp.llvm-bindings::llvm-set-initializer g (crisp.llvm-bindings::llvm-const-null i32-type))
+                          g)
+                        existing)))
+    (crisp.llvm-bindings::llvm-build-load2 builder i32-type gvar (string-downcase spirv-name))))
+
 
 (defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
   "Generates LLVM IR for a GPU built-in function call."
@@ -2229,7 +2247,6 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (dim   (semantic-gpu-builtin-dimension node)))
     (log:info "Generating GPU builtin IR: ~a dim=~a" bname dim)
     (labels
-        ;; Helper: call primitive vec3 builtin and optionally extractelement
         ((vec3-or-scalar (spirv-name)
            (let ((vec (%call-spirv-vec3-builtin builder module spirv-name)))
              (if dim
@@ -2251,9 +2268,8 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
            (if dim
                (let* ((gid-n  (%extract-vec3-i64 builder gid  dim "gid_n"))
                       (goff-n (%extract-vec3-i64 builder goff dim "goff_n")))
-                 (values (llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
-               ;; 3D: vector add (<3 x i64> + <3 x i64>)
-               (values (llvm-build-add builder gid goff "gid_abs") nil))))
+                 (values (crisp.llvm-bindings::llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
+               (values (crisp.llvm-bindings::llvm-build-add builder gid goff "gid_abs") nil))))
         ;; --- WorkDim (hidden kernel parameter, uint) ---
         (:get-work-dim
          (values (%call-spirv-uint-builtin builder module "WorkDim") nil))
@@ -2268,6 +2284,13 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (values (%gen-product-of-vec3 builder module "GlobalSize" "total_threads") nil))
         (:get-total-groups
          (values (%gen-product-of-vec3 builder module "NumWorkgroups" "total_groups") nil))
+        ;; --- 110: warp helpers (scalar uint, L0-safe addrspace(1) globals) ---
+        (:warp-id
+         (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil))
+        (:warp-lane
+         (values (%call-spirv-uint-global-builtin builder module "SubgroupLocalInvocationId") nil))
+        (:warp-count
+         (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil))
         ;; --- Barriers (void) ---
         (:local-barrier (%gen-spirv-control-barrier builder module))
         (:mem-fence     (%gen-spirv-memory-barrier  builder module))
