@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Basic 2D workgroup-stride: cooperative walk of a 4x4 matrix by a (2 2)
+;; workgroup.  Each thread visits 4/4 = 1 row-slot in each of 4/2 = 2 row
+;; bands × 2 col bands = 4 slots? No — extents are 4x4, LWS=(2 2), so each
+;; thread iterates 4/2 = 2 times per axis = 4 total visits, each writing
+;; its 2D local-id-derived position.
+;;
+;; Concretely: each thread (ly, lx) writes M[2*ky + ly][2*kx + lx] = ly
+;; for ky, kx in 0..1.  Result: column-wise pattern of (ly mod 2) per row.
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel ws_basic_2d (&out M)
+  (declare #'(&out mat-t => nil)
+           (global-size :set-to '(4 4))
+           (local-size  :set-to '(2 2)))
+  (workgroup-stride M (ly lx)
+    (set! (~ M ly lx) ly)))

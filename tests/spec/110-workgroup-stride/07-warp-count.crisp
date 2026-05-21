@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Warp helper: (warp-count) returns the total number of warps in the
+;; current workgroup.  All threads in a workgroup see the same value.
+;;
+;; With local-size = warp-size (32), warp-count == 1.
+
+(def-type vec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel ws_warp_count (&out V)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (workgroup-stride V (lx)
+    (set! (~ V lx) (warp-count))))

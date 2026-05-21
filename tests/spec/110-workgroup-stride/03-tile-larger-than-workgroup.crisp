@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Scenario A: tile (vector here) is LARGER than the workgroup.  Each thread
+;; iterates multiple times to cooperatively cover every slot.
+;;
+;; Vector length 8, local-size 4 → each thread does 8/4 = 2 iterations.
+;; Thread 0 visits slots {0, 4}; thread 1 visits {1, 5}; etc.
+;; Each visit writes the slot index into V[slot].  Expected V = [0..7].
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel ws_tile_larger (&out V)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (workgroup-stride V (lx)
+    (set! (~ V lx) lx)))

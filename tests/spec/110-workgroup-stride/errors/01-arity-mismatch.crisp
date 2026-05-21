@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "workgroup-stride"
+
+;; workgroup-stride bindings arity must match the tile's dimensionality.
+;; Here we pass a 2D matrix with only 1 binding — should be a compile error.
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel ws_arity_mismatch (&out M)
+  (declare #'(&out mat-t => nil))
+  (workgroup-stride M (only-one-binding)
+    (set! (~ M only-one-binding only-one-binding) only-one-binding)))

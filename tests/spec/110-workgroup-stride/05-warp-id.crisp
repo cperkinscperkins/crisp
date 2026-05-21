@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Warp helper: (warp-id) returns the warp index within the workgroup.
+;; With local-size = 32 (one warp) the value is always 0.
+;; With local-size = 64 (two warps) lanes 0-31 see 0, lanes 32-63 see 1.
+;;
+;; We use local-size 32 here so the kernel can be verified compile-only and
+;; the analytical result (V = [0,0,...,0]) is host-observable.
+
+(def-type vec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel ws_warp_id (&out V)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (workgroup-stride V (lx)
+    (set! (~ V lx) (warp-id))))

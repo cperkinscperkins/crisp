@@ -17,10 +17,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp
 - - - - - (REGISTER-CONTROL-ANALYZERS)  analysis/control.lisp
 - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
+- - - - - - (REGISTER-WARP-BUILTINS)  analysis/core.lisp
+- - - - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - (%GPU-BUILTIN-INFO BUILTIN-KW)  analysis/core.lisp
 - - - - - (REGISTER-STRUCT-ANALYZERS)  analysis/structs.lisp
 - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
-- - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - (%GPU-BUILTIN-INFO BUILTIN-KW)  analysis/core.lisp
+- - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - - - (INITIALIZE-ADVISEMENTS) :CRISP.UTILS  utils.lisp
 - - - - - (ADVISE-FUNCTION FN-SYMBOL) :CRISP.UTILS  utils.lisp
 - - - - (REGISTER-BUILTINS)  compiler.lisp
@@ -274,6 +276,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (%CALL-SPIRV-VEC3-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
 - - - - - - - - - - - (%GEN-FLAT-LINEAR-ID-FROM-VECS BUILDER LID-VEC LWS-VEC NAME)  codegen.lisp [See above]
 - - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp [See above]
+- - - - - - - - - - (%CALL-SPIRV-UINT-GLOBAL-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp
 - - - - - - - - - - (%GEN-SPIRV-CONTROL-BARRIER BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - (%GEN-SPIRV-MEMORY-BARRIER BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
@@ -600,6 +603,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%CT-RESOLVE-VALUE VALUE)  macros.lisp
 
+- (%EXPAND-WARP-IDX-FORM TENSOR-FORM BINDINGS BODY-FORMS LOCATION)  analysis/control.lisp
+
 - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp
 
 - (%FIND-STRUCT-DEF STRUCTS-SECTION NAME)  metadata-val.lisp
@@ -645,15 +650,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%TILE-HELPERS-REWRITE BODY-FORMS N-TILE TILE-SIZE-FN)  analysis/control.lisp
 - - - - - (%TILE-HELPER-NAME-P SYM)  analysis/control.lisp
 - - - - - (%TILE-HELPER-CALL-EXPANSION HELPER-KIND HELPER-ARGS TILE-SIZE-FN N-TILE CL-PKG)  analysis/control.lisp
-- - - - - - (%TILE-HELPER-BUILD-COORDS ARG-FORMS TILE-SIZE-FN CL-PKG)  analysis/control.lisp
 - - - - - - (%TILE-HELPER-BUILD-INDICES ARG-FORMS TILE-SIZE-FN CL-PKG)  analysis/control.lisp
-- - - - - - (%TILE-HELPER-BUILD-TENSOR-COORDS IDX-FORMS T-FORMS TILE-SIZE-FN CL-PKG)  analysis/control.lisp
-- - - - (%EXPAND-TENSOR-STRIDE-FORM EXPR CT LOCATION)  analysis/control.lisp [See above]
+- - - - (%EXPAND-WORKGROUP-STRIDED-OUTER-LOOP-WITH-TS-SYMS TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN LOCATION)  analysis/control.lisp
 - - - (%EXPAND-HARDWARE-STRIDE-FORM EXPR CT LOCATION)  analysis/control.lisp
 - - - - (%HARDWARE-STRIDE-PARSE EXPR)  analysis/control.lisp
-- - - - (%TILE-HELPERS-REWRITE BODY-FORMS N-TILE TILE-SIZE-FN)  analysis/control.lisp [See above]
-- - - - (%EXPAND-TENSOR-STRIDE-FORM EXPR CT LOCATION)  analysis/control.lisp [See above]
-- - - - (%EXPAND-WARP-IDX-FORM TENSOR-FORM BINDINGS BODY-FORMS LOCATION)  analysis/control.lisp
+- - - - (%EXPAND-HW-WORKGROUP-IDX-FORM TENSOR-FORM BINDINGS BODY-FORMS LOCATION)  analysis/control.lisp
+- - - - - (%TILE-HELPERS-REWRITE BODY-FORMS N-TILE TILE-SIZE-FN)  analysis/control.lisp [See above]
+- - - - - (%EXPAND-WORKGROUP-STRIDED-OUTER-LOOP-WITH-TS-SYMS TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN LOCATION)  analysis/control.lisp [See above]
+- - - - (%EXPAND-HW-WARP-IDX-FORM TENSOR-FORM BINDINGS BODY-FORMS LOCATION)  analysis/control.lisp
+- - - - - (%TILE-HELPERS-REWRITE BODY-FORMS N-TILE TILE-SIZE-FN)  analysis/control.lisp [See above]
+- - - (%EXPAND-WORKGROUP-STRIDE-FORM EXPR LOCATION)  analysis/control.lisp
+- - - - (%WORKGROUP-STRIDE-PARSE EXPR)  analysis/control.lisp
 - - (%COMPUTE-BACKWARD-KERNEL-PARAMS FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)  macros.lisp
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
@@ -740,6 +747,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
 
 - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp
+
+- (%TILE-HELPER-BUILD-COORDS ARG-FORMS TILE-SIZE-FN CL-PKG)  analysis/control.lisp
+
+- (%TILE-HELPER-BUILD-TENSOR-COORDS IDX-FORMS T-FORMS TILE-SIZE-FN CL-PKG)  analysis/control.lisp
 
 - (ADDRESS-SPACE-VALUE K)  enums.lisp
 - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp [See above]
@@ -1067,6 +1078,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-WHEN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-IF-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
+
+- (ANALYZE-WORKGROUP-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (%WORKGROUP-STRIDE-PARSE EXPR)  analysis/control.lisp [See above]
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp [See above]
+- - (%EXPAND-WORKGROUP-STRIDE-FORM EXPR LOCATION)  analysis/control.lisp [See above]
 
 - (ANF-TRANSFORM EXPR)  anf-transform.lisp
 - - (%ANF-TRANSFORM EXPR)  anf-transform.lisp

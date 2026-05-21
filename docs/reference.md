@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-20T06:29:38.110063Z
+Generated on 2026-05-21T18:59:28.504276Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -222,10 +222,24 @@ Generated on 2026-05-20T06:29:38.110063Z
 
 
 ---
+### DEFUN `%EXPAND-HW-WORKGROUP-IDX-FORM`
+- **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
+
+  > Outer-loop expansion for hardware-stride :workgroup-idx.  Chunk-size per  >    dim = (get-local-size k).  Helpers get rewritten with the bound LS gensyms  >    so tile-indices uses a single point of evaluation.
+
+
+---
+### DEFUN `%EXPAND-HW-WARP-IDX-FORM`
+- **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
+
+  > Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.  >   >    Iteration model: each warp processes warp-sized chunks of the flattened  >    global execution space.  Warps stride over chunks with stride =  >    warp-size * total-warps.  >   >    Currently uses a placeholder warp-size of 32 — should switch to  >    (get-warp-size) once that builtin is implemented (then NVIDIA/Intel  >    stay correct, AMD's 64-wide wavefronts also become correct).
+
+
+---
 ### DEFUN `%TILE-HELPER-NAME-P`
 - **Args**: `(SYM)`
 
-  > Returns the helper keyword (:coords :indices :tensor-coords) if SYM is  >    a tile-stride helper macro name, else NIL.  Matches by string.
+  > Returns :indices if SYM is the tile-indices helper macro name, else NIL.  >    tile-coords and tensor-coords were removed in endeavor 111 Phase 0.
 
 
 ---
@@ -253,7 +267,7 @@ Generated on 2026-05-20T06:29:38.110063Z
 ### DEFUN `%TILE-HELPER-CALL-EXPANSION`
 - **Args**: `(HELPER-KIND HELPER-ARGS TILE-SIZE-FN N-TILE CL-PKG)`
 
-  > Returns a list of N expansion forms for a helper call, where N matches the  >    helper's expected arity.  Caller decides whether to use it in single-value  >    position (N=1) or multi-value let-binding (N>1).
+  > Returns a list of N expansion forms for a tile-indices helper call.  >    Only :indices is supported under outer-loop tile-stride semantics.
 
 
 ---
@@ -267,7 +281,7 @@ Generated on 2026-05-20T06:29:38.110063Z
 ### DEFUN `%EXPAND-TILE-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
-  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    For the stride loop, tile-stride is identical to tensor-stride.  Pass 4:  >    the body is first walked to rewrite tile-stride helper macros (tile-coords,  >    tile-indices, tensor-coords) using the tile spec as the per-dim size source.
+  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Outer loop over tile origins, workgroup-strided.  Body executes once per  >    workgroup per tile-origin; each binding is bound to the tile's global  >    origin coord in its dim.  CT is currently ignored at expansion time —  >    layout-tag validation against the tensor's static CT still happens in  >    analyze-tile-stride-expression.
 
 
 ---
@@ -292,10 +306,18 @@ Generated on 2026-05-20T06:29:38.110063Z
 
 
 ---
+### DEFUN `%EXPAND-WORKGROUP-STRIDED-OUTER-LOOP-WITH-TS-SYMS`
+- **Args**: `(TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN
+              LOCATION)`
+
+  > Variant of %expand-workgroup-strided-outer-loop that takes a pre-allocated  >    list of TS gensyms (so the caller's body rewriter can refer to them by  >    name).  Otherwise identical in shape.
+
+
+---
 ### DEFUN `%EXPAND-HARDWARE-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
-  > Pure expansion of (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).  >    Rewrites helper macros using the hw-tag-derived tile-size source, then  >    dispatches by hw-tag:  >      :workgroup-idx delegates to tensor-stride (chunking is implicit in the  >                     workgroup scheduler; same N-D stride loop)  >      :warp-idx      uses a custom linear-flatten expansion over the  >                     global execution space (always 1 binding).
+  > Pure expansion of (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).  >   >    :workgroup-idx — N-dim outer loop with chunk-size = (get-local-size k)  >                     per dim.  Shares structure with tile-stride; body runs  >                     once per workgroup per chunk.  >    :warp-idx       — 1D outer loop with chunk-size = warp width (currently  >                      hardcoded to 32 as a placeholder for (get-warp-size)).  >                      Body runs once per warp per chunk.  Iteration is  >                      warp-strided over the flattened global execution space.
 
 
 ---
@@ -306,9 +328,30 @@ Generated on 2026-05-20T06:29:38.110063Z
 
 
 ---
+### DEFUN `%WORKGROUP-STRIDE-PARSE`
+- **Args**: `(EXPR)`
+
+  > Returns (values bindings body-forms tensor-form) for a workgroup-stride EXPR.  >    Form-shape validation only — does not check tensor arity vs bindings arity.
+
+
+---
+### DEFUN `%EXPAND-WORKGROUP-STRIDE-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Pure expansion of (workgroup-stride T (BINDINGS) BODY...).  N-dim nested  >    dotimes where each thread strides by local-work-size starting at its  >    local-id.  Returns a let/dotimes/when tree suitable for analysis.
+
+
+---
+### DEFUN `ANALYZE-WORKGROUP-STRIDE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (workgroup-stride T (BINDINGS) BODY...).  Validates arity-vs-tensor  >    then delegates codegen via %expand-workgroup-stride-form.
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride (105), grid-stride (105), and tile-stride (109).
+  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride (105), grid-stride (105), tile-stride (109), hardware-stride  >    (109), and workgroup-stride (110).
 
 
 ---
@@ -367,6 +410,12 @@ Generated on 2026-05-20T06:29:38.110063Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes (crisp-vec-literal e1 e2 ...) -- produced by the ##(...) reader macro.  >    Infers the component type from the first element, validates width (2-4) and  >    element type compatibility, then returns a semantic-device-vec-literal node.
+
+
+---
+### DEFUN `REGISTER-WARP-BUILTINS`
+
+  > Registers the warp-id / warp-lane / warp-count GPU builtins in  >    *expression-analyzers* for both :crisp-language and :crisp.compiler.
 
 
 ---
@@ -2048,6 +2097,13 @@ Generated on 2026-05-20T06:29:38.110063Z
 
 
 ---
+### DEFUN `%CALL-SPIRV-UINT-GLOBAL-BUILTIN`
+- **Args**: `(BUILDER MODULE SPIRV-NAME)`
+
+  > Loads from an addrspace(1) i32 global @__spirv_BuiltIn<SPIRV-NAME>.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
@@ -2998,7 +3054,7 @@ Generated on 2026-05-20T06:29:38.110063Z
 ### DEFUN `%EXPAND-STRIDE-MACROS-IN-FORM`
 - **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
 
-  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride forms into their expansions.
+  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride  >    forms into their expansions.
 
 
 ---
