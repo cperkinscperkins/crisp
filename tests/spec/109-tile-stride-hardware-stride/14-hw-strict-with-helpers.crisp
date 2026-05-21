@@ -3,11 +3,14 @@
 
 ;; Strict hardware-stride: layout-tag goes between the tensor and the
 ;; hw-tag.  Combines :row-major static layout with :workgroup-idx
-;; chunking, plus all the coordinate helpers in the body.
+;; chunking + the surviving tile-indices helper.
 ;;
-;; Writes a workgroup-aware encoding so the result identifies both
-;; which workgroup the lane is in (idx-x) and where in the workgroup
-;; (t-x).  Encoding: idx_x * 10 + t_x.
+;; Under outer-loop semantics, tile-coords / tensor-coords no longer
+;; exist; only the workgroup-level tile-indices identity remains.
+;;
+;; Leader thread writes an encoding that identifies which workgroup chunk:
+;; (* idx-x 10) + col-orig — distinguishes both the chunk's column index
+;; and the chunk's column-origin coord within the problem space.
 
 (def-type mat-t (matrix ulong :address-space :global :align :compact))
 
@@ -15,7 +18,8 @@
   (declare #'(&out mat-t => nil)
            (global-size :set-to '(4 4))
            (local-size  :set-to '(2 2)))
-  (hardware-stride M :row-major :workgroup-idx (row-y col-x)
-    (let ((t-y t-x     (tile-coords  row-y col-x))
-          (idx-y idx-x (tile-indices row-y col-x)))
-      (set! (~ M row-y col-x) (+ (* idx-x (to-ulong 10)) t-x)))))
+  (hardware-stride M :row-major :workgroup-idx (row-orig col-orig)
+    (when (= (get-local-linear-id) (to-ulong 0))
+      (let ((idx-y idx-x (tile-indices row-orig col-orig)))
+        (set! (~ M row-orig col-orig)
+              (+ (* idx-x (to-ulong 10)) col-orig))))))

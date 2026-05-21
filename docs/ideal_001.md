@@ -4938,6 +4938,9 @@ With `:warp-idx`, the tensor is chunked into 1D segments equal to the hardware w
 
 Note that `hardware-stride :warp-idx` can be used with any global size arity, but it iterates over the flattened, global execution space by the hardware warp width.
 
+Also note that `load-tile` and `store-tile` (and their async counterparts) are not available
+from within a `:warp-idx` hardware-stride.  
+
 ```
 (hardware-stride someVector :warp-idx (warp-orig-x) 
   (let ((which-warp (tile-indices warp-orig-x)))
@@ -5062,7 +5065,6 @@ For tensors with an arity of three or greater, the `:transpose` keyword accepts 
 
 `load-tile` will map the `<tile>` to the appropriate place in the problem space and 
 load the tile with the data there.  
-The loading is "cooperative", with each thread setting one value.
 
 Similarly, `store-tile` does the reverse - copies memory from some tile vector
 into the appropriate location in the problem space data. This is usually used with 

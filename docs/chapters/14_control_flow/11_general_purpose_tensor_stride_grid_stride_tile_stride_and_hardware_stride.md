@@ -156,6 +156,9 @@ With `:warp-idx`, the tensor is chunked into 1D segments equal to the hardware w
 
 Note that `hardware-stride :warp-idx` can be used with any global size arity, but it iterates over the flattened, global execution space by the hardware warp width.
 
+Also note that `load-tile` and `store-tile` (and their async counterparts) are not available
+from within a `:warp-idx` hardware-stride.  
+
 ```
 (hardware-stride someVector :warp-idx (warp-orig-x) 
   (let ((which-warp (tile-indices warp-orig-x)))

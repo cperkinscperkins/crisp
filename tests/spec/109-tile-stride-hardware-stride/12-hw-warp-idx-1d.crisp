@@ -1,15 +1,14 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
 
-;; hardware-stride with :warp-idx — 1D only.  Each warp gets one tile,
-;; so the tile size for the helpers comes from the warp size.
+;; hardware-stride with :warp-idx on a 1D vector.  Under outer-loop
+;; semantics, the body runs once per warp with the binding bound to the
+;; global origin coord of that warp's chunk.  Critical constraint
+;; (per chapter doc): local_work_size MUST be a multiple of
+;; (get-warp-size); here local-size 32 matches the conventional warp size.
 ;;
-;; Critical constraint (per chapter doc): local_work_size MUST be a
-;; multiple of (get-warp-size).  Here we declare local-size 32 which
-;; matches the conventional warp size on most hardware.
-;;
-;; tile-indices(x) here = which warp this lane is in.
-;; tile-coords(x)  here = which lane within that warp.
+;; Leader thread writes the warp-index — tile-indices(warp-orig) with the
+;; warp width as divisor — into V[warp-orig].
 
 (def-type vec-t (vector ulong :address-space :global :align :compact))
 
@@ -17,6 +16,6 @@
   (declare #'(&out vec-t => nil)
            (global-size :set-to 128)
            (local-size  :set-to 32))
-  (hardware-stride V :warp-idx (x)
-    (let ((which-warp (tile-indices x)))
-      (set! (~ V x) which-warp))))
+  (hardware-stride V :warp-idx (warp-orig)
+    (when (= (get-local-linear-id) (to-ulong 0))
+      (set! (~ V warp-orig) (tile-indices warp-orig)))))

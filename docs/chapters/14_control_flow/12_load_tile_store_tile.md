@@ -50,7 +50,6 @@ For tensors with an arity of three or greater, the `:transpose` keyword accepts 
 
 `load-tile` will map the `<tile>` to the appropriate place in the problem space and 
 load the tile with the data there.  
-The loading is "cooperative", with each thread setting one value.
 
 Similarly, `store-tile` does the reverse - copies memory from some tile vector
 into the appropriate location in the problem space data. This is usually used with 

@@ -1,20 +1,13 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
 
-;; hardware-stride with :workgroup-idx on a 2D matrix.
-;; The tile size for the helpers comes implicitly from the
-;; declared local-size — each workgroup is one tile.
+;; hardware-stride with :workgroup-idx on a 2D matrix.  Under outer-loop
+;; semantics, the body runs once per workgroup with the binding bound to
+;; the global origin coord of that workgroup's chunk.  For local-size (2 2)
+;; and global-size (4 4), origins are { (0,0), (0,2), (2,0), (2,2) } — same
+;; pattern as tile-stride with tile (2 2).
 ;;
-;; Per the chapter doc: "the chunking variants are pretty much exactly
-;; the same as their non-chunking brethren ... The chunking doesn't
-;; change how the stride is executed - it changes how the helper
-;; functions convert coordinates."  So this kernel's body sees
-;; every (row-y, col-x) in the problem space exactly once, just
-;; as tile-stride / tensor-stride would.
-;;
-;; With local-size (2 2) and global-size (4 4), the workgroup arity
-;; is 2D matching the bindings; idx-y/idx-x identify the workgroup,
-;; t-y/t-x identify the lane within it.
+;; Leader thread writes the column tile-index into M[row-orig][col-orig].
 
 (def-type mat-t (matrix ulong :address-space :global :align :compact))
 
@@ -22,6 +15,7 @@
   (declare #'(&out mat-t => nil)
            (global-size :set-to '(4 4))
            (local-size  :set-to '(2 2)))
-  (hardware-stride M :workgroup-idx (row-y col-x)
-    (let ((idx-y idx-x (tile-indices row-y col-x)))
-      (set! (~ M row-y col-x) idx-x))))
+  (hardware-stride M :workgroup-idx (row-orig col-orig)
+    (when (= (get-local-linear-id) (to-ulong 0))
+      (let ((idx-y idx-x (tile-indices row-orig col-orig)))
+        (set! (~ M row-orig col-orig) idx-x)))))
