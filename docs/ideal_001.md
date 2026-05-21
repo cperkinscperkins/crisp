@@ -4897,53 +4897,57 @@ These variants of `tile-stride` DO set up helper macros. They are discussed belo
 Note that `tile-stride` should nearly always be used with the `:strategy :tiled` declaration.  See [:strategy](#strategy) for a discussion. The strategy declaration
 is how you communicate your tiling expections out to the metadata or hoisting code that runs host side. 
 
+
 ### hardware-stride - stride by workgroup or warp.
+
 ```
 (hardware-stride <tensor>  <hw-tag> (<bindings>) ...)
 (hardware-stride <tensor> <layout-tag> <hw-tag> (<bindings>) ...)
 
 ;; examples
-(hardware-stride someMatrix :row-major :workgroup-idx (wg-y wg-x) ...)
+(hardware-stride someMatrix :row-major :workgroup-idx (wg-orig-y wg-orig-x) ...)
    
-(hardware-stride someVector  :warp-idx (x) ...)
+(hardware-stride someVector  :warp-idx (warp-orig-x) ...)
+
 ```
 
-`hardware-stride`takes a `<hw-tag>` argument and chunks the stride by workgroup or warp.  
-For "strict" , provide a `<layout-tag>`.
+`hardware-stride` takes a `<hw-tag>` argument and chunks the problem space by the physical hardware enqueue dimensions. For "strict", provide a `<layout-tag>`.
 
-Note that the helper macros available to `tile-stride` are also available with `hardware-stride`. Theya re discussed below.
+Just like `tile-stride`, `hardware-stride` acts as an **outer loop**. Its body executes once per hardware chunk, and the `<bindings>` represent the global origin coordinate of that chunk within the tensor. The key difference is that you do not provide a `<size-list>`; the chunk size is implicitly derived from the hardware environment.
 
-
-There are two choices for `<hw-tag>`: `workgroup-idx` and `:warp-idx`.  
+There are two choices for `<hw-tag>`: `:workgroup-idx` and `:warp-idx`.
 
 #### `:workgroup-idx`
-- `:workgroup-idx` the threads are chunked by workgroup 
-The arity of the tensor and the bindings MUST match the arity of the workgroup enqueue.
 
-```
+With `:workgroup-idx`, the tensor is chunked by the workgroup dimensions. The arity of the tensor and the bindings MUST match the arity of the workgroup enqueue.
+
+```lisp
 ;; 2D enqueue
-(harware-stride someMatrix :row-major :workgroup-idx (row-y col-x) 
-   (let ((idx-y idx-x (tile-indices row-y col-x))     ;; which workgroup 
-         (local-y local-x (tile-coords row-y col-x))) ;; where are we in it
+(hardware-stride someMatrix :row-major :workgroup-idx (wg-orig-y wg-orig-x) 
+   (let ((idx-y idx-x (tile-indices wg-orig-y wg-orig-x)))  ;; which workgroup chunk is this?
+       
+       ;; body executes once per workgroup cooperatively
+       (load-tile ...) 
        ...))
+
 ```
 
 #### `:warp-idx`
-- `:warp-idx` is just like `:workgroup-idx` except the threads are grouped by warp and it is 1D only. Note that if using `:warp-idx` that it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(get-warp-size)`. Otherwise operations like warp level reductions could end up deadlocking.
+
+With `:warp-idx`, the tensor is chunked into 1D segments equal to the hardware warp width. Note that if using `:warp-idx`, it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(get-warp-size)`. Otherwise, operations like warp-level reductions could end up deadlocking.
 
 Note that `hardware-stride :warp-idx` can be used with any global size arity, but it iterates over the flattened, global execution space by the hardware warp width.
 
 ```
-(hardware-stride someVector :warp-idx (x) ;; x is a coordinate in someVector
-  (let ((which-warp (tile-indices x))
-        (which-lane (tile-coords x)))
+(hardware-stride someVector :warp-idx (warp-orig-x) 
+  (let ((which-warp (tile-indices warp-orig-x)))
+      
+      ;; body executes once per warp cooperatively
       ...))
+
 ```
 
-> Implementation Note: the chunking variants are pretty much exactly the same as their non-chunking brethren.
-> ( modulo "strict" or not)
-> The entire problem space tensor is strided and the bindings are identical across all. The chunking
-> doesn't change how the stride is executed - it changes how the helper functions convert coordinates.
+> Implementation Note: Unlike `tensor-stride`, the chunking variants (`tile-stride` and `hardware-stride`) do not evaluate their bodies per-element. They stride the problem space in block-sized steps. For `hardware-stride`, those steps are driven dynamically by `(get-local-size)` or `(get-warp-size)`. Any element-level computation must be done in an inner loop (like `workgroup-stride`) inside the body.
 
 ### Helper Macros
 

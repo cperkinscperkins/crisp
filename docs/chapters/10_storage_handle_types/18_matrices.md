@@ -162,6 +162,8 @@ not necessarily like we want them to be.
 (def-const TILE_DIM:ulong (get-warp-size))
 
 ;; -- convert-layout --
+;; THIS IS OUTDATED. REWRITE ONCE tile-stride, load-tile, workgroup-stride and store-tile are 
+;; working.
 (def-function convert-layout (source-M dest-M choice &optional (scratch (make-scratch-matrix (element-type~ source-M) :match-warp-tile)))
   ;; scratch is usuallly 32x32 (TILE_DIM x TILE_DIM)
   (declare #(matrix matrix matrix-layout &optional (vector (element-type~ source-M)) => nil)
