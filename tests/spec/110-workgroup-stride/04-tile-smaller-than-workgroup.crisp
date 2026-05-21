@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Scenario B: tile (vector here) is SMALLER than the workgroup.  Threads
+;; with local-id beyond the tile extent skip via the bounds-check on the
+;; first iteration.
+;;
+;; Vector length 2, local-size 4 → only threads 0 and 1 do work.
+;; Threads 2 and 3 hit (< lx E) = (< 2 2) = NIL and skip.
+;; Expected V = [0, 1] with no out-of-bounds writes.
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel ws_tile_smaller (&out V)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (workgroup-stride V (lx)
+    (set! (~ V lx) lx)))

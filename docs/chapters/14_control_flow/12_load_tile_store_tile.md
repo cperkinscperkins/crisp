@@ -43,13 +43,13 @@ data from the problem space where possible, but the REMAINING values of the tile
 `:transpose` key.  The tile will simply lift the data right out of the problem space tensor, 
 whether it is `:col-major` or `:row-major`, and so have the same layout, just smaller.  
 But the `:transpose` argument can be used to change that. For tensors of arity 1 (vectors), the `:transpose` is ignored. For arity 2 (matrices) then if `:transpose true` then
-the `x` and `y` coordinates will be swapped. For arities greater than 2, provide a permutation list: `(load-tile ... :transpose '(0 2 1))`
+the `x` and `y` coordinates will be swapped.
+For tensors with an arity of three or greater, the `:transpose` keyword accepts a permutation list (such as `'(0 2 1)`) to explicitly dictate how the axes are reordered when mapping to local memory. Providing a simple boolean `true` serves as a convenient shorthand for this list, defaulting to swapping only the two innermost dimensions while preserving the outer batch structure.
 
 
 
 `load-tile` will map the `<tile>` to the appropriate place in the problem space and 
 load the tile with the data there.  
-The loading is "cooperative", with each thread setting one value.
 
 Similarly, `store-tile` does the reverse - copies memory from some tile vector
 into the appropriate location in the problem space data. This is usually used with 

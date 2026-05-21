@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Basic 1D workgroup-stride: cooperative walk of a vector by the workgroup.
+;; With local-size = vector length (4), each thread visits exactly one slot
+;; (Scenario A=B degenerate: one iteration per thread, no overshoot, no skip).
+;;
+;; Each thread writes its local-id into V[local-id].  Expected V = [0,1,2,3].
+;;
+;; Note: workgroup-stride is designed for :local tiles, but we test against
+;; a :global vector here so the result is host-observable without a
+;; store-tile primitive (which lands in endeavor 111).
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel ws_basic_1d (&out V)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (workgroup-stride V (lx)
+    (set! (~ V lx) lx)))

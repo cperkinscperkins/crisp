@@ -1,21 +1,19 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
 
-;; tile-indices helper: returns WHICH tile the binding is in.
-;; Semantics: tile-indices(x) = (floor x tile-size).
+;; tile-indices helper under outer-loop semantics: returns which cell of
+;; the tile-grid this iteration is processing.  For a 4x4 matrix with
+;; tile (2 2), the tile-stride bindings (row-orig col-orig) take values
+;; from the problem-space origin set { (0,0), (0,2), (2,0), (2,2) }.
+;; tile-indices then yields { (0,0), (0,1), (1,0), (1,1) }.
 ;;
-;; With tile (2 2) on a 4x4 matrix, the idx-x value at each
-;; (row-y, col-x) position should be (floor col-x 2).  Writing
-;; idx-x into each cell yields the pattern:
-;;   row 0: [0 0 1 1]
-;;   row 1: [0 0 1 1]
-;;   row 2: [0 0 1 1]
-;;   row 3: [0 0 1 1]
+;; Leader thread writes the column tile-index into M[row-orig][col-orig].
 
 (def-type mat-t (matrix ulong :address-space :global :align :compact))
 
-(def-kernel mat_write_tile_indices_x (&out M)
+(def-kernel mat_tile_indices_sentinel (&out M)
   (declare #'(&out mat-t => nil))
-  (tile-stride M (2 2) (row-y col-x)
-    (let ((idx-y idx-x (tile-indices row-y col-x)))
-      (set! (~ M row-y col-x) idx-x))))
+  (tile-stride M (2 2) (row-orig col-orig)
+    (when (= (get-local-linear-id) (to-ulong 0))
+      (let ((idx-y idx-x (tile-indices row-orig col-orig)))
+        (set! (~ M row-orig col-orig) idx-x)))))

@@ -88,18 +88,21 @@ It is how you tell Crisp to "Forget about physical memory for a second. Just gen
 (tile-stride <tensor> <layout-tag> (<size-list>) (<bindings>) ...)
 (tile-stride <tensor> <layout-tag> <tile-tensor> (<bindings>) ...)
 
-(tile-stride someMatrix (8 4) (row-y col-x)
-  (let ((t-y t-x (tile-coords row-y col-x)) ;;coordinate within the tile.
-        (idx-y idx-x  (tile-indices row-y col-x)) ;; which of the tiles is it?
-        ;; let's get location of the neighbor next tile over (this example skips bounds checking)
-        (neighbor-y neighbor-x (tensor-coords (idx-y (1+ idx)) (t-y (1+ t-x)))))
+(tile-stride someMatrix (8 4) (tile-orig-row-y tile-orig-col-x)
+  (let ((idx-y idx-x  (tile-indices tile-orig-row-y tile-orig-col-x))) ;; which of the tiles is it?
+        
     ...))
 
 ```
-`tile-stride` breaks up a `tensor` into tiles (of any arity, not just 2D) 
-and it sets up the coordinate helper functions which can be used in the body of the `tile-stride`.
+`tile-stride` breaks up a `tensor` into tiles (of any arity, not just 2D). The body of 
+`tile-stride` executes once for each tile, with the `<bindings>` being the coordinate
+of the `<tensor>` that would act as the tiles origin.
 
-As in the others, every unique coordinate in the `tensor` is visited exactly once. 
+For example, let's say tile-stride is used with a source vector length 30 and a tile length 10.
+Then in
+`(tile-stride source tile (tile-orig-x) ...)`
+The body will execute three times, with `tile-orig-x` bound to 0, 10 and 20.
+
 
 The arity of the `<size-list>` must match the arity of the `tensor` and the `<bindings>`. Compilation error otherwise.
 Alternately, a smaller `<tile-tensor>` can be provided. Its extents will be used for the tile size and, of course,
@@ -112,59 +115,68 @@ These variants of `tile-stride` DO set up helper macros. They are discussed belo
 Note that `tile-stride` should nearly always be used with the `:strategy :tiled` declaration.  See [:strategy](#strategy) for a discussion. The strategy declaration
 is how you communicate your tiling expections out to the metadata or hoisting code that runs host side. 
 
+
 ### hardware-stride - stride by workgroup or warp.
+
 ```
 (hardware-stride <tensor>  <hw-tag> (<bindings>) ...)
 (hardware-stride <tensor> <layout-tag> <hw-tag> (<bindings>) ...)
 
 ;; examples
-(hardware-stride someMatrix :row-major :workgroup-idx (wg-y wg-x) ...)
+(hardware-stride someMatrix :row-major :workgroup-idx (wg-orig-y wg-orig-x) ...)
    
-(hardware-stride someVector  :warp-idx (x) ...)
+(hardware-stride someVector  :warp-idx (warp-orig-x) ...)
+
 ```
 
-`hardware-stride`takes a `<hw-tag>` argument and chunks the stride by workgroup or warp.  
-For "strict" , provide a `<layout-tag>`.
+`hardware-stride` takes a `<hw-tag>` argument and chunks the problem space by the physical hardware enqueue dimensions. For "strict", provide a `<layout-tag>`.
 
-Note that the helper macros available to `tile-stride` are also available with `hardware-stride`. Theya re discussed below.
+Just like `tile-stride`, `hardware-stride` acts as an **outer loop**. Its body executes once per hardware chunk, and the `<bindings>` represent the global origin coordinate of that chunk within the tensor. The key difference is that you do not provide a `<size-list>`; the chunk size is implicitly derived from the hardware environment.
 
-
-There are two choices for `<hw-tag>`: `workgroup-idx` and `:warp-idx`.  
+There are two choices for `<hw-tag>`: `:workgroup-idx` and `:warp-idx`.
 
 #### `:workgroup-idx`
-- `:workgroup-idx` the threads are chunked by workgroup 
-The arity of the tensor and the bindings MUST match the arity of the workgroup enqueue.
 
-```
+With `:workgroup-idx`, the tensor is chunked by the workgroup dimensions. The arity of the tensor and the bindings MUST match the arity of the workgroup enqueue.
+
+```lisp
 ;; 2D enqueue
-(harware-stride someMatrix :row-major :workgroup-idx (row-y col-x) 
-   (let ((idx-y idx-x (tile-indices row-y col-x))     ;; which workgroup 
-         (local-y local-x (tile-coords row-y col-x))) ;; where are we in it
+(hardware-stride someMatrix :row-major :workgroup-idx (wg-orig-y wg-orig-x) 
+   (let ((idx-y idx-x (tile-indices wg-orig-y wg-orig-x)))  ;; which workgroup chunk is this?
+       
+       ;; body executes once per workgroup cooperatively
+       (load-tile ...) 
        ...))
+
 ```
 
 #### `:warp-idx`
-- `:warp-idx` is just like `:workgroup-idx` except the threads are grouped by warp and it is 1D only. Note that if using `:warp-idx` that it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(get-warp-size)`. Otherwise operations like warp level reductions could end up deadlocking.
+
+With `:warp-idx`, the tensor is chunked into 1D segments equal to the hardware warp width. Note that if using `:warp-idx`, it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(get-warp-size)`. Otherwise, operations like warp-level reductions could end up deadlocking.
 
 Note that `hardware-stride :warp-idx` can be used with any global size arity, but it iterates over the flattened, global execution space by the hardware warp width.
 
+Also note that `load-tile` and `store-tile` (and their async counterparts) are not available
+from within a `:warp-idx` hardware-stride.  
+
 ```
-(hardware-stride someVector :warp-idx (x) ;; x is a coordinate in someVector
-  (let ((which-warp (tile-indices x))
-        (which-lane (tile-coords x)))
+(hardware-stride someVector :warp-idx (warp-orig-x) 
+  (let ((which-warp (tile-indices warp-orig-x)))
+      
+      ;; body executes once per warp cooperatively
       ...))
+
 ```
 
-> Implementation Note: the chunking variants are pretty much exactly the same as their non-chunking brethren.
-> ( modulo "strict" or not)
-> The entire problem space tensor is strided and the bindings are identical across all. The chunking
-> doesn't change how the stride is executed - it changes how the helper functions convert coordinates.
+> Implementation Note: Unlike `tensor-stride`, the chunking variants (`tile-stride` and `hardware-stride`) do not evaluate their bodies per-element. They stride the problem space in block-sized steps. For `hardware-stride`, those steps are driven dynamically by `(get-local-size)` or `(get-warp-size)`. Any element-level computation must be done in an inner loop (like `workgroup-stride`) inside the body.
 
 ### Helper Macros
 
 The helper macros map the tensor coordinates to the other spaces.  These helper macros are
 available when using the `tile-stride` and `hardware-stride` stride macros.
 
+<!-- 
+TILE-COORDS REMOVED
 #### `tile-coords`
 `tile-coords` always has the same arity as the binding and returns that same number of argumetns.
 These coordinates are within the tile `<size-list>`/`<tile-tensor>`
@@ -172,11 +184,14 @@ These coordinates are within the tile `<size-list>`/`<tile-tensor>`
 ```
 (let ((t-z t-y t-x (tile-coords cube-z cube-y cube-x))) ...)
 ```
+-->
 
 #### `tile-indices`
 `tile-indices` also matches arity. It returns the index coordinates of the tile
 
 
+<!-- 
+TENSOR-COORDS REMOVED
 #### `tensor-coords` 
 `tensor-coords` macro takes two arguments. A list of the tile indices followed by a list of the tile coordinates.
 It returns mapping coordinates into the problem space tensor.
@@ -184,6 +199,7 @@ It returns mapping coordinates into the problem space tensor.
 ```
 (let ((row-y col-x (tensor-coords (idx-y idx-x) (t-y t-x)))))
 ```
+-->
 
 #### `load-tile` / `store-tile`
 There are two other helper functions that are present when doing "tileed" striding.  

@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Warp helper: (warp-lane) returns the lane index within the current warp
+;; (0..warp-size-1).  For a 1-warp workgroup with local-size = warp-size,
+;; lane == local-id for every thread.
+
+(def-type vec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel ws_warp_lane (&out V)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (workgroup-stride V (lx)
+    (set! (~ V lx) (warp-lane))))

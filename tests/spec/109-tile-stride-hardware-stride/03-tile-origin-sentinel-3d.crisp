@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Basic 3D tile-stride: tile shape (2 2 2) against a 4x4x4 default-extent
+;; tensor → 8 tiles.  Body runs once per workgroup per tile-origin;
+;; leader-thread sentinel write at each origin proves the outer loop
+;; visits the expected origin coordinates in all three dimensions.
+
+(def-type ten3-t (tensor ulong 3 :address-space :global :align :compact))
+
+(def-kernel ten_tile_origin_sentinel_3d (&out T3)
+  (declare #'(&out ten3-t => nil))
+  (tile-stride T3 (2 2 2) (z-orig y-orig x-orig)
+    (when (= (get-local-linear-id) (to-ulong 0))
+      (set! (~ T3 z-orig y-orig x-orig) z-orig))))

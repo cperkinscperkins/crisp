@@ -1,13 +1,15 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
 
-;; Strict tile-stride with :contiguous-first on a 3D tensor.
-;; First binding (z) varies along the warp lane.  Tensor's static CT
-;; is :first so the tag agrees.
+;; Strict tile-stride with :contiguous-first on a 3D tensor.  z-orig
+;; (first binding) varies along the warp lane.  Tensor's static CT is
+;; :first so the tag agrees.  Leader-thread sentinel write at each
+;; tile origin.
 
-(def-type ten3-t (tensor int 3 :address-space :global :align :compact :contiguous-term :first))
+(def-type ten3-t (tensor ulong 3 :address-space :global :align :compact :contiguous-term :first))
 
-(def-kernel ten3_fill_tile_cf (&out T3)
+(def-kernel ten3_strict_cf_sentinel (&out T3)
   (declare #'(&out ten3-t => nil))
-  (tile-stride T3 :contiguous-first (2 2 2) (z y x)
-    (set! (~ T3 z y x) 13)))
+  (tile-stride T3 :contiguous-first (2 2 2) (z-orig y-orig x-orig)
+    (when (= (get-local-linear-id) (to-ulong 0))
+      (set! (~ T3 z-orig y-orig x-orig) z-orig))))

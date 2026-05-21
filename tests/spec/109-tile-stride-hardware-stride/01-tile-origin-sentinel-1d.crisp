@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Basic 1D tile-stride: verifies the outer-loop iteration walks tile
+;; origins (0, tile-size, 2*tile-size, ...) over the problem space.
+;;
+;; Under the outer-loop semantics established in this endeavor, the body
+;; executes once per workgroup per tile-origin (not once per problem-coord),
+;; so we use a leader-thread sentinel write to prove the body reached each
+;; origin.  This test exercises tile-stride's macro plumbing only — no
+;; cooperative inner work and no load-tile/store-tile dependencies.
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel vec_tile_origin_sentinel_1d (&out V)
+  (declare #'(&out vec-t => nil))
+  (tile-stride V (2) (tile-orig)
+    (when (= (get-local-linear-id) (to-ulong 0))
+      (set! (~ V tile-orig) tile-orig))))

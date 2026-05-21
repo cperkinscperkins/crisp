@@ -133,7 +133,7 @@ data from the tensor where possible, but the REMAINING values of the tile will b
 The tile will simply lift the data right out of the problem space tensor, 
 whether it is `:col-major` or `:row-major`, and so have the same layout, just smaller.  
 But the `:transpose` argument can be used to change that. For tensors of arity 1 (vectors), the `:transpose` is ignored. For arity 2 (matrices) then if `:transpose true` then
-the `x` and `y` coordinates will be swapped. For arities greater than 2, provide a permutation list: `(load-tile ... :transpose '(0 2 1))`
+the `x` and `y` coordinates will be swapped. For tensors with an arity of three or greater, the `:transpose` keyword accepts a permutation list (such as `'(0 2 1)`) to explicitly dictate how the axes are reordered when mapping to local memory. Providing a simple boolean `true` serves as a convenient shorthand for this list, defaulting to swapping only the two innermost dimensions while preserving the outer batch structure.
 
 
 Remember dest-tile should be `:local` memory.
@@ -162,6 +162,8 @@ not necessarily like we want them to be.
 (def-const TILE_DIM:ulong (get-warp-size))
 
 ;; -- convert-layout --
+;; THIS IS OUTDATED. REWRITE ONCE tile-stride, load-tile, workgroup-stride and store-tile are 
+;; working.
 (def-function convert-layout (source-M dest-M choice &optional (scratch (make-scratch-matrix (element-type~ source-M) :match-warp-tile)))
   ;; scratch is usuallly 32x32 (TILE_DIM x TILE_DIM)
   (declare #(matrix matrix matrix-layout &optional (vector (element-type~ source-M)) => nil)

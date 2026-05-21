@@ -101,6 +101,37 @@
 
 
 
+
+;; 110 — warp helper builtins.  Three zero-arg builtins returning uint:
+;;   (warp-id)    → SPIR-V SubgroupId
+;;   (warp-lane)  → SPIR-V SubgroupLocalInvocationId
+;;   (warp-count) → SPIR-V NumSubgroups
+;;
+;; They register the same analyzer (%analyze-gpu-builtin) used by other GPU
+;; builtins; their return-type metadata lives in %gpu-builtin-info (overridden
+;; below).  Codegen lives in the %call-spirv-uint-global-builtin helper plus
+;; new cases in generate-node-ir for semantic-gpu-builtin.
+
+(defun register-warp-builtins ()
+  "Registers the warp-id / warp-lane / warp-count GPU builtins in
+   *expression-analyzers* for both :crisp-language and :crisp.compiler."
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (entry '(("WARP-ID"    :warp-id)
+                     ("WARP-LANE"  :warp-lane)
+                     ("WARP-COUNT" :warp-count)))
+      (let* ((name-str (first entry))
+             (kw       (second entry))
+             (fn       (let ((kw0 kw) (ns0 name-str))
+                         (lambda (expr env context location)
+                           (%analyze-gpu-builtin kw0 ns0 expr env context location))))
+             (sym-cl (intern name-str cl-pkg))
+             (sym-cc (intern name-str cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) fn)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) fn))))))
+
+
 (defun %gpu-builtin-info (builtin-kw)
   "Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.
    BASE-RETURN-TYPE: return type when called with no args (nil = void).
@@ -117,6 +148,9 @@
      (list 'ulong nil))
     ((:local-barrier :mem-fence)
      (list nil nil))
+    ;; 110 — warp helpers (scalar uint, no dim arg)
+    ((:warp-id :warp-lane :warp-count)
+     (list 'uint nil))
     (t (error "Unknown GPU builtin: ~a" builtin-kw))))
 
 ;;; ----- Analyzer -----
