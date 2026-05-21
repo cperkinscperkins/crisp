@@ -2938,7 +2938,7 @@ These operations are non-blocking. They return a `request-token`. You MUST event
 token using `await-request` before accessing the destination memory.
 
 ### `request-load-local`
-`(request-load-local global-vec local-vec &optional identity) => request-token`
+`(request-load-local global-vec local-vec &key identity) => request-token`
 
 Initiates a copy from global memory to local memory. Returns a token representing the inflight operation.
 
@@ -2946,13 +2946,6 @@ IMPORTANT: accessing `global-vec` or `local-vec` before the request completes wi
 In C++ lingo this is called "Undefined Behavior". In other languages it is referred to as "C++-like behavior".
 
 The `check-async-hazards` static analysis can be elected to have the compiler check for you.
-
-### `request-load-tile`
-```
-(request-load-tile ...) => request-token
-```
-There are async variants for the tile scratch helpers as well.
-
 
 
 ### `await-request`
@@ -2967,14 +2960,22 @@ memory buffers. It will emit an error if you attempt to read from `local-vec` be
 and the `await-`.
 
 
-### `request-store-global`  / `request-store-tile` 
+### `request-store-global` 
 ```
 (request-store-global local-scratch-vec global-vec) => request-token
-(request-store-tile ...) => request-token
 ```
 
 Storage back to global memory does NOT yet have wide architecture support.  Crisp has these routines, but be aware that
 the hardware choices that actually support this are limited. Your kernel may fail to compile or execute correctly on non-supporting hardware.
+
+### Tile Support : `request-load-tile-coords` / `request-store-tile-coords` 
+
+```
+(request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
+
+(request-store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transpose) => request token
+```
+There are async variants for the tile scratch helpers as well.
 
 
 
@@ -3220,52 +3221,38 @@ Possible Implemenation
 
 ```
 
-### load-tile / store-tile
+### load-tile-coords / store-tile-coords
 
 ```
-(load-tile source-M dest-tile tile-y tile-x &key transpose)
-(store-tile source-tile dest-M tile-y tile-x &key transpose)
+(load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose)
+(request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
+
+(store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transformF transpose)
+(request-store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transpose) => request token
 ```
 When working with matrices, we often want coalesced memory access, but that is limited
 to the `:row-major` / `:col-major` choice.  For this reason, a very common
 usage pattern when working with matrices is to use local memory tiles.
 These are typically `32x32` (ie `(get-warp-size)` squared ).
 
-The `load-tile` and `store-tile` macros can help with that. They presume the kernel
-has been enqueued with 2D arity and just use the local-id x and y for the target IN the tile.  
+If using the `tile-stride` macro, then stride aware `load-tile` and `store-tile` helpers
+are availalable in the body of the `tile-stride` (along with async variants). See [load-tile / store-tile](#load-tile--store-tile) for a full discussion.
 
-The tile will simply lift the data right out of the source-M, whether it is
-`:col-major` or `:row-major`, and so have the same layout, just smaller.  
+Outside that macro, tile loading and storing is available, but coordinates are needed. 
+`load-tile-coords` and `store-tile-coords` can be used.  
 
-But the `:transpose` argument can be used to change that. If `true` then
-the `x` and `y` coordinates will be swapped. 
+The `:identity` key can be used when the source tensor
+is not evenly divisible by the tile size.  In that case, the tile will be correctly loaded with
+data from the tensor where possible, but the REMAINING values of the tile will be loaded with the `:identity` value (which defaults to 0)
+
+The tile will simply lift the data right out of the problem space tensor, 
+whether it is `:col-major` or `:row-major`, and so have the same layout, just smaller.  
+But the `:transpose` argument can be used to change that. For tensors of arity 1 (vectors), the `:transpose` is ignored. For arity 2 (matrices) then if `:transpose true` then
+the `x` and `y` coordinates will be swapped. For arities greater than 2, provide a permutation list: `(load-tile ... :transpose '(0 2 1))`
+
 
 Remember dest-tile should be `:local` memory.
 
-Here are possible implementations
-```
-;; -- load-tile --
-(defmacro load-tile (source-M dest-tile tile-y tile-x &key transpose)
-  `(let ((tile-dim (num-cols ,dest-tile))
-         (local-id-x (get-local-id 0))
-         (local-id-y (get-local-id 1)))
-
-     ;; Calculate Source Coords for a COALESCED READ 
-     ;; This pattern is always the same: threads in a warp read adjacent columns.
-     (let ((source-x (+ (* ,tile-x tile-dim) local-id-x))
-           (source-y (+ (* ,tile-y tile-dim) local-id-y)))
-
-       ;; Read from Global Memory
-       (when (and (< source-y (num-rows ,source-M)) (< source-x (num-cols ,source-M)))
-         (let ((val (~ ,source-M source-y source-x)))
-
-           ;; Write to Local Memory (Transposed or Direct)
-           (if ,transpose
-               ;; If transposing, write to the swapped local coordinates.
-               (set! (~ ,dest-tile local-id-x local-id-y) val)
-               ;; Otherwise, do a direct copy.
-               (set! (~ ,dest-tile local-id-y local-id-x) val)))))))
-```
 
 
 
@@ -5026,11 +5013,16 @@ There are also asynchronous variants.
 
 
 ```
-(load-tile  <problem-space-tensor> <tile> &optional (identity-val 0))
-(request-load-tile <problem-space-tensor> <tile> &optional (identity-val 0))) => dag-token
+;; Helpers
+(load-tile <problem-space-tensor> <tile> &key (identity 0) transpose)
+(request-load-tile <problem-space-tensor> <tile> &key (identity 0) transpose) => dag-token
 
-(store-tile <tile> <problem-space-tensor> &optional transformF)
-(request-store-tile <tile> <problem-space-tensor> &optional transformF) => dag-token
+
+
+;; Helpers
+(store-tile <problem-space-tensor> <tile> &key transformF transpose)
+(request-store-tile <problem-space-tensor> <tile> &key transpose) => dag-token
+
 
 (await-request dag-token)
 ```
@@ -5041,6 +5033,17 @@ likely `:global` address space.
 `<tile>` is a small `tensor` , the same dimensions of the `<tile-size>` for the `tile-stride`.
 It is typically `:local` address space. 
 
+The `:identity` key can be used when the problem space
+is not evenly divisible by the tile size.  In that case, the tile will be correctly loaded with
+data from the problem space where possible, but the REMAINING values of the tile will be loaded with the `:identity` value (which defaults to 0)
+
+`:transpose` key.  The tile will simply lift the data right out of the problem space tensor, 
+whether it is `:col-major` or `:row-major`, and so have the same layout, just smaller.  
+But the `:transpose` argument can be used to change that. For tensors of arity 1 (vectors), the `:transpose` is ignored. For arity 2 (matrices) then if `:transpose true` then
+the `x` and `y` coordinates will be swapped. For arities greater than 2, provide a permutation list: `(load-tile ... :transpose '(0 2 1))`
+
+
+
 `load-tile` will map the `<tile>` to the appropriate place in the problem space and 
 load the tile with the data there.  
 The loading is "cooperative", with each thread setting one value.
@@ -5049,14 +5052,14 @@ Similarly, `store-tile` does the reverse - copies memory from some tile vector
 into the appropriate location in the problem space data. This is usually used with 
 some `&out` output memory whose size is identical to the problem space. 
 
-The usual practice is that the problem space vector is `:global` and the tile is `:local`.
+The usual practice is that the problem space tensor is `:global` and the tile is `:local`.
 
-`load-tile` takes an optional `identity-val` argument. This is used when the problem space
-is not evenly divisible by the tile size.  In that case, the tile will be correctly loaded with
-data from the problem space where possible, but the REMAINING values of the tile will be loaded with `identity-val`
 
-`store-tile` take an optional `transformF` argument. This is a function of `binop-type` that
-can be used to transform the value as it is stored. 
+`store-tile` can also accept a `:transformF` key. This is a function of `binop-type` that
+can be used to transform the value as it is stored. Note that the asynchronous version does
+not support the `:transformF` key.
+
+> Implementation Note: first order functions are automatically templated and monomorphically specialized in Crisp
 
 ### local-barrier
 
@@ -5371,9 +5374,10 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 - grid-stride
 - tile-stride
 - hardware-stride
-- - problem-space-coords
+- stride helper functions:
+- - tensor-coords
 - - tile-coords
-- - problem-space-view
+- - tile-indices
 - - load-tile
 - - store-tile
 - workgroup-stride

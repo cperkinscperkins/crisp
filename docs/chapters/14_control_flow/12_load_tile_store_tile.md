@@ -16,11 +16,16 @@ There are also asynchronous variants.
 
 
 ```
-(load-tile  <problem-space-tensor> <tile> &optional (identity-val 0))
-(request-load-tile <problem-space-tensor> <tile> &optional (identity-val 0))) => dag-token
+;; Helpers
+(load-tile <problem-space-tensor> <tile> &key (identity 0) transpose)
+(request-load-tile <problem-space-tensor> <tile> &key (identity 0) transpose) => dag-token
 
-(store-tile <tile> <problem-space-tensor> &optional transformF)
-(request-store-tile <tile> <problem-space-tensor> &optional transformF) => dag-token
+
+
+;; Helpers
+(store-tile <problem-space-tensor> <tile> &key transformF transpose)
+(request-store-tile <problem-space-tensor> <tile> &key transpose) => dag-token
+
 
 (await-request dag-token)
 ```
@@ -31,6 +36,17 @@ likely `:global` address space.
 `<tile>` is a small `tensor` , the same dimensions of the `<tile-size>` for the `tile-stride`.
 It is typically `:local` address space. 
 
+The `:identity` key can be used when the problem space
+is not evenly divisible by the tile size.  In that case, the tile will be correctly loaded with
+data from the problem space where possible, but the REMAINING values of the tile will be loaded with the `:identity` value (which defaults to 0)
+
+`:transpose` key.  The tile will simply lift the data right out of the problem space tensor, 
+whether it is `:col-major` or `:row-major`, and so have the same layout, just smaller.  
+But the `:transpose` argument can be used to change that. For tensors of arity 1 (vectors), the `:transpose` is ignored. For arity 2 (matrices) then if `:transpose true` then
+the `x` and `y` coordinates will be swapped. For arities greater than 2, provide a permutation list: `(load-tile ... :transpose '(0 2 1))`
+
+
+
 `load-tile` will map the `<tile>` to the appropriate place in the problem space and 
 load the tile with the data there.  
 The loading is "cooperative", with each thread setting one value.
@@ -39,14 +55,14 @@ Similarly, `store-tile` does the reverse - copies memory from some tile vector
 into the appropriate location in the problem space data. This is usually used with 
 some `&out` output memory whose size is identical to the problem space. 
 
-The usual practice is that the problem space vector is `:global` and the tile is `:local`.
+The usual practice is that the problem space tensor is `:global` and the tile is `:local`.
 
-`load-tile` takes an optional `identity-val` argument. This is used when the problem space
-is not evenly divisible by the tile size.  In that case, the tile will be correctly loaded with
-data from the problem space where possible, but the REMAINING values of the tile will be loaded with `identity-val`
 
-`store-tile` take an optional `transformF` argument. This is a function of `binop-type` that
-can be used to transform the value as it is stored. 
+`store-tile` can also accept a `:transformF` key. This is a function of `binop-type` that
+can be used to transform the value as it is stored. Note that the asynchronous version does
+not support the `:transformF` key.
+
+> Implementation Note: first order functions are automatically templated and monomorphically specialized in Crisp
 
 ### local-barrier
 

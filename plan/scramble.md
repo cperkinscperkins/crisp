@@ -622,6 +622,7 @@ Grid Stride
 - [ ] :strategy :tiled and :tile-shape declarations. 
 - - [ ] metadata
 - - [ ] hoisting
+- [ ] workgroup-stride
 
 Looping Constructs
 ==================

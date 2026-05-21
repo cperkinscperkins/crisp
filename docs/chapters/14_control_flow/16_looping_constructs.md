@@ -8,9 +8,10 @@ Here is a list of the looping constructs supported by Crisp. Some are discussed 
 - grid-stride
 - tile-stride
 - hardware-stride
-- - problem-space-coords
+- stride helper functions:
+- - tensor-coords
 - - tile-coords
-- - problem-space-view
+- - tile-indices
 - - load-tile
 - - store-tile
 - workgroup-stride

@@ -106,52 +106,38 @@ Possible Implemenation
 
 ```
 
-### load-tile / store-tile
+### load-tile-coords / store-tile-coords
 
 ```
-(load-tile source-M dest-tile tile-y tile-x &key transpose)
-(store-tile source-tile dest-M tile-y tile-x &key transpose)
+(load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose)
+(request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
+
+(store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transformF transpose)
+(request-store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transpose) => request token
 ```
 When working with matrices, we often want coalesced memory access, but that is limited
 to the `:row-major` / `:col-major` choice.  For this reason, a very common
 usage pattern when working with matrices is to use local memory tiles.
 These are typically `32x32` (ie `(get-warp-size)` squared ).
 
-The `load-tile` and `store-tile` macros can help with that. They presume the kernel
-has been enqueued with 2D arity and just use the local-id x and y for the target IN the tile.  
+If using the `tile-stride` macro, then stride aware `load-tile` and `store-tile` helpers
+are availalable in the body of the `tile-stride` (along with async variants). See [load-tile / store-tile](#load-tile--store-tile) for a full discussion.
 
-The tile will simply lift the data right out of the source-M, whether it is
-`:col-major` or `:row-major`, and so have the same layout, just smaller.  
+Outside that macro, tile loading and storing is available, but coordinates are needed. 
+`load-tile-coords` and `store-tile-coords` can be used.  
 
-But the `:transpose` argument can be used to change that. If `true` then
-the `x` and `y` coordinates will be swapped. 
+The `:identity` key can be used when the source tensor
+is not evenly divisible by the tile size.  In that case, the tile will be correctly loaded with
+data from the tensor where possible, but the REMAINING values of the tile will be loaded with the `:identity` value (which defaults to 0)
+
+The tile will simply lift the data right out of the problem space tensor, 
+whether it is `:col-major` or `:row-major`, and so have the same layout, just smaller.  
+But the `:transpose` argument can be used to change that. For tensors of arity 1 (vectors), the `:transpose` is ignored. For arity 2 (matrices) then if `:transpose true` then
+the `x` and `y` coordinates will be swapped. For arities greater than 2, provide a permutation list: `(load-tile ... :transpose '(0 2 1))`
+
 
 Remember dest-tile should be `:local` memory.
 
-Here are possible implementations
-```
-;; -- load-tile --
-(defmacro load-tile (source-M dest-tile tile-y tile-x &key transpose)
-  `(let ((tile-dim (num-cols ,dest-tile))
-         (local-id-x (get-local-id 0))
-         (local-id-y (get-local-id 1)))
-
-     ;; Calculate Source Coords for a COALESCED READ 
-     ;; This pattern is always the same: threads in a warp read adjacent columns.
-     (let ((source-x (+ (* ,tile-x tile-dim) local-id-x))
-           (source-y (+ (* ,tile-y tile-dim) local-id-y)))
-
-       ;; Read from Global Memory
-       (when (and (< source-y (num-rows ,source-M)) (< source-x (num-cols ,source-M)))
-         (let ((val (~ ,source-M source-y source-x)))
-
-           ;; Write to Local Memory (Transposed or Direct)
-           (if ,transpose
-               ;; If transposing, write to the swapped local coordinates.
-               (set! (~ ,dest-tile local-id-x local-id-y) val)
-               ;; Otherwise, do a direct copy.
-               (set! (~ ,dest-tile local-id-y local-id-x) val)))))))
-```
 
 
 
