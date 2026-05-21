@@ -604,6 +604,9 @@ changed to :descendant to make the tests pass at some point. Or not. Check thoug
       Also, see if it's sequested to --ir-target=spv only. NVidia doesn't have the same bug
       so when --ir-target is .ptx we don't need the "volatile" workaround. Check to make sure.
 
+- [ ] 031 address
+- [ ] literal "true" (and "nil" / "false"?) and bool type. avoid "t" or "T".
+
 Grid vs Thread Context
 =======================
 - [x] def-grid-function / dispatch/grid/thread context checking.
