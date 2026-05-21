@@ -250,3 +250,47 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     When IGC ships the fix:
       - Remove the %volatile-read pseudo-op and LLVMSetVolatile binding from the overlays.
       - Re-tag 056/03-struct-with-ct-meta with its full VERIFY-AUTODIFF directive.
+
+[ ] 031 - Intel BMG GPU driver / OpenCL ICD breaks VERIFY-AUTODIFF forward FD step.
+    Suspected cause: Intel BMG GPU driver update installed around 2026-05-19 (immediately
+    before endeavor 111 Phase 0 work began).  Not yet investigated; not yet reported to Intel.
+
+    Affected tests (all VERIFY-AUTODIFF specs that worked before the driver update):
+      - 092-dotimes/07-diff-float-accum
+      - 093-loop-vector-stride/04-diff-scale
+      - 105-tensor-and-grid-stride/12-diff-tensor-sum
+      - 107-differentiate-loop-and-stride/01-elemwise-scale
+      - 109-tile-stride-hardware-stride/15-diff-tile-stride
+        (deleted in endeavor 111 Phase 0; will be reintroduced after workgroup-stride lands
+        and is subject to the same driver bug until then)
+
+    Symptom: deterministic, reproduces individually with
+      `sbcl --script .\tests\run-specs.lisp --differentiate --filter=07-diff-float-accum`
+    The analytical gradient (read back from the backward kernel) is correct, but the
+    numerical FD value computed by running the forward kernel at x ± h returns garbage.
+    Example from 092/07 (expected: analytical=5.0, numerical≈5.0):
+      Running Spec: 07-diff-float-accum (Verify-Autodiff)... FAIL (FD vs analytical | atol=0.005):
+        x: analytical=5.0 numerical=7502.499 diff=7497.499
+
+    Diagnosis pointers:
+      - Compiler output is correct: the analytical-side backward kernel produces the
+        expected gradient, so SPV generation and backward-kernel codegen are fine.
+      - Failure is in forward-kernel execution on the device.  Either the output buffer
+        is not being initialized between launches, or the kernel is being JIT'd with a
+        bug that yields wildly wrong arithmetic.
+      - Same SPV was passing before the driver update.  Pre-update baseline (per memory
+        snippet) was 693/693 E2E + the same VERIFY-AUTODIFF specs PASS.
+
+    Status: not yet investigated; deferred until endeavor 111 lands.  The baseline
+    --differentiate suite hovers at 4–5 unexplained FAILs entirely due to this bug.
+    Compiler-side changes in 111 do NOT introduce or worsen the failure set — confirmed
+    by running --differentiate on baseline (with the original 109 tests) and comparing
+    against the Phase 0 overlay (same 4 specs FAIL, identical failure mode).
+
+    Next steps when we return to it:
+      - Roll back the BMG driver (or pin it to a known-good version) and re-run the
+        failing specs to confirm root cause.
+      - If confirmed: build a minimal Level Zero reproducer (similar to the
+        put_temp_files_here/igc-bug-report/ pattern used for bug 030) and file with Intel.
+      - If NOT the driver: bisect against recent main commits for any forward-kernel
+        codegen regression.
