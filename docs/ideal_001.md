@@ -3248,7 +3248,7 @@ data from the tensor where possible, but the REMAINING values of the tile will b
 The tile will simply lift the data right out of the problem space tensor, 
 whether it is `:col-major` or `:row-major`, and so have the same layout, just smaller.  
 But the `:transpose` argument can be used to change that. For tensors of arity 1 (vectors), the `:transpose` is ignored. For arity 2 (matrices) then if `:transpose true` then
-the `x` and `y` coordinates will be swapped. For arities greater than 2, provide a permutation list: `(load-tile ... :transpose '(0 2 1))`
+the `x` and `y` coordinates will be swapped. For tensors with an arity of three or greater, the `:transpose` keyword accepts a permutation list (such as `'(0 2 1)`) to explicitly dictate how the axes are reordered when mapping to local memory. Providing a simple boolean `true` serves as a convenient shorthand for this list, defaulting to swapping only the two innermost dimensions while preserving the outer batch structure.
 
 
 Remember dest-tile should be `:local` memory.
@@ -3277,6 +3277,8 @@ not necessarily like we want them to be.
 (def-const TILE_DIM:ulong (get-warp-size))
 
 ;; -- convert-layout --
+;; THIS IS OUTDATED. REWRITE ONCE tile-stride, load-tile, workgroup-stride and store-tile are 
+;; working.
 (def-function convert-layout (source-M dest-M choice &optional (scratch (make-scratch-matrix (element-type~ source-M) :match-warp-tile)))
   ;; scratch is usuallly 32x32 (TILE_DIM x TILE_DIM)
   (declare #(matrix matrix matrix-layout &optional (vector (element-type~ source-M)) => nil)
@@ -4868,18 +4870,21 @@ It is how you tell Crisp to "Forget about physical memory for a second. Just gen
 (tile-stride <tensor> <layout-tag> (<size-list>) (<bindings>) ...)
 (tile-stride <tensor> <layout-tag> <tile-tensor> (<bindings>) ...)
 
-(tile-stride someMatrix (8 4) (row-y col-x)
-  (let ((t-y t-x (tile-coords row-y col-x)) ;;coordinate within the tile.
-        (idx-y idx-x  (tile-indices row-y col-x)) ;; which of the tiles is it?
-        ;; let's get location of the neighbor next tile over (this example skips bounds checking)
-        (neighbor-y neighbor-x (tensor-coords (idx-y (1+ idx)) (t-y (1+ t-x)))))
+(tile-stride someMatrix (8 4) (tile-orig-row-y tile-orig-col-x)
+  (let ((idx-y idx-x  (tile-indices tile-orig-row-y tile-orig-col-x))) ;; which of the tiles is it?
+        
     ...))
 
 ```
-`tile-stride` breaks up a `tensor` into tiles (of any arity, not just 2D) 
-and it sets up the coordinate helper functions which can be used in the body of the `tile-stride`.
+`tile-stride` breaks up a `tensor` into tiles (of any arity, not just 2D). The body of 
+`tile-stride` executes once for each tile, with the `<bindings>` being the coordinate
+of the `<tensor>` that would act as the tiles origin.
 
-As in the others, every unique coordinate in the `tensor` is visited exactly once. 
+For example, let's say tile-stride is used with a source vector length 30 and a tile length 10.
+Then in
+`(tile-stride source tile (tile-orig-x) ...)`
+The body will execute three times, with `tile-orig-x` bound to 0, 10 and 20.
+
 
 The arity of the `<size-list>` must match the arity of the `tensor` and the `<bindings>`. Compilation error otherwise.
 Alternately, a smaller `<tile-tensor>` can be provided. Its extents will be used for the tile size and, of course,
@@ -4945,6 +4950,8 @@ Note that `hardware-stride :warp-idx` can be used with any global size arity, bu
 The helper macros map the tensor coordinates to the other spaces.  These helper macros are
 available when using the `tile-stride` and `hardware-stride` stride macros.
 
+<!-- 
+TILE-COORDS REMOVED
 #### `tile-coords`
 `tile-coords` always has the same arity as the binding and returns that same number of argumetns.
 These coordinates are within the tile `<size-list>`/`<tile-tensor>`
@@ -4952,11 +4959,14 @@ These coordinates are within the tile `<size-list>`/`<tile-tensor>`
 ```
 (let ((t-z t-y t-x (tile-coords cube-z cube-y cube-x))) ...)
 ```
+-->
 
 #### `tile-indices`
 `tile-indices` also matches arity. It returns the index coordinates of the tile
 
 
+<!-- 
+TENSOR-COORDS REMOVED
 #### `tensor-coords` 
 `tensor-coords` macro takes two arguments. A list of the tile indices followed by a list of the tile coordinates.
 It returns mapping coordinates into the problem space tensor.
@@ -4964,6 +4974,7 @@ It returns mapping coordinates into the problem space tensor.
 ```
 (let ((row-y col-x (tensor-coords (idx-y idx-x) (t-y t-x)))))
 ```
+-->
 
 #### `load-tile` / `store-tile`
 There are two other helper functions that are present when doing "tileed" striding.  
@@ -5040,7 +5051,8 @@ data from the problem space where possible, but the REMAINING values of the tile
 `:transpose` key.  The tile will simply lift the data right out of the problem space tensor, 
 whether it is `:col-major` or `:row-major`, and so have the same layout, just smaller.  
 But the `:transpose` argument can be used to change that. For tensors of arity 1 (vectors), the `:transpose` is ignored. For arity 2 (matrices) then if `:transpose true` then
-the `x` and `y` coordinates will be swapped. For arities greater than 2, provide a permutation list: `(load-tile ... :transpose '(0 2 1))`
+the `x` and `y` coordinates will be swapped.
+For tensors with an arity of three or greater, the `:transpose` keyword accepts a permutation list (such as `'(0 2 1)`) to explicitly dictate how the axes are reordered when mapping to local memory. Providing a simple boolean `true` serves as a convenient shorthand for this list, defaulting to swapping only the two innermost dimensions while preserving the outer batch structure.
 
 
 
