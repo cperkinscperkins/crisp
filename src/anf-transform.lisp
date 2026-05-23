@@ -44,15 +44,14 @@
 
 (defun anf-normalize (expr is-nested?)
   "Returns (VALUES normalized-expr bindings-list).
-Redefined for 082-atomics: atomic RMW ops (atomic-add! etc.) treat the first
-argument as a place (not hoisted to a temp), matching the set! convention."
+   Phase 1c: added opaque pass-through for load-tile-coords / store-tile-coords
+   and their internal *-bwd / bare load-tile / store-tile variants."
   (cond
    ((anf-is-atomic? expr)
      (values expr nil))
 
    ((consp expr)
      (let ((op (car expr)))
-       ;; Macro-expansion hook: if op is a macro and not a built-in ANF primitive
        (when (and (symbolp op)
                   (macro-function op)
                   (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes set! declare progn let
@@ -62,6 +61,19 @@ argument as a place (not hoisted to a temp), matching the set! convention."
                (when changed
                      (return-from anf-normalize (anf-normalize expanded is-nested?)))))
        (cond
+        ;; Phase 1c: tile-coords primitives (forward, backward, and bare sugar)
+        ;; pass through opaquely.  Their third arg is a literal coord list, not
+        ;; a callable, so ANF must not recurse into it.
+        ((and (symbolp op)
+              (member (symbol-name op)
+                      '("LOAD-TILE-COORDS" "STORE-TILE-COORDS"
+                        "%LOAD-TILE-COORDS-BWD" "%STORE-TILE-COORDS-BWD"
+                        "LOAD-TILE" "STORE-TILE")
+                      :test #'string=))
+          (if is-nested?
+              (let ((temp (anf-fresh-temp)))
+                (values temp `((,temp ,expr))))
+              (values expr nil)))
         ((eq op 'set!)
           (let ((place (cadr expr))
                 (value (caddr expr)))
@@ -187,13 +199,11 @@ argument as a place (not hoisted to a temp), matching the set! convention."
                   (let ((temp (anf-fresh-temp)))
                     (values temp `((,temp ,anf-progn))))
                   (values anf-progn nil)))))
-        ;; 092-dotimes: use string-equal so crisp-language::dotimes and cl::dotimes
-        ;; both match regardless of which package the source was read in.
         ((and (symbolp op) (string-equal (symbol-name op) "DOTIMES"))
           (let* ((binding (cadr expr))
                  (var (car binding))
                  (limit (cadr binding))
-                 (stride (third binding))   ;; optional; NIL when omitted
+                 (stride (third binding))
                  (body (cddr expr)))
             (multiple-value-bind (new-limit limit-bindings) (anf-normalize limit t)
               (if stride
@@ -210,8 +220,6 @@ argument as a place (not hoisted to a temp), matching the set! convention."
                         (let ((temp (anf-fresh-temp)))
                           (values temp (append limit-bindings `((,temp ,anf-dotimes)))))
                         (values anf-dotimes limit-bindings)))))))
-        ;; 082-atomics: atomic RMW ops treat the first arg as a place (not hoisted).
-        ;; Use string= to handle cross-package symbols (crisp.compiler vs crisp-language).
         ((and (symbolp op)
               (member (symbol-name op)
                       '("ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-INC!" "ATOMIC-DEC!"

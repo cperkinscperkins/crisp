@@ -622,6 +622,7 @@ Grid Stride
 - [x] A|D of all above
 - [ ] load-tile / store-tile
 - - [ ] async variations of same
+- [ ] convert-layout (in Crisp)
 - [ ] :strategy :tiled and :tile-shape declarations. 
 - - [ ] metadata
 - - [ ] hoisting

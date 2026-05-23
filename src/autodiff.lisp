@@ -356,15 +356,60 @@
     (nreverse vars)))
 
 
+
+(defun %augment-scratch-adj-bindings (bindings kernel-pkg)
+  "For each binding (var (make-scratch-X ...)), inject a paired
+   (var_ADJ (make-scratch-X ...)) binding right after.  For other bindings,
+   pass through unchanged.  Phase 1c initial: assumes same-element-type
+   adjoint (no ulong→double promotion yet)."
+  (loop for b in bindings
+        if (and (consp b) (= (length b) 2) (symbolp (car b))
+                (consp (cadr b)) (symbolp (caadr b))
+                (member (symbol-name (caadr b))
+                        '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX"
+                          "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL")
+                        :test #'string=))
+          append (list b
+                       (let* ((var (car b))
+                              (var-adj (intern (format nil "~A_ADJ" (symbol-name var))
+                                               (or kernel-pkg (symbol-package var))))
+                              (init (cadr b)))
+                         (list var-adj init)))
+        else collect b))
+
+
+(defun %tlc-bwd-adj-name (sym inputs outputs local-adj-fn kernel-pkg)
+  "Returns the backward-pass adjoint symbol for a forward arg SYM:
+     - if SYM is in INPUTS or OUTPUTS  → <SYM>_GRAD  (kernel param)
+     - otherwise (let-bound local)     → <SYM>_ADJ  (direct intern; NOT
+       via local-adj-fn, because local-adj-fn would add the sym to the
+       adjoint-map, which causes the wrapping let to scalar-initialize it
+       — wrong for tensor adjoints.  The auto-allocated LET binding for
+       <var>_ADJ as a make-scratch-* is the only initializer needed.)"
+  (declare (ignore local-adj-fn))
+  (cond
+    ((or (member sym inputs) (member sym outputs))
+     (intern (format nil "~A_GRAD" (symbol-name sym))
+             (or kernel-pkg (symbol-package sym))))
+    (t
+     (intern (format nil "~A_ADJ" (symbol-name sym))
+             (or kernel-pkg (symbol-package sym))))))
+
+
+(defun %tlc-extract-transpose-key (key-args)
+  "Returns the value of :transpose in KEY-ARGS, or NIL if absent."
+  (loop for (k v) on key-args by #'cddr
+        when (eq k :transpose) return v
+        finally (cl:return nil)))
+
+
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                &key kernel-pkg)
   "Walks an ANF body backwards to accumulate adjoints.
-   107: structure-preserving — recursively handles dotimes/if/let forms
-   encountered in flat-anf, emitting backward constructs that mirror the
-   forward structure.  Now also re-zeroes iteration-local adjoints at the
-   top of each backward dotimes body, so the chain-rule `adj += ...`
-   pattern does not accumulate across iterations of a grid-stride /
-   tensor-stride loop."
+   Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form
+   that emit %load-tile-coords-bwd / %store-tile-coords-bwd with the correct
+   adjoint symbols.  Also extends the LET case to auto-allocate paired
+   <var>_ADJ scratch tensors for make-scratch-* bindings."
   (let* ((record-temp-entries
           (loop for form in flat-anf
                 when (and (consp form) (= (length form) 2)
@@ -409,19 +454,12 @@
                      when (%crisp-float-tensor-type-p typ)
                      do (setf (gethash sym ht) typ))
                ht)))
-
-        ;; 107: precompute any-output-double so the DOTIMES iter-zero-reset
-        ;; case can pick the correctly-typed literal.  Same logic the
-        ;; post-walk let-wrap uses for intermediate adjoints (anything not
-        ;; an input gets `(as double 0.0)` if any kernel output is double-
-        ;; promoted, else `0.0`).
         (cl:flet ((promotes-to-double-p (t-spec)
                     (let ((promoted (%promote-to-float-adjoint t-spec)))
                       (or (eq promoted 'double)
                           (and (consp promoted) (eq (second promoted) 'double))))))
           (let* ((any-output-double (some #'promotes-to-double-p output-types))
                  (intermediate-zero (if any-output-double '(as double 0.0) 0.0)))
-
             (labels ((local-adj (v)
                        (or (gethash v adjoint-map)
                            (let ((adv (intern (format nil "~A_ADJ" (symbol-name v))
@@ -430,7 +468,6 @@
                              adv)))
                      (emit (form)
                        (push form backward-forms))
-
                      (hof-inline-backward (fn args v)
                        (let* ((hof-data (gethash fn *differentiable-hof-store*)))
                          (unless hof-data
@@ -478,11 +515,48 @@
                                                                   :hof-handler-fn #'hof-inline-backward
                                                                   :error-on-unknown t
                                                                   :tensor-inputs-ht nil))))))))
-
                      (process-form (form emit-fn)
                        (cond
                          ((and (consp form) (symbolp (car form))
                                (string-equal (symbol-name (car form)) "DECLARE")) nil)
+
+                         ;; Phase 1c: load-tile-coords forward → backward.
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "LOAD-TILE-COORDS"))
+                          (let* ((src      (second form))
+                                 (tile     (third form))
+                                 (origins  (fourth form))
+                                 (key-args (nthcdr 4 form))
+                                 (transpose-v (%tlc-extract-transpose-key key-args))
+                                 (src-adj (%tlc-bwd-adj-name src inputs outputs
+                                                              #'local-adj kernel-pkg))
+                                 (tile-adj (%tlc-bwd-adj-name tile inputs outputs
+                                                               #'local-adj kernel-pkg))
+                                 (bwd-sym (intern "%LOAD-TILE-COORDS-BWD"
+                                                  (find-package :crisp-language)))
+                                 (bwd-form (if transpose-v
+                                               (list bwd-sym src-adj tile-adj origins :transpose transpose-v)
+                                               (list bwd-sym src-adj tile-adj origins))))
+                            (funcall emit-fn bwd-form)))
+
+                         ;; Phase 1c: store-tile-coords forward → backward.
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "STORE-TILE-COORDS"))
+                          (let* ((tile     (second form))
+                                 (dest     (third form))
+                                 (origins  (fourth form))
+                                 (key-args (nthcdr 4 form))
+                                 (transpose-v (%tlc-extract-transpose-key key-args))
+                                 (tile-adj (%tlc-bwd-adj-name tile inputs outputs
+                                                               #'local-adj kernel-pkg))
+                                 (dest-adj (%tlc-bwd-adj-name dest inputs outputs
+                                                                #'local-adj kernel-pkg))
+                                 (bwd-sym (intern "%STORE-TILE-COORDS-BWD"
+                                                  (find-package :crisp-language)))
+                                 (bwd-form (if transpose-v
+                                               (list bwd-sym tile-adj dest-adj origins :transpose transpose-v)
+                                               (list bwd-sym tile-adj dest-adj origins))))
+                            (funcall emit-fn bwd-form)))
 
                          ((and (consp form) (symbolp (car form))
                                (string-equal (symbol-name (car form)) "SET!"))
@@ -505,6 +579,8 @@
                          ((and (consp form) (symbolp (car form))
                                (string-equal (symbol-name (car form)) "LET"))
                           (let* ((bindings (cadr form))
+                                 ;; Phase 1c: auto-allocate <var>_ADJ paired scratch.
+                                 (augmented-bindings (%augment-scratch-adj-bindings bindings kernel-pkg))
                                  (body (cddr form))
                                  (local-forms nil))
                             (cl:flet ((local-emit (f) (push f local-forms)))
@@ -513,14 +589,8 @@
                               (dolist (b (reverse bindings))
                                 (when (and (consp b) (= (length b) 2) (symbolp (car b)))
                                   (process-form b #'local-emit))))
-                            (funcall emit-fn `(let ,bindings ,@(nreverse local-forms)))))
+                            (funcall emit-fn `(let ,augmented-bindings ,@(nreverse local-forms)))))
 
-                         ;; 107 iter-local fix: after walking the body, emit a
-                         ;; (set! adj ZERO) at the top of the backward body for
-                         ;; each iteration-local variable whose adjoint is
-                         ;; actually used by the chain rule.  Without this,
-                         ;; adjoints leak across iterations and grad values
-                         ;; scale with iteration count.
                          ((and (consp form) (symbolp (car form))
                                (string-equal (symbol-name (car form)) "DOTIMES"))
                           (let* ((binding (cadr form))
@@ -634,10 +704,28 @@
                      (local-bindings (loop for v being the hash-keys of adjoint-map
                                            using (hash-value adv)
                                            collect `(,adv ,(funcall typed-zero-for v))))
-                     (result `(let ,local-bindings
+                     ;; Phase 1c: auto-allocate <var>_ADJ paired scratch
+                     ;; tensors for each make-scratch-* binding in flat-anf.
+                     ;; The forward let-bindings already give us <var>; the
+                     ;; backward wants both <var> and <var>_ADJ.
+                     ;; Phase 1c initial: assumes same element-type (no
+                     ;; ulong→double promotion yet; defer to a sub-step).
+                     (scratch-adj-bindings
+                      (loop for form in flat-anf
+                            when (and (consp form) (= (length form) 2)
+                                      (symbolp (car form))
+                                      (consp (cadr form)) (symbolp (caadr form))
+                                      (member (symbol-name (caadr form))
+                                              '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX"
+                                                "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL")
+                                              :test #'string=))
+                            collect (let* ((var (car form))
+                                           (var-adj (intern (format nil "~A_ADJ" (symbol-name var))
+                                                            (or kernel-pkg (symbol-package var)))))
+                                      (list var-adj (cadr form)))))
+                     (result `(let ,(append scratch-adj-bindings local-bindings)
                                 ,@(nreverse backward-forms))))
                 result))))))))
-
 
 ;;; ----------------------------------------------------------
 ;;; %crisp-float-type-p
@@ -965,14 +1053,9 @@ to compute-base-type for derived types."
 
 
 
+
 (defun %backward-skip-fn-p (fn-sym)
-  "Returns T if FN-SYM should be silently skipped in the AD backward walk.
-Skips:
-  - System-generated functions (name contains %)
-  - AS / AS-* type casts and derived-type coercions
-  - TO-<int-type> integer conversions
-  - 101 endeavor: built-in metadata helpers and view constructors.
-  - 105 endeavor: 087 GPU built-ins (per-launch constants and sync primitives)."
+  "Returns T if FN-SYM should be silently skipped in the AD backward walk."
   (let ((name (symbol-name fn-sym)))
     (cl:flet ((prefix-or-mangled-p (prefix)
                 (let ((plen (length prefix)))
@@ -994,10 +1077,10 @@ Skips:
                              "CONTIGUOUS-TERM~" "ELEMENT-TYPE~" "ADDRESS-SPACE~"
                              "ALIGN~" "NUM-DIMS~" "OFFSET~"
                              "MAKE-MATRIX" "MAKE-VECTOR" "MAKE-CELL" "MAKE-TENSOR"
+                             ;; 111 Phase 1c: scratch constructors are gradient-inert.
+                             "MAKE-SCRATCH-CELL" "MAKE-SCRATCH-VECTOR"
+                             "MAKE-SCRATCH-MATRIX" "MAKE-SCRATCH-TENSOR"
                              "TRANSPOSE" "TRANSPOSE!" "ROW" "COL" "SLICE"
-                             ;; 105 follow-up: 087 GPU built-ins.  All 17 return
-                             ;; per-launch constants (sizes, indices) or are
-                             ;; synchronization primitives; none carry gradient.
                              "GET-GLOBAL-ID" "GET-LOCAL-ID" "GET-WORKGROUP-ID"
                              "GET-NUM-GROUPS" "GET-LOCAL-WORK-SIZE"
                              "GET-GLOBAL-WORK-SIZE" "GET-GLOBAL-OFFSET"

@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords land in sub-step 1c"
+
+;; load-tile-coords with :transpose t on a 2D matrix.  With transpose,
+;; tile[ly][lx] receives global[origin-y + lx][origin-x + ly] — the two
+;; tile axes are swapped relative to global.  Useful for changing access
+;; pattern to avoid bank conflicts during compute.
+;;
+;; For origin (0,0) and a 4x4 matrix, tile[ly][lx] == M[lx][ly].
+;; Copied out: OUT[y][x] == M[x][y].
+
+(def-type mat-t  (matrix ulong :address-space :global :align :compact))
+(def-type tile-t (matrix ulong :address-space :local  :align :compact))
+
+(def-kernel ltc_transpose_2d (M &out OUT)
+  (declare #'(mat-t &out mat-t => nil)
+           (global-size :set-to '(4 4))
+           (local-size  :set-to '(4 4)))
+  (let ((tile (make-scratch-matrix ulong 4)))
+    (load-tile-coords M tile (0 0) :transpose t)
+    (workgroup-stride tile (ly lx)
+      (set! (~ OUT ly lx) (~ tile ly lx)))))

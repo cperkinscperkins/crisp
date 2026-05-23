@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Ragged-edge store: tile is 4 elements but storing into a 4-element
+;; &out vector starting at origin 2 means only 2 tile slots (lx=0, lx=1
+;; writing to OUT[2], OUT[3]) land in bounds.  The other 2 slots (which
+;; would write OUT[4], OUT[5]) are skipped via the bounds check.
+;;
+;; Expected: OUT == [0, 0, 100, 101]  (OUT[0], OUT[1] are unmodified
+;; from their default-initialized 0).
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel stc_bounds_1d (&out OUT)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (workgroup-stride tile (lx)
+      (set! (~ tile lx) (+ lx (to-ulong 100))))
+    (store-tile-coords tile OUT (2))))

@@ -1,0 +1,30 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv --differentiate]
+
+;; Sub-step 1c: AD of load-tile-coords / store-tile-coords (identity path).
+;;
+;; Forward kernel: C = A (copy through a local tile).
+;;   tile  ← A[0..3]   via load-tile-coords
+;;   C[0..3] ← tile    via store-tile-coords
+;;
+;; Backward computes df/dA[k] = 1.0 for each k:
+;;   - tile_ADJ ← C_GRAD          via %store-tile-coords-bwd (plain accumulate)
+;;   - A_GRAD  += tile_ADJ        via %load-tile-coords-bwd  (atomic-add!)
+;;
+;; Compile-only verification.  Both forward and backward kernels compile;
+;; backward IR contains the atomic-add scatter into A_GRAD.  Runtime
+;; VERIFY-AUTODIFF is deferred to a follow-up: the auto-allocated tile_ADJ
+;; adds an implicit scratch param to the backward kernel signature that
+;; the OpenCL runner (tests/verify-autodiff-runner.lisp) doesn't yet wire
+;; — VAD launches fail with CL_INVALID_KERNEL_ARGS (-52).  Runner work is
+;; a Phase 1c.2 follow-up.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel ad_identity_via_tile_1d (A &out C)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector float 4)))
+    (load-tile-coords A tile (0))
+    (store-tile-coords tile C (0))))

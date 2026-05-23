@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Basic store-tile-coords on a 1D vector.  Fill a :local tile with each
+;; lane's local-id via workgroup-stride, then store the tile back to a
+;; global &out vector starting at origin 0.  Expected: OUT == [0,1,2,3].
+;;
+;; Sub-step 1a — verifies the bare -coords primitive with src-first
+;; argument order (tile first, then dest global).
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel stc_basic_1d (&out OUT)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (workgroup-stride tile (lx)
+      (set! (~ tile lx) lx))
+    (store-tile-coords tile OUT (0))))
