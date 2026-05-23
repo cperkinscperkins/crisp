@@ -41,11 +41,395 @@
              (t
                (error "Branch type mismatch in IF expression. Then: ~a, Else: ~a" t-type e-type))))))))
 
+
+
+
+;; These are the "explicit coords" variants of load-tile / store-tile.  They
+;; expand into a workgroup-stride-shaped cooperative loop with bounds
+;; checking and an implicit local-barrier.
+;;
+;; API (sub-step 1a, src-first universally):
+;;   (load-tile-coords  <src-global> <dest-tile> (origin-coords...) &key (identity 0) transpose)
+;;   (store-tile-coords <src-tile> <dest-global> (origin-coords...) &key transformF transpose)
+;;
+;; Semantics:
+;;   load-tile-coords:
+;;     - For each tile coord (cooperatively across the workgroup), compute the
+;;       corresponding source coord = origin + tile-coord (or transposed map
+;;       for :transpose t).
+;;     - If source coord is in-bounds, copy source[src-coord] -> tile[tile-coord].
+;;     - If source coord is out-of-bounds, write the :identity value to
+;;       tile[tile-coord] (default 0).
+;;     - Ends with (local-barrier) so subsequent reads see the loaded tile.
+;;
+;;   store-tile-coords:
+;;     - Starts with (local-barrier) so all prior tile writes are visible.
+;;     - For each tile coord (cooperatively), compute dest coord = origin +
+;;       tile-coord (or transposed).
+;;     - If dest coord is in-bounds, write tile[tile-coord] (optionally run
+;;       through :transformF first) to dest[dest-coord].  Out-of-bounds
+;;       tile slots are silently skipped (no :identity equivalent on store).
+;;     - Ends with (local-barrier).
+;;
+;; Transpose handling (Phase 1a):
+;;   - :transpose nil or absent: identity coord map.
+;;   - :transpose t: swap the innermost two dims of the coord map.  Requires
+;;     arity >= 2; arity 1 with :transpose t is a compile error.
+;;   - Explicit permutation lists (e.g. '(0 2 1)): deferred.
+
+
+(defun %extract-key-arg (key-args keyword default)
+  "Parses a &key-style plist KEY-ARGS for KEYWORD, returning its value or
+   DEFAULT if absent.  Phase 1a helper for load-tile-coords / store-tile-coords
+   keyword parsing."
+  (loop for (k v) on key-args by #'cddr
+        when (eq k keyword) return v
+        finally (cl:return default)))
+
+
+(defun %tlc-transpose-permutation (n transpose-form location)
+  "Returns the coord permutation list implied by TRANSPOSE-FORM for a tile of
+   arity N.  Returns NIL for identity (no transpose).  Errors on invalid
+   combinations.  Phase 1a: only NIL and T are supported; explicit permutation
+   lists are deferred."
+  (cond
+    ((null transpose-form) nil)
+    ((or (eq transpose-form t)
+         (and (symbolp transpose-form)
+              (string-equal (symbol-name transpose-form) "T")))
+     (when (< n 2)
+       (error 'crisp-compiler-error
+              :message ":transpose t requires tensor arity >= 2 (1D tensors have nothing to transpose)"
+              :source-location location))
+     ;; Swap innermost two dims of the identity permutation.
+     (let ((p (loop for i from 0 below n collect i)))
+       (rotatef (nth (- n 2) p) (nth (- n 1) p))
+       p))
+    (t
+     (error 'crisp-compiler-error
+            :message (format nil
+                             ":transpose ~S not supported in Phase 1a (only nil and t are accepted)"
+                             transpose-form)
+            :source-location location))))
+
+
+(defun %tlc-coop-loop-skeleton (n tile-sym local-bindings tile-coord-syms
+                                tile-extent-syms lid-syms lws-syms inner-form
+                                cl-pkg)
+  "Builds the cooperative N-dim workgroup-strided nest used by
+   load-tile-coords and store-tile-coords.  At each level:
+     (dotimes (K_k TE_k LWS_k)
+       (let ((tile-coord-k (+ K_k LID_k)))
+         (when (< tile-coord-k TE_k)
+           <inner>)))
+   Returns the nested form.  Local-bindings is the outer let's binding list
+   (passed through unchanged; caller adds tensor/extent/lid/lws bindings).
+   Tile-coord-syms / tile-extent-syms / lid-syms / lws-syms must be lists of
+   length n."
+  (declare (ignore tile-sym local-bindings))
+  (let ((let-sym     (intern "LET" cl-pkg))
+        (dotimes-sym (intern "DOTIMES" cl-pkg))
+        (when-sym    (intern "WHEN" cl-pkg))
+        (plus-sym    (intern "+" cl-pkg))
+        (lt-sym      (intern "<" cl-pkg))
+        (k-syms      (loop for i from 0 below n collect (gensym (format nil "K~A" i))))
+        (acc inner-form))
+    (loop for i from (1- n) downto 0
+          for tc-sym  = (nth i tile-coord-syms)
+          for te-sym  = (nth i tile-extent-syms)
+          for lid-sym = (nth i lid-syms)
+          for lws-sym = (nth i lws-syms)
+          for k-sym   = (nth i k-syms)
+          do (setf acc
+                   (list dotimes-sym
+                         (list k-sym te-sym lws-sym)
+                         (list let-sym
+                               (list (list tc-sym (list plus-sym k-sym lid-sym)))
+                               (list when-sym
+                                     (list lt-sym tc-sym te-sym)
+                                     acc)))))
+    acc))
+
+
+(defun %tlc-source-coord-exprs (n origin-syms tile-coord-syms perm plus-sym)
+  "Returns a list of N source-coord expressions: source-coord[k] = origin[k]
+   + tile-coord[perm[k]].  PERM is NIL for identity (no transpose) or a
+   permutation list of length N."
+  (loop for k from 0 below n
+        for src-tile-idx = (if perm (nth k perm) k)
+        collect (list plus-sym (nth k origin-syms) (nth src-tile-idx tile-coord-syms))))
+
+
+(defun %tlc-all-in-bounds-form (n src-coord-exprs global-extent-syms
+                                lt-sym and-sym)
+  "Builds an AND of per-dim bounds checks: (and (< src-coord[k] ge[k]) ...).
+   For N=1, returns just the single comparison."
+  (let ((tests (loop for k from 0 below n
+                     collect (list lt-sym (nth k src-coord-exprs) (nth k global-extent-syms)))))
+    (if (= (length tests) 1)
+        (first tests)
+        (cons and-sym tests))))
+
+(defun %expand-load-tile-coords-form (expr location)
+  "Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).
+   Returns a let/dotimes/when nest that cooperatively loads the tile, ending
+   with (local-barrier)."
+  (let* ((src-form     (second expr))
+         (tile-form    (third expr))
+         (origin-list  (fourth expr))
+         (key-args     (nthcdr 4 expr)))
+    (unless (and (listp origin-list)
+                 (>= (length origin-list) 1))
+      (error 'crisp-compiler-error
+             :message "load-tile-coords: origin must be a non-empty list of coord forms"
+             :source-location location))
+    (let* ((identity-form  (%extract-key-arg key-args :identity 0))
+           (transpose-form (%extract-key-arg key-args :transpose nil))
+           (n              (length origin-list))
+           (perm           (%tlc-transpose-permutation n transpose-form location))
+           (cl-pkg         (find-package :crisp-language))
+           (let-sym             (intern "LET" cl-pkg))
+           (progn-sym           (intern "PROGN" cl-pkg))
+           (if-sym              (intern "IF" cl-pkg))
+           (set-sym             (intern "SET!" cl-pkg))
+           (aref-sym            (intern "~" cl-pkg))
+           (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym    (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (local-barrier-sym   (intern "LOCAL-BARRIER" cl-pkg))
+           (to-ulong-sym        (intern "TO-ULONG" cl-pkg))
+           (plus-sym            (intern "+" cl-pkg))
+           (lt-sym              (intern "<" cl-pkg))
+           (and-sym             (intern "AND" cl-pkg))
+           (src-sym  (gensym "SRC"))
+           (tile-sym (gensym "TILE"))
+           (ident-sym (gensym "IDENT"))
+           (origin-syms       (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
+           (tile-coord-syms   (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
+           (tile-extent-syms  (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
+           (global-extent-syms (loop for i from 0 below n collect (gensym (format nil "GE~A" i))))
+           (lid-syms          (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms          (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
+           ;; Source coord expressions: src[k] = origin[k] + tile-coord[perm[k]]
+           (src-coord-exprs   (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
+           ;; The innermost body:  (if (and-bounds) (set! tile = src[..]) (set! tile = identity))
+           (tile-aref         (cons aref-sym (cons tile-sym tile-coord-syms)))
+           (src-aref          (cons aref-sym (cons src-sym src-coord-exprs)))
+           (bounds-form       (%tlc-all-in-bounds-form n src-coord-exprs
+                                                       global-extent-syms lt-sym and-sym))
+           (inner-body        (list if-sym
+                                    bounds-form
+                                    (list set-sym tile-aref src-aref)
+                                    (list set-sym tile-aref ident-sym)))
+           (loop-nest (%tlc-coop-loop-skeleton n tile-sym nil tile-coord-syms
+                                               tile-extent-syms lid-syms lws-syms
+                                               inner-body cl-pkg))
+           (outer-bindings
+            (append
+             (list (list src-sym src-form)
+                   (list tile-sym tile-form)
+                   (list ident-sym identity-form))
+             ;; Origin coords are wrapped in (to-ulong ...) so that the inner
+             ;; arithmetic (+ origin tile-coord) is type-consistent regardless
+             ;; of whether the user passed int literals or already-ulong values.
+             (loop for i from 0 below n
+                   for o-sym in origin-syms
+                   collect (list o-sym (list to-ulong-sym (nth i origin-list))))
+             (loop for i from 0 below n
+                   for te-sym in tile-extent-syms
+                   collect (list te-sym (list aref-sym (list extents-tilde-sym tile-sym) i)))
+             (loop for i from 0 below n
+                   for ge-sym in global-extent-syms
+                   collect (list ge-sym (list aref-sym (list extents-tilde-sym src-sym) i)))
+             (loop for i from 0 below n
+                   for lid-sym in lid-syms
+                   collect (list lid-sym (list get-local-id-sym i)))
+             (loop for i from 0 below n
+                   for lws-sym in lws-syms
+                   collect (list lws-sym (list get-lws-sym i))))))
+      (list let-sym outer-bindings
+            (list progn-sym
+                  loop-nest
+                  (list local-barrier-sym))))))
+
+
+;; src/analysis/control.lisp
+(defun %expand-store-tile-coords-form (expr location)
+  "Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).
+   Returns a let/progn nest with (local-barrier) BEFORE and AFTER the
+   cooperative store loop.  TransformF is applied per-element (unary)."
+  (let* ((tile-form    (second expr))
+         (dest-form    (third expr))
+         (origin-list  (fourth expr))
+         (key-args     (nthcdr 4 expr)))
+    (unless (and (listp origin-list)
+                 (>= (length origin-list) 1))
+      (error 'crisp-compiler-error
+             :message "store-tile-coords: origin must be a non-empty list of coord forms"
+             :source-location location))
+    (let* ((transformF-form (%extract-key-arg key-args :transformF nil))
+           (transpose-form  (%extract-key-arg key-args :transpose nil))
+           (n               (length origin-list))
+           (perm            (%tlc-transpose-permutation n transpose-form location))
+           (cl-pkg          (find-package :crisp-language))
+           (let-sym             (intern "LET" cl-pkg))
+           (progn-sym           (intern "PROGN" cl-pkg))
+           (when-sym            (intern "WHEN" cl-pkg))
+           (set-sym             (intern "SET!" cl-pkg))
+           (funcall-sym         (intern "FUNCALL" cl-pkg))
+           (aref-sym            (intern "~" cl-pkg))
+           (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym    (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (local-barrier-sym   (intern "LOCAL-BARRIER" cl-pkg))
+           (to-ulong-sym        (intern "TO-ULONG" cl-pkg))
+           (plus-sym            (intern "+" cl-pkg))
+           (lt-sym              (intern "<" cl-pkg))
+           (and-sym             (intern "AND" cl-pkg))
+           (tile-sym (gensym "TILE"))
+           (dest-sym (gensym "DEST"))
+           (origin-syms       (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
+           (tile-coord-syms   (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
+           (tile-extent-syms  (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
+           (global-extent-syms (loop for i from 0 below n collect (gensym (format nil "GE~A" i))))
+           (lid-syms          (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms          (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
+           ;; Dest coord expressions: dest[k] = origin[k] + tile-coord[perm[k]]
+           (dest-coord-exprs  (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
+           (tile-aref         (cons aref-sym (cons tile-sym tile-coord-syms)))
+           (dest-aref         (cons aref-sym (cons dest-sym dest-coord-exprs)))
+           (bounds-form       (%tlc-all-in-bounds-form n dest-coord-exprs
+                                                       global-extent-syms lt-sym and-sym))
+           ;; Value to store: transformF(tile[..]) if transformF supplied, else tile[..]
+           (value-form (if transformF-form
+                           (list funcall-sym transformF-form tile-aref)
+                           tile-aref))
+           ;; The innermost body: (when bounds (set! dest = value))
+           (inner-body (list when-sym
+                             bounds-form
+                             (list set-sym dest-aref value-form)))
+           (loop-nest (%tlc-coop-loop-skeleton n tile-sym nil tile-coord-syms
+                                               tile-extent-syms lid-syms lws-syms
+                                               inner-body cl-pkg))
+           (outer-bindings
+            (append
+             (list (list tile-sym tile-form)
+                   (list dest-sym dest-form))
+             (loop for i from 0 below n
+                   for o-sym in origin-syms
+                   collect (list o-sym (list to-ulong-sym (nth i origin-list))))
+             (loop for i from 0 below n
+                   for te-sym in tile-extent-syms
+                   collect (list te-sym (list aref-sym (list extents-tilde-sym tile-sym) i)))
+             (loop for i from 0 below n
+                   for ge-sym in global-extent-syms
+                   collect (list ge-sym (list aref-sym (list extents-tilde-sym dest-sym) i)))
+             (loop for i from 0 below n
+                   for lid-sym in lid-syms
+                   collect (list lid-sym (list get-local-id-sym i)))
+             (loop for i from 0 below n
+                   for lws-sym in lws-syms
+                   collect (list lws-sym (list get-lws-sym i))))))
+      (list let-sym outer-bindings
+            (list progn-sym
+                  (list local-barrier-sym)   ; barrier BEFORE
+                  loop-nest
+                  (list local-barrier-sym))))))   ; barrier AFTER
+
+
+;; load-tile-coords / store-tile-coords (and the bare load-tile / store-tile
+;; that rewrite to them) contain internal (local-barrier) calls.  Inside a
+;; thread-divergent (if / when / unless / cond) where some threads enter the
+;; branch and others don't, only some threads hit the barrier — deadlock.
+;;
+;; The compiler tracks divergent-conditional context via the dynamic
+;; defvar *in-divergent-conditional*.  Set to T inside the analyzed branches
+;; of a runtime if-expression (when both branches are analyzed, i.e. the
+;; condition wasn't constant-folded).  The load-tile-coords / store-tile-coords
+;; analyzers check the flag at entry and error if set.
+;;
+;; if+ / when+ / unless+ are compile-time conditionals — they DCE to a single
+;; branch before analysis, so no runtime divergence is introduced.
+
+(defvar *in-divergent-conditional* nil
+  "T when the analyzer is currently inside a thread-divergent if/when/unless/cond
+   branch (i.e. the conditional's test was not constant-folded).  Used by the
+   load-tile-coords / store-tile-coords analyzers to reject placement that
+   would deadlock at their internal local-barriers.
+
+   Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check
+   that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the
+   internal %uniform-when form instead, whose analyzer does NOT set this flag.")
+
+(defun analyze-%uniform-if-impl (expr env context location)
+  "Internal-use: structurally identical to analyze-if-expression-impl but
+   does NOT bind *in-divergent-conditional* on the two-branch path.  Use
+   only from compiler-generated forms whose conditions are guaranteed
+   workgroup-uniform."
+  (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
+         (cond-node (try-constant-fold raw-cond-node)))
+    (when (typep cond-node 'semantic-literal)
+          (let ((val (semantic-literal-value cond-node)))
+            (if (or (null val) (and (integerp val) (= val 0)))
+                (if (fourth expr)
+                    (return-from analyze-%uniform-if-impl (analyze-expression (fourth expr) env context (append location '(3))))
+                    (return-from analyze-%uniform-if-impl (make-semantic-literal :value-type 'int :value 0 :source-location location)))
+                (return-from analyze-%uniform-if-impl (analyze-expression (third expr) env context (append location '(2)))))))
+    ;; Two-branch path — NO flag binding (caller asserts workgroup-uniform).
+    (let* ((then-node (analyze-expression (third expr) env context (append location '(2))))
+           (else-node (if (fourth expr) (analyze-expression (fourth expr) env context (append location '(3))) nil)))
+      (multiple-value-bind (unified-type final-then final-else)
+          (ensure-branch-compatibility then-node else-node location)
+        (make-semantic-if :type unified-type
+                          :condition-node cond-node
+                          :then-node final-then
+                          :else-node final-else
+                          :source-location location)))))
+
+
+(defun analyze-%uniform-when-expression (expr env context location)
+  "Internal: like when, but workgroup-uniform — does not set
+   *in-divergent-conditional*.  Used by compiler-generated stride bounds-
+   checks; not exposed to user code."
+  (let ((cond (second expr))
+        (body (cons 'progn (cddr expr))))
+    (analyze-%uniform-if-impl `(if ,cond ,body) env context location)))
+
+
+(defun %tlc-check-not-divergent (op-name location)
+  "Signals a clear compile error if (op-name) appears inside a thread-divergent
+   conditional.  Call from load-tile-coords / store-tile-coords analyzers."
+  (when *in-divergent-conditional*
+    (error 'crisp-compiler-error
+           :message (format nil
+                            "~A cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It contains an internal local-barrier that would deadlock when only some threads enter the branch.  Compile-time conditionals (if+ / when+ / unless+) are safe.  If you need a guarded copy, use a non-divergent condition (e.g. one based on get-workgroup-id, not get-local-id) or restructure the kernel."
+                            op-name)
+           :source-location location)))
+
+
+(defun analyze-load-tile-coords-expression (expr env context location)
+  "Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).
+   Rejects placement inside a thread-divergent conditional, then delegates
+   codegen via %expand-load-tile-coords-form."
+  (%tlc-check-not-divergent "load-tile-coords" location)
+  (analyze-expression (%expand-load-tile-coords-form expr location)
+                      env context location))
+
+
+(defun analyze-store-tile-coords-expression (expr env context location)
+  "Analyzer for (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).
+   Rejects placement inside a thread-divergent conditional, then delegates
+   codegen via %expand-store-tile-coords-form."
+  (%tlc-check-not-divergent "store-tile-coords" location)
+  (analyze-expression (%expand-store-tile-coords-form expr location)
+                      env context location))
+
 (defun analyze-if-expression-impl (expr env context location &key enforce-constant)
   (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
          (cond-node (try-constant-fold raw-cond-node)))
 
     ;; DCE Optimization: If condition is a constant int/bool literal, analyze ONLY the live branch.
+    ;; No runtime divergence — analyze the live branch without setting the divergent flag.
     (when (typep cond-node 'semantic-literal)
           (let ((val (semantic-literal-value cond-node)))
             ;; Treat 0 and NIL as false, everything else as true.
@@ -61,7 +445,11 @@
     (when enforce-constant
           (error "IF+ condition failed to evaluate at compile time: ~a" expr))
 
-    (let* ((then-node (analyze-expression (third expr) env context (append location '(2))))
+    ;; Phase 1d: both branches will be analyzed → runtime divergence.  Bind
+    ;; *in-divergent-conditional* to T for the branch analyses so that any
+    ;; load-tile-coords / store-tile-coords inside either branch is rejected.
+    (let* ((*in-divergent-conditional* t)
+           (then-node (analyze-expression (third expr) env context (append location '(2))))
            (else-node (if (fourth expr) (analyze-expression (fourth expr) env context (append location '(3))) nil)))
 
       (multiple-value-bind (unified-type final-then final-else)
@@ -1093,32 +1481,33 @@
 
 
 
+
 (defun %expand-hw-workgroup-idx-form (tensor-form bindings body-forms location)
-  "Outer-loop expansion for hardware-stride :workgroup-idx.  Chunk-size per
-   dim = (get-local-size k).  Helpers get rewritten with the bound LS gensyms
-   so tile-indices uses a single point of evaluation."
+  "Outer-loop expansion for hardware-stride :workgroup-idx.  Phase 1b:
+   pre-walks the body to rewrite bare load-tile / store-tile into their
+   -coords forms using the bindings as the origin."
   (let* ((n (length bindings))
          (cl-pkg (find-package :crisp-language))
          (get-local-size-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
          (ts-syms (loop for i from 0 below n
                         collect (gensym (format nil "LS~A" i))))
          (size-expr-fn (lambda (k) (list get-local-size-sym k)))
-         (rewritten-body (%tile-helpers-rewrite body-forms n
+         ;; Phase 1b rewrite (before helper rewrite).
+         (body-with-load-store-rewritten
+          (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg))
+         (rewritten-body (%tile-helpers-rewrite body-with-load-store-rewritten n
                                                  (lambda (k) (nth k ts-syms)))))
     (%expand-workgroup-strided-outer-loop-with-ts-syms
      tensor-form n bindings rewritten-body ts-syms size-expr-fn location)))
 
 (defun %expand-hw-warp-idx-form (tensor-form bindings body-forms location)
-  "Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.
-
-   Iteration model: each warp processes warp-sized chunks of the flattened
-   global execution space.  Warps stride over chunks with stride =
-   warp-size * total-warps.
-
-   Currently uses a placeholder warp-size of 32 — should switch to
-   (get-warp-size) once that builtin is implemented (then NVIDIA/Intel
-   stay correct, AMD's 64-wide wavefronts also become correct)."
+  "Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.  Phase 1b:
+   pre-checks the body for bare load-tile / store-tile (compile error if
+   found — incompatible with warp-grouped chunking)."
   (declare (ignore location))
+  ;; Phase 1b: bare load-tile / store-tile inside :warp-idx is a compile error.
+  (dolist (f body-forms)
+    (%detect-bare-load-store-tile-in-form f "hardware-stride :warp-idx"))
   (let* ((cl-pkg (find-package :crisp-language))
          (let-sym             (intern "LET" cl-pkg))
          (declare-sym         (intern "DECLARE" cl-pkg))
@@ -1143,8 +1532,6 @@
          (numwarps-sym  (gensym "NUMWARPS"))
          (k-sym         (gensym "K"))
          (var-name      (first bindings))
-         ;; Rewrite tile-indices in the body using the bound WS gensym so
-         ;; (tile-indices warp-orig) → (/ warp-orig WS).
          (rewritten-body (%tile-helpers-rewrite body-forms 1
                                                  (lambda (k)
                                                    (declare (ignore k))
@@ -1331,13 +1718,12 @@
 
 
 
+
 (defun %expand-tile-stride-form (expr ct location)
   "Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
-   Outer loop over tile origins, workgroup-strided.  Body executes once per
-   workgroup per tile-origin; each binding is bound to the tile's global
-   origin coord in its dim.  CT is currently ignored at expansion time —
-   layout-tag validation against the tensor's static CT still happens in
-   analyze-tile-stride-expression."
+   Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the
+   body to rewrite bare load-tile / store-tile into their -coords forms using
+   the tile-stride's binding syms as the origin."
   (declare (ignore ct))
   (multiple-value-bind (strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)
       (%tile-stride-parse expr)
@@ -1353,11 +1739,6 @@
            (to-ulong-sym      (intern "TO-ULONG" cl-pkg))
            (aref-sym          (intern "~" cl-pkg))
            (extents-tilde-sym (intern "EXTENTS~" cl-pkg))
-           ;; Capture the size source expressions before helper rewrite so
-           ;; tile-indices can use the gensym-bound TS-k vars built by the
-           ;; shared outer-loop helper.  We pre-allocate the TS-k syms here
-           ;; and pass them down to both the helper rewriter and the loop
-           ;; builder, ensuring a single point of evaluation.
            (ts-syms (loop for i from 0 below n
                           collect (gensym (format nil "TS~A" i))))
            (tile-size-expr-fn
@@ -1369,8 +1750,12 @@
                (let ((tile-form tile-spec))
                  (lambda (k)
                    (list aref-sym (list extents-tilde-sym tile-form) k))))))
-           ;; tile-indices(b_k) → (/ b_k TS_k), referencing the shared ts gensym.
-           (rewritten-body (%tile-helpers-rewrite body-forms n
+           ;; Phase 1b: rewrite bare load-tile / store-tile in body BEFORE
+           ;; helper rewrite (and before any expansion).  Tile-stride bindings
+           ;; are the chunk origin coords, which become the -coords origin list.
+           (body-with-load-store-rewritten
+            (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg))
+           (rewritten-body (%tile-helpers-rewrite body-with-load-store-rewritten n
                                                   (lambda (k) (nth k ts-syms)))))
       (%expand-workgroup-strided-outer-loop-with-ts-syms
        tensor-form n bindings rewritten-body ts-syms tile-size-expr-fn location))))
@@ -1484,18 +1869,106 @@
 
 
 
+
+
+(defun %rewrite-bare-tile-in-form (form origin-binding-syms cl-pkg)
+  "Rewrites bare (load-tile ...) / (store-tile ...) inside FORM into their
+   -coords equivalents using ORIGIN-BINDING-SYMS as the origin list.  Does
+   NOT recurse into nested tile-stride / hardware-stride / workgroup-stride
+   forms — those manage their own body rewrites."
+  (cond
+    ((atom form) form)
+    ((not (and (consp form) (symbolp (car form))))
+     (mapcar (lambda (sub) (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
+             form))
+    (t
+     (let ((op-name (symbol-name (car form))))
+       (cond
+         ((string-equal op-name "LOAD-TILE")
+          ;; (load-tile SRC TILE &key ...) → (load-tile-coords SRC TILE (ORIGIN-SYMS) &key ...)
+          (when (< (length form) 3)
+            (error 'crisp-compiler-error
+                   :message "load-tile: expected (load-tile SRC TILE [&key ...])"
+                   :source-location nil))
+          (let ((ltc-sym (intern "LOAD-TILE-COORDS" cl-pkg))
+                (src     (second form))
+                (tile    (third form))
+                (key-args (nthcdr 3 form)))
+            (append (list ltc-sym src tile origin-binding-syms) key-args)))
+         ((string-equal op-name "STORE-TILE")
+          ;; (store-tile TILE DEST &key ...) → (store-tile-coords TILE DEST (ORIGIN-SYMS) &key ...)
+          (when (< (length form) 3)
+            (error 'crisp-compiler-error
+                   :message "store-tile: expected (store-tile TILE DEST [&key ...])"
+                   :source-location nil))
+          (let ((stc-sym (intern "STORE-TILE-COORDS" cl-pkg))
+                (tile    (second form))
+                (dest    (third form))
+                (key-args (nthcdr 3 form)))
+            (append (list stc-sym tile dest origin-binding-syms) key-args)))
+         ((or (string-equal op-name "TILE-STRIDE")
+              (string-equal op-name "HARDWARE-STRIDE")
+              (string-equal op-name "WORKGROUP-STRIDE"))
+          ;; Nested stride contexts manage their own body rewriting.
+          form)
+         (t
+          (cons (car form)
+                (mapcar (lambda (sub)
+                          (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
+                        (cdr form)))))))))
+
+
+(defun %rewrite-bare-load-store-tile-in-body (body-forms origin-binding-syms cl-pkg)
+  "Walks BODY-FORMS top-down and rewrites bare load-tile / store-tile to
+   their -coords equivalents.  Used by tile-stride and hardware-stride
+   :workgroup-idx body expansion."
+  (mapcar (lambda (f) (%rewrite-bare-tile-in-form f origin-binding-syms cl-pkg))
+          body-forms))
+
+
+(defun %detect-bare-load-store-tile-in-form (form path)
+  "Recursively walks FORM and signals a compile error if a bare (load-tile ...)
+   or (store-tile ...) call appears.  PATH is the context name used in the
+   error message (e.g. \"hardware-stride :warp-idx\")."
+  (cond
+    ((atom form) nil)
+    ((not (and (consp form) (symbolp (car form))))
+     (dolist (sub form) (%detect-bare-load-store-tile-in-form sub path)))
+    (t
+     (let ((op-name (symbol-name (car form))))
+       (cond
+         ((or (string-equal op-name "LOAD-TILE")
+              (string-equal op-name "STORE-TILE"))
+          (error 'crisp-compiler-error
+                 :message (format nil
+                                  "~A: bare ~A is not allowed inside ~A — it is a workgroup-cooperative primitive whose internal local-barrier would deadlock in a warp-grouped chunking context.  Use ~A-coords with explicit origin coords if you need to copy data here, or restructure the kernel."
+                                  (string-downcase op-name)
+                                  (string-downcase op-name)
+                                  path
+                                  (string-downcase op-name))
+                 :source-location nil))
+         ((or (string-equal op-name "TILE-STRIDE")
+              (string-equal op-name "HARDWARE-STRIDE")
+              (string-equal op-name "WORKGROUP-STRIDE"))
+          ;; Nested stride: stop recursing; that context will handle its own body.
+          nil)
+         (t
+          (dolist (sub (cdr form))
+            (%detect-bare-load-store-tile-in-form sub path))))))))
+
+
 (defun %expand-workgroup-strided-outer-loop-with-ts-syms
     (tensor-form n bindings body-forms ts-syms tile-size-expr-fn location)
-  "Variant of %expand-workgroup-strided-outer-loop that takes a pre-allocated
-   list of TS gensyms (so the caller's body rewriter can refer to them by
-   name).  Otherwise identical in shape."
+  "Workgroup-strided outer loop, with the per-dim bounds check routed
+   through %uniform-when so it doesn't trip the divergence checker."
   (declare (ignore location))
   (let* ((cl-pkg (find-package :crisp-language))
          (let-sym             (intern "LET" cl-pkg))
          (declare-sym         (intern "DECLARE" cl-pkg))
          (workgroup-level-sym (intern "WORKGROUP-LEVEL" cl-pkg))
          (dotimes-sym         (intern "DOTIMES" cl-pkg))
-         (when-sym            (intern "WHEN" cl-pkg))
+         ;; Phase 1d: workgroup-uniform bounds check uses %uniform-when.
+         (uniform-when-sym    (intern "%UNIFORM-WHEN" cl-pkg))
          (progn-sym           (intern "PROGN" cl-pkg))
          (aref-sym            (intern "~" cl-pkg))
          (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
@@ -1528,7 +2001,7 @@
                                        (list (list b-sym
                                                    (list plus-sym k-sym
                                                          (list mul-sym gid-sym ts-sym))))
-                                       (list when-sym
+                                       (list uniform-when-sym
                                              (list lt-sym b-sym e-sym)
                                              acc)))))
             acc))
@@ -1550,6 +2023,7 @@
     (list let-sym outer-bindings
           (list declare-sym (list workgroup-level-sym))
           nest)))
+
 
 (defun %expand-hardware-stride-form (expr ct location)
   "Pure expansion of (hardware-stride T [LAYOUT-TAG] <HW-TAG> (BINDINGS) BODY...).
@@ -1743,10 +2217,194 @@
                           env context location))))
 
 
+
+
+(defun analyze-load-tile-expression (expr env context location)
+  "Bare (load-tile SRC TILE &key ...) outside a stride context — compile
+   error pointing the user to load-tile-coords."
+  (declare (ignore expr env context))
+  (error 'crisp-compiler-error
+         :message "load-tile is only valid inside a tile-stride or hardware-stride :workgroup-idx body, where its origin coords are inferred from the surrounding stride bindings.  Use (load-tile-coords SRC TILE (ORIGIN...) ...) for explicit coordinate forms."
+         :source-location location))
+
+
+(defun analyze-store-tile-expression (expr env context location)
+  "Bare (store-tile TILE DEST &key ...) outside a stride context — compile
+   error pointing the user to store-tile-coords."
+  (declare (ignore expr env context))
+  (error 'crisp-compiler-error
+         :message "store-tile is only valid inside a tile-stride or hardware-stride :workgroup-idx body, where its origin coords are inferred from the surrounding stride bindings.  Use (store-tile-coords TILE DEST (ORIGIN...) ...) for explicit coordinate forms."
+         :source-location location))
+
+
+(defun %expand-load-tile-coords-bwd-form (expr location)
+  "Pure expansion of (%load-tile-coords-bwd SRC-ADJ TILE-ADJ (ORIGIN...) &key transpose).
+   Cooperative scatter-add via atomic-add!."
+  (let* ((src-adj-form  (second expr))
+         (tile-adj-form (third expr))
+         (origin-list   (fourth expr))
+         (key-args      (nthcdr 4 expr)))
+    (unless (and (listp origin-list) (>= (length origin-list) 1))
+      (error 'crisp-compiler-error
+             :message "%load-tile-coords-bwd: origin must be a non-empty list of coord forms"
+             :source-location location))
+    (let* ((transpose-form (%extract-key-arg key-args :transpose nil))
+           (n              (length origin-list))
+           (perm           (%tlc-transpose-permutation n transpose-form location))
+           (cl-pkg         (find-package :crisp-language))
+           (let-sym             (intern "LET" cl-pkg))
+           (progn-sym           (intern "PROGN" cl-pkg))
+           (when-sym            (intern "WHEN" cl-pkg))
+           (aref-sym            (intern "~" cl-pkg))
+           (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym    (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (local-barrier-sym   (intern "LOCAL-BARRIER" cl-pkg))
+           (to-ulong-sym        (intern "TO-ULONG" cl-pkg))
+           (plus-sym            (intern "+" cl-pkg))
+           (lt-sym              (intern "<" cl-pkg))
+           (and-sym             (intern "AND" cl-pkg))
+           (atomic-add-sym      (intern "ATOMIC-ADD!" cl-pkg))
+           (src-adj-sym  (gensym "SRC-ADJ"))
+           (tile-adj-sym (gensym "TILE-ADJ"))
+           (origin-syms       (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
+           (tile-coord-syms   (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
+           (tile-extent-syms  (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
+           (global-extent-syms (loop for i from 0 below n collect (gensym (format nil "GE~A" i))))
+           (lid-syms          (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms          (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
+           (src-coord-exprs   (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
+           (tile-aref         (cons aref-sym (cons tile-adj-sym tile-coord-syms)))
+           (src-aref          (cons aref-sym (cons src-adj-sym src-coord-exprs)))
+           (bounds-form       (%tlc-all-in-bounds-form n src-coord-exprs
+                                                       global-extent-syms lt-sym and-sym))
+           ;; Inner body: scatter-add tile_adj[lc] into src_adj[orig+lc] via atomic-add!.
+           ;; Skip silently when out of bounds (no contribution).
+           (inner-body        (list when-sym
+                                    bounds-form
+                                    (list atomic-add-sym src-aref tile-aref)))
+           (loop-nest (%tlc-coop-loop-skeleton n tile-adj-sym nil tile-coord-syms
+                                               tile-extent-syms lid-syms lws-syms
+                                               inner-body cl-pkg))
+           (outer-bindings
+            (append
+             (list (list src-adj-sym src-adj-form)
+                   (list tile-adj-sym tile-adj-form))
+             (loop for i from 0 below n
+                   for o-sym in origin-syms
+                   collect (list o-sym (list to-ulong-sym (nth i origin-list))))
+             (loop for i from 0 below n
+                   for te-sym in tile-extent-syms
+                   collect (list te-sym (list aref-sym (list extents-tilde-sym tile-adj-sym) i)))
+             (loop for i from 0 below n
+                   for ge-sym in global-extent-syms
+                   collect (list ge-sym (list aref-sym (list extents-tilde-sym src-adj-sym) i)))
+             (loop for i from 0 below n
+                   for lid-sym in lid-syms
+                   collect (list lid-sym (list get-local-id-sym i)))
+             (loop for i from 0 below n
+                   for lws-sym in lws-syms
+                   collect (list lws-sym (list get-lws-sym i))))))
+      (list let-sym outer-bindings
+            (list progn-sym
+                  loop-nest
+                  (list local-barrier-sym))))))
+
+
+(defun %expand-store-tile-coords-bwd-form (expr location)
+  "Pure expansion of (%store-tile-coords-bwd TILE-ADJ DEST-ADJ (ORIGIN...) &key transpose).
+   Cooperative non-atomic accumulate into local tile_adj.  Barriers before
+   and after so prior tile_adj writes are visible and subsequent ones see
+   the result."
+  (let* ((tile-adj-form (second expr))
+         (dest-adj-form (third expr))
+         (origin-list   (fourth expr))
+         (key-args      (nthcdr 4 expr)))
+    (unless (and (listp origin-list) (>= (length origin-list) 1))
+      (error 'crisp-compiler-error
+             :message "%store-tile-coords-bwd: origin must be a non-empty list of coord forms"
+             :source-location location))
+    (let* ((transpose-form (%extract-key-arg key-args :transpose nil))
+           (n              (length origin-list))
+           (perm           (%tlc-transpose-permutation n transpose-form location))
+           (cl-pkg         (find-package :crisp-language))
+           (let-sym             (intern "LET" cl-pkg))
+           (progn-sym           (intern "PROGN" cl-pkg))
+           (when-sym            (intern "WHEN" cl-pkg))
+           (set-sym             (intern "SET!" cl-pkg))
+           (aref-sym            (intern "~" cl-pkg))
+           (extents-tilde-sym   (intern "EXTENTS~" cl-pkg))
+           (get-local-id-sym    (intern "GET-LOCAL-ID" cl-pkg))
+           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (local-barrier-sym   (intern "LOCAL-BARRIER" cl-pkg))
+           (to-ulong-sym        (intern "TO-ULONG" cl-pkg))
+           (plus-sym            (intern "+" cl-pkg))
+           (lt-sym              (intern "<" cl-pkg))
+           (and-sym             (intern "AND" cl-pkg))
+           (tile-adj-sym (gensym "TILE-ADJ"))
+           (dest-adj-sym (gensym "DEST-ADJ"))
+           (origin-syms       (loop for i from 0 below n collect (gensym (format nil "ORIG~A" i))))
+           (tile-coord-syms   (loop for i from 0 below n collect (gensym (format nil "TLC~A" i))))
+           (tile-extent-syms  (loop for i from 0 below n collect (gensym (format nil "TE~A" i))))
+           (global-extent-syms (loop for i from 0 below n collect (gensym (format nil "GE~A" i))))
+           (lid-syms          (loop for i from 0 below n collect (gensym (format nil "LID~A" i))))
+           (lws-syms          (loop for i from 0 below n collect (gensym (format nil "LWS~A" i))))
+           (dest-coord-exprs  (%tlc-source-coord-exprs n origin-syms tile-coord-syms perm plus-sym))
+           (tile-aref         (cons aref-sym (cons tile-adj-sym tile-coord-syms)))
+           (dest-aref         (cons aref-sym (cons dest-adj-sym dest-coord-exprs)))
+           (bounds-form       (%tlc-all-in-bounds-form n dest-coord-exprs
+                                                       global-extent-syms lt-sym and-sym))
+           ;; tile_adj[lc] += dest_adj[orig+lc].  No atomic — each tile slot
+           ;; is written by exactly one thread in the workgroup-cooperative loop.
+           (acc-form          (list plus-sym tile-aref dest-aref))
+           (inner-body        (list when-sym
+                                    bounds-form
+                                    (list set-sym tile-aref acc-form)))
+           (loop-nest (%tlc-coop-loop-skeleton n tile-adj-sym nil tile-coord-syms
+                                               tile-extent-syms lid-syms lws-syms
+                                               inner-body cl-pkg))
+           (outer-bindings
+            (append
+             (list (list tile-adj-sym tile-adj-form)
+                   (list dest-adj-sym dest-adj-form))
+             (loop for i from 0 below n
+                   for o-sym in origin-syms
+                   collect (list o-sym (list to-ulong-sym (nth i origin-list))))
+             (loop for i from 0 below n
+                   for te-sym in tile-extent-syms
+                   collect (list te-sym (list aref-sym (list extents-tilde-sym tile-adj-sym) i)))
+             (loop for i from 0 below n
+                   for ge-sym in global-extent-syms
+                   collect (list ge-sym (list aref-sym (list extents-tilde-sym dest-adj-sym) i)))
+             (loop for i from 0 below n
+                   for lid-sym in lid-syms
+                   collect (list lid-sym (list get-local-id-sym i)))
+             (loop for i from 0 below n
+                   for lws-sym in lws-syms
+                   collect (list lws-sym (list get-lws-sym i))))))
+      (list let-sym outer-bindings
+            (list progn-sym
+                  (list local-barrier-sym)
+                  loop-nest
+                  (list local-barrier-sym))))))
+
+
+(defun analyze-%load-tile-coords-bwd-expression (expr env context location)
+  "Analyzer for compiler-internal %load-tile-coords-bwd."
+  (analyze-expression (%expand-load-tile-coords-bwd-form expr location)
+                      env context location))
+
+
+(defun analyze-%store-tile-coords-bwd-expression (expr env context location)
+  "Analyzer for compiler-internal %store-tile-coords-bwd."
+  (analyze-expression (%expand-store-tile-coords-bwd-form expr location)
+                      env context location))
+
+  
 (defun register-control-analyzers ()
   "Registers all control flow expression analyzers, including loop-vector-stride,
-   tensor-stride (105), grid-stride (105), tile-stride (109), hardware-stride
-   (109), and workgroup-stride (110)."
+   tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,
+   and (111 Phase 1a) load-tile-coords / store-tile-coords."
   (def-expression-analyzer function analyze-function-literal)
   (def-expression-analyzer common-lisp:function analyze-function-literal)
   (def-expression-analyzer funcall analyze-funcall-expression)
@@ -1802,20 +2460,62 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-tile-stride-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-tile-stride-expression)))
-  ;; 109 Passes 5-7: hardware-stride
   (let ((sym-cl (intern "HARDWARE-STRIDE" (find-package :crisp-language)))
         (sym-cc (intern "HARDWARE-STRIDE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-hardware-stride-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-hardware-stride-expression)))
-  ;; 110: workgroup-stride
   (let ((sym-cl (intern "WORKGROUP-STRIDE" (find-package :crisp-language)))
         (sym-cc (intern "WORKGROUP-STRIDE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-workgroup-stride-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-workgroup-stride-expression)))
-  ;; 110: warp helper builtins.  Registered here (rather than in the GPU-builtin
-  ;; dolist in initialize-expression-analyzers) because that dolist is part of
-  ;; a long defun we'd rather not whole-replace.  These setf entries survive
-  ;; the subsequent GPU-builtin dolist since it touches different keys.
-  (register-warp-builtins))
+  ;; 110: warp helper builtins.  Registered via a sibling helper that lives
+  ;; in src after the Phase 0 merge.
+  (register-warp-builtins)
+  ;; 111 Phase 1a: load-tile-coords / store-tile-coords
+  (let ((sym-cl (intern "LOAD-TILE-COORDS" (find-package :crisp-language)))
+        (sym-cc (intern "LOAD-TILE-COORDS" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-coords-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-load-tile-coords-expression)))
+  (let ((sym-cl (intern "STORE-TILE-COORDS" (find-package :crisp-language)))
+        (sym-cc (intern "STORE-TILE-COORDS" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-coords-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-coords-expression)))
+  ;; 111 Phase 1b: bare load-tile / store-tile.  Only invoked when the form
+  ;; appears OUTSIDE a tile-stride / hardware-stride :workgroup-idx body
+  ;; (inside, the body walker rewrites them before analysis).  These error
+  ;; with a clear message pointing to the -coords variants.
+  (let ((sym-cl (intern "LOAD-TILE" (find-package :crisp-language)))
+        (sym-cc (intern "LOAD-TILE" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-load-tile-expression)))
+  (let ((sym-cl (intern "STORE-TILE" (find-package :crisp-language)))
+        (sym-cc (intern "STORE-TILE" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-expression)))
+  ;; 111 Phase 1d: %uniform-when — internal-use, compiler-generated
+  ;; workgroup-uniform conditional that does NOT set the divergence flag.
+  ;; Used by tile-stride / hardware-stride :workgroup-idx outer-loop bounds.
+  (let ((sym-cl (intern "%UNIFORM-WHEN" (find-package :crisp-language)))
+        (sym-cc (intern "%UNIFORM-WHEN" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%uniform-when-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%uniform-when-expression)))
+  ;; 111 Phase 1c: AD backward primitives.  Emitted by generate-backward-walk
+  ;; as counterparts of load-tile-coords / store-tile-coords.
+  (let ((sym-cl (intern "%LOAD-TILE-COORDS-BWD" (find-package :crisp-language)))
+        (sym-cc (intern "%LOAD-TILE-COORDS-BWD" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%load-tile-coords-bwd-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%load-tile-coords-bwd-expression)))
+  (let ((sym-cl (intern "%STORE-TILE-COORDS-BWD" (find-package :crisp-language)))
+        (sym-cc (intern "%STORE-TILE-COORDS-BWD" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression))))
+

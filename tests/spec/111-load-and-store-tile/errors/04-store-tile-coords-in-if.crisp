@@ -1,0 +1,20 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "divergent"
+
+;; store-tile-coords inside a thread-divergent (if ...) — same deadlock
+;; risk as load-tile-coords.  Compiler should reject.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel stc_in_divergent_if (&out OUT)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (workgroup-stride tile (lx)
+      (set! (~ tile lx) lx))
+    ;; Divergent: condition is per-thread.
+    (if (< (get-local-id 0) (to-ulong 2))
+        (store-tile-coords tile OUT (0))
+        (set! (~ OUT 0) (to-ulong 999)))))

@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords land in sub-step 1c"
+
+;; Basic load-tile-coords on a 2D matrix.  Cooperatively load a 4x4 chunk
+;; from origin (0,0) into a :local tile, then copy out via workgroup-stride.
+;; Expected: OUT == M (same shape, same values).
+
+(def-type mat-t  (matrix ulong :address-space :global :align :compact))
+(def-type tile-t (matrix ulong :address-space :local  :align :compact))
+
+(def-kernel ltc_basic_2d (M &out OUT)
+  (declare #'(mat-t &out mat-t => nil)
+           (global-size :set-to '(4 4))
+           (local-size  :set-to '(4 4)))
+  (let ((tile (make-scratch-matrix ulong 4)))
+    (load-tile-coords M tile (0 0))
+    (workgroup-stride tile (ly lx)
+      (set! (~ OUT ly lx) (~ tile ly lx)))))

@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; store-tile-coords with :transformF.  Each value going from tile to
+;; global is run through a unary function before the write.  Here we
+;; double via `double-val`; expected OUT == [0, 2, 4, 6].
+;;
+;; Exercises the per-element transform path on the store side.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-function double-val (x)
+  (declare #'(ulong => ulong))
+  (* x (to-ulong 2)))
+
+(def-kernel stc_transformF_1d (&out OUT)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (workgroup-stride tile (lx)
+      (set! (~ tile lx) lx))
+    (store-tile-coords tile OUT (0) :transformF #'double-val)))

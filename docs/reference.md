@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-21T18:59:28.504276Z
+Generated on 2026-05-23T05:23:34.461937Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -8,6 +8,97 @@ Generated on 2026-05-21T18:59:28.504276Z
 - **Args**: `(THEN-NODE ELSE-NODE LOCATION)`
 
   > Unifies types of then/else branches. Returns (values unified-type new-then new-else).
+
+
+---
+### DEFUN `%EXTRACT-KEY-ARG`
+- **Args**: `(KEY-ARGS KEYWORD DEFAULT)`
+
+  > Parses a &key-style plist KEY-ARGS for KEYWORD, returning its value or  >    DEFAULT if absent.  Phase 1a helper for load-tile-coords / store-tile-coords  >    keyword parsing.
+
+
+---
+### DEFUN `%TLC-TRANSPOSE-PERMUTATION`
+- **Args**: `(N TRANSPOSE-FORM LOCATION)`
+
+  > Returns the coord permutation list implied by TRANSPOSE-FORM for a tile of  >    arity N.  Returns NIL for identity (no transpose).  Errors on invalid  >    combinations.  Phase 1a: only NIL and T are supported; explicit permutation  >    lists are deferred.
+
+
+---
+### DEFUN `%TLC-COOP-LOOP-SKELETON`
+- **Args**: `(N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS
+              LID-SYMS LWS-SYMS INNER-FORM CL-PKG)`
+
+  > Builds the cooperative N-dim workgroup-strided nest used by  >    load-tile-coords and store-tile-coords.  At each level:  >      (dotimes (K_k TE_k LWS_k)  >        (let ((tile-coord-k (+ K_k LID_k)))  >          (when (< tile-coord-k TE_k)  >            <inner>)))  >    Returns the nested form.  Local-bindings is the outer let's binding list  >    (passed through unchanged; caller adds tensor/extent/lid/lws bindings).  >    Tile-coord-syms / tile-extent-syms / lid-syms / lws-syms must be lists of  >    length n.
+
+
+---
+### DEFUN `%TLC-SOURCE-COORD-EXPRS`
+- **Args**: `(N ORIGIN-SYMS TILE-COORD-SYMS PERM PLUS-SYM)`
+
+  > Returns a list of N source-coord expressions: source-coord[k] = origin[k]  >    + tile-coord[perm[k]].  PERM is NIL for identity (no transpose) or a  >    permutation list of length N.
+
+
+---
+### DEFUN `%TLC-ALL-IN-BOUNDS-FORM`
+- **Args**: `(N SRC-COORD-EXPRS GLOBAL-EXTENT-SYMS LT-SYM AND-SYM)`
+
+  > Builds an AND of per-dim bounds checks: (and (< src-coord[k] ge[k]) ...).  >    For N=1, returns just the single comparison.
+
+
+---
+### DEFUN `%EXPAND-LOAD-TILE-COORDS-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Pure expansion of (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).  >    Returns a let/dotimes/when nest that cooperatively loads the tile, ending  >    with (local-barrier).
+
+
+---
+### DEFUN `%EXPAND-STORE-TILE-COORDS-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Pure expansion of (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).  >    Returns a let/progn nest with (local-barrier) BEFORE and AFTER the  >    cooperative store loop.  TransformF is applied per-element (unary).
+
+
+---
+### DEFVAR `*IN-DIVERGENT-CONDITIONAL*`
+
+  > T when the analyzer is currently inside a thread-divergent if/when/unless/cond  >    branch (i.e. the conditional's test was not constant-folded).  Used by the  >    load-tile-coords / store-tile-coords analyzers to reject placement that  >    would deadlock at their internal local-barriers.  >   >    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check  >    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the  >    internal %uniform-when form instead, whose analyzer does NOT set this flag.
+
+
+---
+### DEFUN `ANALYZE-%UNIFORM-IF-IMPL`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Internal-use: structurally identical to analyze-if-expression-impl but  >    does NOT bind *in-divergent-conditional* on the two-branch path.  Use  >    only from compiler-generated forms whose conditions are guaranteed  >    workgroup-uniform.
+
+
+---
+### DEFUN `ANALYZE-%UNIFORM-WHEN-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Internal: like when, but workgroup-uniform — does not set  >    *in-divergent-conditional*.  Used by compiler-generated stride bounds-  >    checks; not exposed to user code.
+
+
+---
+### DEFUN `%TLC-CHECK-NOT-DIVERGENT`
+- **Args**: `(OP-NAME LOCATION)`
+
+  > Signals a clear compile error if (op-name) appears inside a thread-divergent  >    conditional.  Call from load-tile-coords / store-tile-coords analyzers.
+
+
+---
+### DEFUN `ANALYZE-LOAD-TILE-COORDS-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).  >    Rejects placement inside a thread-divergent conditional, then delegates  >    codegen via %expand-load-tile-coords-form.
+
+
+---
+### DEFUN `ANALYZE-STORE-TILE-COORDS-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (store-tile-coords TILE DEST (ORIGIN...) &key transformF transpose).  >    Rejects placement inside a thread-divergent conditional, then delegates  >    codegen via %expand-store-tile-coords-form.
 
 
 ---
@@ -225,14 +316,14 @@ Generated on 2026-05-21T18:59:28.504276Z
 ### DEFUN `%EXPAND-HW-WORKGROUP-IDX-FORM`
 - **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
 
-  > Outer-loop expansion for hardware-stride :workgroup-idx.  Chunk-size per  >    dim = (get-local-size k).  Helpers get rewritten with the bound LS gensyms  >    so tile-indices uses a single point of evaluation.
+  > Outer-loop expansion for hardware-stride :workgroup-idx.  Phase 1b:  >    pre-walks the body to rewrite bare load-tile / store-tile into their  >    -coords forms using the bindings as the origin.
 
 
 ---
 ### DEFUN `%EXPAND-HW-WARP-IDX-FORM`
 - **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
 
-  > Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.  >   >    Iteration model: each warp processes warp-sized chunks of the flattened  >    global execution space.  Warps stride over chunks with stride =  >    warp-size * total-warps.  >   >    Currently uses a placeholder warp-size of 32 — should switch to  >    (get-warp-size) once that builtin is implemented (then NVIDIA/Intel  >    stay correct, AMD's 64-wide wavefronts also become correct).
+  > Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.  Phase 1b:  >    pre-checks the body for bare load-tile / store-tile (compile error if  >    found — incompatible with warp-grouped chunking).
 
 
 ---
@@ -281,7 +372,7 @@ Generated on 2026-05-21T18:59:28.504276Z
 ### DEFUN `%EXPAND-TILE-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
-  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Outer loop over tile origins, workgroup-strided.  Body executes once per  >    workgroup per tile-origin; each binding is bound to the tile's global  >    origin coord in its dim.  CT is currently ignored at expansion time —  >    layout-tag validation against the tensor's static CT still happens in  >    analyze-tile-stride-expression.
+  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the  >    body to rewrite bare load-tile / store-tile into their -coords forms using  >    the tile-stride's binding syms as the origin.
 
 
 ---
@@ -306,11 +397,32 @@ Generated on 2026-05-21T18:59:28.504276Z
 
 
 ---
+### DEFUN `%REWRITE-BARE-TILE-IN-FORM`
+- **Args**: `(FORM ORIGIN-BINDING-SYMS CL-PKG)`
+
+  > Rewrites bare (load-tile ...) / (store-tile ...) inside FORM into their  >    -coords equivalents using ORIGIN-BINDING-SYMS as the origin list.  Does  >    NOT recurse into nested tile-stride / hardware-stride / workgroup-stride  >    forms — those manage their own body rewrites.
+
+
+---
+### DEFUN `%REWRITE-BARE-LOAD-STORE-TILE-IN-BODY`
+- **Args**: `(BODY-FORMS ORIGIN-BINDING-SYMS CL-PKG)`
+
+  > Walks BODY-FORMS top-down and rewrites bare load-tile / store-tile to  >    their -coords equivalents.  Used by tile-stride and hardware-stride  >    :workgroup-idx body expansion.
+
+
+---
+### DEFUN `%DETECT-BARE-LOAD-STORE-TILE-IN-FORM`
+- **Args**: `(FORM PATH)`
+
+  > Recursively walks FORM and signals a compile error if a bare (load-tile ...)  >    or (store-tile ...) call appears.  PATH is the context name used in the  >    error message (e.g. "hardware-stride :warp-idx").
+
+
+---
 ### DEFUN `%EXPAND-WORKGROUP-STRIDED-OUTER-LOOP-WITH-TS-SYMS`
 - **Args**: `(TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN
               LOCATION)`
 
-  > Variant of %expand-workgroup-strided-outer-loop that takes a pre-allocated  >    list of TS gensyms (so the caller's body rewriter can refer to them by  >    name).  Otherwise identical in shape.
+  > Workgroup-strided outer loop, with the per-dim bounds check routed  >    through %uniform-when so it doesn't trip the divergence checker.
 
 
 ---
@@ -349,9 +461,51 @@ Generated on 2026-05-21T18:59:28.504276Z
 
 
 ---
+### DEFUN `ANALYZE-LOAD-TILE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Bare (load-tile SRC TILE &key ...) outside a stride context — compile  >    error pointing the user to load-tile-coords.
+
+
+---
+### DEFUN `ANALYZE-STORE-TILE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Bare (store-tile TILE DEST &key ...) outside a stride context — compile  >    error pointing the user to store-tile-coords.
+
+
+---
+### DEFUN `%EXPAND-LOAD-TILE-COORDS-BWD-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Pure expansion of (%load-tile-coords-bwd SRC-ADJ TILE-ADJ (ORIGIN...) &key transpose).  >    Cooperative scatter-add via atomic-add!.
+
+
+---
+### DEFUN `%EXPAND-STORE-TILE-COORDS-BWD-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Pure expansion of (%store-tile-coords-bwd TILE-ADJ DEST-ADJ (ORIGIN...) &key transpose).  >    Cooperative non-atomic accumulate into local tile_adj.  Barriers before  >    and after so prior tile_adj writes are visible and subsequent ones see  >    the result.
+
+
+---
+### DEFUN `ANALYZE-%LOAD-TILE-COORDS-BWD-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for compiler-internal %load-tile-coords-bwd.
+
+
+---
+### DEFUN `ANALYZE-%STORE-TILE-COORDS-BWD-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for compiler-internal %store-tile-coords-bwd.
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride (105), grid-stride (105), tile-stride (109), hardware-stride  >    (109), and workgroup-stride (110).
+  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,  >    and (111 Phase 1a) load-tile-coords / store-tile-coords.
 
 
 ---
@@ -1304,7 +1458,7 @@ Generated on 2026-05-21T18:59:28.504276Z
 ### DEFUN `ANF-NORMALIZE`
 - **Args**: `(EXPR IS-NESTED?)`
 
-  > Returns (VALUES normalized-expr bindings-list).  > Redefined for 082-atomics: atomic RMW ops (atomic-add! etc.) treat the first  > argument as a place (not hoisted to a temp), matching the set! convention.
+  > Returns (VALUES normalized-expr bindings-list).  >    Phase 1c: added opaque pass-through for load-tile-coords / store-tile-coords  >    and their internal *-bwd / bare load-tile / store-tile variants.
 
 
 ---
@@ -1396,10 +1550,31 @@ Generated on 2026-05-21T18:59:28.504276Z
 
 
 ---
+### DEFUN `%AUGMENT-SCRATCH-ADJ-BINDINGS`
+- **Args**: `(BINDINGS KERNEL-PKG)`
+
+  > For each binding (var (make-scratch-X ...)), inject a paired  >    (var_ADJ (make-scratch-X ...)) binding right after.  For other bindings,  >    pass through unchanged.  Phase 1c initial: assumes same-element-type  >    adjoint (no ulong→double promotion yet).
+
+
+---
+### DEFUN `%TLC-BWD-ADJ-NAME`
+- **Args**: `(SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)`
+
+  > Returns the backward-pass adjoint symbol for a forward arg SYM:  >      - if SYM is in INPUTS or OUTPUTS  → <SYM>_GRAD  (kernel param)  >      - otherwise (let-bound local)     → <SYM>_ADJ  (direct intern; NOT  >        via local-adj-fn, because local-adj-fn would add the sym to the  >        adjoint-map, which causes the wrapping let to scalar-initialize it  >        — wrong for tensor adjoints.  The auto-allocated LET binding for  >        <var>_ADJ as a make-scratch-* is the only initializer needed.)
+
+
+---
+### DEFUN `%TLC-EXTRACT-TRANSPOSE-KEY`
+- **Args**: `(KEY-ARGS)`
+
+  > Returns the value of :transpose in KEY-ARGS, or NIL if absent.
+
+
+---
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks an ANF body backwards to accumulate adjoints.  >    107: structure-preserving — recursively handles dotimes/if/let forms  >    encountered in flat-anf, emitting backward constructs that mirror the  >    forward structure.  Now also re-zeroes iteration-local adjoints at the  >    top of each backward dotimes body, so the chain-rule `adj += ...`  >    pattern does not accumulate across iterations of a grid-stride /  >    tensor-stride loop.
+  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form  >    that emit %load-tile-coords-bwd / %store-tile-coords-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.
 
 
 ---
@@ -1462,7 +1637,7 @@ Generated on 2026-05-21T18:59:28.504276Z
 ### DEFUN `%BACKWARD-SKIP-FN-P`
 - **Args**: `(FN-SYM)`
 
-  > Returns T if FN-SYM should be silently skipped in the AD backward walk.  > Skips:  >   - System-generated functions (name contains %)  >   - AS / AS-* type casts and derived-type coercions  >   - TO-<int-type> integer conversions  >   - 101 endeavor: built-in metadata helpers and view constructors.  >   - 105 endeavor: 087 GPU built-ins (per-launch constants and sync primitives).
+  > Returns T if FN-SYM should be silently skipped in the AD backward walk.
 
 
 ---

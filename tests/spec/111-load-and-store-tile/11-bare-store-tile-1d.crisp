@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "AD rules for store-tile-coords land in sub-step 1c"
+
+;; Sub-step 1b: bare store-tile inside tile-stride.  The bare form
+;; (store-tile tile OUT) gets rewritten to
+;; (store-tile-coords tile OUT (orig)) by the tile-stride body walker.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel bare_store_tile_1d (&out OUT)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (tile-stride OUT (4) (orig)
+      (workgroup-stride tile (lx)
+        (set! (~ tile lx) (+ orig lx)))
+      (store-tile tile OUT))))

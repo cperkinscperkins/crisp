@@ -1,0 +1,16 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "tile-stride"
+
+;; Bare load-tile cannot be used outside a tile-stride or
+;; hardware-stride :workgroup-idx body — there's no surrounding context
+;; to extract origin coords from.  The error message should direct the
+;; user to use load-tile-coords with explicit coords instead.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel ltc_no_context (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (load-tile V tile)))
