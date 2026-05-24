@@ -251,9 +251,12 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
       - Remove the %volatile-read pseudo-op and LLVMSetVolatile binding from the overlays.
       - Re-tag 056/03-struct-with-ct-meta with its full VERIFY-AUTODIFF directive.
 
-[ ] 031 - Intel BMG GPU driver / OpenCL ICD breaks VERIFY-AUTODIFF forward FD step.
-    Suspected cause: Intel BMG GPU driver update installed around 2026-05-19 (immediately
-    before endeavor 111 Phase 0 work began).  Not yet investigated; not yet reported to Intel.
+[/] 031 - Intel BMG OpenCL ICD breaks VERIFY-AUTODIFF forward FD step.  Level Zero
+    is unaffected — diagnosed 2026-05-23 via standalone L0 probe.  See
+    put_temp_files_here/bmg-bug-031/.
+    The driver update around 2026-05-19 (immediately before endeavor 111 Phase 0)
+    almost certainly caused the regression on the OpenCL side.  Not yet reported to
+    Intel — see Status / next steps below.
 
     Affected tests (all VERIFY-AUTODIFF specs that worked before the driver update):
       - 092-dotimes/07-diff-float-accum
@@ -281,16 +284,23 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
       - Same SPV was passing before the driver update.  Pre-update baseline (per memory
         snippet) was 693/693 E2E + the same VERIFY-AUTODIFF specs PASS.
 
-    Status: not yet investigated; deferred until endeavor 111 lands.  The baseline
-    --differentiate suite hovers at 4–5 unexplained FAILs entirely due to this bug.
-    Compiler-side changes in 111 do NOT introduce or worsen the failure set — confirmed
-    by running --differentiate on baseline (with the original 109 tests) and comparing
-    against the Phase 0 overlay (same 4 specs FAIL, identical failure mode).
+    Status (2026-05-23): standalone Level Zero loader at
+    put_temp_files_here/bmg-bug-031/loader.cpp dispatches the EXACT SAME SPV pair
+    (092-dotimes/07-diff-float-accum forward + _grad) on BMG and produces correct
+    results:
+      f(x+h) = 15.005   f(x-h) = 14.995
+      FD numerical df/dx  = 4.99916  (within atol 5e-3)
+      Backward analytical = 5.0      (exact)
+      MATCH
+    Since both runtimes JIT through IGC, the SPV and the GPU machine code are not
+    the regression.  The bug is in Intel's OpenCL ICD layer (command-queue
+    dispatch / argument binding / buffer state — something the L0 path skips).
 
-    Next steps when we return to it:
-      - Roll back the BMG driver (or pin it to a known-good version) and re-run the
-        failing specs to confirm root cause.
-      - If confirmed: build a minimal Level Zero reproducer (similar to the
-        put_temp_files_here/igc-bug-report/ pattern used for bug 030) and file with Intel.
-      - If NOT the driver: bisect against recent main commits for any forward-kernel
-        codegen regression.
+    Path forward (Phase 1c.2): port tests/verify-autodiff-runner.lisp from OpenCL
+    to Level Zero.  The loader.cpp covers every L0 verb the runner needs (USM alloc,
+    kernel arg set, group dispatch, sync).  Once ported, all five affected specs
+    should come back to life under VAD.
+
+    No Intel bug to file as a compiler-side reproducer — the OpenCL ICD regression
+    is in Intel's domain to track via their own telemetry.  Worth flagging informally
+    if we have a contact, but no contained-repro report is owed.

@@ -24,6 +24,44 @@
   (format t "~&; Loading CFFI for verify-autodiff runner...~%")
   (ql:quickload :cffi :silent t))
 
+;;; === Runtime selection ================================================
+;;;
+;;; *ad-runtime* picks which on-metal runtime VERIFY-AUTODIFF dispatches
+;;; through:
+;;;   :l0     -- Level Zero via ze_loader (default; SPV-correct on BMG).
+;;;   :opencl -- OpenCL via the platform ICD (legacy; regressed on BMG
+;;;              under recent Intel Graphics driver -- see bug 031).
+;;;
+;;; *ad-device* is the L0 device handle, set by runtime-init when L0 is
+;;; the active runtime.  L0 helpers that need the device read it from
+;;; this dynamic var so the per-helper dispatch signatures can stay
+;;; identical to the OpenCL ones (which pass context + queue).
+
+(defvar *ad-runtime* :l0
+  "Which on-metal runtime VERIFY-AUTODIFF uses: :l0 or :opencl.")
+
+(defvar *ad-device* nil
+  "L0 device handle (ze_device_handle_t) bound by runtime-init.  NIL when
+   *AD-RUNTIME* is :opencl or when no runtime is initialised.")
+
+(defvar *ad-context* nil
+  "Active L0 context handle (ze_context_handle_t), bound by RUNTIME-INIT
+   when *AD-RUNTIME* is :l0.  L0 helpers that need the context for
+   transient command-queue/list creation read it from here.  NIL under
+   :opencl.")
+
+;;; === Level Zero bindings ==============================================
+;;;
+;;; Loaded eagerly so the L0 dispatch path is callable from any test
+;;; that loads this runner.  If ze_loader.dll is missing, this signals
+;;; at load time -- mirror the existing OpenCL-load failure mode.
+
+(load (merge-pathnames "l0-bindings.lisp"
+                       (make-pathname :defaults #.(or *compile-file-pathname*
+                                                      *load-pathname*
+                                                      *default-pathname-defaults*)
+                                      :name nil :type nil)))
+
 ;;; === OpenCL Constants =================================================
 
 (defconstant +CL-SUCCESS+ 0)
@@ -123,7 +161,7 @@
       (read-sequence data stream)
       data)))
 
-(defun create-program-and-kernel (context spv-data kernel-name)
+(defun opencl-create-program-and-kernel (context spv-data kernel-name)
   "Builds an OpenCL program from SPV-DATA and creates KERNEL-NAME.
    Returns (values program kernel)."
   (cffi:with-foreign-object (err :int)
@@ -137,26 +175,26 @@
           (check-cl (cffi:mem-ref err :int))
           (values program kernel))))))
 
-(defun create-float-cell-buffer (context)
+(defun opencl-create-float-cell-buffer (context)
   "Creates a 4-byte read/write cl_mem buffer for a single-float cell."
   (cffi:with-foreign-object (err :int)
     (let ((buffer (cl-create-buffer context +CL-MEM-READ-WRITE+ 4 (cffi:null-pointer) err)))
       (check-cl (cffi:mem-ref err :int))
       buffer)))
 
-(defun write-float-cell (queue buffer value)
+(defun opencl-write-float-cell (queue buffer value)
   "Writes VALUE (a single-float) to the 1-element float buffer."
   (cffi:with-foreign-object (data :float 1)
     (setf (cffi:mem-aref data :float 0) value)
     (check-cl (cl-enqueue-write-buffer queue buffer 1 0 4 data 0 (cffi:null-pointer) (cffi:null-pointer)))))
 
-(defun read-float-cell (queue buffer)
+(defun opencl-read-float-cell (queue buffer)
   "Reads the single float from BUFFER and returns it."
   (cffi:with-foreign-object (result :float 1)
     (check-cl (cl-enqueue-read-buffer queue buffer 1 0 4 result 0 (cffi:null-pointer) (cffi:null-pointer)))
     (cffi:mem-aref result :float 0)))
 
-(defun bind-cell-arg (kernel base-index buffer &key (byte-size 4) (offset 0))
+(defun opencl-bind-cell-arg (kernel base-index buffer &key (byte-size 4) (offset 0))
   "Binds a Crisp cell to KERNEL starting at BASE-INDEX (3 args: parent ptr,
    byte_size, offset).  Reflects the post-:access-removal cell layout
    (3-tuple).  Sizes use :uint64 to match the kernel's i64 params on Windows."
@@ -168,7 +206,7 @@
     (check-cl (cl-set-kernel-arg kernel (+ base-index 1) (cffi:foreign-type-size :uint64) arg1))
     (check-cl (cl-set-kernel-arg kernel (+ base-index 2) (cffi:foreign-type-size :uint64) arg2))))
 
-(defun launch-kernel-1d (queue kernel &key (global-size 1))
+(defun opencl-launch-kernel-1d (queue kernel &key (global-size 1))
   "Launches KERNEL with a 1D ND-range of GLOBAL-SIZE and waits for it to finish."
   (cffi:with-foreign-object (gs :size 1)
     (setf (cffi:mem-aref gs :size 0) global-size)
@@ -177,7 +215,7 @@
 
 ;;; --- Phase 5b helpers: vectors + plain scalars -----------------------
 
-(defun create-float-buffer (context n-elements)
+(defun opencl-create-float-buffer (context n-elements)
   "Creates a read/write cl_mem buffer holding N-ELEMENTS single-float values."
   (cffi:with-foreign-object (err :int)
     (let ((buffer (cl-create-buffer context +CL-MEM-READ-WRITE+
@@ -186,7 +224,7 @@
       (check-cl (cffi:mem-ref err :int))
       buffer)))
 
-(defun write-float-vector (queue buffer values)
+(defun opencl-write-float-vector (queue buffer values)
   "Writes a list of float VALUES into BUFFER (one float per element)."
   (let ((n (length values)))
     (cffi:with-foreign-object (data :float n)
@@ -196,7 +234,7 @@
       (check-cl (cl-enqueue-write-buffer queue buffer 1 0 (* 4 n) data
                                          0 (cffi:null-pointer) (cffi:null-pointer))))))
 
-(defun read-float-vector (queue buffer n)
+(defun opencl-read-float-vector (queue buffer n)
   "Reads N single-floats from BUFFER and returns them as a list."
   (cffi:with-foreign-object (data :float n)
     (check-cl (cl-enqueue-read-buffer queue buffer 1 0 (* 4 n) data
@@ -204,14 +242,14 @@
     (loop for i from 0 below n
           collect (cffi:mem-aref data :float i))))
 
-(defun read-float-vector-elem (queue buffer i)
+(defun opencl-read-float-vector-elem (queue buffer i)
   "Reads a single float at index I from BUFFER."
   (cffi:with-foreign-object (data :float 1)
     (check-cl (cl-enqueue-read-buffer queue buffer 1 (* 4 i) 4 data
                                       0 (cffi:null-pointer) (cffi:null-pointer)))
     (cffi:mem-aref data :float 0)))
 
-(defun bind-vector-arg (kernel base-index buffer length)
+(defun opencl-bind-vector-arg (kernel base-index buffer length)
   "Binds a 1D contiguous-compact float vector to KERNEL starting at BASE-INDEX.
    6 args: parent ptr, parent byte_size, offset, stride[0], extent[0], length.
    Sizes use :uint64 to match the kernel's i64 params on Windows."
@@ -231,27 +269,27 @@
     (check-cl (cl-set-kernel-arg kernel (+ base-index 4) (cffi:foreign-type-size :uint64) arg4))
     (check-cl (cl-set-kernel-arg kernel (+ base-index 5) (cffi:foreign-type-size :uint64) arg5))))
 
-(defun bind-uint64-scalar-arg (kernel arg-index value)
+(defun opencl-bind-uint64-scalar-arg (kernel arg-index value)
   "Binds a plain i64 / uint64 scalar at ARG-INDEX."
   (cffi:with-foreign-object (arg :uint64)
     (setf (cffi:mem-ref arg :uint64) value)
     (check-cl (cl-set-kernel-arg kernel arg-index (cffi:foreign-type-size :uint64) arg))))
 
-(defun bind-float-scalar-arg (kernel arg-index value)
+(defun opencl-bind-float-scalar-arg (kernel arg-index value)
   "Binds a plain (unboxed) float32 scalar at ARG-INDEX.  Used for record
    field inputs that SROA into bare floats at the kernel boundary."
   (cffi:with-foreign-object (arg :float)
     (setf (cffi:mem-ref arg :float) (cl:float value 1.0))
     (check-cl (cl-set-kernel-arg kernel arg-index (cffi:foreign-type-size :float) arg))))
 
-(defun bind-int32-scalar-arg (kernel arg-index value)
+(defun opencl-bind-int32-scalar-arg (kernel arg-index value)
   "Binds a plain (unboxed) i32 scalar at ARG-INDEX.  Used for record
    field inputs declared `int` that SROA into bare i32 at the kernel boundary."
   (cffi:with-foreign-object (arg :int32)
     (setf (cffi:mem-ref arg :int32) value)
     (check-cl (cl-set-kernel-arg kernel arg-index (cffi:foreign-type-size :int32) arg))))
 
-(defun bind-struct-by-value-arg (kernel arg-index fields total-bytes)
+(defun opencl-bind-struct-by-value-arg (kernel arg-index fields total-bytes)
   "Binds a struct passed by value at ARG-INDEX.  FIELDS is a list of plists,
    each `(:value V :ftype :float|:int32 :offset BYTE-OFFSET)` in declaration
    order.  Packs the fields into TOTAL-BYTES of host memory and submits via
@@ -271,7 +309,7 @@
                  (cl:float value 1.0)))
           (:int32
            (setf (cffi:mem-ref (cffi:inc-pointer data offset) :int32) value))
-          (t (error "bind-struct-by-value-arg: unsupported ftype ~A" ftype)))))
+          (t (error "opencl-bind-struct-by-value-arg: unsupported ftype ~A" ftype)))))
     (check-cl (cl-set-kernel-arg kernel arg-index total-bytes data))))
 
 ;;; === Entry Point =======================================================
@@ -362,9 +400,7 @@
    scalar and matches the backward's all-ones gradient seed."
   (if output-vec-length
       (cffi:with-foreign-object (data :float output-vec-length)
-        (check-cl (cl-enqueue-read-buffer queue output-buf 1 0
-                                          (* 4 output-vec-length) data
-                                          0 (cffi:null-pointer) (cffi:null-pointer)))
+        (read-bytes-from-buffer queue output-buf data (* 4 output-vec-length))
         (loop for i from 0 below output-vec-length
               sum (cffi:mem-aref data :float i)))
       (read-float-cell queue output-buf)))
@@ -551,7 +587,7 @@
    vectors only.  Multi-dim tensors / records / structs are later phases."
   (flet ((vlog (control &rest args)
            (when verbose (apply #'format t control args))))
-    (let* ((platform nil) (device nil) (context nil) (queue nil)
+    (let* ((context nil) (queue nil)
            (fwd-program nil) (fwd-kernel nil)
            (bwd-program nil) (bwd-kernel nil)
            (descs nil) (output-fwd-base nil) (output-bwd-base nil)
@@ -566,18 +602,9 @@
            (multiple-value-setq (descs output-fwd-base output-bwd-base grad-output-bwd-base)
              (%vad-make-descriptors inputs at-points structs output-vec-length))
 
-           (cffi:with-foreign-objects ((platforms :pointer 1)
-                                       (devices :pointer 1))
-             (check-cl (cl-get-platform-ids 1 platforms (cffi:null-pointer)))
-             (setf platform (cffi:mem-aref platforms :pointer 0))
-             (check-cl (cl-get-device-ids platform +CL-DEVICE-TYPE-GPU+ 1 devices (cffi:null-pointer)))
-             (setf device (cffi:mem-aref devices :pointer 0)))
-
-           (cffi:with-foreign-object (err :int)
-             (setf context (cl-create-context (cffi:null-pointer) 1
-                                              (cffi:foreign-alloc :pointer :initial-element device)
-                                              (cffi:null-pointer) (cffi:null-pointer) err))
-             (setf queue (cl-create-command-queue context device 0 err)))
+           (multiple-value-bind (ctx q) (runtime-init)
+             (setf context ctx
+                   queue   q))
 
            (vlog "~&;   Loading kernels: ~a / ~a (~a input~:p)~%"
                  fwd-kernel-name bwd-kernel-name (length inputs))
@@ -596,12 +623,7 @@
              ;; Grad buffer is always a single allocation; its byte-size depends
              ;; on kind (4 for float-cell, 8 for double-cell, 4*len for vector).
              (setf (getf d :grad-buffer)
-                   (let ((bytes (%vad-grad-bytes-for d)))
-                     (cffi:with-foreign-object (err :int)
-                       (let ((buf (cl-create-buffer context +CL-MEM-READ-WRITE+
-                                                    bytes (cffi:null-pointer) err)))
-                         (check-cl (cffi:mem-ref err :int))
-                         buf)))))
+                   (runtime-create-grad-buffer context (%vad-grad-bytes-for d))))
            ;; Output buffer: 1 element for scalar-cell output, N for vector.
            ;; Grad output (seed) buffer: same shape as output.
            (setf output-buf
@@ -700,19 +722,13 @@
                       (:scalar-ulong
                        (cffi:with-foreign-object (data :uint64 1)
                          (setf (cffi:mem-aref data :uint64 0) 0)
-                         (check-cl (cl-enqueue-write-buffer queue (getf d :grad-buffer)
-                                                            1 0 8 data
-                                                            0 (cffi:null-pointer)
-                                                            (cffi:null-pointer)))))
+                         (write-bytes-to-buffer queue (getf d :grad-buffer) data 8)))
                       (:struct-by-value
                        (let ((nbytes (getf d :grad-bytes)))
                          (cffi:with-foreign-object (data :uint8 nbytes)
                            (loop for i from 0 below nbytes
                                  do (setf (cffi:mem-aref data :uint8 i) 0))
-                           (check-cl (cl-enqueue-write-buffer queue (getf d :grad-buffer)
-                                                              1 0 nbytes data
-                                                              0 (cffi:null-pointer)
-                                                              (cffi:null-pointer))))))))))
+                           (write-bytes-to-buffer queue (getf d :grad-buffer) data nbytes))))))))
 
              ;; Static binds: buffer-backed inputs bound once.
              (bind-static-input-args fwd-kernel)
@@ -852,10 +868,7 @@
                         ;; declaration order (offsets 0, 4, 8, ...).
                         (let ((nbytes (getf d :grad-bytes)))
                           (cffi:with-foreign-object (raw :uint8 nbytes)
-                            (check-cl (cl-enqueue-read-buffer queue (getf d :grad-buffer)
-                                                              1 0 nbytes raw
-                                                              0 (cffi:null-pointer)
-                                                              (cffi:null-pointer)))
+                            (read-bytes-from-buffer queue (getf d :grad-buffer) raw nbytes)
                             (format *error-output* "~&[DBG] struct ~A grad raw bytes:" (getf d :name))
                             (loop for i from 0 below nbytes
                                   do (format *error-output* " ~2,'0X" (cffi:mem-aref raw :uint8 i)))
@@ -890,16 +903,503 @@
                    (vlog "~&;   pass-p = ~a~%" pass-p))))))
 
         ;; Cleanup
-        (when output-buf      (cl-release-mem-object output-buf))
-        (when output-grad-buf (cl-release-mem-object output-grad-buf))
+        (when output-buf      (runtime-release-buffer context output-buf))
+        (when output-grad-buf (runtime-release-buffer context output-grad-buf))
         (dolist (d descs)
-          (when (getf d :buffer)      (cl-release-mem-object (getf d :buffer)))
-          (when (getf d :grad-buffer) (cl-release-mem-object (getf d :grad-buffer))))
-        (when fwd-kernel  (cl-release-kernel fwd-kernel))
-        (when fwd-program (cl-release-program fwd-program))
-        (when bwd-kernel  (cl-release-kernel bwd-kernel))
-        (when bwd-program (cl-release-program bwd-program))
-        (when queue   (cl-release-command-queue queue))
-        (when context (cl-release-context context)))
+          (when (getf d :buffer)      (runtime-release-buffer context (getf d :buffer)))
+          (when (getf d :grad-buffer) (runtime-release-buffer context (getf d :grad-buffer))))
+        (when fwd-kernel  (runtime-release-kernel fwd-kernel))
+        (when fwd-program (runtime-release-program fwd-program))
+        (when bwd-kernel  (runtime-release-kernel bwd-kernel))
+        (when bwd-program (runtime-release-program bwd-program))
+        (runtime-shutdown context queue))
 
       (values pass-p results))))
+
+
+;;; ======================================================================
+;;; === Level Zero helpers (parallel to the opencl-* layer above) ========
+;;; ======================================================================
+;;;
+;;; Each l0-* helper has the same arity and same logical role as the
+;;; matching opencl-* helper, so the dispatch shim below can pick between
+;;; them on (*ad-runtime*) without the caller (or VERIFY-AUTODIFF body)
+;;; knowing which runtime is in play.
+;;;
+;;; Two adapter notes:
+;;;
+;;;   1. The "queue" arg the OpenCL helpers take is ignored under L0:
+;;;      USM-shared allocations are host-addressable, so read/write are
+;;;      just (setf (cffi:mem-ref ...)).  And dispatch creates a fresh
+;;;      command queue + list per launch (cheap and stateless; can be
+;;;      pooled later if it shows up in profiling).
+;;;
+;;;   2. The L0 device handle is held in *AD-DEVICE* (a dynamic var),
+;;;      set by RUNTIME-INIT before any L0 helper runs.  Helpers that
+;;;      need the device read it from there instead of taking it as
+;;;      an extra arg, preserving the OpenCL-helper signatures.
+
+(defun l0-make-zeroed-struct (struct-name)
+  "Allocate a foreign struct sized for STRUCT-NAME and zero-fill it.
+   Caller must (cffi:foreign-free) the returned pointer."
+  (let* ((n (cffi:foreign-type-size (list :struct struct-name)))
+         (p (cffi:foreign-alloc :uchar :count n)))
+    (loop for i from 0 below n do (setf (cffi:mem-aref p :uchar i) 0))
+    p))
+
+(defun l0-create-program-and-kernel (context spv-data kernel-name)
+  "L0 counterpart of OPENCL-CREATE-PROGRAM-AND-KERNEL.  CONTEXT is the
+   L0 ze_context_handle_t.  Reads device from *AD-DEVICE*.  Returns
+   (values module kernel) where MODULE plays the role OpenCL's program
+   plays (release with ZE-MODULE-DESTROY)."
+  (let* ((il-len (length spv-data))
+         (il-ptr (cffi:foreign-alloc :uchar :count il-len))
+         (desc   (l0-make-zeroed-struct 'ze-module-desc))
+         (kdesc  (l0-make-zeroed-struct 'ze-kernel-desc))
+         (name-bytes (length kernel-name))
+         (name-c (cffi:foreign-alloc :char :count (1+ name-bytes))))
+    (unwind-protect
+        (progn
+         (loop for i from 0 below il-len
+               do (setf (cffi:mem-aref il-ptr :uchar i) (aref spv-data i)))
+         (setf (cffi:foreign-slot-value desc '(:struct ze-module-desc) 'stype)
+               +ZE-STYPE-MODULE-DESC+
+               (cffi:foreign-slot-value desc '(:struct ze-module-desc) 'format)
+               +ZE-MODULE-FORMAT-IL-SPIRV+
+               (cffi:foreign-slot-value desc '(:struct ze-module-desc) 'input-size)
+               il-len
+               (cffi:foreign-slot-value desc '(:struct ze-module-desc) 'p-input-module)
+               il-ptr)
+         (cffi:with-foreign-objects ((mod-out :pointer) (log-out :pointer))
+           (setf (cffi:mem-ref log-out :pointer) (cffi:null-pointer))
+           (let ((err (ze-module-create context *ad-device* desc mod-out log-out)))
+             (unless (= err +ZE-RESULT-SUCCESS+)
+               (let ((blog (ze-fetch-build-log (cffi:mem-ref log-out :pointer))))
+                 (error "L0 zeModuleCreate(~a) failed: 0x~X~@[~%  build log:~%~A~]"
+                        kernel-name err blog)))
+             (let ((module (cffi:mem-ref mod-out :pointer))
+                   (log    (cffi:mem-ref log-out :pointer)))
+               (unless (cffi:null-pointer-p log)
+                 (ze-module-build-log-destroy log))
+               (loop for i from 0 below name-bytes
+                     do (setf (cffi:mem-aref name-c :char i)
+                              (char-code (char kernel-name i))))
+               (setf (cffi:mem-aref name-c :char name-bytes) 0)
+               (setf (cffi:foreign-slot-value kdesc '(:struct ze-kernel-desc) 'stype)
+                     +ZE-STYPE-KERNEL-DESC+
+                     (cffi:foreign-slot-value kdesc '(:struct ze-kernel-desc) 'p-kernel-name)
+                     name-c)
+               (cffi:with-foreign-object (kern-out :pointer)
+                 (check-ze (ze-kernel-create module kdesc kern-out))
+                 (values module (cffi:mem-ref kern-out :pointer)))))))
+      (cffi:foreign-free il-ptr)
+      (cffi:foreign-free desc)
+      (cffi:foreign-free kdesc)
+      (cffi:foreign-free name-c))))
+
+(defun l0-alloc-shared (context bytes alignment)
+  "Allocate a USM-shared buffer of BYTES with ALIGNMENT.  Returns the
+   host-addressable pointer."
+  (let ((dev-desc (l0-make-zeroed-struct 'ze-device-mem-alloc-desc))
+        (hst-desc (l0-make-zeroed-struct 'ze-host-mem-alloc-desc)))
+    (unwind-protect
+        (progn
+         (setf (cffi:foreign-slot-value dev-desc '(:struct ze-device-mem-alloc-desc) 'stype)
+               +ZE-STYPE-DEVICE-MEM-ALLOC-DESC+
+               (cffi:foreign-slot-value hst-desc '(:struct ze-host-mem-alloc-desc) 'stype)
+               +ZE-STYPE-HOST-MEM-ALLOC-DESC+)
+         (cffi:with-foreign-object (pp :pointer)
+           (check-ze (ze-mem-alloc-shared context dev-desc hst-desc bytes alignment
+                                          *ad-device* pp))
+           (cffi:mem-ref pp :pointer)))
+      (cffi:foreign-free dev-desc)
+      (cffi:foreign-free hst-desc))))
+
+(defun l0-create-float-cell-buffer (context)
+  (l0-alloc-shared context 4 4))
+
+(defun l0-write-float-cell (queue buffer value)
+  (declare (ignore queue))
+  (setf (cffi:mem-ref buffer :float) (cl:float value 1.0)))
+
+(defun l0-read-float-cell (queue buffer)
+  (declare (ignore queue))
+  (cffi:mem-ref buffer :float))
+
+(defun l0-create-float-buffer (context n-elements)
+  (l0-alloc-shared context (* 4 n-elements) 4))
+
+(defun l0-write-float-vector (queue buffer values)
+  (declare (ignore queue))
+  (loop for v in values
+        for i from 0
+        do (setf (cffi:mem-aref buffer :float i) (cl:float v 1.0))))
+
+(defun l0-opencl-read-float-vector (queue buffer n)
+  (declare (ignore queue))
+  (loop for i from 0 below n
+        collect (cffi:mem-aref buffer :float i)))
+
+(defun l0-opencl-read-float-vector-elem (queue buffer i)
+  (declare (ignore queue))
+  (cffi:mem-aref buffer :float i))
+
+(defun l0-bind-cell-arg (kernel base-index buffer &key (byte-size 4) (offset 0))
+  "L0 cell binding: 3 args at BASE-INDEX, BASE+1, BASE+2."
+  (cffi:with-foreign-objects ((p-ptr :pointer) (p-bs :uint64) (p-off :uint64))
+    (setf (cffi:mem-ref p-ptr :pointer) buffer
+          (cffi:mem-ref p-bs :uint64) byte-size
+          (cffi:mem-ref p-off :uint64) offset)
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 0)
+                                            (cffi:foreign-type-size :pointer) p-ptr))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 1)
+                                            (cffi:foreign-type-size :uint64) p-bs))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 2)
+                                            (cffi:foreign-type-size :uint64) p-off))))
+
+(defun l0-bind-vector-arg (kernel base-index buffer length)
+  "L0 1D-vector binding: 6 args (ptr, parent-byte_size, offset, stride[0],
+   extent[0], length).  Mirrors OPENCL-BIND-VECTOR-ARG exactly."
+  (cffi:with-foreign-objects ((p-ptr :pointer)
+                              (p-bs :uint64) (p-off :uint64)
+                              (p-stride :uint64) (p-extent :uint64) (p-len :uint64))
+    (setf (cffi:mem-ref p-ptr :pointer) buffer
+          (cffi:mem-ref p-bs :uint64) (* 4 length)
+          (cffi:mem-ref p-off :uint64) 0
+          (cffi:mem-ref p-stride :uint64) 1
+          (cffi:mem-ref p-extent :uint64) length
+          (cffi:mem-ref p-len :uint64) length)
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 0)
+                                            (cffi:foreign-type-size :pointer) p-ptr))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 1)
+                                            (cffi:foreign-type-size :uint64) p-bs))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 2)
+                                            (cffi:foreign-type-size :uint64) p-off))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 3)
+                                            (cffi:foreign-type-size :uint64) p-stride))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 4)
+                                            (cffi:foreign-type-size :uint64) p-extent))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 5)
+                                            (cffi:foreign-type-size :uint64) p-len))))
+
+(defun l0-bind-uint64-scalar-arg (kernel arg-index value)
+  (cffi:with-foreign-object (p :uint64)
+    (setf (cffi:mem-ref p :uint64) value)
+    (check-ze (ze-kernel-set-argument-value kernel arg-index
+                                            (cffi:foreign-type-size :uint64) p))))
+
+(defun l0-bind-float-scalar-arg (kernel arg-index value)
+  (cffi:with-foreign-object (p :float)
+    (setf (cffi:mem-ref p :float) (cl:float value 1.0))
+    (check-ze (ze-kernel-set-argument-value kernel arg-index
+                                            (cffi:foreign-type-size :float) p))))
+
+(defun l0-bind-int32-scalar-arg (kernel arg-index value)
+  (cffi:with-foreign-object (p :int32)
+    (setf (cffi:mem-ref p :int32) value)
+    (check-ze (ze-kernel-set-argument-value kernel arg-index
+                                            (cffi:foreign-type-size :int32) p))))
+
+(defun l0-bind-struct-by-value-arg (kernel arg-index fields total-bytes)
+  (cffi:with-foreign-object (data :uint8 total-bytes)
+    (loop for i from 0 below total-bytes
+          do (setf (cffi:mem-aref data :uint8 i) 0))
+    (dolist (f fields)
+      (let ((offset (getf f :offset))
+            (ftype  (getf f :ftype))
+            (value  (getf f :value)))
+        (case ftype
+          (:float (setf (cffi:mem-ref (cffi:inc-pointer data offset) :float)
+                        (cl:float value 1.0)))
+          (:int32 (setf (cffi:mem-ref (cffi:inc-pointer data offset) :int32) value))
+          (t (error "l0-bind-struct-by-value-arg: unsupported ftype ~A" ftype)))))
+    (check-ze (ze-kernel-set-argument-value kernel arg-index total-bytes data))))
+
+(defun l0-opencl-launch-kernel-1d (queue kernel &key (global-size 1))
+  "L0 launch: sets group size to (1,1,1), launches with (GLOBAL-SIZE,1,1)
+   groups.  Creates a fresh command queue + list per call (cheap; pool
+   later if needed)."
+  (declare (ignore queue))
+  (let ((context nil))
+    ;; We need the context for queue/list creation.  *ad-context* is bound
+    ;; by RUNTIME-INIT.
+    (setf context *ad-context*)
+    (check-ze (ze-kernel-set-group-size kernel 1 1 1))
+    (cffi:with-foreign-objects ((gc '(:struct ze-group-count))
+                                (cl-desc '(:struct ze-command-list-desc))
+                                (cq-desc '(:struct ze-command-queue-desc))
+                                (cl-out :pointer)
+                                (cq-out :pointer)
+                                (cl-arr :pointer))
+      (setf (cffi:foreign-slot-value gc '(:struct ze-group-count) 'x) global-size
+            (cffi:foreign-slot-value gc '(:struct ze-group-count) 'y) 1
+            (cffi:foreign-slot-value gc '(:struct ze-group-count) 'z) 1)
+      (loop for i from 0 below (cffi:foreign-type-size '(:struct ze-command-list-desc))
+            do (setf (cffi:mem-aref cl-desc :uchar i) 0))
+      (loop for i from 0 below (cffi:foreign-type-size '(:struct ze-command-queue-desc))
+            do (setf (cffi:mem-aref cq-desc :uchar i) 0))
+      (setf (cffi:foreign-slot-value cl-desc '(:struct ze-command-list-desc) 'stype)
+            +ZE-STYPE-COMMAND-LIST-DESC+
+            (cffi:foreign-slot-value cq-desc '(:struct ze-command-queue-desc) 'stype)
+            +ZE-STYPE-COMMAND-QUEUE-DESC+)
+      (check-ze (ze-command-list-create context *ad-device* cl-desc cl-out))
+      (check-ze (ze-command-queue-create context *ad-device* cq-desc cq-out))
+      (let ((cl-h (cffi:mem-ref cl-out :pointer))
+            (cq-h (cffi:mem-ref cq-out :pointer)))
+        (unwind-protect
+            (progn
+             (check-ze (ze-command-list-append-launch-kernel
+                        cl-h kernel gc (cffi:null-pointer) 0 (cffi:null-pointer)))
+             (check-ze (ze-command-list-close cl-h))
+             (setf (cffi:mem-ref cl-arr :pointer) cl-h)
+             (check-ze (ze-command-queue-execute-command-lists
+                        cq-h 1 cl-arr (cffi:null-pointer)))
+             (check-ze (ze-command-queue-synchronize cq-h +ZE-UINT64-MAX+)))
+          (ze-command-list-destroy cl-h)
+          (ze-command-queue-destroy cq-h))))))
+
+
+;;; ======================================================================
+;;; === Dispatch shims ===================================================
+;;; ======================================================================
+;;;
+;;; Bare-name helpers that pick between :opencl and :l0 on (*ad-runtime*).
+;;; VERIFY-AUTODIFF's body calls these unprefixed names, so flipping the
+;;; runtime is a single defvar setf.
+;;;
+;;; Implementation note: the shims dispatch via (funcall (ecase ...) args)
+;;; instead of (ecase ... (:opencl (opencl-foo args))).  The funcall form
+;;; keeps the impl-fn symbols quoted ('opencl-foo, 'l0-foo) so they do
+;;; NOT appear as "(opencl-foo " patterns -- which keeps text-level
+;;; rename passes from accidentally turning the shims into infinite
+;;; self-recursion.  Yes, this is ugly; it is also the smallest change
+;;; that keeps the verify-autodiff body identical-looking under either
+;;; runtime.
+
+(defun create-program-and-kernel (context spv-data kernel-name)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-create-program-and-kernel)
+             (:l0     'l0-create-program-and-kernel))
+           context spv-data kernel-name))
+
+(defun create-float-cell-buffer (context)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-create-float-cell-buffer)
+             (:l0     'l0-create-float-cell-buffer))
+           context))
+
+(defun write-float-cell (queue buffer value)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-write-float-cell)
+             (:l0     'l0-write-float-cell))
+           queue buffer value))
+
+(defun read-float-cell (queue buffer)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-read-float-cell)
+             (:l0     'l0-read-float-cell))
+           queue buffer))
+
+(defun bind-cell-arg (kernel base-index buffer &key (byte-size 4) (offset 0))
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-cell-arg)
+             (:l0     'l0-bind-cell-arg))
+           kernel base-index buffer :byte-size byte-size :offset offset))
+
+(defun launch-kernel-1d (queue kernel &key (global-size 1))
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-launch-kernel-1d)
+             (:l0     'l0-opencl-launch-kernel-1d))
+           queue kernel :global-size global-size))
+
+(defun create-float-buffer (context n-elements)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-create-float-buffer)
+             (:l0     'l0-create-float-buffer))
+           context n-elements))
+
+(defun write-float-vector (queue buffer values)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-write-float-vector)
+             (:l0     'l0-write-float-vector))
+           queue buffer values))
+
+(defun read-float-vector (queue buffer n)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-read-float-vector)
+             (:l0     'l0-opencl-read-float-vector))
+           queue buffer n))
+
+(defun read-float-vector-elem (queue buffer i)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-read-float-vector-elem)
+             (:l0     'l0-opencl-read-float-vector-elem))
+           queue buffer i))
+
+(defun bind-vector-arg (kernel base-index buffer length)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-vector-arg)
+             (:l0     'l0-bind-vector-arg))
+           kernel base-index buffer length))
+
+(defun bind-uint64-scalar-arg (kernel arg-index value)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-uint64-scalar-arg)
+             (:l0     'l0-bind-uint64-scalar-arg))
+           kernel arg-index value))
+
+(defun bind-float-scalar-arg (kernel arg-index value)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-float-scalar-arg)
+             (:l0     'l0-bind-float-scalar-arg))
+           kernel arg-index value))
+
+(defun bind-int32-scalar-arg (kernel arg-index value)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-int32-scalar-arg)
+             (:l0     'l0-bind-int32-scalar-arg))
+           kernel arg-index value))
+
+(defun bind-struct-by-value-arg (kernel arg-index fields total-bytes)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-struct-by-value-arg)
+             (:l0     'l0-bind-struct-by-value-arg))
+           kernel arg-index fields total-bytes))
+
+;;; --- Byte-level buffer I/O dispatchers --------------------------------
+;;;
+;;; A handful of call sites in %vad-* and VERIFY-AUTODIFF copy raw bytes
+;;; in or out of buffers that don't fit the float-cell / float-vector
+;;; abstractions: :scalar-ulong grad buffers (8 bytes), :struct-by-value
+;;; grad shadows (NBYTES), and vector outputs in %vad-read-y.  These
+;;; dispatchers wrap those copies.
+;;;
+;;; Under :opencl the host pointer is staged in/out via cl-enqueue-*.
+;;; Under :l0 the USM-shared pointer IS the host pointer, so the copy
+;;; collapses to a memcpy.
+
+(defun write-bytes-to-buffer (queue buffer host-ptr nbytes)
+  "Copies NBYTES from host-pointer HOST-PTR into runtime BUFFER."
+  (ecase *ad-runtime*
+    (:opencl
+     (check-cl (cl-enqueue-write-buffer queue buffer 1 0 nbytes host-ptr
+                                        0 (cffi:null-pointer) (cffi:null-pointer))))
+    (:l0
+     (loop for i from 0 below nbytes
+           do (setf (cffi:mem-aref buffer :uint8 i)
+                    (cffi:mem-aref host-ptr :uint8 i))))))
+
+(defun read-bytes-from-buffer (queue buffer host-ptr nbytes)
+  "Copies NBYTES from runtime BUFFER into host-pointer HOST-PTR."
+  (ecase *ad-runtime*
+    (:opencl
+     (check-cl (cl-enqueue-read-buffer queue buffer 1 0 nbytes host-ptr
+                                       0 (cffi:null-pointer) (cffi:null-pointer))))
+    (:l0
+     (loop for i from 0 below nbytes
+           do (setf (cffi:mem-aref host-ptr :uint8 i)
+                    (cffi:mem-aref buffer :uint8 i))))))
+
+
+;;; ======================================================================
+;;; === Runtime init / shutdown / per-object release =====================
+;;; ======================================================================
+;;;
+;;; The grad-buffer allocation, context+queue lifecycle, and per-object
+;;; release calls used to be inlined into VERIFY-AUTODIFF as raw cl-*
+;;; calls.  They are now lifted to runtime-aware wrappers so the body
+;;; is runtime-agnostic top-to-bottom.
+
+(defun runtime-init ()
+  "Initialise the active runtime (per *AD-RUNTIME*) and return
+   (values context queue).  For :opencl, both are OpenCL handles.  For
+   :l0, CONTEXT is a ze_context_handle_t and QUEUE is NIL (L0 launches
+   create transient command queues); *AD-DEVICE* and *AD-CONTEXT* are
+   also bound for L0 helpers to read."
+  (ecase *ad-runtime*
+    (:opencl
+     (cffi:with-foreign-objects ((platforms :pointer 1)
+                                 (devices :pointer 1))
+       (check-cl (cl-get-platform-ids 1 platforms (cffi:null-pointer)))
+       (let ((platform (cffi:mem-aref platforms :pointer 0)))
+         (check-cl (cl-get-device-ids platform +CL-DEVICE-TYPE-GPU+ 1 devices (cffi:null-pointer)))
+         (let ((device (cffi:mem-aref devices :pointer 0)))
+           (cffi:with-foreign-object (err :int)
+             (let ((ctx (cl-create-context (cffi:null-pointer) 1
+                                           (cffi:foreign-alloc :pointer :initial-element device)
+                                           (cffi:null-pointer) (cffi:null-pointer) err)))
+               (check-cl (cffi:mem-ref err :int))
+               (let ((q (cl-create-command-queue ctx device 0 err)))
+                 (check-cl (cffi:mem-ref err :int))
+                 (values ctx q))))))))
+    (:l0
+     (check-ze (ze-init +ZE-INIT-FLAG-GPU-ONLY+))
+     (cffi:with-foreign-objects ((n-drv :uint32) (drv :pointer)
+                                 (n-dev :uint32) (dev :pointer)
+                                 (ctx-out :pointer))
+       (setf (cffi:mem-ref n-drv :uint32) 0)
+       (check-ze (ze-driver-get n-drv (cffi:null-pointer)))
+       (when (zerop (cffi:mem-ref n-drv :uint32))
+         (error "RUNTIME-INIT: no L0 drivers found"))
+       (setf (cffi:mem-ref n-drv :uint32) 1)
+       (check-ze (ze-driver-get n-drv drv))
+       (let ((driver (cffi:mem-ref drv :pointer)))
+         (setf (cffi:mem-ref n-dev :uint32) 0)
+         (check-ze (ze-device-get driver n-dev (cffi:null-pointer)))
+         (when (zerop (cffi:mem-ref n-dev :uint32))
+           (error "RUNTIME-INIT: no L0 devices found"))
+         (setf (cffi:mem-ref n-dev :uint32) 1)
+         (check-ze (ze-device-get driver n-dev dev))
+         (let ((device (cffi:mem-ref dev :pointer))
+               (ctx-desc (l0-make-zeroed-struct 'ze-context-desc)))
+           (unwind-protect
+               (progn
+                (setf (cffi:foreign-slot-value ctx-desc '(:struct ze-context-desc) 'stype)
+                      +ZE-STYPE-CONTEXT-DESC+)
+                (check-ze (ze-context-create driver ctx-desc ctx-out))
+                (let ((ctx (cffi:mem-ref ctx-out :pointer)))
+                  (setf *ad-device* device
+                        *ad-context* ctx)
+                  (values ctx nil)))
+             (cffi:foreign-free ctx-desc))))))))
+
+(defun runtime-shutdown (context queue)
+  "Tear down the runtime handles returned by RUNTIME-INIT."
+  (ecase *ad-runtime*
+    (:opencl
+     (when queue   (cl-release-command-queue queue))
+     (when context (cl-release-context context)))
+    (:l0
+     (when context (ze-context-destroy context))
+     (setf *ad-device* nil
+           *ad-context* nil))))
+
+(defun runtime-create-grad-buffer (context bytes)
+  "Allocate a grad-output buffer of BYTES bytes (cl_mem under :opencl,
+   USM-shared ptr under :l0)."
+  (ecase *ad-runtime*
+    (:opencl
+     (cffi:with-foreign-object (err :int)
+       (let ((buf (cl-create-buffer context +CL-MEM-READ-WRITE+
+                                    bytes (cffi:null-pointer) err)))
+         (check-cl (cffi:mem-ref err :int))
+         buf)))
+    (:l0
+     (l0-alloc-shared context bytes 8))))
+
+(defun runtime-release-buffer (context buffer)
+  (ecase *ad-runtime*
+    (:opencl (cl-release-mem-object buffer))
+    (:l0     (ze-mem-free context buffer))))
+
+(defun runtime-release-kernel (kernel)
+  (ecase *ad-runtime*
+    (:opencl (cl-release-kernel kernel))
+    (:l0     (ze-kernel-destroy kernel))))
+
+(defun runtime-release-program (program)
+  "Release a program (OpenCL) / module (L0)."
+  (ecase *ad-runtime*
+    (:opencl (cl-release-program program))
+    (:l0     (ze-module-destroy program))))
+

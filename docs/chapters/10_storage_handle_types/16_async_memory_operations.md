@@ -43,7 +43,7 @@ the hardware choices that actually support this are limited. Your kernel may fai
 ```
 (request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
 
-(request-store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transpose) => request token
+(request-store-tile-coords source-tile dest-tensor  (... tensor-row-y tensor-col-x) &key transpose) => request token
 ```
 There are async variants for the tile scratch helpers as well.
 

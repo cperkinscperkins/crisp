@@ -2973,7 +2973,7 @@ the hardware choices that actually support this are limited. Your kernel may fai
 ```
 (request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
 
-(request-store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transpose) => request token
+(request-store-tile-coords source-tile dest-tensor  (... tensor-row-y tensor-col-x) &key transpose) => request token
 ```
 There are async variants for the tile scratch helpers as well.
 
@@ -3227,8 +3227,8 @@ Possible Implemenation
 (load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose)
 (request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
 
-(store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transformF transpose)
-(request-store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transpose) => request token
+(store-tile-coords source-tile dest-tensor  (... tensor-row-y tensor-col-x) &key transformF transpose)
+(request-store-tile-coords source-tile dest-tensor  (... tensor-row-y tensor-col-x) &key transpose) => request token
 ```
 When working with matrices, we often want coalesced memory access, but that is limited
 to the `:row-major` / `:col-major` choice.  For this reason, a very common
@@ -5032,24 +5032,23 @@ There are also asynchronous variants.
 
 ```
 ;; Helpers
-(load-tile <problem-space-tensor> <tile> &key (identity 0) transpose)
-(request-load-tile <problem-space-tensor> <tile> &key (identity 0) transpose) => dag-token
+(load-tile <src-problem-space-tensor> <dest-tile> &key (identity 0) transpose)
+(request-load-tile <src-problem-space-tensor> <dest-tile> &key (identity 0) transpose) => request-token
 
 
 
 ;; Helpers
-(store-tile <problem-space-tensor> <tile> &key transformF transpose)
-(request-store-tile <problem-space-tensor> <tile> &key transpose) => dag-token
+(store-tile <src-tile> <dest-problem-space-tensor> &key transformF transpose)
+(request-store-tile <src-tile> <dest-problem-space-tensor> &key transpose) => request-token
 
 
-(await-request dag-token)
+(await-request request-token)
 ```
 
-`<problem-space-tensor>` is the original `<tensor>` of the `tile-stride`. It is most
-likely `:global` address space.
+`<problem-space-tensor>` can be any tensor whose arity matches the surrounding tile-stride / hardware-stride and whose element type is compatible with <tile>. Extents, strides, offset, address space, alignment, and contiguous-term may all differ from the stride's tensor — the cooperative loop reads each tensor through its own metadata, and the in-bounds check uses the passed tensor's extents (so ragged or under-sized destinations just skip out-of-range writes / fill with :identity on the load side).
 
 `<tile>` is a small `tensor` , the same dimensions of the `<tile-size>` for the `tile-stride`.
-It is typically `:local` address space. 
+It is typically `:local` address space.
 
 The `:identity` key can be used when the problem space
 is not evenly divisible by the tile size.  In that case, the tile will be correctly loaded with
