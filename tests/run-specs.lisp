@@ -680,13 +680,19 @@
                           (error (e)
                             (format *error-output* "FAIL (Runner error: ~a)~%" e)
                             nil)))))
-             ;; Cleanup: VERIFY-AUTODIFF produces fwd/bwd .spv files in the
-             ;; spec's directory.  Delete them on completion (success OR
-             ;; failure) so stale outputs can't mask later runs.  Skipped
-             ;; under --keep-work.
+             ;; Cleanup: VERIFY-AUTODIFF produces fwd/bwd .spv files plus
+             ;; the .metacrisp metadata files (since 1c.2.f.3 added
+             ;; --metadata to the compile so the runner can read
+             ;; implicit-params).  Delete all of them on completion
+             ;; (success OR failure) so stale outputs can't mask later
+             ;; runs.  Skipped under --keep-work.
              (unless *keep-work*
                (when (and fwd-spv (probe-file fwd-spv)) (delete-file fwd-spv))
-               (when (and bwd-spv (probe-file bwd-spv)) (delete-file bwd-spv))))
+               (when (and bwd-spv (probe-file bwd-spv)) (delete-file bwd-spv))
+               (let ((fwd-meta (%vad-metacrisp-path file kernel-name :grad nil))
+                     (bwd-meta (%vad-metacrisp-path file kernel-name :grad t)))
+                 (when (probe-file fwd-meta) (delete-file fwd-meta))
+                 (when (probe-file bwd-meta) (delete-file bwd-meta)))))
            result)))))))
 
 ;;; ======================================================================

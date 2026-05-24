@@ -311,9 +311,9 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     affected VAD specs PASS again under --differentiate, suite back to 716/716 green on
     both passes.  Intel filing is now optional cleanup, not a blocker.
 
-[ ] 032 - AD gradient drops scalar factor through workgroup-stride inside tile
+[x] 032 - AD gradient drops scalar factor through workgroup-stride inside tile
     pipeline.  Discovered 2026-05-23 while adding VERIFY-AUTODIFF coverage to the
-    111 specs (endeavor 112 Phase 1c.2.f).
+    111 specs (endeavor 112 Phase 1c.2.f).  Fixed 2026-05-24.
 
     Repro: tests/spec/111-load-and-store-tile/15-ad-tile-scale-1d.crisp with the
     VERIFY-AUTODIFF directive enabled.  Kernel is
@@ -342,3 +342,43 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     Status: not blocking.  111/15 is currently a compile-only spec (no VERIFY-AUTODIFF
     directive) with a TODO comment pointing at this bug entry; the underlying compile
     + AD passes complete, only the on-metal gradient is wrong.  Tracked for follow-up.
+
+    Resolution (2026-05-24): the actual bug was a stack of four AD-walker holes
+    around WHEN / UNLESS / local-scratch tiles, each one masking the next.  All
+    four fixes are in overlays/crisp-compiler-overlay.lisp:
+
+      1. generate-backward-walk's process-form had no WHEN or UNLESS clause, so
+         workgroup-stride bodies (which expand to WHEN guards) were skipped
+         entirely by the AD walker.  Added: rewrite WHEN to (if c body nil) and
+         UNLESS to (if c nil body), then route to the existing IF clause.
+
+      2. process-form's SET! clause only emitted backward when the target was
+         in OUTPUTS; for set! into a local-scratch tile (target neither input
+         nor output) it fell through to (t nil) and emitted nothing.  Added
+         a third gated branch that emits the consume + reset pair (val_adj +=
+         tile_ADJ[indices]; tile_ADJ[indices] := 0).  Gated on the new
+         scratch-tile-syms hash table so unrelated targets keep old behavior.
+
+      3. %handle-single-value-backward's (~ ...) clause routed indexed reads
+         on non-input sources through the scalar fallthrough -- emitting
+         (set! ,(local-adj src) ...) which both polluted adjoint-map with src
+         and emitted a scalar add into what was actually a tensor.  The wrap-
+         let then bound (src_ADJ 0.0), shadowing the auto-allocated scratch
+         tensor binding for src_ADJ.  Added a fourth branch that emits an
+         indexed add into src_ADJ when src is in scratch-tile-syms.
+
+      4. %collect-locally-bound-vars walked LET / DOTIMES / IF / PROGN but
+         not WHEN / UNLESS, so adj allocas for vars bound inside a WHEN body
+         (e.g. the ANF temps for the workgroup-stride's per-iter scale step)
+         were missing from the DOTIMES iter-local-reset list.  They
+         accumulated across iterations and produced exactly-scaled-wrong
+         gradients (numerical=2.0, analytical=6.0 for the 4-iter case).
+         Added WHEN / UNLESS clauses to %collect-locally-bound-vars.
+
+    All four functions had to be redefined whole in the overlay (lexical
+    scoping means inner (cond ...) clauses can't be patched independently).
+    The fixes should merge cleanly back to src/autodiff.lisp.
+
+    Confirmed by tests/spec/111-load-and-store-tile/15-ad-tile-scale-1d.crisp
+    which is now a full VERIFY-AUTODIFF spec.  Suite 716/716 on both default
+    and --differentiate.
