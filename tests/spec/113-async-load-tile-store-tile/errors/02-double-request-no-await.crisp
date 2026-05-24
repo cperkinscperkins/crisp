@@ -1,0 +1,24 @@
+;; CHECK-FAIL: "single outstanding"
+;; TEST-WITH[--ir-target=spv]
+
+;; Phase 1 enforces a single-outstanding-request rule statically: issuing
+;; a second request-* before the previous one is awaited is a compile-
+;; time error.  Lets multi-outstanding land later (with real-runtime
+;; tokens + check-async-hazards) without breaking Phase 1 source.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel rltc_double (V W &out OUT)
+  (declare #'(vec-t vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile-v (make-scratch-vector ulong 4))
+        (tile-w (make-scratch-vector ulong 4)))
+    (let ((tv (request-load-tile-coords V tile-v (0))))
+      ;; Second request issued without awaiting the first -- ERROR.
+      (let ((tw (request-load-tile-coords W tile-w (0))))
+        (await-request tv)
+        (await-request tw)
+        (workgroup-stride tile-v (lx)
+          (set! (~ OUT lx) (+ (~ tile-v lx) (~ tile-w lx))))))))

@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "AD pre-rewrite for request-* lands in phase 1"
+
+;; Async counterpart of 111/01-load-tile-coords-1d.crisp.  Cooperatively
+;; loads 4 elements from a global vector starting at origin 0 into a
+;; :local tile via the async path, awaits, then copies the tile back
+;; out via workgroup-stride so the load is observable host-side.
+;; Expected: OUT == V (same as 111/01).
+;;
+;; Phase 0 smoke target.  Drives Phase 1 implementation of
+;;   - request-load-tile-coords analyzer (both SPV and PTX lowering)
+;;   - await-request analyzer
+;;   - phantom-token scope table
+;;   - SPV codegen: async_work_group_copy + wait_group_events
+;;   - PTX codegen: cp.async + commit_group + wait_group
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel rltc_basic_1d (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (let ((tok (request-load-tile-coords V tile (0))))
+      (await-request tok)
+      (workgroup-stride tile (lx)
+        (set! (~ OUT lx) (~ tile lx))))))
