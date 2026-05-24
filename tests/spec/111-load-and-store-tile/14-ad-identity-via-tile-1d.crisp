@@ -1,5 +1,6 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv --differentiate]
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=1.0 output-vec=4
 
 ;; Sub-step 1c: AD of load-tile-coords / store-tile-coords (identity path).
 ;;
@@ -13,11 +14,10 @@
 ;;
 ;; Compile-only verification.  Both forward and backward kernels compile;
 ;; backward IR contains the atomic-add scatter into A_GRAD.  Runtime
-;; VERIFY-AUTODIFF is deferred to a follow-up: the auto-allocated tile_ADJ
-;; adds an implicit scratch param to the backward kernel signature that
-;; the OpenCL runner (tests/verify-autodiff-runner.lisp) doesn't yet wire
-;; — VAD launches fail with CL_INVALID_KERNEL_ARGS (-52).  Runner work is
-;; a Phase 1c.2 follow-up.
+;; VERIFY-AUTODIFF deferred: the backward kernel signature includes two
+;; :local-addrspace scratch vector descriptors (`tile` and the AD-minted
+;; `tile_ADJ` shadow) that the verify-autodiff runner does not yet know
+;; how to bind.  Tracked in the 112 endeavor's Phase 1c.2.f section.
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 

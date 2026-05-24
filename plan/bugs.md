@@ -251,9 +251,12 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
       - Remove the %volatile-read pseudo-op and LLVMSetVolatile binding from the overlays.
       - Re-tag 056/03-struct-with-ct-meta with its full VERIFY-AUTODIFF directive.
 
-[ ] 031 - Intel BMG GPU driver / OpenCL ICD breaks VERIFY-AUTODIFF forward FD step.
-    Suspected cause: Intel BMG GPU driver update installed around 2026-05-19 (immediately
-    before endeavor 111 Phase 0 work began).  Not yet investigated; not yet reported to Intel.
+[/] 031 - Intel BMG OpenCL ICD breaks VERIFY-AUTODIFF forward FD step.  Level Zero
+    is unaffected — diagnosed 2026-05-23 via standalone L0 probe.  See
+    put_temp_files_here/bmg-bug-031/.
+    The driver update around 2026-05-19 (immediately before endeavor 111 Phase 0)
+    almost certainly caused the regression on the OpenCL side.  Not yet reported to
+    Intel — see Status / next steps below.
 
     Affected tests (all VERIFY-AUTODIFF specs that worked before the driver update):
       - 092-dotimes/07-diff-float-accum
@@ -281,16 +284,101 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
       - Same SPV was passing before the driver update.  Pre-update baseline (per memory
         snippet) was 693/693 E2E + the same VERIFY-AUTODIFF specs PASS.
 
-    Status: not yet investigated; deferred until endeavor 111 lands.  The baseline
-    --differentiate suite hovers at 4–5 unexplained FAILs entirely due to this bug.
-    Compiler-side changes in 111 do NOT introduce or worsen the failure set — confirmed
-    by running --differentiate on baseline (with the original 109 tests) and comparing
-    against the Phase 0 overlay (same 4 specs FAIL, identical failure mode).
+    Status (2026-05-23): standalone Level Zero loader at
+    put_temp_files_here/bmg-bug-031/loader.cpp dispatches the EXACT SAME SPV pair
+    (092-dotimes/07-diff-float-accum forward + _grad) on BMG and produces correct
+    results:
+      f(x+h) = 15.005   f(x-h) = 14.995
+      FD numerical df/dx  = 4.99916  (within atol 5e-3)
+      Backward analytical = 5.0      (exact)
+      MATCH
+    Since both runtimes JIT through IGC, the SPV and the GPU machine code are not
+    the regression.  The bug is in Intel's OpenCL ICD layer (command-queue
+    dispatch / argument binding / buffer state — something the L0 path skips).
 
-    Next steps when we return to it:
-      - Roll back the BMG driver (or pin it to a known-good version) and re-run the
-        failing specs to confirm root cause.
-      - If confirmed: build a minimal Level Zero reproducer (similar to the
-        put_temp_files_here/igc-bug-report/ pattern used for bug 030) and file with Intel.
-      - If NOT the driver: bisect against recent main commits for any forward-kernel
-        codegen regression.
+    Path forward (Phase 1c.2): port tests/verify-autodiff-runner.lisp from OpenCL
+    to Level Zero.  The loader.cpp covers every L0 verb the runner needs (USM alloc,
+    kernel arg set, group dispatch, sync).  Once ported, all five affected specs
+    should come back to life under VAD.
+
+    No Intel bug to file as a compiler-side reproducer — the OpenCL ICD regression
+    is in Intel's domain to track via their own telemetry.  Worth flagging informally
+    if we have a contact, but no contained-repro report is owed.
+
+    Update (2026-05-23): bug-report folder at put_temp_files_here/intel-bmg-opencl-regression/
+    ready to file (forward.spv + backward.spv + loader_l0.cpp + loader_opencl.cpp + README.md;
+    no Crisp jargon).  Runner has been ported to Level Zero (endeavor 112), all four
+    affected VAD specs PASS again under --differentiate, suite back to 716/716 green on
+    both passes.  Intel filing is now optional cleanup, not a blocker.
+
+[x] 032 - AD gradient drops scalar factor through workgroup-stride inside tile
+    pipeline.  Discovered 2026-05-23 while adding VERIFY-AUTODIFF coverage to the
+    111 specs (endeavor 112 Phase 1c.2.f).  Fixed 2026-05-24.
+
+    Repro: tests/spec/111-load-and-store-tile/15-ad-tile-scale-1d.crisp with the
+    VERIFY-AUTODIFF directive enabled.  Kernel is
+
+      (let ((tile (make-scratch-vector float 4)))
+        (load-tile-coords A tile (0))
+        (workgroup-stride tile (lx)
+          (set! (~ tile lx) (* 2.0f (~ tile lx))))
+        (store-tile-coords tile C (0)))
+
+    forward computes C[i] = 2 * A[i], so f(A) = sum_i C[i] = 2*sum_i A[i] and
+    df/dA[k] = 2.0 for every k.
+
+    On metal under the L0 runner: numerical (FD) reports ~2.0 correctly, but
+    analytical (backward) reports exactly 1.0 — the workgroup-stride scale factor
+    of 2 is silently dropped from the gradient.  The fact that the result is
+    exactly 1.0 (not 0, not some small drift) suggests the scale step is being
+    treated as identity by the AD pass rather than its derivative not being
+    propagated.
+
+    Suspect: %workgroup-stride-bwd interaction with load-tile-coords-bwd /
+    store-tile-coords-bwd.  Either the workgroup-stride body's adjoint is being
+    overwritten by load-tile-coords-bwd's accumulate-into-tile_ADJ step, or the
+    transform-on-tile pattern is not being walked by generate-backward-walk.
+
+    Status: not blocking.  111/15 is currently a compile-only spec (no VERIFY-AUTODIFF
+    directive) with a TODO comment pointing at this bug entry; the underlying compile
+    + AD passes complete, only the on-metal gradient is wrong.  Tracked for follow-up.
+
+    Resolution (2026-05-24): the actual bug was a stack of four AD-walker holes
+    around WHEN / UNLESS / local-scratch tiles, each one masking the next.  All
+    four fixes are in overlays/crisp-compiler-overlay.lisp:
+
+      1. generate-backward-walk's process-form had no WHEN or UNLESS clause, so
+         workgroup-stride bodies (which expand to WHEN guards) were skipped
+         entirely by the AD walker.  Added: rewrite WHEN to (if c body nil) and
+         UNLESS to (if c nil body), then route to the existing IF clause.
+
+      2. process-form's SET! clause only emitted backward when the target was
+         in OUTPUTS; for set! into a local-scratch tile (target neither input
+         nor output) it fell through to (t nil) and emitted nothing.  Added
+         a third gated branch that emits the consume + reset pair (val_adj +=
+         tile_ADJ[indices]; tile_ADJ[indices] := 0).  Gated on the new
+         scratch-tile-syms hash table so unrelated targets keep old behavior.
+
+      3. %handle-single-value-backward's (~ ...) clause routed indexed reads
+         on non-input sources through the scalar fallthrough -- emitting
+         (set! ,(local-adj src) ...) which both polluted adjoint-map with src
+         and emitted a scalar add into what was actually a tensor.  The wrap-
+         let then bound (src_ADJ 0.0), shadowing the auto-allocated scratch
+         tensor binding for src_ADJ.  Added a fourth branch that emits an
+         indexed add into src_ADJ when src is in scratch-tile-syms.
+
+      4. %collect-locally-bound-vars walked LET / DOTIMES / IF / PROGN but
+         not WHEN / UNLESS, so adj allocas for vars bound inside a WHEN body
+         (e.g. the ANF temps for the workgroup-stride's per-iter scale step)
+         were missing from the DOTIMES iter-local-reset list.  They
+         accumulated across iterations and produced exactly-scaled-wrong
+         gradients (numerical=2.0, analytical=6.0 for the 4-iter case).
+         Added WHEN / UNLESS clauses to %collect-locally-bound-vars.
+
+    All four functions had to be redefined whole in the overlay (lexical
+    scoping means inner (cond ...) clauses can't be patched independently).
+    The fixes should merge cleanly back to src/autodiff.lisp.
+
+    Confirmed by tests/spec/111-load-and-store-tile/15-ad-tile-scale-1d.crisp
+    which is now a full VERIFY-AUTODIFF spec.  Suite 716/716 on both default
+    and --differentiate.

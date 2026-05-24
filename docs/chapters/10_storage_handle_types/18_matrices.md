@@ -112,8 +112,8 @@ Possible Implemenation
 (load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose)
 (request-load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose) => request token
 
-(store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transformF transpose)
-(request-store-tile-coords dest-tensor source-tile (... tensor-row-y tensor-col-x) &key transpose) => request token
+(store-tile-coords source-tile dest-tensor  (... tensor-row-y tensor-col-x) &key transformF transpose)
+(request-store-tile-coords source-tile dest-tensor  (... tensor-row-y tensor-col-x) &key transpose) => request token
 ```
 When working with matrices, we often want coalesced memory access, but that is limited
 to the `:row-major` / `:col-major` choice.  For this reason, a very common

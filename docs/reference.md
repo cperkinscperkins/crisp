@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-23T05:23:34.461937Z
+Generated on 2026-05-24T19:35:06.002580Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1537,16 +1537,16 @@ Generated on 2026-05-23T05:23:34.461937Z
 ---
 ### DEFUN `%HANDLE-SINGLE-VALUE-BACKWARD`
 - **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
-              (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT)`
+              (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)`
 
-  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  >    Overlay change (049/11 fix): field-name extraction in the accessor rules  >    strips both leading and trailing tildes so the raw `~X~` form routes  >    correctly.
+  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  >    Overlay change (049/11 fix): field-name extraction in the accessor rules  >    strips both leading and trailing tildes so the raw `~X~` form routes  >    correctly.  >   >    Bug 032 fix: indexed `~` reads on a local-scratch tile (src is a member of  >    SCRATCH-TILE-SYMS, the hash table of locally make-scratch-*-bound syms)  >    emit an indexed `(set! (~ src_ADJ indices) ...)` into the auto-allocated  >    tile_ADJ tensor instead of falling through to the scalar `(local-adj src)`  >    path -- which would shadow the tensor binding in the wrap-let.  >   >    SCRATCH-TILE-SYMS is built by GENERATE-BACKWARD-WALK from flat-anf and  >    threaded through; absence (NIL or empty) keeps the original scalar path.
 
 
 ---
 ### DEFUN `%COLLECT-LOCALLY-BOUND-VARS`
 - **Args**: `(BODY-FORMS)`
 
-  > Returns a list of distinct symbols introduced as bindings anywhere  >    inside BODY-FORMS (a list of forms).  Includes single-value bindings  >    `(v expr)`, multi-value bindings `(v0 v1 ... expr)`, the induction var  >    of nested DOTIMES, and the bound vars of nested LET.  Recurses through  >    LET / DOTIMES / IF / PROGN bodies.  SET! and DECLARE introduce no  >    bindings, so they are not scanned.  Used by the AD walker to identify  >    adjoint allocas that must be reset at the top of each backward  >    loop iteration.
+  > Returns a list of distinct symbols introduced as bindings anywhere  >    inside BODY-FORMS (a list of forms).  Includes single-value bindings  >    `(v expr)`, multi-value bindings `(v0 v1 ... expr)`, the induction var  >    of nested DOTIMES, and the bound vars of nested LET.  Recurses through  >    LET / DOTIMES / IF / PROGN / WHEN / UNLESS bodies.  SET! and DECLARE  >    introduce no bindings, so they are not scanned.  Used by the AD walker  >    to identify adjoint allocas that must be reset at the top of each  >    backward loop iteration.
 
 
 ---
@@ -1574,7 +1574,7 @@ Generated on 2026-05-23T05:23:34.461937Z
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form  >    that emit %load-tile-coords-bwd / %store-tile-coords-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.
+  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form  >    that emit %load-tile-coords-bwd / %store-tile-coords-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.
 
 
 ---

@@ -346,7 +346,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%CHECK-FN-BODY-FOR-MUTATIONS BODY-FORMS PARAM-NAMES FN-NAME)  autodiff.lisp
 - - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL TENSOR-INPUTS-HT)  autodiff.lisp
 - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                          T) TENSOR-INPUTS-HT)  autodiff.lisp
+                                                                                                          T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
 - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                             BW))  autodiff.lisp
 - - - - - - - - (%STRIP-ACCESSOR-TILDES ACCESSOR)  autodiff.lisp
@@ -717,7 +717,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
 - - - (%EXTRACT-RETURN-VARS FLAT-ANF)  autodiff.lisp [See above]
 - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                  T) TENSOR-INPUTS-HT)  autodiff.lisp [See above]
+                                                                                                  T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [See above]
 - - - (%TLC-EXTRACT-TRANSPOSE-KEY KEY-ARGS)  autodiff.lisp
 - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp
 - - - (%AUGMENT-SCRATCH-ADJ-BINDINGS BINDINGS KERNEL-PKG)  autodiff.lisp

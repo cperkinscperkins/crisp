@@ -123,13 +123,26 @@
         (subseq no-trail 1)
         no-trail)))
 
+
+
+
 (defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
                                       &key hof-handler-fn (error-on-unknown t)
-                                           tensor-inputs-ht)
+                                           tensor-inputs-ht
+                                           scratch-tile-syms)
   "Generates backward-pass adjoint updates for a single ANF binding (v := expr).
    Overlay change (049/11 fix): field-name extraction in the accessor rules
    strips both leading and trailing tildes so the raw `~X~` form routes
-   correctly."
+   correctly.
+
+   Bug 032 fix: indexed `~` reads on a local-scratch tile (src is a member of
+   SCRATCH-TILE-SYMS, the hash table of locally make-scratch-*-bound syms)
+   emit an indexed `(set! (~ src_ADJ indices) ...)` into the auto-allocated
+   tile_ADJ tensor instead of falling through to the scalar `(local-adj src)`
+   path -- which would shadow the tensor binding in the wrap-let.
+
+   SCRATCH-TILE-SYMS is built by GENERATE-BACKWARD-WALK from flat-anf and
+   threaded through; absence (NIL or empty) keeps the original scalar path."
   (flet ((local-adj (x) (funcall local-adj-fn x))
          (emit (x) (funcall emit-fn x)))
     (cond
@@ -179,6 +192,25 @@
                (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
                                        (symbol-package src))))
                  (emit `(atomic-add! (~ ,grad-sym) ,v-adj))))
+              ;; --- Bug 032 fix: local-scratch tile read. ---
+              ;; SRC has indices, is not a tensor kernel-input, AND is a
+              ;; known make-scratch-* local — its _ADJ has been auto-
+              ;; allocated by scratch-adj-bindings.  Indexed add into the
+              ;; tile_ADJ tensor (NOT a scalar add) and intern src_ADJ
+              ;; directly (NOT via local-adj) so the wrap-let does not give
+              ;; it a stale scalar-0.0 init that would shadow the real
+              ;; tensor binding.
+              ;;
+              ;; The scratch-tile-syms gate matters: indexed reads on ANF
+              ;; temps holding e.g. (EXTENTS~ T) arrays would otherwise
+              ;; route here and emit nonsense `(set! (~ %anf-t-N_ADJ 0) ...)`
+              ;; — those adjs are scalar, not tensors.
+              ((and indices scratch-tile-syms
+                    (gethash src scratch-tile-syms))
+               (let ((src-adj (intern (format nil "~A_ADJ" (symbol-name src))
+                                      (symbol-package src))))
+                 (emit `(set! (~ ,src-adj ,@indices)
+                              (+ (~ ,src-adj ,@indices) ,v-adj)))))
               (t
                (emit `(set! ,(local-adj src) (+ ,(local-adj src) ,v-adj))))))))
       ;; Differentiable sub-function call
@@ -279,7 +311,6 @@
 
 
 
-
 ;; 107 iteration-local adjoint reset fix.
 ;;
 ;; Bug: the structure-preserving walker mirrored forward (dotimes ...) into
@@ -310,15 +341,17 @@
 ;; `(as double 0.0)`) instead of being computed only at the post-walk
 ;; let-wrap stage.
 
+
+
 (defun %collect-locally-bound-vars (body-forms)
   "Returns a list of distinct symbols introduced as bindings anywhere
    inside BODY-FORMS (a list of forms).  Includes single-value bindings
    `(v expr)`, multi-value bindings `(v0 v1 ... expr)`, the induction var
    of nested DOTIMES, and the bound vars of nested LET.  Recurses through
-   LET / DOTIMES / IF / PROGN bodies.  SET! and DECLARE introduce no
-   bindings, so they are not scanned.  Used by the AD walker to identify
-   adjoint allocas that must be reset at the top of each backward
-   loop iteration."
+   LET / DOTIMES / IF / PROGN / WHEN / UNLESS bodies.  SET! and DECLARE
+   introduce no bindings, so they are not scanned.  Used by the AD walker
+   to identify adjoint allocas that must be reset at the top of each
+   backward loop iteration."
   (let ((vars nil))
     (labels ((push-var (v)
                (when (and (symbolp v) (not (member v vars :test #'eq)))
@@ -342,6 +375,9 @@
                  ((string-equal (symbol-name (car form)) "IF")
                   (when (caddr form) (scan (caddr form)))
                   (when (cadddr form) (scan (cadddr form))))
+                 ((or (string-equal (symbol-name (car form)) "WHEN")
+                      (string-equal (symbol-name (car form)) "UNLESS"))
+                  (dolist (sub (cddr form)) (scan sub)))
                  ((string-equal (symbol-name (car form)) "PROGN")
                   (dolist (sub (cdr form)) (scan sub)))
                  ;; Single-value binding: (v expr)
@@ -354,7 +390,6 @@
                  (t nil))))
       (dolist (f body-forms) (scan f)))
     (nreverse vars)))
-
 
 
 (defun %augment-scratch-adj-bindings (bindings kernel-pkg)
@@ -403,13 +438,20 @@
         finally (cl:return nil)))
 
 
+
+
+
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                &key kernel-pkg)
   "Walks an ANF body backwards to accumulate adjoints.
    Phase 1c: adds LOAD-TILE-COORDS / STORE-TILE-COORDS clauses to process-form
    that emit %load-tile-coords-bwd / %store-tile-coords-bwd with the correct
    adjoint symbols.  Also extends the LET case to auto-allocate paired
-   <var>_ADJ scratch tensors for make-scratch-* bindings."
+   <var>_ADJ scratch tensors for make-scratch-* bindings.
+
+   Bug 032 fix: SET! on a local-scratch tile (target neither input nor
+   output) now emits a proper consume + reset pair so the RHS chain rule
+   propagates through tile mutations."
   (let* ((record-temp-entries
           (loop for form in flat-anf
                 when (and (consp form) (= (length form) 2)
@@ -453,8 +495,25 @@
                      for typ  in input-types
                      when (%crisp-float-tensor-type-p typ)
                      do (setf (gethash sym ht) typ))
+               ht))
+            ;; Bug 032: collect locally-bound scratch tile syms (those
+            ;; bound via make-scratch-vector / -matrix / -tensor / -cell
+            ;; anywhere in flat-anf) so the `~` and SET! backward cases
+            ;; can route indexed accesses on them to their _ADJ tensor
+            ;; instead of polluting the scalar adjoint-map.
+            (scratch-tile-syms
+             (let ((ht (make-hash-table :test 'eq)))
+               (loop for form in flat-anf
+                     when (and (consp form) (= (length form) 2)
+                               (symbolp (car form))
+                               (consp (cadr form)) (symbolp (caadr form))
+                               (member (symbol-name (caadr form))
+                                       '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX"
+                                         "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL")
+                                       :test #'string=))
+                     do (setf (gethash (car form) ht) t))
                ht)))
-        (cl:flet ((promotes-to-double-p (t-spec)
+        (flet ((promotes-to-double-p (t-spec)
                     (let ((promoted (%promote-to-float-adjoint t-spec)))
                       (or (eq promoted 'double)
                           (and (consp promoted) (eq (second promoted) 'double))))))
@@ -514,7 +573,8 @@
                                    (%handle-single-value-backward hv hexpr adjoint-map #'emit #'local-adj
                                                                   :hof-handler-fn #'hof-inline-backward
                                                                   :error-on-unknown t
-                                                                  :tensor-inputs-ht nil))))))))
+                                                                  :tensor-inputs-ht nil
+                                                                  :scratch-tile-syms scratch-tile-syms))))))))
                      (process-form (form emit-fn)
                        (cond
                          ((and (consp form) (symbolp (car form))
@@ -574,6 +634,33 @@
                                   ((member target inputs)
                                    (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
                                           target target))
+                                  ;; --- Bug 032 fix: local-scratch target. ---
+                                  ;; The forward overwrote tile[indices] with val.
+                                  ;; The backward consumes the upstream
+                                  ;; tile_ADJ[indices] into val_adj, then zeroes
+                                  ;; tile_ADJ[indices] so subsequent chain-rule
+                                  ;; contributions (from the backward of the RHS
+                                  ;; expression's index reads) populate it fresh.
+                                  ;; Without this, any in-place tile mutation
+                                  ;; between load-tile-coords and store-tile-coords
+                                  ;; silently loses its derivative.
+                                  ;;
+                                  ;; Gated on scratch-tile-syms membership; other
+                                  ;; non-input/output set! targets fall through
+                                  ;; (old behavior) to avoid emitting nonsense
+                                  ;; indexed adjs for unrelated symbols.
+                                  ((and scratch-tile-syms
+                                        (gethash target scratch-tile-syms))
+                                   (let ((tgt-adj (%tlc-bwd-adj-name
+                                                   target inputs outputs
+                                                   #'local-adj kernel-pkg)))
+                                     (funcall emit-fn
+                                              `(set! ,(local-adj val)
+                                                     (+ ,(local-adj val)
+                                                        (~ ,tgt-adj ,@indices))))
+                                     (funcall emit-fn
+                                              `(set! (~ ,tgt-adj ,@indices)
+                                                     ,intermediate-zero))))
                                   (t nil))))))
 
                          ((and (consp form) (symbolp (car form))
@@ -583,7 +670,7 @@
                                  (augmented-bindings (%augment-scratch-adj-bindings bindings kernel-pkg))
                                  (body (cddr form))
                                  (local-forms nil))
-                            (cl:flet ((local-emit (f) (push f local-forms)))
+                            (flet ((local-emit (f) (push f local-forms)))
                               (dolist (b (reverse body))
                                 (process-form b #'local-emit))
                               (dolist (b (reverse bindings))
@@ -597,7 +684,7 @@
                                  (body (cddr form))
                                  (local-vars (%collect-locally-bound-vars body))
                                  (local-forms nil))
-                            (cl:flet ((local-emit (f) (push f local-forms)))
+                            (flet ((local-emit (f) (push f local-forms)))
                               (dolist (b (reverse body))
                                 (process-form b #'local-emit)))
                             (let ((zero-resets
@@ -634,6 +721,37 @@
                                            `(if ,cond-form ,(or then-body 'nil) ,else-body)
                                            `(if ,cond-form ,(or then-body 'nil)))))))
 
+                         ;; Bug 032 fix part 2: WHEN and UNLESS were not handled
+                         ;; by the AD walker, so any forms inside them (including
+                         ;; the load/store-tile-coords inner body's set!s after
+                         ;; workgroup-stride expansion) were silently dropped.
+                         ;; Desugar them to IF + PROGN here and let the IF case
+                         ;; handle the rest.
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "WHEN"))
+                          (let* ((pkg     (find-package :crisp-language))
+                                 (if-sym  (intern "IF"    pkg))
+                                 (progn-sym (intern "PROGN" pkg))
+                                 (cond-form (cadr form))
+                                 (body      (cddr form))
+                                 (then      (cond ((null body) 'nil)
+                                                  ((= (length body) 1) (first body))
+                                                  (t (cons progn-sym body)))))
+                            (process-form (list if-sym cond-form then 'nil) emit-fn)))
+
+                         ((and (consp form) (symbolp (car form))
+                               (string-equal (symbol-name (car form)) "UNLESS"))
+                          (let* ((pkg     (find-package :crisp-language))
+                                 (if-sym  (intern "IF"    pkg))
+                                 (progn-sym (intern "PROGN" pkg))
+                                 (cond-form (cadr form))
+                                 (body      (cddr form))
+                                 (then      (cond ((null body) 'nil)
+                                                  ((= (length body) 1) (first body))
+                                                  (t (cons progn-sym body)))))
+                            ;; (unless C B) = (if C nil B) — pass B as the else slot.
+                            (process-form (list if-sym cond-form 'nil then) emit-fn)))
+
                          ((and (consp form) (symbolp (car form))
                                (string-equal (symbol-name (car form)) "PROGN"))
                           (dolist (sub (reverse (cdr form)))
@@ -644,7 +762,8 @@
                                                          adjoint-map emit-fn #'local-adj
                                                          :hof-handler-fn #'hof-inline-backward
                                                          :error-on-unknown t
-                                                         :tensor-inputs-ht tensor-inputs-ht))
+                                                         :tensor-inputs-ht tensor-inputs-ht
+                                                         :scratch-tile-syms scratch-tile-syms))
 
                          ((and (listp form) (>= (length form) 3)
                                (symbolp (car form))
