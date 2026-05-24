@@ -304,3 +304,41 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
     No Intel bug to file as a compiler-side reproducer — the OpenCL ICD regression
     is in Intel's domain to track via their own telemetry.  Worth flagging informally
     if we have a contact, but no contained-repro report is owed.
+
+    Update (2026-05-23): bug-report folder at put_temp_files_here/intel-bmg-opencl-regression/
+    ready to file (forward.spv + backward.spv + loader_l0.cpp + loader_opencl.cpp + README.md;
+    no Crisp jargon).  Runner has been ported to Level Zero (endeavor 112), all four
+    affected VAD specs PASS again under --differentiate, suite back to 716/716 green on
+    both passes.  Intel filing is now optional cleanup, not a blocker.
+
+[ ] 032 - AD gradient drops scalar factor through workgroup-stride inside tile
+    pipeline.  Discovered 2026-05-23 while adding VERIFY-AUTODIFF coverage to the
+    111 specs (endeavor 112 Phase 1c.2.f).
+
+    Repro: tests/spec/111-load-and-store-tile/15-ad-tile-scale-1d.crisp with the
+    VERIFY-AUTODIFF directive enabled.  Kernel is
+
+      (let ((tile (make-scratch-vector float 4)))
+        (load-tile-coords A tile (0))
+        (workgroup-stride tile (lx)
+          (set! (~ tile lx) (* 2.0f (~ tile lx))))
+        (store-tile-coords tile C (0)))
+
+    forward computes C[i] = 2 * A[i], so f(A) = sum_i C[i] = 2*sum_i A[i] and
+    df/dA[k] = 2.0 for every k.
+
+    On metal under the L0 runner: numerical (FD) reports ~2.0 correctly, but
+    analytical (backward) reports exactly 1.0 — the workgroup-stride scale factor
+    of 2 is silently dropped from the gradient.  The fact that the result is
+    exactly 1.0 (not 0, not some small drift) suggests the scale step is being
+    treated as identity by the AD pass rather than its derivative not being
+    propagated.
+
+    Suspect: %workgroup-stride-bwd interaction with load-tile-coords-bwd /
+    store-tile-coords-bwd.  Either the workgroup-stride body's adjoint is being
+    overwritten by load-tile-coords-bwd's accumulate-into-tile_ADJ step, or the
+    transform-on-tile pattern is not being walked by generate-backward-walk.
+
+    Status: not blocking.  111/15 is currently a compile-only spec (no VERIFY-AUTODIFF
+    directive) with a TODO comment pointing at this bug entry; the underlying compile
+    + AD passes complete, only the on-metal gradient is wrong.  Tracked for follow-up.

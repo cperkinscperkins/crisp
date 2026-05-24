@@ -460,6 +460,64 @@
               (when (> end start)
                 (subseq content start end)))))))))
 
+(defun %vad-metacrisp-path (file kernel-name &key grad)
+  "Predicts the metacrisp path for FILE's forward (default) or backward
+   (when GRAD is T) kernel.  The compiler names them
+       <basename>[_grad]_<lowercased-kernel-name>.metacrisp"
+  (make-pathname :name (format nil "~a~:[~;_grad~]_~a"
+                               (pathname-name file)
+                               grad
+                               (string-downcase kernel-name))
+                 :type "metacrisp"
+                 :defaults file))
+
+(defun %vad-read-implicit-params (file kernel-name &key grad)
+  "Reads the forward or backward kernel's metacrisp file for FILE and
+   extracts its :implicit-params, returning a list of plists each
+       (:base START :n-elements N :elem-bytes BYTES :arg-width 6)
+   for use by VERIFY-AUTODIFF.  Returns NIL if the file is missing, has
+   no :kernels block, or the matching kernel has no implicit params.
+
+   The compiler emits implicit-params for local-mem scratch tiles -- in
+   the forward they come from a (let ((tile (make-scratch-vector ...))))
+   that participates in load-tile-coords / store-tile-coords; in the
+   backward the AD pass adds a paired tile_ADJ shadow for each.  Each
+   implicit param's :range pair gives its inclusive arg-slot span and
+   :size-expr is the element count of the underlying tensor.  Element
+   type comes from the second sub-form of :type, e.g. (tensor float 1
+   ...) -> float -> 4 bytes."
+  (let* ((meta-path (%vad-metacrisp-path file kernel-name :grad grad))
+         (wanted-name (if grad
+                          (format nil "~a_grad" kernel-name)
+                          kernel-name)))
+    (unless (probe-file meta-path)
+      (return-from %vad-read-implicit-params nil))
+    (let ((forms (with-open-file (s meta-path :direction :input)
+                   (loop for f = (read s nil :eof)
+                         until (eq f :eof) collect f))))
+      (dolist (form forms)
+        (when (and (consp form) (eq (first form) :kernels))
+          (dolist (kern (rest form))
+            (when (and (eq (first kern) :name)
+                       (string-equal (second kern) wanted-name))
+              (let ((implicit (getf kern :implicit-params)))
+                (return-from %vad-read-implicit-params
+                  (loop for p in implicit
+                        for range = (getf p :range)
+                        for size = (getf p :size-expr)
+                        for type-spec = (getf p :type)
+                        for elem-type = (second type-spec)
+                        for elem-bytes = (case elem-type
+                                           ((float)  4)
+                                           ((double) 8)
+                                           ((int ulong long) 8)
+                                           (t (error "%vad-read-implicit-params: unsupported elem-type ~A in ~A"
+                                                     elem-type type-spec)))
+                        collect (list :base (first range)
+                                      :n-elements size
+                                      :elem-bytes elem-bytes
+                                      :arg-width (1+ (- (second range) (first range))))))))))))))
+
 (defun %vad-compile-spv (file &key differentiate)
   "Compiles FILE to SPV via the crisp-compile binary.
    When DIFFERENTIATE is T, passes --differentiate and expects
@@ -471,6 +529,12 @@
                         (pathname-name file)))
          (out-path (make-pathname :name base-name :type "spv" :defaults file))
          (args (list (uiop:native-namestring file) "--ir-target=spv"
+                     ;; --metadata emits a sibling .metacrisp s-expression
+                     ;; file with the kernel's :physical-signature,
+                     ;; :declared-signature, and :implicit-params.  The
+                     ;; verify-autodiff runner needs the implicit-params
+                     ;; list to bind backward-kernel local-scratch tiles.
+                     "--metadata"
                      (format nil "--log-level=~a" cl-user::*log-level*))))
     (when differentiate (push "--differentiate" args))
     (when (probe-file out-path) (delete-file out-path))
@@ -587,6 +651,10 @@
                                  :at-points at-points
                                  :structs structs
                                  :output-vec-length output-vec
+                                 :fwd-implicit-params
+                                 (%vad-read-implicit-params file kernel-name :grad nil)
+                                 :bwd-implicit-params
+                                 (%vad-read-implicit-params file kernel-name :grad t)
                                  :seed-grad (cl:float seed-grad 1.0)
                                  :h (cl:float h 1.0)
                                  :atol atol

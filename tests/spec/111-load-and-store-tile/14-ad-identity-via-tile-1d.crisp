@@ -1,10 +1,6 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv --differentiate]
-;; TODO[112-phase-1c.2.f]: enable VERIFY-AUTODIFF once the L0 runner can
-;;   bind :local-addrspace scratch vector descriptors (tile + tile_ADJ).
-;;   With the L0 port complete, the underlying ABI issue is no longer
-;;   "kernel rejects args" but "kernel runs with NULL/zero scratch ptrs
-;;   and silently produces zero gradients."
+;; VERIFY-AUTODIFF: A=[1.0 2.0 3.0 4.0] at.A=1 atol=5e-3 expect.A=1.0 output-vec=4
 
 ;; Sub-step 1c: AD of load-tile-coords / store-tile-coords (identity path).
 ;;

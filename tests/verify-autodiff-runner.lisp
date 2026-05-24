@@ -420,7 +420,8 @@
                           (make-list output-vec-length :initial-element seed-value))
       (write-float-cell queue grad-buf seed-value)))
 
-(defun %vad-make-descriptors (inputs at-points &optional structs output-vec-length)
+(defun %vad-make-descriptors (inputs at-points &optional structs output-vec-length
+                              &key (fwd-prefix-args 0) (bwd-prefix-args 0))
   "Builds the per-input descriptor list, threading cumulative arg offsets.
 
    STRUCTS is a list of parent-name strings declared as `struct=...` in
@@ -431,7 +432,7 @@
 
    Each descriptor is a plist with these keys pre-allocated:
      :name :value :kind :length :perturb-i
-     :arg-width :arg-base
+     :arg-width :fwd-arg-base :bwd-arg-base
      :grad-arg-width :grad-arg-base
      :buffer :grad-buffer
    And for :struct-by-value also:
@@ -440,8 +441,11 @@
    Returns (values DESCRIPTORS OUTPUT-FWD-BASE OUTPUT-BWD-BASE
                    GRAD-OUTPUT-BWD-BASE)."
   (let ((descs nil)
-        (fwd-base 0)
-        (bwd-base 0)
+        ;; Both bases start at their respective prefix counts so any
+        ;; implicit local-scratch vectors at the head of the kernel
+        ;; signature are accounted for before user-declared inputs.
+        (fwd-base fwd-prefix-args)
+        (bwd-base bwd-prefix-args)
         (struct-descs-by-name (make-hash-table :test 'equal)))
     (dolist (entry inputs)
       (let* ((name (car entry))
@@ -477,7 +481,8 @@
                                 :length nil
                                 :perturb-i nil
                                 :arg-width 1
-                                :arg-base fwd-base
+                                :fwd-arg-base fwd-base
+                                :bwd-arg-base bwd-base
                                 :grad-arg-width 3
                                 :grad-arg-base nil
                                 :buffer nil
@@ -501,7 +506,8 @@
                          :length (getf cls :length)
                          :perturb-i (getf cls :perturb-i)
                          :arg-width (getf cls :arg-width)
-                         :arg-base fwd-base
+                         :fwd-arg-base fwd-base
+                         :bwd-arg-base bwd-base
                          :grad-arg-width (getf cls :grad-arg-width)
                          :grad-arg-base nil
                          :buffer nil
@@ -554,6 +560,8 @@
                          at-points
                          structs
                          output-vec-length
+                         fwd-implicit-params
+                         bwd-implicit-params
                          (seed-grad 1.0)
                          (h 1e-3)
                          (atol 1e-2)
@@ -599,8 +607,22 @@
            (when (null inputs)
              (error "VERIFY-AUTODIFF: no inputs supplied"))
 
-           (multiple-value-setq (descs output-fwd-base output-bwd-base grad-output-bwd-base)
-             (%vad-make-descriptors inputs at-points structs output-vec-length))
+           ;; Sum implicit-param arg widths (default 6 per local-scratch
+           ;; vector).  Both kernels can carry implicit params: the
+           ;; forward kernel via user (let ((tile (make-scratch-vector
+           ;; ...)))), the backward via AD-minted tile_ADJ shadows.
+           (let ((fwd-prefix-args
+                  (reduce #'+ fwd-implicit-params
+                          :key (lambda (p) (getf p :arg-width 6))
+                          :initial-value 0))
+                 (bwd-prefix-args
+                  (reduce #'+ bwd-implicit-params
+                          :key (lambda (p) (getf p :arg-width 6))
+                          :initial-value 0)))
+             (multiple-value-setq (descs output-fwd-base output-bwd-base grad-output-bwd-base)
+               (%vad-make-descriptors inputs at-points structs output-vec-length
+                                      :fwd-prefix-args fwd-prefix-args
+                                      :bwd-prefix-args bwd-prefix-args)))
 
            (multiple-value-bind (ctx q) (runtime-init)
              (setf context ctx
@@ -636,7 +658,15 @@
                      (create-float-cell-buffer context)))
 
            (labels
-               ((apply-primals (kernel perturb-desc delta &optional perturb-field)
+               ((arg-base-for (d kernel)
+                  "Picks DESC's arg-base based on which kernel we're binding to.
+                   For the backward kernel this includes the implicit-param
+                   prefix offset already baked into :bwd-arg-base."
+                  (cond
+                   ((eq kernel fwd-kernel) (getf d :fwd-arg-base))
+                   ((eq kernel bwd-kernel) (getf d :bwd-arg-base))
+                   (t (error "arg-base-for: unknown kernel handle ~A" kernel))))
+                (apply-primals (kernel perturb-desc delta &optional perturb-field)
                   "Stages every input for the next launch of KERNEL.
                    When PERTURB-DESC is non-NIL, perturbs that input by DELTA.
                    PERTURB-FIELD names the specific :struct-by-value field to
@@ -653,11 +683,11 @@
                        (let* ((v (cl:float (getf d :value) 1.0))
                               (vv (if (eq d perturb-desc)
                                       (cl:float (+ v delta) 1.0) v)))
-                         (bind-float-scalar-arg kernel (getf d :arg-base) vv)))
+                         (bind-float-scalar-arg kernel (arg-base-for d kernel) vv)))
                       (:scalar-int32-plain
-                       (bind-int32-scalar-arg kernel (getf d :arg-base) (getf d :value)))
+                       (bind-int32-scalar-arg kernel (arg-base-for d kernel) (getf d :value)))
                       (:scalar-ulong
-                       (bind-uint64-scalar-arg kernel (getf d :arg-base) (getf d :value)))
+                       (bind-uint64-scalar-arg kernel (arg-base-for d kernel) (getf d :value)))
                       (:vector-float
                        (let* ((vals (getf d :value))
                               (i    (getf d :perturb-i))
@@ -682,7 +712,7 @@
                                                        f2)
                                                      f))
                                    fields-raw)))
-                         (bind-struct-by-value-arg kernel (getf d :arg-base)
+                         (bind-struct-by-value-arg kernel (arg-base-for d kernel)
                                                    perturbed-fields
                                                    (getf d :total-bytes)))))))
                 (bind-static-input-args (kernel)
@@ -690,7 +720,7 @@
                    (cells and vectors).  Plain floats, ulongs, and structs
                    are bound on every iteration by APPLY-PRIMALS."
                   (dolist (d descs)
-                    (let ((base (getf d :arg-base)))
+                    (let ((base (arg-base-for d kernel)))
                       (case (getf d :kind)
                         (:scalar-float (bind-cell-arg kernel base (getf d :buffer)))
                         (:vector-float (bind-vector-arg kernel base (getf d :buffer) (getf d :length)))))))
@@ -730,11 +760,29 @@
                                  do (setf (cffi:mem-aref data :uint8 i) 0))
                            (write-bytes-to-buffer queue (getf d :grad-buffer) data nbytes))))))))
 
+             ;; Bind any forward-kernel implicit-params (local-mem scratch
+             ;; vectors declared via make-scratch-vector inside the kernel).
+             ;; Must precede static input binds so the declared input slots
+             ;; line up.
+             (dolist (p fwd-implicit-params)
+               (bind-local-scratch-vector-arg
+                fwd-kernel
+                (getf p :base)
+                (getf p :n-elements)
+                (getf p :elem-bytes)))
              ;; Static binds: buffer-backed inputs bound once.
              (bind-static-input-args fwd-kernel)
              (if output-vec-length
                  (bind-vector-arg fwd-kernel output-fwd-base output-buf output-vec-length)
                  (bind-cell-arg fwd-kernel output-fwd-base output-buf))
+             ;; Backward-kernel implicit-params: the original scratch tiles
+             ;; PLUS any AD-minted tile_ADJ shadows.
+             (dolist (p bwd-implicit-params)
+               (bind-local-scratch-vector-arg
+                bwd-kernel
+                (getf p :base)
+                (getf p :n-elements)
+                (getf p :elem-bytes)))
              (bind-static-input-args bwd-kernel)
              (if output-vec-length
                  (progn
@@ -1299,6 +1347,70 @@
      (loop for i from 0 below nbytes
            do (setf (cffi:mem-aref host-ptr :uint8 i)
                     (cffi:mem-aref buffer :uint8 i))))))
+
+;;; --- Local-scratch vector binding -------------------------------------
+;;;
+;;; The AD pass auto-mints a `<tile>_ADJ` shadow next to every local-mem
+;;; tile that participates in a load-tile-coords / store-tile-coords AD
+;;; expansion (and the original tile itself is also a kernel param under
+;;; that rewriting).  These show up as 6-arg vector descriptors with
+;;; `:local` addrspace at the start of the backward kernel's arg list,
+;;; before the forward primals.
+;;;
+;;; Binding a :local pointer differs from binding a :global pointer:
+;;;   - the pointer arg is set with HOST_PTR = NULL and arg-size =
+;;;     bytes-of-local-mem-to-allocate (the runtime allocates the local
+;;;     memory at launch time)
+;;;   - the 5 i64 metadata args (byte_size, offset, stride[0], extent[0],
+;;;     length) are set to their normal compact-vector values
+;;;
+;;; Both OpenCL and L0 use the same wire form.
+
+(defun opencl-bind-local-scratch-vector-arg (kernel base-index n-elements elem-bytes)
+  "Binds a :local addrspace 1D-compact scratch vector at BASE-INDEX (6 args)."
+  (let ((byte-size (* n-elements elem-bytes)))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 0) byte-size (cffi:null-pointer))))
+  (cffi:with-foreign-objects ((arg1 :uint64) (arg2 :uint64)
+                              (arg3 :uint64) (arg4 :uint64) (arg5 :uint64))
+    (setf (cffi:mem-ref arg1 :uint64) (* n-elements elem-bytes) ; parent byte_size
+          (cffi:mem-ref arg2 :uint64) 0                          ; offset
+          (cffi:mem-ref arg3 :uint64) 1                          ; stride[0]
+          (cffi:mem-ref arg4 :uint64) n-elements                 ; extent[0]
+          (cffi:mem-ref arg5 :uint64) n-elements)                ; length
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 1) (cffi:foreign-type-size :uint64) arg1))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 2) (cffi:foreign-type-size :uint64) arg2))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 3) (cffi:foreign-type-size :uint64) arg3))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 4) (cffi:foreign-type-size :uint64) arg4))
+    (check-cl (cl-set-kernel-arg kernel (+ base-index 5) (cffi:foreign-type-size :uint64) arg5))))
+
+(defun l0-bind-local-scratch-vector-arg (kernel base-index n-elements elem-bytes)
+  "L0 counterpart: NULL pArgValue + byte-size for the local mem alloc."
+  (let ((byte-size (* n-elements elem-bytes)))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 0)
+                                            byte-size (cffi:null-pointer))))
+  (cffi:with-foreign-objects ((arg1 :uint64) (arg2 :uint64)
+                              (arg3 :uint64) (arg4 :uint64) (arg5 :uint64))
+    (setf (cffi:mem-ref arg1 :uint64) (* n-elements elem-bytes)
+          (cffi:mem-ref arg2 :uint64) 0
+          (cffi:mem-ref arg3 :uint64) 1
+          (cffi:mem-ref arg4 :uint64) n-elements
+          (cffi:mem-ref arg5 :uint64) n-elements)
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 1)
+                                            (cffi:foreign-type-size :uint64) arg1))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 2)
+                                            (cffi:foreign-type-size :uint64) arg2))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 3)
+                                            (cffi:foreign-type-size :uint64) arg3))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 4)
+                                            (cffi:foreign-type-size :uint64) arg4))
+    (check-ze (ze-kernel-set-argument-value kernel (+ base-index 5)
+                                            (cffi:foreign-type-size :uint64) arg5))))
+
+(defun bind-local-scratch-vector-arg (kernel base-index n-elements elem-bytes)
+  (funcall (ecase *ad-runtime*
+             (:opencl 'opencl-bind-local-scratch-vector-arg)
+             (:l0     'l0-bind-local-scratch-vector-arg))
+           kernel base-index n-elements elem-bytes))
 
 
 ;;; ======================================================================
