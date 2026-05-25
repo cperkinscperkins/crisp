@@ -270,6 +270,26 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   type
   source-location)
 
+;; Endeavor 114 Phase A: SPV-native async tile copy.  Holds the analyzed
+;; sub-nodes for src tensor, tile tensor, and origin coord exprs.  At
+;; codegen time the IR call to __spirv_GroupAsyncCopy is emitted and the
+;; returned event is stashed in a per-function event slot.  The semantic
+;; node's TYPE is ULONG so the surrounding let-binding's phantom token
+;; matches the Phase 1a fallback contract.
+(defstruct semantic-spirv-async-tile-copy
+  src-node      ;; semantic node for the source tensor (addrspace 1)
+  tile-node     ;; semantic node for the dest tile (addrspace 3)
+  origin-nodes  ;; list of semantic nodes for origin coords (one per dim)
+  type
+  source-location)
+
+;; Endeavor 114 Phase A: SPV-native await.  Loads the slot, addrspacecasts
+;; to generic (4), calls __spirv_GroupWaitEvents.  Returns a phantom ulong
+;; for surrounding-progn compatibility.
+(defstruct semantic-spirv-await-request
+  type
+  source-location)
+
 (defstruct semantic-make-view
   "Represents a make-cell/vector/matrix/tensor view construction.
    Creates a new Storage Handle that reinterprets an existing one.

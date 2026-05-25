@@ -51,6 +51,103 @@ police:
   hazards we're deferring to a later "real-runtime tokens" endeavor.
 
 
+Research findings (Phase 0, recorded 2026-05-24)
+------------------------------------------------
+
+Toolchain pinned to LLVM 21.1.5 (llc) + LLVM 22.0.0-git (llvm-spirv,
+Khronos translator) as bundled with Crisp `tools/`.
+
+### SPV (`__spirv_GroupAsyncCopy` direct form, NOT mangled OpenCL)
+
+The mangled OpenCL form (`_Z21async_work_group_copyPU3AS3...`) is
+NOT recognised by llvm-spirv 22 — it survives translation as an
+`Import` LinkageAttribute, which would fail at L0 module-create
+(`ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED`).  The `__spirv_*` direct
+form IS recognised and emits the native `OpGroupAsyncCopy` /
+`OpGroupWaitEvents` opcodes.
+
+Confirmed empirically with a hand-crafted IR roundtrip
+(`c:/tmp/async_copy_smoke2.ll`).
+
+```llvm
+declare spir_func ptr @__spirv_GroupAsyncCopy(
+  i32, ptr addrspace(3), ptr addrspace(1), i64, i64, ptr)
+
+declare spir_func void @__spirv_GroupWaitEvents(
+  i32, i32, ptr addrspace(4))
+
+;; usage:
+%evt = call spir_func ptr @__spirv_GroupAsyncCopy(
+          i32 2,                       ;; scope = Workgroup
+          ptr addrspace(3) %tile,      ;; dst (local)
+          ptr addrspace(1) %src,       ;; src (global)
+          i64 %count,                  ;; element count
+          i64 1,                       ;; element stride (1 = contiguous)
+          ptr null)                    ;; prev event (null = start)
+store ptr %evt, ptr %evt_slot
+%generic_slot = addrspacecast ptr %evt_slot to ptr addrspace(4)
+call spir_func void @__spirv_GroupWaitEvents(
+       i32 2, i32 1, ptr addrspace(4) %generic_slot)
+```
+
+Translates cleanly to:
+
+```spirv
+... GroupAsyncCopy ...
+... GroupWaitEvents ...
+```
+
+Event type: opaque `ptr` (the translator infers `OpTypeEvent` from
+context).  No need to declare `%opencl.event_t` or `%spirv.Event`
+explicitly.
+
+### PTX (NVVM intrinsics in LLVM 21)
+
+Confirmed empirically with `c:/tmp/cp_async_smoke.ll` →
+`llc -march=nvptx64 -mcpu=sm_80`:
+
+```llvm
+declare void @llvm.nvvm.cp.async.ca.shared.global.4(
+  ptr addrspace(3), ptr addrspace(1))
+declare void @llvm.nvvm.cp.async.ca.shared.global.8(
+  ptr addrspace(3), ptr addrspace(1))
+declare void @llvm.nvvm.cp.async.ca.shared.global.16(
+  ptr addrspace(3), ptr addrspace(1))
+declare void @llvm.nvvm.cp.async.commit.group()
+declare void @llvm.nvvm.cp.async.wait.group(i32 immarg)
+```
+
+Lowers to:
+
+```
+cp.async.ca.shared.global [dst], [src], 8;
+cp.async.commit_group;
+cp.async.wait_group 0;
+```
+
+Payload size: per-thread 4 / 8 / 16 bytes only.  For element types
+that don't match a power-of-two-byte boundary (e.g. `half` = 2),
+either coalesce two halves per cp.async or fall back to sync.
+
+Compute capability: cp.async requires sm_80+ (Ampere).  Crisp's
+current PTX default is `sm_50` (Maxwell).  Two options for 114:
+
+1. Bump the default to sm_80 globally — simple, but rejects older
+   GPUs even for kernels that don't use async ops.
+2. Auto-bump per-kernel when async ops are present — cleaner but
+   requires per-kernel compute-capability tracking that doesn't
+   exist yet.
+
+Going with **option 1** for 114 (just bump the default).  Maxwell is
+ancient and the dev/CI box runs Battlemage / Hopper anyway.
+
+### Address-space mapping
+
+Both backends use addrspace(3) for shared/local, addrspace(1) for
+global, and addrspace(4) for generic.  Same numbers — convenient
+accident of history.  Confirmed.
+
+
 Research discipline — what to look up before writing a line
 -----------------------------------------------------------
 
