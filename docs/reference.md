@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-25T05:56:48.223267Z
+Generated on 2026-05-25T22:59:13.704310Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -520,7 +520,7 @@ Generated on 2026-05-25T05:56:48.223267Z
 ### DEFUN `ANALYZE-REQUEST-LOAD-TILE-COORDS-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Phase 1a analyzer for request-load-tile-coords.  Reuses the sync  >    divergence guard then delegates to the fallback expansion.
+  > 114 Phase B: emit semantic-nvvm-cp-async-tile-copy on :ptx target;  >    fall back to sync expansion elsewhere (including :spirv, which is  >    blocked — see 114 Phase A notes).
 
 
 ---
@@ -534,7 +534,7 @@ Generated on 2026-05-25T05:56:48.223267Z
 ### DEFUN `ANALYZE-AWAIT-REQUEST-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Phase 1a analyzer for await-request.  In fallback mode the matching  >    request-* has already emitted its barrier, so this is a no-op that  >    just yields a phantom ulong 0.  Validates arity.
+  > 114 Phase B: emit semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.
 
 
 ---
@@ -875,14 +875,14 @@ Generated on 2026-05-25T05:56:48.223267Z
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the Crisp type of a semantic node.  > Extended for 092-dotimes.
+  > Returns the Crisp type of a semantic node.  >    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
 
-  > Returns the source location of a semantic node.  > Extended for 092-dotimes.
+  > Returns the source location of a semantic node.  >    Extended for 092-dotimes and 114 Phase B.
 
 
 ---
@@ -2314,6 +2314,41 @@ Generated on 2026-05-25T05:56:48.223267Z
 
 
 ---
+### DEFUN `%GEN-NVVM-CP-ASYNC-ELEM`
+- **Args**: `(BUILDER MODULE DST-PTR SRC-PTR ELEM-BYTES)`
+
+  > Emits @llvm.nvvm.cp.async.ca.shared.global.{4|8|16}(dst, src).  >    ELEM-BYTES picks the right intrinsic variant.
+
+
+---
+### DEFUN `%GEN-NVVM-CP-ASYNC-COMMIT-GROUP`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.cp.async.commit.group().
+
+
+---
+### DEFUN `%GEN-NVVM-CP-ASYNC-WAIT-GROUP`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.cp.async.wait.group(i32 0).  i32 must be an immarg.
+
+
+---
+### DEFUN `%GEN-NVVM-READ-TID-X`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.read.ptx.sreg.tid.x() → i32 (per-thread tid in X).
+
+
+---
+### DEFUN `%VECTOR-ELEM-TYPE`
+- **Args**: `(TILE-TYPE-SPEC)`
+
+  > Returns the element type symbol from a (vector ELEM ...) or (tensor  >    ELEM ...) type spec, walking through aliases.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
@@ -2457,9 +2492,9 @@ Generated on 2026-05-25T05:56:48.223267Z
 
 ---
 ### DEFUN `COMPILE-TO-PTX`
-- **Args**: `(MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_50) DEBUG-P)`
+- **Args**: `(MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)`
 
-  > Compiles an LLVM Module to PTX using llc.  >  COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)  >                      sm_50 = Maxwell (good default for compatibility)
+  > Compiles an LLVM Module to PTX using llc.  >  COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)  >                      sm_80 = Ampere (required for endeavor 114's cp.async path).  >                      Pre-Ampere targets can pass an explicit value if needed,  >                      but kernels using request-load-tile / await-request will  >                      fail to compile on anything earlier.
 
 
 ---
@@ -4555,6 +4590,12 @@ Generated on 2026-05-25T05:56:48.223267Z
 
   > Represents a GPU built-in function call (e.g. get-global-id, local-barrier).  >    BUILTIN-NAME is a keyword: :get-global-id, :local-barrier, etc.  >    DIMENSION is NIL for the 3D vector form, or 0/1/2 for the scalar-n form.  >    TYPE is the Crisp return type: 'ulong3, 'ulong, 'uint, or NIL (void).
 
+
+---
+### DEFSTRUCT `SEMANTIC-NVVM-CP-ASYNC-TILE-COPY`
+
+---
+### DEFSTRUCT `SEMANTIC-NVVM-CP-ASYNC-WAIT`
 
 ---
 ### DEFSTRUCT `SEMANTIC-MAKE-VIEW`

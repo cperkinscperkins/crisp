@@ -270,6 +270,31 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   type
   source-location)
 
+;; Endeavor 114 Phase A SPV codegen was attempted then reverted — see
+;; tests/spec/114-async-tile-codegen/async-tile-codegen.md.  The two
+;; semantic node defstructs the SPV path needed (semantic-spirv-async-tile-copy
+;; and semantic-spirv-await-request) are NOT defined here; if/when the
+;; SPV blocker is unblocked, they'll be re-introduced.
+
+;; Endeavor 114 Phase B: NVPTX cp.async-based async tile copy.  Holds the
+;; analyzed sub-nodes; codegen emits per-thread cp.async + commit_group
+;; for the request, and cp.async.wait_group(0) for the await.  Direct LLVM
+;; NVVM intrinsics — no linkage hazard (the SPV blocker doesn't apply).
+;;
+;; Phase B.1 scope: simple case where tile.length == workgroup_size (one
+;; cp.async per thread, no inner loop).  Bigger tiles need a cooperative
+;; loop, which lands in B.2.
+(defstruct semantic-nvvm-cp-async-tile-copy
+  src-node      ;; semantic node for the source tensor (addrspace 1)
+  tile-node     ;; semantic node for the dest tile (addrspace 3)
+  origin-nodes  ;; list of semantic nodes for origin coords (one per dim)
+  type
+  source-location)
+
+(defstruct semantic-nvvm-cp-async-wait
+  type
+  source-location)
+
 (defstruct semantic-make-view
   "Represents a make-cell/vector/matrix/tensor view construction.
    Creates a new Storage Handle that reinterprets an existing one.

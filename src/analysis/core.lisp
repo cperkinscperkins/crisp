@@ -1351,10 +1351,9 @@ in single-pass mode."
 ;; --- Helper to get the type from any node ---
 
 
-
 (defun semantic-node-type (node)
   "Returns the Crisp type of a semantic node.
-Extended for 092-dotimes."
+   Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*)."
   (etypecase node
     (semantic-dotimes (semantic-dotimes-type node))
     (semantic-literal (semantic-literal-value-type node))
@@ -1393,13 +1392,13 @@ Extended for 092-dotimes."
     (semantic-make-view (semantic-make-view-type node))
     (semantic-atomic-rmw (semantic-atomic-rmw-type node))
     (semantic-stride-view (semantic-stride-view-type node))
-    (semantic-gpu-builtin (semantic-gpu-builtin-type node))))
+    (semantic-gpu-builtin (semantic-gpu-builtin-type node))
+    (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-type node))
+    (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-type node))))
 
-;; src/analysis/core.lisp
-;; Redefine semantic-node-source-location to include semantic-dotimes.
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
-Extended for 092-dotimes."
+   Extended for 092-dotimes and 114 Phase B."
   (etypecase node
     (semantic-dotimes (semantic-dotimes-source-location node))
     (semantic-literal (semantic-literal-source-location node))
@@ -1420,7 +1419,6 @@ Extended for 092-dotimes."
     (semantic-gt (semantic-gt-source-location node))
     (semantic-le (semantic-le-source-location node))
     (semantic-ge (semantic-ge-source-location node))
-    (semantic-sizeof (semantic-sizeof-source-location node))
     (semantic-eq (semantic-eq-source-location node))
     (semantic-neq (semantic-neq-source-location node))
     (semantic-if (semantic-if-source-location node))
@@ -1435,10 +1433,13 @@ Extended for 092-dotimes."
     (semantic-ct-array (semantic-ct-array-source-location node))
     (semantic-progn (semantic-progn-source-location node))
     (semantic-struct-member-update (semantic-struct-member-update-source-location node))
+    (semantic-sizeof (semantic-sizeof-source-location node))
     (semantic-make-view (semantic-make-view-source-location node))
     (semantic-atomic-rmw (semantic-atomic-rmw-source-location node))
     (semantic-stride-view (semantic-stride-view-source-location node))
-    (semantic-gpu-builtin (semantic-gpu-builtin-source-location node))))
+    (semantic-gpu-builtin (semantic-gpu-builtin-source-location node))
+    (semantic-nvvm-cp-async-tile-copy (semantic-nvvm-cp-async-tile-copy-source-location node))
+    (semantic-nvvm-cp-async-wait      (semantic-nvvm-cp-async-wait-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)

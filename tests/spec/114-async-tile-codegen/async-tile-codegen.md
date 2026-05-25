@@ -1,14 +1,28 @@
 Endeavor 114 — Async tile codegen on metal (SPV `OpGroupAsyncCopy` + PTX `cp.async`)
 ======================================================================================
 
-> **Status: planning stub.**  Endeavor 113 delivered the front-end +
-> AD pre-rewrite + fallback-to-sync lowering on both backends.  This
-> endeavor replaces the fallback with the real backend-specific async
-> machinery so memory-bound tile-heavy kernels can hide their load
-> latency.  Splitting it from 113 was a deliberate choice: 114 is
-> LLVM-intrinsic spelunking + per-backend IR validation +
-> Colab/RunPod hardware verification, a different character of work
-> than 113's front-end story.
+> **Status (closed 2026-05-25): PTX path shipped, SPV path blocked,
+> remaining sub-phases deferred with clear criteria.**
+>
+> - **Phase B.1 PTX cp.async — SHIPPED.** Native
+>   `@llvm.nvvm.cp.async.ca.shared.global.{4|8}` + `commit.group` +
+>   `wait.group(0)`, lowering to the right cp.async PTX assembly under
+>   `llc -mcpu=sm_80`.  Verified at IR + PTX-assembly inspection level
+>   for `tests/spec/113-async-load-tile-store-tile/01-request-load-tile-coords-1d.crisp`.
+>   PTX default compute capability bumped sm_50 → sm_80 in
+>   `src/compiler.lisp`.
+> - **Phase A SPV — BLOCKED.** IGC's BiFModule doesn't resolve either
+>   `__spirv_GroupAsyncCopy` direct or mangled `_Z21async_work_group_copy...`
+>   forms.  Both produce SPV that fails `zeKernelCreate` with
+>   `ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED`.  Per Gemini's "pragmatic
+>   out", SPV stays on the 113 sync fallback — on Intel SLM-integrated
+>   hardware the perf delta is small.  See section below.
+> - **Phase B.2 / C / D / E — deferred** with clear re-attempt criteria
+>   (see end of this doc).
+>
+> Suite remains 720/720 on default and `--differentiate`.
+> Runtime validation on Ampere+ (Colab / RunPod) is pending — the only
+> verification done so far is at the IR / PTX-assembly inspection level.
 
 
 Why this matters
@@ -49,6 +63,103 @@ police:
   second `request-*` is issued before the prior token is awaited.
   Matches cp.async's FIFO semantics and avoids the multi-outstanding
   hazards we're deferring to a later "real-runtime tokens" endeavor.
+
+
+Research findings (Phase 0, recorded 2026-05-24)
+------------------------------------------------
+
+Toolchain pinned to LLVM 21.1.5 (llc) + LLVM 22.0.0-git (llvm-spirv,
+Khronos translator) as bundled with Crisp `tools/`.
+
+### SPV (`__spirv_GroupAsyncCopy` direct form, NOT mangled OpenCL)
+
+The mangled OpenCL form (`_Z21async_work_group_copyPU3AS3...`) is
+NOT recognised by llvm-spirv 22 — it survives translation as an
+`Import` LinkageAttribute, which would fail at L0 module-create
+(`ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED`).  The `__spirv_*` direct
+form IS recognised and emits the native `OpGroupAsyncCopy` /
+`OpGroupWaitEvents` opcodes.
+
+Confirmed empirically with a hand-crafted IR roundtrip
+(`c:/tmp/async_copy_smoke2.ll`).
+
+```llvm
+declare spir_func ptr @__spirv_GroupAsyncCopy(
+  i32, ptr addrspace(3), ptr addrspace(1), i64, i64, ptr)
+
+declare spir_func void @__spirv_GroupWaitEvents(
+  i32, i32, ptr addrspace(4))
+
+;; usage:
+%evt = call spir_func ptr @__spirv_GroupAsyncCopy(
+          i32 2,                       ;; scope = Workgroup
+          ptr addrspace(3) %tile,      ;; dst (local)
+          ptr addrspace(1) %src,       ;; src (global)
+          i64 %count,                  ;; element count
+          i64 1,                       ;; element stride (1 = contiguous)
+          ptr null)                    ;; prev event (null = start)
+store ptr %evt, ptr %evt_slot
+%generic_slot = addrspacecast ptr %evt_slot to ptr addrspace(4)
+call spir_func void @__spirv_GroupWaitEvents(
+       i32 2, i32 1, ptr addrspace(4) %generic_slot)
+```
+
+Translates cleanly to:
+
+```spirv
+... GroupAsyncCopy ...
+... GroupWaitEvents ...
+```
+
+Event type: opaque `ptr` (the translator infers `OpTypeEvent` from
+context).  No need to declare `%opencl.event_t` or `%spirv.Event`
+explicitly.
+
+### PTX (NVVM intrinsics in LLVM 21)
+
+Confirmed empirically with `c:/tmp/cp_async_smoke.ll` →
+`llc -march=nvptx64 -mcpu=sm_80`:
+
+```llvm
+declare void @llvm.nvvm.cp.async.ca.shared.global.4(
+  ptr addrspace(3), ptr addrspace(1))
+declare void @llvm.nvvm.cp.async.ca.shared.global.8(
+  ptr addrspace(3), ptr addrspace(1))
+declare void @llvm.nvvm.cp.async.ca.shared.global.16(
+  ptr addrspace(3), ptr addrspace(1))
+declare void @llvm.nvvm.cp.async.commit.group()
+declare void @llvm.nvvm.cp.async.wait.group(i32 immarg)
+```
+
+Lowers to:
+
+```
+cp.async.ca.shared.global [dst], [src], 8;
+cp.async.commit_group;
+cp.async.wait_group 0;
+```
+
+Payload size: per-thread 4 / 8 / 16 bytes only.  For element types
+that don't match a power-of-two-byte boundary (e.g. `half` = 2),
+either coalesce two halves per cp.async or fall back to sync.
+
+Compute capability: cp.async requires sm_80+ (Ampere).  Crisp's
+current PTX default is `sm_50` (Maxwell).  Two options for 114:
+
+1. Bump the default to sm_80 globally — simple, but rejects older
+   GPUs even for kernels that don't use async ops.
+2. Auto-bump per-kernel when async ops are present — cleaner but
+   requires per-kernel compute-capability tracking that doesn't
+   exist yet.
+
+Going with **option 1** for 114 (just bump the default).  Maxwell is
+ancient and the dev/CI box runs Battlemage / Hopper anyway.
+
+### Address-space mapping
+
+Both backends use addrspace(3) for shared/local, addrspace(1) for
+global, and addrspace(4) for generic.  Same numbers — convenient
+accident of history.  Confirmed.
 
 
 Research discipline — what to look up before writing a line
@@ -94,7 +205,58 @@ specs to nail down by reading the source-of-truth:
 Phasing
 -------
 
-### Phase A — SPV codegen for request-load-tile-coords
+### Phase A — SPV codegen for request-load-tile-coords  *(BLOCKED, pragmatic-fallback)*
+
+**Status (2026-05-25): attempted, reverted to fallback.**  Both candidate
+SPV emission paths translate cleanly to SPIR-V but fail at
+`zeKernelCreate` with `ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED`:
+
+- **Direct `__spirv_GroupAsyncCopy`** form lowers to a real
+  `OpGroupAsyncCopy` opcode in the SPV.  IGC's frontend ingests the
+  SPV and synthesises a function call with mangled
+  `_Z22__spirv_GroupAsyncCopyi...l...` (`l` = i64 / long when the
+  pointee type propagates correctly via typed GEPs) — but IGC's
+  BiFModule doesn't ship a matching builtin.  Searched
+  `intel-graphics-compiler/IGC/BiFModule/Languages/OpenCL/IBiF_Impl.cl`
+  directly: no mention of `async_work_group_copy` or `GroupAsyncCopy`.
+- **Mangled OpenCL form** (`_Z21async_work_group_copyPU3AS3mPU3AS1Kmj9ocl_event`)
+  translates to `LinkageAttributes Import`.  Per the L0 spec, that's
+  exactly the case `zeModuleDynamicLink` is supposed to resolve —
+  but we don't have a builtins module to link against, and the spec
+  doesn't define one as auto-loaded for OpenCL builtins.
+
+Gemini diagnosed the underlying issue: the LLVM-SPIRV translator
+defaults opaque-pointer args to `i8`, so even when the SPV opcode
+emits successfully it asks IGC for an 8-bit builtin (`<i8>` mangle)
+that Intel hardware doesn't have.  We confirmed by adding typed-GEP
+hints (`getelementptr i64, ptr addrspace(3) %tile, i64 0`) that
+the translator picks up the i64 element type and emits
+`__spirv_GroupAsyncCopy<long>` — but IGC's BiFModule doesn't have
+the long variant either.  Sub-byte and non-standard widths look
+similarly unsupported.
+
+**Pragmatic fallback** (Gemini's recommendation, accepted): SPV stays
+at the 113 sync cooperative-loop lowering.  On Intel hardware (BMG and
+later) the SPV-side perf delta between hardware async copy and a
+well-coalesced sync cooperative load is small — L1 and SLM are
+tightly integrated, the load looks like a back-to-back coalesced
+read.  Phase B (PTX) is where the headline perf win lives, since
+NVPTX uses direct LLVM intrinsics (no BiF linkage needed).
+
+**Re-attempt criteria** for the SPV path:
+
+- Intel publishes (or we find) a documented L0 module / pBuildFlags
+  invocation that auto-resolves OpenCL builtins, OR
+- We implement a `zeModuleDynamicLink` call against a builtins module
+  we can ship or extract, OR
+- IGC adds direct support for the `__spirv_GroupAsyncCopy<long>` /
+  `<int>` / `<float>` mangles in its BiFModule.
+
+Filing context for the question: when bug 031 goes to Intel on Tuesday,
+add a sidebar question about the recommended SPIR-V async DMA path for
+L0 + IGC consumers who aren't going through Clang's OpenCL frontend.
+
+#### Original plan (kept for when the blocker lifts)
 
 - [ ] Research items 1 above; write findings as comments in the
       codegen helper.
@@ -117,7 +279,51 @@ Phasing
       for the async_work_group_copy / OpGroupAsyncCopy call.
       llvm-spirv round-trip to confirm the translator accepts it.
 
-### Phase B — PTX codegen for request-load-tile-coords
+### Phase B.1 — PTX cp.async, single-element-per-thread MVP *(LANDED)*
+
+Status (2026-05-25): **shipped**.  When `*target-backend*` is `:ptx`,
+the analyzer builds `semantic-nvvm-cp-async-tile-copy` /
+`semantic-nvvm-cp-async-wait` nodes; codegen emits:
+
+```
+call void @llvm.nvvm.cp.async.ca.shared.global.{4|8}(
+       ptr addrspace(3) %tile_elt_ptr, ptr addrspace(1) %src_elt_ptr)
+call void @llvm.nvvm.cp.async.commit.group()
+;; ... user work that doesn't touch the tile ...
+call void @llvm.nvvm.cp.async.wait.group(i32 0)
+```
+
+`llc -march=nvptx64 -mcpu=sm_80` lowers to exactly:
+
+```
+cp.async.ca.shared.global [%rd_dst], [%rd_src], 8;
+cp.async.commit_group;
+cp.async.wait_group  0;
+```
+
+Confirmed on `tests/spec/113-async-load-tile-store-tile/01-request-load-tile-coords-1d.crisp`.
+PTX default compute capability bumped sm_50 → sm_80 in
+`src/compiler.lisp` (cp.async requires Ampere).  Kernels not using
+request-* still compile cleanly under sm_80.
+
+**B.1 scope assumption**: tile.length == workgroup_size (one cp.async
+per thread, no inner loop).  Element types limited to 4- and 8-byte
+(int, uint, float, long, ulong, double).  Other shapes fall through to
+the 113 sync fallback.
+
+**Tested only at IR / PTX-assembly inspection level** (CI has no NVIDIA
+hardware).  Runtime validation requires Colab or RunPod.  Suite stays
+green at 720/720 default + --differentiate (no regressions).
+
+### Phase B.2 — PTX cp.async cooperative loop *(deferred)*
+
+For tiles larger than workgroup_size, threads iterate workgroup-strided
+issuing one cp.async per element.  Same structural pattern as the sync
+load-tile-coords cooperative loop, swapping `set!` for cp.async.
+Worth deferring until there's a kernel that actually needs it (most
+real-world tile shapes equal workgroup_size).
+
+### Phase B.0 — Original plan *(retained for reference)*
 
 - [ ] Research items 2 above.
 - [ ] New codegen helpers:
@@ -136,39 +342,42 @@ Phasing
 - [ ] Colab / RunPod: actually run the kernel on an Ampere+ GPU and
       verify correctness against a sync reference.
 
-### Phase C — Missing-target gate
+### Phase C — Missing-target gate *(deferred — not value-add yet)*
 
-- [ ] Add `%request-tile-check-target` to the analyzers (was removed
-      in 113 because fallback was target-agnostic).  Now that the
-      lowering branches on `*target-backend*` and there's no
-      meaningful generic IR, `:generic` is a hard error.
-- [ ] Reintroduce `errors/01-request-needs-ir-target.crisp` (was
-      deleted in 113 Phase 1a for the same reason).
-- [ ] Make sure the spec runner's "Default" pass (which uses
-      `:generic`) still works for the rest of 113's specs — likely
-      means those specs need `;; SKIP-WITH[default]: "needs --ir-target"`
-      or similar, OR we make the default pass set a backend.
+The 113 Phase 1a gate was removed because the sync fallback worked on
+any target including `:generic`, and gating broke the spec runner's
+default pass.  With 114 Phase B.1 shipped, the user-facing trade-off is
+now: forgetting `--ir-target=ptx` silently keeps you on the sync
+fallback (correct results, no cp.async).
 
-### Phase D — Single-outstanding scope table
+Re-introducing the gate would mean updating every request-* spec with
+`SKIP-WITH[default]` directives — meaningful friction for a check that
+just catches a typo.  Defer until either:
+- a real user gets bitten by silently-not-getting-perf, or
+- the spec runner gains a per-spec default-pass target opt-in.
 
-- [ ] Compile-time scope table that tracks pending tokens through
-      analyze-let / analyze-progn.  Issuing a second request-* while
-      a token is pending = error.  Awaiting a token = clears the entry.
-- [ ] Special-var binding at kernel-analyze entry so state doesn't
-      leak across kernels.
-- [ ] Reintroduce `errors/02-double-request-no-await.crisp` (was
-      deleted in 113 Phase 1a).
+### Phase D — Single-outstanding scope table *(deferred — runtime already correct)*
 
-### Phase E — Async store on backends where it exists
+`@llvm.nvvm.cp.async.wait.group(i32 0)` waits for **all** pending
+groups, so the multi-outstanding pattern works correctly at runtime
+today.  A compile-time scope table would constrain style, not fix
+correctness.
 
-- [ ] SPV: `async_work_group_copy` with reversed addrspaces (global←
-      local) — supported on most ICDs but check.  Fallback to sync if
-      not supported.
-- [ ] PTX-Hopper: `cp.async.bulk` with TMA — requires host-side
-      TensorMap descriptors, which needs hoist-side work that doesn't
-      exist yet.  Defer to its own endeavor.
-- [ ] PTX-Ampere: no async store hardware support — stays as sync
-      fallback.
+Re-attempt criteria: when real-runtime tokens land (so users can
+distinguish "wait for THIS request" from "wait for all"), the
+static-check helps disambiguate.  Not before then.
+
+### Phase E — Async store *(deferred — mostly N/A)*
+
+- **SPV**: same IGC BiFModule blocker as Phase A.  Sync fallback stays.
+- **PTX-Ampere**: no hardware async store.  Sync fallback stays.
+- **PTX-Hopper TMA** (`cp.async.bulk`): requires host-side TensorMap
+  descriptors — needs hoist-side plumbing that doesn't exist.  Its own
+  endeavor when there's a real Hopper target.
+
+Net: no Phase E work needed now.  `request-store-*` continues to
+lower to the 113 sync fallback on every backend, which is the only
+correct path on current hardware.
 
 
 Out of scope (further follow-ups)

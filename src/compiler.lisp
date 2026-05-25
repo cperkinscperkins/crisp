@@ -362,10 +362,13 @@ Returns modified IR text with metadata."
         (log:info "028-cleanup: deleted ~a dead array-returning function(s)" n))
       n)))
 
-(defun compile-to-ptx (module output-path &key (compute-capability "sm_50") debug-p)
+(defun compile-to-ptx (module output-path &key (compute-capability "sm_80") debug-p)
   "Compiles an LLVM Module to PTX using llc.
  COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)
-                     sm_50 = Maxwell (good default for compatibility)"
+                     sm_80 = Ampere (required for endeavor 114's cp.async path).
+                     Pre-Ampere targets can pass an explicit value if needed,
+                     but kernels using request-load-tile / await-request will
+                     fail to compile on anything earlier."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
          (name (pathname-name output-path))
          (ll-file (merge-pathnames (format nil "~a.temp.ll" name) base-path))

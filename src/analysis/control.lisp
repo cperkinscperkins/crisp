@@ -2453,12 +2453,32 @@
          (sync-form  (%expand-store-tile-coords-form sync-expr location)))
     (list progn-sym sync-form (list to-ulong 0))))
 
+
 (defun analyze-request-load-tile-coords-expression (expr env context location)
-  "Phase 1a analyzer for request-load-tile-coords.  Reuses the sync
-   divergence guard then delegates to the fallback expansion."
+  "114 Phase B: emit semantic-nvvm-cp-async-tile-copy on :ptx target;
+   fall back to sync expansion elsewhere (including :spirv, which is
+   blocked — see 114 Phase A notes)."
   (%tlc-check-not-divergent "request-load-tile-coords" location)
-  (analyze-expression (%expand-request-load-tile-coords-form expr location)
-                      env context location))
+  (case *target-backend*
+    (:ptx
+     (let* ((src-form    (second expr))
+            (tile-form   (third expr))
+            (origin-list (fourth expr))
+            (src-node    (analyze-expression src-form env context (append location '(1))))
+            (tile-node   (analyze-expression tile-form env context (append location '(2))))
+            (origin-nodes (loop for o in origin-list for i from 0
+                                collect (analyze-expression
+                                         o env context
+                                         (append location (list 3 i))))))
+       (make-semantic-nvvm-cp-async-tile-copy
+        :src-node     src-node
+        :tile-node    tile-node
+        :origin-nodes origin-nodes
+        :type         'ulong
+        :source-location location)))
+    (t
+     (analyze-expression (%expand-request-load-tile-coords-form expr location)
+                         env context location))))
 
 (defun analyze-request-store-tile-coords-expression (expr env context location)
   "Phase 3 analyzer for request-store-tile-coords.  Same divergence guard
@@ -2467,17 +2487,23 @@
   (analyze-expression (%expand-request-store-tile-coords-form expr location)
                       env context location))
 
+
+
 (defun analyze-await-request-expression (expr env context location)
-  "Phase 1a analyzer for await-request.  In fallback mode the matching
-   request-* has already emitted its barrier, so this is a no-op that
-   just yields a phantom ulong 0.  Validates arity."
+  "114 Phase B: emit semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere."
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error
            :message (format nil "await-request: expected (await-request TOKEN), got ~S" expr)
            :source-location location))
-  (let ((cl-pkg (find-package :crisp-language)))
-    (analyze-expression (list (intern "TO-ULONG" cl-pkg) 0)
-                        env context location)))
+  (case *target-backend*
+    (:ptx
+     (make-semantic-nvvm-cp-async-wait
+      :type 'ulong
+      :source-location location))
+    (t
+     (analyze-expression
+      (list (intern "TO-ULONG" (find-package :crisp-language)) 0)
+      env context location))))
 
 
 (defun register-control-analyzers ()

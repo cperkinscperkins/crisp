@@ -176,8 +176,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp
-- - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
 - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
 - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - (%GENERATE-KEYWORD-LITERAL-IR VALUE)  codegen.lisp
@@ -200,7 +200,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - (%BUILD-FUNCTION-CALL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE SIG CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT RETURN-TYPE-NAMES)  codegen.lisp
 - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp
-- - - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
 - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp
 - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp
 - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
@@ -247,10 +247,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - - - - - - - - - - (%LOOKUP-FIELD-PHYSICAL-INDEX STRUCT-DEF FIELD-NAME-STR)  codegen.lisp
 - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
-- - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
 - - - - - - - - - - (%DVEC-COERCE-ELEMENT-IR ELEM-NODE COMP-TYPE COMP-LLVM-TYPE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
 - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - - - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [RECURSION]
 - - - - - - - - - - (%MV-BUMP-PTR BUILDER BASE-PTR OFFSET-BYTES ADDR-SPACE)  codegen.lisp
 - - - - - - - - - - (%MV-SOURCE-ADDR CANON)  analysis/structs.lisp
 - - - - - - - - - - - (%MV-SOURCE-HEAD CANON)  analysis/structs.lisp
@@ -280,6 +280,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (%GEN-SPIRV-CONTROL-BARRIER BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - (%GEN-SPIRV-MEMORY-BARRIER BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - (%VECTOR-ELEM-TYPE TILE-TYPE-SPEC)  codegen.lisp
+- - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (%GEN-NVVM-READ-TID-X BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - (%GEN-NVVM-CP-ASYNC-ELEM BUILDER MODULE DST-PTR SRC-PTR ELEM-BYTES)  codegen.lisp
+- - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - (%GEN-NVVM-CP-ASYNC-COMMIT-GROUP BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - (%GEN-NVVM-CP-ASYNC-WAIT-GROUP BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp
@@ -530,7 +541,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (IR-TYPE-TO-OPENCL-METADATA IR-TYPE)  compiler.lisp
 - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp
 - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp
-- - - (COMPILE-TO-PTX MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_50) DEBUG-P)  compiler.lisp
+- - - (COMPILE-TO-PTX MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)  compiler.lisp
 - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]
 - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp [See above]
 - - - (PRINT-COMPILER-ERROR C FILENAME) :CRISP.MAIN  main.lisp
@@ -1198,7 +1209,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GET-PROMOTED-TYPE TYPE-A-NAME TYPE-B-NAME)  type-checker.lisp [See above]
 
 - (DEF-BINARY-OP-CODEGEN NODE-TYPE INT-INST FLOAT-INST ACCESSOR-PREFIX)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
@@ -1210,7 +1221,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 
 - (DEF-CAST-CODEGEN NODE-TYPE DOCSTRING ARG-ACCESSOR TYPE-ACCESSOR &BODY BODY)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
@@ -1220,7 +1231,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (DEF-COMPARISON-CODEGEN TYPE-NAME INT-PRED FLOAT-PRED ACCESSOR-PREFIX)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
@@ -1270,7 +1281,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (DEF-UNARY-MATH-CODEGEN NODE-TYPE INTRINSIC-NAME)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
@@ -1280,7 +1291,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (DUMP-ENV ENV &KEY (TITLE Environment Dump)) :CRISP.UTILS  utils.lisp
 
 - (GENERATE-COMPARISON-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE OP-NODE-INT OP-NODE-FLOAT)  codegen.lisp
-- - (GENERATE-NODE-IR (NODE SEMANTIC-EQ) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - (GENERATE-NODE-IR (NODE SEMANTIC-NVVM-CP-ASYNC-WAIT) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (GET-TEMPLATE-SIGNATURE NAME CONCRETE-TYPES)  templates.lisp
