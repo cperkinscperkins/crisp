@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-24T19:35:06.002580Z
+Generated on 2026-05-25T05:56:48.223267Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -400,7 +400,7 @@ Generated on 2026-05-24T19:35:06.002580Z
 ### DEFUN `%REWRITE-BARE-TILE-IN-FORM`
 - **Args**: `(FORM ORIGIN-BINDING-SYMS CL-PKG)`
 
-  > Rewrites bare (load-tile ...) / (store-tile ...) inside FORM into their  >    -coords equivalents using ORIGIN-BINDING-SYMS as the origin list.  Does  >    NOT recurse into nested tile-stride / hardware-stride / workgroup-stride  >    forms — those manage their own body rewrites.
+  > Rewrites bare (load-tile ...) / (store-tile ...) inside FORM into their  >    -coords equivalents using ORIGIN-BINDING-SYMS as the origin list.  Does  >    NOT recurse into nested tile-stride / hardware-stride / workgroup-stride  >    forms — those manage their own body rewrites.  >    Endeavor 113 Phase 2: also handles bare (request-load-tile ...).
 
 
 ---
@@ -414,7 +414,7 @@ Generated on 2026-05-24T19:35:06.002580Z
 ### DEFUN `%DETECT-BARE-LOAD-STORE-TILE-IN-FORM`
 - **Args**: `(FORM PATH)`
 
-  > Recursively walks FORM and signals a compile error if a bare (load-tile ...)  >    or (store-tile ...) call appears.  PATH is the context name used in the  >    error message (e.g. "hardware-stride :warp-idx").
+  > Recursively walks FORM and signals a compile error if a bare (load-tile ...)  >    or (store-tile ...) call appears.  PATH is the context name used in the  >    error message (e.g. "hardware-stride :warp-idx").  >    Endeavor 113 Phase 2: also detects bare (request-load-tile ...).
 
 
 ---
@@ -503,9 +503,44 @@ Generated on 2026-05-24T19:35:06.002580Z
 
 
 ---
+### DEFUN `%EXPAND-REQUEST-LOAD-TILE-COORDS-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Phase 1a: degrade-to-sync.  Expand to (PROGN <sync-load-tile-coords> 0)  >    so the result has a ulong-typed phantom token for the surrounding let.
+
+
+---
+### DEFUN `%EXPAND-REQUEST-STORE-TILE-COORDS-FORM`
+- **Args**: `(EXPR LOCATION)`
+
+  > Phase 3 fallback: degrade-to-sync.  Expand to  >    (PROGN <sync-store-tile-coords> 0) — same phantom-token shape as the  >    load side.  Real async store (where hardware supports it) lands in  >    114 Phase E.
+
+
+---
+### DEFUN `ANALYZE-REQUEST-LOAD-TILE-COORDS-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Phase 1a analyzer for request-load-tile-coords.  Reuses the sync  >    divergence guard then delegates to the fallback expansion.
+
+
+---
+### DEFUN `ANALYZE-REQUEST-STORE-TILE-COORDS-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Phase 3 analyzer for request-store-tile-coords.  Same divergence guard  >    as the sync form, then delegates to the fallback expansion.
+
+
+---
+### DEFUN `ANALYZE-AWAIT-REQUEST-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Phase 1a analyzer for await-request.  In fallback mode the matching  >    request-* has already emitted its barrier, so this is a no-op that  >    just yields a phantom ulong 0.  Validates arity.
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,  >    and (111 Phase 1a) load-tile-coords / store-tile-coords.
+  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,  >    and (111 Phase 1a) load-tile-coords / store-tile-coords.  >    Endeavor 113: also registers request-load-tile-coords and await-request.
 
 
 ---
@@ -3229,7 +3264,7 @@ Generated on 2026-05-24T19:35:06.002580Z
 ### DEFUN `%EXPAND-STRIDE-MACROS-IN-FORM`
 - **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
 
-  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride  >    forms into their expansions.
+  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride  >    forms into their expansions.  Endeavor 113: also normalises  >    request-load-tile-coords -> load-tile-coords and await-request -> nil  >    for the backward pass.
 
 
 ---

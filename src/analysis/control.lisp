@@ -1870,12 +1870,12 @@
 
 
 
-
 (defun %rewrite-bare-tile-in-form (form origin-binding-syms cl-pkg)
   "Rewrites bare (load-tile ...) / (store-tile ...) inside FORM into their
    -coords equivalents using ORIGIN-BINDING-SYMS as the origin list.  Does
    NOT recurse into nested tile-stride / hardware-stride / workgroup-stride
-   forms — those manage their own body rewrites."
+   forms — those manage their own body rewrites.
+   Endeavor 113 Phase 2: also handles bare (request-load-tile ...)."
   (cond
     ((atom form) form)
     ((not (and (consp form) (symbolp (car form))))
@@ -1885,7 +1885,6 @@
      (let ((op-name (symbol-name (car form))))
        (cond
          ((string-equal op-name "LOAD-TILE")
-          ;; (load-tile SRC TILE &key ...) → (load-tile-coords SRC TILE (ORIGIN-SYMS) &key ...)
           (when (< (length form) 3)
             (error 'crisp-compiler-error
                    :message "load-tile: expected (load-tile SRC TILE [&key ...])"
@@ -1896,7 +1895,6 @@
                 (key-args (nthcdr 3 form)))
             (append (list ltc-sym src tile origin-binding-syms) key-args)))
          ((string-equal op-name "STORE-TILE")
-          ;; (store-tile TILE DEST &key ...) → (store-tile-coords TILE DEST (ORIGIN-SYMS) &key ...)
           (when (< (length form) 3)
             (error 'crisp-compiler-error
                    :message "store-tile: expected (store-tile TILE DEST [&key ...])"
@@ -1906,10 +1904,31 @@
                 (dest    (third form))
                 (key-args (nthcdr 3 form)))
             (append (list stc-sym tile dest origin-binding-syms) key-args)))
+         ;; --- Endeavor 113 Phase 2: bare request-load-tile sugar. ---
+         ((string-equal op-name "REQUEST-LOAD-TILE")
+          (when (< (length form) 3)
+            (error 'crisp-compiler-error
+                   :message "request-load-tile: expected (request-load-tile SRC TILE [&key ...])"
+                   :source-location nil))
+          (let ((rltc-sym (intern "REQUEST-LOAD-TILE-COORDS" cl-pkg))
+                (src      (second form))
+                (tile     (third form))
+                (key-args (nthcdr 3 form)))
+            (append (list rltc-sym src tile origin-binding-syms) key-args)))
+         ;; --- Endeavor 113 Phase 3: bare request-store-tile sugar. ---
+         ((string-equal op-name "REQUEST-STORE-TILE")
+          (when (< (length form) 3)
+            (error 'crisp-compiler-error
+                   :message "request-store-tile: expected (request-store-tile TILE DEST [&key ...])"
+                   :source-location nil))
+          (let ((rstc-sym (intern "REQUEST-STORE-TILE-COORDS" cl-pkg))
+                (tile     (second form))
+                (dest     (third form))
+                (key-args (nthcdr 3 form)))
+            (append (list rstc-sym tile dest origin-binding-syms) key-args)))
          ((or (string-equal op-name "TILE-STRIDE")
               (string-equal op-name "HARDWARE-STRIDE")
               (string-equal op-name "WORKGROUP-STRIDE"))
-          ;; Nested stride contexts manage their own body rewriting.
           form)
          (t
           (cons (car form)
@@ -1926,10 +1945,13 @@
           body-forms))
 
 
+
+
 (defun %detect-bare-load-store-tile-in-form (form path)
   "Recursively walks FORM and signals a compile error if a bare (load-tile ...)
    or (store-tile ...) call appears.  PATH is the context name used in the
-   error message (e.g. \"hardware-stride :warp-idx\")."
+   error message (e.g. \"hardware-stride :warp-idx\").
+   Endeavor 113 Phase 2: also detects bare (request-load-tile ...)."
   (cond
     ((atom form) nil)
     ((not (and (consp form) (symbolp (car form))))
@@ -1938,7 +1960,9 @@
      (let ((op-name (symbol-name (car form))))
        (cond
          ((or (string-equal op-name "LOAD-TILE")
-              (string-equal op-name "STORE-TILE"))
+              (string-equal op-name "STORE-TILE")
+              (string-equal op-name "REQUEST-LOAD-TILE")
+              (string-equal op-name "REQUEST-STORE-TILE"))
           (error 'crisp-compiler-error
                  :message (format nil
                                   "~A: bare ~A is not allowed inside ~A — it is a workgroup-cooperative primitive whose internal local-barrier would deadlock in a warp-grouped chunking context.  Use ~A-coords with explicit origin coords if you need to copy data here, or restructure the kernel."
@@ -1950,7 +1974,6 @@
          ((or (string-equal op-name "TILE-STRIDE")
               (string-equal op-name "HARDWARE-STRIDE")
               (string-equal op-name "WORKGROUP-STRIDE"))
-          ;; Nested stride: stop recursing; that context will handle its own body.
           nil)
          (t
           (dolist (sub (cdr form))
@@ -2401,10 +2424,67 @@
                       env context location))
 
   
+  
+
+
+(defun %expand-request-load-tile-coords-form (expr location)
+  "Phase 1a: degrade-to-sync.  Expand to (PROGN <sync-load-tile-coords> 0)
+   so the result has a ulong-typed phantom token for the surrounding let."
+  (let* ((cl-pkg     (find-package :crisp-language))
+         (progn-sym  (intern "PROGN" cl-pkg))
+         (to-ulong   (intern "TO-ULONG" cl-pkg))
+         (sync-sym   (intern "LOAD-TILE-COORDS" cl-pkg))
+         (sync-expr  (cons sync-sym (rest expr)))
+         (sync-form  (%expand-load-tile-coords-form sync-expr location)))
+    (list progn-sym sync-form (list to-ulong 0))))
+
+;; Phase 3: symmetric fallback for the store side.
+
+(defun %expand-request-store-tile-coords-form (expr location)
+  "Phase 3 fallback: degrade-to-sync.  Expand to
+   (PROGN <sync-store-tile-coords> 0) — same phantom-token shape as the
+   load side.  Real async store (where hardware supports it) lands in
+   114 Phase E."
+  (let* ((cl-pkg     (find-package :crisp-language))
+         (progn-sym  (intern "PROGN" cl-pkg))
+         (to-ulong   (intern "TO-ULONG" cl-pkg))
+         (sync-sym   (intern "STORE-TILE-COORDS" cl-pkg))
+         (sync-expr  (cons sync-sym (rest expr)))
+         (sync-form  (%expand-store-tile-coords-form sync-expr location)))
+    (list progn-sym sync-form (list to-ulong 0))))
+
+(defun analyze-request-load-tile-coords-expression (expr env context location)
+  "Phase 1a analyzer for request-load-tile-coords.  Reuses the sync
+   divergence guard then delegates to the fallback expansion."
+  (%tlc-check-not-divergent "request-load-tile-coords" location)
+  (analyze-expression (%expand-request-load-tile-coords-form expr location)
+                      env context location))
+
+(defun analyze-request-store-tile-coords-expression (expr env context location)
+  "Phase 3 analyzer for request-store-tile-coords.  Same divergence guard
+   as the sync form, then delegates to the fallback expansion."
+  (%tlc-check-not-divergent "request-store-tile-coords" location)
+  (analyze-expression (%expand-request-store-tile-coords-form expr location)
+                      env context location))
+
+(defun analyze-await-request-expression (expr env context location)
+  "Phase 1a analyzer for await-request.  In fallback mode the matching
+   request-* has already emitted its barrier, so this is a no-op that
+   just yields a phantom ulong 0.  Validates arity."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+           :message (format nil "await-request: expected (await-request TOKEN), got ~S" expr)
+           :source-location location))
+  (let ((cl-pkg (find-package :crisp-language)))
+    (analyze-expression (list (intern "TO-ULONG" cl-pkg) 0)
+                        env context location)))
+
+
 (defun register-control-analyzers ()
   "Registers all control flow expression analyzers, including loop-vector-stride,
    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,
-   and (111 Phase 1a) load-tile-coords / store-tile-coords."
+   and (111 Phase 1a) load-tile-coords / store-tile-coords.
+   Endeavor 113: also registers request-load-tile-coords and await-request."
   (def-expression-analyzer function analyze-function-literal)
   (def-expression-analyzer common-lisp:function analyze-function-literal)
   (def-expression-analyzer funcall analyze-funcall-expression)
@@ -2470,10 +2550,7 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-workgroup-stride-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-workgroup-stride-expression)))
-  ;; 110: warp helper builtins.  Registered via a sibling helper that lives
-  ;; in src after the Phase 0 merge.
   (register-warp-builtins)
-  ;; 111 Phase 1a: load-tile-coords / store-tile-coords
   (let ((sym-cl (intern "LOAD-TILE-COORDS" (find-package :crisp-language)))
         (sym-cc (intern "LOAD-TILE-COORDS" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-coords-expression)
@@ -2484,10 +2561,6 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-coords-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-coords-expression)))
-  ;; 111 Phase 1b: bare load-tile / store-tile.  Only invoked when the form
-  ;; appears OUTSIDE a tile-stride / hardware-stride :workgroup-idx body
-  ;; (inside, the body walker rewrites them before analysis).  These error
-  ;; with a clear message pointing to the -coords variants.
   (let ((sym-cl (intern "LOAD-TILE" (find-package :crisp-language)))
         (sym-cc (intern "LOAD-TILE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-load-tile-expression)
@@ -2498,16 +2571,11 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-store-tile-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-store-tile-expression)))
-  ;; 111 Phase 1d: %uniform-when — internal-use, compiler-generated
-  ;; workgroup-uniform conditional that does NOT set the divergence flag.
-  ;; Used by tile-stride / hardware-stride :workgroup-idx outer-loop bounds.
   (let ((sym-cl (intern "%UNIFORM-WHEN" (find-package :crisp-language)))
         (sym-cc (intern "%UNIFORM-WHEN" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%uniform-when-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%uniform-when-expression)))
-  ;; 111 Phase 1c: AD backward primitives.  Emitted by generate-backward-walk
-  ;; as counterparts of load-tile-coords / store-tile-coords.
   (let ((sym-cl (intern "%LOAD-TILE-COORDS-BWD" (find-package :crisp-language)))
         (sym-cc (intern "%LOAD-TILE-COORDS-BWD" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%load-tile-coords-bwd-expression)
@@ -2517,5 +2585,21 @@
         (sym-cc (intern "%STORE-TILE-COORDS-BWD" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression))))
-
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression)))
+  ;; --- Endeavor 113 Phase 1a: async tile load + await. ---
+  (let ((sym-cl (intern "REQUEST-LOAD-TILE-COORDS" (find-package :crisp-language)))
+        (sym-cc (intern "REQUEST-LOAD-TILE-COORDS" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-request-load-tile-coords-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-request-load-tile-coords-expression)))
+  ;; --- Endeavor 113 Phase 3: async tile store. ---
+  (let ((sym-cl (intern "REQUEST-STORE-TILE-COORDS" (find-package :crisp-language)))
+        (sym-cc (intern "REQUEST-STORE-TILE-COORDS" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-request-store-tile-coords-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-request-store-tile-coords-expression)))
+  (let ((sym-cl (intern "AWAIT-REQUEST" (find-package :crisp-language)))
+        (sym-cc (intern "AWAIT-REQUEST" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-request-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-request-expression))))
