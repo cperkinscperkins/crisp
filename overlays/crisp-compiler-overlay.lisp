@@ -40,11 +40,33 @@
          (sync-form  (%expand-load-tile-coords-form sync-expr location)))
     (list progn-sym sync-form (list to-ulong 0))))
 
+;; Phase 3: symmetric fallback for the store side.
+
+(defun %expand-request-store-tile-coords-form (expr location)
+  "Phase 3 fallback: degrade-to-sync.  Expand to
+   (PROGN <sync-store-tile-coords> 0) — same phantom-token shape as the
+   load side.  Real async store (where hardware supports it) lands in
+   114 Phase E."
+  (let* ((cl-pkg     (find-package :crisp-language))
+         (progn-sym  (intern "PROGN" cl-pkg))
+         (to-ulong   (intern "TO-ULONG" cl-pkg))
+         (sync-sym   (intern "STORE-TILE-COORDS" cl-pkg))
+         (sync-expr  (cons sync-sym (rest expr)))
+         (sync-form  (%expand-store-tile-coords-form sync-expr location)))
+    (list progn-sym sync-form (list to-ulong 0))))
+
 (defun analyze-request-load-tile-coords-expression (expr env context location)
   "Phase 1a analyzer for request-load-tile-coords.  Reuses the sync
    divergence guard then delegates to the fallback expansion."
   (%tlc-check-not-divergent "request-load-tile-coords" location)
   (analyze-expression (%expand-request-load-tile-coords-form expr location)
+                      env context location))
+
+(defun analyze-request-store-tile-coords-expression (expr env context location)
+  "Phase 3 analyzer for request-store-tile-coords.  Same divergence guard
+   as the sync form, then delegates to the fallback expansion."
+  (%tlc-check-not-divergent "request-store-tile-coords" location)
+  (analyze-expression (%expand-request-store-tile-coords-form expr location)
                       env context location))
 
 (defun analyze-await-request-expression (expr env context location)
@@ -178,11 +200,137 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-request-load-tile-coords-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-request-load-tile-coords-expression)))
+  ;; --- Endeavor 113 Phase 3: async tile store. ---
+  (let ((sym-cl (intern "REQUEST-STORE-TILE-COORDS" (find-package :crisp-language)))
+        (sym-cc (intern "REQUEST-STORE-TILE-COORDS" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-request-store-tile-coords-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-request-store-tile-coords-expression)))
   (let ((sym-cl (intern "AWAIT-REQUEST" (find-package :crisp-language)))
         (sym-cc (intern "AWAIT-REQUEST" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-request-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-request-expression))))
+
+
+;; src/analysis/control.lisp
+;;
+;; Phase 2 sugar: bare `request-load-tile` inside tile-stride /
+;; hardware-stride :workgroup-idx gets rewritten to
+;; `request-load-tile-coords` with the stride's binding sym as the
+;; origin -- exactly mirroring the load-tile -> load-tile-coords
+;; rewrite from 111 Phase 1b.
+;;
+;; Whole-function redefinition of %rewrite-bare-tile-in-form from
+;; src/analysis/control.lisp with the new REQUEST-LOAD-TILE clause
+;; appended.  REQUEST-STORE-TILE will join in Phase 3 alongside its
+;; analyzer.
+
+(defun %rewrite-bare-tile-in-form (form origin-binding-syms cl-pkg)
+  "Rewrites bare (load-tile ...) / (store-tile ...) inside FORM into their
+   -coords equivalents using ORIGIN-BINDING-SYMS as the origin list.  Does
+   NOT recurse into nested tile-stride / hardware-stride / workgroup-stride
+   forms — those manage their own body rewrites.
+   Endeavor 113 Phase 2: also handles bare (request-load-tile ...)."
+  (cond
+    ((atom form) form)
+    ((not (and (consp form) (symbolp (car form))))
+     (mapcar (lambda (sub) (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
+             form))
+    (t
+     (let ((op-name (symbol-name (car form))))
+       (cond
+         ((string-equal op-name "LOAD-TILE")
+          (when (< (length form) 3)
+            (error 'crisp-compiler-error
+                   :message "load-tile: expected (load-tile SRC TILE [&key ...])"
+                   :source-location nil))
+          (let ((ltc-sym (intern "LOAD-TILE-COORDS" cl-pkg))
+                (src     (second form))
+                (tile    (third form))
+                (key-args (nthcdr 3 form)))
+            (append (list ltc-sym src tile origin-binding-syms) key-args)))
+         ((string-equal op-name "STORE-TILE")
+          (when (< (length form) 3)
+            (error 'crisp-compiler-error
+                   :message "store-tile: expected (store-tile TILE DEST [&key ...])"
+                   :source-location nil))
+          (let ((stc-sym (intern "STORE-TILE-COORDS" cl-pkg))
+                (tile    (second form))
+                (dest    (third form))
+                (key-args (nthcdr 3 form)))
+            (append (list stc-sym tile dest origin-binding-syms) key-args)))
+         ;; --- Endeavor 113 Phase 2: bare request-load-tile sugar. ---
+         ((string-equal op-name "REQUEST-LOAD-TILE")
+          (when (< (length form) 3)
+            (error 'crisp-compiler-error
+                   :message "request-load-tile: expected (request-load-tile SRC TILE [&key ...])"
+                   :source-location nil))
+          (let ((rltc-sym (intern "REQUEST-LOAD-TILE-COORDS" cl-pkg))
+                (src      (second form))
+                (tile     (third form))
+                (key-args (nthcdr 3 form)))
+            (append (list rltc-sym src tile origin-binding-syms) key-args)))
+         ;; --- Endeavor 113 Phase 3: bare request-store-tile sugar. ---
+         ((string-equal op-name "REQUEST-STORE-TILE")
+          (when (< (length form) 3)
+            (error 'crisp-compiler-error
+                   :message "request-store-tile: expected (request-store-tile TILE DEST [&key ...])"
+                   :source-location nil))
+          (let ((rstc-sym (intern "REQUEST-STORE-TILE-COORDS" cl-pkg))
+                (tile     (second form))
+                (dest     (third form))
+                (key-args (nthcdr 3 form)))
+            (append (list rstc-sym tile dest origin-binding-syms) key-args)))
+         ((or (string-equal op-name "TILE-STRIDE")
+              (string-equal op-name "HARDWARE-STRIDE")
+              (string-equal op-name "WORKGROUP-STRIDE"))
+          form)
+         (t
+          (cons (car form)
+                (mapcar (lambda (sub)
+                          (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
+                        (cdr form)))))))))
+
+
+;; src/analysis/control.lisp
+;;
+;; Phase 2 :warp-idx guard: forbid bare REQUEST-LOAD-TILE inside
+;; hardware-stride :warp-idx for the same reason bare load-tile is
+;; forbidden -- the internal local-barrier in the await-companion path
+;; would deadlock in a warp-grouped chunking context.
+
+(defun %detect-bare-load-store-tile-in-form (form path)
+  "Recursively walks FORM and signals a compile error if a bare (load-tile ...)
+   or (store-tile ...) call appears.  PATH is the context name used in the
+   error message (e.g. \"hardware-stride :warp-idx\").
+   Endeavor 113 Phase 2: also detects bare (request-load-tile ...)."
+  (cond
+    ((atom form) nil)
+    ((not (and (consp form) (symbolp (car form))))
+     (dolist (sub form) (%detect-bare-load-store-tile-in-form sub path)))
+    (t
+     (let ((op-name (symbol-name (car form))))
+       (cond
+         ((or (string-equal op-name "LOAD-TILE")
+              (string-equal op-name "STORE-TILE")
+              (string-equal op-name "REQUEST-LOAD-TILE")
+              (string-equal op-name "REQUEST-STORE-TILE"))
+          (error 'crisp-compiler-error
+                 :message (format nil
+                                  "~A: bare ~A is not allowed inside ~A — it is a workgroup-cooperative primitive whose internal local-barrier would deadlock in a warp-grouped chunking context.  Use ~A-coords with explicit origin coords if you need to copy data here, or restructure the kernel."
+                                  (string-downcase op-name)
+                                  (string-downcase op-name)
+                                  path
+                                  (string-downcase op-name))
+                 :source-location nil))
+         ((or (string-equal op-name "TILE-STRIDE")
+              (string-equal op-name "HARDWARE-STRIDE")
+              (string-equal op-name "WORKGROUP-STRIDE"))
+          nil)
+         (t
+          (dolist (sub (cdr form))
+            (%detect-bare-load-store-tile-in-form sub path))))))))
 
 
 ;; src/macros.lisp
@@ -267,13 +415,81 @@
                                         (%expand-stride-macros-in-form sub type-resolver-fn location))
                                       (cdr form)))))
             (%expand-workgroup-stride-form walked location)))
-         ;; --- Endeavor 113 Phase 1a AD pre-rewrite. ---
+         ;; --- Endeavor 113 Phase 4 AD pre-rewrite: hoist tile-coords
+         ;; binding values out of let-bindings. ---
+         ;;
+         ;; The user-facing async API is
+         ;;   (let ((tok (request-load-tile-coords ...)))
+         ;;     (await-request tok)
+         ;;     body)
+         ;; The siblings below rewrite the inner forms — request-X to its
+         ;; sync counterpart, await-request to nil — but the result is
+         ;;   (let ((tok (load-tile-coords ...))) nil body)
+         ;; with the tile-coords call in BINDING-VALUE position.  The AD
+         ;; walker routes that through handle-single-value-backward, which
+         ;; doesn't know what to do with LOAD/STORE-TILE-COORDS and errors.
+         ;;
+         ;; Hoist any binding whose recursive rewrite produced a
+         ;; LOAD/STORE-TILE-COORDS call into a sibling PROGN before the
+         ;; let — that puts the call in statement position, where
+         ;; process-form's LOAD-TILE-COORDS / STORE-TILE-COORDS clauses
+         ;; pick it up and emit the right backward primitive.
+         ((string-equal op-name "LET")
+          (let* ((bindings (cadr form))
+                 (body (cddr form))
+                 (rewritten-bindings
+                  (mapcar (lambda (b)
+                            (if (and (consp b) (= (length b) 2) (symbolp (car b)))
+                                ;; Recurse only into the VALUE position so the
+                                ;; binding-name isn't accidentally rewritten.
+                                (list (car b)
+                                      (%expand-stride-macros-in-form
+                                       (cadr b) type-resolver-fn location))
+                                (%expand-stride-macros-in-form b type-resolver-fn location)))
+                          bindings))
+                 (rewritten-body
+                  (mapcar (lambda (b) (%expand-stride-macros-in-form b type-resolver-fn location))
+                          body))
+                 (hoisted-calls nil)
+                 (kept-bindings nil))
+            (dolist (b rewritten-bindings)
+              (let* ((val (and (consp b) (= (length b) 2) (cadr b)))
+                     (op (and (consp val) (symbolp (car val)) (car val)))
+                     (op-name (and op (symbol-name op))))
+                (cond
+                 ((and op-name
+                       (or (string-equal op-name "LOAD-TILE-COORDS")
+                           (string-equal op-name "STORE-TILE-COORDS")))
+                  (push val hoisted-calls))
+                 (t
+                  (push b kept-bindings)))))
+            (setf hoisted-calls (nreverse hoisted-calls)
+                  kept-bindings (nreverse kept-bindings))
+            (cond
+             (hoisted-calls
+              (let* ((cl-pkg (find-package :crisp-language))
+                     (progn-sym (intern "PROGN" cl-pkg))
+                     (let-sym (intern "LET" cl-pkg)))
+                (if (null kept-bindings)
+                    `(,progn-sym ,@hoisted-calls ,@rewritten-body)
+                    `(,progn-sym ,@hoisted-calls
+                                 (,let-sym ,kept-bindings ,@rewritten-body)))))
+             (t
+              (cons (car form) (cons rewritten-bindings rewritten-body))))))
+         ;; --- Endeavor 113 AD pre-rewrite. ---
          ;; request-load-tile-coords -> load-tile-coords (sync).  AD has
          ;; no use for async; the backward scatter pattern is naturally
          ;; barrier-bound.  Recurse into args so any nested stride
          ;; macros in the origin list are still expanded.
          ((string-equal op-name "REQUEST-LOAD-TILE-COORDS")
           (let ((sync-sym (intern "LOAD-TILE-COORDS" (find-package :crisp-language))))
+            (cons sync-sym
+                  (mapcar (lambda (sub)
+                            (%expand-stride-macros-in-form sub type-resolver-fn location))
+                          (cdr form)))))
+         ;; request-store-tile-coords -> store-tile-coords (Phase 3).
+         ((string-equal op-name "REQUEST-STORE-TILE-COORDS")
+          (let ((sync-sym (intern "STORE-TILE-COORDS" (find-package :crisp-language))))
             (cons sync-sym
                   (mapcar (lambda (sub)
                             (%expand-stride-macros-in-form sub type-resolver-fn location))

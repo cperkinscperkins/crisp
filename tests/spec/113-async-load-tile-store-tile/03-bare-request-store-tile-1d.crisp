@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "AD pre-rewrite normalises request-store-tile to store-tile-coords; covered in phase 4"
+
+;; Phase 3 sugar: bare request-store-tile inside tile-stride.  The bare form
+;; (request-store-tile tile OUT) gets rewritten to
+;; (request-store-tile-coords tile OUT (orig)) by the tile-stride body walker,
+;; mirroring the sync (store-tile tile OUT) -> (store-tile-coords tile OUT (orig))
+;; rewrite from 111/11.
+;;
+;; Fallback semantics in 113: request-store-tile-coords collapses to sync
+;; store-tile-coords + barrier; await-request is a no-op.  Real async store
+;; (when hardware supports it) lives in 114 Phase E.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel bare_request_store_tile_1d (&out OUT)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (tile-stride OUT (4) (orig)
+      (workgroup-stride tile (lx)
+        (set! (~ tile lx) (+ orig lx)))
+      (let ((tok (request-store-tile tile OUT)))
+        (await-request tok)))))
