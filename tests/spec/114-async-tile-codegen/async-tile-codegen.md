@@ -191,7 +191,58 @@ specs to nail down by reading the source-of-truth:
 Phasing
 -------
 
-### Phase A — SPV codegen for request-load-tile-coords
+### Phase A — SPV codegen for request-load-tile-coords  *(BLOCKED, pragmatic-fallback)*
+
+**Status (2026-05-25): attempted, reverted to fallback.**  Both candidate
+SPV emission paths translate cleanly to SPIR-V but fail at
+`zeKernelCreate` with `ZE_RESULT_ERROR_INVALID_MODULE_UNLINKED`:
+
+- **Direct `__spirv_GroupAsyncCopy`** form lowers to a real
+  `OpGroupAsyncCopy` opcode in the SPV.  IGC's frontend ingests the
+  SPV and synthesises a function call with mangled
+  `_Z22__spirv_GroupAsyncCopyi...l...` (`l` = i64 / long when the
+  pointee type propagates correctly via typed GEPs) — but IGC's
+  BiFModule doesn't ship a matching builtin.  Searched
+  `intel-graphics-compiler/IGC/BiFModule/Languages/OpenCL/IBiF_Impl.cl`
+  directly: no mention of `async_work_group_copy` or `GroupAsyncCopy`.
+- **Mangled OpenCL form** (`_Z21async_work_group_copyPU3AS3mPU3AS1Kmj9ocl_event`)
+  translates to `LinkageAttributes Import`.  Per the L0 spec, that's
+  exactly the case `zeModuleDynamicLink` is supposed to resolve —
+  but we don't have a builtins module to link against, and the spec
+  doesn't define one as auto-loaded for OpenCL builtins.
+
+Gemini diagnosed the underlying issue: the LLVM-SPIRV translator
+defaults opaque-pointer args to `i8`, so even when the SPV opcode
+emits successfully it asks IGC for an 8-bit builtin (`<i8>` mangle)
+that Intel hardware doesn't have.  We confirmed by adding typed-GEP
+hints (`getelementptr i64, ptr addrspace(3) %tile, i64 0`) that
+the translator picks up the i64 element type and emits
+`__spirv_GroupAsyncCopy<long>` — but IGC's BiFModule doesn't have
+the long variant either.  Sub-byte and non-standard widths look
+similarly unsupported.
+
+**Pragmatic fallback** (Gemini's recommendation, accepted): SPV stays
+at the 113 sync cooperative-loop lowering.  On Intel hardware (BMG and
+later) the SPV-side perf delta between hardware async copy and a
+well-coalesced sync cooperative load is small — L1 and SLM are
+tightly integrated, the load looks like a back-to-back coalesced
+read.  Phase B (PTX) is where the headline perf win lives, since
+NVPTX uses direct LLVM intrinsics (no BiF linkage needed).
+
+**Re-attempt criteria** for the SPV path:
+
+- Intel publishes (or we find) a documented L0 module / pBuildFlags
+  invocation that auto-resolves OpenCL builtins, OR
+- We implement a `zeModuleDynamicLink` call against a builtins module
+  we can ship or extract, OR
+- IGC adds direct support for the `__spirv_GroupAsyncCopy<long>` /
+  `<int>` / `<float>` mangles in its BiFModule.
+
+Filing context for the question: when bug 031 goes to Intel on Tuesday,
+add a sidebar question about the recommended SPIR-V async DMA path for
+L0 + IGC consumers who aren't going through Clang's OpenCL frontend.
+
+#### Original plan (kept for when the blocker lifts)
 
 - [ ] Research items 1 above; write findings as comments in the
       codegen helper.
@@ -214,7 +265,51 @@ Phasing
       for the async_work_group_copy / OpGroupAsyncCopy call.
       llvm-spirv round-trip to confirm the translator accepts it.
 
-### Phase B — PTX codegen for request-load-tile-coords
+### Phase B.1 — PTX cp.async, single-element-per-thread MVP *(LANDED)*
+
+Status (2026-05-25): **shipped**.  When `*target-backend*` is `:ptx`,
+the analyzer builds `semantic-nvvm-cp-async-tile-copy` /
+`semantic-nvvm-cp-async-wait` nodes; codegen emits:
+
+```
+call void @llvm.nvvm.cp.async.ca.shared.global.{4|8}(
+       ptr addrspace(3) %tile_elt_ptr, ptr addrspace(1) %src_elt_ptr)
+call void @llvm.nvvm.cp.async.commit.group()
+;; ... user work that doesn't touch the tile ...
+call void @llvm.nvvm.cp.async.wait.group(i32 0)
+```
+
+`llc -march=nvptx64 -mcpu=sm_80` lowers to exactly:
+
+```
+cp.async.ca.shared.global [%rd_dst], [%rd_src], 8;
+cp.async.commit_group;
+cp.async.wait_group  0;
+```
+
+Confirmed on `tests/spec/113-async-load-tile-store-tile/01-request-load-tile-coords-1d.crisp`.
+PTX default compute capability bumped sm_50 → sm_80 in
+`src/compiler.lisp` (cp.async requires Ampere).  Kernels not using
+request-* still compile cleanly under sm_80.
+
+**B.1 scope assumption**: tile.length == workgroup_size (one cp.async
+per thread, no inner loop).  Element types limited to 4- and 8-byte
+(int, uint, float, long, ulong, double).  Other shapes fall through to
+the 113 sync fallback.
+
+**Tested only at IR / PTX-assembly inspection level** (CI has no NVIDIA
+hardware).  Runtime validation requires Colab or RunPod.  Suite stays
+green at 720/720 default + --differentiate (no regressions).
+
+### Phase B.2 — PTX cp.async cooperative loop *(deferred)*
+
+For tiles larger than workgroup_size, threads iterate workgroup-strided
+issuing one cp.async per element.  Same structural pattern as the sync
+load-tile-coords cooperative loop, swapping `set!` for cp.async.
+Worth deferring until there's a kernel that actually needs it (most
+real-world tile shapes equal workgroup_size).
+
+### Phase B.0 — Original plan *(retained for reference)*
 
 - [ ] Research items 2 above.
 - [ ] New codegen helpers:

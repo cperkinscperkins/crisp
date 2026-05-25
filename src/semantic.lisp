@@ -270,23 +270,28 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   type
   source-location)
 
-;; Endeavor 114 Phase A: SPV-native async tile copy.  Holds the analyzed
-;; sub-nodes for src tensor, tile tensor, and origin coord exprs.  At
-;; codegen time the IR call to __spirv_GroupAsyncCopy is emitted and the
-;; returned event is stashed in a per-function event slot.  The semantic
-;; node's TYPE is ULONG so the surrounding let-binding's phantom token
-;; matches the Phase 1a fallback contract.
-(defstruct semantic-spirv-async-tile-copy
+;; Endeavor 114 Phase A SPV codegen was attempted then reverted — see
+;; tests/spec/114-async-tile-codegen/async-tile-codegen.md.  The two
+;; semantic node defstructs the SPV path needed (semantic-spirv-async-tile-copy
+;; and semantic-spirv-await-request) are NOT defined here; if/when the
+;; SPV blocker is unblocked, they'll be re-introduced.
+
+;; Endeavor 114 Phase B: NVPTX cp.async-based async tile copy.  Holds the
+;; analyzed sub-nodes; codegen emits per-thread cp.async + commit_group
+;; for the request, and cp.async.wait_group(0) for the await.  Direct LLVM
+;; NVVM intrinsics — no linkage hazard (the SPV blocker doesn't apply).
+;;
+;; Phase B.1 scope: simple case where tile.length == workgroup_size (one
+;; cp.async per thread, no inner loop).  Bigger tiles need a cooperative
+;; loop, which lands in B.2.
+(defstruct semantic-nvvm-cp-async-tile-copy
   src-node      ;; semantic node for the source tensor (addrspace 1)
   tile-node     ;; semantic node for the dest tile (addrspace 3)
   origin-nodes  ;; list of semantic nodes for origin coords (one per dim)
   type
   source-location)
 
-;; Endeavor 114 Phase A: SPV-native await.  Loads the slot, addrspacecasts
-;; to generic (4), calls __spirv_GroupWaitEvents.  Returns a phantom ulong
-;; for surrounding-progn compatibility.
-(defstruct semantic-spirv-await-request
+(defstruct semantic-nvvm-cp-async-wait
   type
   source-location)
 
