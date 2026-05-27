@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-27T19:14:31.734688Z
+Generated on 2026-05-27T20:21:46.279203Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2296,7 +2296,7 @@ Generated on 2026-05-27T19:14:31.734688Z
 ### DEFUN `%GEN-PRODUCT-OF-VEC3`
 - **Args**: `(BUILDER MODULE SPIRV-NAME RESULT-NAME)`
 
-  > Computes x*y*z for the <3 x i64> builtin @__spirv_BuiltIn<SPIRV-NAME>.
+  > Computes x*y*z for the <3 x i64> builtin named SPIRV-NAME.  >    Backend-aware: uses %get-builtin-vec3 for PTX dispatch.
 
 
 ---
@@ -2310,14 +2310,14 @@ Generated on 2026-05-27T19:14:31.734688Z
 ### DEFUN `%GEN-LOCAL-LINEAR-ID`
 - **Args**: `(BUILDER MODULE)`
 
-  > Synthesizes get-local-linear-id: z*lws.y*lws.x + y*lws.x + x.
+  > Synthesizes get-local-linear-id: z*lws.y*lws.x + y*lws.x + x.  >    Backend-aware: uses %get-builtin-vec3 for PTX dispatch.
 
 
 ---
 ### DEFUN `%GEN-GLOBAL-LINEAR-ID`
 - **Args**: `(BUILDER MODULE)`
 
-  > Synthesizes get-global-linear-id: flat_wg * lws_total + flat_lid.
+  > Synthesizes get-global-linear-id: flat_wg * lws_total + flat_lid.  >    Backend-aware: uses %get-builtin-vec3 for PTX dispatch.
 
 
 ---
@@ -2342,6 +2342,48 @@ Generated on 2026-05-27T19:14:31.734688Z
 
 
 ---
+### DEFUN `%PTX-SYNTHESIZE-GLOBAL-ID-VEC3`
+- **Args**: `(BUILDER MODULE)`
+
+  > Synthesizes GlobalInvocationId = ctaid * ntid + tid as a <3 x i64>.
+
+
+---
+### DEFUN `%PTX-SYNTHESIZE-GLOBAL-SIZE-VEC3`
+- **Args**: `(BUILDER MODULE)`
+
+  > Synthesizes GlobalSize = nctaid * ntid as a <3 x i64>.
+
+
+---
+### DEFUN `%PTX-ZERO-VEC3`
+- **Args**: `(BUILDER MODULE)`
+
+  > Returns a <3 x i64> of all zeros (PTX has no GlobalOffset).
+
+
+---
+### DEFUN `%GET-BUILTIN-VEC3`
+- **Args**: `(BUILDER MODULE SPIRV-NAME)`
+
+  > Backend-aware vec3 builtin read.  On SPV, delegates to  >    %call-spirv-vec3-builtin.  On PTX, maps SPV names to NVVM  >    special-register intrinsics or synthesizes the value from  >    component registers.
+
+
+---
+### DEFUN `%PTX-BARRIER`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.barrier0() — PTX bar.sync 0 (workgroup barrier).
+
+
+---
+### DEFUN `%PTX-MEMBAR-CTA`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.membar.cta() — PTX membar.cta (workgroup memory fence).
+
+
+---
 ### DEFUN `%PTX-READ-SREG-SCALAR`
 - **Args**: `(BUILDER MODULE SREG-BASE DIM)`
 
@@ -2353,6 +2395,20 @@ Generated on 2026-05-27T19:14:31.734688Z
 - **Args**: `(BUILDER MODULE SREG-BASE)`
 
   > Builds a <3 x i64> vector from x/y/z reads of the NVPTX special  >    register family SREG-BASE.  Mirrors the shape of %call-spirv-vec3-builtin  >    so the rest of the gpu-builtin codegen can treat both backends  >    uniformly.
+
+
+---
+### DEFUN `%PTX-READ-WARP-SREG`
+- **Args**: `(BUILDER MODULE SREG-NAME)`
+
+  > Reads a single NVPTX warp special register (warpid, laneid) as i32.  >    Unlike %ptx-read-sreg-scalar which zext's to i64, this returns i32  >    to match the SPV uint convention used by warp builtins.
+
+
+---
+### DEFUN `%PTX-SYNTHESIZE-WARP-COUNT`
+- **Args**: `(BUILDER MODULE)`
+
+  > Synthesizes warp count per block: ceil(ntid.x * ntid.y * ntid.z / 32).  >    Returns i32 to match SPV uint convention.
 
 
 ---
