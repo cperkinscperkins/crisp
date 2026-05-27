@@ -636,8 +636,8 @@ Looping Constructs
 - [ ] do-times-by-doubling
 - [ ] &c.
 
-Async Ops
-=========
+Async Ops \ Named Barriers \ Rings
+===================================
 - 
 
 PERFORMANCE TESTING
