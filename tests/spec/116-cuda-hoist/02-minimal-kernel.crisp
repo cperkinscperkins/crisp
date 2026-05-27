@@ -1,0 +1,5 @@
+;; TEST-HOIST[CUDA]: validate-cuda-generation
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+
+(def-kernel noop ()
+  (declare #'(=> nil)))

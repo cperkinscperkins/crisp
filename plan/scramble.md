@@ -621,7 +621,7 @@ Grid Stride
 - [x] hardware-stride
 - [x] A|D of all above
 - [x] load-tile / store-tile
-- - [ ] async variations of same
+- - [x] async variations of same
 - [ ] convert-layout (in Crisp)
 - [ ] :strategy :tiled and :tile-shape declarations. 
 - - [ ] metadata
@@ -636,13 +636,18 @@ Looping Constructs
 - [ ] do-times-by-doubling
 - [ ] &c.
 
-Async Ops
-=========
+Async Ops \ Named Barriers \ Rings
+===================================
 - 
 
 PERFORMANCE TESTING
 ===================
 - setup RunPod AI .  ( guess we should write the CUDA hoist app too then).
+ssh root@213.173.108.8 -p 10435 -i ~/.ssh/id_ed25519  
+scp ~/Documents/crisp-man/tests/spec/113-async-load-tile-store-tile/01-request-load-tile-coords-1d.ptx root@213.173.108.8
+scp C:\Users\cperk\Documents\crisp-man\tests\spec\113-async-load-tile-store-tile\01-request-load-tile-coords-1d.ptx root@213.173.108.8
+scp C:\Users\cperk\Documents\crisp-man\scripts\verify-ptx-113-01.py root@213.173.108.8
+
 - leverage RunPod as a GitHub Actions target.  Maybe only for the hoisting tests? Separate .yml likely.
 - choose some "realizable" algorithms and get them for a series of platforms
  - CUTLASS

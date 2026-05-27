@@ -1,0 +1,18 @@
+;; TEST-HOIST[CUDA]: validate-cuda-shared-mem
+;; SKIP-WITH[--differentiate]: "AD pre-rewrite for request-* lands in phase 1"
+
+;; Uses a local tile via request-load-tile-coords — the CUDA hoist must
+;; emit shared memory at launch and pass 0 as the tile's parent-ptr offset.
+;; Mirrors 113/01 but uses the TEST-HOIST[CUDA] directive for validation.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+
+(def-kernel tile_copy (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (let ((tok (request-load-tile-coords V tile (0))))
+      (await-request tok)
+      (workgroup-stride tile (lx)
+        (set! (~ OUT lx) (~ tile lx))))))

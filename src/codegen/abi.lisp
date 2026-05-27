@@ -289,21 +289,37 @@
       ;; It is a single value
       value))
 
-(defun create-llvm-function-type (module return-types param-nodes)
-  "Calculates the LLVM function type, handling parameter explosion."
+
+
+(defun create-llvm-function-type (module return-types param-nodes &optional is-entry-point fn-name)
+  "Calculates the LLVM function type, handling parameter explosion.
+   When IS-ENTRY-POINT is non-NIL and *TARGET-BACKEND* is :PTX, demotes
+   shared (addrspace 3) and local (addrspace 5) pointer params to i64
+   so the resulting kernel image will be accepted by the CUDA driver
+   (see header comment in this overlay).  After demotion, runs the
+   PTX-entry verifier as a belt-and-suspenders check.  FN-NAME is used
+   only in the verifier's error message."
   (let* ((return-type (get-llvm-return-type module return-types))
-         (expanded-param-types (mapcan (lambda (p)
-                                         (let ((type-spec (semantic-param-type p))
-                                               (expanded (get-expanded-types (semantic-param-type p) module)))
-                                           (log:debug "PARAM: ~a TYPE: ~a EXPANDED-COUNT: ~a"
-                                                      (semantic-param-name p)
-                                                      type-spec
-                                                      (length expanded))
-                                           expanded))
-                                   param-nodes))
-         (param-count (length expanded-param-types))
-         (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
-    (loop for i from 0
-          for type in expanded-param-types
-          do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
-    (llvm-function-type return-type param-types-array param-count nil)))
+         (expanded-param-types
+          (mapcan (lambda (p)
+                    (let ((type-spec (semantic-param-type p))
+                          (expanded (get-expanded-types (semantic-param-type p) module)))
+                      (log:debug "PARAM: ~a TYPE: ~a EXPANDED-COUNT: ~a"
+                                 (semantic-param-name p)
+                                 type-spec
+                                 (length expanded))
+                      expanded))
+                  param-nodes))
+         (expanded-param-types
+          (if (and (eq *target-backend* :ptx) is-entry-point)
+              (mapcar #'%ptx-entry-demote-type expanded-param-types)
+              expanded-param-types)))
+    (when (and (eq *target-backend* :ptx) is-entry-point)
+      (%verify-ptx-entry-expanded-types expanded-param-types
+                                        (or fn-name "<unknown>")))
+    (let* ((param-count (length expanded-param-types))
+           (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
+      (loop for i from 0
+            for type in expanded-param-types
+            do (setf (cffi:mem-aref param-types-array 'llvm-type-ref i) type))
+      (llvm-function-type return-type param-types-array param-count nil))))

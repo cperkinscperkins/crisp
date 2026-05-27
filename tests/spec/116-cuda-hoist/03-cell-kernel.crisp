@@ -1,0 +1,8 @@
+;; TEST-HOIST[CUDA]: validate-cuda-cell-args
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+
+(def-type cell-int (cell int :address-space :global))
+
+(def-kernel write_42 (c)
+  (declare #'(cell-int => nil))
+  (set! (~ c) 42))

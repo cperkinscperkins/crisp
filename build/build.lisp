@@ -18,6 +18,7 @@
 
 (run-build-script "build/build-compiler.lisp")
 (run-build-script "build/build-hoist-l0.lisp")
+(run-build-script "build/build-hoist-cuda.lisp")
 
 (format t "~%;;; ======================================================================~%")
 (format t ";;; ALL BUILDS COMPLETE~%")

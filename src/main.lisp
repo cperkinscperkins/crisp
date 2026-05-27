@@ -121,6 +121,15 @@ Supports one or more .crisp source files: the last file is treated as the primar
                 (format *error-output* "ERROR: --hoist=L0 requires --ir-target=spv. Found targets: ~a~%" targets)
                 (uiop:quit 1))))
 
+    (when (member :CUDA hoist-targets)
+          (if (null targets)
+              (progn
+               (format *error-output* "; Auto-enabling --ir-target=ptx (required for --hoist=CUDA)~%")
+               (setf targets '(:ptx)))
+              (unless (member :ptx targets)
+                (format *error-output* "ERROR: --hoist=CUDA requires --ir-target=ptx. Found targets: ~a~%" targets)
+                (uiop:quit 1))))
+
     (values files nil debug-p single-pass-p targets metadata-p hoist-targets)))
 
 (defun get-hoister-binary-path (hoist-id)

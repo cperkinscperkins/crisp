@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-25T22:59:13.704310Z
+Generated on 2026-05-27T19:14:31.734688Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1978,10 +1978,38 @@ Generated on 2026-05-25T22:59:13.704310Z
 
 
 ---
-### DEFUN `INITIALIZE-FUNCTION-PARAMETERS`
-- **Args**: `(BUILDER FUNC PARAM-NODES MODULE VAR-ENV)`
+### DEFUN `%PTX-ENTRY-ILLEGAL-ADDRSPACE-P`
+- **Args**: `(AS)`
 
-  > Allocates stack space and stores function parameters.
+  > PTX kernel entry-point param pointers may not target shared (NVPTX  >    addrspace 3) or local (NVPTX addrspace 5).  Both are per-block /  >    per-thread state spaces with no addressable launch-time value, and  >    the CUDA driver rejects any cubin whose entry sig declares such  >    a pointer.
+
+
+---
+### DEFUN `%PTX-ENTRY-DEMOTE-TYPE`
+- **Args**: `(TY)`
+
+  > If TY is a pointer in an illegal-for-PTX-entry addrspace, returns  >    i64 (the demoted form Crisp passes at the kernel boundary).  >    Otherwise returns TY unchanged.
+
+
+---
+### DEFUN `%VERIFY-PTX-ENTRY-EXPANDED-TYPES`
+- **Args**: `(EXPANDED-TYPES FN-NAME)`
+
+  > Walks an already-demoted EXPANDED-TYPES list and ERRORs if any entry  >    is still an illegal-for-entry pointer (shared/local).  Called from  >    inside CREATE-LLVM-FUNCTION-TYPE on the post-demotion list, so this  >    should never fire in correct code — it's a belt-and-suspenders check  >    for future regressions where a new pointer-producing path slips past  >    %PTX-ENTRY-DEMOTE-TYPE.  >   >    We check expanded LLVM types rather than walking the live func via  >    llvm-count-params because we already have the list at the demotion  >    site and there's no Crisp binding for LLVMCountParams (avoiding the  >    need to plumb a new foreign binding through llvm-bindings-overlay).
+
+
+---
+### DEFUN `%PTX-ENTRY-RESTORE-SHARED-PTRS-FOR-IMPLODE`
+- **Args**: `(BUILDER COMPONENTS TYPE-SPEC MODULE IS-ENTRY-POINT)`
+
+  > Counterpart to the demoter: at the receive site, the kernel's LLVM  >    param at a demoted slot is now an i64.  IMPLODE-VALUE expects a  >    pointer in the original addrspace there, so inttoptr each demoted  >    component back before packing.  No-op for non-PTX, non-entry, and  >    for params whose expanded types had no demotable pointer.
+
+
+---
+### DEFUN `INITIALIZE-FUNCTION-PARAMETERS`
+- **Args**: `(BUILDER FUNC PARAM-NODES MODULE VAR-ENV &OPTIONAL IS-ENTRY-POINT)`
+
+  > Allocates stack space and stores function parameters.  >    When IS-ENTRY-POINT is non-NIL and *TARGET-BACKEND* is :PTX, restores  >    any param components that the kernel-entry demoter swapped from  >    shared/local pointer to i64 (see header comment in this overlay).
 
 
 ---
@@ -2011,7 +2039,7 @@ Generated on 2026-05-25T22:59:13.704310Z
 ### DEFUN `GENERATE-FUNCTION-PROTOTYPE`
 - **Args**: `(SEMANTIC-FUNCTION MODULE DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)`
 
-  > Generates the LLVM function prototype and debug info.
+  > Generates the LLVM function prototype and debug info.  >    For PTX entry points, threads IS-ENTRY-POINT and FN-NAME into  >    CREATE-LLVM-FUNCTION-TYPE so shared/local pointer params get demoted  >    to i64 at the kernel boundary, and the post-demotion verifier can  >    error with the kernel name (see header comment).
 
 
 ---
@@ -2019,7 +2047,7 @@ Generated on 2026-05-25T22:59:13.704310Z
 - **Args**: `(SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER
               LOCATION-MAP)`
 
-  > Generates the body of the function.
+  > Generates the body of the function.  >    Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the  >    PTX kernel-entry receive site can inttoptr demoted i64 params back  >    to their original-addrspace pointer (see header comment).
 
 
 ---
@@ -2314,6 +2342,20 @@ Generated on 2026-05-25T22:59:13.704310Z
 
 
 ---
+### DEFUN `%PTX-READ-SREG-SCALAR`
+- **Args**: `(BUILDER MODULE SREG-BASE DIM)`
+
+  > Reads @llvm.nvvm.read.ptx.sreg.<SREG-BASE>.<X|Y|Z> and zext-promotes  >    the i32 result to i64 (Crisp's ulong contract).  >    SREG-BASE: "tid" / "ntid" / "ctaid" / "nctaid".  >    DIM: 0=x, 1=y, 2=z.
+
+
+---
+### DEFUN `%PTX-READ-SREG-VEC3`
+- **Args**: `(BUILDER MODULE SREG-BASE)`
+
+  > Builds a <3 x i64> vector from x/y/z reads of the NVPTX special  >    register family SREG-BASE.  Mirrors the shape of %call-spirv-vec3-builtin  >    so the rest of the gpu-builtin codegen can treat both backends  >    uniformly.
+
+
+---
 ### DEFUN `%GEN-NVVM-CP-ASYNC-ELEM`
 - **Args**: `(BUILDER MODULE DST-PTR SRC-PTR ELEM-BYTES)`
 
@@ -2414,9 +2456,9 @@ Generated on 2026-05-25T22:59:13.704310Z
 
 ---
 ### DEFUN `CREATE-LLVM-FUNCTION-TYPE`
-- **Args**: `(MODULE RETURN-TYPES PARAM-NODES)`
+- **Args**: `(MODULE RETURN-TYPES PARAM-NODES &OPTIONAL IS-ENTRY-POINT FN-NAME)`
 
-  > Calculates the LLVM function type, handling parameter explosion.
+  > Calculates the LLVM function type, handling parameter explosion.  >    When IS-ENTRY-POINT is non-NIL and *TARGET-BACKEND* is :PTX, demotes  >    shared (addrspace 3) and local (addrspace 5) pointer params to i64  >    so the resulting kernel image will be accepted by the CUDA driver  >    (see header comment in this overlay).  After demotion, runs the  >    PTX-entry verifier as a belt-and-suspenders check.  FN-NAME is used  >    only in the verifier's error message.
 
 
 ---
@@ -2702,6 +2744,206 @@ Generated on 2026-05-25T22:59:13.704310Z
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\errors.lisp`
+
+## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-cuda\main.lisp`
+
+### DEFUN `MAIN`
+
+  > Entry point for crisp-hoist-cuda.exe
+
+
+---
+### DEFVAR `*HOIST-CURRENT-STRUCTS*`
+
+  > Dynamic variable: list of (def-struct NAME ...) forms from the current  >    metacrisp :structs section.
+
+
+---
+### DEFUN `%FIND-STRUCT-DEF`
+- **Args**: `(NAME)`
+
+  > Find (def-struct NAME ...) in *hoist-current-structs*.
+
+
+---
+### DEFUN `STRUCT-TYPE-P`
+- **Args**: `(TYPE)`
+
+  > Returns T if TYPE names a def-struct in *hoist-current-structs*.
+
+
+---
+### DEFUN `%STRUCT-BASE-TYPE`
+- **Args**: `(PARAM-TYPE)`
+
+  > Extract the base struct name from PARAM-TYPE.
+
+
+---
+### DEFUN `%ARRAY-TYPE-P`
+- **Args**: `(TYPE)`
+
+  > Returns T if TYPE is an (array T N) form.
+
+
+---
+### DEFUN `%ARRAY-ELEMENT-TYPE`
+- **Args**: `(TYPE)`
+
+---
+### DEFUN `%ARRAY-SIZE`
+- **Args**: `(TYPE)`
+
+---
+### DEFUN `%STRUCT-EMIT-FIELDS`
+- **Args**: `(STREAM VAR-PATH MEMBERS ALIASES)`
+
+  > Recursively emit C++ field assignments for a struct variable.
+
+
+---
+### DEFUN `RECORD-BASE-TYPE`
+- **Args**: `(TYPE)`
+
+  > Extract the base record type symbol.
+
+
+---
+### DEFUN `FIND-RECORD-DEF`
+- **Args**: `(TYPE RECORDS)`
+
+  > Find the def-record entry matching TYPE in RECORDS.
+
+
+---
+### DEFUN `RECORD-TYPE-P`
+- **Args**: `(TYPE RECORDS)`
+
+  > Returns true if TYPE refers to a def-record in RECORDS.
+
+
+---
+### DEFUN `TENSOR-TYPE-P`
+- **Args**: `(PARAM-TYPE)`
+
+  > Returns T if PARAM-TYPE is a tensor/vector/matrix type specifier.
+
+
+---
+### DEFUN `%TENSOR-COMPACT-EXTENTS-STRIDES`
+- **Args**: `(N DIM-EXTENT)`
+
+  > Returns (values extents strides) for a compact N-dim tensor.
+
+
+---
+### DEFUN `GENERATE-CUDA-LAUNCHER`
+- **Args**: `(METACRISP-PATH)`
+
+  > Generate CUDA Driver API C++ launcher code from metacrisp file.
+
+
+---
+### DEFUN `EMIT-PREAMBLE`
+- **Args**: `(STREAM METACRISP-PATH KERNEL-NAME OUTPUT-NAME)`
+
+  > Generate C++ file preamble comment.
+
+
+---
+### DEFUN `EMIT-INCLUDES`
+- **Args**: `(STREAM)`
+
+  > Generate C++ includes for CUDA Driver API.
+
+
+---
+### DEFUN `EMIT-TYPEDEFS`
+- **Args**: `(STREAM ALIASES)`
+
+  > Generate C++ typedef declarations from type aliases.
+
+
+---
+### DEFUN `EMIT-STRUCTS`
+- **Args**: `(STREAM STRUCTS)`
+
+  > Generate C++ struct definitions from metadata (mirrors L0 hoist).
+
+
+---
+### DEFUN `EMIT-HELPERS`
+- **Args**: `(STREAM)`
+
+  > Generate C++ helper: read PTX file and CUDA error checking.
+
+
+---
+### DEFUN `EMIT-MAIN`
+- **Args**: `(STREAM KERNEL-NAME PTX-PATH DECLARED-SIG ALIASES RECORDS
+              &OPTIONAL DISPATCH-INFO)`
+
+  > Generate C++ main function for CUDA Driver API launcher.
+
+
+---
+### DEFUN `EMIT-CUDA-INIT`
+- **Args**: `(STREAM)`
+
+  > Emit CUDA Driver API initialization.
+
+
+---
+### DEFUN `EMIT-MODULE-LOADING`
+- **Args**: `(STREAM PTX-PATH)`
+
+  > Emit PTX module loading via cuModuleLoadData (JIT).
+
+
+---
+### DEFUN `COMPUTE-TOTAL-SHARED-BYTES`
+- **Args**: `(DECLARED-SIG ALIASES)`
+
+  > Sum up all local-memory tensor byte-sizes for the sharedMemBytes launch param.
+
+
+---
+### DEFUN `EMIT-KERNEL-ARGS`
+- **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS)`
+
+  > Emit host-side variable declarations and fill the kernelParams[] array.  >    Returns a list of allocation plists for readback.
+
+
+---
+### DEFUN `%RECORD-FIELD-ARGS`
+- **Args**: `(STREAM MEMBERS VAR-PATH ARG-INDEX RECORDS ALIASES)`
+
+  > Recursively emit field initialization for record args.  >    Returns (values new-arg-index list-of-arg-names).
+
+
+---
+### DEFUN `%DISPATCH-SYM-TO-CPP-VAR`
+- **Args**: `(SYM)`
+
+  > Convert a dispatch param symbol to C++ variable name.
+
+
+---
+### DEFUN `EMIT-LAUNCH`
+- **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES)`
+
+  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.
+
+
+---
+### DEFUN `EMIT-READBACK`
+- **Args**: `(STREAM ALLOCATIONS)`
+
+  > Emit cuMemcpyDtoH and print buffer contents.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-cuda\package.lisp`
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\main.lisp`
 

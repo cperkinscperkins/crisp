@@ -1,0 +1,5 @@
+;; FAIL-WITH[--ir-target=spv --hoist=CUDA]: "--hoist=CUDA requires --ir-target=ptx. Found targets: (SPIRV)"
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+
+(def-kernel noop ()
+  (declare #'(=> nil)))
