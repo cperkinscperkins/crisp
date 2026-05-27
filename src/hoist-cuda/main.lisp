@@ -144,6 +144,36 @@
 
 
 ;;; -----------------------------------------------------------------------
+;;; Device vector ostream operators for CUDA
+;;;
+;;; CUDA's <cuda.h> already defines ushort2, float4, etc. via vector_types.h.
+;;; We must NOT re-declare the struct — only add the operator<< for output.
+;;; -----------------------------------------------------------------------
+
+(defun emit-cuda-dvec-ostream-operators (stream dvec-types)
+  "Emit operator<< free functions for device vector types.
+   Unlike the L0 hoist, does NOT emit struct definitions since CUDA already
+   provides them via <cuda.h>."
+  (when dvec-types
+    (format stream "// Device vector output operators (types provided by <cuda.h>)~%")
+    (dolist (type-sym dvec-types)
+      (multiple-value-bind (base width) (%dvec-parse type-sym)
+        (when base
+          (let* ((type-str (string-downcase (symbol-name type-sym)))
+                 (member-names (subseq (list "x" "y" "z" "w") 0 width)))
+            (format stream "std::ostream& operator<<(std::ostream& os, const ~a& v) {~%" type-str)
+            (let ((firstp t))
+              (dolist (m member-names)
+                (if firstp
+                    (format stream "    os << v.~a" m)
+                    (format stream " << \" \" << v.~a" m))
+                (setf firstp nil)))
+            (format stream ";~%")
+            (format stream "    return os;~%")
+            (format stream "}~%~%")))))))
+
+
+;;; -----------------------------------------------------------------------
 ;;; Top-level launcher generator
 ;;; -----------------------------------------------------------------------
 
@@ -201,7 +231,7 @@
                      (emit-preamble stream metacrisp-path kernel-name output-name)
                      (emit-includes stream)
                      (emit-typedefs stream aliases)
-                     (generate-cpp-dvec-typedefs stream dvec-types)
+                     (emit-cuda-dvec-ostream-operators stream dvec-types)
                      (emit-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
                      (emit-helpers stream)
                      (emit-main stream kernel-name ptx-path full-sig aliases
