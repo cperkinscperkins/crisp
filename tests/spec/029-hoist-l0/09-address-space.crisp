@@ -1,6 +1,7 @@
 
 ;; TEST-HOIST[L0] : validate-l0-cell-address-space
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER gc: 17
 
 ;; Expected in generated C++:

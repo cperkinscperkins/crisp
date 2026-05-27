@@ -1,4 +1,5 @@
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER v: 0 43 2 3
 
 ;; End-to-end correctness for compact vector GET and SET.

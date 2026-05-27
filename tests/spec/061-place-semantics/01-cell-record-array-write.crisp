@@ -1,4 +1,5 @@
 ;; TEST-HOIST[L0] : validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER c: 0 0 42 0
 
 ;; Place semantics: write through a cell-of-record containing an (array int 4) field.

@@ -1,4 +1,5 @@
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out: 0 1 2 3
 ;; Fill a 4-element 1D tensor with its indices using tensor-stride.
 ;; Mirrors 093/03-fill-hoist but uses tensor-stride (N=1) instead of

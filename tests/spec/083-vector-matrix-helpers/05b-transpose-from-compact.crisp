@@ -1,5 +1,6 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out: 43
 ;; transpose works on a compact (row-major) input.
 ;; Produces a new :strided view with swapped extents and strides.

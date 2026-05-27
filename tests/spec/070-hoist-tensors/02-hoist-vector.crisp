@@ -1,4 +1,5 @@
 ;; TEST-HOIST[L0]: validate-l0-compile-only
+;; TEST-HOIST[CUDA]: validate-cuda-compile-only
 
 ;; Validates that a kernel with a vector parameter hoists to compilable C++.
 ;; The generated C++ should allocate USM for the vector and set 7 kernel args:

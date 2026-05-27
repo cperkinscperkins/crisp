@@ -68,13 +68,31 @@ echo "--- Step 2: Install dependencies (SBCL, LLVM 21) ---"
 pod_run "bash -s" <<'SETUP_DEPS'
 set -e
 
-# Check if SBCL is already installed
+# Check SBCL version — apt's 2.1.x is too old (save-lisp-and-die crashes on modern kernels)
+SBCL_MIN_VERSION="2.4"
+SBCL_INSTALL_VERSION="2.5.5"
+NEED_SBCL=true
 if command -v sbcl &>/dev/null; then
-    echo "SBCL already installed: $(sbcl --version)"
-else
-    echo "Installing SBCL..."
+    SBCL_VER=$(sbcl --version | grep -oP '\d+\.\d+' | head -1)
+    if [ "$(echo "$SBCL_VER >= $SBCL_MIN_VERSION" | bc 2>/dev/null)" = "1" ]; then
+        echo "SBCL already installed: $(sbcl --version)"
+        NEED_SBCL=false
+    else
+        echo "SBCL $SBCL_VER is too old (need >= $SBCL_MIN_VERSION), upgrading..."
+    fi
+fi
+if $NEED_SBCL; then
+    echo "Installing SBCL $SBCL_INSTALL_VERSION from official binary..."
     apt-get update -qq
-    apt-get install -y -qq sbcl wget gpg-agent software-properties-common lsb-release curl
+    apt-get install -y -qq wget gpg-agent software-properties-common lsb-release curl bzip2
+    cd /tmp
+    wget -q "https://prdownloads.sourceforge.net/sbcl/sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
+    tar xjf "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
+    cd "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux"
+    INSTALL_ROOT=/usr/local sh install.sh
+    cd /root
+    rm -rf /tmp/sbcl-${SBCL_INSTALL_VERSION}*
+    echo "Installed: $(sbcl --version)"
 fi
 
 # Check if llc-21 and clang-21 are already installed
