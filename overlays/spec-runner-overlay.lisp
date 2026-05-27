@@ -3,10 +3,14 @@
 
 
 ;; ======================================================================
-;; Endeavor 116/117 — CUDA hoist spec runner support
+;; Endeavor 116/117 — CUDA hoist spec runner support + cross-platform robustness
 ;; ======================================================================
 ;;
-;; - run-spec-with-hoist: discovers .cu files for CUDA backend
+;; - run-spec-with-hoist: discovers .cu files for CUDA backend;
+;;   skips hoist tests when SKIP_<BACKEND>_HOIST env var is set
+;; - validate-l0-compile-only: fixed to not crash when Docker is missing
+;;   (old code called uiop:run-program on "docker" which signals an error
+;;   on systems where docker binary doesn't exist, e.g. RunPod pods)
 ;; - Content validators (no hardware): validate-cuda-generation,
 ;;   validate-cuda-cell-args, validate-cuda-tensor-args, validate-cuda-shared-mem
 ;; - Compile+run validators: validate-cuda-host-run, validate-cuda-compile-only
@@ -18,7 +22,14 @@
 
 (defun run-spec-with-hoist (file backend)
   "Compiles .crisp file with --hoist=backend flag and returns list of generated output files.
-   For L0: discovers .cpp files.  For CUDA: discovers .cu files."
+   For L0: discovers .cpp files.  For CUDA: discovers .cu files.
+   Checks SKIP_<BACKEND>_HOIST env var (e.g. SKIP_L0_HOIST=true) to skip
+   gracefully on machines that don't have the target SDK."
+  ;; Check for SKIP env var (e.g. SKIP_L0_HOIST, SKIP_CUDA_HOIST)
+  (let ((skip-env (uiop:getenv (format nil "SKIP_~a_HOIST" (symbol-name backend)))))
+    (when (and skip-env (string-not-equal skip-env "false"))
+      (format t "SKIP (~a hoist disabled via SKIP_~a_HOIST)~%" backend (symbol-name backend))
+      (return-from run-spec-with-hoist :skipped)))
   (let* ((hoist-arg (format nil "--hoist=~a" backend))
          (bin (get-binary-path))
          (args (list hoist-arg

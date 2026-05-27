@@ -1,0 +1,13 @@
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out_cell: 1
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+
+;; Mirrors 029/07-basic-cell but for CUDA.
+;; in_cell is iota-initialized (value 0 for 1 element), out_cell = in + 1 = 1.
+;; SKIPs on machines without nvcc; runs on RunPod.
+
+(def-type cell-int (cell int :address-space :global))
+
+(def-kernel basic_cell (in_cell &out out_cell)
+  (declare #'(cell-int &out cell-int => nil))
+  (set! (~ out_cell) (+ (~ in_cell) 1)))

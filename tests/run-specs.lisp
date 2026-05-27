@@ -194,15 +194,17 @@
                   (validator-name (cdr directive)))
               (format t "~&Running Spec: ~a (Hoist[~a] -> ~a)... " (pathname-name file) backend validator-name)
               (finish-output)
-              (let ((cpp-files (run-spec-with-hoist file backend)))
-                ;; Use find-symbol to look up the existing function symbol
-                (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
-                  (if (fboundp validator-sym)
-                      (unless (funcall validator-sym file cpp-files)
-                        (setf all-passed nil))
-                      (progn
-                       (format t "FAIL (Validator ~a not found)~%" validator-name)
-                       (setf all-passed nil))))))
+              (let ((hoist-result (run-spec-with-hoist file backend)))
+                (unless (eq hoist-result :skipped)
+                  (let ((cpp-files hoist-result))
+                    ;; Use find-symbol to look up the existing function symbol
+                    (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
+                      (if (fboundp validator-sym)
+                          (unless (funcall validator-sym file cpp-files)
+                            (setf all-passed nil))
+                          (progn
+                           (format t "FAIL (Validator ~a not found)~%" validator-name)
+                           (setf all-passed nil))))))))
 
             ;; Cleanup Hoist Files on Success
             (when (and all-passed (not *keep-work*))
@@ -881,7 +883,9 @@
   "Validates C++ files compile. Tries Native Clang first, then Docker."
   (let ((clang-exe (resolve-clang-executable))
         (l0-include (resolve-l0-include-dir))
-        (docker-available (zerop (nth-value 2 (uiop:run-program '("docker" "--version") :ignore-error-status t :output nil)))))
+        (docker-available (handler-case
+                             (zerop (nth-value 2 (uiop:run-program '("docker" "--version") :ignore-error-status t :output nil)))
+                           (error () nil))))
     (log:debug "clang-exe=~s l0-include=~s docker-available=~s" clang-exe l0-include docker-available)
 
     (cond
