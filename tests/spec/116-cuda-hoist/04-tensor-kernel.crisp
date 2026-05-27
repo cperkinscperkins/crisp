@@ -1,0 +1,12 @@
+;; TEST-HOIST[CUDA]: validate-cuda-tensor-args
+;; SKIP-WITH[--differentiate]: "forward-only"
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel copy_vec (v &out out)
+  (declare #'(vec-t &out vec-t => nil))
+  (declare (forward-only))
+  (declare (global-size :set-to 4))
+  (declare (local-size :set-to 4))
+  (workgroup-stride out (i)
+    (set! (~ out i) (~ v i))))
