@@ -75,22 +75,37 @@ int main(int argc, char** argv) {
     CUdeviceptr d_result;
     CUDA_CHECK(cuMemAlloc(&d_result, sizeof(float)));
 
+    // Scratch vector (implicit param — comes FIRST in PTX kernel sig).
+    // make-scratch-vector :match-workgroup-size with lsize=256, float → 256 floats = 1024 bytes.
+    uint64_t slm_ptr        = 0;     // shared-memory offset, demoted from addrspace(3) ptr to i64
+    uint64_t slm_byte_size  = 256 * sizeof(float);
+    uint64_t slm_off0       = 0;
+    uint64_t slm_str0       = 1;
+    uint64_t slm_ext0       = 256;
+    uint64_t slm_length     = 256;
+
+    // Input tensor (declared param, 6-tuple)
     uint64_t input_byte_size = N * sizeof(float);
     uint64_t input_off0 = 0;
     uint64_t input_str0 = 1;
     uint64_t input_ext0 = (uint64_t)N;
     uint64_t input_length = (uint64_t)N;
+
+    // Result cell (declared param, 3-tuple)
     uint64_t result_byte_size = sizeof(float);
     uint64_t result_offset = 0;
 
-    // Shared memory for the scratch vector: 256 floats = 1024 bytes
-    const unsigned int sharedMemBytes = 256 * sizeof(float);
+    // Shared memory for the scratch vector
+    const unsigned int sharedMemBytes = (unsigned int)slm_byte_size;
 
     auto run_once = [&]() {
         float zero = 0.0f;
         cuMemcpyHtoD(d_result, &zero, sizeof(float));
 
-        void* params[9] = {
+        // 15 params: scratch (6) + input (6) + result (3)
+        void* params[15] = {
+            &slm_ptr, &slm_byte_size, &slm_off0,
+            &slm_str0, &slm_ext0, &slm_length,
             &d_input, &input_byte_size, &input_off0,
             &input_str0, &input_ext0, &input_length,
             &d_result, &result_byte_size, &result_offset,
