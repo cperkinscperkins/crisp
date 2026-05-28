@@ -1,4 +1,5 @@
 ;; TEST-HOIST[L0] : validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER c: 15
 
 

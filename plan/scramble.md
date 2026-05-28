@@ -640,6 +640,18 @@ Async Ops \ Named Barriers \ Rings
 ===================================
 - 
 
+Technical Debt
+==============
+- [ ] MkDocs
+- - markup ideal_001.md with what is Implemented, or partially implemented. (could be Emoji or CSS)
+- - MkDocs produces TOC on side, with Implemtened.
+- - retire realized_001.md
+- [ ] refactor overly long functions
+- [ ] refactor build - Warning unused var.
+- [ ] refactor build - reverse dependency order for most .lisp. ( warning undefined function)
+- other refactoring?
+- [ ] review previous "technical debt"
+
 PERFORMANCE TESTING
 ===================
 - setup RunPod AI .  ( guess we should write the CUDA hoist app too then).

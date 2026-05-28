@@ -2205,16 +2205,7 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
   (llvm-build-extract-element builder vec-val
                                (llvm-const-int (llvm-int32-type) dim nil)
                                name-suffix))
-#|
-(defun %gen-product-of-vec3 (builder module spirv-name result-name)
-  "Computes x*y*z for the <3 x i64> builtin @__spirv_BuiltIn<SPIRV-NAME>."
-  (let* ((vec (%call-spirv-vec3-builtin builder module spirv-name))
-         (x   (%extract-vec3-i64 builder vec 0 "x"))
-         (y   (%extract-vec3-i64 builder vec 1 "y"))
-         (z   (%extract-vec3-i64 builder vec 2 "z"))
-         (xy  (llvm-build-mul builder x y "xy")))
-    (llvm-build-mul builder xy z result-name)))
-    |#
+
 
 
 (defun %gen-product-of-vec3 (builder module spirv-name result-name)

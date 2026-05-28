@@ -1,6 +1,7 @@
 
 
 ;; TEST-HOIST[L0]: validate-l0-compile-only
+;; TEST-HOIST[CUDA]: validate-cuda-compile-only
 
 (def-kernel access_test (ro rw &out wo)
   (declare (type ro (cell int :address-space :global))

@@ -1,5 +1,6 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out: 1
 ;; get-layout on a default (row-major) matrix returns :row-major.
 ;; Row-major: strides=[4,1] for a 3x4 matrix.

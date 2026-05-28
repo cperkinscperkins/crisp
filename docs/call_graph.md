@@ -11,6 +11,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (EMIT-PREAMBLE STREAM METACRISP-PATH KERNEL-NAME OUTPUT-NAME)  hoist-cuda/main.lisp
 - - - (EMIT-INCLUDES STREAM)  hoist-cuda/main.lisp
 - - - (EMIT-TYPEDEFS STREAM ALIASES)  hoist-cuda/main.lisp
+- - - (EMIT-CUDA-DVEC-OSTREAM-OPERATORS STREAM DVEC-TYPES)  hoist-cuda/main.lisp
 - - - (EMIT-STRUCTS STREAM STRUCTS)  hoist-cuda/main.lisp
 - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp
 - - - - (%ARRAY-ELEMENT-TYPE TYPE)  hoist-cuda/main.lisp

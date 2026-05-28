@@ -1,5 +1,6 @@
 
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out-cell: 1
 
 ;; This test can not just be tested for compile, but also actually does something.

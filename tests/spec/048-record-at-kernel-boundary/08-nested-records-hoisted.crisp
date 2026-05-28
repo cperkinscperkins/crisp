@@ -1,5 +1,6 @@
 ;; TEST-HOIST[L0] : validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER c: 1
+;; (no TEST-HOIST[CUDA]: PTX backend skips record-returning accessor functions)
 
 ;; v-rect is on the kernel boundary.
 ;; by virtue of that, v-point will also appear in the metadata.

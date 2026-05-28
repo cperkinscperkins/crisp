@@ -1,0 +1,16 @@
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 0 1 2 3
+;; SKIP-WITH[--differentiate]: "forward-only"
+
+;; Identity copy: out[i] = v[i].  v is iota-initialized [0,1,2,3].
+;; SKIPs on machines without nvcc; runs on RunPod.
+
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel copy_vec (v &out out)
+  (declare #'(vec-t &out vec-t => nil))
+  (declare (forward-only))
+  (declare (global-size :set-to 4))
+  (declare (local-size :set-to 4))
+  (workgroup-stride out (i)
+    (set! (~ out i) (~ v i))))

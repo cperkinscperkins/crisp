@@ -1,4 +1,5 @@
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out: 0 1 2 3
 ;; Fill a 4-element vector with its indices using loop-vector-stride.
 ;; global-size :set-to 4 means one thread per element, so each thread

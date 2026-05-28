@@ -1,4 +1,5 @@
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out: 3
 ;;
 ;; Basic end-to-end: make-cell with :offset, read through the view.

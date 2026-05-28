@@ -1,5 +1,6 @@
 
 ;; TEST-HOIST[L0] : validate-l0-compile-only
+;; TEST-HOIST[CUDA]: validate-cuda-compile-only
 ;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
 

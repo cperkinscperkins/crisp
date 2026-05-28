@@ -338,3 +338,7 @@ Compiled and successfully ran the first kernel at 1AM Jan 3, 2026.
 
 
 E2E Testing from .crisp test to .spv accompanied by a .cpp, compiled to an .exe, run and validated, achieved on Jan 22, 2026.
+
+E2E Testing from .crisp test to .ptx accompanied by a .cu, compiled to an executable. Run and validated on runpod.io CUDA machines  on May 27, 2026.
+
+Performance milestones. Crisp is production grade competitive. Wall time and Kernel Time are competitive. Whereas Crisp Time to Compile is vastly faster.  

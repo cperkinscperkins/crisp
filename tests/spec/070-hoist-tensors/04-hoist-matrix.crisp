@@ -1,5 +1,6 @@
 ;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 ;; TEST-HOIST[L0]: validate-l0-compile-only
+;; TEST-HOIST[CUDA]: validate-cuda-compile-only
 
 ;; Validates that a kernel with a matrix (N=2) parameter hoists to compilable C++.
 ;; The generated C++ sets 10 kernel args: val(0) + 9 tensor slots for v.

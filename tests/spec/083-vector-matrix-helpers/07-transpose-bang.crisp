@@ -1,5 +1,6 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out: 43
 ;; transpose! updates a local binding in place.
 ;; Input: col-major 3x4. After transpose!: 4x3. Encoded: 4*10+3 = 43.

@@ -1,0 +1,35 @@
+;; Sum reduction in Crisp.
+;;
+;; Strategy: grid-stride accumulation + atomic-add.
+;; Each thread walks a stripe of the input, accumulates into a register,
+;; then atomic-adds the partial sum to the output cell.
+;;
+;; This avoids shared-memory tree-reduce (which needs a halving loop
+;; that Crisp's dotimes doesn't directly express) in favor of a simpler
+;; pattern that's competitive for large N because the grid-stride loop
+;; dominates and the atomic contention is only global_work_size atomics.
+;;
+;; Compile:
+;;   crisp-compile.exe --ir-target=ptx --hoist=cuda --metadata sum-reduce.crisp
+
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-cell (cell float :address-space :global))
+
+(def-kernel sum_reduce (input &out result)
+  (declare #'(in-vec &out out-cell => nil))
+  (declare (forward-only))
+  (declare (global-size :set-to (65536))
+           (local-size  :set-to (256)))
+
+  (let ((gid    (to-ulong (get-global-id 0)))
+        (stride (to-ulong (get-global-work-size 0)))
+        (n      (length~ input))
+        (acc    0.0f))
+    ;; Grid-stride accumulation: each thread sums every stride-th element
+    ;; Loop bound = ceil(n / stride) — each thread does ~(n/global_work_size) iterations
+    (dotimes (step (+ (/ n stride) (to-ulong 1)))
+      (let ((i (+ gid (* (to-ulong step) stride))))
+        (when (< i n)
+          (set! acc (+ acc (~ input i))))))
+    ;; Single atomic-add per thread
+    (atomic-add! (~ result) acc)))

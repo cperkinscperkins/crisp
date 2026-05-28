@@ -1,4 +1,5 @@
 ;; TEST-HOIST[L0] : validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out: 6
 ;;
 ;; Cell cursor sum: move a cell view through a 4-element int vector [0,1,2,3]

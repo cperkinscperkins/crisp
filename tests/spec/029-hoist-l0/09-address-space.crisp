@@ -2,6 +2,7 @@
 ;; TEST-HOIST[L0] : validate-l0-cell-address-space
 ;; TEST-HOIST[L0]: validate-l0-host-run
 ;; HOIST-EXPECT: BUFFER gc: 17
+;; (no TEST-HOIST[CUDA]: PTX codegen for local cells emits cvta.to.shared on raw offset — runtime crash)
 
 ;; Expected in generated C++:
 ;; - 'g' and 'gc' → zeMemAllocDevice (global device memory)

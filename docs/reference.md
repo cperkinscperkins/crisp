@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-27T20:21:46.279203Z
+Generated on 2026-05-28T04:22:55.297410Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2890,6 +2890,13 @@ Generated on 2026-05-27T20:21:46.279203Z
 - **Args**: `(N DIM-EXTENT)`
 
   > Returns (values extents strides) for a compact N-dim tensor.
+
+
+---
+### DEFUN `EMIT-CUDA-DVEC-OSTREAM-OPERATORS`
+- **Args**: `(STREAM DVEC-TYPES)`
+
+  > Emit operator<< free functions for device vector types.  >    Unlike the L0 hoist, does NOT emit struct definitions since CUDA already  >    provides them via <cuda.h>.
 
 
 ---

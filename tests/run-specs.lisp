@@ -194,15 +194,17 @@
                   (validator-name (cdr directive)))
               (format t "~&Running Spec: ~a (Hoist[~a] -> ~a)... " (pathname-name file) backend validator-name)
               (finish-output)
-              (let ((cpp-files (run-spec-with-hoist file backend)))
-                ;; Use find-symbol to look up the existing function symbol
-                (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
-                  (if (fboundp validator-sym)
-                      (unless (funcall validator-sym file cpp-files)
-                        (setf all-passed nil))
-                      (progn
-                       (format t "FAIL (Validator ~a not found)~%" validator-name)
-                       (setf all-passed nil))))))
+              (let ((hoist-result (run-spec-with-hoist file backend)))
+                (unless (eq hoist-result :skipped)
+                  (let ((cpp-files hoist-result))
+                    ;; Use find-symbol to look up the existing function symbol
+                    (let ((validator-sym (find-symbol (string-upcase validator-name) :crisp.spec-runner)))
+                      (if (fboundp validator-sym)
+                          (unless (funcall validator-sym file cpp-files)
+                            (setf all-passed nil))
+                          (progn
+                           (format t "FAIL (Validator ~a not found)~%" validator-name)
+                           (setf all-passed nil))))))))
 
             ;; Cleanup Hoist Files on Success
             (when (and all-passed (not *keep-work*))
@@ -699,10 +701,16 @@
 
 ;;; ======================================================================
 
-
 (defun run-spec-with-hoist (file backend)
   "Compiles .crisp file with --hoist=backend flag and returns list of generated output files.
-   For L0: discovers .cpp files.  For CUDA: discovers .cu files."
+   For L0: discovers .cpp files.  For CUDA: discovers .cu files.
+   Checks SKIP_<BACKEND>_HOIST env var (e.g. SKIP_L0_HOIST=true) to skip
+   gracefully on machines that don't have the target SDK."
+  ;; Check for SKIP env var (e.g. SKIP_L0_HOIST, SKIP_CUDA_HOIST)
+  (let ((skip-env (uiop:getenv (format nil "SKIP_~a_HOIST" (symbol-name backend)))))
+    (when (and skip-env (string-not-equal skip-env "false"))
+      (format t "SKIP (~a hoist disabled via SKIP_~a_HOIST)~%" backend (symbol-name backend))
+      (return-from run-spec-with-hoist :skipped)))
   (let* ((hoist-arg (format nil "--hoist=~a" backend))
          (bin (get-binary-path))
          (args (list hoist-arg
@@ -881,7 +889,9 @@
   "Validates C++ files compile. Tries Native Clang first, then Docker."
   (let ((clang-exe (resolve-clang-executable))
         (l0-include (resolve-l0-include-dir))
-        (docker-available (zerop (nth-value 2 (uiop:run-program '("docker" "--version") :ignore-error-status t :output nil)))))
+        (docker-available (handler-case
+                             (zerop (nth-value 2 (uiop:run-program '("docker" "--version") :ignore-error-status t :output nil)))
+                           (error () nil))))
     (log:debug "clang-exe=~s l0-include=~s docker-available=~s" clang-exe l0-include docker-available)
 
     (cond
@@ -1580,29 +1590,140 @@
       (let ((passed t))
         (dolist (cu cu-files)
           (let ((content (uiop:read-file-string cu)))
-            ;; Shared offset = 0
             (unless (search "_ptr = 0;" content)
               (format t "FAIL: ~a missing shared-mem offset=0 for tile ptr~%" (file-namestring cu))
               (setf passed nil))
-            ;; Non-zero sharedMemBytes in launch (should NOT be "0, 0," which means 0 shared + stream 0)
-            ;; Look for the cuLaunchKernel line and check sharedMemBytes isn't 0
             (let ((launch-pos (search "cuLaunchKernel" content)))
               (when launch-pos
                 (let ((launch-region (subseq content launch-pos
                                              (min (+ launch-pos 300) (length content)))))
-                  ;; The 7th arg (sharedMemBytes) should be > 0 for a local-tile kernel
-                  ;; Pattern: "32, 0," means 32 bytes shared, stream 0
                   (unless (search "32," launch-region)
                     (format t "FAIL: ~a cuLaunchKernel should have sharedMemBytes=32 for 4-element ulong tile~%"
                             (file-namestring cu))
                     (setf passed nil)))))
-            ;; Arg count: tile(6) + v(6) + out(6) = 18
             (unless (search "kernelParams[18]" content)
               (format t "FAIL: ~a expected kernelParams[18] for tile+v+out~%" (file-namestring cu))
               (setf passed nil))))
         (when passed
           (format t "PASS: .cu has correct shared-mem setup (offset=0, 32 bytes, 18 params)~%"))
         passed)))
+
+
+;; --- Compile+run validators (require nvcc + NVIDIA GPU) ---
+
+
+(defun resolve-nvcc-executable ()
+  "Finds nvcc on PATH or in common CUDA toolkit locations.
+   Returns the path string, or NIL if not found."
+  (or
+   ;; Check PATH
+   (let ((on-path (uiop:run-program
+                    (if (uiop:os-windows-p)
+                        '("where" "nvcc")
+                        '("which" "nvcc"))
+                    :output :string :ignore-error-status t)))
+     (when (and (stringp on-path) (> (length (string-trim '(#\Space #\Newline #\Return) on-path)) 0))
+       (string-trim '(#\Space #\Newline #\Return) on-path)))
+   ;; Linux: check common CUDA paths
+   (loop for pattern in '("/usr/local/cuda/bin/nvcc"
+                          "/usr/local/cuda-12.4/bin/nvcc"
+                          "/usr/local/cuda-12.8/bin/nvcc"
+                          "/usr/local/cuda-12.6/bin/nvcc")
+         when (probe-file pattern)
+         return pattern)
+   ;; Windows: check standard NVIDIA install
+   (when (uiop:os-windows-p)
+     (let ((candidate "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4/bin/nvcc.exe"))
+       (when (probe-file candidate) candidate)))))
+
+(defun validate-cuda-compile-only (crisp-file cu-files)
+  "Validates .cu files compile with nvcc.  SKIPs if nvcc not available."
+  (declare (ignore crisp-file))
+  (let ((nvcc (resolve-nvcc-executable)))
+    (cond
+     ((null cu-files)
+      (format t "FAIL: No .cu files generated~%")
+      nil)
+
+     ((null nvcc)
+      (format t "SKIP (nvcc not available)~%")
+      t)
+
+     (t
+      (dolist (cu cu-files)
+        (let ((exe-path (make-pathname :type #+windows "exe" #-windows nil
+                                       :defaults cu)))
+          (multiple-value-bind (output error-output exit-code)
+              (uiop:run-program
+                (list nvcc
+                      (uiop:native-namestring cu)
+                      "-lcuda"
+                      "-o" (uiop:native-namestring exe-path))
+                :output :string :error-output :string :ignore-error-status t)
+            (declare (ignore output))
+            (unless (zerop exit-code)
+              (format t "FAIL: nvcc compilation error for ~a~%~a~%"
+                      (file-namestring cu) error-output)
+              (return-from validate-cuda-compile-only nil))
+            (format t "PASS: ~a compiles with nvcc~%" (file-namestring cu)))))
+      t))))
+
+
+(defun validate-cuda-host-run (crisp-file cu-files)
+  "Validates .cu files compile with nvcc AND run successfully on a CUDA GPU.
+   Checks HOIST-EXPECT: directives against program stdout.
+   SKIPs gracefully if nvcc is not available (e.g. Windows dev machine, CI without GPU)."
+  (let ((nvcc (resolve-nvcc-executable)))
+    (cond
+     ((null cu-files)
+      (format t "FAIL: No .cu files generated~%")
+      nil)
+
+     ((null nvcc)
+      (format t "SKIP (nvcc not available)~%")
+      t)
+
+     (t
+      (dolist (cu cu-files)
+        (let ((exe-path (make-pathname :type #+windows "exe" #-windows nil
+                                       :defaults cu)))
+          ;; 1. Compile
+          (multiple-value-bind (output error-output exit-code)
+              (uiop:run-program
+                (list nvcc
+                      (uiop:native-namestring cu)
+                      "-lcuda"
+                      "-o" (uiop:native-namestring exe-path))
+                :output :string :error-output :string :ignore-error-status t)
+            (declare (ignore output))
+            (unless (zerop exit-code)
+              (format t "FAIL: nvcc compilation error for ~a~%~a~%"
+                      (file-namestring cu) error-output)
+              (return-from validate-cuda-host-run nil))
+            (format t "Compiled ~a -> ~a... OK~%" (file-namestring cu) (file-namestring exe-path)))
+
+          ;; 2. Run
+          (multiple-value-bind (run-out run-err run-code)
+              (uiop:run-program (uiop:native-namestring exe-path)
+                :output :string :error-output :string :ignore-error-status t)
+            (format t "Output:~%~a~%" run-out)
+            (unless (zerop run-code)
+              (format t "FAIL: ~a execution failed (Code ~a)~%Error: ~a~%"
+                      (file-namestring exe-path) run-code run-err)
+              (return-from validate-cuda-host-run nil))
+
+            ;; 3. Check HOIST-EXPECT
+            (let ((expectations (parse-hoist-expect (extract-test-directives crisp-file)))
+                  (passed t))
+              (when expectations
+                (dolist (exp expectations)
+                  (unless (search exp run-out)
+                    (format t "FAIL: Expectation not found in output: '~a'~%" exp)
+                    (setf passed nil))))
+              (if passed
+                  (format t "PASS: ~a ran successfully on CUDA!~%" (file-namestring cu))
+                  (return-from validate-cuda-host-run nil))))))
+      t))))
 
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))

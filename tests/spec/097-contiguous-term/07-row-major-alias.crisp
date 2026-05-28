@@ -1,6 +1,7 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=spv]
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out: 1
 
 ;; :contiguous-term :row-major is a matrix-only alias for :last.
