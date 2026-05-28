@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
@@ -47,29 +48,37 @@ def find_executable(name):
     return None
 
 
-def build_cuda(impl_dir, binary_name):
-    """Compile a .cu file with nvcc -O3."""
-    cu_files = list(impl_dir.glob("*.cu"))
-    if not cu_files:
-        print(f"  SKIP: no .cu files in {impl_dir}")
-        return None
-    cu = cu_files[0]
+def build_cuda(impl_dir, binary_name, cu_name=None):
+    """Compile a .cu file with nvcc -O3. Returns (binary_path, compile_time_s)."""
+    if cu_name:
+        cu = impl_dir / cu_name
+    else:
+        cu_files = list(impl_dir.glob("*.cu"))
+        if not cu_files:
+            print(f"  SKIP: no .cu files in {impl_dir}")
+            return None, 0.0
+        cu = cu_files[0]
     out = impl_dir / binary_name
     cmd = ["nvcc", "-O3", str(cu), "-o", str(out)]
     print(f"  Building: {' '.join(cmd)}")
+    t0 = time.monotonic()
     r = subprocess.run(cmd, capture_output=True, text=True)
+    compile_time = time.monotonic() - t0
     if r.returncode != 0:
         print(f"  BUILD FAILED:\n{r.stderr}")
-        return None
-    return str(out)
+        return None, compile_time
+    print(f"  Compiled in {compile_time:.2f}s")
+    return str(out), compile_time
 
 
 def build_crisp(crisp_dir):
-    """Compile Crisp kernel to PTX, then build the benchmark harness."""
+    """Compile Crisp kernel to PTX, then build the benchmark harness.
+    Returns (binary_path, compile_time_s).
+    compile_time measures crisp-compile only (not nvcc for the harness)."""
     crisp_files = list(crisp_dir.glob("*.crisp"))
     if not crisp_files:
         print(f"  SKIP: no .crisp files in {crisp_dir}")
-        return None
+        return None, 0.0
     crisp_file = crisp_files[0]
 
     compiler = find_executable("crisp-compile")
@@ -77,24 +86,26 @@ def build_crisp(crisp_dir):
         compiler = find_executable("crisp-compile.exe")
     if not compiler:
         print("  SKIP: crisp-compile not found")
-        return None
+        return None, 0.0
 
-    # Compile to PTX only (no hoist needed — we use the custom bench harness)
+    # Compile to PTX — this is the "compile time" we measure
     cmd = [compiler, "--ir-target=ptx", str(crisp_file)]
     print(f"  Crisp compile: {' '.join(cmd)}")
+    t0 = time.monotonic()
     r = subprocess.run(cmd, capture_output=True, text=True,
                        env={**os.environ, "CRISP_USE_SYSTEM_TOOLS": "true"})
+    crisp_compile_time = time.monotonic() - t0
     if r.returncode != 0:
         print(f"  CRISP COMPILE FAILED:\n{r.stderr}")
-        return None
+        return None, crisp_compile_time
+    print(f"  Crisp compiled in {crisp_compile_time:.2f}s")
 
-    # Verify PTX was generated
     ptx = crisp_dir / "sum-reduce.ptx"
     if not ptx.exists():
         print(f"  SKIP: {ptx} not generated")
-        return None
+        return None, crisp_compile_time
 
-    # Build the benchmark harness (loads PTX at runtime)
+    # Build the benchmark harness (not counted as "compile time" — it's infrastructure)
     harness = crisp_dir / "bench_harness.cu"
     out = crisp_dir / "sum_reduce_crisp"
     cmd = ["nvcc", "-O3", str(harness), "-lcuda", "-o", str(out)]
@@ -102,8 +113,8 @@ def build_crisp(crisp_dir):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         print(f"  NVCC FAILED:\n{r.stderr}")
-        return None
-    return str(out)
+        return None, crisp_compile_time
+    return str(out), crisp_compile_time
 
 
 def run_benchmark(binary, N, warmup, iterations, impl_name):
@@ -126,13 +137,12 @@ def run_benchmark(binary, N, warmup, iterations, impl_name):
         return None
 
 
-def print_comparison_table(all_results):
+def print_comparison_table(all_results, compile_times=None):
     """Print a summary comparison table."""
     if not all_results:
         print("\nNo results to compare.")
         return
 
-    # Group by N
     by_n = {}
     for r in all_results:
         n = r["N"]
@@ -142,28 +152,60 @@ def print_comparison_table(all_results):
 
     impls = sorted(set(r["implementation"] for r in all_results))
 
-    # Header
-    print("\n" + "=" * 80)
-    print("Sum Reduction Benchmark Comparison")
-    print("=" * 80)
+    # Compile times
+    if compile_times:
+        print("\n" + "=" * 60)
+        print("Compile Times")
+        print("=" * 60)
+        for impl in impls:
+            ct = compile_times.get(impl, 0)
+            print(f"  {impl:>8s}: {ct:.2f}s")
+        print()
+
+    # Kernel time table
+    print("=" * 100)
+    print("Kernel Time (GPU hardware events, excludes host overhead)")
+    print("=" * 100)
     header = f"{'N':>10s}"
     for impl in impls:
-        header += f"  {impl:>12s} (us)"
-        header += f"  {impl:>8s} GB/s"
+        header += f"  {impl+' (us)':>14s}"
+        header += f"  {impl+' GB/s':>11s}"
     print(header)
     print("-" * len(header))
-
     for n in sorted(by_n.keys()):
         row = f"{n:>10d}"
         for impl in impls:
             r = by_n[n].get(impl)
             if r:
-                row += f"  {r['kernel_median_us']:>16.2f}"
+                row += f"  {r['kernel_median_us']:>14.2f}"
                 row += f"  {r['throughput_gb_s']:>11.2f}"
             else:
-                row += f"  {'---':>16s}"
+                row += f"  {'---':>14s}"
                 row += f"  {'---':>11s}"
         print(row)
+
+    # Wall time table (if available)
+    has_wall = any("wall_median_us" in r for r in all_results)
+    if has_wall:
+        print()
+        print("=" * 70)
+        print("Wall Time (includes kernel + sync + D→H readback)")
+        print("=" * 70)
+        header = f"{'N':>10s}"
+        for impl in impls:
+            header += f"  {impl+' (us)':>14s}"
+        print(header)
+        print("-" * len(header))
+        for n in sorted(by_n.keys()):
+            row = f"{n:>10d}"
+            for impl in impls:
+                r = by_n[n].get(impl)
+                if r and "wall_median_us" in r:
+                    row += f"  {r['wall_median_us']:>14.2f}"
+                else:
+                    row += f"  {'---':>14s}"
+            print(row)
+
     print()
 
 
@@ -191,25 +233,29 @@ def main():
 
     # Build phase
     binaries = {}
+    compile_times = {}
     print("=== Build phase ===")
 
     if "cuda" in run_impls:
         print("Building CUDA hand-written...")
-        b = build_cuda(SCRIPT_DIR / "cuda", "sum_reduce")
+        b, ct = build_cuda(SCRIPT_DIR / "cuda", "sum_reduce", "sum_reduce.cu")
         if b:
             binaries["cuda"] = b
+            compile_times["cuda"] = ct
 
     if "cub" in run_impls:
         print("Building CUB...")
-        b = build_cuda(SCRIPT_DIR / "cub", "sum_reduce_cub")
+        b, ct = build_cuda(SCRIPT_DIR / "cub", "sum_reduce_cub", "sum_reduce_cub.cu")
         if b:
             binaries["cub"] = b
+            compile_times["cub"] = ct
 
     if "crisp" in run_impls:
         print("Building Crisp...")
-        b = build_crisp(SCRIPT_DIR / "crisp")
+        b, ct = build_crisp(SCRIPT_DIR / "crisp")
         if b:
             binaries["crisp"] = b
+            compile_times["crisp"] = ct
 
     if not binaries:
         print("No implementations built successfully. Exiting.")
@@ -230,7 +276,7 @@ def main():
                     json.dump(result, f, indent=2)
 
     # Comparison
-    print_comparison_table(all_results)
+    print_comparison_table(all_results, compile_times)
 
     return 0
 
