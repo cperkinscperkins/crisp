@@ -1,0 +1,50 @@
+;; Sum reduction in Crisp — workgroup tree-reduce version.
+;;
+;; Three-phase strategy:
+;;   Phase 1: each thread accumulates a stripe via grid-stride
+;;   Phase 2: workgroup tree-reduce in shared memory (8 rounds, halving stride)
+;;   Phase 3: one atomic-add per workgroup to global result
+;;
+;; Reduces atomic contention from 65,536 (one per thread) to 256 (one per
+;; workgroup) — should close most of the gap with CUB.
+;;
+;; Companion to sum-reduce.crisp (the simpler atomic-per-thread version).
+;;
+;; Compile:
+;;   crisp-compile.exe --ir-target=ptx sum-reduce-tree.crisp
+
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-cell (cell float :address-space :global))
+
+(def-kernel sum_reduce_tree (input &out result)
+  (declare #'(in-vec &out out-cell => nil))
+  (declare (forward-only))
+  (declare (global-size :set-to (65536))
+           (local-size  :set-to (256)))
+
+  (let ((gid     (to-ulong (get-global-id 0)))
+        (lid     (to-ulong (get-local-id 0)))
+        (gstride (to-ulong (get-global-work-size 0)))
+        (n       (length~ input))
+        (acc     0.0f))
+
+    ;; Phase 1: grid-stride accumulation
+    (dotimes (step (+ (/ n gstride) (to-ulong 1)))
+      (let ((i (+ gid (* (to-ulong step) gstride))))
+        (when (< i n)
+          (set! acc (+ acc (~ input i))))))
+
+    ;; Phase 2: workgroup tree-reduce via local memory
+    (let ((slm    (make-scratch-vector float :match-workgroup-size))
+          (stride (to-ulong 128)))             ; lsize/2 = 128 for lsize=256
+      (set! (~ slm lid) acc)
+      ;; 8 rounds for lsize=256: stride = 128, 64, 32, 16, 8, 4, 2, 1
+      (dotimes (round (to-ulong 8))
+        (local-barrier)
+        (when (< lid stride)
+          (set! (~ slm lid) (+ (~ slm lid) (~ slm (+ lid stride)))))
+        (set! stride (/ stride (to-ulong 2))))
+
+      ;; Phase 3: one atomic-add per workgroup
+      (when (= lid (to-ulong 0))
+        (atomic-add! (~ result) (~ slm (to-ulong 0)))))))

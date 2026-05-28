@@ -71,26 +71,21 @@ def build_cuda(impl_dir, binary_name, cu_name=None):
     return str(out), compile_time
 
 
-def build_crisp(crisp_dir):
-    """Compile Crisp kernel to PTX, then build the benchmark harness.
-    Returns (binary_path, compile_time_s).
+def build_crisp_variant(crisp_dir, crisp_filename, ptx_filename, harness_filename, binary_name):
+    """Compile one Crisp kernel + its harness.  Returns (binary_path, compile_time_s).
     compile_time measures crisp-compile only (not nvcc for the harness)."""
-    crisp_files = list(crisp_dir.glob("*.crisp"))
-    if not crisp_files:
-        print(f"  SKIP: no .crisp files in {crisp_dir}")
+    crisp_file = crisp_dir / crisp_filename
+    if not crisp_file.exists():
+        print(f"  SKIP: {crisp_file} not found")
         return None, 0.0
-    crisp_file = crisp_files[0]
 
-    compiler = find_executable("crisp-compile")
-    if not compiler:
-        compiler = find_executable("crisp-compile.exe")
+    compiler = find_executable("crisp-compile") or find_executable("crisp-compile.exe")
     if not compiler:
         print("  SKIP: crisp-compile not found")
         return None, 0.0
 
-    # Compile to PTX — this is the "compile time" we measure
     cmd = [compiler, "--ir-target=ptx", str(crisp_file)]
-    print(f"  Crisp compile: {' '.join(cmd)}")
+    print(f"  Crisp compile [{crisp_filename}]: {' '.join(cmd)}")
     t0 = time.monotonic()
     r = subprocess.run(cmd, capture_output=True, text=True,
                        env={**os.environ, "CRISP_USE_SYSTEM_TOOLS": "true"})
@@ -100,14 +95,13 @@ def build_crisp(crisp_dir):
         return None, crisp_compile_time
     print(f"  Crisp compiled in {crisp_compile_time:.2f}s")
 
-    ptx = crisp_dir / "sum-reduce.ptx"
+    ptx = crisp_dir / ptx_filename
     if not ptx.exists():
         print(f"  SKIP: {ptx} not generated")
         return None, crisp_compile_time
 
-    # Build the benchmark harness (not counted as "compile time" — it's infrastructure)
-    harness = crisp_dir / "bench_harness.cu"
-    out = crisp_dir / "sum_reduce_crisp"
+    harness = crisp_dir / harness_filename
+    out = crisp_dir / binary_name
     cmd = ["nvcc", "-O3", str(harness), "-lcuda", "-o", str(out)]
     print(f"  nvcc harness: {' '.join(cmd)}")
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -115,6 +109,20 @@ def build_crisp(crisp_dir):
         print(f"  NVCC FAILED:\n{r.stderr}")
         return None, crisp_compile_time
     return str(out), crisp_compile_time
+
+
+def build_crisp(crisp_dir):
+    """Naive grid-stride + atomic-per-thread version."""
+    return build_crisp_variant(
+        crisp_dir, "sum-reduce.crisp", "sum-reduce.ptx",
+        "bench_harness.cu", "sum_reduce_crisp")
+
+
+def build_crisp_tree(crisp_dir):
+    """Workgroup tree-reduce + one atomic per workgroup version."""
+    return build_crisp_variant(
+        crisp_dir, "sum-reduce-tree.crisp", "sum-reduce-tree.ptx",
+        "bench_harness_tree.cu", "sum_reduce_crisp_tree")
 
 
 def run_benchmark(binary, N, warmup, iterations, impl_name):
@@ -229,7 +237,7 @@ def main():
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    run_impls = args.impl.split(",") if args.impl != "all" else ["cuda", "cub", "crisp"]
+    run_impls = args.impl.split(",") if args.impl != "all" else ["cuda", "cub", "crisp", "crisp_tree"]
 
     # Build phase
     binaries = {}
@@ -251,11 +259,18 @@ def main():
             compile_times["cub"] = ct
 
     if "crisp" in run_impls:
-        print("Building Crisp...")
+        print("Building Crisp (atomic-per-thread)...")
         b, ct = build_crisp(SCRIPT_DIR / "crisp")
         if b:
             binaries["crisp"] = b
             compile_times["crisp"] = ct
+
+    if "crisp_tree" in run_impls:
+        print("Building Crisp (workgroup tree-reduce)...")
+        b, ct = build_crisp_tree(SCRIPT_DIR / "crisp")
+        if b:
+            binaries["crisp_tree"] = b
+            compile_times["crisp_tree"] = ct
 
     if not binaries:
         print("No implementations built successfully. Exiting.")
