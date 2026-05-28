@@ -6,6 +6,8 @@
 # clones the Crisp repo, builds the compiler + hoist apps, and runs
 # the spec suite with CUDA hoist tests executing on real hardware.
 #
+# https://console.runpod.io/deploy
+#
 # Usage:
 #   ./scripts/run-on-pod.sh <host> <port> [branch] [ssh-key]
 #
