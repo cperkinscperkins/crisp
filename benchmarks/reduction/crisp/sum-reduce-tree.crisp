@@ -20,9 +20,35 @@
 (def-type out-cell (cell float :address-space :global))
 
 (def-kernel sum_reduce_tree (input &out result)
+  (declare #'(in-vec &out out-cell) 
+           (global-size :derive-from input :strategy :strided :occupancy 0.15)
+           (local-size :set-to (256)))
+  (let ((acc     0.0f)
+        (lid     (to-ulong (get-local-id 0))))
+  ;; Phase 1: accumulate on stride
+    (loop-vector-stride input (i)
+      (set! acc (+ acc (~ input i))))
+  
+  ;; Phase 2: workgroup tree-reduce via local memory
+    (let ((slm    (make-scratch-vector float :match-workgroup-size))
+          (stride (to-ulong 128)))             ; lsize/2 = 128 for lsize=256
+      (set! (~ slm lid) acc)
+      ;; 8 rounds for lsize=256: stride = 128, 64, 32, 16, 8, 4, 2, 1
+      (dotimes (round (to-ulong 8))
+        (local-barrier)
+        (when (< lid stride)
+          (set! (~ slm lid) (+ (~ slm lid) (~ slm (+ lid stride)))))
+        (set! stride (/ stride (to-ulong 2))))
+
+      ;; Phase 3: one atomic-add per workgroup
+      (when (= lid (to-ulong 0))
+        (atomic-add! (~ result) (~ slm (to-ulong 0)))))))
+
+#|
+(def-kernel sum_reduce_tree (input &out result)
   (declare #'(in-vec &out out-cell => nil))
   (declare (forward-only))
-  (declare (global-size :derive-from input :strategy :strided :occupancy 0.5)
+  (declare (global-size :derive-from input :strategy :strided :occupancy 0.15)
            (local-size  :set-to 256))
 
   (let ((gid     (to-ulong (get-global-id 0)))
@@ -52,3 +78,4 @@
       ;; Phase 3: one atomic-add per workgroup
       (when (= lid (to-ulong 0))
         (atomic-add! (~ result) (~ slm (to-ulong 0)))))))
+        |#

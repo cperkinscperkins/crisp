@@ -749,178 +749,163 @@
 	.local .align 8 .b8 	__local_depot43[80];
 	.reg .b64 	%SP;
 	.reg .b64 	%SPL;
-	.reg .pred 	%p<7>;
-	.reg .b32 	%r<20>;
-	.reg .b64 	%rd<87>;
+	.reg .pred 	%p<6>;
+	.reg .b32 	%r<17>;
+	.reg .b64 	%rd<78>;
 
 // %bb.0:                               // %entry
 	mov.b64 	%SPL, __local_depot43;
-	ld.param.b64 	%rd33, [sum_reduce_tree_param_6];
-	ld.param.b64 	%rd34, [sum_reduce_tree_param_7];
-	ld.param.b64 	%rd35, [sum_reduce_tree_param_8];
-	ld.param.b64 	%rd36, [sum_reduce_tree_param_9];
-	ld.param.b64 	%rd37, [sum_reduce_tree_param_10];
-	ld.param.b64 	%rd38, [sum_reduce_tree_param_11];
-	ld.param.b64 	%rd39, [sum_reduce_tree_param_12];
-	cvta.to.global.u64 	%rd7, %rd33;
-	cvta.to.global.u64 	%rd8, %rd39;
-	mov.u32 	%r4, %ctaid.x;
-	mov.u32 	%r5, %ntid.x;
-	mov.u32 	%r6, %tid.x;
-	cvt.u64.u32 	%rd9, %r6;
-	mul.wide.u32 	%rd40, %r4, %r5;
-	add.s64 	%rd84, %rd40, %rd9;
-	mov.u32 	%r7, %nctaid.x;
-	mul.wide.u32 	%rd11, %r7, %r5;
-	{ // callseq 0, 0
-	.param .b64 	param0;
-	st.param.b64 	[param0], %rd7;
-	.param .b64 	param1;
-	st.param.b64 	[param1], %rd34;
-	.param .b64 	param2;
-	st.param.b64 	[param2], %rd35;
-	.param .b64 	param3;
-	st.param.b64 	[param3], %rd36;
-	.param .b64 	param4;
-	st.param.b64 	[param4], %rd37;
-	.param .b64 	param5;
-	st.param.b64 	[param5], %rd38;
-	.param .b64 	retval0;
-	call.uni (retval0), length__tensor_float_1_global_compact_last, (param0, param1, param2, param3, param4, param5);
-	ld.param.b64 	%rd41, [retval0];
-	} // callseq 0
-	or.b64 	%rd42, %rd41, %rd11;
-	and.b64 	%rd43, %rd42, -4294967296;
-	setp.ne.b64 	%p1, %rd43, 0;
-	@%p1 bra 	$L__BB43_2;
-	bra.uni 	$L__BB43_1;
-$L__BB43_2:
-	div.s64 	%rd83, %rd41, %rd11;
-	bra.uni 	$L__BB43_3;
-$L__BB43_1:
-	cvt.u32.u64 	%r8, %rd11;
-	cvt.u32.u64 	%r9, %rd41;
-	div.u32 	%r10, %r9, %r8;
-	cvt.u64.u32 	%rd83, %r10;
-$L__BB43_3:
-	ld.param.b64 	%rd32, [sum_reduce_tree_param_14];
-	ld.param.b64 	%rd31, [sum_reduce_tree_param_5];
+	ld.param.b64 	%rd25, [sum_reduce_tree_param_14];
+	ld.param.b64 	%rd24, [sum_reduce_tree_param_5];
 	ld.param.b64 	%rd1, [sum_reduce_tree_param_0];
 	ld.param.b64 	%rd2, [sum_reduce_tree_param_1];
 	ld.param.b64 	%rd3, [sum_reduce_tree_param_2];
 	ld.param.b64 	%rd4, [sum_reduce_tree_param_3];
 	ld.param.b64 	%rd5, [sum_reduce_tree_param_4];
-	add.s64 	%rd16, %rd83, 1;
-	shl.b64 	%rd45, %rd84, 2;
-	add.s64 	%rd85, %rd7, %rd45;
-	shl.b64 	%rd18, %rd11, 2;
-	mov.b64 	%rd86, 0;
-	mov.b32 	%r18, 0f00000000;
-	bra.uni 	$L__BB43_4;
-$L__BB43_7:                             // %ifcont
-                                        //   in Loop: Header=BB43_4 Depth=1
-	add.s64 	%rd86, %rd86, 1;
-	add.s64 	%rd85, %rd85, %rd18;
-	add.s64 	%rd84, %rd84, %rd11;
-$L__BB43_4:                             // %dt_check
+	ld.param.b64 	%rd27, [sum_reduce_tree_param_6];
+	ld.param.b64 	%rd28, [sum_reduce_tree_param_7];
+	ld.param.b64 	%rd29, [sum_reduce_tree_param_8];
+	ld.param.b64 	%rd30, [sum_reduce_tree_param_9];
+	ld.param.b64 	%rd31, [sum_reduce_tree_param_10];
+	ld.param.b64 	%rd32, [sum_reduce_tree_param_11];
+	ld.param.b64 	%rd33, [sum_reduce_tree_param_12];
+	cvta.to.global.u64 	%rd34, %rd27;
+	cvta.to.global.u64 	%rd7, %rd33;
+	mov.u32 	%r5, %tid.x;
+	cvt.u64.u32 	%rd8, %r5;
+	mov.u32 	%r6, %ctaid.x;
+	mov.u32 	%r7, %ntid.x;
+	mul.wide.u32 	%rd35, %r6, %r7;
+	add.s64 	%rd9, %rd35, %rd8;
+	mov.u32 	%r8, %nctaid.x;
+	mul.wide.u32 	%rd10, %r8, %r7;
+	{ // callseq 0, 0
+	.param .b64 	param0;
+	st.param.b64 	[param0], %rd34;
+	.param .b64 	param1;
+	st.param.b64 	[param1], %rd28;
+	.param .b64 	param2;
+	st.param.b64 	[param2], %rd29;
+	.param .b64 	param3;
+	st.param.b64 	[param3], %rd30;
+	.param .b64 	param4;
+	st.param.b64 	[param4], %rd31;
+	.param .b64 	param5;
+	st.param.b64 	[param5], %rd32;
+	.param .b64 	retval0;
+	call.uni (retval0), length__tensor_float_1_global_compact_last, (param0, param1, param2, param3, param4, param5);
+	ld.param.b64 	%rd36, [retval0];
+	} // callseq 0
+	shl.b64 	%rd37, %rd9, 2;
+	add.s64 	%rd76, %rd34, %rd37;
+	shl.b64 	%rd13, %rd10, 2;
+	mov.b64 	%rd77, 0;
+	mov.b32 	%r15, 0f00000000;
+	bra.uni 	$L__BB43_1;
+$L__BB43_4:                             // %ifcont
+                                        //   in Loop: Header=BB43_1 Depth=1
+	add.s64 	%rd77, %rd77, %rd10;
+	add.s64 	%rd76, %rd76, %rd13;
+$L__BB43_1:                             // %dt_check
                                         // =>This Inner Loop Header: Depth=1
-	setp.ge.u64 	%p2, %rd86, %rd16;
-	@%p2 bra 	$L__BB43_8;
-// %bb.5:                               // %dt_body
-                                        //   in Loop: Header=BB43_4 Depth=1
-	add.u64 	%rd81, %SPL, 0;
-	shr.u64 	%rd82, %rd84, 32;
-	st.local.b32 	[%rd81+4], %rd82;
-	st.local.b32 	[%rd81], %rd84;
-	setp.lt.u64 	%p6, %rd84, %rd41;
-	@%p6 bra 	$L__BB43_6;
-	bra.uni 	$L__BB43_7;
-$L__BB43_6:                             // %then
-                                        //   in Loop: Header=BB43_4 Depth=1
-	ld.global.b32 	%r17, [%rd85];
-	add.rn.f32 	%r18, %r18, %r17;
-	bra.uni 	$L__BB43_7;
-$L__BB43_8:                             // %dt_exit
-	add.u64 	%rd22, %SPL, 8;
-	st.local.b64 	[%rd22+40], %rd31;
-	st.local.b64 	[%rd22+8], %rd2;
-	st.local.b64 	[%rd22], %rd1;
-	st.local.b64 	[%rd22+16], %rd3;
-	st.local.b64 	[%rd22+24], %rd4;
-	st.local.b64 	[%rd22+32], %rd5;
-	add.u64 	%rd23, %SPL, 56;
-	st.local.b32 	[%rd23+4], 0;
-	st.local.b32 	[%rd23], 128;
-	ld.local.b64 	%rd48, [%rd22];
-	shl.b64 	%rd24, %rd9, 2;
-	add.s64 	%rd49, %rd48, %rd24;
-	st.shared.b32 	[%rd49], %r18;
-	add.u64 	%rd25, %SPL, 64;
-	st.local.b32 	[%rd25+4], 0;
-	st.local.b32 	[%rd25], 0;
-	bra.uni 	$L__BB43_9;
-$L__BB43_12:                            // %ifcont75
-                                        //   in Loop: Header=BB43_9 Depth=1
-	ld.local.b32 	%rd66, [%rd23];
-	ld.local.b32 	%rd67, [%rd23+4];
+	setp.ge.u64 	%p1, %rd77, %rd36;
+	@%p1 bra 	$L__BB43_5;
+// %bb.2:                               // %dt_body
+                                        //   in Loop: Header=BB43_1 Depth=1
+	add.s64 	%rd72, %rd9, %rd77;
+	add.u64 	%rd74, %SPL, 0;
+	st.local.b32 	[%rd74], %rd72;
+	shr.u64 	%rd75, %rd72, 32;
+	st.local.b32 	[%rd74+4], %rd75;
+	setp.lt.u64 	%p5, %rd72, %rd36;
+	@%p5 bra 	$L__BB43_3;
+	bra.uni 	$L__BB43_4;
+$L__BB43_3:                             // %then
+                                        //   in Loop: Header=BB43_1 Depth=1
+	ld.global.b32 	%r14, [%rd76];
+	add.rn.f32 	%r15, %r15, %r14;
+	bra.uni 	$L__BB43_4;
+$L__BB43_5:                             // %dt_exit
+	add.u64 	%rd16, %SPL, 8;
+	st.local.b64 	[%rd16+40], %rd24;
+	st.local.b64 	[%rd16+8], %rd2;
+	st.local.b64 	[%rd16], %rd1;
+	st.local.b64 	[%rd16+16], %rd3;
+	st.local.b64 	[%rd16+24], %rd4;
+	st.local.b64 	[%rd16+32], %rd5;
+	add.u64 	%rd17, %SPL, 56;
+	st.local.b32 	[%rd17+4], 0;
+	st.local.b32 	[%rd17], 128;
+	ld.local.b64 	%rd40, [%rd16];
+	shl.b64 	%rd18, %rd8, 2;
+	add.s64 	%rd41, %rd40, %rd18;
+	st.shared.b32 	[%rd41], %r15;
+	add.u64 	%rd19, %SPL, 64;
+	st.local.b32 	[%rd19+4], 0;
+	st.local.b32 	[%rd19], 0;
+	bra.uni 	$L__BB43_6;
+$L__BB43_9:                             // %ifcont71
+                                        //   in Loop: Header=BB43_6 Depth=1
+	ld.local.b32 	%rd58, [%rd17];
+	ld.local.b32 	%rd59, [%rd17+4];
+	shl.b64 	%rd60, %rd59, 32;
+	or.b64 	%rd61, %rd60, %rd58;
+	bfe.u64 	%rd62, %rd59, 31, 1;
+	add.s64 	%rd63, %rd61, %rd62;
+	shr.s64 	%rd64, %rd63, 1;
+	st.local.b32 	[%rd17], %rd64;
+	shr.u64 	%rd65, %rd64, 32;
+	st.local.b32 	[%rd17+4], %rd65;
+	ld.local.b32 	%rd66, [%rd19];
+	ld.local.b32 	%rd67, [%rd19+4];
 	shl.b64 	%rd68, %rd67, 32;
 	or.b64 	%rd69, %rd68, %rd66;
-	bfe.u64 	%rd70, %rd67, 31, 1;
-	add.s64 	%rd71, %rd69, %rd70;
-	shr.s64 	%rd72, %rd71, 1;
-	st.local.b32 	[%rd23], %rd72;
-	shr.u64 	%rd73, %rd72, 32;
-	st.local.b32 	[%rd23+4], %rd73;
-	ld.local.b32 	%rd74, [%rd25];
-	ld.local.b32 	%rd75, [%rd25+4];
-	shl.b64 	%rd76, %rd75, 32;
-	or.b64 	%rd77, %rd76, %rd74;
-	add.s64 	%rd78, %rd77, 1;
-	st.local.b32 	[%rd25], %rd78;
-	shr.u64 	%rd79, %rd78, 32;
-	st.local.b32 	[%rd25+4], %rd79;
-$L__BB43_9:                             // %dt_check63
+	add.s64 	%rd70, %rd69, 1;
+	st.local.b32 	[%rd19], %rd70;
+	shr.u64 	%rd71, %rd70, 32;
+	st.local.b32 	[%rd19+4], %rd71;
+$L__BB43_6:                             // %dt_check59
                                         // =>This Inner Loop Header: Depth=1
-	ld.local.b32 	%rd51, [%rd25];
-	ld.local.b32 	%rd52, [%rd25+4];
-	shl.b64 	%rd53, %rd52, 32;
-	or.b64 	%rd54, %rd53, %rd51;
-	setp.gt.u64 	%p3, %rd54, 7;
-	@%p3 bra 	$L__BB43_13;
-// %bb.10:                              // %dt_body64
-                                        //   in Loop: Header=BB43_9 Depth=1
+	ld.local.b32 	%rd43, [%rd19];
+	ld.local.b32 	%rd44, [%rd19+4];
+	shl.b64 	%rd45, %rd44, 32;
+	or.b64 	%rd46, %rd45, %rd43;
+	setp.gt.u64 	%p2, %rd46, 7;
+	@%p2 bra 	$L__BB43_10;
+// %bb.7:                               // %dt_body60
+                                        //   in Loop: Header=BB43_6 Depth=1
 	bar.sync 	0;
-	ld.local.b32 	%rd58, [%rd23];
-	ld.local.b32 	%rd59, [%rd23+4];
-	shl.b64 	%rd60, %rd59, 32;
-	or.b64 	%rd29, %rd60, %rd58;
-	setp.lt.u64 	%p5, %rd9, %rd29;
-	@%p5 bra 	$L__BB43_11;
-	bra.uni 	$L__BB43_12;
-$L__BB43_11:                            // %then73
-                                        //   in Loop: Header=BB43_9 Depth=1
-	ld.local.b64 	%rd61, [%rd22];
-	add.s64 	%rd62, %rd61, %rd24;
-	ld.shared.b32 	%r14, [%rd62];
-	add.s64 	%rd63, %rd9, %rd29;
-	shl.b64 	%rd64, %rd63, 2;
-	add.s64 	%rd65, %rd61, %rd64;
-	ld.shared.b32 	%r15, [%rd65];
-	add.rn.f32 	%r16, %r14, %r15;
-	st.shared.b32 	[%rd62], %r16;
-	bra.uni 	$L__BB43_12;
-$L__BB43_13:                            // %dt_exit65
-	setp.eq.b64 	%p4, %rd9, 0;
-	add.u64 	%rd30, %SPL, 72;
-	@%p4 bra 	$L__BB43_14;
-	bra.uni 	$L__BB43_15;
-$L__BB43_14:                            // %then108
-	add.s64 	%rd56, %rd8, %rd32;
-	ld.local.b64 	%rd57, [%rd22];
+	ld.local.b32 	%rd50, [%rd17];
+	ld.local.b32 	%rd51, [%rd17+4];
+	shl.b64 	%rd52, %rd51, 32;
+	or.b64 	%rd22, %rd52, %rd50;
+	setp.lt.u64 	%p4, %rd8, %rd22;
+	@%p4 bra 	$L__BB43_8;
+	bra.uni 	$L__BB43_9;
+$L__BB43_8:                             // %then69
+                                        //   in Loop: Header=BB43_6 Depth=1
+	ld.local.b64 	%rd53, [%rd16];
+	add.s64 	%rd54, %rd53, %rd18;
+	ld.shared.b32 	%r11, [%rd54];
+	add.s64 	%rd55, %rd8, %rd22;
+	shl.b64 	%rd56, %rd55, 2;
+	add.s64 	%rd57, %rd53, %rd56;
 	ld.shared.b32 	%r12, [%rd57];
-	atom.global.add.f32 	%r13, [%rd56], %r12;
-	st.local.b32 	[%rd30], %r13;
-$L__BB43_15:                            // %ifcont110
+	add.rn.f32 	%r13, %r11, %r12;
+	st.shared.b32 	[%rd54], %r13;
+	bra.uni 	$L__BB43_9;
+$L__BB43_10:                            // %dt_exit61
+	setp.eq.b64 	%p3, %rd8, 0;
+	add.u64 	%rd23, %SPL, 72;
+	@%p3 bra 	$L__BB43_11;
+	bra.uni 	$L__BB43_12;
+$L__BB43_11:                            // %then104
+	add.s64 	%rd48, %rd7, %rd25;
+	ld.local.b64 	%rd49, [%rd16];
+	ld.shared.b32 	%r9, [%rd49];
+	atom.global.add.f32 	%r10, [%rd48], %r9;
+	st.local.b32 	[%rd23], %r10;
+$L__BB43_12:                            // %ifcont106
 	ret;
                                         // -- End function
 }

@@ -4524,8 +4524,10 @@ that don't scale with thread count:
   barriers cost the same regardless of how much work each thread does.
 
 For reduction-pattern kernels (those ending in a global atomic), the sweet
-spot is often `:occupancy 0.5` or even lower. Bandwidth-bound kernels without
+spot is often `:occupancy 0.2` or even lower. Bandwidth-bound kernels without
 atomics generally benefit from the default `1.0`.
+
+Remember, these declarations influence any hoisting code that Crisp outputs (`--hoist=L0` or `--hoist=CUDA`), the kernel itself is NOT effected in any way. 
 
 ```
 ;; -- sum_reduce_tree --
