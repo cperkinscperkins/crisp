@@ -22,7 +22,7 @@
 (def-kernel sum_reduce_tree (input &out result)
   (declare #'(in-vec &out out-cell => nil))
   (declare (forward-only))
-  (declare (global-size :derive-from input :strategy :strided)
+  (declare (global-size :derive-from input :strategy :strided :occupancy 0.5)
            (local-size  :set-to 256))
 
   (let ((gid     (to-ulong (get-global-id 0)))

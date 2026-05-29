@@ -80,22 +80,31 @@
          (raw-derive-from (when disp-rest (getf disp-rest :derive-from)))
          (derive-from-is-tensor (%l0-derive-from-is-tensor-p raw-derive-from))
          (derive-from (%l0-normalize-derive-from raw-derive-from))
-         (tile-shape (when disp-rest (getf disp-rest :tile-shape))))
+         (tile-shape (when disp-rest (getf disp-rest :tile-shape)))
+         ;; :occupancy <ratio> — manual derating for :strided (default 1.0)
+         (occupancy  (when disp-rest (getf disp-rest :occupancy))))
 
     (when is-strided
-      (format stream "    // Strategy: :strided — max occupancy~%")
-      (format stream "    ze_device_compute_properties_t _computeProps = { ZE_STRUCTURE_TYPE_DEVICE_COMPUTE_PROPERTIES };~%")
-      (format stream "    zeDeviceGetComputeProperties(device, &_computeProps);~%")
-      (format stream "    uint32_t _hw_threads = _computeProps.numSubslices * _computeProps.numEUsPerSubslice * _computeProps.numThreadsPerEU;~%")
-      (format stream "    // Refine with kernel resource footprint (privateMemSize, spillMemSize)~%")
-      (format stream "    ze_kernel_properties_t _kernelProps = { ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES };~%")
-      (format stream "    zeKernelGetProperties(kernel, &_kernelProps);~%")
-      (format stream "    // Derate occupancy by 2x if kernel spilled to private memory~%")
-      (format stream "    if (_kernelProps.spillMemSize > 0) { _hw_threads /= 2; }~%")
-      (when derive-from-is-tensor
-        (format stream "    // :derive-from tensor '~a' (length=~a) used for check-thread-bounds; grid uses occupancy~%"
-                (first derive-from) (%l0-tensor-length-cpp-var (first derive-from))))
-      (format stream "~%"))
+      (let ((ratio (cond ((null occupancy) 1.0)
+                         ((numberp occupancy) (float occupancy))
+                         (t 1.0))))
+        (format stream "    // Strategy: :strided — max occupancy~%")
+        (format stream "    ze_device_compute_properties_t _computeProps = { ZE_STRUCTURE_TYPE_DEVICE_COMPUTE_PROPERTIES };~%")
+        (format stream "    zeDeviceGetComputeProperties(device, &_computeProps);~%")
+        (format stream "    uint32_t _hw_threads = _computeProps.numSubslices * _computeProps.numEUsPerSubslice * _computeProps.numThreadsPerEU;~%")
+        (format stream "    // Refine with kernel resource footprint (privateMemSize, spillMemSize)~%")
+        (format stream "    ze_kernel_properties_t _kernelProps = { ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES };~%")
+        (format stream "    zeKernelGetProperties(kernel, &_kernelProps);~%")
+        (format stream "    // Derate occupancy by 2x if kernel spilled to private memory~%")
+        (format stream "    if (_kernelProps.spillMemSize > 0) { _hw_threads /= 2; }~%")
+        (unless (= ratio 1.0)
+          (format stream "    // :occupancy ~a — user-requested derate from max~%" occupancy)
+          (format stream "    _hw_threads = (uint32_t)(_hw_threads * ~f);~%" ratio)
+          (format stream "    if (_hw_threads < 1) _hw_threads = 1;~%"))
+        (when derive-from-is-tensor
+          (format stream "    // :derive-from tensor '~a' (length=~a) used for check-thread-bounds; grid uses occupancy~%"
+                  (first derive-from) (%l0-tensor-length-cpp-var (first derive-from))))
+        (format stream "~%")))
 
     (when is-interleaved
       (format stream "    // Strategy: :interleaved not yet implemented — using default dispatch~%"))

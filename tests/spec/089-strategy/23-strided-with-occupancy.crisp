@@ -1,0 +1,21 @@
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; TEST-HOIST[CUDA]: validate-cuda-strategy-content
+;; STRATEGY-EXPECT: :occupancy 0.5
+;; STRATEGY-EXPECT: user-requested derate
+;; SKIP-WITH[--differentiate]: "forward-only"
+;;
+;; :strategy :strided + :occupancy <ratio>
+;;   Hoist multiplies the max-occupancy grid count by ratio.
+;;   Useful for kernels where max-occupancy isn't optimal
+;;   (e.g. atomic-heavy reductions where atomic contention
+;;   becomes a bottleneck when too many workgroups are launched).
+
+(def-type in-vec-t  (vector float :address-space :global :align :compact))
+(def-type out-cell-t (cell float :address-space :global))
+
+(def-kernel strided_derated (input &out result)
+  (declare #'(in-vec-t &out out-cell-t => nil))
+  (declare (forward-only))
+  (declare (global-size :derive-from input :strategy :strided :occupancy 0.5)
+           (local-size  :set-to 256))
+  (set! (~ result) 0.0f))

@@ -24,12 +24,13 @@
 set -euo pipefail
 
 # --- Parse arguments ---
-HOST="${1:?Usage: $0 <host> <port> [branch] [ssh-key] [sizes] [iters]}"
-PORT="${2:?Usage: $0 <host> <port> [branch] [ssh-key] [sizes] [iters]}"
+HOST="${1:?Usage: $0 <host> <port> [branch] [ssh-key] [sizes] [iters] [crisp-tree-occupancy]}"
+PORT="${2:?Usage: $0 <host> <port> [branch] [ssh-key] [sizes] [iters] [crisp-tree-occupancy]}"
 BRANCH="${3:-main}"
 SSH_KEY="${4:-$HOME/.ssh/id_ed25519}"
 SIZES="${5:-1K,100K,1M}"
 ITERS="${6:-100}"
+CRISP_TREE_OCCUPANCY="${7:-1.0}"
 
 REPO_URL="https://github.com/cperkinscperkins/crisp.git"
 WORK_DIR="/root/crisp"
@@ -156,7 +157,7 @@ CUDA_DIR=\$(ls -d /usr/local/cuda-*/bin 2>/dev/null | sort -V | tail -1)
 [ -n "\$CUDA_DIR" ] && export PATH="\${CUDA_DIR}:\$PATH"
 export CRISP_USE_SYSTEM_TOOLS=true
 
-python3 benchmarks/reduction/run.py --sizes=${SIZES} --iters=${ITERS}
+python3 benchmarks/reduction/run.py --sizes=${SIZES} --iters=${ITERS} --crisp-tree-occupancy=${CRISP_TREE_OCCUPANCY}
 BENCH
 
 echo ""

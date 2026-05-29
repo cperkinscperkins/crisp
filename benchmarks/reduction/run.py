@@ -125,9 +125,12 @@ def build_crisp_tree(crisp_dir):
         "bench_harness_tree.cu", "sum_reduce_crisp_tree")
 
 
-def run_benchmark(binary, N, warmup, iterations, impl_name):
-    """Run a benchmark binary and parse its JSON output."""
+def run_benchmark(binary, N, warmup, iterations, impl_name, extra_args=None):
+    """Run a benchmark binary and parse its JSON output.
+    extra_args: optional list of extra positional args appended after iterations."""
     cmd = [binary, str(N), str(warmup), str(iterations)]
+    if extra_args:
+        cmd.extend(str(a) for a in extra_args)
     print(f"  Running: {impl_name} N={N} ... ", end="", flush=True)
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
@@ -225,6 +228,8 @@ def main():
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument("--impl", default="all",
                         help="Implementations to run: all, cuda, cub, crisp")
+    parser.add_argument("--crisp-tree-occupancy", type=float, default=1.0,
+                        help="Occupancy ratio (0.0..1.0) for crisp_tree grid sizing. Default 1.0 (max).")
     args = parser.parse_args()
 
     sizes = []
@@ -282,7 +287,10 @@ def main():
 
     for N in sizes:
         for impl_name, binary in binaries.items():
-            result = run_benchmark(binary, N, args.warmup, args.iters, impl_name)
+            extra = None
+            if impl_name == "crisp_tree":
+                extra = [args.crisp_tree_occupancy]
+            result = run_benchmark(binary, N, args.warmup, args.iters, impl_name, extra_args=extra)
             if result:
                 all_results.append(result)
                 # Save individual result

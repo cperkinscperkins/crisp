@@ -86,14 +86,19 @@
          (is-one-thread-per (or (and strat-name (string-equal strat-name "ONE-THREAD-PER"))
                                 ;; default when :derive-from is present without explicit strategy
                                 (and (null strat-name) derive-from)))
-         (tile-shape  (when disp-rest (getf disp-rest :tile-shape))))
+         (tile-shape  (when disp-rest (getf disp-rest :tile-shape)))
+         ;; :occupancy <ratio> — manual derating for :strided (default 1.0)
+         (occupancy   (when disp-rest (getf disp-rest :occupancy))))
 
     (format stream "    // Launch kernel~%")
 
     (cond
-      ;; --- :strategy :strided — max occupancy ---
+      ;; --- :strategy :strided — max occupancy (optionally derated by :occupancy) ---
       (is-strided
-       (let ((block-size (* block-x (max 1 block-y))))
+       (let ((block-size (* block-x (max 1 block-y)))
+             (ratio (cond ((null occupancy) 1.0)
+                          ((numberp occupancy) (float occupancy))
+                          (t 1.0))))
          (format stream "    // Strategy: :strided — max occupancy via cuOccupancyMaxActiveBlocksPerMultiprocessor~%")
          (when derive-from-is-tensor
            (format stream "    // derive-from tensor '~a' (length=~a) used for check-thread-bounds; grid uses occupancy~%"
@@ -103,7 +108,12 @@
                  block-size shared-bytes)
          (format stream "    int _numSMs;~%")
          (format stream "    CUDA_CHECK(cuDeviceGetAttribute(&_numSMs, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));~%")
-         (format stream "    unsigned int gridX = (unsigned int)(_blocksPerSM * _numSMs);~%")
+         (if (= ratio 1.0)
+             (format stream "    unsigned int gridX = (unsigned int)(_blocksPerSM * _numSMs);~%")
+             (progn
+               (format stream "    // :occupancy ~a — user-requested derate from max~%" occupancy)
+               (format stream "    unsigned int gridX = (unsigned int)((_blocksPerSM * _numSMs) * ~f);~%" ratio)
+               (format stream "    if (gridX < 1) gridX = 1;~%")))
          (format stream "    unsigned int gridY = 1, gridZ = 1;~%")))
 
       ;; --- :set-to integer — fixed grid ---
