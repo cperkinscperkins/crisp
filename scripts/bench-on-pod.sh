@@ -30,7 +30,9 @@ BRANCH="${3:-main}"
 SSH_KEY="${4:-$HOME/.ssh/id_ed25519}"
 SIZES="${5:-1K,100K,1M}"
 ITERS="${6:-100}"
-CRISP_TREE_OCCUPANCY="${7:-1.0}"
+## crisp-tree occupancy: when empty, run.py reads :occupancy from the .crisp file
+## (the single source of truth).  Provide a value to override for ad-hoc sweeps.
+CRISP_TREE_OCCUPANCY="${7:-}"
 
 REPO_URL="https://github.com/cperkinscperkins/crisp.git"
 WORK_DIR="/root/crisp"
@@ -126,6 +128,7 @@ pod_run "bash -s" <<CLONE
 set -e
 if [ -d ${WORK_DIR}/.git ]; then
     cd ${WORK_DIR}
+    git stash
     git fetch origin
     git checkout ${BRANCH}
     git pull origin ${BRANCH} || true
@@ -157,7 +160,13 @@ CUDA_DIR=\$(ls -d /usr/local/cuda-*/bin 2>/dev/null | sort -V | tail -1)
 [ -n "\$CUDA_DIR" ] && export PATH="\${CUDA_DIR}:\$PATH"
 export CRISP_USE_SYSTEM_TOOLS=true
 
-python3 benchmarks/reduction/run.py --sizes=${SIZES} --iters=${ITERS} --crisp-tree-occupancy=${CRISP_TREE_OCCUPANCY}
+## Build run.py invocation: only pass --crisp-tree-occupancy when overriding.
+## Empty value -> let run.py read it from the .crisp file (avoids stale defaults).
+PY_ARGS="--sizes=${SIZES} --iters=${ITERS}"
+if [ -n "${CRISP_TREE_OCCUPANCY}" ]; then
+    PY_ARGS="\${PY_ARGS} --crisp-tree-occupancy=${CRISP_TREE_OCCUPANCY}"
+fi
+python3 benchmarks/reduction/run.py \${PY_ARGS}
 BENCH
 
 echo ""

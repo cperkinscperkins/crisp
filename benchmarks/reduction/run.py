@@ -18,10 +18,40 @@ Output: JSON files in ../results/ and a summary table to stdout.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+
+def extract_occupancy_from_crisp(crisp_file):
+    """Parse a .crisp file for :occupancy <ratio> in a global-size declaration.
+    Returns the float value, or 1.0 if not found.
+
+    NOTE: This is a regex on the source file — brittle in the abstract.
+    We do it this way because:
+
+      - The bench harness uses its OWN occupancy logic (not the auto-generated
+        hoist .cu), so it needs the value at launch time.
+      - The proper-but-heavier alternative is `--metadata` + s-expression parsing
+        of the .metacrisp file via sbcl-from-python.  Overkill for one number.
+      - The .crisp dispatch syntax is documented and stable (see
+        docs/chapters/14_control_flow/07_hoisting_and_enqueing_a_kernel.md).
+
+    If you change the dispatch declaration syntax, update this regex too.
+    The pattern is intentionally tolerant of whitespace and accepts plain
+    decimals (no scientific notation, which the spec doesn't allow anyway).
+    """
+    pattern = re.compile(r':occupancy\s+([0-9]+(?:\.[0-9]+)?)')
+    try:
+        content = Path(crisp_file).read_text()
+    except OSError:
+        return 1.0
+    m = pattern.search(content)
+    if m:
+        return float(m.group(1))
+    return 1.0
 
 SCRIPT_DIR = Path(__file__).parent
 RESULTS_DIR = SCRIPT_DIR.parent / "results"
@@ -228,8 +258,9 @@ def main():
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument("--impl", default="all",
                         help="Implementations to run: all, cuda, cub, crisp")
-    parser.add_argument("--crisp-tree-occupancy", type=float, default=1.0,
-                        help="Occupancy ratio (0.0..1.0) for crisp_tree grid sizing. Default 1.0 (max).")
+    parser.add_argument("--crisp-tree-occupancy", type=float, default=None,
+                        help="Occupancy ratio (0.0..1.0) for crisp_tree grid sizing. "
+                             "Default: read :occupancy from the .crisp file (falls back to 1.0).")
     args = parser.parse_args()
 
     sizes = []
@@ -285,11 +316,26 @@ def main():
     print("\n=== Benchmark phase ===")
     all_results = []
 
+    # Resolve crisp_tree occupancy:
+    #   CLI flag overrides; otherwise read from the .crisp file.
+    # This keeps a single source of truth (the .crisp file's :occupancy
+    # declaration) while still allowing ad-hoc sweeps from the command line.
+    if "crisp_tree" in binaries:
+        if args.crisp_tree_occupancy is not None:
+            crisp_tree_occ = args.crisp_tree_occupancy
+            print(f"\ncrisp_tree occupancy: {crisp_tree_occ} (from --crisp-tree-occupancy CLI flag)")
+        else:
+            crisp_tree_occ = extract_occupancy_from_crisp(
+                SCRIPT_DIR / "crisp" / "sum-reduce-tree.crisp")
+            print(f"\ncrisp_tree occupancy: {crisp_tree_occ} (parsed from sum-reduce-tree.crisp)")
+    else:
+        crisp_tree_occ = 1.0
+
     for N in sizes:
         for impl_name, binary in binaries.items():
             extra = None
             if impl_name == "crisp_tree":
-                extra = [args.crisp_tree_occupancy]
+                extra = [crisp_tree_occ]
             result = run_benchmark(binary, N, args.warmup, args.iters, impl_name, extra_args=extra)
             if result:
                 all_results.append(result)
