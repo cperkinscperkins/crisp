@@ -46,9 +46,9 @@ Target #5: Our first Crisp Expression.
 
 Target #6 - LLVM IR
 - [x] walk DATA STUCT, gen LLVM IR
-- [ ] compile
-- [ ] test? golden string or using ORC?
-- [ ] Make a new "in-progress" doc and check "[ ] minimal def-function" ?
+- [x] compile
+- [x] test? golden string or using ORC?
+- [x] Make a new "in-progress" doc and check "[ ] minimal def-function" ?
 
 Transpiling is no longer a target.  Targeting LLVM-IR is general purpose and powerful
 enough for our needs.  Plus, we add Dwarf symbols from the beginning, so that leaves
@@ -69,7 +69,7 @@ Target #9 - Deploy Crisp on QuickLisp
 
 Target #10 - Hoisting
 - [x] Level Zero Backend C++ Generation
-
+- [x] CUDA Backend
 
 Target #11 - C API for Compilation
 
@@ -150,7 +150,7 @@ ERRORS
 LOOSE PRIORITIES
 - [x] Linux?
 - [x] DWARF
-- [ ] def-grid-function
+- [x] def-grid-function
 - [x] def-kernel - case-sensitive
 - [ ] Hoisting
 - [x] E2E Test?
@@ -168,7 +168,7 @@ LOOSE PRIORITIES
 - [x] &out
 - [x] defmacro
 - [ ] variadic + < = etc
-- [ ] vectors
+- [x] vectors
 - [x] def-struct
 - [x] cond  ( we can make all other divergent control flows from that: when, if, unless)
 - [ ] bool true false.  ( macros can still use T/nil ? )
@@ -199,8 +199,9 @@ SHORT TERM PLAN
 
 - [x] defmacro - Get it in now. Shouldn't be difficult, paves way to "crisp in crisp"
 - [x] conditionals - LLVM Blocks and branches. Will be needed for "crisp-in-crisp" vectors etc.
-- - [ ] anaphoric support
-- - [ ] star `*` variants
+- - [/] anaphoric support
+- - [ ] star `*` variants - uniform across warp
+- - [x] plus `+` variants - compile time calculable
 - [x] def-struct - :std140 , property accessors, ADVANCED member lookup, setter and getter?  A BIG lift.
 - [x] compile time assert mightn't be the worst idea. Pretty handy. 
 - [x] refactor? compiler.lisp is nearly 2000 lines. maybe analysis.lisp and compiler.lisp ?
@@ -240,7 +241,7 @@ SHORT TERM PLAN
 - [x] we aren't testing explosion of def-record, etc.  The metadata support will give us that opportutnity.
      otherwise, need to either --ir-target=llvm-ir or something more complicated for the validators
 - [x] review the validators in the 028-metadata directory.  I have a feeling they are only cursory. (probably just listp or something)
-- [ ] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
+- [x] Storage Handles. Or at least a proper cell. In theory, this could be the first 'crisp-in-crisp' construct.
 - - [x] Storage Properties  (cannot be set)
 - - - [x] address-space
 - - - [x] access
@@ -264,19 +265,19 @@ SHORT TERM PLAN
 - - - [x] compile errors if conflict.  
 - - [x] type constructors for all def-struct / def-record with :c-t props
         This _might_ be tested already, check.
-- - [ ] Tensor Properties ( can be set)
-- - - [ ] length~ ( number of elements)
-- - - [ ] parent~
-- - - [ ] alignment~ <-- compile time.
-- - - [ ] offset~
-- - - [ ] num-dims~   <-- compile time. 
-- - - [ ] strides~
-- - - [ ] extents~
-- - - [ ] element-type~
-- - [ ] Pass Through
+- - [x] Tensor Properties ( can be set)
+- - - [x] length~ ( number of elements)
+- - - [x] parent~
+- - - [x] alignment~ <-- compile time.
+- - - [x] offset~
+- - - [x] num-dims~   <-- compile time. 
+- - - [x] strides~
+- - - [x] extents~
+- - - [x] element-type~
+- - [x] Pass Through
 - - - (access~ someCellOrTensor)
 - - - (address-space~ someCellOrTensor)
-- - [ ] built atop def-record 
+- - [x] built atop def-record 
 - [x] def-kernel-exact 
 - [x] def-kernel  <-- 
 - [ ] expand variadics (+, * etc).  Maybe up to 5 or 7?  (+ a b c d e)
@@ -345,11 +346,13 @@ Kernels
 - [x] move tools somewhere and make them part of "release". Will need to scrub LFS entries.
 - [x] refactor single pass vs. multi.  We are getting too much duplication
       constant source of bugs. At minimum, do an evaluation. 
-- [ ] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
+- [x] re-examine def-rec-vec. Maybe just general "rec-vec" type? No need to be defining new types
+      became fixed array, only usable in structs and records. no "def-"
 - [x] def-derived-type => expand specification for numerics ("contagion"). 
 - [/] def-record : probably should decide and document that these CANNOT appear on the 
       kernel boundary. Obviously, we do for Storage Handles. But no general case marshalling.
       If a user WANTS to pass them individually and use marshall-XXXX they are welcome to do so.
+      They CAN and ARE supported at kernel boundary.
 - [x] set-derived: probably should take TWO structs as args. Disallow "derived" structs.
       Should it support def-record? Probably not. 
 
@@ -550,7 +553,7 @@ Tensors Vectors and Matrices
 - - [x] matrix helpers
 - - [ ] tile?
 - - [ ] no-sroa ?
-- :contiguous-term  As a compile-time property of tensor? <-- would require some refactor
+- [x] :contiguous-term  As a compile-time property of tensor? <-- would require some refactor
                    Is optional. Defaults to :last 
    Matrix: 
    :contiguous-term :first  <-- col major matrix.  
@@ -646,11 +649,16 @@ Technical Debt
 - - markup ideal_001.md with what is Implemented, or partially implemented. (could be Emoji or CSS)
 - - MkDocs produces TOC on side, with Implemtened.
 - - retire realized_001.md
+- - remove outdated "TOC" section from ideal_001.md
 - [ ] refactor overly long functions
 - [ ] refactor build - Warning unused var.
 - [ ] refactor build - reverse dependency order for most .lisp. ( warning undefined function)
 - other refactoring?
 - [ ] review previous "technical debt"
+- [ ] 089 :derive-from support looks incomplete. It should support TENSORS and result
+      in the number of threads for size of the tensor. BUT if :strided then calc max number of thread
+      available for the hardware, and use that (if less than the size of the tensor).
+- [ ] also new kernel in sum-reduce-tree.crisp crashes compiler when --hoist=L0
 
 PERFORMANCE TESTING
 ===================
@@ -660,7 +668,7 @@ scp ~/Documents/crisp-man/tests/spec/113-async-load-tile-store-tile/01-request-l
 scp C:\Users\cperk\Documents\crisp-man\tests\spec\113-async-load-tile-store-tile\01-request-load-tile-coords-1d.ptx root@213.173.108.8
 scp C:\Users\cperk\Documents\crisp-man\scripts\verify-ptx-113-01.py root@213.173.108.8
 
-- leverage RunPod as a GitHub Actions target.  Maybe only for the hoisting tests? Separate .yml likely.
+- [/] leverage RunPod as a GitHub Actions target.  Maybe only for the hoisting tests? Separate .yml likely.
 - choose some "realizable" algorithms and get them for a series of platforms
  - CUTLASS
  - Cuda
@@ -670,12 +678,15 @@ scp C:\Users\cperk\Documents\crisp-man\scripts\verify-ptx-113-01.py root@213.173
 - Nvidia compare: CUTLASS | Cuda | Crisp
 - Intel compare: SYCL-TLA | SYCL | Crisp
 - Algorithms
-- - SAXPY
-- - Tiled GEMM
-- - Add / Sum Reduction
+- - [ ] SAXPY
+- - [ ] Tiled GEMM
+- - [x] Add / Sum Reduction
 - More Algorithms
 - - Bitonic Sort
 - - Radix Sort ( but might be best with PGAS ?)
+
+- [ ] CUDA_CHECK is in Crisp .cu harness, but not CUDA or CUB. Wall time impact?
+- [ ] compile time comparison maybe not fair. crisp compile is device only. others are device + host.
 
 These initial "first generation" algorithms might not be expressible on CUTLASS/SYCL-TLA
 
@@ -721,16 +732,15 @@ LANGUAGE CHANGES
 - [x] Shore up set! and atomic-ops
 - - (atomic-inc! someVar)                 <--
 - - (atomic-inc! someTensor (x y z ...))
-- - (atomic-inc! someSingleRes)           <--   hmmm. atomic-inc-result! ?
+- - (atomic-inc! someCell)           
 - - atomic-set! would just be atomic-xchg!  .  
-- - (atomic-set-result! someSingleRes val)   
+- - (atomic-set! someCell val)   
 - - (atomic-set! someTensor (x y z ...) val)
 - - (atomic-set! someVar val)  
 - - (set! someVar someVal)
 - - (set! (~ someTensor x y z)  val) 
 - - (set! (~ someCell) val)  <--  cell doesn't need '0'  
-- - (set-result! someSingleRes val)  ;; Q: should this compile error if :global ?
-                                     ;; A: no. It is totaly valid to (when (= id 0) (set! ...))
+
 
 - [x] suggestion: rename single-result to 'cell'.  (make-cell int :local)
 - [x] use (~ someCell) without 0 to get and set its value.
@@ -860,7 +870,7 @@ Not sure how difficult that would be.
 - - [ ] Prepare Intel OpenCL CPU Runtime to test kernels
 - - [ ] POCL (portable OpenCL) ??
 - - [ ] buy PC w/ GPU and hook up as Self Hosted runner. 
-- [ ] Get logging under control
+- [x] Get logging under control
 - - [x] Log4CL.  Probably the best choice. Mostly "compiles away".   There is also Verbose
 
 - [ ] proper bug tracker?
@@ -875,6 +885,7 @@ Milestones
 - **2026-01-22**: Crisp toolset can now generate (hoist) `.cpp` files for those kernels, and the testing system runs them on actual GPU iron via Level Zero.
 - **2026-04-29** `loop-vector-stride` joins the toolkit, along with def-grid-function, strategy declarations, tensors/vectors/matrices, and more. With this Crisp can now be used FOR REAL to write
 reductions, matrix multiply, stencil operations, convolutions and more. 
+- **2026-05-27**: CUDA hoisting, runpod.io e2e testing AND performance comparisons. Crisp is fastest to compile, by far (order of magnitude).  While not yet fastest, it is breathing down the neck of CUDA and CUB.
 
 
 

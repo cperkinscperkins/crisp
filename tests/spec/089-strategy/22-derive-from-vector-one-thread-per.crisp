@@ -1,0 +1,18 @@
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; TEST-HOIST[CUDA]: validate-cuda-strategy-content
+;; STRATEGY-EXPECT: input_length
+;; SKIP-WITH[--differentiate]: "forward-only"
+;;
+;; :derive-from <tensor> + :strategy :one-thread-per
+;;   Both hoists should size the grid to ceil(input_length / wg-size).
+;;   The generated dispatch code references input_length.
+
+(def-type in-vec-t  (vector float :address-space :global :align :compact))
+(def-type out-cell-t (cell float :address-space :global))
+
+(def-kernel derive_one_thread_per (input &out result)
+  (declare #'(in-vec-t &out out-cell-t => nil))
+  (declare (forward-only))
+  (declare (global-size :derive-from input :strategy :one-thread-per)
+           (local-size  :set-to 256))
+  (set! (~ result) 0.0f))
