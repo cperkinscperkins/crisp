@@ -1,0 +1,19 @@
+;; TEST-HOIST[L0]: validate-l0-strategy-content
+;; TEST-HOIST[CUDA]: validate-cuda-strategy-content
+;; STRATEGY-EXPECT: input_length
+;; STRATEGY-EXPECT: :strided
+;; SKIP-WITH[--differentiate]: "forward-only stride test"
+;;
+;; :derive-from <tensor> + :strategy :strided
+;;   - L0 hoist: emits zeDeviceGetComputeProperties + zeKernelGetProperties for occupancy
+;;   - CUDA hoist: emits cuOccupancyMaxActiveBlocksPerMultiprocessor
+;;   - Both: reference input_length in a comment (for check-thread-bounds documentation)
+
+(def-type in-vec-t  (vector float :address-space :global :align :compact))
+(def-type out-cell-t (cell float :address-space :global))
+
+(def-kernel derive_strided (input &out result)
+  (declare #'(in-vec-t &out out-cell-t => nil))
+  (declare (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (set! (~ result) 0.0f))

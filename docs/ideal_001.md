@@ -4480,7 +4480,9 @@ It can be one of five possible values.
 
 - `:strided` This strategy tells the hoisting code that we are expecting to use a grid stride pattern to walk
 the vector. (Read more at [Looping -- Grid Stride](#looping---grid-stride)). In this case the hoisting code
-will try to size the global work size near the number of threads actually available on the hardware (and not more).
+will try to size the global work size near the number of threads actually available on the hardware for MAXIMUM OCCUPANCY. 
+
+But note that while maximum occupancy results in ideal performance for many workloads, it is not ideal for all workloads. In particular, if atomics are used, then a maximum occupancy stride might result in less work performed per atomic and more net atomic operations performed. Lower occupancy might be better for performance. See [:occupancy](#occupancy) below.
 
 - `:interleaved` This strategy tells the hoisting code that we are expecting this kernels launching to be interleaved
 with a progressive chunked memory transfer. It's a good practice to document expectations further with the `:msg` key.
@@ -4498,6 +4500,43 @@ This declaration should always be used when using the `tile-stride` macro.  See 
 
 
 If the `:strategy` is not provided, then the default assumption is `:one-thread-per`. 
+
+
+#### `:occupancy`
+
+The `:occupancy` key is a manual derating factor for the `:strided` strategy.
+Accepts a number from `0.0` to `1.0` (default `1.0`).
+
+When the hoisting code calculates "near the number of threads actually
+available on the hardware" (via `cuOccupancyMaxActiveBlocksPerMultiprocessor`
+on CUDA or `zeDeviceGetComputeProperties` + `zeKernelGetProperties` on Level
+Zero), it multiplies the result by the `:occupancy` ratio.
+
+Maximum theoretical occupancy is necessary but not
+sufficient for peak performance. Real workloads compete for shared resources
+that don't scale with thread count:
+
+- L2 cache pressure -  more concurrent workgroups thrash the L2.
+- LSU queue depth -  finite per-SM load/store queues saturate.
+- Atomic serialization - kernels ending in `atomic-add!` to global memory
+  serialize at the atomic site. More workgroups = more atomic ops queued.
+- Per-block fixed overhead amortization - shared-memory setup and
+  barriers cost the same regardless of how much work each thread does.
+
+For reduction-pattern kernels (those ending in a global atomic), the sweet
+spot is often `:occupancy 0.2` or even lower. Bandwidth-bound kernels without
+atomics generally benefit from the default `1.0`.
+
+Remember, these declarations influence any hoisting code that Crisp outputs (`--hoist=L0` or `--hoist=CUDA`), the kernel itself is NOT effected in any way. 
+
+```
+;; -- sum_reduce_tree --
+(def-kernel sum_reduce_tree (input &out result)
+  (declare #'(in-vec &out out-cell => nil))
+  (declare (global-size :derive-from input :strategy :strided :occupancy 0.5)
+           (local-size  :set-to 256))
+  ...)
+```
 
 
 #### :tile-shape

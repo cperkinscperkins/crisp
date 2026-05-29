@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-28T04:22:55.297410Z
+Generated on 2026-05-29T06:13:46.256285Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2992,10 +2992,31 @@ Generated on 2026-05-28T04:22:55.297410Z
 
 
 ---
+### DEFUN `%TENSOR-LENGTH-CPP-VAR`
+- **Args**: `(SYM)`
+
+  > Convert a tensor parameter symbol to its C++ length variable.  >    The CUDA hoist emits 'uint64_t <name>_length = N;' for each tensor param,  >    which we reference at dispatch time.
+
+
+---
+### DEFUN `%NORMALIZE-DERIVE-FROM`
+- **Args**: `(RAW)`
+
+  > Normalize :derive-from value into a list:  >      <symbol>           -> (<symbol>)  ;; tensor case  >      (sym1 sym2 ...)    -> (sym1 sym2 ...)  >      nil                -> nil
+
+
+---
+### DEFUN `%DERIVE-FROM-IS-TENSOR-P`
+- **Args**: `(RAW)`
+
+  > Returns T if :derive-from was supplied as a bare symbol (tensor name).
+
+
+---
 ### DEFUN `EMIT-LAUNCH`
 - **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES)`
 
-  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.
+  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :tiled          — grid sized via derive-from + tile-shape  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
 
 
 ---
@@ -3142,10 +3163,31 @@ Generated on 2026-05-28T04:22:55.297410Z
 
 
 ---
+### DEFUN `%L0-TENSOR-LENGTH-CPP-VAR`
+- **Args**: `(SYM)`
+
+  > Convert a tensor parameter symbol to its C++ length variable.  >    The L0 hoist emits 'uint64_t <name>_length = N;' for each tensor param.
+
+
+---
+### DEFUN `%L0-NORMALIZE-DERIVE-FROM`
+- **Args**: `(RAW)`
+
+  > Normalize :derive-from value into a list:  >      <symbol>           -> (<symbol>)  ;; tensor case  >      (sym1 sym2 ...)    -> (sym1 sym2 ...)  >      nil                -> nil
+
+
+---
+### DEFUN `%L0-DERIVE-FROM-IS-TENSOR-P`
+- **Args**: `(RAW)`
+
+  > Returns T if :derive-from was supplied as a bare symbol (tensor name).
+
+
+---
 ### DEFUN `%L0-EMIT-DISPATCH`
 - **Args**: `(STREAM GLOBAL-DECL LOCAL-DECL NUM-GROUPS-DECL)`
 
-  > Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.  >    Handles: :set-to scalar/list, :derive-from with :one-thread-per/:strided/:tiled/:interleaved.
+  > Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.  >    Supports:  >      :strategy :strided        — max occupancy (zeDeviceGetComputeProperties +  >                                  optional zeKernelGetProperties)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :tiled          — grid sized via derive-from + tile-shape  >      :strategy :interleaved    — not yet implemented (default dispatch)  >      :set-to scalar/list       — fixed grid  >    :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
 
 
 ---

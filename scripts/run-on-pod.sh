@@ -152,6 +152,7 @@ set -e
 if [ -d ${WORK_DIR}/.git ]; then
     echo "Repo exists, fetching and checking out ${BRANCH}..."
     cd ${WORK_DIR}
+    git stash
     git fetch origin
     git checkout ${BRANCH}
     git pull origin ${BRANCH} || true

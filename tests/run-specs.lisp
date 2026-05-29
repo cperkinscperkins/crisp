@@ -1725,6 +1725,32 @@
                   (return-from validate-cuda-host-run nil))))))
       t))))
 
+
+
+(defun validate-cuda-strategy-content (crisp-file cu-files)
+  "Validates generated .cu files contain expected strategy dispatch strings."
+  (when (null cu-files)
+    (format t "FAIL: No .cu files to validate~%")
+    (return-from validate-cuda-strategy-content nil))
+  (let* ((directives (extract-test-directives crisp-file))
+         (expectations (parse-strategy-expect directives))
+         (passed t))
+    (when (null expectations)
+      (format t "PASS: No STRATEGY-EXPECT directives (trivial pass).~%")
+      (return-from validate-cuda-strategy-content t))
+    (dolist (cu cu-files)
+      (let ((content (uiop:read-file-string cu)))
+        (dolist (exp expectations)
+          (unless (search exp content)
+            (format t "FAIL: Expected string not found in ~a:~%  '~a'~%"
+                    (file-namestring cu) exp)
+            (setf passed nil)))))
+    (when passed
+      (format t "PASS: All ~a strategy expectations met.~%" (length expectations)))
+    passed))
+
+    
+
 (defun main ()
   (let* ((script-path (or *load-pathname* *compile-file-pathname*))
          ;; Assume tests/run-specs.lisp -> tests/spec/

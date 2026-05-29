@@ -58,6 +58,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - (%ARRAY-SIZE TYPE)  hoist-cuda/main.lisp [See above]
 - - - - (EMIT-LAUNCH STREAM DISPATCH-INFO SHARED-BYTES)  hoist-cuda/main.lisp
+- - - - - (%DERIVE-FROM-IS-TENSOR-P RAW)  hoist-cuda/main.lisp
+- - - - - (%NORMALIZE-DERIVE-FROM RAW)  hoist-cuda/main.lisp
+- - - - - (%TENSOR-LENGTH-CPP-VAR SYM)  hoist-cuda/main.lisp
 - - - - - (%DISPATCH-SYM-TO-CPP-VAR SYM)  hoist-cuda/main.lisp
 - - - - (EMIT-READBACK STREAM ALLOCATIONS)  hoist-cuda/main.lisp
 - - (PARSE-CLI-ARGS ARGS) :CRISP.MAIN  main.lisp

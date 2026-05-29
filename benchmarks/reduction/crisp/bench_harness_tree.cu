@@ -3,7 +3,10 @@
  * Same structure as bench_harness.cu but loads sum-reduce-tree.ptx and calls
  * the sum_reduce_tree kernel.
  *
- * Usage: ./sum_reduce_crisp_tree [N] [warmup] [iterations]
+ * Usage: ./sum_reduce_crisp_tree [N] [warmup] [iterations] [occupancy]
+ *   occupancy = 0.0..1.0 ratio for grid sizing (default: 1.0 = max occupancy)
+ *               Mirrors what the Crisp CUDA hoist would emit for
+ *               (global-size :derive-from input :strategy :strided :occupancy R).
  *
  * Compile: nvcc -O3 bench_harness_tree.cu -lcuda -o sum_reduce_crisp_tree
  */
@@ -30,9 +33,14 @@
 } while(0)
 
 int main(int argc, char** argv) {
-    int N          = argc > 1 ? atoi(argv[1]) : 1000000;
-    int warmup     = argc > 2 ? atoi(argv[2]) : 50;
-    int iterations = argc > 3 ? atoi(argv[3]) : 100;
+    int    N          = argc > 1 ? atoi(argv[1]) : 1000000;
+    int    warmup     = argc > 2 ? atoi(argv[2]) : 50;
+    int    iterations = argc > 3 ? atoi(argv[3]) : 100;
+    double occupancy  = argc > 4 ? atof(argv[4]) : 1.0;
+    if (occupancy <= 0.0 || occupancy > 1.0) {
+        fprintf(stderr, "occupancy must be in (0.0, 1.0], got %f\n", occupancy);
+        return 1;
+    }
 
     const char* ptx_candidates[] = {
         "sum-reduce-tree.ptx",
@@ -97,6 +105,19 @@ int main(int argc, char** argv) {
 
     // Shared memory for the scratch vector
     const unsigned int sharedMemBytes = (unsigned int)slm_byte_size;
+    const int blockSize = 256;
+
+    // Compute grid size via occupancy (mirrors what the Crisp CUDA hoist would emit
+    // for :strategy :strided :occupancy R).
+    int blocksPerSM;
+    CUDA_CHECK(cuOccupancyMaxActiveBlocksPerMultiprocessor(
+        &blocksPerSM, kernel, blockSize, sharedMemBytes));
+    int numSMs;
+    CUDA_CHECK(cuDeviceGetAttribute(&numSMs, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));
+    unsigned int gridX = (unsigned int)((blocksPerSM * numSMs) * occupancy);
+    if (gridX < 1) gridX = 1;
+    fprintf(stderr, "Grid: %u blocks (blocksPerSM=%d * numSMs=%d * occupancy=%.2f), block=%d\n",
+            gridX, blocksPerSM, numSMs, occupancy, blockSize);
 
     auto run_once = [&]() {
         float zero = 0.0f;
@@ -112,8 +133,8 @@ int main(int argc, char** argv) {
         };
 
         CUDA_CHECK(cuLaunchKernel(kernel,
-            256, 1, 1,
-            256, 1, 1,
+            gridX, 1, 1,
+            blockSize, 1, 1,
             sharedMemBytes, 0,
             params, nullptr));
     };
