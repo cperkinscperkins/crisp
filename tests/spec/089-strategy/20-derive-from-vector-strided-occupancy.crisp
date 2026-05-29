@@ -12,7 +12,6 @@
 
 (def-kernel l0_occupancy_test (input &out result)
   (declare #'(in-vec-t &out out-cell-t => nil))
-  (declare (forward-only))
   (declare (global-size :derive-from input :strategy :strided)
            (local-size  :set-to 128))
   (set! (~ result) 0.0f))

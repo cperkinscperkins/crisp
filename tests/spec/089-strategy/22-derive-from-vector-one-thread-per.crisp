@@ -12,7 +12,6 @@
 
 (def-kernel derive_one_thread_per (input &out result)
   (declare #'(in-vec-t &out out-cell-t => nil))
-  (declare (forward-only))
   (declare (global-size :derive-from input :strategy :one-thread-per)
            (local-size  :set-to 256))
   (set! (~ result) 0.0f))
