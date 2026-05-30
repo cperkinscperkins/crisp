@@ -1,13 +1,13 @@
 /*
  * Benchmark harness for Crisp-compiled PTX sum reduction.
- * Loads the PTX, allocates memory, runs warmup+measured iterations,
- * outputs JSON timing results — same format as the CUDA/CUB benchmarks.
+ * Loads sum-reduce.ptx and calls the sum_reduce kernel.
  *
- * Usage: ./sum_reduce_crisp [N] [warmup] [iterations]
+ * Usage: ./sum_reduce_crisp [N] [warmup] [iterations] [occupancy]
+ *   occupancy = 0.0..1.0 ratio for grid sizing (default: 1.0 = max occupancy)
+ *               Mirrors what the Crisp CUDA hoist would emit for
+ *               (global-size :derive-from input :strategy :strided :occupancy R).
  *
  * Compile: nvcc -O3 bench_harness.cu -lcuda -o sum_reduce_crisp
- *
- * Expects sum-reduce.ptx in the same directory.
  */
 
 #include <cuda.h>
@@ -32,11 +32,15 @@
 } while(0)
 
 int main(int argc, char** argv) {
-    int N          = argc > 1 ? atoi(argv[1]) : 1000000;
-    int warmup     = argc > 2 ? atoi(argv[2]) : 50;
-    int iterations = argc > 3 ? atoi(argv[3]) : 100;
+    int    N          = argc > 1 ? atoi(argv[1]) : 1000000;
+    int    warmup     = argc > 2 ? atoi(argv[2]) : 50;
+    int    iterations = argc > 3 ? atoi(argv[3]) : 100;
+    double occupancy  = argc > 4 ? atof(argv[4]) : 1.0;
+    if (occupancy <= 0.0 || occupancy > 1.0) {
+        fprintf(stderr, "occupancy must be in (0.0, 1.0], got %f\n", occupancy);
+        return 1;
+    }
 
-    // Find PTX file
     const char* ptx_candidates[] = {
         "sum-reduce.ptx",
         "benchmarks/reduction/crisp/sum-reduce.ptx",
@@ -57,20 +61,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // CUDA init
     CUDA_CHECK(cuInit(0));
     CUdevice device;
     CUDA_CHECK(cuDeviceGet(&device, 0));
     CUcontext context;
     CUDA_CHECK(cuCtxCreate(&context, 0, device));
 
-    // Load PTX module
     CUmodule module;
     CUDA_CHECK(cuModuleLoadData(&module, ptx_text.c_str()));
     CUfunction kernel;
     CUDA_CHECK(cuModuleGetFunction(&kernel, module, "sum_reduce"));
 
-    // Allocate: input vector (6-tuple) + result cell (3-tuple)
     float* h_input = new float[N];
     for (int i = 0; i < N; i++) h_input[i] = 1.0f;
 
@@ -81,29 +82,59 @@ int main(int argc, char** argv) {
     CUdeviceptr d_result;
     CUDA_CHECK(cuMemAlloc(&d_result, sizeof(float)));
 
-    // Kernel params
+    // Scratch vector (implicit param — comes FIRST in PTX kernel sig).
+    // make-scratch-vector :match-workgroup-size with lsize=256, float → 256 floats = 1024 bytes.
+    uint64_t slm_ptr        = 0;     // shared-memory offset, demoted from addrspace(3) ptr to i64
+    uint64_t slm_byte_size  = 256 * sizeof(float);
+    uint64_t slm_off0       = 0;
+    uint64_t slm_str0       = 1;
+    uint64_t slm_ext0       = 256;
+    uint64_t slm_length     = 256;
+
+    // Input tensor (declared param, 6-tuple)
     uint64_t input_byte_size = N * sizeof(float);
     uint64_t input_off0 = 0;
     uint64_t input_str0 = 1;
     uint64_t input_ext0 = (uint64_t)N;
     uint64_t input_length = (uint64_t)N;
+
+    // Result cell (declared param, 3-tuple)
     uint64_t result_byte_size = sizeof(float);
     uint64_t result_offset = 0;
+
+    // Shared memory for the scratch vector
+    const unsigned int sharedMemBytes = (unsigned int)slm_byte_size;
+    const int blockSize = 256;
+
+    // Compute grid size via occupancy (mirrors what the Crisp CUDA hoist would emit
+    // for :strategy :strided :occupancy R).
+    int blocksPerSM;
+    CUDA_CHECK(cuOccupancyMaxActiveBlocksPerMultiprocessor(
+        &blocksPerSM, kernel, blockSize, sharedMemBytes));
+    int numSMs;
+    CUDA_CHECK(cuDeviceGetAttribute(&numSMs, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));
+    unsigned int gridX = (unsigned int)((blocksPerSM * numSMs) * occupancy);
+    if (gridX < 1) gridX = 1;
+    fprintf(stderr, "Grid: %u blocks (blocksPerSM=%d * numSMs=%d * occupancy=%.2f), block=%d\n",
+            gridX, blocksPerSM, numSMs, occupancy, blockSize);
 
     auto run_once = [&]() {
         float zero = 0.0f;
         cuMemcpyHtoD(d_result, &zero, sizeof(float));
 
-        void* params[9] = {
+        // 15 params: scratch (6) + input (6) + result (3)
+        void* params[15] = {
+            &slm_ptr, &slm_byte_size, &slm_off0,
+            &slm_str0, &slm_ext0, &slm_length,
             &d_input, &input_byte_size, &input_off0,
             &input_str0, &input_ext0, &input_length,
             &d_result, &result_byte_size, &result_offset,
         };
 
         CUDA_CHECK(cuLaunchKernel(kernel,
-            256, 1, 1,
-            256, 1, 1,
-            0, 0,
+            gridX, 1, 1,
+            blockSize, 1, 1,
+            sharedMemBytes, 0,
             params, nullptr));
     };
 
@@ -113,7 +144,7 @@ int main(int argc, char** argv) {
     }
     CUDA_CHECK(cuCtxSynchronize());
 
-    // Measured runs — kernel time (GPU events) + wall time (host chrono)
+    // Measured runs
     std::vector<float> kernel_times(iterations);
     std::vector<double> wall_times(iterations);
     cudaEvent_t start, stop;
@@ -128,7 +159,6 @@ int main(int argc, char** argv) {
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
 
-        // Readback inside wall time
         float tmp;
         CUDA_CHECK(cuMemcpyDtoH(&tmp, d_result, sizeof(float)));
 
@@ -137,7 +167,6 @@ int main(int argc, char** argv) {
         wall_times[i] = std::chrono::duration<double, std::micro>(wall_end - wall_start).count();
     }
 
-    // Final result for correctness check
     float result;
     CUDA_CHECK(cuMemcpyDtoH(&result, d_result, sizeof(float)));
 

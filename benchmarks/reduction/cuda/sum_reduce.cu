@@ -29,6 +29,15 @@
 
 #define BLOCK_SIZE 256
 
+#define CUDA_CHECK(call) do {                                                  \
+    cudaError_t _e = (call);                                                   \
+    if (_e != cudaSuccess) {                                                   \
+        fprintf(stderr, "CUDA error at %s:%d — %s\n",                          \
+                __FILE__, __LINE__, cudaGetErrorString(_e));                   \
+        exit(1);                                                               \
+    }                                                                          \
+} while(0)
+
 __global__ void reduce_grid_stride_atomic(const float* __restrict__ input,
                                           float* __restrict__ result,
                                           int n) {
@@ -74,17 +83,17 @@ int main(int argc, char** argv) {
 
     float* d_input;
     float* d_result;
-    cudaMalloc(&d_input, N * sizeof(float));
-    cudaMalloc(&d_result, sizeof(float));
-    cudaMemcpy(d_input, h_input, N * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_input, N * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_result, sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d_input, h_input, N * sizeof(float), cudaMemcpyHostToDevice));
 
     // Occupancy-based grid sizing — mirrors what Crisp's CUDA hoist emits
     // for :strategy :strided :occupancy <ratio>.
     int blocksPerSM;
-    cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-        &blocksPerSM, reduce_grid_stride_atomic, BLOCK_SIZE, 0);
+    CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &blocksPerSM, reduce_grid_stride_atomic, BLOCK_SIZE, 0));
     int numSMs;
-    cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
+    CUDA_CHECK(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0));
     int gridSize = (int)((blocksPerSM * numSMs) * occupancy);
     if (gridSize < 1) gridSize = 1;
     fprintf(stderr, "Grid: %d blocks (blocksPerSM=%d * numSMs=%d * occupancy=%.2f), block=%d\n",
@@ -92,37 +101,38 @@ int main(int argc, char** argv) {
 
     auto run_once = [&]() {
         // Reset result before each launch (atomicAdd accumulates)
-        cudaMemsetAsync(d_result, 0, sizeof(float));
+        CUDA_CHECK(cudaMemsetAsync(d_result, 0, sizeof(float)));
         reduce_grid_stride_atomic<<<gridSize, BLOCK_SIZE>>>(d_input, d_result, N);
+        CUDA_CHECK(cudaGetLastError());
     };
 
     // Warmup
     for (int i = 0; i < warmup; i++) {
         run_once();
     }
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Measured runs — kernel time (GPU events) + wall time (host chrono)
     std::vector<float> kernel_times(iterations);
     std::vector<double> wall_times(iterations);
     cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
 
     float result = 0.0f;
     for (int i = 0; i < iterations; i++) {
         auto wall_start = std::chrono::high_resolution_clock::now();
 
-        cudaEventRecord(start);
+        CUDA_CHECK(cudaEventRecord(start));
         run_once();
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
+        CUDA_CHECK(cudaEventRecord(stop));
+        CUDA_CHECK(cudaEventSynchronize(stop));
 
-        // Readback inside wall time (matches crisp_tree harness)
-        cudaMemcpy(&result, d_result, sizeof(float), cudaMemcpyDeviceToHost);
+        // Readback inside wall time (matches crisp harness)
+        CUDA_CHECK(cudaMemcpy(&result, d_result, sizeof(float), cudaMemcpyDeviceToHost));
 
         auto wall_end = std::chrono::high_resolution_clock::now();
-        cudaEventElapsedTime(&kernel_times[i], start, stop);
+        CUDA_CHECK(cudaEventElapsedTime(&kernel_times[i], start, stop));
         wall_times[i] = std::chrono::duration<double, std::micro>(wall_end - wall_start).count();
     }
 
