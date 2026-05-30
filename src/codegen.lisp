@@ -279,11 +279,121 @@
           (%create-new-function fn-name fn-type module di-builder di-compile-unit
                                 crisp-return-type param-nodes location-map fn-loc)))))
 
+
+
+
+;; Convention: when a def-kernel signature has an &out parameter, any
+;; tensor parameter declared BEFORE &out (positional, &optional, or &key)
+;; is treated as read-only.  Indexed reads via (~ T i) on such a tensor
+;; get the LLVM `!invariant.load !{}` metadata, which NVPTX lowers to
+;; `ld.global.nc.f32` — the non-coherent / texture-cache load path.
+;; Hand-written CUDA gets this via `const float* __restrict__`.
+;;
+;; Documented limitations:
+;;
+;;   1. Kernels with no &out parameter are skipped (no read-only inference
+;;      possible — kernel may write back through any of its params).
+;;
+;;   2. Only direct references `(~ paramsym i)` are detected.  Aliased
+;;      references such as `(let ((x input)) (~ x i))` lose the optimisation
+;;      — we conservatively don't propagate the read-only property through
+;;      let-bindings or function calls.  No miscompile risk: missing the
+;;      metadata is always safe, just slower.
+;;
+;;   3. Only tensor params benefit.  Cells written via `atomic-add!`
+;;      would be miscompiled if marked, so we exclude them entirely.
+;;
+;; AD compatibility: under --differentiate, the backward kernel rebuilds
+;; its param-list with the input/output split inverted (forward inputs
+;; become _GRAD outputs and vice versa).  The same rule applies: any
+;; tensor that's :in in the backward kernel can be marked read-only.
+
+(defparameter *kernel-readonly-tensor-syms* nil
+  "Hash-table set of kernel-param symbols whose indexed loads should be
+   marked with !invariant.load metadata.  Bound by generate-function-body
+   around the body codegen loop; read by the semantic-aref tensor case.
+   NIL means no read-only inference applies (kernel has no &out, or non-
+   kernel function).")
+
+(defun %collect-readonly-tensor-param-syms (semantic-function)
+  "Looks up SEMANTIC-FUNCTION's high-level (pre-flatten) declared
+   signature in *KERNEL-DECLARED-SIGNATURES* and returns a hash-table
+   of param symbols whose tensor reads can be marked invariant, or NIL
+   if the convention doesn't apply.
+
+   The convention applies iff the kernel's declared params include &OUT.
+   Every param BEFORE the &OUT marker that is also a float or integer
+   tensor goes into the returned set.
+
+   Returns NIL when:
+     - The function isn't a registered kernel (no entry in
+       *KERNEL-DECLARED-SIGNATURES*).  Helper functions, accessors, and
+       internally-generated functions all fall here — safe default.
+     - The declared signature contains no &OUT marker (kernel may write
+       through any param; no read-only inference possible).
+     - No qualifying tensor params remain after filtering.
+
+   Declared signature shape: a list of (PARAM-NAME . TYPE-SPEC) pairs,
+   except &OUT itself which appears as (&OUT . &OUT)."
+  (let* ((fn-name  (semantic-function-name semantic-function))
+         (declared (gethash fn-name *kernel-declared-signatures*)))
+    (when declared
+      (let ((out-pos (position-if
+                      (lambda (entry)
+                        (and (consp entry)
+                             (symbolp (car entry))
+                             (string-equal (symbol-name (car entry)) "&OUT")))
+                      declared)))
+        (when out-pos
+          (let ((ht (make-hash-table :test 'eq)))
+            (loop for entry in declared
+                  for i from 0
+                  while (< i out-pos)
+                  when (and (consp entry)
+                            (symbolp (car entry))
+                            (let ((t-spec (cdr entry)))
+                              (or (crisp.compiler::%crisp-float-tensor-type-p t-spec)
+                                  (crisp.compiler::%crisp-integer-tensor-type-p t-spec))))
+                  do (setf (gethash (car entry) ht) t))
+            (when (> (hash-table-count ht) 0) ht)))))))
+
+(defun %attach-invariant-load (loaded-inst module)
+  "Attach `!invariant.load !{}` metadata to the LLVM load instruction
+   LOADED-INST.  The empty MD node is the LLVM convention for the
+   invariant.load assertion.  NVPTX lowers `load` + `!invariant.load`
+   to `ld.global.nc.f32` (texture-cache / non-coherent path).
+
+   Note: LLVMMDNodeInContext2 returns an LLVMMetadataRef; LLVMSetMetadata
+   expects an LLVMValueRef.  We wrap via LLVMMetadataAsValue."
+  (let* ((ctx       (crisp.llvm-bindings::llvm-get-module-context module))
+         (kind-name "invariant.load")
+         (kind-id   (crisp.llvm-bindings::llvm-get-md-kind-id-in-context
+                     ctx kind-name (length kind-name)))
+         (empty-md-ref (crisp.llvm-bindings::llvm-md-node-in-context2
+                        ctx (cffi:null-pointer) 0))
+         (empty-md-val (crisp.llvm-bindings::llvm-metadata-as-value
+                        ctx empty-md-ref)))
+    (crisp.llvm-bindings::llvm-set-metadata loaded-inst kind-id empty-md-val)))
+
+(defun %array-node-readonly-tensor-param-p (array-node)
+  "Returns T if ARRAY-NODE is a direct reference (semantic-var-read)
+   to a kernel-param symbol in *KERNEL-READONLY-TENSOR-SYMS*.  Aliased
+   references (let-bindings, function-call results) return NIL — they
+   degrade gracefully to a plain load."
+  (and *kernel-readonly-tensor-syms*
+       (semantic-var-read-p array-node)
+       (gethash (semantic-var-read-name array-node)
+                *kernel-readonly-tensor-syms*)))
+
+
 (defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
   "Generates the body of the function.
    Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the
    PTX kernel-entry receive site can inttoptr demoted i64 params back
-   to their original-addrspace pointer (see header comment)."
+   to their original-addrspace pointer.
+   Binds *kernel-readonly-tensor-syms* around the body codegen so the
+   semantic-aref tensor case can attach !invariant.load to direct
+   reads of read-only kernel-param tensors."
   (let ((entry-block (llvm-append-basic-block func "entry"))
         (var-env (make-hash-table))
         (param-nodes (semantic-function-param-list semantic-function))
@@ -295,29 +405,36 @@
 
     (initialize-function-parameters builder func param-nodes module var-env is-entry-point)
 
-    (let* ((body-nodes (semantic-function-body semantic-function))
-           (is-void-return (or (null return-types)
-                               (equal return-types '(nil))
-                               (and (consp return-types) (symbolp (first return-types)) (string-equal (first return-types) "VOID"))))
-           (last-val nil)
-           (last-loc nil))
-      (dolist (node body-nodes)
-        (multiple-value-bind (val loc)
-            (generate-expression-ir builder module var-env di-builder di-subprogram location-map node)
-          (setf last-val val)
-          (setf last-loc loc)))
+    (let ((*kernel-readonly-tensor-syms*
+           (%collect-readonly-tensor-param-syms semantic-function)))
+      (when *kernel-readonly-tensor-syms*
+        (log:debug "Read-only tensor params for kernel ~a: ~a"
+                   (semantic-function-name semantic-function)
+                   (loop for k being the hash-keys of *kernel-readonly-tensor-syms*
+                         collect k)))
 
-      (let ((ret-inst (if is-void-return
-                          (llvm-build-ret-void builder)
-                          (let* ((ret-type-spec (first return-types))
-                                 (expected-type (crisp-type-to-llvm-type ret-type-spec module))
-                                 (actual-type (llvm-type-of last-val)))
-                            (if (and (llvm-type-kind-is-pointer? actual-type)
-                                     (not (llvm-type-kind-is-pointer? expected-type)))
-                                (llvm-build-ret builder (llvm-build-load2 builder expected-type last-val "ret_val"))
-                                (llvm-build-ret builder last-val))))))
-        (when last-loc (llvm-instruction-set-debug-loc ret-inst last-loc))))))
+      (let* ((body-nodes (semantic-function-body semantic-function))
+             (is-void-return (or (null return-types)
+                                 (equal return-types '(nil))
+                                 (and (consp return-types) (symbolp (first return-types)) (string-equal (first return-types) "VOID"))))
+             (last-val nil)
+             (last-loc nil))
+        (dolist (node body-nodes)
+          (multiple-value-bind (val loc)
+              (generate-expression-ir builder module var-env di-builder di-subprogram location-map node)
+            (setf last-val val)
+            (setf last-loc loc)))
 
+        (let ((ret-inst (if is-void-return
+                            (llvm-build-ret-void builder)
+                            (let* ((ret-type-spec (first return-types))
+                                   (expected-type (crisp-type-to-llvm-type ret-type-spec module))
+                                   (actual-type (llvm-type-of last-val)))
+                              (if (and (llvm-type-kind-is-pointer? actual-type)
+                                       (not (llvm-type-kind-is-pointer? expected-type)))
+                                  (llvm-build-ret builder (llvm-build-load2 builder expected-type last-val "ret_val"))
+                                  (llvm-build-ret builder last-val))))))
+          (when last-loc (llvm-instruction-set-debug-loc ret-inst last-loc)))))))
 
 (defun %lookup-field-physical-index (struct-def field-name-str)
   "Returns the physical (LLVM struct) index of a field identified by
@@ -1603,17 +1720,14 @@
 ;;; the alloca spill if sub-ptr is nil.
 ;;; =========================================================
 
-               
-
-
 
 (defmethod generate-node-ir ((node semantic-aref) builder module var-env
                               di-builder di-scope location-map)
   "Generates IR for array/cell/tensor element access (aref / ~ / ~ref~).
    Case 2: (array T N) fixed-size array — GEP into alloca (unchanged).
    Case 3: TENSOR — parent.address from SROA field 0; byte-off = flat_idx * sizeof(elem);
-     GEP i8* + byte-off, bitcast, load.  The flat element index is pre-computed by
-     analyze-aref-expression (strides and offsets already folded in).
+     GEP i8* + byte-off, bitcast, load.  Load gets !invariant.load when
+     ARRAY-NODE is a direct ref to a read-only kernel-param tensor.
    Case 1: CELL — original behaviour unchanged.
    Returns (values loaded-val nil elem-ptr) so set! can store through the pointer."
   (let* ((array-node   (semantic-aref-array-node node))
@@ -1691,6 +1805,7 @@
        ;; Case 3: TENSOR — flat index pre-computed; GEP via parent storage pointer.
        ;; SROA field 0 of tensor is (storage Addr) → {address ptr, byte-size}.
        ;; Field 0 of storage is the raw pointer.
+       ;; NEW: read-only kernel-param tensor reads get !invariant.load.
        ((and (listp cell-spec) (symbolp (first cell-spec))
              (string-equal (symbol-name (first cell-spec)) "TENSOR"))
         (let* ((tensor-val     (generate-node-ir array-node builder module var-env
@@ -1698,8 +1813,10 @@
                (elem-type-spec element-type)
                (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
                (mangled-name   (mangle-template-struct-name (first cell-spec)
-                                                            (rest cell-spec))))
-          (log:info "semantic-aref tensor: struct=~a elem=~a" mangled-name elem-type-spec)
+                                                            (rest cell-spec)))
+               (mark-invariant-p (%array-node-readonly-tensor-param-p array-node)))
+          (log:info "semantic-aref tensor: struct=~a elem=~a invariant=~a"
+                    mangled-name elem-type-spec mark-invariant-p)
           (ensure-struct-llvm-type mangled-name)
           (let* ((parent-val  (llvm-build-extract-value builder tensor-val 0 "t_parent_val"))
                  (base-ptr    (llvm-build-extract-value builder parent-val 0 "t_base_ptr"))
@@ -1716,6 +1833,8 @@
                                 builder ptr-i8
                                 (llvm-pointer-type elem-llvm-type ptr-as) "t_ptr"))
                      (loaded   (llvm-build-load2 builder elem-llvm-type t-ptr "t_elem")))
+                (when mark-invariant-p
+                  (%attach-invariant-load loaded module))
                 (values loaded nil t-ptr))))))
 
        ;; Case 1: CELL parameterized type (unchanged)
@@ -1753,7 +1872,6 @@
 
        (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)"
                  array-type cell-spec))))))
-
 
 
 (defmethod generate-node-ir ((node semantic-sizeof) builder module var-env di-builder di-scope location-map)

@@ -79,40 +79,58 @@ def find_executable(name):
 
 
 def build_cuda(impl_dir, binary_name, cu_name=None):
-    """Compile a .cu file with nvcc -O3. Returns (binary_path, compile_time_s)."""
+    """Compile a .cu file with nvcc -O3.
+    Returns (binary_path, compile_times) where compile_times is a dict:
+      {'device': float,    # nvcc -ptx -O3 only (kernel compile)
+       'end_to_end': float} # nvcc -O3 full build (kernel + host link)
+
+    The 'device' number is fair to compare against Crisp's crisp-compile
+    (both produce just the device-side PTX).  The 'end_to_end' number is
+    fair to compare against Crisp's crisp-compile + nvcc-on-harness."""
     if cu_name:
         cu = impl_dir / cu_name
     else:
         cu_files = list(impl_dir.glob("*.cu"))
         if not cu_files:
             print(f"  SKIP: no .cu files in {impl_dir}")
-            return None, 0.0
+            return None, {'device': 0.0, 'end_to_end': 0.0}
         cu = cu_files[0]
     out = impl_dir / binary_name
-    cmd = ["nvcc", "-O3", str(cu), "-o", str(out)]
-    print(f"  Building: {' '.join(cmd)}")
+
+    # Device-only timing: nvcc -ptx -O3
+    ptx_out = impl_dir / (cu.stem + ".ptx")
+    cmd_ptx = ["nvcc", "-O3", "-ptx", str(cu), "-o", str(ptx_out)]
     t0 = time.monotonic()
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    compile_time = time.monotonic() - t0
+    r_ptx = subprocess.run(cmd_ptx, capture_output=True, text=True)
+    device_time = time.monotonic() - t0
+
+    # End-to-end timing: nvcc -O3 (full executable)
+    cmd_full = ["nvcc", "-O3", str(cu), "-o", str(out)]
+    print(f"  Building: {' '.join(cmd_full)}")
+    t0 = time.monotonic()
+    r = subprocess.run(cmd_full, capture_output=True, text=True)
+    end_to_end_time = time.monotonic() - t0
     if r.returncode != 0:
         print(f"  BUILD FAILED:\n{r.stderr}")
-        return None, compile_time
-    print(f"  Compiled in {compile_time:.2f}s")
-    return str(out), compile_time
+        return None, {'device': device_time, 'end_to_end': end_to_end_time}
+    print(f"  Compiled in {end_to_end_time:.2f}s (device-only: {device_time:.2f}s)")
+    return str(out), {'device': device_time, 'end_to_end': end_to_end_time}
 
 
 def build_crisp_variant(crisp_dir, crisp_filename, ptx_filename, harness_filename, binary_name):
-    """Compile one Crisp kernel + its harness.  Returns (binary_path, compile_time_s).
-    compile_time measures crisp-compile only (not nvcc for the harness)."""
+    """Compile one Crisp kernel + its harness.
+    Returns (binary_path, compile_times) where compile_times is a dict:
+      {'device': float,    # crisp-compile only (PTX kernel)
+       'end_to_end': float} # crisp-compile + nvcc on harness"""
     crisp_file = crisp_dir / crisp_filename
     if not crisp_file.exists():
         print(f"  SKIP: {crisp_file} not found")
-        return None, 0.0
+        return None, {'device': 0.0, 'end_to_end': 0.0}
 
     compiler = find_executable("crisp-compile") or find_executable("crisp-compile.exe")
     if not compiler:
         print("  SKIP: crisp-compile not found")
-        return None, 0.0
+        return None, {'device': 0.0, 'end_to_end': 0.0}
 
     cmd = [compiler, "--ir-target=ptx", str(crisp_file)]
     print(f"  Crisp compile [{crisp_filename}]: {' '.join(cmd)}")
@@ -122,37 +140,35 @@ def build_crisp_variant(crisp_dir, crisp_filename, ptx_filename, harness_filenam
     crisp_compile_time = time.monotonic() - t0
     if r.returncode != 0:
         print(f"  CRISP COMPILE FAILED:\n{r.stderr}")
-        return None, crisp_compile_time
+        return None, {'device': crisp_compile_time, 'end_to_end': crisp_compile_time}
     print(f"  Crisp compiled in {crisp_compile_time:.2f}s")
 
     ptx = crisp_dir / ptx_filename
     if not ptx.exists():
         print(f"  SKIP: {ptx} not generated")
-        return None, crisp_compile_time
+        return None, {'device': crisp_compile_time, 'end_to_end': crisp_compile_time}
 
     harness = crisp_dir / harness_filename
     out = crisp_dir / binary_name
     cmd = ["nvcc", "-O3", str(harness), "-lcuda", "-o", str(out)]
     print(f"  nvcc harness: {' '.join(cmd)}")
+    t0 = time.monotonic()
     r = subprocess.run(cmd, capture_output=True, text=True)
+    harness_compile_time = time.monotonic() - t0
     if r.returncode != 0:
         print(f"  NVCC FAILED:\n{r.stderr}")
-        return None, crisp_compile_time
-    return str(out), crisp_compile_time
+        return None, {'device': crisp_compile_time, 'end_to_end': crisp_compile_time}
+    end_to_end = crisp_compile_time + harness_compile_time
+    print(f"  Total {end_to_end:.2f}s (device-only: {crisp_compile_time:.2f}s + harness: {harness_compile_time:.2f}s)")
+    return str(out), {'device': crisp_compile_time, 'end_to_end': end_to_end}
 
 
 def build_crisp(crisp_dir):
-    """Naive grid-stride + atomic-per-thread version."""
+    """Workgroup tree-reduce + one atomic per workgroup version
+    (the only Crisp variant we ship in this benchmark)."""
     return build_crisp_variant(
         crisp_dir, "sum-reduce.crisp", "sum-reduce.ptx",
         "bench_harness.cu", "sum_reduce_crisp")
-
-
-def build_crisp_tree(crisp_dir):
-    """Workgroup tree-reduce + one atomic per workgroup version."""
-    return build_crisp_variant(
-        crisp_dir, "sum-reduce-tree.crisp", "sum-reduce-tree.ptx",
-        "bench_harness_tree.cu", "sum_reduce_crisp_tree")
 
 
 def run_benchmark(binary, N, warmup, iterations, impl_name, extra_args=None):
@@ -193,14 +209,25 @@ def print_comparison_table(all_results, compile_times=None):
 
     impls = sorted(set(r["implementation"] for r in all_results))
 
-    # Compile times
+    # Compile times — two columns:
+    #   device:     just the kernel device compile (nvcc -ptx for CUDA/CUB; crisp-compile for Crisp).
+    #   end-to-end: full source-to-executable build (CUDA/CUB nvcc; Crisp + nvcc-on-harness for Crisp).
     if compile_times:
         print("\n" + "=" * 60)
         print("Compile Times")
         print("=" * 60)
+        print(f"  {'impl':>10s}   {'device (s)':>12s}   {'end-to-end (s)':>16s}")
+        print(f"  {'-'*10}   {'-'*12}   {'-'*16}")
         for impl in impls:
-            ct = compile_times.get(impl, 0)
-            print(f"  {impl:>8s}: {ct:.2f}s")
+            ct = compile_times.get(impl, {})
+            if isinstance(ct, dict):
+                device = ct.get('device', 0.0)
+                e2e    = ct.get('end_to_end', 0.0)
+            else:
+                # Backwards compat for the old single-float schema
+                device = ct
+                e2e = ct
+            print(f"  {impl:>10s}   {device:>12.2f}   {e2e:>16.2f}")
         print()
 
     # Kernel time table
@@ -259,7 +286,7 @@ def main():
     parser.add_argument("--impl", default="all",
                         help="Implementations to run: all, cuda, cub, crisp")
     parser.add_argument("--crisp-tree-occupancy", type=float, default=None,
-                        help="Occupancy ratio (0.0..1.0) for crisp_tree grid sizing. "
+                        help="Occupancy ratio (0.0..1.0) for crisp grid sizing. "
                              "Default: read :occupancy from the .crisp file (falls back to 1.0).")
     args = parser.parse_args()
 
@@ -273,7 +300,7 @@ def main():
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    run_impls = args.impl.split(",") if args.impl != "all" else ["cuda", "cub", "crisp", "crisp_tree"]
+    run_impls = args.impl.split(",") if args.impl != "all" else ["cuda", "cub", "crisp"]
 
     # Build phase
     binaries = {}
@@ -295,18 +322,11 @@ def main():
             compile_times["cub"] = ct
 
     if "crisp" in run_impls:
-        print("Building Crisp (atomic-per-thread)...")
+        print("Building Crisp...")
         b, ct = build_crisp(SCRIPT_DIR / "crisp")
         if b:
             binaries["crisp"] = b
             compile_times["crisp"] = ct
-
-    if "crisp_tree" in run_impls:
-        print("Building Crisp (workgroup tree-reduce)...")
-        b, ct = build_crisp_tree(SCRIPT_DIR / "crisp")
-        if b:
-            binaries["crisp_tree"] = b
-            compile_times["crisp_tree"] = ct
 
     if not binaries:
         print("No implementations built successfully. Exiting.")
@@ -316,26 +336,27 @@ def main():
     print("\n=== Benchmark phase ===")
     all_results = []
 
-    # Resolve crisp_tree occupancy:
+    # Resolve occupancy (shared between crisp and cuda):
     #   CLI flag overrides; otherwise read from the .crisp file.
     # This keeps a single source of truth (the .crisp file's :occupancy
     # declaration) while still allowing ad-hoc sweeps from the command line.
-    if "crisp_tree" in binaries:
-        if args.crisp_tree_occupancy is not None:
-            crisp_tree_occ = args.crisp_tree_occupancy
-            print(f"\ncrisp_tree occupancy: {crisp_tree_occ} (from --crisp-tree-occupancy CLI flag)")
-        else:
-            crisp_tree_occ = extract_occupancy_from_crisp(
-                SCRIPT_DIR / "crisp" / "sum-reduce-tree.crisp")
-            print(f"\ncrisp_tree occupancy: {crisp_tree_occ} (parsed from sum-reduce-tree.crisp)")
+    # The cuda reference uses the SAME occupancy as crisp so the
+    # comparison is "same algorithm, same launch policy, different language".
+    if args.crisp_tree_occupancy is not None:
+        shared_occupancy = args.crisp_tree_occupancy
+        print(f"\nOccupancy: {shared_occupancy} (from --crisp-tree-occupancy CLI flag, "
+              f"applied to both crisp and cuda)")
     else:
-        crisp_tree_occ = 1.0
+        shared_occupancy = extract_occupancy_from_crisp(
+            SCRIPT_DIR / "crisp" / "sum-reduce.crisp")
+        print(f"\nOccupancy: {shared_occupancy} (parsed from sum-reduce.crisp, "
+              f"applied to both crisp and cuda)")
 
     for N in sizes:
         for impl_name, binary in binaries.items():
             extra = None
-            if impl_name == "crisp_tree":
-                extra = [crisp_tree_occ]
+            if impl_name in ("crisp", "cuda"):
+                extra = [shared_occupancy]
             result = run_benchmark(binary, N, args.warmup, args.iters, impl_name, extra_args=extra)
             if result:
                 all_results.append(result)

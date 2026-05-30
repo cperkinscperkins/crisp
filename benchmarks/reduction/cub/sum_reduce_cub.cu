@@ -20,6 +20,15 @@
 
 #include <cub/cub.cuh>
 
+#define CUDA_CHECK(call) do {                                                  \
+    cudaError_t _e = (call);                                                   \
+    if (_e != cudaSuccess) {                                                   \
+        fprintf(stderr, "CUDA error at %s:%d — %s\n",                          \
+                __FILE__, __LINE__, cudaGetErrorString(_e));                   \
+        exit(1);                                                               \
+    }                                                                          \
+} while(0)
+
 int main(int argc, char** argv) {
     int N          = argc > 1 ? atoi(argv[1]) : 1000000;
     int warmup     = argc > 2 ? atoi(argv[2]) : 50;
@@ -30,40 +39,40 @@ int main(int argc, char** argv) {
 
     float* d_input;
     float* d_output;
-    cudaMalloc(&d_input, N * sizeof(float));
-    cudaMalloc(&d_output, sizeof(float));
-    cudaMemcpy(d_input, h_input, N * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_input, N * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_output, sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d_input, h_input, N * sizeof(float), cudaMemcpyHostToDevice));
 
     void* d_temp = nullptr;
     size_t temp_bytes = 0;
-    cub::DeviceReduce::Sum(d_temp, temp_bytes, d_input, d_output, N);
-    cudaMalloc(&d_temp, temp_bytes);
+    CUDA_CHECK(cub::DeviceReduce::Sum(d_temp, temp_bytes, d_input, d_output, N));
+    CUDA_CHECK(cudaMalloc(&d_temp, temp_bytes));
 
     // Warmup
     for (int i = 0; i < warmup; i++) {
-        cub::DeviceReduce::Sum(d_temp, temp_bytes, d_input, d_output, N);
+        CUDA_CHECK(cub::DeviceReduce::Sum(d_temp, temp_bytes, d_input, d_output, N));
     }
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Measured runs — kernel time (GPU events) + wall time (host chrono)
     std::vector<float> kernel_times(iterations);
     std::vector<double> wall_times(iterations);
     cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
 
     float result = 0.0f;
     for (int i = 0; i < iterations; i++) {
         auto wall_start = std::chrono::high_resolution_clock::now();
 
-        cudaEventRecord(start);
-        cub::DeviceReduce::Sum(d_temp, temp_bytes, d_input, d_output, N);
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        cudaMemcpy(&result, d_output, sizeof(float), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaEventRecord(start));
+        CUDA_CHECK(cub::DeviceReduce::Sum(d_temp, temp_bytes, d_input, d_output, N));
+        CUDA_CHECK(cudaEventRecord(stop));
+        CUDA_CHECK(cudaEventSynchronize(stop));
+        CUDA_CHECK(cudaMemcpy(&result, d_output, sizeof(float), cudaMemcpyDeviceToHost));
 
         auto wall_end = std::chrono::high_resolution_clock::now();
-        cudaEventElapsedTime(&kernel_times[i], start, stop);
+        CUDA_CHECK(cudaEventElapsedTime(&kernel_times[i], start, stop));
         wall_times[i] = std::chrono::duration<double, std::micro>(wall_end - wall_start).count();
     }
 

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-29T06:13:46.256285Z
+Generated on 2026-05-30T17:00:35.970016Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -236,24 +236,31 @@ Generated on 2026-05-29T06:13:46.256285Z
 
 
 ---
+### DEFUN `%BUILD-EXACT-ITER-COUNT-FORM`
+- **Args**: `(START-SYM STRIDE-SYM LEN-SYM CL-PKG)`
+
+  > Returns an expression that computes the exact iteration count for a  >    grid-stride loop starting at START-SYM and stepping by STRIDE-SYM,  >    visiting only positions < LEN-SYM.  All three symbols name ULONG values.  >   >    Formula:  >      iters = (start >= len) ? 0  >                             : 1 + (len - 1 - start) / stride  >   >    The outer (>= start len) guard short-circuits the (len - 1 - start)  >    ulong underflow when start >= len or len = 0.
+
+
+---
 ### DEFUN `%EXPAND-TENSOR-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
-  > Pure expansion of (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).  >    CT must be :last or :first (already resolved by caller).  Returns the  >    expanded let+dotimes+if+let tree.  Validates form shape only — strict-  >    tag vs CT agreement and tensor-arity checks are the caller's job.
+  > Pure expansion of (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).  >    CT must be :last or :first (already resolved by caller).  Returns the  >    expanded let+dotimes tree.  Validates form shape only — strict-tag vs  >    CT agreement and tensor-arity checks are the caller's job.  >   >    New shape: exact-iter-count + simple dotimes (no per-iter bounds check).
 
 
 ---
 ### DEFUN `%EXPAND-GRID-STRIDE-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  No type  >    info needed — grid-stride is always rightmost-binding-gets-warp.
+  > Pure expansion of (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  No type  >    info needed — grid-stride is always rightmost-binding-gets-warp.  >   >    New shape: exact-iter-count + simple dotimes (no per-iter bounds check).
 
 
 ---
 ### DEFUN `%EXPAND-LOOP-VECTOR-STRIDE-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  Mirrors the  >    original analyzer expansion but uses IF instead of WHEN so the AD  >    backward walker recognises the conditional (107 fix).
+  > Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  >    Refactored to use %build-exact-iter-count-form for consistency with  >    the rest of Group A.  Same behaviour as the earlier rewrite — single  >    counter dotimes, body runs unconditionally.
 
 
 ---
@@ -323,7 +330,7 @@ Generated on 2026-05-29T06:13:46.256285Z
 ### DEFUN `%EXPAND-HW-WARP-IDX-FORM`
 - **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
 
-  > Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.  Phase 1b:  >    pre-checks the body for bare load-tile / store-tile (compile error if  >    found — incompatible with warp-grouped chunking).
+  > Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.  >    Bare load-tile / store-tile inside :warp-idx remain a compile error.  >   >    New shape: exact-iter-count + simple dotimes (no per-iter bounds check).  >    Loop start  = mywarp * ws         (warp-uniform within a warp)  >    Loop stride = ws * numwarps       (warp-uniform across the device)  >    Loop var    = start + k * stride.
 
 
 ---
@@ -422,7 +429,7 @@ Generated on 2026-05-29T06:13:46.256285Z
 - **Args**: `(TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN
               LOCATION)`
 
-  > Workgroup-strided outer loop, with the per-dim bounds check routed  >    through %uniform-when so it doesn't trip the divergence checker.
+  > Workgroup-strided outer loop over chunk origins.  Per-workgroup exact  >    iter count per dim — body runs unconditionally.
 
 
 ---
@@ -450,7 +457,7 @@ Generated on 2026-05-29T06:13:46.256285Z
 ### DEFUN `%EXPAND-WORKGROUP-STRIDE-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (workgroup-stride T (BINDINGS) BODY...).  N-dim nested  >    dotimes where each thread strides by local-work-size starting at its  >    local-id.  Returns a let/dotimes/when tree suitable for analysis.
+  > Pure expansion of (workgroup-stride T (BINDINGS) BODY...).  N-dim nested  >    per-thread cooperative loop.  Each dim's iter count is computed up  >    front (per thread) so the inner dotimes is a single-counter, body-  >    unconditional loop the unroller can attack.
 
 
 ---
@@ -2043,11 +2050,38 @@ Generated on 2026-05-29T06:13:46.256285Z
 
 
 ---
+### DEFPARAMETER `*KERNEL-READONLY-TENSOR-SYMS*`
+
+  > Hash-table set of kernel-param symbols whose indexed loads should be  >    marked with !invariant.load metadata.  Bound by generate-function-body  >    around the body codegen loop; read by the semantic-aref tensor case.  >    NIL means no read-only inference applies (kernel has no &out, or non-  >    kernel function).
+
+
+---
+### DEFUN `%COLLECT-READONLY-TENSOR-PARAM-SYMS`
+- **Args**: `(SEMANTIC-FUNCTION)`
+
+  > Looks up SEMANTIC-FUNCTION's high-level (pre-flatten) declared  >    signature in *KERNEL-DECLARED-SIGNATURES* and returns a hash-table  >    of param symbols whose tensor reads can be marked invariant, or NIL  >    if the convention doesn't apply.  >   >    The convention applies iff the kernel's declared params include &OUT.  >    Every param BEFORE the &OUT marker that is also a float or integer  >    tensor goes into the returned set.  >   >    Returns NIL when:  >      - The function isn't a registered kernel (no entry in  >        *KERNEL-DECLARED-SIGNATURES*).  Helper functions, accessors, and  >        internally-generated functions all fall here — safe default.  >      - The declared signature contains no &OUT marker (kernel may write  >        through any param; no read-only inference possible).  >      - No qualifying tensor params remain after filtering.  >   >    Declared signature shape: a list of (PARAM-NAME . TYPE-SPEC) pairs,  >    except &OUT itself which appears as (&OUT . &OUT).
+
+
+---
+### DEFUN `%ATTACH-INVARIANT-LOAD`
+- **Args**: `(LOADED-INST MODULE)`
+
+  > Attach `!invariant.load !{}` metadata to the LLVM load instruction  >    LOADED-INST.  The empty MD node is the LLVM convention for the  >    invariant.load assertion.  NVPTX lowers `load` + `!invariant.load`  >    to `ld.global.nc.f32` (texture-cache / non-coherent path).  >   >    Note: LLVMMDNodeInContext2 returns an LLVMMetadataRef; LLVMSetMetadata  >    expects an LLVMValueRef.  We wrap via LLVMMetadataAsValue.
+
+
+---
+### DEFUN `%ARRAY-NODE-READONLY-TENSOR-PARAM-P`
+- **Args**: `(ARRAY-NODE)`
+
+  > Returns T if ARRAY-NODE is a direct reference (semantic-var-read)  >    to a kernel-param symbol in *KERNEL-READONLY-TENSOR-SYMS*.  Aliased  >    references (let-bindings, function-call results) return NIL — they  >    degrade gracefully to a plain load.
+
+
+---
 ### DEFUN `GENERATE-FUNCTION-BODY`
 - **Args**: `(SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER
               LOCATION-MAP)`
 
-  > Generates the body of the function.  >    Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the  >    PTX kernel-entry receive site can inttoptr demoted i64 params back  >    to their original-addrspace pointer (see header comment).
+  > Generates the body of the function.  >    Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the  >    PTX kernel-entry receive site can inttoptr demoted i64 params back  >    to their original-addrspace pointer.  >    Binds *kernel-readonly-tensor-syms* around the body codegen so the  >    semantic-aref tensor case can attach !invariant.load to direct  >    reads of read-only kernel-param tensors.
 
 
 ---
@@ -2575,10 +2609,23 @@ Generated on 2026-05-29T06:13:46.256285Z
 
 
 ---
+### DEFUN `%OPT-AVAILABLE-P`
+
+  > Returns the resolved opt tool path if findable, NIL otherwise.  >    We probe rather than assume, so machines without opt installed still  >    produce PTX / SPV (just unoptimized).
+
+
+---
+### DEFUN `%RUN-OPT-O3`
+- **Args**: `(INPUT-LL-FILE OUTPUT-LL-FILE)`
+
+  > Run opt -O3 -S input-ll-file -o output-ll-file.  >    Returns T on success, NIL if opt isn't available or the run failed.
+
+
+---
 ### DEFUN `COMPILE-TO-SPIRV`
 - **Args**: `(MODULE OUTPUT-PATH &KEY DEBUG-P)`
 
-  > Compiles an LLVM Module to SPIR-V using the external toolchain.  >    Runs %remove-dead-array-returning-functions before translation to  >    prevent IGC from miscompiling dead TypeArray-returning functions  >    (bug 028 workaround Part 2).
+  > Compiles an LLVM Module to SPIR-V via opt -O3 -> llvm-as -> llvm-spirv.  >    (bug 028 workaround Part 2).
 
 
 ---
@@ -2592,7 +2639,7 @@ Generated on 2026-05-29T06:13:46.256285Z
 ### DEFUN `COMPILE-TO-PTX`
 - **Args**: `(MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)`
 
-  > Compiles an LLVM Module to PTX using llc.  >  COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)  >                      sm_80 = Ampere (required for endeavor 114's cp.async path).  >                      Pre-Ampere targets can pass an explicit value if needed,  >                      but kernels using request-load-tile / await-request will  >                      fail to compile on anything earlier.
+  > Compiles an LLVM Module to PTX using llc.  >    Pipeline: IR -> opt -O3 (if available) -> llc -> PTX.  >    COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)  >                        sm_80 = Ampere (required for endeavor 114's cp.async path).  >                        Pre-Ampere targets can pass an explicit value if needed,  >                        but kernels using request-load-tile / await-request will  >                        fail to compile on anything earlier.
 
 
 ---
