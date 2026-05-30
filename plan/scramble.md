@@ -691,10 +691,13 @@ scp C:\Users\cperk\Documents\crisp-man\scripts\verify-ptx-113-01.py root@213.173
 - [x] compile time comparison maybe not fair. crisp compile is device only. others are device + host.  Break out?
 - [x] crisp_tree optimizes occupancy, but CUDA and CUB do not. Seems unfair.
 - [x] drop atomic-heavy crisp test, just use crisp_tree. Rename?
-- [ ] improve? loop pattern,
-- [ ] !invariant.load metadata for read-only tensor params — next biggest, still tractable.
+- [x] improve? loop pattern — done 2026-05-29/30. All 6 stride macros (loop-vector-stride / tensor-stride / grid-stride / hardware-stride :warp-idx / workgroup-stride / tile-stride+hw :workgroup-idx) rewritten to use exact-iter-count + single-counter dotimes with unconditional body. Shared helper `%build-exact-iter-count-form` in overlay. Loop-vector-stride alone gave ~50% kernel-time win on the reduction bench; transfer to the other macros assumed (PTX shape verified for each, but no perf measurement yet). 732/732 default + 732/732 --differentiate.
+
+- [x] !invariant.load metadata for read-only tensor params — next biggest, still tractable.
 
 The change is in src/codegen.lisp wherever we emit load instructions for tensor element accesses. Add a check: "is this tensor parameter never written (no set! reaching it)?" If yes, attach !invariant.load metadata to the LLVM load instruction. The NVPTX backend recognizes this and emits ld.global.nc.f32 (texture cache path) instead of ld.global.b32 (L1 path).
+
+Done 2026-05-29. Inference rule: when the kernel's declared signature has `&out`, every tensor param before `&out` (positional / `&optional` / `&key`) is read-only and its `(~ T i)` loads get `!invariant.load !{}` → PTX `ld.global.nc.b32`. Lookup is via `*kernel-declared-signatures*` (the pre-flatten signature retains `&out`). Limitations: direct refs only — let-bound aliases lose the marking (no miscompile, just slower); kernels with no `&out` get nothing. Reduction-bench perf delta was in the noise — this kernel has no data reuse, so the texture-cache path is a wash. Expected to matter on GEMM B-tile broadcast / stencils.
 
 - [ ] compile-time known scratch/local mem opt.
 

@@ -648,3 +648,617 @@
                  array-type cell-spec))))))
 
 
+;; ======================================================================
+;; Endeavor: stride macros — exact-iter-count rewrite (Group A)
+;;
+;; Group A is the 1-D family of grid-stride loops that all share the same
+;; broken pattern:
+;;
+;;   (dotimes (k LEN GSIZE)            ; k = 0, GSIZE, 2*GSIZE, ...
+;;     (let ((flat (+ k GID)))
+;;       (if (< flat LEN) BODY ())))
+;;
+;; The per-iteration `if (< flat LEN)` is a runtime bounds check that
+;; LLVM SCEV can't always remove (the dotimes trip count covers all gid
+;; values, so the predicate depends on `gid + k * gsize` and is not
+;; loop-invariant).  Hand-written CUDA writes the loop as
+;; `for (int i = gid; i < n; i += gstride)` — a single-counter affine
+;; loop the unroller / vectorizer handle aggressively.
+;;
+;; New shape mirrors that:
+;;
+;;   (let ((iters (if (>= GID LEN)
+;;                    (to-ulong 0)
+;;                    (+ (to-ulong 1) (/ (- (- LEN (to-ulong 1)) GID) GSIZE)))))
+;;     (dotimes (k iters)
+;;       (let ((flat (+ GID (* k GSIZE))))
+;;         BODY)))
+;;
+;; iters formula: 1 + floor((len - 1 - gid) / gsize) for gid < len, else 0.
+;; The outer guard short-circuits the (len - 1 - gid) underflow when
+;; gid >= len or len = 0.
+;;
+;; Macros covered here (all share the shared helper):
+;;   - tensor-stride        — N-D tensor walk (decode flat → coords inside)
+;;   - grid-stride          — synthetic N-D walk over a size-list
+;;   - hardware-stride
+;;       :warp-idx          — 1D warp-strided walk over flattened linear domain
+;;   - loop-vector-stride   — 1D walk over a vector (refactor for consistency)
+;;
+;; AD compatibility: backward walker recognises LET, IF (in let-binding
+;; init position), DOTIMES, PROGN — all forms used here.  The IF in the
+;; iters compute returns an integer count, not a differentiable value,
+;; so AD handles it as straight control flow.
+
+(defun %build-exact-iter-count-form (start-sym stride-sym len-sym cl-pkg)
+  "Returns an expression that computes the exact iteration count for a
+   grid-stride loop starting at START-SYM and stepping by STRIDE-SYM,
+   visiting only positions < LEN-SYM.  All three symbols name ULONG values.
+
+   Formula:
+     iters = (start >= len) ? 0
+                            : 1 + (len - 1 - start) / stride
+
+   The outer (>= start len) guard short-circuits the (len - 1 - start)
+   ulong underflow when start >= len or len = 0."
+  (let ((if-sym       (intern "IF" cl-pkg))
+        (ge-sym       (intern ">=" cl-pkg))
+        (plus-sym     (intern "+" cl-pkg))
+        (minus-sym    (intern "-" cl-pkg))
+        (div-sym      (intern "/" cl-pkg))
+        (to-ulong-sym (intern "TO-ULONG" cl-pkg)))
+    (let ((zero (list to-ulong-sym 0))
+          (one  (list to-ulong-sym 1)))
+      (list if-sym
+            (list ge-sym start-sym len-sym)
+            zero
+            (list plus-sym
+                  one
+                  (list div-sym
+                        (list minus-sym
+                              (list minus-sym len-sym one)
+                              start-sym)
+                        stride-sym))))))
+
+
+;; ----------------------------------------------------------------------
+;; src/analysis/control.lisp — %expand-tensor-stride-form
+;; ----------------------------------------------------------------------
+
+(defun %expand-tensor-stride-form (expr ct location)
+  "Pure expansion of (tensor-stride T [LAYOUT-TAG] (BINDINGS...) BODY...).
+   CT must be :last or :first (already resolved by caller).  Returns the
+   expanded let+dotimes tree.  Validates form shape only — strict-tag vs
+   CT agreement and tensor-arity checks are the caller's job.
+
+   New shape: exact-iter-count + simple dotimes (no per-iter bounds check)."
+  (let* ((strict-p   (keywordp (third expr)))
+         (bindings   (if strict-p (fourth expr) (third expr)))
+         (body-forms (if strict-p (cddddr expr) (cdddr expr)))
+         (tensor-form (second expr)))
+    (unless (and bindings (listp bindings) (every #'symbolp bindings)
+                 (>= (length bindings) 1))
+      (error 'crisp-compiler-error
+             :message (if strict-p
+                          "Malformed tensor-stride: expected (tensor-stride TENSOR LAYOUT-TAG (BINDING ...) BODY...)"
+                          "Malformed tensor-stride: expected (tensor-stride TENSOR (BINDING ...) BODY...)")
+             :source-location location))
+    (let* ((n           (length bindings))
+           (t-sym       (gensym "T"))
+           (gid-sym     (gensym "GID"))
+           (gsize-sym   (gensym "GSIZE"))
+           (len-sym     (gensym "LEN"))
+           (iters-sym   (gensym "ITERS"))
+           (k-sym       (gensym "K"))
+           (flat-sym    (gensym "FLAT"))
+           (extents-syms (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
+           (cl-pkg          (find-package :crisp-language))
+           (let-sym         (intern "LET"                 cl-pkg))
+           (declare-sym     (intern "DECLARE"             cl-pkg))
+           (grid-level-sym  (intern "GRID-LEVEL"          cl-pkg))
+           (dotimes-sym     (intern "DOTIMES"             cl-pkg))
+           (progn-sym       (intern "PROGN"               cl-pkg))
+           (get-gid-sym     (intern "GET-GLOBAL-ID"        cl-pkg))
+           (get-gsize-sym   (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+           (len-tilde-sym   (intern "LENGTH~"             cl-pkg))
+           (extents-tilde   (intern "EXTENTS~"            cl-pkg))
+           (aref-sym        (intern "~"                   cl-pkg))
+           (plus-sym        (intern "+"                   cl-pkg))
+           (mul-sym         (intern "*"                   cl-pkg))
+           (extent-bindings
+            (loop for esym in extents-syms
+                  for i from 0
+                  collect (list esym (list aref-sym (list extents-tilde t-sym) i))))
+           (stride-bindings (%ts-build-stride-bindings extents-syms ct))
+           (decode-bindings (if (= n 1)
+                                (list (list (first bindings) flat-sym))
+                                (%ts-build-decode-bindings flat-sym bindings
+                                                           (mapcar #'first stride-bindings)
+                                                           ct)))
+           (inner-body (if (= (length body-forms) 1)
+                           (first body-forms)
+                           (cons progn-sym body-forms)))
+           ;; Decode multi-D coords + body, run unconditionally.
+           (decode-let (list let-sym decode-bindings inner-body))
+           ;; flat = gid + k * gsize
+           (flat-let (list let-sym
+                           (list (list flat-sym
+                                       (list plus-sym gid-sym
+                                             (list mul-sym k-sym gsize-sym))))
+                           decode-let))
+           (dotimes-form (list dotimes-sym
+                               (list k-sym iters-sym)
+                               flat-let))
+           (iters-let (list let-sym
+                            (list (list iters-sym
+                                        (%build-exact-iter-count-form
+                                         gid-sym gsize-sym len-sym cl-pkg)))
+                            dotimes-form))
+           (outer-let
+            (list* let-sym
+                   (append (list (list t-sym     tensor-form)
+                                 (list gid-sym   (list get-gid-sym 0))
+                                 (list gsize-sym (list get-gsize-sym 0))
+                                 (list len-sym   (list len-tilde-sym t-sym)))
+                           extent-bindings
+                           stride-bindings)
+                   (list (list declare-sym (list grid-level-sym))
+                         iters-let))))
+      outer-let)))
+
+
+;; ----------------------------------------------------------------------
+;; src/analysis/control.lisp — %expand-grid-stride-form
+;; ----------------------------------------------------------------------
+
+(defun %expand-grid-stride-form (expr location)
+  "Pure expansion of (grid-stride (SIZE-LIST) (BINDINGS) BODY...).  No type
+   info needed — grid-stride is always rightmost-binding-gets-warp.
+
+   New shape: exact-iter-count + simple dotimes (no per-iter bounds check)."
+  (unless (and (>= (length expr) 4)
+               (listp (second expr)) (listp (third expr))
+               (every #'symbolp (third expr))
+               (>= (length (second expr)) 1)
+               (= (length (second expr)) (length (third expr))))
+    (error 'crisp-compiler-error
+           :message "Malformed grid-stride: expected (grid-stride (SIZE ...) (BINDING ...) BODY...) with size and binding arity matching and >= 1"
+           :source-location location))
+  (let* ((size-forms     (second expr))
+         (bindings       (third expr))
+         (body-forms     (cdddr expr))
+         (n              (length bindings))
+         (cl-pkg          (find-package :crisp-language))
+         (let-sym         (intern "LET"                 cl-pkg))
+         (declare-sym     (intern "DECLARE"             cl-pkg))
+         (grid-level-sym  (intern "GRID-LEVEL"          cl-pkg))
+         (dotimes-sym     (intern "DOTIMES"             cl-pkg))
+         (progn-sym       (intern "PROGN"               cl-pkg))
+         (get-gid-sym     (intern "GET-GLOBAL-ID"        cl-pkg))
+         (get-gsize-sym   (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+         (plus-sym        (intern "+"                   cl-pkg))
+         (mul-sym         (intern "*"                   cl-pkg))
+         (to-ulong-sym    (intern "TO-ULONG"            cl-pkg))
+         (gid-sym         (gensym "GID"))
+         (gsize-sym       (gensym "GSIZE"))
+         (len-sym         (gensym "LEN"))
+         (iters-sym       (gensym "ITERS"))
+         (k-sym           (gensym "K"))
+         (flat-sym        (gensym "FLAT"))
+         (extents-syms    (loop for i from 0 below n collect (gensym (format nil "E~A" i))))
+         (size-bindings   (loop for esym in extents-syms
+                                for form in size-forms
+                                collect (list esym (list to-ulong-sym form))))
+         (len-form        (if (= n 1)
+                              (first extents-syms)
+                              (reduce (lambda (a b) (list mul-sym a b)) extents-syms)))
+         (stride-bindings (%ts-build-stride-bindings extents-syms :last))
+         (decode-bindings (if (= n 1)
+                              (list (list (first bindings) flat-sym))
+                              (%ts-build-decode-bindings flat-sym bindings
+                                                         (mapcar #'first stride-bindings)
+                                                         :last)))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
+         (decode-let (list let-sym decode-bindings inner-body))
+         (flat-let (list let-sym
+                         (list (list flat-sym
+                                     (list plus-sym gid-sym
+                                           (list mul-sym k-sym gsize-sym))))
+                         decode-let))
+         (dotimes-form (list dotimes-sym
+                             (list k-sym iters-sym)
+                             flat-let))
+         (iters-let (list let-sym
+                          (list (list iters-sym
+                                      (%build-exact-iter-count-form
+                                       gid-sym gsize-sym len-sym cl-pkg)))
+                          dotimes-form))
+         (outer-let
+          (list* let-sym
+                 (append (list (list gid-sym   (list get-gid-sym 0))
+                               (list gsize-sym (list get-gsize-sym 0)))
+                         size-bindings
+                         (list (list len-sym len-form))
+                         stride-bindings)
+                 (list (list declare-sym (list grid-level-sym))
+                       iters-let))))
+    outer-let))
+
+
+;; ----------------------------------------------------------------------
+;; src/analysis/control.lisp — %expand-hw-warp-idx-form
+;; ----------------------------------------------------------------------
+
+(defun %expand-hw-warp-idx-form (tensor-form bindings body-forms location)
+  "Outer-loop expansion for hardware-stride :warp-idx.  Always 1D.
+   Bare load-tile / store-tile inside :warp-idx remain a compile error.
+
+   New shape: exact-iter-count + simple dotimes (no per-iter bounds check).
+   Loop start  = mywarp * ws         (warp-uniform within a warp)
+   Loop stride = ws * numwarps       (warp-uniform across the device)
+   Loop var    = start + k * stride."
+  (declare (ignore location))
+  (dolist (f body-forms)
+    (%detect-bare-load-store-tile-in-form f "hardware-stride :warp-idx"))
+  (let* ((cl-pkg              (find-package :crisp-language))
+         (let-sym             (intern "LET"                    cl-pkg))
+         (declare-sym         (intern "DECLARE"                cl-pkg))
+         (grid-level-sym      (intern "GRID-LEVEL"             cl-pkg))
+         (dotimes-sym         (intern "DOTIMES"                cl-pkg))
+         (progn-sym           (intern "PROGN"                  cl-pkg))
+         (to-ulong-sym        (intern "TO-ULONG"               cl-pkg))
+         (len-tilde-sym       (intern "LENGTH~"                cl-pkg))
+         (get-glid-sym        (intern "GET-GLOBAL-LINEAR-ID"   cl-pkg))
+         (get-glsize-sym      (intern "GET-GLOBAL-LINEAR-SIZE" cl-pkg))
+         (plus-sym            (intern "+"                      cl-pkg))
+         (mul-sym             (intern "*"                      cl-pkg))
+         (div-sym             (intern "/"                      cl-pkg))
+         (t-sym         (gensym "T"))
+         (ws-sym        (gensym "WSIZE"))
+         (len-sym       (gensym "LEN"))
+         (glid-sym      (gensym "GLID"))
+         (glsize-sym    (gensym "GLSIZE"))
+         (mywarp-sym    (gensym "MYWARP"))
+         (numwarps-sym  (gensym "NUMWARPS"))
+         (start-sym     (gensym "WSTART"))
+         (stride-sym    (gensym "WSTRIDE"))
+         (iters-sym     (gensym "ITERS"))
+         (k-sym         (gensym "K"))
+         (var-name      (first bindings))
+         (rewritten-body (%tile-helpers-rewrite body-forms 1
+                                                (lambda (k)
+                                                  (declare (ignore k))
+                                                  ws-sym)))
+         (inner-body (if (= (length rewritten-body) 1)
+                         (first rewritten-body)
+                         (cons progn-sym rewritten-body)))
+         (var-let (list let-sym
+                        (list (list var-name
+                                    (list plus-sym start-sym
+                                          (list mul-sym k-sym stride-sym))))
+                        inner-body))
+         (dotimes-form (list dotimes-sym
+                             (list k-sym iters-sym)
+                             var-let))
+         (iters-let (list let-sym
+                          (list (list iters-sym
+                                      (%build-exact-iter-count-form
+                                       start-sym stride-sym len-sym cl-pkg)))
+                          dotimes-form))
+         (outer-let (list let-sym
+                          (list (list t-sym        tensor-form)
+                                (list ws-sym       (list to-ulong-sym 32))
+                                (list len-sym      (list len-tilde-sym t-sym))
+                                (list glid-sym     (list get-glid-sym))
+                                (list glsize-sym   (list get-glsize-sym))
+                                (list mywarp-sym   (list div-sym glid-sym ws-sym))
+                                (list numwarps-sym (list div-sym glsize-sym ws-sym))
+                                (list start-sym    (list mul-sym mywarp-sym ws-sym))
+                                (list stride-sym   (list mul-sym ws-sym numwarps-sym)))
+                          (list declare-sym (list grid-level-sym))
+                          iters-let)))
+    outer-let))
+
+
+;; ----------------------------------------------------------------------
+;; src/analysis/control.lisp — %expand-loop-vector-stride-form
+;; (refactor: same algorithm as the earlier overlay redefinition, but
+;;  uses the shared %build-exact-iter-count-form helper)
+;; ----------------------------------------------------------------------
+
+(defun %expand-loop-vector-stride-form (expr location)
+  "Pure expansion of (loop-vector-stride VEC (VAR) BODY...).
+   Refactored to use %build-exact-iter-count-form for consistency with
+   the rest of Group A.  Same behaviour as the earlier rewrite — single
+   counter dotimes, body runs unconditionally."
+  (unless (and (>= (length expr) 3)
+               (listp (third expr))
+               (= (length (third expr)) 1)
+               (symbolp (first (third expr))))
+    (error 'crisp-compiler-error
+           :message "Malformed loop-vector-stride: expected (loop-vector-stride VEC (VAR) BODY...)"
+           :source-location location))
+  (let* ((vec-form        (second expr))
+         (var-name        (first (third expr)))
+         (body-forms      (cdddr expr))
+         (gid-sym         (gensym "GID"))
+         (gsize-sym       (gensym "GSIZE"))
+         (len-sym         (gensym "LEN"))
+         (iters-sym       (gensym "ITERS"))
+         (k-sym           (gensym "K"))
+         (cl-pkg          (find-package :crisp-language))
+         (let-sym         (intern "LET"                 cl-pkg))
+         (declare-sym     (intern "DECLARE"             cl-pkg))
+         (grid-level-sym  (intern "GRID-LEVEL"          cl-pkg))
+         (dotimes-sym     (intern "DOTIMES"             cl-pkg))
+         (progn-sym       (intern "PROGN"               cl-pkg))
+         (get-gid-sym     (intern "GET-GLOBAL-ID"        cl-pkg))
+         (get-gsize-sym   (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+         (len-tilde-sym   (intern "LENGTH~"             cl-pkg))
+         (plus-sym        (intern "+"                   cl-pkg))
+         (mul-sym         (intern "*"                   cl-pkg))
+         (i-binding       (list var-name
+                                (list plus-sym gid-sym
+                                      (list mul-sym k-sym gsize-sym))))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
+         (inner-let   (list let-sym (list i-binding) inner-body))
+         (dotimes-form (list dotimes-sym (list k-sym iters-sym) inner-let))
+         (iters-let   (list let-sym
+                            (list (list iters-sym
+                                        (%build-exact-iter-count-form
+                                         gid-sym gsize-sym len-sym cl-pkg)))
+                            dotimes-form))
+         (expansion (list let-sym
+                          (list (list gid-sym   (list get-gid-sym   0))
+                                (list gsize-sym (list get-gsize-sym 0))
+                                (list len-sym   (list len-tilde-sym vec-form)))
+                          (list declare-sym (list grid-level-sym))
+                          iters-let)))
+    expansion))
+
+
+;; ======================================================================
+;; src/analysis/control.lisp — %expand-workgroup-stride-form (Group C)
+;; ======================================================================
+;;
+;; Cooperative inner loop for a workgroup to walk a tile's coordinates.
+;; Per dim, each thread strides by LWS_i starting at LID_i.
+;;
+;; Old shape (per dim):
+;;
+;;   (dotimes (k_i E_i LWS_i)            ; k_i = 0, LWS_i, 2*LWS_i, ...
+;;     (let ((b_i (+ k_i LID_i)))
+;;       (when (< b_i E_i)
+;;         <inner-or-next-dim>)))
+;;
+;; Two scenarios the old `when` guards:
+;;   A. tile > workgroup → some threads iterate multiple times; the tail
+;;      iteration may go past extent for some threads.
+;;   B. tile < workgroup → threads with LID_i ≥ E_i never enter the body.
+;;
+;; The `when (< b_i E_i)` is THREAD-DIVERGENT (different threads, different
+;; LID_i) — the SCEV unroller can't remove it.
+;;
+;; New shape (per dim): exact per-thread iter count, no inner guard.
+;;
+;;   ITERS_i = (LID_i >= E_i) ? 0
+;;                            : 1 + (E_i - 1 - LID_i) / LWS_i
+;;   (dotimes (j_i ITERS_i)
+;;     (let ((b_i (+ LID_i (* j_i LWS_i))))
+;;       <inner-or-next-dim>))
+;;
+;; All ITERS_i bindings sit at the outer LET so the nest stays flat.
+;; Threads in scenario B compute ITERS_i = 0 and skip the dim entirely.
+;; In both scenarios the body is unconditional — no per-iter compare.
+;;
+;; Does NOT inject an end barrier (per chapter 13).  Caller inserts
+;; (local-barrier) explicitly when needed.
+
+(defun %expand-workgroup-stride-form (expr location)
+  "Pure expansion of (workgroup-stride T (BINDINGS) BODY...).  N-dim nested
+   per-thread cooperative loop.  Each dim's iter count is computed up
+   front (per thread) so the inner dotimes is a single-counter, body-
+   unconditional loop the unroller can attack."
+  (multiple-value-bind (bindings body-forms tensor-form)
+      (%workgroup-stride-parse expr)
+    (unless (and (listp bindings)
+                 (every #'symbolp bindings)
+                 (>= (length bindings) 1))
+      (error 'crisp-compiler-error
+             :message "Malformed workgroup-stride: expected (workgroup-stride TENSOR (BINDING ...) BODY...)"
+             :source-location location))
+    (let* ((n (length bindings))
+           (cl-pkg              (find-package :crisp-language))
+           (let-sym             (intern "LET"                 cl-pkg))
+           (dotimes-sym         (intern "DOTIMES"             cl-pkg))
+           (progn-sym           (intern "PROGN"               cl-pkg))
+           (aref-sym            (intern "~"                   cl-pkg))
+           (extents-tilde-sym   (intern "EXTENTS~"            cl-pkg))
+           (get-local-id-sym    (intern "GET-LOCAL-ID"        cl-pkg))
+           (get-lws-sym         (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
+           (plus-sym            (intern "+"                   cl-pkg))
+           (mul-sym             (intern "*"                   cl-pkg))
+           (t-sym (gensym "T"))
+           (e-syms     (loop for i from 0 below n collect (gensym (format nil "E~A"     i))))
+           (lid-syms   (loop for i from 0 below n collect (gensym (format nil "LID~A"   i))))
+           (lws-syms   (loop for i from 0 below n collect (gensym (format nil "LWS~A"   i))))
+           (iters-syms (loop for i from 0 below n collect (gensym (format nil "ITERS~A" i))))
+           (k-syms     (loop for i from 0 below n collect (gensym (format nil "K~A"     i))))
+           (inner-body (if (= (length body-forms) 1)
+                           (first body-forms)
+                           (cons progn-sym body-forms)))
+           ;; Build the nest from innermost out.  At each level:
+           ;;   (dotimes (K_i ITERS_i)
+           ;;     (let ((b_i (+ LID_i (* K_i LWS_i))))
+           ;;       <inner-or-next-dim>))
+           (nest
+            (let ((acc inner-body))
+              (loop for i from (1- n) downto 0
+                    for b-sym     = (nth i bindings)
+                    for lid-sym   = (nth i lid-syms)
+                    for lws-sym   = (nth i lws-syms)
+                    for k-sym     = (nth i k-syms)
+                    for iters-sym = (nth i iters-syms)
+                    do (setf acc
+                             (list dotimes-sym
+                                   (list k-sym iters-sym)
+                                   (list let-sym
+                                         (list (list b-sym
+                                                     (list plus-sym lid-sym
+                                                           (list mul-sym k-sym lws-sym))))
+                                         acc))))
+              acc))
+           (outer-bindings
+            (append
+             (list (list t-sym tensor-form))
+             (loop for i from 0 below n
+                   for e-sym in e-syms
+                   collect (list e-sym (list aref-sym (list extents-tilde-sym t-sym) i)))
+             (loop for i from 0 below n
+                   for lid-sym in lid-syms
+                   collect (list lid-sym (list get-local-id-sym i)))
+             (loop for i from 0 below n
+                   for lws-sym in lws-syms
+                   collect (list lws-sym (list get-lws-sym i)))
+             ;; Per-dim exact-iter-count, one per thread.
+             (loop for i from 0 below n
+                   for iters-sym in iters-syms
+                   for lid-sym   in lid-syms
+                   for lws-sym   in lws-syms
+                   for e-sym     in e-syms
+                   collect (list iters-sym
+                                 (%build-exact-iter-count-form
+                                  lid-sym lws-sym e-sym cl-pkg))))))
+      (list let-sym outer-bindings nest))))
+
+
+;; ======================================================================
+;; src/analysis/control.lisp — %expand-workgroup-strided-outer-loop-with-ts-syms
+;;   (used by tile-stride and hardware-stride :workgroup-idx — Group B)
+;; ======================================================================
+;;
+;; Old shape (per dim):
+;;
+;;   (dotimes (k_i E_i (* TS_i NG_i))     ; k_i = 0, TS_i*NG_i, 2*TS_i*NG_i, ...
+;;     (let ((b_i (+ k_i (* GID_i TS_i))))
+;;       (%uniform-when (< b_i E_i)
+;;         <next-dim-or-body>)))
+;;
+;; Where:
+;;   GID_i = get-workgroup-id i      (workgroup-uniform)
+;;   NG_i  = get-num-groups i        (workgroup-uniform)
+;;   TS_i  = tile size               (workgroup-uniform / compile-time)
+;;   E_i   = extents[i]              (workgroup-uniform)
+;;
+;; The `%uniform-when` is workgroup-uniform (b_i is workgroup-uniform),
+;; but it's NOT loop-invariant — b_i changes every iteration.  llc emits
+;; it as a per-iter `setp + @p bra` inside the body, and opt -O3 can only
+;; sometimes elide it.
+;;
+;; New shape (per dim): per-workgroup exact-iter-count over chunk origins.
+;;
+;;   START_i  = GID_i * TS_i              (this WG's chunk origin in dim i)
+;;   STRIDE_i = TS_i * NG_i               (distance between chunk origins)
+;;   ITERS_i  = (START_i >= E_i) ? 0
+;;                               : 1 + (E_i - 1 - START_i) / STRIDE_i
+;;   (dotimes (j_i ITERS_i)
+;;     (let ((b_i (+ START_i (* j_i STRIDE_i))))
+;;       <next-dim-or-body>))
+;;
+;; No %uniform-when needed.  Divergence checker is happy because there's
+;; no conditional to check.
+
+(defun %expand-workgroup-strided-outer-loop-with-ts-syms
+    (tensor-form n bindings body-forms ts-syms tile-size-expr-fn location)
+  "Workgroup-strided outer loop over chunk origins.  Per-workgroup exact
+   iter count per dim — body runs unconditionally."
+  (declare (ignore location))
+  (let* ((cl-pkg              (find-package :crisp-language))
+         (let-sym             (intern "LET"                cl-pkg))
+         (declare-sym         (intern "DECLARE"            cl-pkg))
+         (workgroup-level-sym (intern "WORKGROUP-LEVEL"    cl-pkg))
+         (dotimes-sym         (intern "DOTIMES"            cl-pkg))
+         (progn-sym           (intern "PROGN"              cl-pkg))
+         (aref-sym            (intern "~"                  cl-pkg))
+         (extents-tilde-sym   (intern "EXTENTS~"           cl-pkg))
+         (get-wg-id-sym       (intern "GET-WORKGROUP-ID"   cl-pkg))
+         (get-num-groups-sym  (intern "GET-NUM-GROUPS"     cl-pkg))
+         (plus-sym            (intern "+"                  cl-pkg))
+         (mul-sym             (intern "*"                  cl-pkg))
+         (t-sym (gensym "T"))
+         (e-syms      (loop for i from 0 below n collect (gensym (format nil "E~A"      i))))
+         (gid-syms    (loop for i from 0 below n collect (gensym (format nil "WGID~A"   i))))
+         (ng-syms     (loop for i from 0 below n collect (gensym (format nil "NG~A"     i))))
+         (start-syms  (loop for i from 0 below n collect (gensym (format nil "START~A"  i))))
+         (stride-syms (loop for i from 0 below n collect (gensym (format nil "STRIDE~A" i))))
+         (iters-syms  (loop for i from 0 below n collect (gensym (format nil "ITERS~A"  i))))
+         (k-syms      (loop for i from 0 below n collect (gensym (format nil "K~A"      i))))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
+         (nest
+          (let ((acc inner-body))
+            (loop for i from (1- n) downto 0
+                  for b-sym      = (nth i bindings)
+                  for start-sym  = (nth i start-syms)
+                  for stride-sym = (nth i stride-syms)
+                  for iters-sym  = (nth i iters-syms)
+                  for k-sym      = (nth i k-syms)
+                  do (setf acc
+                           (list dotimes-sym
+                                 (list k-sym iters-sym)
+                                 (list let-sym
+                                       (list (list b-sym
+                                                   (list plus-sym start-sym
+                                                         (list mul-sym k-sym stride-sym))))
+                                       acc))))
+            acc))
+         (outer-bindings
+          (append
+           (list (list t-sym tensor-form))
+           ;; ts_i  = tile size (from caller)
+           (loop for i from 0 below n
+                 for ts-sym in ts-syms
+                 collect (list ts-sym (funcall tile-size-expr-fn i)))
+           ;; e_i   = extents[i]
+           (loop for i from 0 below n
+                 for e-sym in e-syms
+                 collect (list e-sym (list aref-sym (list extents-tilde-sym t-sym) i)))
+           ;; gid_i = get-workgroup-id i
+           (loop for i from 0 below n
+                 for gid-sym in gid-syms
+                 collect (list gid-sym (list get-wg-id-sym i)))
+           ;; ng_i  = get-num-groups i
+           (loop for i from 0 below n
+                 for ng-sym in ng-syms
+                 collect (list ng-sym (list get-num-groups-sym i)))
+           ;; start_i  = gid_i * ts_i
+           (loop for i from 0 below n
+                 for start-sym in start-syms
+                 for gid-sym   in gid-syms
+                 for ts-sym    in ts-syms
+                 collect (list start-sym (list mul-sym gid-sym ts-sym)))
+           ;; stride_i = ts_i * ng_i
+           (loop for i from 0 below n
+                 for stride-sym in stride-syms
+                 for ts-sym     in ts-syms
+                 for ng-sym     in ng-syms
+                 collect (list stride-sym (list mul-sym ts-sym ng-sym)))
+           ;; iters_i  = exact count given start_i, stride_i, e_i
+           (loop for i from 0 below n
+                 for iters-sym in iters-syms
+                 for start-sym in start-syms
+                 for stride-sym in stride-syms
+                 for e-sym     in e-syms
+                 collect (list iters-sym
+                               (%build-exact-iter-count-form
+                                start-sym stride-sym e-sym cl-pkg))))))
+    (list let-sym outer-bindings
+          (list declare-sym (list workgroup-level-sym))
+          nest)))
+
+
