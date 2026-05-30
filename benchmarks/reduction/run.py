@@ -316,26 +316,27 @@ def main():
     print("\n=== Benchmark phase ===")
     all_results = []
 
-    # Resolve crisp_tree occupancy:
+    # Resolve occupancy (shared between crisp_tree and cuda):
     #   CLI flag overrides; otherwise read from the .crisp file.
     # This keeps a single source of truth (the .crisp file's :occupancy
     # declaration) while still allowing ad-hoc sweeps from the command line.
-    if "crisp_tree" in binaries:
-        if args.crisp_tree_occupancy is not None:
-            crisp_tree_occ = args.crisp_tree_occupancy
-            print(f"\ncrisp_tree occupancy: {crisp_tree_occ} (from --crisp-tree-occupancy CLI flag)")
-        else:
-            crisp_tree_occ = extract_occupancy_from_crisp(
-                SCRIPT_DIR / "crisp" / "sum-reduce-tree.crisp")
-            print(f"\ncrisp_tree occupancy: {crisp_tree_occ} (parsed from sum-reduce-tree.crisp)")
+    # The cuda reference uses the SAME occupancy as crisp_tree so the
+    # comparison is "same algorithm, same launch policy, different language".
+    if args.crisp_tree_occupancy is not None:
+        shared_occupancy = args.crisp_tree_occupancy
+        print(f"\nOccupancy: {shared_occupancy} (from --crisp-tree-occupancy CLI flag, "
+              f"applied to both crisp_tree and cuda)")
     else:
-        crisp_tree_occ = 1.0
+        shared_occupancy = extract_occupancy_from_crisp(
+            SCRIPT_DIR / "crisp" / "sum-reduce-tree.crisp")
+        print(f"\nOccupancy: {shared_occupancy} (parsed from sum-reduce-tree.crisp, "
+              f"applied to both crisp_tree and cuda)")
 
     for N in sizes:
         for impl_name, binary in binaries.items():
             extra = None
-            if impl_name == "crisp_tree":
-                extra = [crisp_tree_occ]
+            if impl_name in ("crisp_tree", "cuda"):
+                extra = [shared_occupancy]
             result = run_benchmark(binary, N, args.warmup, args.iters, impl_name, extra_args=extra)
             if result:
                 all_results.append(result)

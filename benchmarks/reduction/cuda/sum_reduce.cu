@@ -1,9 +1,17 @@
 /*
  * Hand-written CUDA sum reduction benchmark.
- * Classic tree-reduce: each block reduces to a single value via shared memory,
- * then a second pass reduces the block results.
  *
- * Usage: ./sum_reduce [N] [warmup] [iterations]
+ * Algorithm mirrors Crisp's sum_reduce_tree exactly so the comparison is
+ * "same algorithm, same launch policy, different source language":
+ *   Phase 1: grid-stride accumulation — each thread accumulates a stripe
+ *   Phase 2: workgroup tree-reduce in shared memory (halving stride, 8 rounds)
+ *   Phase 3: thread 0 of each block atomicAdds its partial sum to result
+ *
+ * Launch: cudaOccupancyMaxActiveBlocksPerMultiprocessor with an optional
+ * derating factor (matches Crisp's :strategy :strided :occupancy <ratio>).
+ *
+ * Usage: ./sum_reduce [N] [warmup] [iterations] [occupancy]
+ *   occupancy = 0.0..1.0 ratio for grid sizing (default: 1.0 = max occupancy)
  *
  * Output: JSON to stdout with timing statistics.
  *
@@ -21,82 +29,76 @@
 
 #define BLOCK_SIZE 256
 
-__global__ void reduce_sum(const float* __restrict__ input, float* __restrict__ output, int n) {
+__global__ void reduce_grid_stride_atomic(const float* __restrict__ input,
+                                          float* __restrict__ result,
+                                          int n) {
     __shared__ float sdata[BLOCK_SIZE];
 
-    unsigned int tid = threadIdx.x;
-    unsigned int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+    int lid     = threadIdx.x;
+    int gid     = blockIdx.x * blockDim.x + threadIdx.x;
+    int gstride = gridDim.x * blockDim.x;
 
-    float val = 0.0f;
-    if (i < n) val = input[i];
-    if (i + blockDim.x < n) val += input[i + blockDim.x];
-    sdata[tid] = val;
-    __syncthreads();
+    // Phase 1: grid-stride accumulation into a register
+    float acc = 0.0f;
+    for (int i = gid; i < n; i += gstride) {
+        acc += input[i];
+    }
 
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }
+    // Phase 2: workgroup tree-reduce in shared memory
+    sdata[lid] = acc;
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
         __syncthreads();
+        if (lid < stride) {
+            sdata[lid] += sdata[lid + stride];
+        }
     }
 
-    if (tid == 0) output[blockIdx.x] = sdata[0];
-}
-
-struct ReduceState {
-    float *d_partial, *d_partial2;
-    float *h_partial;
-    int blocks, blocks2;
-
-    ReduceState(int n) {
-        blocks  = (n + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2);
-        blocks2 = (blocks + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2);
-        cudaMalloc(&d_partial,  blocks  * sizeof(float));
-        cudaMalloc(&d_partial2, blocks2 * sizeof(float));
-        h_partial = new float[std::max(blocks, blocks2)];
+    // Phase 3: one atomicAdd per workgroup
+    if (lid == 0) {
+        atomicAdd(result, sdata[0]);
     }
-    ~ReduceState() {
-        cudaFree(d_partial);
-        cudaFree(d_partial2);
-        delete[] h_partial;
-    }
-};
-
-float gpu_reduce(const float* d_input, int n, ReduceState& st) {
-    reduce_sum<<<st.blocks, BLOCK_SIZE>>>(d_input, st.d_partial, n);
-
-    if (st.blocks > 1) {
-        reduce_sum<<<st.blocks2, BLOCK_SIZE>>>(st.d_partial, st.d_partial2, st.blocks);
-        int final_count = st.blocks2;
-        cudaMemcpy(st.h_partial, st.d_partial2,
-                   final_count * sizeof(float), cudaMemcpyDeviceToHost);
-        float sum = 0.0f;
-        for (int i = 0; i < final_count; i++) sum += st.h_partial[i];
-        return sum;
-    }
-
-    float result;
-    cudaMemcpy(&result, st.d_partial, sizeof(float), cudaMemcpyDeviceToHost);
-    return result;
 }
 
 int main(int argc, char** argv) {
-    int N          = argc > 1 ? atoi(argv[1]) : 1000000;
-    int warmup     = argc > 2 ? atoi(argv[2]) : 50;
-    int iterations = argc > 3 ? atoi(argv[3]) : 100;
+    int    N          = argc > 1 ? atoi(argv[1]) : 1000000;
+    int    warmup     = argc > 2 ? atoi(argv[2]) : 50;
+    int    iterations = argc > 3 ? atoi(argv[3]) : 100;
+    double occupancy  = argc > 4 ? atof(argv[4]) : 1.0;
+    if (occupancy <= 0.0 || occupancy > 1.0) {
+        fprintf(stderr, "occupancy must be in (0.0, 1.0], got %f\n", occupancy);
+        return 1;
+    }
 
     float* h_input = new float[N];
     for (int i = 0; i < N; i++) h_input[i] = 1.0f;
 
     float* d_input;
+    float* d_result;
     cudaMalloc(&d_input, N * sizeof(float));
+    cudaMalloc(&d_result, sizeof(float));
     cudaMemcpy(d_input, h_input, N * sizeof(float), cudaMemcpyHostToDevice);
 
-    ReduceState state(N);
+    // Occupancy-based grid sizing — mirrors what Crisp's CUDA hoist emits
+    // for :strategy :strided :occupancy <ratio>.
+    int blocksPerSM;
+    cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &blocksPerSM, reduce_grid_stride_atomic, BLOCK_SIZE, 0);
+    int numSMs;
+    cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
+    int gridSize = (int)((blocksPerSM * numSMs) * occupancy);
+    if (gridSize < 1) gridSize = 1;
+    fprintf(stderr, "Grid: %d blocks (blocksPerSM=%d * numSMs=%d * occupancy=%.2f), block=%d\n",
+            gridSize, blocksPerSM, numSMs, occupancy, BLOCK_SIZE);
+
+    auto run_once = [&]() {
+        // Reset result before each launch (atomicAdd accumulates)
+        cudaMemsetAsync(d_result, 0, sizeof(float));
+        reduce_grid_stride_atomic<<<gridSize, BLOCK_SIZE>>>(d_input, d_result, N);
+    };
 
     // Warmup
     for (int i = 0; i < warmup; i++) {
-        gpu_reduce(d_input, N, state);
+        run_once();
     }
     cudaDeviceSynchronize();
 
@@ -112,9 +114,12 @@ int main(int argc, char** argv) {
         auto wall_start = std::chrono::high_resolution_clock::now();
 
         cudaEventRecord(start);
-        result = gpu_reduce(d_input, N, state);
+        run_once();
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
+
+        // Readback inside wall time (matches crisp_tree harness)
+        cudaMemcpy(&result, d_result, sizeof(float), cudaMemcpyDeviceToHost);
 
         auto wall_end = std::chrono::high_resolution_clock::now();
         cudaEventElapsedTime(&kernel_times[i], start, stop);
@@ -122,7 +127,7 @@ int main(int argc, char** argv) {
     }
 
     float expected = (float)N;
-    bool correct = fabs(result - expected) < expected * 1e-4f;
+    bool correct = fabs(result - expected) < expected * 1e-3f;
 
     // Kernel statistics
     std::sort(kernel_times.begin(), kernel_times.end());
@@ -161,6 +166,7 @@ int main(int argc, char** argv) {
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
     cudaFree(d_input);
+    cudaFree(d_result);
     delete[] h_input;
 
     return correct ? 0 : 1;

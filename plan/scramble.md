@@ -687,7 +687,9 @@ scp C:\Users\cperk\Documents\crisp-man\scripts\verify-ptx-113-01.py root@213.173
 - - Radix Sort ( but might be best with PGAS ?)
 
 - [ ] CUDA_CHECK is in Crisp .cu harness, but not CUDA or CUB. Wall time impact?
-- [ ] compile time comparison maybe not fair. crisp compile is device only. others are device + host.
+- [ ] compile time comparison maybe not fair. crisp compile is device only. others are device + host.  Break out?
+- [ ] crisp_tree optimizes occupancy, but CUDA and CUB do not. Seems unfair.
+- [ ] drop atomic-heavy crisp test, just use crisp_tree. Rename?
 
 These initial "first generation" algorithms might not be expressible on CUTLASS/SYCL-TLA
 
