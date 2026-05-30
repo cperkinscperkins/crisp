@@ -686,14 +686,20 @@ scp C:\Users\cperk\Documents\crisp-man\scripts\verify-ptx-113-01.py root@213.173
 - - Bitonic Sort
 - - Radix Sort ( but might be best with PGAS ?)
 
-- [ ] CUDA_CHECK is in Crisp .cu harness, but not CUDA or CUB. Wall time impact?
-- [ ] compile time comparison maybe not fair. crisp compile is device only. others are device + host.  Break out?
-- [ ] crisp_tree optimizes occupancy, but CUDA and CUB do not. Seems unfair.
-- [ ] drop atomic-heavy crisp test, just use crisp_tree. Rename?
+- [x] CUDA_CHECK is in Crisp .cu harness, but not CUDA or CUB. Wall time impact?
+- [x] compile time comparison maybe not fair. crisp compile is device only. others are device + host.  Break out?
+- [x] crisp_tree optimizes occupancy, but CUDA and CUB do not. Seems unfair.
+- [x] drop atomic-heavy crisp test, just use crisp_tree. Rename?
+- [ ] improve? loop pattern,
+- [ ] !invariant.load metadata for read-only tensor params — next biggest, still tractable.
+
+The change is in src/codegen.lisp wherever we emit load instructions for tensor element accesses. Add a check: "is this tensor parameter never written (no set! reaching it)?" If yes, attach !invariant.load metadata to the LLVM load instruction. The NVPTX backend recognizes this and emits ld.global.nc.f32 (texture cache path) instead of ld.global.b32 (L1 path).
+
+- [ ] compile-time known scratch/local mem opt.
 
 These initial "first generation" algorithms might not be expressible on CUTLASS/SYCL-TLA
 
-Other Platforms: OpenCL.   Triton? Mojo?
+Other Platforms: OpenCL. Huawei.  Triton? Mojo?
 
 
 PGAS / SHMem, UALink, and Asyc Operations

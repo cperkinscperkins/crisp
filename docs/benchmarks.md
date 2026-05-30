@@ -2,60 +2,55 @@
 === Build phase ===
 Building CUDA hand-written...
   Building: nvcc -O3 /root/crisp/benchmarks/reduction/cuda/sum_reduce.cu -o /root/crisp/benchmarks/reduction/cuda/sum_reduce
-  Compiled in 2.24s
+  Compiled in 2.16s (device-only: 0.67s)
 Building CUB...
   Building: nvcc -O3 /root/crisp/benchmarks/reduction/cub/sum_reduce_cub.cu -o /root/crisp/benchmarks/reduction/cub/sum_reduce_cub
-  Compiled in 7.35s
-Building Crisp (atomic-per-thread)...
+  Compiled in 6.90s (device-only: 2.49s)
+Building Crisp...
   Crisp compile [sum-reduce.crisp]: /root/crisp/bin/crisp-compile --ir-target=ptx /root/crisp/benchmarks/reduction/crisp/sum-reduce.crisp
-  Crisp compiled in 0.21s
+  Crisp compiled in 0.20s
   nvcc harness: nvcc -O3 /root/crisp/benchmarks/reduction/crisp/bench_harness.cu -lcuda -o /root/crisp/benchmarks/reduction/crisp/sum_reduce_crisp
-Building Crisp (workgroup tree-reduce)...
-  Crisp compile [sum-reduce-tree.crisp]: /root/crisp/bin/crisp-compile --ir-target=ptx /root/crisp/benchmarks/reduction/crisp/sum-reduce-tree.crisp
-  Crisp compiled in 0.19s
-  nvcc harness: nvcc -O3 /root/crisp/benchmarks/reduction/crisp/bench_harness_tree.cu -lcuda -o /root/crisp/benchmarks/reduction/crisp/sum_reduce_crisp_tree
+  Total 3.07s (device-only: 0.20s + harness: 2.87s)
 
 === Benchmark phase ===
 
-Occupancy: 0.15 (parsed from sum-reduce-tree.crisp, applied to both crisp_tree and cuda)
-  Running: cuda N=1000 ... 8.77 us (median)
-  Running: cub N=1000 ... 6.88 us (median)
-  Running: crisp N=1000 ... 132.9 us (median)
-  Running: crisp_tree N=1000 ... 12.61 us (median)
-  Running: cuda N=100000 ... 8.93 us (median)
-  Running: cub N=100000 ... 10.88 us (median)
-  Running: crisp N=100000 ... 133.31 us (median)
-  Running: crisp_tree N=100000 ... 13.28 us (median)
-  Running: cuda N=1000000 ... 10.62 us (median)
-  Running: cub N=1000000 ... 11.2 us (median)
-  Running: crisp N=1000000 ... 133.22 us (median)
-  Running: crisp_tree N=1000000 ... 20.83 us (median)
+Occupancy: 0.15 (parsed from sum-reduce.crisp, applied to both crisp and cuda)
+  Running: cuda N=1000 ... 8.0 us (median)
+  Running: cub N=1000 ... 5.98 us (median)
+  Running: crisp N=1000 ... 11.36 us (median)
+  Running: cuda N=100000 ... 8.51 us (median)
+  Running: cub N=100000 ... 9.38 us (median)
+  Running: crisp N=100000 ... 12.1 us (median)
+  Running: cuda N=1000000 ... 11.07 us (median)
+  Running: cub N=1000000 ... 10.4 us (median)
+  Running: crisp N=1000000 ... 21.7 us (median)
 
 ============================================================
 Compile Times
 ============================================================
-     crisp: 0.21s
-  crisp_tree: 0.19s
-       cub: 7.35s
-      cuda: 2.24s
+        impl     device (s)     end-to-end (s)
+  ----------   ------------   ----------------
+       crisp           0.20               3.07
+         cub           2.49               6.90
+        cuda           0.67               2.16
 
 ====================================================================================================
 Kernel Time (GPU hardware events, excludes host overhead)
 ====================================================================================================
-         N      crisp (us)   crisp GB/s  crisp_tree (us)  crisp_tree GB/s        cub (us)     cub GB/s       cuda (us)    cuda GB/s
------------------------------------------------------------------------------------------------------------------------------------
-      1000          132.90         0.03           12.61         0.32            6.88         0.58            8.77         0.46
-    100000          133.31         3.00           13.28        30.12           10.88        36.76            8.93        44.80
-   1000000          133.22        30.03           20.83       192.01           11.20       357.14           10.62       376.51
+         N      crisp (us)   crisp GB/s        cub (us)     cub GB/s       cuda (us)    cuda GB/s
+-------------------------------------------------------------------------------------------------
+      1000           11.36         0.35            5.98         0.67            8.00         0.50
+    100000           12.10        33.07            9.38        42.66            8.51        46.99
+   1000000           21.70       184.37           10.40       384.62           11.07       361.27
 
 ======================================================================
 Wall Time (includes kernel + sync + D→H readback)
 ======================================================================
-         N      crisp (us)  crisp_tree (us)        cub (us)       cuda (us)
----------------------------------------------------------------------------
-      1000          146.54           26.05           20.75           22.76
-    100000          147.20           26.86           24.82           22.47
-   1000000          145.44           33.15           25.81           23.03
+         N      crisp (us)        cub (us)       cuda (us)
+----------------------------------------------------------
+      1000           23.60           18.22           20.33
+    100000           24.45           21.71           20.95
+   1000000           34.83           22.80           23.37
 
 
 === Benchmark run complete ===

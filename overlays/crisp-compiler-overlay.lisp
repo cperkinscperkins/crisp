@@ -183,3 +183,138 @@
     (log:info "Generated SPIR-V: ~a" spv-file)))
 
 
+;; ======================================================================
+;; src/analysis/control.lisp — %expand-loop-vector-stride-form
+;; Exact-iter-count rewrite to close the kernel-perf gap with hand-written
+;; CUDA grid-stride loops.
+;; ======================================================================
+;;
+;; Old expansion:
+;;
+;;   (let ((gid    (get-global-id 0))
+;;         (gsize  (get-global-work-size 0))
+;;         (len    (length~ vec)))
+;;     (declare (grid-level))
+;;     (dotimes (k len gsize)               ; strided: k = 0, gsize, 2*gsize, ...
+;;       (let ((i (+ k gid)))
+;;         (if (< i len) BODY ()))))         ; per-iter guard
+;;
+;; The per-iteration `(if (< i len) ...)` is a runtime bounds check that
+;; LLVM cannot always remove (the dotimes trip count covers all gid values,
+;; so the predicate depends on gid + k * gsize and is not loop-invariant).
+;; Hand-written CUDA writes the loop as:
+;;
+;;   for (int i = gid; i < n; i += gstride) { body; }
+;;
+;; — a single-counter loop with one exit check.  SCEV recognises it as an
+;; affine recurrence and LLVM can unroll / vectorize aggressively.
+;;
+;; New expansion mirrors that shape: compute the exact iteration count
+;; (handling the gid >= len edge case with a single outer guard), then run
+;; a straight dotimes with `i = gid + k * gsize`:
+;;
+;;   (let ((gid    (get-global-id 0))
+;;         (gsize  (get-global-work-size 0))
+;;         (len    (length~ vec)))
+;;     (declare (grid-level))
+;;     (let ((iters (if (>= gid len)
+;;                      (to-ulong 0)
+;;                      (+ (to-ulong 1)
+;;                         (/ (- (- len (to-ulong 1)) gid) gsize)))))
+;;       (dotimes (k iters)
+;;         (let ((i (+ gid (* k gsize))))
+;;           BODY))))
+;;
+;; iters formula: 1 + floor((len - 1 - gid) / gsize) for gid < len, else 0.
+;; The outer IF short-circuits the underflow on (len - 1 - gid) when gid
+;; ≥ len (and equivalently when len = 0, since gid ≥ 0 ≥ len).
+;;
+;; AD compatibility (107 fix): the backward walker recognises LET, IF
+;; (here in let-binding init position), DOTIMES, and the inner LET; the
+;; old inner IF guard is now gone because every iteration is in-bounds
+;; by construction, which strictly simplifies the backward walk (no
+;; conditional accumulation across the body).
+
+(defun %expand-loop-vector-stride-form (expr location)
+  "Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  Computes the
+   exact per-thread iteration count up front, so the inner loop is a
+   single-counter dotimes with no per-iteration bounds check.  Mirrors
+   the canonical CUDA grid-stride loop shape, which LLVM SCEV / unroller
+   can optimise aggressively.
+
+   AD-safe: backward walker handles LET, IF, DOTIMES, LET (inner) — same
+   form set as the prior expansion, but with the body unconditional."
+  (unless (and (>= (length expr) 3)
+               (listp (third expr))
+               (= (length (third expr)) 1)
+               (symbolp (first (third expr))))
+    (error 'crisp-compiler-error
+           :message "Malformed loop-vector-stride: expected (loop-vector-stride VEC (VAR) BODY...)"
+           :source-location location))
+  (let* ((vec-form     (second expr))
+         (var-name     (first (third expr)))
+         (body-forms   (cdddr expr))
+         (gid-sym      (gensym "GID"))
+         (gsize-sym    (gensym "GSIZE"))
+         (len-sym      (gensym "LEN"))
+         (iters-sym    (gensym "ITERS"))
+         (k-sym        (gensym "K"))
+         (cl-pkg       (find-package :crisp-language))
+         (let-sym         (intern "LET"                 cl-pkg))
+         (declare-sym     (intern "DECLARE"             cl-pkg))
+         (grid-level-sym  (intern "GRID-LEVEL"          cl-pkg))
+         (dotimes-sym     (intern "DOTIMES"             cl-pkg))
+         (if-sym          (intern "IF"                  cl-pkg))
+         (progn-sym       (intern "PROGN"               cl-pkg))
+         (get-gid-sym     (intern "GET-GLOBAL-ID"       cl-pkg))
+         (get-gsize-sym   (intern "GET-GLOBAL-WORK-SIZE" cl-pkg))
+         (len-tilde-sym   (intern "LENGTH~"             cl-pkg))
+         (plus-sym        (intern "+"                   cl-pkg))
+         (minus-sym       (intern "-"                   cl-pkg))
+         (mul-sym         (intern "*"                   cl-pkg))
+         (div-sym         (intern "/"                   cl-pkg))
+         (ge-sym          (intern ">="                  cl-pkg))
+         (to-ulong-sym    (intern "TO-ULONG"            cl-pkg))
+         ;; (to-ulong 0) and (to-ulong 1) — small ulong literals used in
+         ;; the iteration-count formula.
+         (zero-ulong      (list to-ulong-sym 0))
+         (one-ulong       (list to-ulong-sym 1))
+         ;; iters = 1 + (len - 1 - gid) / gsize   (when gid < len)
+         ;;       = 0                              (when gid >= len)
+         (iters-true-branch
+          (list plus-sym
+                one-ulong
+                (list div-sym
+                      (list minus-sym
+                            (list minus-sym len-sym one-ulong)
+                            gid-sym)
+                      gsize-sym)))
+         (iters-form
+          (list if-sym
+                (list ge-sym gid-sym len-sym)
+                zero-ulong
+                iters-true-branch))
+         ;; Inner body: rebind user's VAR to gid + k * gsize, then run body
+         ;; unconditionally.
+         (i-binding
+          (list var-name
+                (list plus-sym gid-sym (list mul-sym k-sym gsize-sym))))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
+         (inner-let
+          (list let-sym (list i-binding) inner-body))
+         (dotimes-form
+          (list dotimes-sym (list k-sym iters-sym) inner-let))
+         (iters-let
+          (list let-sym (list (list iters-sym iters-form)) dotimes-form))
+         (expansion
+          (list let-sym
+                (list (list gid-sym   (list get-gid-sym   0))
+                      (list gsize-sym (list get-gsize-sym 0))
+                      (list len-sym   (list len-tilde-sym vec-form)))
+                (list declare-sym (list grid-level-sym))
+                iters-let)))
+    expansion))
+
+
