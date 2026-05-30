@@ -2,55 +2,55 @@
 === Build phase ===
 Building CUDA hand-written...
   Building: nvcc -O3 /root/crisp/benchmarks/reduction/cuda/sum_reduce.cu -o /root/crisp/benchmarks/reduction/cuda/sum_reduce
-  Compiled in 2.16s (device-only: 0.67s)
+  Compiled in 2.16s (device-only: 0.66s)
 Building CUB...
   Building: nvcc -O3 /root/crisp/benchmarks/reduction/cub/sum_reduce_cub.cu -o /root/crisp/benchmarks/reduction/cub/sum_reduce_cub
-  Compiled in 6.90s (device-only: 2.49s)
+  Compiled in 7.05s (device-only: 2.47s)
 Building Crisp...
   Crisp compile [sum-reduce.crisp]: /root/crisp/bin/crisp-compile --ir-target=ptx /root/crisp/benchmarks/reduction/crisp/sum-reduce.crisp
-  Crisp compiled in 0.20s
+  Crisp compiled in 0.21s
   nvcc harness: nvcc -O3 /root/crisp/benchmarks/reduction/crisp/bench_harness.cu -lcuda -o /root/crisp/benchmarks/reduction/crisp/sum_reduce_crisp
-  Total 3.07s (device-only: 0.20s + harness: 2.87s)
+  Total 3.12s (device-only: 0.21s + harness: 2.91s)
 
 === Benchmark phase ===
 
 Occupancy: 0.15 (parsed from sum-reduce.crisp, applied to both crisp and cuda)
-  Running: cuda N=1000 ... 8.0 us (median)
-  Running: cub N=1000 ... 5.98 us (median)
-  Running: crisp N=1000 ... 11.36 us (median)
-  Running: cuda N=100000 ... 8.51 us (median)
-  Running: cub N=100000 ... 9.38 us (median)
-  Running: crisp N=100000 ... 12.1 us (median)
-  Running: cuda N=1000000 ... 11.07 us (median)
-  Running: cub N=1000000 ... 10.4 us (median)
-  Running: crisp N=1000000 ... 21.7 us (median)
+  Running: cuda N=1000 ... 8.13 us (median)
+  Running: cub N=1000 ... 6.05 us (median)
+  Running: crisp N=1000 ... 11.58 us (median)
+  Running: cuda N=100000 ... 8.58 us (median)
+  Running: cub N=100000 ... 9.22 us (median)
+  Running: crisp N=100000 ... 12.13 us (median)
+  Running: cuda N=1000000 ... 10.94 us (median)
+  Running: cub N=1000000 ... 10.46 us (median)
+  Running: crisp N=1000000 ... 13.95 us (median)
 
 ============================================================
 Compile Times
 ============================================================
         impl     device (s)     end-to-end (s)
   ----------   ------------   ----------------
-       crisp           0.20               3.07
-         cub           2.49               6.90
-        cuda           0.67               2.16
+       crisp           0.21               3.12
+         cub           2.47               7.05
+        cuda           0.66               2.16
 
 ====================================================================================================
 Kernel Time (GPU hardware events, excludes host overhead)
 ====================================================================================================
          N      crisp (us)   crisp GB/s        cub (us)     cub GB/s       cuda (us)    cuda GB/s
 -------------------------------------------------------------------------------------------------
-      1000           11.36         0.35            5.98         0.67            8.00         0.50
-    100000           12.10        33.07            9.38        42.66            8.51        46.99
-   1000000           21.70       184.37           10.40       384.62           11.07       361.27
+      1000           11.58         0.35            6.05         0.66            8.13         0.49
+    100000           12.13        32.98            9.22        43.40            8.58        46.64
+   1000000           13.95       286.70           10.46       382.26           10.94       365.50
 
 ======================================================================
 Wall Time (includes kernel + sync + D→H readback)
 ======================================================================
          N      crisp (us)        cub (us)       cuda (us)
 ----------------------------------------------------------
-      1000           23.60           18.22           20.33
-    100000           24.45           21.71           20.95
-   1000000           34.83           22.80           23.37
+      1000           23.75           18.51           20.29
+    100000           24.38           21.78           20.91
+   1000000           26.17           22.88           23.32
 
 
 === Benchmark run complete ===

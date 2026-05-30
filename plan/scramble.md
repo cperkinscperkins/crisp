@@ -660,6 +660,7 @@ Technical Debt
       available for the hardware, and use that (if less than the size of the tensor).
 - [ ] double check the :derive-from / :strided with tensors of any arity. 
 - [ ] also new kernel in sum-reduce-tree.crisp crashes compiler when --ir-target=spv. Works ptx though.
+- [ ] run-on-pod.sh / check-on-pod.sh always reinstall SBCL. 
 
 PERFORMANCE TESTING
 ===================
