@@ -341,13 +341,83 @@ Returns modified IR text with metadata."
 
 
 
-;; Adds opt -O3 before llvm-as.  Note: the SPV path has its own quirks
-;; (kernel metadata injection, atomic-float extension flag) that we
-;; preserve verbatim; only the new opt step is bracketed at the start.
+;; ======================================================================
+;; ROOT CAUSE of the SPV -O3 destruction bug (resolved 2026-05-31)
+;; ======================================================================
+;;
+;; Symptom: any Crisp-emitted SPV kernel that called an accessor function
+;; (e.g. `length__tensor_int_1_global_compact_last`) was collapsed by
+;; opt -O3 to `entry: unreachable`, triggering `ZE_RESULT_ERROR_DEVICE_LOST`
+;; at launch.  Loop-vector-stride, tile-stride, and the sum-reduction
+;; benchmark all tripped it.
+;;
+;; Real root cause: Crisp marks accessor (non-kernel) functions
+;; `spir_func` via `mark-function-as-kernel` (LLVM CC=75), but every
+;; `llvm-build-call2` call instruction is built with the default C
+;; calling convention (CC=0).  Modern LLVM (opt-21) treats a caller/
+;; callee CC mismatch as immediate UB.  InstCombine inserts
+;;   `store i1 true, ptr poison`
+;; at the entry of any function containing such a call and turns every
+;; downstream branch condition into `i1 poison`; subsequent passes prune
+;; the unreachable body and the kernel becomes `entry: unreachable`.
+;;
+;; Earlier theories (SROA poison from aggregate allocas, the
+;; insertvalue-from-undef chain in accessor functions, etc.) all turned
+;; out to be downstream noise: the destruction happens with just
+;; InstCombine on raw IR, no SROA needed, and reproduces on a hand-written
+;; minimal repro with no aggregates at all (see put_temp_files_here/
+;; test-bisect-min2.sh, T6).
+;;
+;; Fix: after every `llvm-build-call2`, copy the callee's CC onto the
+;; call instruction.  This matches Clang's behaviour and is what
+;; `LLVMBuildCall2` arguably should do automatically.  With the fix,
+;; opt -O3 produces fully optimized SPV kernels — no destruction.
+;;
+;; Unaffected:
+;;   - PTX path: opt loads the NVPTX target and runs with a proper data
+;;     layout; the UB heuristic that fires on the data-layout-less SPV
+;;     path doesn't trigger.  But the call-conv fix is still applied
+;;     uniformly and is harmless on PTX (PTX kernels use ptx_kernel CC
+;;     and non-kernel functions use the default CC, so the propagation
+;;     is a no-op).
+;;   - Intrinsic calls (llvm.trap, llvm.sin, etc.): these are declared
+;;     with the default CC, so propagating their CC to the call site
+;;     leaves it at 0.
+
+(defparameter +spv-opt-pipeline+
+  "default<O3>"
+  "Full -O3 pipeline for SPV builds.  Safe now that the call-site CC
+   mismatch (see overlay header) is fixed in `%build-function-call` and
+   `generate-node-ir semantic-funcall` below.")
+
+(defun %run-opt-pipeline (input-ll-file output-ll-file passes-string)
+  "Run opt -passes=<passes-string> -S input -o output.
+   Returns T on success, NIL if opt isn't available or the run failed."
+  (let ((opt-tool (%opt-available-p)))
+    (cond
+      ((null opt-tool)
+       (log:info "opt not available, skipping IR optimization pass")
+       nil)
+      (t
+       (handler-case
+           (progn
+             (run-tool-command
+              (list opt-tool
+                    (format nil "-passes=~a" passes-string)
+                    "-S"
+                    (namestring input-ll-file)
+                    "-o" (namestring output-ll-file))
+              :log-prefix "[opt SPV] ")
+             (log:info "opt produced ~a" output-ll-file)
+             t)
+         (error (e)
+           (log:warn "opt failed (~a), using unoptimized IR" e)
+           nil))))))
+
 
 (defun compile-to-spirv (module output-path &key debug-p)
-  "Compiles an LLVM Module to SPIR-V via opt -O3 -> llvm-as -> llvm-spirv.
-   (bug 028 workaround Part 2)."
+  "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as ->
+   llvm-spirv."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
          (name (pathname-name output-path))
          (ll-file     (merge-pathnames (format nil "~a.temp.ll" name) base-path))
@@ -368,9 +438,8 @@ Returns modified IR text with metadata."
       (with-open-file (stream ll-file :direction :output :if-exists :supersede)
         (write-string ir-with-metadata stream)))
 
-    ;; 2. opt -O3 on the IR (gracefully degrades if opt missing).
-    ;;    Feed the optimized IR to llvm-as if opt succeeded, raw IR otherwise.
-    (let* ((opt-ok      (%run-opt-O3 ll-file ll-opt-file))
+    ;; 2. opt -O3.  If opt isn't available, fall back to the raw IR.
+    (let* ((opt-ok        (%run-opt-pipeline ll-file ll-opt-file +spv-opt-pipeline+))
            (llvm-as-input (if opt-ok ll-opt-file ll-file)))
 
       ;; 3. llvm-as (LL -> BC)
@@ -379,16 +448,14 @@ Returns modified IR text with metadata."
          (list tool (namestring llvm-as-input) "-o" (namestring bc-file))
          :log-prefix "[SPIR-V] ")))
 
-    ;; 4. llvm-spirv (BC -> SPV)
-    ;; Backward kernels emit `atomicrmw fadd` for thread-safe gradient
-    ;; accumulation into tensor _grad cells.  Under --differentiate, request
-    ;; the SPV_EXT_shader_atomic_float_add extension so translation succeeds.
+    ;; 4. llvm-spirv (BC -> SPV).
+    ;; Always request SPV_EXT_shader_atomic_float_add — forward kernels
+    ;; can emit `atomicrmw fadd` too (e.g. the sum-reduction phase-3
+    ;; atomic into a float result cell), not just backward _grad kernels.
     (let* ((tool (resolve-tool-executable "llvm-spirv"))
            (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
-           (ad-flags (if *differentiate-p*
-                         '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
-                         nil))
-           (flags (append debug-flags ad-flags)))
+           (ext-flags '("--spirv-ext=+SPV_EXT_shader_atomic_float_add"))
+           (flags (append debug-flags ext-flags)))
       (run-tool-command
        (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
        :log-prefix "[SPIR-V] "))
@@ -399,7 +466,6 @@ Returns modified IR text with metadata."
       (when (probe-file bc-file)     (delete-file bc-file)))
 
     (log:info "Generated SPIR-V: ~a" spv-file)))
-
 
 ;;;; ============================================================
 ;;;; Bug 028 Part 2 — diagnostic redef: verbose logging to confirm

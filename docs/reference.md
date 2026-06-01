@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-05-30T17:00:35.970016Z
+Generated on 2026-06-01T05:57:12.841276Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2232,12 +2232,19 @@ Generated on 2026-05-30T17:00:35.970016Z
 
 
 ---
+### DEFUN `%PROPAGATE-CALLEE-CC-TO-CALL`
+- **Args**: `(CALL-INST CALLEE-FN-VAL)`
+
+  > If CALLEE-FN-VAL is a function value, copy its calling convention to  >    CALL-INST.  Safe to call even when callee is an arbitrary SSA value  >    (e.g. a function pointer through generate-node-ir) — we only set CC  >    when we have a concrete LLVM value in hand.
+
+
+---
 ### DEFUN `%BUILD-FUNCTION-CALL`
 - **Args**: `(BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE SIG
               CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT
               RETURN-TYPE-NAMES)`
 
-  > Helper: Builds the actual function call instruction.
+  > Helper: Builds the actual function call instruction.  >   >    Overlay change: propagate the callee's calling convention onto the  >    resulting call instruction.  Required on SPV builds — see overlay  >    header for the InstCombine UB bug this fix addresses.
 
 
 ---
@@ -2622,10 +2629,23 @@ Generated on 2026-05-30T17:00:35.970016Z
 
 
 ---
+### DEFPARAMETER `+SPV-OPT-PIPELINE+`
+
+  > Full -O3 pipeline for SPV builds.  Safe now that the call-site CC  >    mismatch (see overlay header) is fixed in `%build-function-call` and  >    `generate-node-ir semantic-funcall` below.
+
+
+---
+### DEFUN `%RUN-OPT-PIPELINE`
+- **Args**: `(INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)`
+
+  > Run opt -passes=<passes-string> -S input -o output.  >    Returns T on success, NIL if opt isn't available or the run failed.
+
+
+---
 ### DEFUN `COMPILE-TO-SPIRV`
 - **Args**: `(MODULE OUTPUT-PATH &KEY DEBUG-P)`
 
-  > Compiles an LLVM Module to SPIR-V via opt -O3 -> llvm-as -> llvm-spirv.  >    (bug 028 workaround Part 2).
+  > Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as ->  >    llvm-spirv.
 
 
 ---

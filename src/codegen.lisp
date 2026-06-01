@@ -1171,17 +1171,36 @@
     (values (llvm-function-type llvm-return-type param-types-array param-count nil)
             param-count)))
 
+
+
+(defun %propagate-callee-cc-to-call (call-inst callee-fn-val)
+  "If CALLEE-FN-VAL is a function value, copy its calling convention to
+   CALL-INST.  Safe to call even when callee is an arbitrary SSA value
+   (e.g. a function pointer through generate-node-ir) — we only set CC
+   when we have a concrete LLVM value in hand."
+  (when (and call-inst callee-fn-val
+             (not (cffi:null-pointer-p call-inst))
+             (not (cffi:null-pointer-p callee-fn-val)))
+    (let ((cc (crisp.llvm-bindings::llvm-get-function-call-conv callee-fn-val)))
+      (crisp.llvm-bindings::llvm-set-instruction-call-conv call-inst cc))))
+
 (defun %build-function-call (builder module var-env di-builder di-scope location-map node sig callee-name llvm-fn-type param-nodes param-count return-type-names)
-  "Helper: Builds the actual function call instruction."
+  "Helper: Builds the actual function call instruction.
+
+   Overlay change: propagate the callee's calling convention onto the
+   resulting call instruction.  Required on SPV builds — see overlay
+   header for the InstCombine UB bug this fix addresses."
+  (declare (ignore sig))
   (let* ((arg-nodes (semantic-call-args node))
          (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
                                              arg-nodes param-nodes param-count))
+         (callee-fn (let ((f (llvm-get-named-function module callee-name)))
+                      (if (cffi:null-pointer-p f)
+                          (llvm-add-function module callee-name llvm-fn-type)
+                          f)))
          (call-inst (llvm-build-call2 builder
                                       llvm-fn-type
-                                      (let ((f (llvm-get-named-function module callee-name)))
-                                        (if (cffi:null-pointer-p f)
-                                            (llvm-add-function module callee-name llvm-fn-type)
-                                            f))
+                                      callee-fn
                                       args-array
                                       param-count
                                       (if (or (null return-type-names)
@@ -1190,7 +1209,9 @@
                                           ""
                                           "call_tmp")))
          (di-location (%attach-debug-loc call-inst node module di-builder di-scope location-map)))
+    (%propagate-callee-cc-to-call call-inst callee-fn)
     (values call-inst di-location)))
+
 
 (defmethod generate-node-ir ((node semantic-call) builder module var-env di-builder di-scope location-map)
   "Generates IR for a function call."
@@ -1288,46 +1309,41 @@
           (setf last-loc loc)))
       (values last-val last-loc))))
 
+
+
+
 (defmethod generate-node-ir ((node semantic-funcall) builder module var-env di-builder di-scope location-map)
-  "Generates IR for an indirect function call (funcall)."
+  "Generates IR for a funcall — function-pointer/function-literal style.
 
+   Overlay change: propagate the callee's calling convention onto the
+   resulting call instruction.  Same rationale as %build-function-call."
   (let* ((func-node (semantic-funcall-func-node node))
-         (func-type-spec (semantic-node-type func-node)) ; (:function-type (ret) :params (p1 p2)) or literals
-         (return-type-names (semantic-funcall-type node)) ; (int)
+         (func-type-spec (semantic-node-type func-node))
+         (return-type-names (semantic-funcall-type node))
          (has-return-value (not (null (remove 'nil return-type-names))))
-         (llvm-return-type (get-llvm-return-type module return-type-names))
-
-         ;; Extract param types from the function type descriptor
          (param-types (cond
                        ((and (listp func-type-spec) (eq (first func-type-spec) :function-type))
-                         (getf (cddr func-type-spec) :params))
+                        (getf (cddr func-type-spec) :params))
                        ((and (listp func-type-spec) (eq (first func-type-spec) :function-literal))
-                         ;; For literals, we rely on analyze-funcall-expression having verified constraints.
-                         ;; We can get the params from the funcall arg types (which match the signature).
-                         (mapcar #'semantic-node-type (semantic-funcall-args node)))
-                       (t (error "Codegen error: Invalid function type for funcall: ~a" func-type-spec))))
-
-         ;; Build LLVM function type
-         (expanded-param-types (mapcan (lambda (p) (get-expanded-types p module)) param-types))
-         (param-count (length expanded-param-types))
-         (param-types-array (cffi:foreign-alloc 'llvm-type-ref :count param-count)))
-
+                        (mapcar #'semantic-node-type (semantic-funcall-args node)))
+                       (t (error "Codegen error: Invalid function type for funcall: ~a" func-type-spec)))))
     (multiple-value-bind (llvm-fn-type param-count)
         (%build-llvm-function-type module return-type-names param-types)
-
       (let* ((callee (generate-node-ir func-node builder module var-env di-builder di-scope location-map))
              (arg-nodes (semantic-funcall-args node))
              (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
                                                  arg-nodes param-types param-count)))
-
         (let* ((call-inst (llvm-build-call2 builder
-                                           llvm-fn-type
-                                           callee
-                                           args-array
-                                           param-count
-                                           (if has-return-value "funcall_tmp" "")))
+                                            llvm-fn-type
+                                            callee
+                                            args-array
+                                            param-count
+                                            (if has-return-value "funcall_tmp" "")))
                (di-location (%attach-debug-loc call-inst node module di-builder di-scope location-map)))
-          (values call-inst di-location))))));; --- IF ---
+          (%propagate-callee-cc-to-call call-inst callee)
+          (values call-inst di-location))))))
+
+
 (defun terminator-p (block)
   "Checks if a basic block already has a terminator instruction."
   (not (cffi:null-pointer-p (llvm-get-basic-block-terminator block))))

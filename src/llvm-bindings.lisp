@@ -779,3 +779,15 @@
 (cffi:defcfun ("LLVMSetVolatile" llvm-set-volatile) :void
   (memory-access-inst :pointer)
   (is-volatile :int))
+
+
+
+(defcfun ("LLVMSetInstructionCallConv" llvm-set-instruction-call-conv) :void
+         "Sets the calling convention on a CALL/INVOKE instruction.
+          Common values: 0=C, 75=spir_func (LLVM 21), 76=spir_kernel."
+         (inst :pointer)
+         (cc :unsigned-int))
+
+(defcfun ("LLVMGetInstructionCallConv" llvm-get-instruction-call-conv) :unsigned-int
+         "Reads the calling convention from a CALL/INVOKE instruction."
+         (inst :pointer))
