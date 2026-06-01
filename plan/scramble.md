@@ -659,8 +659,10 @@ Technical Debt
       in the number of threads for size of the tensor. BUT if :strided then calc max number of thread
       available for the hardware, and use that (if less than the size of the tensor).
 - [ ] double check the :derive-from / :strided with tensors of any arity. 
-- [ ] also new kernel in sum-reduce-tree.crisp crashes compiler when --ir-target=spv. Works ptx though.
+- [x] also new kernel in sum-reduce-tree.crisp crashes compiler when --ir-target=spv. Works ptx though.
 - [ ] run-on-pod.sh / check-on-pod.sh always reinstall SBCL. 
+- [ ] --device-only flag for SYCL to get kernel only timing?
+- [ ] update docs with &out "input" vs "output" requirement (in flux)
 
 PERFORMANCE TESTING
 ===================

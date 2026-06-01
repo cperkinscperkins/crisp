@@ -1,0 +1,83 @@
+# Crisp Intel benchmark image
+#
+# Base: intel/oneapi-basekit (DPC++, oneDPL, L0 driver, OpenCL runtime)
+# Adds: SBCL, LLVM-21 (llc / opt / llvm-as / llvm-spirv), Quicklisp
+#
+# Built and used by scripts/bench-intel.sh.  Intended for running
+# Crisp-vs-SYCL-vs-oneDPL competitive benchmarks on an Intel GPU
+# (BMG / Arc / iGPU) inside a Docker container on Windows + WSL2.
+#
+# GPU passthrough (REQUIRED for L0 GPU device — see scripts/bench-intel.sh):
+#   docker run --device=/dev/dxg \
+#              -v /usr/lib/wsl:/usr/lib/wsl \
+#              -e LD_LIBRARY_PATH=/usr/lib/wsl/lib:... \
+#              ...
+# Without these, only CPU OpenCL is visible.  With them, sycl-ls reports
+# the BMG via both level_zero:gpu and opencl:gpu.
+
+FROM intel/oneapi-basekit:latest
+
+# Don't prompt during apt-get
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Pin SBCL version — same as scripts/bench-on-pod.sh uses on RunPod
+ARG SBCL_VERSION=2.5.5
+
+# ----------------------------------------------------------------------
+# Base deps + LLVM-21 toolchain
+# ----------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wget bzip2 curl ca-certificates gnupg lsb-release \
+        software-properties-common build-essential \
+    && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+       | gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-21 main" \
+       > /etc/apt/sources.list.d/llvm-21.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        llvm-21 llvm-21-dev clang-21 \
+    && ln -sf /usr/bin/llc-21 /usr/bin/llc \
+    && ln -sf /usr/bin/opt-21 /usr/bin/opt \
+    && ln -sf /usr/bin/llvm-as-21 /usr/bin/llvm-as \
+    && rm -rf /var/lib/apt/lists/*
+
+# ----------------------------------------------------------------------
+# llvm-spirv — not in apt.llvm.org 21.x as a separate package, but the
+# oneAPI base image ships SPIRV-LLVM-Translator inside the compiler dir.
+# Symlink it onto PATH so Crisp's `(resolve-tool-executable "llvm-spirv")`
+# finds it.
+# ----------------------------------------------------------------------
+RUN ln -sf /opt/intel/oneapi/compiler/2025.3/bin/compiler/llvm-spirv /usr/bin/llvm-spirv
+
+# ----------------------------------------------------------------------
+# SBCL — install from upstream binary tarball
+# ----------------------------------------------------------------------
+RUN cd /tmp \
+    && wget -q "https://prdownloads.sourceforge.net/sbcl/sbcl-${SBCL_VERSION}-x86-64-linux-binary.tar.bz2" \
+    && tar xjf "sbcl-${SBCL_VERSION}-x86-64-linux-binary.tar.bz2" \
+    && cd "sbcl-${SBCL_VERSION}-x86-64-linux" \
+    && INSTALL_ROOT=/usr/local sh install.sh \
+    && cd / && rm -rf "/tmp/sbcl-${SBCL_VERSION}"*
+
+# ----------------------------------------------------------------------
+# Quicklisp — preinstall for the root user that runs benchmarks
+# Silent install so JSON-RPC-style consumers don't see chatter
+# ----------------------------------------------------------------------
+RUN curl -sO https://beta.quicklisp.org/quicklisp.lisp \
+    && echo "" | sbcl --non-interactive \
+         --load quicklisp.lisp \
+         --eval '(quicklisp-quickstart:install)' \
+         --eval '(ql:add-to-init-file)' \
+         --eval '(quit)' \
+    && rm -f quicklisp.lisp
+
+# ----------------------------------------------------------------------
+# Final environment
+# ----------------------------------------------------------------------
+# Source the oneAPI environment for every shell.
+RUN echo '. /opt/intel/oneapi/setvars.sh > /dev/null 2>&1' >> /etc/bash.bashrc
+
+# Crisp build expects to find system tools (opt, llc, llvm-spirv) on PATH.
+ENV CRISP_USE_SYSTEM_TOOLS=true
+
+WORKDIR /workspace
+CMD ["bash"]

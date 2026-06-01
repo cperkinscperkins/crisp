@@ -1,5 +1,154 @@
 # Reduction benchmark — running commentary
 
+## 2026-05-30 — Intel Arc B580 (BMG) — three-way + InstCombine-free pipeline
+
+Crisp SPV path now works end-to-end on BMG via WSL2 Docker.  The fix
+went through two stages this evening:
+
+1. **First pass** (Plan A in our bug-hunt): disable opt entirely for the
+   SPV path.  Verified the kernel runs; documented the InstCombine
+   UB-inference bug in the overlay header.
+2. **Second pass** (Plan C): replace opt -O3 with a custom
+   InstCombine-free pipeline:
+   `function(mem2reg,sroa,early-cse,gvn,dce,simplifycfg,loop(loop-rotate),loop-unroll,dce)`.
+   Recovers mem2reg + SROA + CSE + GVN + DCE + simplifycfg + loop unroll
+   without triggering the InstCombine UB.  Verified end-to-end (kernel
+   correctness + spec suite 732/732 default + 732/732 --differentiate).
+
+The expected perf gain on this kernel turned out to be in the noise
+(~1% at all sizes), because the reduction is bandwidth-bound and the
+remaining opt passes don't transform the hot path much.  The pipeline
+is still a strict improvement: future compute-bound kernels (GEMM, etc.)
+will get real benefit from mem2reg + SROA + GVN + unroll.
+
+**Final three-way at occupancy=0.5, 100 iters (InstCombine-free pipeline):**
+
+|       N | crisp (us) | crisp GB/s | sycl (us) | sycl GB/s | onedpl (us) | onedpl GB/s |
+|--------:|-----------:|-----------:|----------:|----------:|------------:|------------:|
+|    1000 |       8.94 |       0.45 |      6.66 |      0.60 |      147.69 |        0.03 |
+|  100000 |       8.84 |      45.25 |      7.07 |     56.56 |      164.20 |        2.44 |
+| 1000000 |      14.66 |     272.78 |     12.90 |    310.17 |      173.06 |       23.11 |
+
+**Headline:** at N=1M, Crisp hits 272.78 GB/s vs SYCL's 310.17 GB/s →
+**crisp/sycl = 87.9%**, i.e. Crisp comes within 12% of hand-tuned DPC++
+on BMG, *without the full opt -O3 pass*.  Same ballpark as Crisp's
+~88% of hand-tuned CUDA on Blackwell.
+
+Both Crisp and SYCL crush oneDPL by 10-25× — its `oneapi::dpl::reduce`
+has multi-pass orchestration overhead that swamps the kernel work at
+this scale (wall ≈ 150-180us at all N).  CUB doesn't show the same
+pattern on the NVIDIA side; this is a real ergonomic gap between the
+two library stacks.
+
+**Occupancy sweep on SYCL (used to pick the across-platform value):**
+
+|        N | occ=0.25 | occ=0.5 | occ=1.0 |
+|---------:|---------:|--------:|--------:|
+|     1000 |     5.93 |    6.14 |    8.63 |
+|   100000 |     7.18 |    6.86 |    8.74 |
+|  1000000 |    18.30 |   12.48 |   11.75 |
+
+Best per size: 0.25 at small N, 1.0 at large N, 0.5 is the compromise.
+We picked **0.5** as the across-the-board value.
+
+This is **opposite of CUDA's 0.15 sweet spot**.  Reason: the SYCL harness's
+heuristic (`gridSize = numEUs × occupancy`) is much simpler than the
+CUDA path's `cuOccupancyMaxActiveBlocksPerMultiprocessor() × occupancy`
+(which already accounts for register and SLM pressure before the
+multiplier).  Different scales of "1.0" map to different absolute grid
+sizes.  Worth tracking separately per platform — the user's hope that
+one occupancy value works across platforms doesn't pan out here.
+
+**Open Crisp bug:** opt -O3's InstCombine destroys SPV kernels.
+Reproduced with both `sum_reduce` and `vector_add` (and presumably any
+kernel using a Crisp stride macro).  PTX path is unaffected because
+opt loads the NVPTX target there and uses a proper data layout.
+
+**2026-05-31 root-cause investigation update:** confirmed via aggressive
+bisection that the destruction signature `entry: store i1 true, ptr poison;
+br i1 poison` arises from how SROA decomposes Crisp's alloca+aggregate-
+store+load round-trip:
+
+1. Crisp's `initialize-function-parameters` emits, for every parameter:
+   ```
+   %alloca = alloca STRUCT
+   store STRUCT %imploded, ptr %alloca
+   ... later ...
+   %loaded = load STRUCT, ptr %alloca
+   ```
+   `%generate-let-binding` emits the same pattern for let-bindings of
+   aggregate-typed values (like the tensor handles built by
+   `marshall-tensor`).
+
+2. SROA decomposes aggregate allocas into per-field slices.  Because
+   the alloca starts uninitialised, SROA models its initial content as
+   POISON and rewrites loads as:
+   ```
+   %p.fca.0.0.insert = insertvalue %TENSOR poison, ..., 0, 0
+   %p.fca.0.1.insert = insertvalue %TENSOR %p.fca.0.0.insert, ..., 0, 1
+   ...
+   ```
+
+3. InstCombine walks this poison-rooted insertvalue chain.  On the SPV
+   target (no data layout loaded — opt-21 doesn't ship SPIR-V target
+   plugin), it conservatively propagates poison and marks the entire
+   entry block unreachable.
+
+**Attempted fix** (overlay sketch in `put_temp_files_here/` for next-time
+reference): bypass the alloca round-trip for aggregate parameters and
+aggregate let-bindings, storing the imploded SSA value directly in a
+new `*param-direct-values*` hash; have `semantic-var-read` check that
+hash first.  The fix successfully removes the alloca round-trip in the
+IR (verified by IR inspection — length__ becomes `ret i64 %5`, vec_copy
+has zero aggregate allocas) and 725/732 tests still pass.  **But:**
+
+- The 7 failing tests are kernels that SET! their aggregate parameters
+  (records-mutable, transpose-bang, etc.) — when the direct-value path
+  is taken, subsequent SET! writes to the alloca don't propagate to
+  later reads.  Need SET!-reachability analysis to gate the optimisation.
+- Even with the alloca round-trip eliminated, InstCombine STILL destroys
+  vec_copy.  So the alloca-with-aggregate-store-then-extract pattern is
+  one trigger, but not the only one.  The extract-from-insertvalue-from-
+  undef chain that builds the tensor handle in the caller still survives
+  in the IR and seems to be enough on its own.
+
+Remaining hypotheses (kept from previous session):
+
+- **Address-space mixing through the sizeof trick.**  Crisp emits
+  `ptrtoint (ptr getelementptr (float, ptr null, i32 1) to i64)` to
+  compute sizeof(float) without a data layout.  The `ptr null` is
+  addrspace(0); the downstream uses are addrspace(1) and addrspace(3)
+  pointers.  Without the SPIR-V target loaded, opt has no anchor for
+  the relative sizes of these address spaces, and InstCombine may
+  conservatively poison rather than reason about them.
+
+- **Signed-overflow on pointer offsets.**  The `mul i64` Crisp uses
+  for byte-offset computation has no `nsw`/`nuw` flags, so it can
+  wrap.  The downstream `getelementptr inbounds` is then potentially
+  out-of-bounds → poison.  Adding `nuw` to the multiply (it's always
+  multiplying a non-negative element index by a positive sizeof
+  constant) would let InstCombine prove the `inbounds` is sound.
+
+- **Missing SPIR-V target backend in opt.**  `apt.llvm.org`'s opt-21
+  doesn't include the native SPIR-V target.  Building opt with
+  `LLVM_TARGETS_TO_BUILD=...;SPIRV` may resolve the data-layout
+  ambiguity at the source.  Worth checking as Plan A when we come back
+  to this.
+
+Bisecting the IR for a minimal repro (Plan B) is the guaranteed-success
+diagnostic path if neither hypothesis pans out.
+
+**Infrastructure highlights:**
+- Docker image: `intel/oneapi-basekit` + SBCL 2.5.5 + LLVM 21 + Quicklisp
+- BMG visible via L0 inside container with `--device=/dev/dxg` +
+  `-v /usr/lib/wsl:/usr/lib/wsl` + `LD_LIBRARY_PATH=/usr/lib/wsl/lib:...`
+- icpx -fsycl -O3: 4-8s build for the SYCL impls; crisp-compile: 0.5s
+- Wall-time floor ~150-250us regardless of N (Docker/WSL2/SYCL queue
+  overhead).  Only kernel-time numbers are competitive-comparison
+  material.
+
+---
+
 ## 2026-05-30 — RTX PRO 4500 Blackwell
 
 Latest run (raw transcript below).  Notable:
