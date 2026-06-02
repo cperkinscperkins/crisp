@@ -1,4 +1,4 @@
-## One Thread Per Element ✅
+# One Thread Per Element ✅
 
 
 When the host enqueue's a kernel it will set up the global work size, which means the host is deciding how

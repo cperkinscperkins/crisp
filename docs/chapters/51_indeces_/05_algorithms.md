@@ -1,4 +1,4 @@
-## Algorithms
+# Algorithms
 
 - fft
 - fuzed-softmax

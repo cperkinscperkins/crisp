@@ -1,4 +1,4 @@
-## Compiliation Flags ✅
+# Compiliation Flags ✅
 
 
 ### `-D`

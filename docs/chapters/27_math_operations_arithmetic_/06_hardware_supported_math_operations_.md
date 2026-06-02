@@ -1,4 +1,4 @@
-## Hardware Supported Math Operations ✅
+# Hardware Supported Math Operations ✅
 
 
 ### `op-fma` Fused Multiply Add

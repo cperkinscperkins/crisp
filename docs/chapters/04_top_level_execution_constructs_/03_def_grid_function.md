@@ -1,4 +1,4 @@
-## `def-grid-function`
+# `def-grid-function`
 
 
 ```

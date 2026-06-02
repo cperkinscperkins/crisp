@@ -1,4 +1,4 @@
-## def-type-function 📝
+# def-type-function 📝
 
 
 Similar to `def-constraint`, `def-type-function` is not a regular function.

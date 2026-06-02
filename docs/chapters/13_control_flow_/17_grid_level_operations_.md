@@ -1,4 +1,4 @@
-## Grid Level Operations ✅
+# Grid Level Operations ✅
 
 
 Grid-level operations are primitives that orchestrate work across the entire grid of threads. A fundamental rule in Crisp is that 

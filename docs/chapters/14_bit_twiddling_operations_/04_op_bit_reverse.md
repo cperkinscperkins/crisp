@@ -1,4 +1,4 @@
-## `op-bit-reverse`
+# `op-bit-reverse`
 
 Reverses the bits in a 32-bit integer.
 ```

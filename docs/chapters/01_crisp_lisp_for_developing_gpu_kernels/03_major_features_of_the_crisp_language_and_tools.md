@@ -1,4 +1,4 @@
-## Major Features of the Crisp language and tools
+# Major Features of the Crisp language and tools
 
 
 - Distinct Execution Contexts:  A formal context system (thread, grid, dispatch) separates sequential per-thread code from parallel grid-level operations.  This makes a whole class of subtle but catastrophic parallel programming bugs (like nesting grid-level operations) impossible to write by turning them into clear, compile-time errors.

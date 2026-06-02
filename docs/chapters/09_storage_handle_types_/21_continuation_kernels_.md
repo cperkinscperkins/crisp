@@ -1,4 +1,4 @@
-## Continuation Kernels 📝
+# Continuation Kernels 📝
 
 
 A common practice in GPU kernel coding is begin with with one kernel, that perhaps uses a certain

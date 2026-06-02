@@ -1,4 +1,4 @@
-## `--differentiate`
+# `--differentiate`
 
 
 The `--differentiate` flag enables the Crisp Automatic Differentiation (AD) engine. When this flag is active, the compiler performs a reverse-mode transformation on compatible GPU kernels, generating a corresponding gradient kernel (the "adjoint") for every forward kernel defined in the source.

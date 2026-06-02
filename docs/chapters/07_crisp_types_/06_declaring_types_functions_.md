@@ -1,4 +1,4 @@
-## Declaring Types - Functions ⚠️
+# Declaring Types - Functions ⚠️
 
 
 Types MUST be declared for parameters to functions and the function return type.  

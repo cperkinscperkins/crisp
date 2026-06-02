@@ -1,4 +1,4 @@
-## Sorting ⚠️
+# Sorting ⚠️
 
 - bitonic-sort-workgroup
 - bitonic-sort-workgroup!

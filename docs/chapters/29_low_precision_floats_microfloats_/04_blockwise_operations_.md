@@ -1,4 +1,4 @@
-## blockwise operations ✅
+# blockwise operations ✅
 
 
 The arithmetic operations on microfloats are "blockwise". This is highly optimized.

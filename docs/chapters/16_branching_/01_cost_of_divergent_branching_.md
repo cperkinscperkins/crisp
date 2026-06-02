@@ -1,4 +1,4 @@
-## Cost of Divergent Branching ✅
+# Cost of Divergent Branching ✅
 
 
 Examine the following simple example:

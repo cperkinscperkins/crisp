@@ -1,4 +1,4 @@
-## Matrix Vector Multiply `(m*v M v)`
+# Matrix Vector Multiply `(m*v M v)`
 
 ```
 (mat-vec-mult someMatrix someVec &out outVec &optional scratchVec)

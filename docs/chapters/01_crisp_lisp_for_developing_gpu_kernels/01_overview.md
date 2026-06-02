@@ -1,4 +1,4 @@
-## Overview
+# Overview
 
 
 Crisp is a Lisp dialect for developing GPU Kernels.

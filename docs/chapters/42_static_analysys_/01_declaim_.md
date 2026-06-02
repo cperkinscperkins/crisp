@@ -1,4 +1,4 @@
-## declaim ⚠️
+# declaim ⚠️
 
 
 We've already seen `declare` introduced earlier. Whereas `declare` must appear in the context of some `progn`, 

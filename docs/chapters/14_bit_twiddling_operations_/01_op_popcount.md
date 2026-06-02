@@ -1,4 +1,4 @@
-## `op-popcount`
+# `op-popcount`
 
 `(op-popcount uint) => uint`
 

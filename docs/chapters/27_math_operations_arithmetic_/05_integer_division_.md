@@ -1,4 +1,4 @@
-## Integer Division ✅
+# Integer Division ✅
 
 
 There are four  integer divison functions: `/`, `ceil` ,  `floor` and `round`.

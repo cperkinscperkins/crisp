@@ -1,4 +1,4 @@
-## Looping -- Uniform Loops ✅
+# Looping -- Uniform Loops ✅
 
 
 A C++ `for` loop is a big liability when improperly used in a GPU kernel. If the loop isn't

@@ -1,4 +1,4 @@
-## Floating Point Only Operations ✅
+# Floating Point Only Operations ✅
 
 
 Crisp provides the following operations for floating point numbers:

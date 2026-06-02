@@ -1,4 +1,4 @@
-## Radix Sort ⚠️
+# Radix Sort ⚠️
 
 
 Like Bitonic Sort, Radix Sort is done with multiple kernels, but its structure is a loop 

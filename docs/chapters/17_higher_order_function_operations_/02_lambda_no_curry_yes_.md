@@ -1,4 +1,4 @@
-## Lambda No, Curry Yes ✅
+# Lambda No, Curry Yes ✅
 
 Because the GPU has only one callstack per warp (not one per thread), lambda functions are 
 not supported. This is because they enable lexical closures (capturing variables from their surrounding scope),

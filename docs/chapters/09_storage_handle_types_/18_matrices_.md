@@ -1,4 +1,4 @@
-## Matrices ⚠️
+# Matrices ⚠️
 
 
 `(def-type matrix (tensor T 2))`

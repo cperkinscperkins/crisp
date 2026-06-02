@@ -1,4 +1,4 @@
-## Common Debug Flag Configurations ✅
+# Common Debug Flag Configurations ✅
 
 
 ### Default (Low Overhead):

@@ -1,4 +1,4 @@
-## `op-pack-double-2x32` / `op-unpack-double-2x32`
+# `op-pack-double-2x32` / `op-unpack-double-2x32`
 
 ```
 (op-pack-double-2x32 uint uint) => double

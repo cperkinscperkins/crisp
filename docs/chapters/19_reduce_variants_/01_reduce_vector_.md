@@ -1,4 +1,4 @@
-## reduce vector ⚠️
+# reduce vector ⚠️
 
 
 The previous reductions are general purpose tools that let you create algorithms that reduce over warps, workgroups, or all the threads.  

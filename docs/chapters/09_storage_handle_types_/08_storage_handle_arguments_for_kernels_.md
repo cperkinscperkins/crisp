@@ -1,4 +1,4 @@
-## Storage Handle Arguments for Kernels ⚠️
+# Storage Handle Arguments for Kernels ⚠️
 
 `def-kernel` is the definition for the kernel function. 
 And any Storage Handle in its parameter list MUST have its element-type, number or dimensions, align, and address-space specified in

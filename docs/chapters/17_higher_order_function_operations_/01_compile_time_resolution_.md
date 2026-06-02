@@ -1,4 +1,4 @@
-## Compile Time Resolution ✅
+# Compile Time Resolution ✅
 
 
 Crisp does not support "true" higher order functions. Doing so would introduce too much divergence,

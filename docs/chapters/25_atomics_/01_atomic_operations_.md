@@ -1,4 +1,4 @@
-## Atomic Operations ⚠️
+# Atomic Operations ⚠️
 
 Crisp provides a number of built-in atomic operations that perform their work on shared memory locations. Each function is guaranteed to be a single, indivisible transaction.  Each one updates some variable in place and returns the value at the location BEFORE the modification occured.
 

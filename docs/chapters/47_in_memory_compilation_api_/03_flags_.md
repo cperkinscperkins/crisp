@@ -1,4 +1,4 @@
-## Flags ✅
+# Flags ✅
 
 If using the `set_tree_shake_directory()` call, then the compilation environment will
 load the flags from the record there.  This ensures maximum reuse of the .crisp_lib files

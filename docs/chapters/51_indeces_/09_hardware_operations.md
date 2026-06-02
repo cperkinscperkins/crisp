@@ -1,4 +1,4 @@
-## Hardware Operations
+# Hardware Operations
 
 - op-popcount
 - op-count-leading-zeros / op-count-trailing-zeros

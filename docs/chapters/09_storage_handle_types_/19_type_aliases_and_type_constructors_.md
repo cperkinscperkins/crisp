@@ -1,4 +1,4 @@
-## Type Aliases and Type Constructors ✅
+# Type Aliases and Type Constructors ✅
 
 
 The type names for vectors and functions,  etc. can be rather long and ungainly. 

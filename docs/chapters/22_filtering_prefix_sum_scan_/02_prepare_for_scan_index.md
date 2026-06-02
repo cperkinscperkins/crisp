@@ -1,4 +1,4 @@
-## `prepare-for-scan--index`
+# `prepare-for-scan--index`
 
 ```
 (prepare-for-scan--index input-vec predicateF (<localScratchVar>) ...)

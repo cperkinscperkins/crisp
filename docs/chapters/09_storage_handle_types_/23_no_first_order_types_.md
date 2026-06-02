@@ -1,4 +1,4 @@
-## No First Order Types 📝
+# No First Order Types 📝
 
 
 Types are evaluable only at compile-time. There is no runtime

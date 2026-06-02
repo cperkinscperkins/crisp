@@ -1,4 +1,4 @@
-## element-wise access ✅
+# element-wise access ✅
 
 
 Element-wise access to microfloat blocks is not slow (like atomic ops or reading global memory). 

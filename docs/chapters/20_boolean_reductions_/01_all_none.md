@@ -1,4 +1,4 @@
-## `all?` / `none?`
+# `all?` / `none?`
 
 ```
 (all? someVec &out result &optional predicateF)

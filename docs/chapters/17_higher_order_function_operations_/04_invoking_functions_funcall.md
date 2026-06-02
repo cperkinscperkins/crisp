@@ -1,4 +1,4 @@
-## Invoking Functions: `funcall`
+# Invoking Functions: `funcall`
 
 
 Crisp follows the Common Lisp tradition (Lisp-2) regarding function application. This means that variables and functions occupy separate namespaces.

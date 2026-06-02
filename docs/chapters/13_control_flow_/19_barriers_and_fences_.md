@@ -1,4 +1,4 @@
-## Barriers and Fences ✅
+# Barriers and Fences ✅
 
 
 The golden rule of GPU programming is: if you have threads cooperating on a task and one thread writes a value that another thread needs to read, you must use a barrier. The logical pattern is always **Write -> Barrier -> Read**, regardless of whether it's one thread writing and many reading, or many threads writing and one reading.

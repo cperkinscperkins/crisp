@@ -1,4 +1,4 @@
-## Latency Hiding - warp sizes and workgroup sizes ✅
+# Latency Hiding - warp sizes and workgroup sizes ✅
 
 
 As mentioned in passing, most GPUs have a warp size of 32 threads, and the best practice is to use a `local_work_size` (ie a work group size) that is a multiple of the warp size when enqueueing.  But why is that?

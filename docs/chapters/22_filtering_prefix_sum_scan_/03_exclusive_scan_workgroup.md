@@ -1,4 +1,4 @@
-## `exclusive-scan-workgroup`
+# `exclusive-scan-workgroup`
 
 The purpose of `exclusive-scan-workgroup` is to, for each element in a vector, calculate the sum of all the elements
 that came before it. This is an extremely useful routine. If the activity if "finding matches" then the input vector

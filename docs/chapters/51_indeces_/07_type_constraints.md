@@ -1,4 +1,4 @@
-## Type Constraints
+# Type Constraints
 
 - type-is               [DP]  
 - value-is              [DP]

@@ -1,4 +1,4 @@
-## Looping - Grid Stride ✅
+# Looping - Grid Stride ✅
 
 
 The One Thread Per Element strategy is simple and it can scale to any size. But if the number of threads

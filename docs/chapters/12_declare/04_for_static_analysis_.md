@@ -1,4 +1,4 @@
-## For Static Analysis ⚠️
+# For Static Analysis ⚠️
 
 
 There are a half dozen declare directives that can be declared to elect static analysis.

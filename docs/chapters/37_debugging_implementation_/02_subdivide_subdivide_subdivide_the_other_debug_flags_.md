@@ -1,4 +1,4 @@
-## Subdivide Subdivide Subdivide - the "other" debug flags ✅
+# Subdivide Subdivide Subdivide - the "other" debug flags ✅
 
 
 Three debug flags govern subdivision by scope, target, and call site. Two more flags

@@ -1,4 +1,4 @@
-## Struct Types ✅
+# Struct Types ✅
 
 
 `def-struct` defines a structure and makes a new type. 

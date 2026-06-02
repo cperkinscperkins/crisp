@@ -1,4 +1,4 @@
-## `op-find-msb` / `op-find-lsb`
+# `op-find-msb` / `op-find-lsb`
 
 `op-find-msb` returns the *index* (0-31) of the most significant bit set.
 Note: This is NOT the same as `op-count-leading-zeros`.

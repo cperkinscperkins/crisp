@@ -1,4 +1,4 @@
-## Storage Properties ✅
+# Storage Properties ✅
 
 
  `storage` has the following immutable properties:

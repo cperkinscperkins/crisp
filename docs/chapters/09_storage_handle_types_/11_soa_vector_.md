@@ -1,4 +1,4 @@
-## soa-vector ✅
+# soa-vector ✅
 
 
 `soa-vector` is a special type of vector, with a special memory layout. They are used for vectors of structs (only).

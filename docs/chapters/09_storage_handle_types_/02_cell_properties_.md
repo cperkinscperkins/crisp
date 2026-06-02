@@ -1,4 +1,4 @@
-## Cell Properties ✅
+# Cell Properties ✅
 
 
 A `cell` has these mutable properties:

@@ -1,4 +1,4 @@
-## `declare` and templates
+# `declare` and templates
 
 
 ### `type-is`

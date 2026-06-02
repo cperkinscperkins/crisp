@@ -1,4 +1,4 @@
-## matrix multiplication (matmul) ⚠️
+# matrix multiplication (matmul) ⚠️
 
 
 Matrix multiplication (`matmul`) is an operation that takes two matrices and produces a new matrix.

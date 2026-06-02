@@ -1,4 +1,4 @@
-## dot product ⚠️
+# dot product ⚠️
 
 
 The "dot product" is an operation that takes two vectors of the same length

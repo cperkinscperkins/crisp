@@ -1,4 +1,4 @@
-## global-inclusive-scan ⚠️
+# global-inclusive-scan ⚠️
 
 
 Global inclusive scan, like its exclusive scan counterpart, is done with an upsweep and a downsweep operation, with

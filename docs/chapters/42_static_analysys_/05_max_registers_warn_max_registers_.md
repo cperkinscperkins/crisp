@@ -1,4 +1,4 @@
-## max-registers / warn-max-registers ⚠️
+# max-registers / warn-max-registers ⚠️
 
 
 ```

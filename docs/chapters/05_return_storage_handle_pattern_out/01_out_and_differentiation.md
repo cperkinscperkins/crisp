@@ -1,4 +1,4 @@
-## `&out` and differentiation
+# `&out` and differentiation
 
 
 Crisp's auto-differentiation feature (`--differentiate` flag), can only differentiate kernels

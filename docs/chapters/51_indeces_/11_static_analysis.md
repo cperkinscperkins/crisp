@@ -1,4 +1,4 @@
-## static analysis
+# static analysis
 
 - declaim
 - check-coalesce

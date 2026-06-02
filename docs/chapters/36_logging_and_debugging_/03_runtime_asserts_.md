@@ -1,4 +1,4 @@
-## Runtime Asserts ⚠️
+# Runtime Asserts ⚠️
 
 
 There are various asserts available at runtime. They are available if the debug output is enabled or not, but their behavior changes slightly.

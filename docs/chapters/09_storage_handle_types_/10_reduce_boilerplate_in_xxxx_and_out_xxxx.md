@@ -1,4 +1,4 @@
-## Reduce Boilerplate: `in-XXXX` and `out-XXXX`
+# Reduce Boilerplate: `in-XXXX` and `out-XXXX`
 
 
 ```

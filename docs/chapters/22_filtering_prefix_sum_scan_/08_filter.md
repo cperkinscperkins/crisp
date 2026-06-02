@@ -1,4 +1,4 @@
-## `filter`
+# `filter`
 
 ```
   (filter input-vec predicateF result-vec)

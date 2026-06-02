@@ -1,4 +1,4 @@
-## Workgroup Stride ✅
+# Workgroup Stride ✅
 
 
 Whereas the other stride macros bend all available threads to their wicked purposes, `workgroup-stride` is 

@@ -1,4 +1,4 @@
-## workgroup-stride ✅
+# workgroup-stride ✅
 
 ```
 (workgroup-stride <tile-tensor> (<bindings>) ...)

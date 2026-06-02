@@ -1,4 +1,4 @@
-## So You Want Debug Logging ✅
+# So You Want Debug Logging ✅
 
 
 ### `--logging-output`  Master Switch.

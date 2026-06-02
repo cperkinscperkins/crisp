@@ -1,4 +1,4 @@
-## Differences From Lisp
+# Differences From Lisp
 
 
 While Crisp is an s-expression based language and shares with Common Lisp the very powerful `defmacro` 

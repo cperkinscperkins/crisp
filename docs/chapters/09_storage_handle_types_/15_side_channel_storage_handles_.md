@@ -1,4 +1,4 @@
-## Side Channel Storage Handles ✅
+# Side Channel Storage Handles ✅
 
 
 As was mentioned earlier, Crisp supports side channel Storage Handles, which are special purpose memory objects that

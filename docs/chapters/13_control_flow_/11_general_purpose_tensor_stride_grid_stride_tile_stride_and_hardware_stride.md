@@ -1,4 +1,4 @@
-## General Purpose: `tensor-stride`, `grid-stride`,  `tile-stride` and `hardware-stride`
+# General Purpose: `tensor-stride`, `grid-stride`,  `tile-stride` and `hardware-stride`
 
 
 While `loop-vector-stride` is very handy and one of the most commonly used Crisp affordances, 

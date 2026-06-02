@@ -1,4 +1,4 @@
-## Vector / Matrix /Tensor Properties ⚠️
+# Vector / Matrix /Tensor Properties ⚠️
 
 
  `vector` and `matrix` are just the 1D and 2D variants of `tensor`

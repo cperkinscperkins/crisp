@@ -1,4 +1,4 @@
-## Incomplete Types ✅
+# Incomplete Types ✅
 
 
 An "Incomplete Type" is a composite type (defined via `def-record` or `def-struct`) where one or more of its compile-time properties have not been specified in type declaration.

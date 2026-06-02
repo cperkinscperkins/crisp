@@ -1,4 +1,4 @@
-## Micro Float Types ✅
+# Micro Float Types ✅
 
 
 Crisp provides these base types for you:

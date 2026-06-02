@@ -1,4 +1,4 @@
-## Declaring Types - Kernels ✅
+# Declaring Types - Kernels ✅
 
 
 ### def-kernel

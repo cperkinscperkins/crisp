@@ -1,4 +1,4 @@
-## Other Basic Types ⚠️
+# Other Basic Types ⚠️
 
 
 > NOTE: this section needs work

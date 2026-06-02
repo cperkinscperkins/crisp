@@ -1,4 +1,4 @@
-## Output Targeting Options ✅
+# Output Targeting Options ✅
 
 
 ### `--output-dir=<DIRECTORY_PATH>`

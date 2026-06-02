@@ -1,4 +1,4 @@
-## def-record ✅
+# def-record ✅
 
 
 `def-record` is very simlar to `def-struct`. Records "pun" as structs. The crucial difference is that while structs result in contiguous memory (though aligned and padded), records are not contiguous in memory.  Records are just a collection of register, of memory addresses. They act as virtualized structures.

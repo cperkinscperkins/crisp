@@ -1,4 +1,4 @@
-## Template Types ✅
+# Template Types ✅
 
 
 `with-template-type` can wrap several `def-` declarations to template them. 

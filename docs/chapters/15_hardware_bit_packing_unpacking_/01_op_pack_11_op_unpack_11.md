@@ -1,4 +1,4 @@
-## `op-pack-11` / `op-unpack-11`
+# `op-pack-11` / `op-unpack-11`
 
 Take three floats and store them in 32 bits by converting two of them to 11 bit floats and the third
 to a 10 bit float.  Unpacking them to normal 4-byte floats for operations

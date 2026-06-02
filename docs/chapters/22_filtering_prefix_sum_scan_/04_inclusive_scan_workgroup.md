@@ -1,4 +1,4 @@
-## `inclusive-scan-workgroup`
+# `inclusive-scan-workgroup`
 
 
 The sister to `exclusive-scan-workgroup`, its output at any index is the sum of the elements up to _and including_ `i`.

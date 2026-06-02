@@ -1,4 +1,4 @@
-## Tensors & Matrices ⚠️
+# Tensors & Matrices ⚠️
 
 
 Tensors were introduced earlier in the [Storage Handle Types](#storage-handle-types) section.

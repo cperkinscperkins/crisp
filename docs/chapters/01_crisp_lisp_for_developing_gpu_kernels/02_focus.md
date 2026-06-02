@@ -1,4 +1,4 @@
-## Focus
+# Focus
 
 
 The focus is on performance, compiliation speed, safety and correctness.

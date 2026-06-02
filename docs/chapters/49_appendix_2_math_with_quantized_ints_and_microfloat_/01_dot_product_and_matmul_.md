@@ -1,4 +1,4 @@
-## dot product and matmul ✅
+# dot product and matmul ✅
 
 
 These dot product and matmul implementations work for ALL types. 

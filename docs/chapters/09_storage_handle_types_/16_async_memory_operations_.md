@@ -1,4 +1,4 @@
-## Async Memory Operations 📝
+# Async Memory Operations 📝
 
 
 Crisp supports hardware-accelerated asynchronous memory copies (DMA). These operations allow the GPU

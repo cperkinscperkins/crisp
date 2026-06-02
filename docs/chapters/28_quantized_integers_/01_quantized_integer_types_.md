@@ -1,4 +1,4 @@
-## Quantized Integer Types ✅
+# Quantized Integer Types ✅
 
 
 These are the Crisp `qint` base types pre-defined for you.   

@@ -1,4 +1,4 @@
-## Vector Numeric Types ✅
+# Vector Numeric Types ✅
 
 
 | Base Type | 2 | 3 | 4 |

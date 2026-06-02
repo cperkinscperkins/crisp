@@ -1,4 +1,4 @@
-## `op-bitfield-extract` / `op-bitfield-insert`
+# `op-bitfield-extract` / `op-bitfield-insert`
 
 These two operations are precision tools for slicing and splicing bits within an integer. They are incredibly useful for packing multiple small values (like 5-bit, 6-bit, or 10-bit numbers) into a single 32-bit integer without messy shifting and masking math.
 

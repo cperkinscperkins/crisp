@@ -1,4 +1,4 @@
-## Helper Functions ✅
+# Helper Functions ✅
 
 
 `(element-type~ someStorageHandle)`  a type expression that returns the type of the elements in the Storage Handle.

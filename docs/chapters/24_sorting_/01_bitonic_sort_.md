@@ -1,4 +1,4 @@
-## Bitonic Sort ⚠️
+# Bitonic Sort ⚠️
 
 
 Crisp provides a "toolkit" for bitonic sort.  If the sort can be performed by a single workgroup, then there are functions for that.

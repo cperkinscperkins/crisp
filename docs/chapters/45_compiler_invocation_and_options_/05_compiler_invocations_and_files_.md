@@ -1,4 +1,4 @@
-## Compiler Invocations and Files ✅
+# Compiler Invocations and Files ✅
 
 Each target (for example .spv) has one file output per orchestration. Loose kernels that
 are not named in an orchestration are also output, one target file apiece. 

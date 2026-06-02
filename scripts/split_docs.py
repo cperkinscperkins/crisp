@@ -29,6 +29,7 @@ def main():
     # State machine variables
     chapter_num = 0
     section_num = 0
+    nav_chapters = []
     
     current_chapter_dir = None
     current_chapter_title = "Preamble"
@@ -78,6 +79,12 @@ def main():
             current_section_file = os.path.join(current_chapter_dir, "00_intro.md")
             current_buffer = [f"# {title}\n\n"]
             
+            # Add to nav structure
+            nav_chapters.append({
+                "title": title,
+                "sections": [("Introduction", f"chapters/{dirname}/00_intro.md")]
+            })
+            
             i += 2 # Skip title and underline
             continue
 
@@ -99,11 +106,15 @@ def main():
             
             # Add Link to Master Index
             # Relative path for GitHub Pages/Markdown
-            rel_path = f"chapters/{os.path.basename(current_chapter_dir)}/{filename}"
+            chapter_dirname = os.path.basename(current_chapter_dir)
+            rel_path = f"chapters/{chapter_dirname}/{filename}"
             index_content.append(f"- [{title}]({rel_path})\n")
             
-            # Start buffer with the header
-            current_buffer = [f"## {title}\n\n"]
+            # Add to nav structure
+            nav_chapters[-1]["sections"].append((title, rel_path))
+            
+            # Start buffer with the header (H1 to prevent redundant sidebar nesting)
+            current_buffer = [f"# {title}\n\n"]
             
             i += 2 # Skip title and underline
             continue
@@ -131,8 +142,36 @@ def main():
     with open(INDEX_FILE, 'w', encoding='utf-8') as f:
         f.writelines(index_content)
 
+    # Generate mkdocs.yml with navigation
+    base_content = ""
+    if os.path.exists("mkdocs-base.yml"):
+        with open("mkdocs-base.yml", "r", encoding="utf-8") as f:
+            base_content = f.read()
+
+    with open("mkdocs.yml", "w", encoding="utf-8") as f:
+        f.write(base_content)
+        f.write("\nnav:\n")
+        f.write('  - "Welcome": "index.md"\n')
+        f.write('  - "The Blueprint Philosophy": "crisp-curios.md"\n')
+        f.write('  - "Crisp Codebase Reference": "reference.md"\n')
+        f.write('  - "Crisp Testing Guide": "tests.md"\n')
+        f.write('  - "Call Graph": "call_graph.md"\n')
+        f.write('  - "Defmacro Utilities": "defmacro-utils.md"\n')
+        f.write('  - "Benchmarks": "benchmarks.md"\n')
+        f.write('  - "Criticisms": "criticsms.md"\n')
+        f.write('  - "Elevator Pitches": "elevator_pitches.md"\n')
+        f.write('  - "Chapters":\n')
+        for ch in nav_chapters:
+            ch_title = ch["title"].replace('"', '')
+            f.write(f'      - "{ch_title}":\n')
+            for sec_title, sec_path in ch["sections"]:
+                clean_title = sec_title.replace('"', '')
+                clean_path = sec_path.replace("\\", "/")
+                f.write(f'          - "{clean_title}": "{clean_path}"\n')
+
     print(f"Done! Split {chapter_num} chapters into {OUTPUT_DIR}")
     print(f"Generated Master Index at {INDEX_FILE}")
+    print("Generated mkdocs.yml navigation")
 
 if __name__ == "__main__":
     main()

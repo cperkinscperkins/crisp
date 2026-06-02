@@ -1,4 +1,4 @@
-## Array Type ⚠️
+# Array Type ⚠️
 
 
 `(array T N)`

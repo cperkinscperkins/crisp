@@ -1,4 +1,4 @@
-## when-is-last-warp / when-is-last-thread ✅
+# when-is-last-warp / when-is-last-thread ✅
 
 ```
 (when-is-last-warp (lane-id) ...)

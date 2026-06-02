@@ -1,4 +1,4 @@
-## Memory
+# Memory
 
 
 Memory cannot be allocated by the kernel itself. Only the host or the compiler can do so.

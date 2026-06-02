@@ -1,4 +1,4 @@
-## Logging Utilities ✅
+# Logging Utilities ✅
 
 
 - `(line)`  evaluates at compile-time to the line number of the file where it appears.

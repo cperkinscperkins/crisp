@@ -1,4 +1,4 @@
-## Word Count With Exclusive Scan ⚠️
+# Word Count With Exclusive Scan ⚠️
 
 
 <!-- 

@@ -1,4 +1,4 @@
-## Higher Order Function Operations ✅
+# Higher Order Function Operations ✅
 
 - map-stride
 - reduce-to-warp

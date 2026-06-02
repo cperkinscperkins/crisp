@@ -1,4 +1,4 @@
-## logging and debugging
+# logging and debugging
 
 - c-t-output
 - c-t-assert

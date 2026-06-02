@@ -1,4 +1,4 @@
-## Sum a Vector using Local Memory ✅
+# Sum a Vector using Local Memory ✅
 
 
 Earlier we demonstrated a simple `vector_add` using grid strides. 

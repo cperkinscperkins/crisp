@@ -1,4 +1,4 @@
-## def-constraint 📝
+# def-constraint 📝
 
 
 Constraint functions are not regular functions. They are limited to where they can

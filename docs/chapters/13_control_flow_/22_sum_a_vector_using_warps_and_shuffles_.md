@@ -1,4 +1,4 @@
-## Sum a Vector using Warps and Shuffles ✅
+# Sum a Vector using Warps and Shuffles ✅
 
 
 Would you like to calculate the sum of a vector without needing any local shared memory

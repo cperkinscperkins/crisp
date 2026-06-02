@@ -1,4 +1,4 @@
-## Other `declare` directives
+# Other `declare` directives
 
 
 ### `use`

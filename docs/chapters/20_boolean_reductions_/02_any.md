@@ -1,4 +1,4 @@
-## `any?`
+# `any?`
 
 ```
 (any? someVec &out result &optional predicateF)

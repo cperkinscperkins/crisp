@@ -1,4 +1,4 @@
-## Atomics ⚠️
+# Atomics ⚠️
 
 - atomic-add!
 - atomic-sub!

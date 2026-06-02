@@ -61,6 +61,7 @@
   (let ((lines (uiop:read-file-lines *input-file*))
         (chapter-num 0)
         (section-num 0)
+        (nav-chapters nil)
         ;; Default to preamble before first chapter
         (current-chapter-dir (merge-pathnames "00_preamble/" *output-dir*))
         (current-section-file nil)
@@ -101,12 +102,16 @@
                     (setf current-chapter-dir (merge-pathnames dirname *output-dir*))
                     (ensure-directories-exist current-chapter-dir)
 
-                    ;; Append to Master Index
-                    (format index-content "~%## ~A~%" title)
+                    (let ((chapter-dirname (car (last (pathname-directory current-chapter-dir)))))
+                      ;; Append to Master Index
+                      (format index-content "~%## ~A~%" title)
 
-                    ;; Start a new intro file for the chapter
-                    (setf current-section-file (merge-pathnames "00_intro.md" current-chapter-dir))
-                    (format current-buffer "# ~A~%~%" title)
+                      ;; Start a new intro file for the chapter
+                      (setf current-section-file (merge-pathnames "00_intro.md" current-chapter-dir))
+                      (format current-buffer "# ~A~%~%" title)
+                      
+                      ;; Add to nav structure
+                      (push (list title (cons "Introduction" (format nil "chapters/~A/00_intro.md" chapter-dirname))) nav-chapters))
                     
                     ;; Skip both title line and underline
                     (incf i 2)))
@@ -128,11 +133,17 @@
 
                     ;; Append Link to Master Index
                     ;; We need the relative path for Markdown: chapters/01_intro/01_file.md
-                    (let ((chapter-dirname (car (last (pathname-directory current-chapter-dir)))))
-                       (format index-content "- [~A](chapters/~A/~A)~%" title chapter-dirname filename))
+                    (let* ((chapter-dirname (car (last (pathname-directory current-chapter-dir))))
+                           (rel-path (format nil "chapters/~A/~A" chapter-dirname filename)))
+                       (format index-content "- [~A](chapters/~A/~A)~%" title chapter-dirname filename)
+                       
+                       ;; Add to nav structure
+                       (setf (car nav-chapters)
+                             (append (car nav-chapters)
+                                     (list (cons title rel-path)))))
                     
-                    ;; Start buffer with header
-                    (format current-buffer "## ~A~%~%" title)
+                    ;; Start buffer with header (H1 to prevent redundant sidebar nesting)
+                    (format current-buffer "# ~A~%~%" title)
 
                     ;; Skip both title line and underline
                     (incf i 2)))
@@ -150,8 +161,40 @@
     ;; Write the Master Index file
     (write-buffer-to-file *index-file* index-content)
 
+    ;; Generate mkdocs.yml with navigation
+    (setf nav-chapters (nreverse nav-chapters))
+    (let ((base-content (if (probe-file "mkdocs-base.yml")
+                            (uiop:read-file-string "mkdocs-base.yml")
+                            "")))
+      (with-open-file (stream "mkdocs.yml" 
+                              :direction :output 
+                              :if-exists :supersede
+                              :if-does-not-exist :create)
+        (write-string base-content stream)
+        (format stream "~%nav:~%")
+        (format stream "  - \"Welcome\": \"index.md\"~%")
+        (format stream "  - \"The Blueprint Philosophy\": \"crisp-curios.md\"~%")
+        (format stream "  - \"Crisp Codebase Reference\": \"reference.md\"~%")
+        (format stream "  - \"Crisp Testing Guide\": \"tests.md\"~%")
+        (format stream "  - \"Call Graph\": \"call_graph.md\"~%")
+        (format stream "  - \"Defmacro Utilities\": \"defmacro-utils.md\"~%")
+        (format stream "  - \"Benchmarks\": \"benchmarks.md\"~%")
+        (format stream "  - \"Criticisms\": \"criticsms.md\"~%")
+        (format stream "  - \"Elevator Pitches\": \"elevator_pitches.md\"~%")
+        (format stream "  - \"Chapters\":~%")
+        (dolist (ch nav-chapters)
+          (let ((ch-title (remove #\" (car ch)))
+                (sections (cdr ch)))
+            (format stream "      - \"~A\":~%" ch-title)
+            (dolist (sec sections)
+              (let ((sec-title (remove #\" (car sec)))
+                    (sec-path (cdr sec)))
+                (let ((clean-path (substitute #\/ #\\ sec-path)))
+                  (format stream "          - \"~A\": \"~A\"~%" sec-title clean-path))))))))
+
     (format t "Done! Split ~D chapters into ~A~%" chapter-num *output-dir*)
-    (format t "Generated Master Index at ~A~%" *index-file*)))
+    (format t "Generated Master Index at ~A~%" *index-file*)
+    (format t "Generated mkdocs.yml navigation~%")))
 
 ;; Run it
 (main)

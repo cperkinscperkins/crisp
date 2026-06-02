@@ -1,4 +1,4 @@
-## Workgroup Level Operations ✅
+# Workgroup Level Operations ✅
 
 
 Workgroup-level operations are a bit like grid-level, in that multiple threads are being coordinated in

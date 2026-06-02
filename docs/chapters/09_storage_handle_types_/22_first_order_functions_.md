@@ -1,4 +1,4 @@
-## First Order Functions 📝
+# First Order Functions 📝
 
 
 - `def-function` defines a function

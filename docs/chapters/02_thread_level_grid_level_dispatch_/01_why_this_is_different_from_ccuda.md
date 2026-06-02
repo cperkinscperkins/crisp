@@ -1,4 +1,4 @@
-## Why This is Different from C++/CUDA
+# Why This is Different from C++/CUDA
 
 
 In C++/CUDA, there is no formal distinction between a "dress pattern" and an "assembly line blueprint". A programmer can accidentally write code that has a single thread try to launch a new, grid-wide operation. The C++ compiler won't prevent this. This code compiles but results in a silent, catastrophic bug: either the logic is fundamentally incorrect, or the performance is thousands of times slower than expected. The developer is left to debug a complex runtime issue with no help from the compiler.

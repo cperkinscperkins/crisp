@@ -1,4 +1,4 @@
-## `op-pack-snorm-4x8` / `op-unpack-snorm-4x8`
+# `op-pack-snorm-4x8` / `op-unpack-snorm-4x8`
 
 ```
 (op-pack-snorm-4x8 float float float float) => uint

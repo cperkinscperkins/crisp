@@ -1,4 +1,4 @@
-## Load Tile / Store Tile 📝
+# Load Tile / Store Tile 📝
 
 
 `load-tile` and `store-tile` work with tensors of any arity, not only 2D matrices.

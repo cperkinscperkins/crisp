@@ -1,4 +1,4 @@
-## Compile Time Strings ✅
+# Compile Time Strings ✅
 
 
 Most strings in Crisp are compile time. They follow the Common Lisp parsing rules

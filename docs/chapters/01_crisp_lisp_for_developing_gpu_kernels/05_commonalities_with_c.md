@@ -1,4 +1,4 @@
-## Commonalities with C++
+# Commonalities with C++
 
 
 ### Monomorphization

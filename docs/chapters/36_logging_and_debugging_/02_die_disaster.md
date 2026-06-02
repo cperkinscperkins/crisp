@@ -1,4 +1,4 @@
-## `(die "disaster")`
+# `(die "disaster")`
 
 
 ```

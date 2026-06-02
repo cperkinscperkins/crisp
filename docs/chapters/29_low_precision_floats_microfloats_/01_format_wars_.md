@@ -1,4 +1,4 @@
-## Format Wars ✅
+# Format Wars ✅
 
 
 There are competing formats for these microfloat blocks.

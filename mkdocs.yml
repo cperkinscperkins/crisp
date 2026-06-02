@@ -34,3 +34,300 @@ markdown_extensions:
       emoji_generator: !!python/name:pymdownx.emoji.to_svg
   - toc:
       permalink: true
+
+exclude_docs: |
+  ideal_001.md
+
+nav:
+  - "Welcome": "index.md"
+  - "The Blueprint Philosophy": "crisp-curios.md"
+  - "Crisp Codebase Reference": "reference.md"
+  - "Crisp Testing Guide": "tests.md"
+  - "Call Graph": "call_graph.md"
+  - "Defmacro Utilities": "defmacro-utils.md"
+  - "Benchmarks": "benchmarks.md"
+  - "Criticisms": "criticsms.md"
+  - "Elevator Pitches": "elevator_pitches.md"
+  - "Chapters":
+      - "CRISP - Lisp for developing GPU Kernels":
+          - "Introduction": "chapters/01_crisp_lisp_for_developing_gpu_kernels/00_intro.md"
+          - "Overview": "chapters/01_crisp_lisp_for_developing_gpu_kernels/01_overview.md"
+          - "Focus": "chapters/01_crisp_lisp_for_developing_gpu_kernels/02_focus.md"
+          - "Major Features of the Crisp language and tools": "chapters/01_crisp_lisp_for_developing_gpu_kernels/03_major_features_of_the_crisp_language_and_tools.md"
+          - "Differences From Lisp": "chapters/01_crisp_lisp_for_developing_gpu_kernels/04_differences_from_lisp.md"
+          - "Commonalities with C++": "chapters/01_crisp_lisp_for_developing_gpu_kernels/05_commonalities_with_c.md"
+      - "Thread Level / Grid Level / Dispatch ✅":
+          - "Introduction": "chapters/02_thread_level_grid_level_dispatch_/00_intro.md"
+          - "Why This is Different from C++/CUDA": "chapters/02_thread_level_grid_level_dispatch_/01_why_this_is_different_from_ccuda.md"
+      - "Terminology: Storage Handles ✅":
+          - "Introduction": "chapters/03_terminology_storage_handles_/00_intro.md"
+      - "Top Level Execution Constructs ✅":
+          - "Introduction": "chapters/04_top_level_execution_constructs_/00_intro.md"
+          - "`def-kernel`": "chapters/04_top_level_execution_constructs_/01_def_kernel.md"
+          - "`def-function`": "chapters/04_top_level_execution_constructs_/02_def_function.md"
+          - "`def-grid-function`": "chapters/04_top_level_execution_constructs_/03_def_grid_function.md"
+      - "Return Storage Handle Pattern `&out`":
+          - "Introduction": "chapters/05_return_storage_handle_pattern_out/00_intro.md"
+          - "`&out` and differentiation": "chapters/05_return_storage_handle_pattern_out/01_out_and_differentiation.md"
+          - "`&out` and performance": "chapters/05_return_storage_handle_pattern_out/02_out_and_performance.md"
+      - "Argument Passing and Side Channels ✅":
+          - "Introduction": "chapters/06_argument_passing_and_side_channels_/00_intro.md"
+      - "Crisp Types ✅":
+          - "Introduction": "chapters/07_crisp_types_/00_intro.md"
+          - "Base Numeric Types ✅": "chapters/07_crisp_types_/01_base_numeric_types_.md"
+          - "Vector Numeric Types ✅": "chapters/07_crisp_types_/02_vector_numeric_types_.md"
+          - "Numeric Type Promotion, Casting, Conversion ✅": "chapters/07_crisp_types_/03_numeric_type_promotion_casting_conversion_.md"
+          - "Quantized Integers and Complex Numbers ✅": "chapters/07_crisp_types_/04_quantized_integers_and_complex_numbers_.md"
+          - "Other Basic Types ⚠️": "chapters/07_crisp_types_/05_other_basic_types_.md"
+          - "Declaring Types - Functions ⚠️": "chapters/07_crisp_types_/06_declaring_types_functions_.md"
+          - "Function Overloading ✅": "chapters/07_crisp_types_/07_function_overloading_.md"
+          - "Recursion Disallowed ✅": "chapters/07_crisp_types_/08_recursion_disallowed_.md"
+          - "Declaring Types - Kernels ✅": "chapters/07_crisp_types_/09_declaring_types_kernels_.md"
+          - "Struct Types ✅": "chapters/07_crisp_types_/10_struct_types_.md"
+          - "def-setter ✅": "chapters/07_crisp_types_/11_def_setter_.md"
+          - "def-record ✅": "chapters/07_crisp_types_/12_def_record_.md"
+          - "Array Type ⚠️": "chapters/07_crisp_types_/13_array_type_.md"
+          - "Incomplete Types ✅": "chapters/07_crisp_types_/14_incomplete_types_.md"
+          - "Template Types ✅": "chapters/07_crisp_types_/15_template_types_.md"
+          - "def-constraint 📝": "chapters/07_crisp_types_/16_def_constraint_.md"
+          - "def-type-function 📝": "chapters/07_crisp_types_/17_def_type_function_.md"
+      - "GPU Memory ⚠️":
+          - "Introduction": "chapters/08_gpu_memory_/00_intro.md"
+      - "Storage Handle Types ⚠️":
+          - "Introduction": "chapters/09_storage_handle_types_/00_intro.md"
+          - "Storage Properties ✅": "chapters/09_storage_handle_types_/01_storage_properties_.md"
+          - "Cell Properties ✅": "chapters/09_storage_handle_types_/02_cell_properties_.md"
+          - "Vector / Matrix /Tensor Properties ⚠️": "chapters/09_storage_handle_types_/03_vector_matrix_tensor_properties_.md"
+          - "Element Access ✅": "chapters/09_storage_handle_types_/04_element_access_.md"
+          - "Helper Functions ✅": "chapters/09_storage_handle_types_/05_helper_functions_.md"
+          - "Member Data Rules ✅": "chapters/09_storage_handle_types_/06_member_data_rules_.md"
+          - "Storage Handle Type Definitions ⚠️": "chapters/09_storage_handle_types_/07_storage_handle_type_definitions_.md"
+          - "Storage Handle Arguments for Kernels ⚠️": "chapters/09_storage_handle_types_/08_storage_handle_arguments_for_kernels_.md"
+          - "Creating Storage Handle Views ⚠️": "chapters/09_storage_handle_types_/09_creating_storage_handle_views_.md"
+          - "Reduce Boilerplate: `in-XXXX` and `out-XXXX`": "chapters/09_storage_handle_types_/10_reduce_boilerplate_in_xxxx_and_out_xxxx.md"
+          - "soa-vector ✅": "chapters/09_storage_handle_types_/11_soa_vector_.md"
+          - "def-const ✅": "chapters/09_storage_handle_types_/12_def_const_.md"
+          - "def-parameter ✅": "chapters/09_storage_handle_types_/13_def_parameter_.md"
+          - "def-const-vec ✅": "chapters/09_storage_handle_types_/14_def_const_vec_.md"
+          - "Side Channel Storage Handles ✅": "chapters/09_storage_handle_types_/15_side_channel_storage_handles_.md"
+          - "Async Memory Operations 📝": "chapters/09_storage_handle_types_/16_async_memory_operations_.md"
+          - "Tensors & Matrices ⚠️": "chapters/09_storage_handle_types_/17_tensors_matrices_.md"
+          - "Matrices ⚠️": "chapters/09_storage_handle_types_/18_matrices_.md"
+          - "Type Aliases and Type Constructors ✅": "chapters/09_storage_handle_types_/19_type_aliases_and_type_constructors_.md"
+          - "Derived Types ✅": "chapters/09_storage_handle_types_/20_derived_types_.md"
+          - "Continuation Kernels 📝": "chapters/09_storage_handle_types_/21_continuation_kernels_.md"
+          - "First Order Functions 📝": "chapters/09_storage_handle_types_/22_first_order_functions_.md"
+          - "No First Order Types 📝": "chapters/09_storage_handle_types_/23_no_first_order_types_.md"
+          - "Enumerations ✅": "chapters/09_storage_handle_types_/24_enumerations_.md"
+          - "Maybe Type ⚠️": "chapters/09_storage_handle_types_/25_maybe_type_.md"
+      - "`let`":
+          - "Introduction": "chapters/10_let/00_intro.md"
+      - "`set!`":
+          - "Introduction": "chapters/11_set/00_intro.md"
+      - "`declare`":
+          - "Introduction": "chapters/12_declare/00_intro.md"
+          - "`declare` and templates": "chapters/12_declare/01_declare_and_templates.md"
+          - "Other `declare` directives": "chapters/12_declare/02_other_declare_directives.md"
+          - "For `defmacro` writers": "chapters/12_declare/03_for_defmacro_writers.md"
+          - "For Static Analysis ⚠️": "chapters/12_declare/04_for_static_analysis_.md"
+      - "Control Flow ✅":
+          - "Introduction": "chapters/13_control_flow_/00_intro.md"
+          - "Single Task ✅": "chapters/13_control_flow_/01_single_task_.md"
+          - "when-thread-is / abs-when-thread-is ✅": "chapters/13_control_flow_/02_when_thread_is_abs_when_thread_is_.md"
+          - "when-thread-in-group-is / when-group-is ✅": "chapters/13_control_flow_/03_when_thread_in_group_is_when_group_is_.md"
+          - "when-global-linear-id-is / when-local-linear-id-is ✅": "chapters/13_control_flow_/04_when_global_linear_id_is_when_local_linear_id_is_.md"
+          - "when-is-last-workgroup ✅": "chapters/13_control_flow_/05_when_is_last_workgroup_.md"
+          - "when-is-last-warp / when-is-last-thread ✅": "chapters/13_control_flow_/06_when_is_last_warp_when_is_last_thread_.md"
+          - "Hoisting and Enqueing a Kernel ⚠️": "chapters/13_control_flow_/07_hoisting_and_enqueing_a_kernel_.md"
+          - "Latency Hiding - warp sizes and workgroup sizes ✅": "chapters/13_control_flow_/08_latency_hiding_warp_sizes_and_workgroup_sizes_.md"
+          - "One Thread Per Element ✅": "chapters/13_control_flow_/09_one_thread_per_element_.md"
+          - "Looping - Grid Stride ✅": "chapters/13_control_flow_/10_looping_grid_stride_.md"
+          - "General Purpose: `tensor-stride`, `grid-stride`,  `tile-stride` and `hardware-stride`": "chapters/13_control_flow_/11_general_purpose_tensor_stride_grid_stride_tile_stride_and_hardware_stride.md"
+          - "Load Tile / Store Tile 📝": "chapters/13_control_flow_/12_load_tile_store_tile_.md"
+          - "workgroup-stride ✅": "chapters/13_control_flow_/13_workgroup_stride_.md"
+          - "Workgroup Stride ✅": "chapters/13_control_flow_/14_workgroup_stride_.md"
+          - "Looping -- Uniform Loops ✅": "chapters/13_control_flow_/15_looping_uniform_loops_.md"
+          - "Looping Constructs ✅": "chapters/13_control_flow_/16_looping_constructs_.md"
+          - "Grid Level Operations ✅": "chapters/13_control_flow_/17_grid_level_operations_.md"
+          - "Workgroup Level Operations ✅": "chapters/13_control_flow_/18_workgroup_level_operations_.md"
+          - "Barriers and Fences ✅": "chapters/13_control_flow_/19_barriers_and_fences_.md"
+          - "Sum a Vector using Local Memory ✅": "chapters/13_control_flow_/20_sum_a_vector_using_local_memory_.md"
+          - "Warps & Shuffles ✅": "chapters/13_control_flow_/21_warps_shuffles_.md"
+          - "Sum a Vector using Warps and Shuffles ✅": "chapters/13_control_flow_/22_sum_a_vector_using_warps_and_shuffles_.md"
+      - "Bit Twiddling Operations ✅":
+          - "Introduction": "chapters/14_bit_twiddling_operations_/00_intro.md"
+          - "`op-popcount`": "chapters/14_bit_twiddling_operations_/01_op_popcount.md"
+          - "`op-count-leading-zeros` / `op-count-trailing-zeros`": "chapters/14_bit_twiddling_operations_/02_op_count_leading_zeros_op_count_trailing_zeros.md"
+          - "`op-find-msb` / `op-find-lsb`": "chapters/14_bit_twiddling_operations_/03_op_find_msb_op_find_lsb.md"
+          - "`op-bit-reverse`": "chapters/14_bit_twiddling_operations_/04_op_bit_reverse.md"
+          - "`op-bitfield-extract` / `op-bitfield-insert`": "chapters/14_bit_twiddling_operations_/05_op_bitfield_extract_op_bitfield_insert.md"
+      - "Hardware Bit Packing / Unpacking ✅":
+          - "Introduction": "chapters/15_hardware_bit_packing_unpacking_/00_intro.md"
+          - "`op-pack-11` / `op-unpack-11`": "chapters/15_hardware_bit_packing_unpacking_/01_op_pack_11_op_unpack_11.md"
+          - "`op-pack-half-2x16` / `op-unpack-half-2x16`": "chapters/15_hardware_bit_packing_unpacking_/02_op_pack_half_2x16_op_unpack_half_2x16.md"
+          - "`op-pack-unorm-4x8` / `op-unpack-unorm-4x8`": "chapters/15_hardware_bit_packing_unpacking_/03_op_pack_unorm_4x8_op_unpack_unorm_4x8.md"
+          - "`op-pack-snorm-4x8` / `op-unpack-snorm-4x8`": "chapters/15_hardware_bit_packing_unpacking_/04_op_pack_snorm_4x8_op_unpack_snorm_4x8.md"
+          - "`op-pack-unorm-2x16` / `op-unpack-unorm-2x16`": "chapters/15_hardware_bit_packing_unpacking_/05_op_pack_unorm_2x16_op_unpack_unorm_2x16.md"
+          - "`op-pack-double-2x32` / `op-unpack-double-2x32`": "chapters/15_hardware_bit_packing_unpacking_/06_op_pack_double_2x32_op_unpack_double_2x32.md"
+          - "`op-pack-rgb-9e5` (Shared Exponent)  Pack only.": "chapters/15_hardware_bit_packing_unpacking_/07_op_pack_rgb_9e5_shared_exponent_pack_only.md"
+      - "Branching ✅":
+          - "Introduction": "chapters/16_branching_/00_intro.md"
+          - "Cost of Divergent Branching ✅": "chapters/16_branching_/01_cost_of_divergent_branching_.md"
+          - "Predicated Selection ✅": "chapters/16_branching_/02_predicated_selection_.md"
+      - "Higher Order Function Operations ✅":
+          - "Introduction": "chapters/17_higher_order_function_operations_/00_intro.md"
+          - "Compile Time Resolution ✅": "chapters/17_higher_order_function_operations_/01_compile_time_resolution_.md"
+          - "Lambda No, Curry Yes ✅": "chapters/17_higher_order_function_operations_/02_lambda_no_curry_yes_.md"
+          - "map ✅": "chapters/17_higher_order_function_operations_/03_map_.md"
+          - "Invoking Functions: `funcall`": "chapters/17_higher_order_function_operations_/04_invoking_functions_funcall.md"
+      - "Shop Local, Act Global 📝":
+          - "Introduction": "chapters/18_shop_local_act_global_/00_intro.md"
+      - "Reduce Variants ⚠️":
+          - "Introduction": "chapters/19_reduce_variants_/00_intro.md"
+          - "reduce vector ⚠️": "chapters/19_reduce_variants_/01_reduce_vector_.md"
+      - "Boolean Reductions ⚠️":
+          - "Introduction": "chapters/20_boolean_reductions_/00_intro.md"
+          - "`all?` / `none?`": "chapters/20_boolean_reductions_/01_all_none.md"
+          - "`any?`": "chapters/20_boolean_reductions_/02_any.md"
+      - "Segmented Reduction 📝":
+          - "Introduction": "chapters/21_segmented_reduction_/00_intro.md"
+      - "Filtering / Prefix-Sum Scan ⚠️":
+          - "Introduction": "chapters/22_filtering_prefix_sum_scan_/00_intro.md"
+          - "`prepare-for-scan--value`": "chapters/22_filtering_prefix_sum_scan_/01_prepare_for_scan_value.md"
+          - "`prepare-for-scan--index`": "chapters/22_filtering_prefix_sum_scan_/02_prepare_for_scan_index.md"
+          - "`exclusive-scan-workgroup`": "chapters/22_filtering_prefix_sum_scan_/03_exclusive_scan_workgroup.md"
+          - "`inclusive-scan-workgroup`": "chapters/22_filtering_prefix_sum_scan_/04_inclusive_scan_workgroup.md"
+          - "global-exclusive-scan ⚠️": "chapters/22_filtering_prefix_sum_scan_/05_global_exclusive_scan_.md"
+          - "global-inclusive-scan ⚠️": "chapters/22_filtering_prefix_sum_scan_/06_global_inclusive_scan_.md"
+          - "Word Count With Exclusive Scan ⚠️": "chapters/22_filtering_prefix_sum_scan_/07_word_count_with_exclusive_scan_.md"
+          - "`filter`": "chapters/22_filtering_prefix_sum_scan_/08_filter.md"
+      - "Gather / Scatter 📝":
+          - "Introduction": "chapters/23_gather_scatter_/00_intro.md"
+      - "Sorting ⚠️":
+          - "Introduction": "chapters/24_sorting_/00_intro.md"
+          - "Bitonic Sort ⚠️": "chapters/24_sorting_/01_bitonic_sort_.md"
+          - "Radix Sort ⚠️": "chapters/24_sorting_/02_radix_sort_.md"
+      - "Atomics ⚠️":
+          - "Introduction": "chapters/25_atomics_/00_intro.md"
+          - "Atomic Operations ⚠️": "chapters/25_atomics_/01_atomic_operations_.md"
+      - "Vector and Tensor Operations ⚠️":
+          - "Introduction": "chapters/26_vector_and_tensor_operations_/00_intro.md"
+          - "`fill` and `iota`": "chapters/26_vector_and_tensor_operations_/01_fill_and_iota.md"
+          - "`copy`": "chapters/26_vector_and_tensor_operations_/02_copy.md"
+          - "dot product ⚠️": "chapters/26_vector_and_tensor_operations_/03_dot_product_.md"
+          - "matrix multiplication (matmul) ⚠️": "chapters/26_vector_and_tensor_operations_/04_matrix_multiplication_matmul_.md"
+          - "Matrix Vector Multiply `(m*v M v)`": "chapters/26_vector_and_tensor_operations_/05_matrix_vector_multiply_mv_m_v.md"
+          - "Convolution ⚠️": "chapters/26_vector_and_tensor_operations_/06_convolution_.md"
+      - "Math Operations & Arithmetic ✅":
+          - "Introduction": "chapters/27_math_operations_arithmetic_/00_intro.md"
+          - "Floating Point Precision ✅": "chapters/27_math_operations_arithmetic_/01_floating_point_precision_.md"
+          - "Floating Point Only Operations ✅": "chapters/27_math_operations_arithmetic_/02_floating_point_only_operations_.md"
+          - "Floating Point and Integer Operations ✅": "chapters/27_math_operations_arithmetic_/03_floating_point_and_integer_operations_.md"
+          - "Integer Only Operations ✅": "chapters/27_math_operations_arithmetic_/04_integer_only_operations_.md"
+          - "Integer Division ✅": "chapters/27_math_operations_arithmetic_/05_integer_division_.md"
+          - "Hardware Supported Math Operations ✅": "chapters/27_math_operations_arithmetic_/06_hardware_supported_math_operations_.md"
+      - "Quantized Integers ✅":
+          - "Introduction": "chapters/28_quantized_integers_/00_intro.md"
+          - "Quantized Integer Types ✅": "chapters/28_quantized_integers_/01_quantized_integer_types_.md"
+      - "Low Precision Floats (microfloats) ✅":
+          - "Introduction": "chapters/29_low_precision_floats_microfloats_/00_intro.md"
+          - "Format Wars ✅": "chapters/29_low_precision_floats_microfloats_/01_format_wars_.md"
+          - "Micro Float Types ✅": "chapters/29_low_precision_floats_microfloats_/02_micro_float_types_.md"
+          - "def-microfloat-block ✅": "chapters/29_low_precision_floats_microfloats_/03_def_microfloat_block_.md"
+          - "blockwise operations ✅": "chapters/29_low_precision_floats_microfloats_/04_blockwise_operations_.md"
+          - "Vector Conversion Operations ✅": "chapters/29_low_precision_floats_microfloats_/05_vector_conversion_operations_.md"
+          - "element-wise access ✅": "chapters/29_low_precision_floats_microfloats_/06_element_wise_access_.md"
+      - "Complex Numbers ✅":
+          - "Introduction": "chapters/30_complex_numbers_/00_intro.md"
+          - "soa-vector and complex ✅": "chapters/30_complex_numbers_/01_soa_vector_and_complex_.md"
+      - "Fast Fourier Transform (FFT) 📝":
+          - "Introduction": "chapters/31_fast_fourier_transform_fft_/00_intro.md"
+      - "Fused Softmax 📝":
+          - "Introduction": "chapters/32_fused_softmax_/00_intro.md"
+      - "Builtin GPU Functions ✅":
+          - "Introduction": "chapters/33_builtin_gpu_functions_/00_intro.md"
+      - "Forgotten 📝":
+          - "Introduction": "chapters/34_forgotten_/00_intro.md"
+      - "Strings - Compile Time and Run Time ✅":
+          - "Introduction": "chapters/35_strings_compile_time_and_run_time_/00_intro.md"
+          - "Compile Time Strings ✅": "chapters/35_strings_compile_time_and_run_time_/01_compile_time_strings_.md"
+          - "Runtime Strings ✅": "chapters/35_strings_compile_time_and_run_time_/02_runtime_strings_.md"
+      - "Logging and Debugging ✅":
+          - "Introduction": "chapters/36_logging_and_debugging_/00_intro.md"
+          - "Compile Time Output and Assert ✅": "chapters/36_logging_and_debugging_/01_compile_time_output_and_assert_.md"
+          - "`(die disaster)`": "chapters/36_logging_and_debugging_/02_die_disaster.md"
+          - "Runtime Asserts ⚠️": "chapters/36_logging_and_debugging_/03_runtime_asserts_.md"
+          - "Runtime Logging ⚠️": "chapters/36_logging_and_debugging_/04_runtime_logging_.md"
+          - "Logging Utilities ✅": "chapters/36_logging_and_debugging_/05_logging_utilities_.md"
+      - "Debugging Implementation ✅":
+          - "Introduction": "chapters/37_debugging_implementation_/00_intro.md"
+          - "So You Want Debug Logging ✅": "chapters/37_debugging_implementation_/01_so_you_want_debug_logging_.md"
+          - "Subdivide Subdivide Subdivide - the other debug flags ✅": "chapters/37_debugging_implementation_/02_subdivide_subdivide_subdivide_the_other_debug_flags_.md"
+          - "Common Debug Flag Configurations ✅": "chapters/37_debugging_implementation_/03_common_debug_flag_configurations_.md"
+      - "Conditional Compilation ✅":
+          - "Introduction": "chapters/38_conditional_compilation_/00_intro.md"
+          - "defmacro ✅": "chapters/38_conditional_compilation_/01_defmacro_.md"
+          - "target-has / device-has ✅": "chapters/38_conditional_compilation_/02_target_has_device_has_.md"
+      - "Assist defmacro Development ✅":
+          - "Introduction": "chapters/39_assist_defmacro_development_/00_intro.md"
+      - "`entrypoint`":
+          - "Introduction": "chapters/40_entrypoint/00_intro.md"
+      - "`defmacro` and `T`":
+          - "Introduction": "chapters/41_defmacro_and_t/00_intro.md"
+      - "Static Analysys ⚠️":
+          - "Introduction": "chapters/42_static_analysys_/00_intro.md"
+          - "declaim ⚠️": "chapters/42_static_analysys_/01_declaim_.md"
+          - "check-coalesce ⚠️": "chapters/42_static_analysys_/02_check_coalesce_.md"
+          - "check-bank-conflicts ⚠️": "chapters/42_static_analysys_/03_check_bank_conflicts_.md"
+          - "check-divergence ⚠️": "chapters/42_static_analysys_/04_check_divergence_.md"
+          - "max-registers / warn-max-registers ⚠️": "chapters/42_static_analysys_/05_max_registers_warn_max_registers_.md"
+          - "check-barriers ⚠️": "chapters/42_static_analysys_/06_check_barriers_.md"
+          - "miscellaneous ⚠️": "chapters/42_static_analysys_/07_miscellaneous_.md"
+      - "Auto Differentiation (AD) ✅":
+          - "Introduction": "chapters/43_auto_differentiation_ad_/00_intro.md"
+          - "`--differentiate`": "chapters/43_auto_differentiation_ad_/01__differentiate.md"
+      - "Hoisting and `def-orchestration`":
+          - "Introduction": "chapters/44_hoisting_and_def_orchestration/00_intro.md"
+          - "`def-orchestration`": "chapters/44_hoisting_and_def_orchestration/01_def_orchestration.md"
+          - "launch-sequential ⚠️": "chapters/44_hoisting_and_def_orchestration/02_launch_sequential_.md"
+          - "launch-kernel ⚠️": "chapters/44_hoisting_and_def_orchestration/03_launch_kernel_.md"
+          - "launch-parallel ⚠️": "chapters/44_hoisting_and_def_orchestration/04_launch_parallel_.md"
+          - "launch-interleaved ⚠️": "chapters/44_hoisting_and_def_orchestration/05_launch_interleaved_.md"
+      - "Compiler Invocation and Options ✅":
+          - "Introduction": "chapters/45_compiler_invocation_and_options_/00_intro.md"
+          - "Output Targeting Options ✅": "chapters/45_compiler_invocation_and_options_/01_output_targeting_options_.md"
+          - "Other Flags ✅": "chapters/45_compiler_invocation_and_options_/02_other_flags_.md"
+          - "Compiliation Flags ✅": "chapters/45_compiler_invocation_and_options_/03_compiliation_flags_.md"
+          - "Fast Compilation ✅": "chapters/45_compiler_invocation_and_options_/04_fast_compilation_.md"
+          - "Compiler Invocations and Files ✅": "chapters/45_compiler_invocation_and_options_/05_compiler_invocations_and_files_.md"
+      - "Hoisting Code ✅":
+          - "Introduction": "chapters/46_hoisting_code_/00_intro.md"
+      - "In-Memory Compilation API ✅":
+          - "Introduction": "chapters/47_in_memory_compilation_api_/00_intro.md"
+          - "C API ✅": "chapters/47_in_memory_compilation_api_/01_c_api_.md"
+          - "Status Codes ✅": "chapters/47_in_memory_compilation_api_/02_status_codes_.md"
+          - "Flags ✅": "chapters/47_in_memory_compilation_api_/03_flags_.md"
+      - "APPENDIX #1 - Summary: set / get vars, storage handles, and structs ✅":
+          - "Introduction": "chapters/48_appendix_1_summary_set_get_vars_storage_handles_and_structs_/00_intro.md"
+      - "APPENDIX #2 - Math with Quantized Ints and Microfloat ✅":
+          - "Introduction": "chapters/49_appendix_2_math_with_quantized_ints_and_microfloat_/00_intro.md"
+          - "dot product and matmul ✅": "chapters/49_appendix_2_math_with_quantized_ints_and_microfloat_/01_dot_product_and_matmul_.md"
+      - "Acknowledgements ✅":
+          - "Introduction": "chapters/50_acknowledgements_/00_intro.md"
+      - "INDECES ✅":
+          - "Introduction": "chapters/51_indeces_/00_intro.md"
+          - "def-": "chapters/51_indeces_/01_def_.md"
+          - "control flow": "chapters/51_indeces_/02_control_flow.md"
+          - "Higher Order Function Operations ✅": "chapters/51_indeces_/03_higher_order_function_operations_.md"
+          - "Sorting ⚠️": "chapters/51_indeces_/04_sorting_.md"
+          - "Algorithms": "chapters/51_indeces_/05_algorithms.md"
+          - "Atomics ⚠️": "chapters/51_indeces_/06_atomics_.md"
+          - "Type Constraints": "chapters/51_indeces_/07_type_constraints.md"
+          - "other": "chapters/51_indeces_/08_other.md"
+          - "Hardware Operations": "chapters/51_indeces_/09_hardware_operations.md"
+          - "logging and debugging": "chapters/51_indeces_/10_logging_and_debugging.md"
+          - "static analysis": "chapters/51_indeces_/11_static_analysis.md"
+          - "hoisting and def-orchestration": "chapters/51_indeces_/12_hoisting_and_def_orchestration.md"
+          - "lisp": "chapters/51_indeces_/13_lisp.md"
+          - "To Do": "chapters/51_indeces_/14_to_do.md"
+          - "Memory": "chapters/51_indeces_/15_memory.md"

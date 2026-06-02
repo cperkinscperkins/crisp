@@ -1,4 +1,4 @@
-## To Do
+# To Do
 
 - implementation notes for each, esp vector and def-const-vec, def-function, def-kernel
 - [x] is our "hoist" code going to include reading the compiled kernel from disk? Seems like it should.

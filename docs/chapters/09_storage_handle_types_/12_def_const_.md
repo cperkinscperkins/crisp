@@ -1,4 +1,4 @@
-## def-const ✅
+# def-const ✅
 
 
 `def-const` is used to define an immutable expression in global file scope that the compiler will inject in place whereever it encounters it. The Lisp practice is that `def-const` expressions have a `+` sign on either side.

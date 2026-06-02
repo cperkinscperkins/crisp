@@ -1,4 +1,4 @@
-## Hoisting and Enqueing a Kernel ⚠️
+# Hoisting and Enqueing a Kernel ⚠️
 
 
 Crisp refers to the overall effort of getting a kernel read from disk, preparing the data, and actually enqueueing it as "hoisting". The Crisp compiler

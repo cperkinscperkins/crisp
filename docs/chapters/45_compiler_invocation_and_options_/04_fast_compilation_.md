@@ -1,4 +1,4 @@
-## Fast Compilation ✅
+# Fast Compilation ✅
 
 Compilation speed is one of the prime goals of the Crisp compiler. There are things you can 
 do to maximize compilation performance.
