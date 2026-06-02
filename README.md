@@ -15,12 +15,9 @@ Crisp is a Lisp dialect designed specifically for writing safe, performant, and 
 - Simplifies the Workflow: A "Kernel-First" approach where the compiler can generate the necessary C++ or Python "hoisting" code to manage and launch the kernels, letting the developer focus on the algorithm.
 
 ### The Specification
-The complete, in-progress design document can be found in the docs directory.
+The complete, in-progress design document can be found in the docs directory. Each feature is tagged with an emoji indicating its implementation status (✅ Completed, ⚠️ Partially Implemented, 📝 Planned).
 
 [View the Current Specification](./docs/ideal_001.md)
-
-### The Implementation
-The implementation is nascent (kindly put). It is tracked [here](./docs/realized_001.md)
 
 ## Author
 

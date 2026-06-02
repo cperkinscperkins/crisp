@@ -1,4 +1,0 @@
-# Auto Differentiation (AD)
-
-
-

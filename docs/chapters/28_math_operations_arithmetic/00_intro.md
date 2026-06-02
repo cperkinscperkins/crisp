@@ -1,3 +1,0 @@
-# Math Operations & Arithmetic
-
-

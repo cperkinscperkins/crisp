@@ -1,3 +1,0 @@
-# Vector and Tensor Operations
-
-

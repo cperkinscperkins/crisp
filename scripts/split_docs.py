@@ -56,7 +56,7 @@ def main():
         if len(next_line) > 2 and set(next_line) == {'='}:
             # Flush previous section
             if current_section_file and current_buffer:
-                with open(current_section_file, 'w') as f:
+                with open(current_section_file, 'w', encoding='utf-8') as f:
                     f.writelines(current_buffer)
                 current_buffer = []
 
@@ -85,7 +85,7 @@ def main():
         elif len(next_line) > 2 and set(next_line) == {'-'}:
             # Flush previous section
             if current_section_file and current_buffer:
-                with open(current_section_file, 'w') as f:
+                with open(current_section_file, 'w', encoding='utf-8') as f:
                     f.writelines(current_buffer)
                 current_buffer = []
 
@@ -124,11 +124,11 @@ def main():
 
     # Flush final buffer
     if current_section_file and current_buffer:
-        with open(current_section_file, 'w') as f:
+        with open(current_section_file, 'w', encoding='utf-8') as f:
             f.writelines(current_buffer)
 
     # Write Master Index
-    with open(INDEX_FILE, 'w') as f:
+    with open(INDEX_FILE, 'w', encoding='utf-8') as f:
         f.writelines(index_content)
 
     print(f"Done! Split {chapter_num} chapters into {OUTPUT_DIR}")

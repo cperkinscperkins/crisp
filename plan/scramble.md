@@ -658,11 +658,11 @@ Precision: IEEE vs Fast
 
 Technical Debt
 ==============
-- [ ] MkDocs
-- - markup ideal_001.md with what is Implemented, or partially implemented. (could be Emoji or CSS)
-- - MkDocs produces TOC on side, with Implemtened.
-- - retire realized_001.md
-- - remove outdated "TOC" section from ideal_001.md
+- [x] MkDocs
+- - [x] markup ideal_001.md with what is Implemented, or partially implemented. (could be Emoji or CSS)
+- - [x] MkDocs produces TOC on side, with Implemtened.
+- - [x] retire realized_001.md
+- - [x] remove outdated "TOC" section from ideal_001.md
 - [ ] refactor overly long functions
 - [ ] refactor build - Warning unused var.
 - [ ] refactor build - reverse dependency order for most .lisp. ( warning undefined function)

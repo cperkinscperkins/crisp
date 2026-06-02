@@ -148,131 +148,7 @@ Just kidding. Crisp doesn't do SFINAE. It has Common Lisp `defmacro` which is be
 
 
 
-
-Table of Contents
-=================
-<details>
-<summary>Table of Contents</summary>
-
-- Overview 
-- - Focus 
-- - Major Features of the Crisp language and tools 
-- - Differences From Lisp 
-- Thread Level / Grid Level / Dispatch Contexts 
-- - Why Different from C++/CUDA
-- Top Level Execution Constructs 
-- Return Vector Pattern `&out` 
-- Argument Passing and Side Channels
-- Crisp Types
-- - Basic Numeric Types
-- - Vector Numeric Types
-- - Numeric Type Promotion, Casting, Conversion
-- - Other Basic Types
-- - Declaring Types - Functions
-- - Function Overloading
-- - Recursion Disallowed
-- - Declaring Types - Kernels
-- - Struct Types
-- - `def-setter`
-- - Template Types
-- - `def-constraint`
-- - `def-type-function`
-- - Vectors and Storage
-- - Reduce Boilerplate: Vectors Of Lenght 1: `single-result` and `set-result!`
-- - Reduce Boilerplate: `in-vec` and `out-vec`
-- - `soa-vector` and `soa-view`
-- - `def-const`
-- - `def-parameter`
-- - `def-const-vec`
-- - Side Channel Vectors
-- - Tensors
-- - Matrices
-- - Type Aliases and Type Constructors
-- - Derived Types
-- - Continuation Kernels
-- - First Order Functions
-- - First Order Types
-- - Enumerations
-- - Maybe Type
-- Control Flow
-- - Single Task
-- - when-thread-is / abs-when-thread-is
-- - when-thread-in-group-is / when-group-is
-- - when-is-last-workgroup
-- - Hoisting and Enqueing a Kernel
-- - Latency Hiding - warp sizes and workgroup sizes
-- - One Thread Per Element
-- - Looping - Grid Stride
-- - Looping -- Uniform Loops
-- - Looping Constructs
-- - Grid Level Operations
-- - Sum a Vector using Local Memory
-- - Warps & Shuffles
-- - Sum a Vector using Warps and Shuffles
-- Hardware Bit Twiddling Operations
-- Hardware Bit Packing Opoerations
-- Branching
-- - Cost of Divergent Branching
-- - Predicated Selection
-- Higher Order Function Operations
-- - Lambda No, Curry Yes
-- - map
-- - reduce variants
-- - reduce vector
-- Boolean Reductions
-- Filtering / Prefix-Sum Scan
-- - exclusive scan
-- - inclusive scan
-- - Word Count with Exclusive Scan
-- - `filter`
-- Gather / Scatter
-- Sorting
-- - Bitonic Sort
-- - Radix Sort
-- Atomics
-- Vector And Tensor Operations
-- - dot product
-- - matrix multiplication (matmul)
-- Math Operations & Arithmetic
-- - Floating Point Precision
-- - Floating Point Only Operations
-- - Floating Point and Integer Operations
-- - Integer Only Operations
-- - Integer Division
-- Quantized Integers
-- Complext Numbers
-- - soa-vector and complex
-- Fast Fourier Transform (FFT)
-- Builtin GPU Functions & Constants
-- Forgotten
-- Logging and Debugging
-- - Logging Utilities
-- Conditional Compilation
-- defmacro
-- Static Analysis
-- - declaim
-- - check-coalesce
-- - check-bank-conflicts
-- - check-divergence
-- - max-registers / warn-max-registers
-- - check-barriers
-- Hoisting and `def-orchestration`
-- - `def-orchestration`
-- - launch-sequential
-- - launch-parallel
-- - launch-interleaved
-- Compiler Invocation and Options
-- - Compilation Flags
-- Hoisting Code
-- In-Memory Compilation API
-- - C API
-- - Status Codes
-- - Flags
-- INDECES
-- To Do etc.
-</details>
-
-Thread Level / Grid Level / Dispatch
+Thread Level / Grid Level / Dispatch ✅
 =========================================
 
 > A GPU is not a CPU
@@ -336,7 +212,7 @@ In short, this system provides:
  - Readability: It separates the high-level orchestration of a kernel from the low-level, per-thread implementation details, making complex algorithms easier to reason about.
 
 
-Terminology: Storage Handles 
+Terminology: Storage Handles ✅
 ============================
 
 You'll see the term _"Storage Handle"_ a lot in this document.
@@ -349,7 +225,7 @@ We'll discuss the actual types later in the document.
  
 
 
-Top Level Execution Constructs
+Top Level Execution Constructs ✅
 ==============================
 
 In Crisp, nearly everything that can be put at the "top level" of a code file begins with "`def-`".  
@@ -511,7 +387,7 @@ For any kernel, when `&out` is used then the "other" parameters not designated a
 considiered as read-only input candidates. You can read and write to those parameters, if you wish, BUT if you forego write operations to them and honor a read-only contract, then the optimizer will be better able to work its magic and improve your kernel performance. In other words, for maximum performance use `&out` to designate your kernel output parameters and only write to those, never to any others.
 
 
-Argument Passing and Side Channels
+Argument Passing and Side Channels ✅
 ==================================
 
 As a general rule, GPU Kernels cannot allocate dynamic memory. This means that the host has to allocate 
@@ -535,14 +411,14 @@ These are also discussed below.
 Side channels introduce side effects into functions that would otherwise be referentially transparent. For this reason, it's often better to avoid them. Many users choose to explicitly declare all their required memory in the kernel parameter list and pass it to sub-functions rather than introducing this impurity. Crisp supports both formulations. 
 
 
-Crisp Types
+Crisp Types ✅
 ===========
 
 Because compile time types are a significant departure from most familiar Lisps, the next several sections
 are focused on type declaration and support in the Crisp language.  
 
 
-Base Numeric Types
+Base Numeric Types ✅
 ------------------
 
 
@@ -568,7 +444,7 @@ Base Numeric Types
 
 
 
-Vector Numeric Types
+Vector Numeric Types ✅
 --------------------
 
 | Base Type | 2 | 3 | 4 |
@@ -629,7 +505,7 @@ Furthermore, Crisp supports "swizzles" (like `xyyy~`)
    ...  )
 ```
 
-Numeric Type Promotion, Casting, Conversion
+Numeric Type Promotion, Casting, Conversion ✅
 -------------------------------------------
 
 It should surprise no one that Python, C++, and Common Lisp all have different
@@ -712,7 +588,7 @@ Example: `(as uint someInt)`
 Note there is no equivalent shorthand for _conversion_ (ie no `to`). Use  `to-XXXX` .
 
 
-Quantized Integers and Complex Numbers
+Quantized Integers and Complex Numbers ✅
 ----------------------------------
 
 Crisp has in-language support for quantized integers a popular optimization among
@@ -721,7 +597,7 @@ and [Complex Numbers](#complex-numbers) below.
 
 
 
-Other Basic Types
+Other Basic Types ⚠️
 -----------------
 
 > NOTE: this section needs work
@@ -760,7 +636,7 @@ they appear in an enumartion.
 
 
 
-Declaring Types - Functions
+Declaring Types - Functions ⚠️
 ---------------------------
 
 Types MUST be declared for parameters to functions and the function return type.  
@@ -864,7 +740,7 @@ each option.  In other words, an optional declaration like so:
 
 
 
-Function Overloading
+Function Overloading ✅
 --------------------
 
 Crisp support function overloading for functions defined with `def-function`, `def-grid-function`, as well as property access functions on 
@@ -880,7 +756,7 @@ As mentioned, the property access functions that some types support can be overl
 but the `make-XXXX` functions CANNOT be overloaded. 
 
 
-Recursion Disallowed
+Recursion Disallowed ✅
 --------------------
 
 Crisp does not support recursive functions, nor mutually recursive functions.  The compiler will emit an error if it detects this.
@@ -888,7 +764,7 @@ Crisp does not support recursive functions, nor mutually recursive functions.  T
 
 
 
-Declaring Types - Kernels
+Declaring Types - Kernels ✅
 -------------------------
 
 ### def-kernel
@@ -1070,7 +946,7 @@ by the compiler for all of these. Be sure to incorporate them into your own enqu
 
 
 
-Struct Types
+Struct Types ✅
 ------------
 
 `def-struct` defines a structure and makes a new type. 
@@ -1300,7 +1176,7 @@ See the "possible implementation" of  `convert-aos-to-soa` below for a usage exa
 
 
 
-def-setter
+def-setter ✅
 ----------
 
 `def-setter` can be used to define an overloaded function to set any property.
@@ -1334,7 +1210,7 @@ In the future, Crisp may handle this automatically.
 ```
 
 
-def-record
+def-record ✅
 ----------
 
 `def-record` is very simlar to `def-struct`. Records "pun" as structs. The crucial difference is that while structs result in contiguous memory (though aligned and padded), records are not contiguous in memory.  Records are just a collection of register, of memory addresses. They act as virtualized structures.
@@ -1396,7 +1272,7 @@ Though there is no equivalent of `soa-vector` for records.
 > Implementation Note: consider changing `make-` to `marshall-` for `def-record`.
 
 
-Array Type
+Array Type ⚠️
 ----------
 
 `(array T N)`
@@ -1447,7 +1323,7 @@ Crisp also has the `soa-vector` data type, where "soa" stands for "Struct of Arr
 
 
 
-Incomplete Types
+Incomplete Types ✅
 ----------------
 
 An "Incomplete Type" is a composite type (defined via `def-record` or `def-struct`) where one or more of its compile-time properties have not been specified in type declaration.
@@ -1509,7 +1385,7 @@ is declared in the type constructor, then the compiler will enforce that require
 
 
 
-Template Types
+Template Types ✅
 --------------
 
 `with-template-type` can wrap several `def-` declarations to template them. 
@@ -1769,7 +1645,7 @@ The with-template-type form can be used to create generics that are parameterize
 ```
 
 
-def-constraint
+def-constraint 📝
 --------------
 
 Constraint functions are not regular functions. They are limited to where they can
@@ -1840,7 +1716,7 @@ when derived types are used.
 | `:pass-orig`    |  `nil`                                         | `T`                                            |
 
 
-def-type-function
+def-type-function 📝
 -----------------
 
 Similar to `def-constraint`, `def-type-function` is not a regular function.
@@ -1861,7 +1737,7 @@ Possible example:
 
 
     
-GPU Memory
+GPU Memory ⚠️
 ==========
 
 In the next section we introduce the Storage Handles (`cell`, `vector`, `tensor`). These are the only
@@ -1910,7 +1786,7 @@ With Crisp you have two ways of preparing constant memory:
 `:private`  - need to be written
 
 
-Storage Handle Types
+Storage Handle Types ⚠️
 ====================
 
 Crisp has an internal represention called `storage`.  It is a contiguous array of bytes. 
@@ -1978,7 +1854,7 @@ referencing.
 ```
 
 
-Storage Properties
+Storage Properties ✅
 ------------------
 
  `storage` has the following immutable properties:
@@ -2011,7 +1887,7 @@ not document it, and play it by ear later.
 
 -->
 
-Cell Properties
+Cell Properties ✅
 ---------------
 
 A `cell` has these mutable properties:
@@ -2029,7 +1905,7 @@ to define your own cell type and overload those property accesses. The `~offset~
 can also be used, and those cannot be overloaded. 
 
 
-Vector / Matrix /Tensor Properties
+Vector / Matrix /Tensor Properties ⚠️
 -------------------------------
 
  `vector` and `matrix` are just the 1D and 2D variants of `tensor`
@@ -2084,7 +1960,7 @@ than the `bytes` of the parent `storage`. But the checking and enforcement for t
 The `storage` property accessor  `address-space~` can be used directly on any Storage Handle type. 
 There is no reason to do `(address-space~ (parent~ some-vector))`.  Simply doing `(address-space~ some-vector)` is sufficient.
 
-Element Access
+Element Access ✅
 --------------
 
 - `~`
@@ -2134,7 +2010,7 @@ access functions cannot be overloaded.   `~ref~` is intended to be used from ove
 ```
 
 
-Helper Functions
+Helper Functions ✅
 ----------------
 
 `(element-type~ someStorageHandle)`  a type expression that returns the type of the elements in the Storage Handle.
@@ -2153,7 +2029,7 @@ Very useful for the `tensor` type, less so for the others.
 | matrix | 2 | 
 | tensor | N | 
 
-Member Data Rules
+Member Data Rules ✅
 -----------------
 
 A  Storage Handle can contain any type that has a fixed, known size at compile time.
@@ -2171,7 +2047,7 @@ But it excludes:
 
 
 
-Storage Handle Type Definitions
+Storage Handle Type Definitions ⚠️
 -------------------------------
 
 Storage Handles are completely typed by 
@@ -2253,7 +2129,7 @@ It cannot be the type of a function. It cannot be a `def-record`.  Nor can it be
 (vector float :align :compact :address-space :local :extent (100))
 ```
 
-Storage Handle Arguments for Kernels
+Storage Handle Arguments for Kernels ⚠️
 ------------------------------------
 `def-kernel` is the definition for the kernel function. 
 And any Storage Handle in its parameter list MUST have its element-type, number or dimensions, align, and address-space specified in
@@ -2271,7 +2147,7 @@ The number of dimensions is (obviously) implicit for the `cell`, `vector` and `m
   ...)
 ```
 
-Creating Storage Handle Views
+Creating Storage Handle Views ⚠️
 ------------------------------
 
 Kernels cannot dynamically allocate memory. Crisp has four different ways
@@ -2394,7 +2270,7 @@ Possible Implmenetionat
 ```
 
 
-soa-vector
+soa-vector ✅
 ----------
 
 `soa-vector` is a special type of vector, with a special memory layout. They are used for vectors of structs (only).
@@ -2560,7 +2436,7 @@ access that Crisp enjoys, making it easy to initialize or inspect data and inter
 
 
 
-def-const
+def-const ✅
 ---------
 
 `def-const` is used to define an immutable expression in global file scope that the compiler will inject in place whereever it encounters it. The Lisp practice is that `def-const` expressions have a `+` sign on either side.
@@ -2582,7 +2458,7 @@ Due to inference, `def-const` expressions do not typically need type information
   (* r r +PI+))
 ```
 
-def-parameter
+def-parameter ✅
 -------------
 
 `def-parameter` is used to define the type and possible default value for parameters that might 
@@ -2620,7 +2496,7 @@ crisp.exe -DMAX_INDEX=35  my_kernels.crisp
 
 
 
-def-const-vec
+def-const-vec ✅
 -------------
 
 Memory in the constant address space is read only and it must be 
@@ -2717,7 +2593,7 @@ and
 (like `matrix`) then the appropriate `make-XXXX` function to reinterpreset it.
 
 
-Side Channel Storage Handles
+Side Channel Storage Handles ✅
 ----------------------------
 
 As was mentioned earlier, Crisp supports side channel Storage Handles, which are special purpose memory objects that
@@ -2941,7 +2817,7 @@ be hoisted, plus a pointer to a unsigned long array.
 ```
 
 
-Async Memory Operations
+Async Memory Operations 📝
 -----------------------
 
 Crisp supports hardware-accelerated asynchronous memory copies (DMA). These operations allow the GPU
@@ -2993,7 +2869,7 @@ There are async variants for the tile scratch helpers as well.
 
 
 
-Tensors & Matrices
+Tensors & Matrices ⚠️
 ------------------
 
 Tensors were introduced earlier in the [Storage Handle Types](#storage-handle-types) section.
@@ -3126,7 +3002,7 @@ where all the indeces are equal, which are 1.
 
 -->
 
-Matrices
+Matrices ⚠️
 --------
 
 `(def-type matrix (tensor T 2))`
@@ -3316,7 +3192,7 @@ not necessarily like we want them to be.
 
 
 
-Type Aliases and Type Constructors
+Type Aliases and Type Constructors ✅
 ----------------------------------
 
 The type names for vectors and functions,  etc. can be rather long and ungainly. 
@@ -3354,7 +3230,7 @@ didn't directly invoke any GPU-only capaibilities (like the shuffle functions) i
 
 
 
-Derived Types
+Derived Types ✅
 -------------
 
 `def-derived-type`, `make-XXXX`, `as-XXXX`, `is-XXXX?`
@@ -3666,7 +3542,7 @@ If you want to extend a type like `vector` with your own type that has extra dat
 
 
 
-Continuation Kernels
+Continuation Kernels 📝
 --------------------
 
 A common practice in GPU kernel coding is begin with with one kernel, that perhaps uses a certain
@@ -3787,7 +3663,7 @@ and realized. Additionally, it can appear in a `def-orchestration` context (see 
 
 
 
-First Order Functions
+First Order Functions 📝
 ---------------------
 
 - `def-function` defines a function
@@ -3816,7 +3692,7 @@ ANSWER: I guess.
 
 
 
-No First Order Types
+No First Order Types 📝
 --------------------
 
 Types are evaluable only at compile-time. There is no runtime
@@ -3826,7 +3702,7 @@ But keywords and enumeration values ARE first order.
 
 
 
-Enumerations
+Enumerations ✅
 ------------
 
 ```
@@ -3846,7 +3722,7 @@ in `with-template-type`.  See the discussion of type constraints in `with-templa
 
 
 
-Maybe Type
+Maybe Type ⚠️
 ----------
 
 GPU Kernels do not support exceptions. Many operations that would be segfaults on a CPU 
@@ -4182,14 +4058,14 @@ Also, less common, [workgroup level operations](#workgroup-level-operations)
 ### warp-convergent / workgroup-convergent. 
 Tells the compiler this progn CANNOT be called in a divergent branch. See [the dedicated section](#declare-warp-convergent-and-declare-workgroup-convergent) on this topic.
 
-For Static Analysis
+For Static Analysis ⚠️
 -------------------
 
 There are a half dozen declare directives that can be declared to elect static analysis.
 Rather than list them here, see the [section dedicated to this topic](#static-analysis)
 
 
-Control Flow
+Control Flow ✅
 ============
 
 Programming performant GPU kernels is often very different than programming performant CPU-bound code.
@@ -4205,7 +4081,7 @@ in sync, and avoiding bifurcations. Additionally Crisp keeps the developer invol
 being made, rather than hiding them behind abstractions. 
 
 
-Single Task
+Single Task ✅
 -----------
 
 A single task kernel is a kernel that runs on exactly one thread. While it is simple to understand be warned that it is not
@@ -4237,7 +4113,7 @@ is generated will set the global work size (thread count) to be 1.
 ```
 <!-- NOTE: what might be a better "real" example for single-task? -->
 
-when-thread-is / abs-when-thread-is
+when-thread-is / abs-when-thread-is ✅
 -----------------------------------
 
 The `single-task` declaration above is a convenience, but it signals its limitation to the compiler
@@ -4273,7 +4149,7 @@ Example:
     ...))
 ```
 
-when-thread-in-group-is / when-group-is
+when-thread-in-group-is / when-group-is ✅
 ---------------------------------------
 
 `when-thread-in-group-is` is much like `when-thread-is` except that instead of using the global thread id,
@@ -4297,7 +4173,7 @@ Using `(local-barrier)` inside the scope of `when-thread-in-group-is` results in
 
 Crisp users are strongly encouraged to use `when-thread-in-group-is` as opposed to a generic construction like  `(when (= (get-local-id) 0) ...)`  for this reason. The compiler will _attempt_ to detect the deadlock possibility in a generic construction, but due to variables, assignments, etc that guarantee is not strong. Whereas in `when-thread-in-group-is` it is a surety.
 
-when-global-linear-id-is / when-local-linear-id-is
+when-global-linear-id-is / when-local-linear-id-is ✅
 --------------------------------------------------
 
 Unlike the previous `when-XXXX-is` , these two calculate the relevant linear id, and so there are no
@@ -4311,7 +4187,7 @@ Note that the global linear id is always relative, an absolute version isn't sup
 
 ```
 
-when-is-last-workgroup
+when-is-last-workgroup ✅
 ----------------------
 `when-is-last-workgroup` captures the "last block standing" pattern. It provides a mechanism to elect a single workgroup to perform a final action after all other workgroups have completed their primary tasks up to that point. It does not cause other workgroups to wait. You can think of the other workgroups as party guests that continue on home, leaving the last one to whatever work is in the block.
 
@@ -4352,7 +4228,7 @@ Implementation Notes
     )
 ```
 
-when-is-last-warp / when-is-last-thread
+when-is-last-warp / when-is-last-thread ✅
 ---------------------------------------
 ```
 (when-is-last-warp (lane-id) ...)
@@ -4369,7 +4245,7 @@ For the last thread or warp in the last workgroup, simply compose the two constr
    ...))
 ```
 
-Hoisting and Enqueing a Kernel
+Hoisting and Enqueing a Kernel ⚠️
 ------------------------------
 
 Crisp refers to the overall effort of getting a kernel read from disk, preparing the data, and actually enqueueing it as "hoisting". The Crisp compiler
@@ -4621,7 +4497,7 @@ A compile error is emitted if forbidden access is detected.
 
 
 
-Latency Hiding - warp sizes and workgroup sizes
+Latency Hiding - warp sizes and workgroup sizes ✅
 -----------------------------------------------
 
 As mentioned in passing, most GPUs have a warp size of 32 threads, and the best practice is to use a `local_work_size` (ie a work group size) that is a multiple of the warp size when enqueueing.  But why is that?
@@ -4633,7 +4509,7 @@ There are times when it is simplest, and indeed fastest, to simply set the `loca
 
 
 
-One Thread Per Element
+One Thread Per Element ✅
 ----------------------
 
 When the host enqueue's a kernel it will set up the global work size, which means the host is deciding how
@@ -4730,7 +4606,7 @@ requesting to the next muliple of a nice local_work_size.
 
 
 
-Looping - Grid Stride
+Looping - Grid Stride ✅
 ---------------------
 
 The One Thread Per Element strategy is simple and it can scale to any size. But if the number of threads
@@ -5065,7 +4941,7 @@ If you are wanting fast chunk access use `load-chunk` / `store-chunk` below to t
 
 
 
-Load Tile / Store Tile
+Load Tile / Store Tile 📝
 ------------------------
 
 `load-tile` and `store-tile` work with tensors of any arity, not only 2D matrices.
@@ -5187,7 +5063,7 @@ Because in MatMul, the bottleneck isn't just loading the data; it is reusing the
 
 <!-- Next is the new workgroup-stride API.  The old one follows it and is commetnd out -->
 
-workgroup-stride
+workgroup-stride ✅
 ----------------
 ```
 (workgroup-stride <tile-tensor> (<bindings>) ...)
@@ -5245,7 +5121,7 @@ This pattern is useful for algorithms where only one "representative" thread per
 
 OLD WORKGROUP STRIDE API 
 
-Workgroup Stride
+Workgroup Stride ✅
 ----------------
 
 Whereas the other stride macros bend all available threads to their wicked purposes, `workgroup-stride` is 
@@ -5309,7 +5185,7 @@ or for making sure tile strides don't split work across the warp boundary.
 
 
 
-Looping -- Uniform Loops
+Looping -- Uniform Loops ✅
 ------------------------
 
 A C++ `for` loop is a big liability when improperly used in a GPU kernel. If the loop isn't
@@ -5433,7 +5309,7 @@ This will cause stalls and kill performance.
 
 
 
-Looping Constructs
+Looping Constructs ✅
 ------------------
 
 Here is a list of the looping constructs supported by Crisp. Some are discussed elsewhere.
@@ -5624,7 +5500,7 @@ So `i` would be bound to 128, 64, 32, 16, 8, 4, 2, and 1.
 ```
 
 
-Grid Level Operations
+Grid Level Operations ✅
 ---------------------
 
 Grid-level operations are primitives that orchestrate work across the entire grid of threads. A fundamental rule in Crisp is that 
@@ -5662,7 +5538,7 @@ Atomic operations (see below) performed on `:global` memory are, by fiat, grid l
 `defmacro` uses any atomic operation on `:global` memory, be sure to `(declare (grid-level))`.  
 Atomic operations on `:local` memory have no such requirement.
 
-Workgroup Level Operations
+Workgroup Level Operations ✅
 --------------------------
 
 Workgroup-level operations are a bit like grid-level, in that multiple threads are being coordinated in
@@ -5678,7 +5554,7 @@ context. If you are writing a `defmacro` that is doing workgroup level coordinat
 this declaration in its expansion.
 
 
-Barriers and Fences
+Barriers and Fences ✅
 -------------------
 
 The golden rule of GPU programming is: if you have threads cooperating on a task and one thread writes a value that another thread needs to read, you must use a barrier. The logical pattern is always **Write -> Barrier -> Read**, regardless of whether it's one thread writing and many reading, or many threads writing and one reading.
@@ -5700,7 +5576,7 @@ On CUDA, (mem-fence :global) maps to __threadfence(). On OpenCL, it maps to mem_
 
 
 
-Sum a Vector using Local Memory
+Sum a Vector using Local Memory ✅
 -------------------------------
 
 Earlier we demonstrated a simple `vector_add` using grid strides. 
@@ -5786,7 +5662,7 @@ like to see the hoisting code in action, then use either a continuation kernel (
 or  `def-orchestration` (see below).
 
 
-Warps & Shuffles
+Warps & Shuffles ✅
 ----------------
 Witchcraft.
 
@@ -5878,7 +5754,7 @@ Returns true if any (or all) active threads in the warp evaluate `predicate` to 
 The shuffle operations natively support 32-bit types (`int`, `uint`, `float`). 
 Crisp will automatically decompose larger types (like `double`, vectors, or structs) into multiple 32-bit shuffle operations for you.
 
-Sum a Vector using Warps and Shuffles
+Sum a Vector using Warps and Shuffles ✅
 -------------------------------------
 
 Would you like to calculate the sum of a vector without needing any local shared memory
@@ -5948,7 +5824,7 @@ employs `reduce-vec-second-stage` (see below) and then you'll have a two step so
 like to see the hoisting code in action, then use either a continuation kernel (see above) 
 or  `def-orchestration` (see below).
 
-Bit Twiddling Operations
+Bit Twiddling Operations ✅
 ========================
 
 `op-popcount`
@@ -6031,7 +5907,7 @@ could be used.
 
 
 
-Hardware Bit Packing / Unpacking
+Hardware Bit Packing / Unpacking ✅
 ================================
 
 Modern GPU hardware has built-in intrinsic functions which can quickly pack and unpack values out
@@ -6145,7 +6021,7 @@ For that reason, I'm keeping this out of the spec until later.
 
 -->
 
-Branching
+Branching ✅
 =========
 
 Crisp has the same four basic branching expressions as Common Lisp: `if` , `when`, `unless`, and `cond`
@@ -6195,7 +6071,7 @@ Note that THIS may not work as expected:
   (set! somethingElse it))
 ```
 
-Cost of Divergent Branching
+Cost of Divergent Branching ✅
 ---------------------------
 
 Examine the following simple example:
@@ -6218,7 +6094,7 @@ might not be appropriate for some problem sets. But you can see where it is obvi
 take advantage of such an optimization. 
 
 
-Predicated Selection
+Predicated Selection ✅
 --------------------
 
 Because the cost of branch divergence is so high, it is often just preferable to evaluate BOTH the consequent and alternative and
@@ -6234,10 +6110,10 @@ There is no uniform `+` or `*` variant for `select-if`.
 <!-- NOTE: how is this actually realized on a GPU -->
 
 
-Higher Order Function Operations
+Higher Order Function Operations ✅
 ================================
 
-Compile Time Resolution
+Compile Time Resolution ✅
 -----------------------
 
 Crisp does not support "true" higher order functions. Doing so would introduce too much divergence,
@@ -6269,7 +6145,7 @@ If that was the intention, then these would work
   (declare (constexpr someExr)) ...)
 ```
 
-Lambda No, Curry Yes
+Lambda No, Curry Yes ✅
 --------------------
 Because the GPU has only one callstack per warp (not one per thread), lambda functions are 
 not supported. This is because they enable lexical closures (capturing variables from their surrounding scope),
@@ -6347,7 +6223,7 @@ Note: This obeys the Compile Time Resolution rule. The compiler treats `(ident x
 not as a dynamic function pointer, but as a direct reference to the variable `x` 
 inside the target scope. It is fully inlined and zero-overhead.
 
-map
+map ✅
 ---
 
 ### map-stride
@@ -6415,7 +6291,7 @@ If a variable `f` holds a function (or a compile-time resolvable entity like an 
 The use of `funcall` does NOT imply dynamic runtime dispatch. The restriction that all functions must be resolvable at compile-time remains in effect. The compiler uses `funcall` as the insertion point for the specialized, inlined logic derived from the variable's definition.
 
 
-Shop Local, Act Global
+Shop Local, Act Global 📝
 ======================
 
 A VERY common practice among GPU algorithm writers is "shop local, act global". In this
@@ -6428,7 +6304,7 @@ the sorting, and more.  Crisp usually provides very useful reusable macros for t
 and ready-to-go routines that employ them at the global level. 
 
 
-Reduce Variants
+Reduce Variants ⚠️
 ===============
 
 Crisp provide several choices and building blocks for reductions. There are "shop local" variants that perform
@@ -6864,7 +6740,7 @@ Possible Implementation
 ```
 
 
-reduce vector
+reduce vector ⚠️
 -------------
 
 The previous reductions are general purpose tools that let you create algorithms that reduce over warps, workgroups, or all the threads.  
@@ -7105,7 +6981,7 @@ But they still work fine with commutative operations like addition, multiply, mi
 Additionally any function defined with `def-function` can be used with the reduction, but it will only work
 correctly if it is commutative, where  `(someF a b)` is equivalent to `(someF b a)`. 
 
-Boolean Reductions
+Boolean Reductions ⚠️
 ==================
 
 `all?` / `none?`
@@ -7163,7 +7039,7 @@ Possible Implementation
     (reduce-to-1-cas #'logior partial-result 0 result-vec)))
 ```
 
-Segmented Reduction
+Segmented Reduction 📝
 ===================
 
 With the common use of prefix-sum scans, GPU programmers often find themselves using "segment maps".
@@ -7211,7 +7087,7 @@ segment-vec #( 9        10    20)      <-- final output
 
 
 
-Filtering / Prefix-Sum Scan
+Filtering / Prefix-Sum Scan ⚠️
 ============================
 
 A common activity on the GPU is to "find all matches".  Crisp has several macros and functions that
@@ -7366,7 +7242,7 @@ This is a possible implementation of `exclusive-scan-workgroup` realized via a B
 
 
 
-global-exclusive-scan
+global-exclusive-scan ⚠️
 ---------------------
 
 Unfortunately, doing an exclusive scan on a really big vector is not a simple isolated operation. 
@@ -7444,7 +7320,7 @@ What could be simpler?
     
 ```
 
-global-inclusive-scan
+global-inclusive-scan ⚠️
 ---------------------
 
 Global inclusive scan, like its exclusive scan counterpart, is done with an upsweep and a downsweep operation, with
@@ -7455,7 +7331,7 @@ the same recursive behavior expected.
 ```
 
 
-Word Count With Exclusive Scan
+Word Count With Exclusive Scan ⚠️
 ------------------------------
 
 <!-- 
@@ -7577,7 +7453,7 @@ determinable at compile time. (ie the exact property being referenced can't be a
 ```
 
 
-Gather / Scatter
+Gather / Scatter 📝
 ================
 
 A very common practice in GPU programming is gathering and scattering.
@@ -7714,10 +7590,10 @@ But the count in `count-vec` is correct regardless.
 ```
 
 
-Sorting
+Sorting ⚠️
 =======
 
-Bitonic Sort 
+Bitonic Sort ⚠️
 ------------
 
 Crisp provides a "toolkit" for bitonic sort.  If the sort can be performed by a single workgroup, then there are functions for that.
@@ -8044,7 +7920,7 @@ Possible implementation.
 ```
 
 
-Radix Sort
+Radix Sort ⚠️
 ----------
 
 Like Bitonic Sort, Radix Sort is done with multiple kernels, but its structure is a loop 
@@ -8423,7 +8299,7 @@ kernels and the hoisting example code will walk through everything.
 
 
 
-Atomics
+Atomics ⚠️
 =======
 Barriers are used when we have a structured, cooperative algorithm when we know exactly when threads write
 and when they read, especially when there is no contention for the location being written to.
@@ -8439,7 +8315,7 @@ In some languages, atomics are a variable type, but in Crisp, it's simply an ope
 on any variable that has possible contention. 
 
 
-Atomic Operations
+Atomic Operations ⚠️
 -----------------
 Crisp provides a number of built-in atomic operations that perform their work on shared memory locations. Each function is guaranteed to be a single, indivisible transaction.  Each one updates some variable in place and returns the value at the location BEFORE the modification occured.
 
@@ -8600,7 +8476,7 @@ workgroup will add its sum to the first element of the result vector.
 ```
 
 
-Vector and Tensor Operations
+Vector and Tensor Operations ⚠️
 ============================
 
 `fill` and `iota`
@@ -8656,7 +8532,7 @@ Possible Implementation
       (set~ (~ out i) (~ in i)))))
 ```
 
-dot product
+dot product ⚠️
 -----------
 
 The "dot product" is an operation that takes two vectors of the same length
@@ -8693,7 +8569,7 @@ result will be written to index 0.
 
 There are possible implementations below, with the implementations of `matmul`
 
-matrix multiplication (matmul)
+matrix multiplication (matmul) ⚠️
 -------------------------------
 
 Matrix multiplication (`matmul`) is an operation that takes two matrices and produces a new matrix.
@@ -8879,7 +8755,7 @@ Possible Implementation
             
 ```
 
-Convolution
+Convolution ⚠️
 -----------
 
 ```
@@ -8916,10 +8792,10 @@ Convolution
 
 
 
-Math Operations & Arithmetic
+Math Operations & Arithmetic ✅
 ============================
 
-Floating Point Precision
+Floating Point Precision ✅
 -------------------------
 
 ### variable type
@@ -8996,7 +8872,7 @@ The `--force-math-precision` compiler flag can be used to override ALL other pre
 It will override the developers stated intent, and for that reason it should be avoided. This flag is intended for validation and testing purposes and should not be used as part of your release
 cycle.  The compiler emits a warning whenever this flag is used. 
 
-Floating Point Only Operations
+Floating Point Only Operations ✅
 ------------------------------
 
 Crisp provides the following operations for floating point numbers:
@@ -9026,7 +8902,7 @@ Example:
 - `pow`   => `(pow base exponent)`
 - `atan2` => `(atan2 y x)`
 
-Floating Point and Integer Operations
+Floating Point and Integer Operations ✅
 -------------------------------------
 
 These operations are available for both floating point and integer values.
@@ -9055,7 +8931,7 @@ like Quantized Integers and MicroFloat Blocks.
 
 - `*!`  => `#'(T T => (accum T))`  widening multiplication.
 
-Integer Only Operations
+Integer Only Operations ✅
 -----------------------
 
 - `ash`   ;; arithmetic shift `(ash I count)`
@@ -9065,7 +8941,7 @@ Integer Only Operations
 - `lognot`
 - `popcount`
 
-Integer Division
+Integer Division ✅
 ----------------
 
 There are four  integer divison functions: `/`, `ceil` ,  `floor` and `round`.
@@ -9130,7 +9006,7 @@ In addition to the three above, there is also `round`. This performes division a
 | (round a b) | Rounds nearest neighbor | 3, 1  | -3, -1 | 
 
 
-Hardware Supported Math Operations
+Hardware Supported Math Operations ✅
 ----------------------------------
 
 ### `op-fma` Fused Multiply Add
@@ -9248,7 +9124,7 @@ normalizing vectors, or Monte Carlo simulations—but not enough for scientific 
 - Output: Returns two values: $\approx \sin(x)$ and $\approx \cos(x)$.
 - Use: Calculating both sine and cosine for the same angle (e.g., rotation matrices). This often compiles to a single hardware instruction.
 
-Quantized Integers
+Quantized Integers ✅
 ==================
 
 A quantized integer (`qint`) is just like a normal integer that's being used
@@ -9278,7 +9154,7 @@ as some small `qint` base type, operate on it, using temporary `qint` accumulato
 and get it stored away again back as a the `qint` base type before
 anyone notices. What could be easier?
 
-Quantized Integer Types
+Quantized Integer Types ✅
 -----------------------
 
 These are the Crisp `qint` base types pre-defined for you.   
@@ -9456,7 +9332,7 @@ This path is optimized for maximum portability and debugging, not performance. T
 - This ensures the transpiled C code is portable and works, but it will have severely suboptimal performance as it will NOT use the specialized AI hardware.
 
 
-Low Precision Floats ("microfloats")
+Low Precision Floats ("microfloats") ✅
 ====================================
 
 Similar to Quantized Integers, Crisp supports "microfloats".  These are
@@ -9475,7 +9351,7 @@ So microfloats don't have independent scaling factors in the way that quantized 
 (*) - This "not uncommon" organization is the one used by the NVIDIA Blackwell NVFP4 format.
 It is 72 bits total and is usually padded out to 128 bits. 
 
-Format Wars
+Format Wars ✅
 -----------
 
 There are competing formats for these microfloat blocks.
@@ -9485,7 +9361,7 @@ NVidia NVFP4 / Blackwell: https://developer.nvidia.com/blog/introducing-nvfp4-fo
 OCP (Open Compute Project) MX Formats: https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
 
 
-Micro Float Types
+Micro Float Types ✅
 -----------------
 
 Crisp provides these base types for you:
@@ -9501,7 +9377,7 @@ Crisp provides these base types for you:
 
 The `f8-e8m0` type is used for the OCP MX formats ( MXFP8, MXFP6, and MXFP4 )
 
-def-microfloat-block
+def-microfloat-block ✅
 ---------------------
 
 The types above can then be used in `def-microfloat-block`.  Note that blocks can have 1D or 2D arity.
@@ -9571,7 +9447,7 @@ This path is optimized for maximum portability and debugging, not performance. T
 
 
 
-blockwise operations
+blockwise operations ✅
 --------------------
 
 The arithmetic operations on microfloats are "blockwise". This is highly optimized.
@@ -9619,7 +9495,7 @@ for both the base and accumulator types.
 (min A A) => A
 ```
 
-Vector Conversion Operations
+Vector Conversion Operations ✅
 ----------------------------
 
 The conversion operations operate on entire vectors of floats and microfloat blocks. A `quantize-to-...` and 
@@ -9728,7 +9604,7 @@ Possible Implementation
             
 
 
-element-wise access
+element-wise access ✅
 -------------------
 
 Element-wise access to microfloat blocks is not slow (like atomic ops or reading global memory). 
@@ -9747,7 +9623,7 @@ the microfloat type at that index, scale it appropriately, and then return "regu
 
 
 
-Complex Numbers
+Complex Numbers ✅
 ===============
 
 Complex numbers are fairly straightforward in Crisp.
@@ -9832,14 +9708,14 @@ Additionally, Crisp provides the following operations for complex numbers:
 
 And the transcendantals ( `exp`, `log`, `sqrt`, `sin`, `cos`, etc )
 
-soa-vector and complex
+soa-vector and complex ✅
 ----------------------
 
 Because complex numbers are defined as Crisp structs, they can take advantage
 of `soa-vector`  support. 
 
 
-Fast Fourier Transform (FFT)
+Fast Fourier Transform (FFT) 📝
 ============================
 
 The routines and orchestration below implement the Fast Fourier Transform using the Cooley-Tukey algorithm. 
@@ -10150,7 +10026,7 @@ And a possible orchestration
     (copy-final (if (even? (log2 (length~ input-vec))) buffer-A buffer-B) output-vec)))
 ```
 
-Fused Softmax
+Fused Softmax 📝
 =============
 
 ```
@@ -10208,7 +10084,7 @@ scratch vector whose length is equal to the local work size.
 
 
 
-Builtin GPU Functions
+Builtin GPU Functions ✅
 =====================
 
 These GPU built-in functions help inspect the execution environment. Note that all of 
@@ -10248,15 +10124,15 @@ If you need to use a runtime `n`, get the vector `ulong3` and index it `(~ (get-
 
 - get-timestamp   returns the high resolution clock counter. ( %clock64 register).
 
-Forgotten
+Forgotten 📝
 ==========
 - when-thread-in-warp-is 
 
 
-Strings - Compile Time and Run Time
+Strings - Compile Time and Run Time ✅
 ===================================
 
-Compile Time Strings
+Compile Time Strings ✅
 --------------------
 
 Most strings in Crisp are compile time. They follow the Common Lisp parsing rules
@@ -10272,7 +10148,7 @@ The are mostly output into the hoisting example code.
 be a different "printable" type, which is either a numeric type or a string.
 The final string result is just all those things together, separated by spaces.
 
-Runtime Strings
+Runtime Strings ✅
 ---------------
 
 Runtime strings are a completely different animal. 
@@ -10314,7 +10190,7 @@ formulation.
 
 
 
-Logging and Debugging
+Logging and Debugging ✅
 =====================
 
 > Overengineer much?
@@ -10327,7 +10203,7 @@ access to stdout or the file system. This makes debugging and logging challengin
  - side channel logging at runtime.  This has to be elected when compiling your kernel and the hoisting/enqueue code has to participate as well.
 
 
-Compile Time Output and Assert
+Compile Time Output and Assert ✅
 ------------------------------
 
 ### `c-t-output`  
@@ -10413,7 +10289,7 @@ Possible Implementation
     (device-halt!)))
 ```
 
-Runtime Asserts
+Runtime Asserts ⚠️
 ---------------
 
 There are various asserts available at runtime. They are available if the debug output is enabled or not, but their behavior changes slightly.
@@ -10467,7 +10343,7 @@ surroud `r-t-assert` in one of the other thread guards.
    (r-t-assert (< 0 lives) "no lives left"))
 ```
 
-Runtime Logging
+Runtime Logging ⚠️
 ---------------
 
 ### `r-t-workgroup-output-if`
@@ -10509,7 +10385,7 @@ surroud `r-t-output` in one of the thread guards.
 
 
 
-Logging Utilities
+Logging Utilities ✅
 -----------------
 
 - `(line)`  evaluates at compile-time to the line number of the file where it appears.
@@ -10518,7 +10394,7 @@ Logging Utilities
 Note that the routines above always include line numbers and file identifiers automatically,
 so the practical use of these logging utilities is rare - mostly reserved for dev macros.
 
-Debugging Implementation
+Debugging Implementation ✅
 ========================
 
 The perennial challenge of using debug logging on a GPU is that there is just TOO MUCH of it. 
@@ -10534,7 +10410,7 @@ can be divided in differrent ways, ways to limit who logs, or ways to ensure tha
 selected at compile time, rather than when enqueueing the kernel. Perhaps some intrepid user
 can use the [In-Memory Compilation API](#in-memory-compilation-api) to make a handy tool.
 
-So You Want Debug Logging
+So You Want Debug Logging ✅
 -------------------------
 
 ### `--logging-output`  Master Switch.
@@ -10554,7 +10430,7 @@ The debug output vector base type is a `(vector ulong :align :compact :address-s
 be setup by the host. In this part of the document we refer to this vector as "the debug buffer" or 
 just "the buffer". 
 
-Subdivide Subdivide Subdivide - the "other" debug flags
+Subdivide Subdivide Subdivide - the "other" debug flags ✅
 -------------------------------------------------------
 
 Three debug flags govern subdivision by scope, target, and call site. Two more flags
@@ -10621,7 +10497,7 @@ This flag is relevant whenever the debug target has been set to `warp` (in BOTH 
 
 Select which warp in a workgroup should perform debug logging to the buffer. It can be the warp number (from 0 to the max number of warps, ie 32) 
 
-Common Debug Flag Configurations
+Common Debug Flag Configurations ✅
 -------------------------------
 
 ### Default (Low Overhead):
@@ -10666,7 +10542,7 @@ Result: The buffer for the dedicated target (WG 42) is subdivided, giving each l
 
 
 
-Conditional Compilation
+Conditional Compilation ✅
 =======================
 
 Crisp uses the `#+` and `#-` reader macros to do conditional compilation. Unlike Common Lisp, 
@@ -10721,14 +10597,14 @@ crisp.exe -Dfull_ride=nil -Dsleigh_ride=T -Dover_ride=1  ... etc
 ```
 See below for `target-has`.
 
-defmacro 
+defmacro ✅
 --------
 
 Crisp supports defmacro, which makes it very easy to 
 employ conditional compilation off ANY variable known at 
 compile time.
 
-target-has / device-has
+target-has / device-has ✅
 -----------------------
 
 ### `(target-has <prop> &optional might:bool)`
@@ -10755,7 +10631,7 @@ Implementation Notes: for SPIR-V, device-has will require specialization constan
 coordination with the hoisting code.
 ```
 
-Assist defmacro Development
+Assist defmacro Development ✅
 ===========================
 
 Crisp has some constructs that are useful to developers leveraging `defmacro` and needing
@@ -10935,7 +10811,7 @@ something.
 
 
 
-Static Analysys
+Static Analysys ⚠️
 ===============
 
 > The minute you finally understand how a GPU works is the minute you are wrong.
@@ -10958,7 +10834,7 @@ skipped. The compiler will warn you if it is skipping any.  Don't rely on `--sin
 If you have static analysis opt-ins within your file, 
 and you don't want that analysis performed, use `--no-static-analysis`. 
 
-declaim
+declaim ⚠️
 -------
 
 We've already seen `declare` introduced earlier. Whereas `declare` must appear in the context of some `progn`, 
@@ -10982,7 +10858,7 @@ It's slow, and you'll likely trip a bunch of warnings that shouldn't really be a
 ```
 In the example above the "barrier check"  (see below) would be run on every function and kernel.
 
-check-coalesce
+check-coalesce ⚠️
 --------------
 
 ```
@@ -11004,7 +10880,7 @@ or specify the kernel/function in a top level `declaim`, then this check will be
 and a warning emitted if the function in question is not using coalesced access and a note if it is ok.
 
 
-check-bank-conflicts
+check-bank-conflicts ⚠️
 --------------------
 
 ```
@@ -11027,7 +10903,7 @@ threads are accessing memory with a stride that is a multiple of the bank count
 the analysis completes and no conflicts are found.
 
 
-check-divergence
+check-divergence ⚠️
 ----------------
 
 ```
@@ -11060,7 +10936,7 @@ in the warp, not just some.
 -->
 
 
-max-registers / warn-max-registers
+max-registers / warn-max-registers ⚠️
 ----------------------------------
 
 ```
@@ -11093,7 +10969,7 @@ to `max-registers`, which may mean that other variables will experience "registe
 and be moved to local memory. Only use `max-registers` if you know what you are about.
 
 
-check-barriers
+check-barriers ⚠️
 --------------
 
 ```
@@ -11112,14 +10988,14 @@ But with this check declared, Crisp will try to analyze other thread divergences
 see if perhaps a barrier is performed in one branch but not another, and warn about it.  
 
 
-miscellaneous
+miscellaneous ⚠️
 -------------
 
 - if -stride or -loop has an atomic op inside, turn off the users machine.
 
 
 
-Auto Differentiation (AD)
+Auto Differentiation (AD) ✅
 ========================
 
 
@@ -11422,7 +11298,7 @@ Presently, the following forms are the ONLY ones allowed within the body of a `d
 - `kernel_var_name::param-name` identifier 
 - `make-hoist-vector`
 
-launch-sequential
+launch-sequential ⚠️
 -----------------
 
 ```
@@ -11437,7 +11313,7 @@ The CPU is free to do other things while the sequence of kernels run, and it doe
 A "launch specification" is simply a kernel _variable_ and the correct number of arguments. eg. `(VADD A B C)` or
 `(VADD _ _ _)` or `(VADD _ B _)` etc
 
-launch-kernel
+launch-kernel ⚠️
 -------------
 
 ```
@@ -11455,7 +11331,7 @@ If you need to launch multiple kernels, the other `launch-XXXX` with an explicit
 (launch-kernel (VSUM C RES) :copyback (RES))
 ```
 
-launch-parallel
+launch-parallel ⚠️
 ---------------
 
 ```
@@ -11469,7 +11345,7 @@ Note the parallel kernels can't safely write to the same vectors (whether marked
 error if it detects parallel re-use of `&out` vectors, but even if you sneak around the compiler it still won't
 work correctly.
 
-launch-interleaved
+launch-interleaved ⚠️
 ------------------
 
 `launch-interleaved` is for 1D interleaved operations on vectors. 
@@ -11518,13 +11394,13 @@ Neat!
 
 
 
-Compiler Invocation and Options
+Compiler Invocation and Options ✅
 ===============================
 
 `$ crisp.exe file.crisp`
 Without any output targeting options, the crisp compiler would simply output any compilation errors. Similar to using `-fsyntax-only` with C compilers.
 
-Output Targeting Options
+Output Targeting Options ✅
 ------------------------
 
 ### `--output-dir=<DIRECTORY_PATH>`
@@ -11637,7 +11513,7 @@ Use `(declare forward-only)` to opt out of differentiation for a specific kernel
 
 Also note that at this time `--differentiate` and `--hoist` are mutually exclusive.  The compiler will emit an error if both flags are used.
 
-Other Flags
+Other Flags ✅
 -----------
 
 ### `--runtime-checks`
@@ -11727,7 +11603,7 @@ faster.
 
 <!--  (declare entry-point inline)  both need definitions -->
 
-Compiliation Flags
+Compiliation Flags ✅
 ------------------
 
 ### `-D`
@@ -11757,7 +11633,7 @@ Default: Linked to the precision mode (i.e., precision: `fast` implies `flush`, 
 Override: A user can run `--math-precision ieee --denormal-handling flush`.
 
 
-Fast Compilation
+Fast Compilation ✅
 ----------------
 Compilation speed is one of the prime goals of the Crisp compiler. There are things you can 
 do to maximize compilation performance.
@@ -11800,7 +11676,7 @@ With this there is no disk IO and compilation can be performed nearly instantane
 If you are confident that the code you are compiling is completely ready and error free, use the flag that skips the compile time
 checks. 
 
-Compiler Invocations and Files
+Compiler Invocations and Files ✅
 ------------------------------
 Each target (for example .spv) has one file output per orchestration. Loose kernels that
 are not named in an orchestration are also output, one target file apiece. 
@@ -11823,7 +11699,7 @@ are ALWAYS order sensitive, multi-pass or single-pass.
 
 
 
-Hoisting Code
+Hoisting Code ✅
 =============
 
 The hoisting code that Crisp outputs demonstrates the following:
@@ -11844,10 +11720,10 @@ Further, if the `--hoist-dynamic` flag is used, then the example code will actua
 include the string of that kernel and pass it to the in-memory compilation API (etc.).
 
 
-In-Memory Compilation API
+In-Memory Compilation API ✅
 =========================
 
-C API
+C API ✅
 -----
 
 <!-- NOTE  Let's rename "tree shaking" throughout. set_cache_directory() ??  But also change the flag -->
@@ -11939,7 +11815,7 @@ Gets the metadata from the last successful compilation. Format TBD.
 
 Destroys the context. 
 
-Status Codes
+Status Codes ✅
 ------------
 
 When using the In Memory Compilation API in conjunction with the "tree shaking cache" <!-- RENAME -->
@@ -11971,7 +11847,7 @@ typedef enum {
 ```
 
 
-Flags
+Flags ✅
 -----
 If using the `set_tree_shake_directory()` call, then the compilation environment will
 load the flags from the record there.  This ensures maximum reuse of the .crisp_lib files
@@ -11994,7 +11870,7 @@ The only flags it respects are
 - flags governing errors and warnings (TBD)
 
 
-APPENDIX #1 - Summary: set / get vars, storage handles, and structs
+APPENDIX #1 - Summary: set / get vars, storage handles, and structs ✅
 ==================================================================
 
 ```
@@ -12058,10 +11934,10 @@ someVar
 
 
 
-APPENDIX #2 - Math with Quantized Ints and Microfloat
+APPENDIX #2 - Math with Quantized Ints and Microfloat ✅
 ======================================================
 
-dot product and matmul
+dot product and matmul ✅
 ----------------------
 
 These dot product and matmul implementations work for ALL types. 
@@ -12281,7 +12157,7 @@ great with ReLU or any of the other common activation functions.
       (set! (~ output-M y x) (max zero-point (~ input-M y x))))))
 ```
 
-Acknowledgements
+Acknowledgements ✅
 ==================
 
 Firstly, I'd like to thank Paul Graham whose essay [Beating the Averages](https://www.paulgraham.com/avg.html) introduced me to Common Lisp and forever altered the arc of my programming career and my life. I've never met him, but without his inspiration Crisp would not exist today.
@@ -12290,7 +12166,7 @@ I should thank Google Deepmind and Anthropic for AntiGravity and Claude Code. Th
 Lastly, I'd like to thank Gemini for being a great sounding board, helping me understand any number of issues and shining light into what would otherwise be a dark impenetrable forest. While Crisp itself is a labor of love, I do work professionally in the field of GPU enablement and yet even with my experience and skill I could not have done this without Gemini. 
 
 
-INDECES
+INDECES ✅
 =======
 
 def-
@@ -12376,7 +12252,7 @@ control flow
 - cond / cond+ / when*
 - select-if
 
-Higher Order Function Operations
+Higher Order Function Operations ✅
 --------------------------------
 - map-stride
 - reduce-to-warp
@@ -12409,7 +12285,7 @@ Higher Order Function Operations
 - find-indices
 
 
-Sorting
+Sorting ⚠️
 -------
 - bitonic-sort-workgroup
 - bitonic-sort-workgroup!
@@ -12441,7 +12317,7 @@ Algorithms
 
 
 
-Atomics
+Atomics ⚠️
 -------
 - atomic-add!
 - atomic-sub!

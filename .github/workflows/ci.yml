@@ -171,4 +171,33 @@ jobs:
           echo "--- Running Negative Specs (Unified Runner) ---"
           sbcl --script tests/run-error-specs.lisp
 
+  deploy-docs:
+    name: Build & Deploy Documentation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mkdocs mkdocs-material
+
+      - name: Build site (All Branches)
+        run: python -m mkdocs build
+
+      - name: Deploy to GitHub Pages (Main Branch Only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          python -m mkdocs gh-deploy --force
+
 

@@ -1,3 +1,0 @@
-# Higher Order Function Operations
-
-
