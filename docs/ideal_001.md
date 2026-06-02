@@ -796,12 +796,7 @@ will accept additional arguments for the scratch memory Storage Handle.
 
 Similarly, every invocation of `make-implicit-XXXX` adds at least two implicit args to the kernel.
 
-<!-- NOTES
-clSetKernelArg : https://registry.khronos.org/OpenCL/sdk/3.0/docs/man/html/clSetKernelArg.html
-clEnqueueNDRangeKernel: https://registry.khronos.org/OpenCL/sdk/3.0/docs/man/html/clEnqueueNDRangeKernel.html
-Note that nearly all the args for clEnqueueNDRangeKernel revolve around the NDRange (and event list). 
 
--->
 
 #### def-kernel-exact
 
@@ -868,7 +863,7 @@ the `&out` specifier and possibly other safety checks.
 - `str_0`, `str_1` — `ulong` strides along dimensions 0 and 1
 - `ext_0`, `ext_1` — `ulong` extents along dimensions 0 and 1
 - `length` — `ulong` total element count
-```
+
 
 
 `marshall-tensor` — N-dimensional strided view, keyword form
@@ -880,6 +875,7 @@ the `&out` specifier and possibly other safety checks.
   :extents (e0 e1 ... eN-1)
   :length  len)
 ```
+
 - type — fully-specified tensor type alias, e.g. `(tensor float 3 :address-space :global :align :compact)`. Also accepts an expanded vector or matrix alias (since both desugar to tensor).
 - `byte-size` — `ulong` total byte size of the backing buffer
 - `ptr` — raw pointer (`voidp`)
@@ -896,6 +892,7 @@ All four keywords are required. Each list must be of length N. The macro validat
 `marshall-vector` is just a macro that associates them.
 
 In reality even `(def-kernel k (someVector) ...)` just expands to 
+
 ```
 (def-kernel-exact k (sv-len sv-mem)
   (let ((someVector (marshall-vector sv-len sv-mem))) ...)
@@ -930,15 +927,6 @@ Additionally, the type constraint function `is-XXXX?` is also generated.
 Storage Handles can be specialized to struct types. If a struct needs to be passed directly to a 
 kernel, that is the most common way of doing so for both input and output arguments. Note that structs CAN be passed directly to a kernel, without being wrapped by a Storage Handle. But in that
 case the struct is configured with constant memory and is read only, immutable. 
-
-<!-- NOTES:  The compiler will treat these custom "functions"  as direct data offsets.  
-If a user wants to pass #'make-point or #'x~ as first order arguments, 
-then the compiler will generate a function for that.
-
-Common Lisp would generate "point-x", but Crisp generates "x~".
-I believe Clojure allows structs and vects to be in the function position:  (somePoint 'x)  (someVec i)
-and I have to admit, that's fairly compelling. Might have to consider it. 
--->
 
 
 ```
@@ -1134,7 +1122,6 @@ In Crisp, like in C++, the struct type itself is not runtime inspectable. But un
 that help you write macros that generically walk all the properties. One of those affordance is `with-struct-accessors`.
 
 ```
-```
 (defmacro with-struct-accessors (struct-type (aos-var &optional soa-var) &key (access :public) &body body) ...)
 ```
 This is an iterate-and-bind macro that loops over all the properties of `struct-type`. The return
@@ -1173,6 +1160,7 @@ If overloading the setting of a struct property and you wish to use that struct
 consistently and correctly in a `soa-vector`, then an additional overload
 for that is recommended as well. The compiler will warn if it detects the absence.
 In the future, Crisp may handle this automatically. 
+
 ```
 ;; additional overload if we are using soa-vectors.
 
