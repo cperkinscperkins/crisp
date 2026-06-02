@@ -1,7 +1,7 @@
 # Floating Point Precision ✅
 
 
-### variable type
+#### variable type
 
 The Crisp language supports four floating point types that have different levels of precision:
 
@@ -18,7 +18,7 @@ Smaller sizes are less accurate, but faster.
 Note that while all platforms support 32 bit, the other sizes aren't always available. If needed use the compile-time checks
 `target-has` or `device-has` to partition supporting and unusupporting code. See [target-has/device-has](#target-has--device-has) 
 
-### precision
+#### precision
 
 In addition to choice of variable type, Crisp has a precision control that supports two
 different options: `fast` and `ieee`.
@@ -38,7 +38,7 @@ Additionally, it might disable `Nan` and `Inf`.
 
 Consult the Crisp documentation for any particular target for a complete rundown.
 
-### selecting precision
+#### selecting precision
 
 Crisp provides three avenues for selecting precision. In order of specifity, 
 from the least specific to the most specific, they are: 
@@ -69,7 +69,7 @@ Example:
 4. in the example above, the `--math-precision` flag would always be ignored. The `declaim` at file level 
 would override.
 
-#### overriding precision: `--force-math-precision`
+##### overriding precision: `--force-math-precision`
 
 The `--force-math-precision` compiler flag can be used to override ALL other precision choices.
 It will override the developers stated intent, and for that reason it should be avoided. This flag is intended for validation and testing purposes and should not be used as part of your release

@@ -16,7 +16,7 @@ Similarly, `when-group-is` is akin to those except that the group id is used ins
 (when-group-is x-id y-id z-id <expr>)   
 ```
 
-### local-barrier compilation issue.
+#### local-barrier compilation issue.
 
 Using `(local-barrier)` inside the scope of `when-thread-in-group-is` results in a compilation error as it would otherwise deadlock an entire workgroup.
 

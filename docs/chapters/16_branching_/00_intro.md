@@ -7,11 +7,11 @@ They each operate similarly: first evalute a predicate expression, and if true, 
 some consequent. With variations for multiple checks, multiple statements, etc.  
 ( `unless` checks the predicate for being `false`, not `true`).
 
-### `cond` default
+#### `cond` default
 The default case for `cond` is not `T` like it is in Common Lisp. That would be too confusing 
 with the very common `T` used for templating.  Instead in Crisp, `cond` uses `else` as the default case.
 
-### + variant
+#### + variant
 The `+` variant exists as well (`if+`, `when+`, `unless+`, `cond+`). 
 This variant checks that the predicate expression is compile time calculable. It wil error if it is not.
 This variant is very useful for when you expect the compiler will "compile away" some clause. 
@@ -19,7 +19,7 @@ Use it to have your intentions confirmed, rather than guessing.
 
 This is parallel to  `if constexpr (...)` introduced in C++17.
 
-### * variant
+#### * variant
 Each of these has a `*` variant: `if*`, `when*`, `unless*`, and `cond*`.  
 
 The `*` variant checks that the predicate expression is uniform across the entire warp. If the compiler
@@ -28,7 +28,7 @@ high performance non-diverging code.
 
 
 
-### `it` - anaphoric
+#### `it` - anaphoric
 All the branching expressions (except `unless`) are "anaphoric", which is a linguistic concept to describe a word that acts as a substitute for an earlier expression.
 For example "The cat chased the mouse, but it got away", the word "it" is an anaphoric reference to the mouse.
 Whatever.

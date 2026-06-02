@@ -62,6 +62,7 @@
         (chapter-num 0)
         (section-num 0)
         (nav-chapters nil)
+        (in-code-block nil)
         ;; Default to preamble before first chapter
         (current-chapter-dir (merge-pathnames "00_preamble/" *output-dir*))
         (current-section-file nil)
@@ -78,14 +79,27 @@
 
     (loop with i = 0
           while (< i (length lines))
-          do (let* ((line (elt lines i))
-                    ;; Look ahead to next line
-                    (next-line (if (< (+ i 1) (length lines)) (elt lines (+ i 1)) ""))
-                    (trimmed-next (string-trim '(#\Space #\Return #\Newline) next-line)))
+          do (let* ((orig-line (elt lines i))
+                    (trimmed (string-trim '(#\Space #\Tab #\Return) orig-line)))
                
-               (cond
-                 ;; Case 1: Chapter Header (======)
-                 ((header-line-p trimmed-next #\=)
+                (cond
+                 ;; Case 0: Track code blocks
+                 ((and (>= (length trimmed) 3)
+                       (string= "```" trimmed :end2 3))
+                  (setf in-code-block (not in-code-block))
+                  (format current-buffer "~A~%" (string-trim '(#\Return) orig-line))
+                  (incf i))
+
+                 ;; Case 0.5: In code block, treat as normal text
+                 (in-code-block
+                  (format current-buffer "~A~%" (string-trim '(#\Return) orig-line))
+                  (incf i))
+
+                 ;; Case 1: Chapter Header (starts with "# " or "## ")
+                 ((or (and (>= (length trimmed) 2)
+                           (string= "# " trimmed :end2 2))
+                      (and (>= (length trimmed) 3)
+                           (string= "## " trimmed :end2 3)))
                   ;; Flush previous file if active
                   (when current-section-file
                     (write-buffer-to-file current-section-file current-buffer)
@@ -95,7 +109,8 @@
                   (incf chapter-num)
                   (setf section-num 0)
                   
-                  (let* ((title (string-trim '(#\Space #\Return) line))
+                  (let* ((prefix-len (if (string= "# " trimmed :end2 2) 2 3))
+                         (title (string-trim '(#\Space #\Tab #\Return) (subseq trimmed prefix-len)))
                          (slug (clean-filename title))
                          (dirname (format nil "~2,'0d_~A/" chapter-num slug)))
                     
@@ -113,11 +128,11 @@
                       ;; Add to nav structure
                       (push (list title (cons "Introduction" (format nil "chapters/~A/00_intro.md" chapter-dirname))) nav-chapters))
                     
-                    ;; Skip both title line and underline
-                    (incf i 2)))
+                    (incf i)))
 
-                 ;; Case 2: Section Header (------)
-                 ((header-line-p trimmed-next #\-)
+                 ;; Case 2: Section Header (starts with "### ")
+                 ((and (>= (length trimmed) 4)
+                       (string= "### " trimmed :end2 4))
                   ;; Flush previous file if active
                   (when current-section-file
                     (write-buffer-to-file current-section-file current-buffer)
@@ -125,7 +140,7 @@
 
                   ;; Setup New Section
                   (incf section-num)
-                  (let* ((title (string-trim '(#\Space #\Return) line))
+                  (let* ((title (string-trim '(#\Space #\Tab #\Return) (subseq trimmed 4)))
                          (slug (clean-filename title))
                          (filename (format nil "~2,'0d_~A.md" section-num slug)))
                     
@@ -145,13 +160,12 @@
                     ;; Start buffer with header (H1 to prevent redundant sidebar nesting)
                     (format current-buffer "# ~A~%~%" title)
 
-                    ;; Skip both title line and underline
-                    (incf i 2)))
+                    (incf i)))
 
                  ;; Case 3: Normal Text
                  (t
                   ;; read-file-lines strips newlines, so we must add them back
-                  (format current-buffer "~A~%" (string-trim '(#\Return) line))
+                  (format current-buffer "~A~%" (string-trim '(#\Return) orig-line))
                   (incf i)))))
 
     ;; Flush any remaining content in the buffer at EOF

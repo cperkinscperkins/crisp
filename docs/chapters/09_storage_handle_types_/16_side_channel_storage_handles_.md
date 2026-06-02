@@ -25,7 +25,7 @@ which allows you to state its intended size and purpose.
 
 
 
-### make-scratch-XXXX
+#### make-scratch-XXXX
 ```
 ;; cells
 (make-scratch-cell element-type  &key address-space  name msg)
@@ -56,7 +56,7 @@ but the defaults can be overridden by either using the `&key` arguments to the `
 or by using the second creation function of the pair that uses a Storage Handle type argument.
 
 
-#### `sizeExpression`
+##### `sizeExpression`
 
 The `sizeExpression` is the magic that makes these things tick.  The most useful choices
 for `sizeExpression` are the following keyword symbols that Crisp supports:
@@ -76,7 +76,7 @@ Alternately, the `sizeExpression` can be a compile-time known value, in which ca
 or it can be any runtime value or some other Storage Handle variable.  In these cases, this will be noted in the hoisting comment,
 but that may lack clarity. It is best ot use the `:msg` key as well.
 
-#### `sizeExpression` for matrices and tensors
+##### `sizeExpression` for matrices and tensors
 
 `:match-workgroup-size` and  `:match-grid-size` (and `:match-warp-tile`) all work well when the arity of the `local_work_size`/`global_work_size` matches
 the arity of the Storage Handle view.  If it is expected that they won't match, use a scratch `vector` and reinterpret it for your needs.
@@ -84,12 +84,12 @@ the arity of the Storage Handle view.  If it is expected that they won't match, 
 Alternately, the `sizeExpression` can be a list in `(... z y x)` order. 
 
 
-#### type expression argument
+##### type expression argument
 
 Usually this argument is a Storage Handle type, but an existing Storage Handle variable can be used as well, which 
 can make things simpler.
 
-#### scratch types
+##### scratch types
 <!-- NOTE not sure about this -->
 These type expressions are available:
 ```
@@ -100,7 +100,7 @@ These type expressions are available:
 ```
 
 
-#### Example 
+##### Example 
 Below is  a simple example
 ```
 ;; -- calc_something --
@@ -135,7 +135,7 @@ Modifying the beginning of the arglist (of course).
 
 -->
 
-### Scratch Helpers
+#### Scratch Helpers
 
 Important: There are asynchronouse variants of these helpers.  See [Async Memory Operations](#async-memory-operations) for more information. 
 
@@ -188,7 +188,7 @@ Possible Implementation
 
 
 
-### make-implicit-XXXX
+#### make-implicit-XXXX
 
 ```
 (make-implicit-cell <ID> cellType &key name msg)

@@ -16,7 +16,7 @@ These all use `die` underneath, so some amount of thread id and line numbers, et
 
 
 
-### `r-t-workgroup-assert`
+#### `r-t-workgroup-assert`
 
 `(r-t-workgroup-assert <testExpression>  <expr1> ... <exprN>)`
 
@@ -29,7 +29,7 @@ Note that `<testExpression>` reduced across ALL the threads in a workgroup. If i
 then the assert behavior is tripped.  So `r-t-workgroup-assert` is protected from "firehose" problems.
 
 
-### `r-t-assert`
+#### `r-t-assert`
 ```
 (r-t-assert <testExpression>  <expr1> ... <exprN>)
 (r-t-assert-0 <testExpression>  <expr1> ... <exprN>)
@@ -42,7 +42,7 @@ Behaves like the asserts described above.  Ultimately, will call `die` if `<test
 In contrast, the variant `r-t-assert-0` uses the `when-thread-is 0` guard and so the 
 check and output is only performed in one thread.
 
-#### WARNING - FIREHOSE
+##### WARNING - FIREHOSE
 If `r-t-assert` appears loose in your kernel, it could result in many threads simultaneously
 trying to dump strings into a debug buffer. Use the debugging subdivisions to control it (see [Debugging Implementation](#debugging-implementation)), or consider using `r-t-workgroup-assert` instead, or `r-t-assert-0`, or
 surroud `r-t-assert` in one of the other thread guards.

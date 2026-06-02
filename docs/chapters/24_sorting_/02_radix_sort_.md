@@ -12,25 +12,25 @@ The easiest way to understand Radix Sort is to think of it like sorting a huge p
 
 Radix Sort does this with the bits of your numbers.  It loops over three kernels: histogram, prefix-sum, and scatter.
 
-### Radix Sort on the GPU
+#### Radix Sort on the GPU
 
 The entire process is a loop that has to be organized host side. For a 32-bit integer, you might loop 4 times, processing 8 bits in each pass. Inside this loop, the host orchestrates a sequence of kernel launches.
 
-#### Step 1: The Histogram Kernel
+##### Step 1: The Histogram Kernel
 The first kernel's job is to count the occurrences of each "digit" across the entire dataset.
 
 How it works: Each workgroup computes a local histogram (e.g., a 256-element array for an 8-bit pass) in its fast shared memory. The leader of each workgroup then uses atomic-add! to add its local counts to a small global histogram buffer.
 
 Result: A small array in global memory with the total count for each digit.
 
-#### Step 2: The Prefix-Sum (Scan) Kernel
+##### Step 2: The Prefix-Sum (Scan) Kernel
 The second kernel's job is to turn the histogram counts into bucket offsets. It answers the question, "Where does the bucket for digit X begin in the final output array?"
 
 How it works: Since the global histogram is very small (e.g., 256 elements), this is a tiny, fast kernel, often launched with just a single workgroup. It performs an exclusive scan on the histogram. (This step can sometimes even be done on the host CPU because the data size is negligible).
 
 Result: A small array of "bucket pointers" in global memory.
 
-#### Step 3: The Scatter (or Permute) Kernel
+##### Step 3: The Scatter (or Permute) Kernel
 The third kernel's job is to actually move the data.
 
 How it works: Each thread reads an element, looks at its current "digit," uses the bucket pointers from Step 2 to find the base address for that digit, and then uses a local counter to find its specific place within that bucket. It then writes the element to a new output buffer.
@@ -39,10 +39,10 @@ Result: A new global buffer where the data is sorted according to the current gr
 
 This new output buffer then becomes the input buffer for the next pass of the host-side loop. This is often called "ping-ponging" between two large buffers. After the final pass (on the most significant bits), the data is fully sorted.
 
-### Radix Sort in Crisp
+#### Radix Sort in Crisp
 
 
-#### `histogram-pass`
+##### `histogram-pass`
 ```
  (histogram-pass input-vec bit-offset &out global-histogram  &optional local-histogram)
 ```
@@ -114,7 +114,7 @@ Possible Implementation
             (atomic-add! (~ global-histogram local-id) count-for-this-bin)))) )))
 ```
 
-### scan histogram pass
+#### scan histogram pass
 
 ```
 (scan-histogram global-histogram &out bucket-offsets)
@@ -160,7 +160,7 @@ And its output is a prefix-sum vector.
 ```
 
 
-### scatter pass
+#### scatter pass
 
 ```
 (scatter-pass input-vec bucket-offset bit-offset &out output-vec)
@@ -327,7 +327,7 @@ Local Rank (The Tricky Part): The local-rank-within-digit function is the most c
         rank))))
 ```
 
-### coordinating all three: histogram / san / scatter
+#### coordinating all three: histogram / san / scatter
 
 Finally, after defining `histogram-pass`, `scan-histogram` and `scatter-pass` we
 are ready to use Radix Sort. 

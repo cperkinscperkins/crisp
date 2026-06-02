@@ -9,9 +9,9 @@ In the first stage, you hoist/enqueue a kernel which will invoke one of the `bit
 
 In the second stage, you hoist a `bitonic_merge_pass` kernel repeatedly until the sort is completed.
 
-### psuedo demonstration
+#### psuedo demonstration
 
-#### generate the kernels
+##### generate the kernels
 ```
 ;; generate kernel that sorts in place a vector of floats using :compact alignment
 (gen-bitonic_sort_workgroup_in_place float :compact "stage_one_kernel")
@@ -20,7 +20,7 @@ In the second stage, you hoist a `bitonic_merge_pass` kernel repeatedly until th
 (gen-bintonic_merge_pass float :compact "stage_two_kernel")
 ```
 
-#### load and enqueue the first kernel
+##### load and enqueue the first kernel
 
 This is a simplified Python example of hoisting the first kernel.
 
@@ -53,7 +53,7 @@ stage_one_kernel.launch(queue, global_size, workgroup_size)
 # The host would then wait for the queue to finish before starting Stage 2.
 ```
 
-#### loop the second kernel
+##### loop the second kernel
 
 ```
 # loop through the merge stages.
@@ -68,7 +68,7 @@ while j <= data_size:
 ``` 
 
 
-### `bitonic-sort-workgroup`
+#### `bitonic-sort-workgroup`
 
 ```
 (bitonic-sort-workgroup data-in data-out &key keyF)
@@ -211,7 +211,7 @@ A possible implementation might be
     (bitonic-sort-workgroup! data)))
 ```
 
-### `bitonic_merge_pass`
+#### `bitonic_merge_pass`
 
 ```
 (bitonic-merge-pass data j k &keyF)
@@ -279,7 +279,7 @@ Possible Implementation
     (bitonic-merge-pass data j k)))
 ```
 
-### Don't Make Me Think `gen-bitonic-sort-vector`
+#### Don't Make Me Think `gen-bitonic-sort-vector`
 
 ```
 (gen-bitonic-sort-vector elementT alignment) ;;  &key keyF

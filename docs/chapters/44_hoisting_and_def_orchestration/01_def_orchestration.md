@@ -3,7 +3,7 @@
 
 Let's dive into some simple examples.
 
-### "default" orchestration
+#### "default" orchestration
 
 ```
 ;; assume vector_add is defined and is not templated, uses &out
@@ -27,7 +27,7 @@ and is followed by a series of command for how to launch kernels.
 
 Let's take a quick look at its pieces:
 
-#### gen-KERNEL_NAME
+##### gen-KERNEL_NAME
 
 In the context of an orchestration you'll typically want a variable to refer to 
 the kernels you intend to launch. Use `gen-KERNEL_NAME` for this. For kernels that are 
@@ -35,7 +35,7 @@ templated, this is also used to generate its type. Don't forget that in this cas
 kernel name string will be required and it must obey the C language naming rules.
  `(gen-templated_kernel float "name_of_kernel")`
 
-#### make-hoist-vector and kernel_var_name::param-name
+##### make-hoist-vector and kernel_var_name::param-name
 
 `(make-hoist-vector <VectorType> &optional size)`
 
@@ -46,7 +46,7 @@ vector type, BUT there shortcut that let's you just grab the type directly from 
 `kernel_var_name::param-name` Using the name of the kernel _variable_ that is in scope of the
 `def-orchestration`, NOT the name of the kernel itself (ie `K` in the above, not `vector_add`) 
 
-#### copy-back
+##### copy-back
 
 `(copy-back <hoist-vector-var>)`
 
@@ -56,7 +56,7 @@ to the host use `copy-back`. Crisp will generate code for that in the hoisting e
 
 
 
-###  kernel template instantiation
+#### kernel template instantiation
 
 ```
 ;; assume both vector_add and vector_sum are templated for some element-type.
@@ -83,7 +83,7 @@ Recall that when a kernel is templated, `gen-KernelName` is used to specialize i
 Here, that is leveraged. Note that this orchestration is effecting the compilation. It is generating
 two kernels ( `v_a_double` and `v_s_double` ) that will appear in the output.
 
-### template def-orchestration
+#### template def-orchestration
 
 `def-orchestration` can itself be templated. Within its body `${XXXX}` can appear in strings and 
 evaluate to the name of the type `XXXX`.
@@ -108,7 +108,7 @@ It is then incumbent on the user of the library to explicitly put the desired `g
 their own .crisp file.
 
 
-### `_` as a dummy var placeholder.
+#### `_` as a dummy var placeholder.
 
 The "calls" to a vector variable in an orchestration must have the correct number of arguments for that kernel.
 But you don't have to be burdened to declare and bind each and every one. For any argument position
@@ -118,7 +118,7 @@ and make a dummy var for you and pass it.
 `(launch-sequential (VADD _ _ _))`  <-- invoke the `vector_add` from the earlier examples with dummy
 placeholders. Crisp will provide the right arg type, whatever that is (vectors in this case).
 
-### More notes on `def-orchestration`
+#### More notes on `def-orchestration`
 
 Hopefully those examples give you a grounding on how it can be used. It is important to remember
 that the forms inside the body of `def-orchestration` are used to just generate sample code and

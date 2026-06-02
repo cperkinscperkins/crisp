@@ -4,7 +4,7 @@
 The conversion operations operate on entire vectors of floats and microfloat blocks. A `quantize-to-...` and 
 `dequantize-from-...` operation are defined for each invocation of `def-microfloat-block`.
 
-### quantize-to-XXXX
+#### quantize-to-XXXX
 ```
 (quantize-to-XXXX float-input-vec &out microfloat-block-vec)
 
@@ -74,7 +74,7 @@ Possible Implementation
 
 ```
 
-### dequantize-from-XXXX
+#### dequantize-from-XXXX
 ```
 (dequantize-from-XXXX microfloat-block-vec &out float-input-vec )
 ```

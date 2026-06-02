@@ -1,7 +1,7 @@
 # So You Want Debug Logging ✅
 
 
-### `--logging-output`  Master Switch.
+#### `--logging-output`  Master Switch.
 
 The `--logging-output` flag turns ON debug logging when it is present, or off when it is not.
 

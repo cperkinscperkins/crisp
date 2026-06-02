@@ -8,7 +8,7 @@ to a 10 bit float.  Unpacking them to normal 4-byte floats for operations
 (op-unpack-11 uint) => float-1 float-2 float-3
 ```
 
-### Best Practice
+#### Best Practice
 
 Rather than passing a vector of `uint` around, use `def-derived-type` to
 define your own type and do the packing in the setters and getters.

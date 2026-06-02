@@ -48,13 +48,35 @@ def main():
     # Logic: Setext headers consist of a Text Line followed by a Underline Line
     # We iterate and look ahead.
     
+    in_code_block = False
     i = 0
     while i < len(lines):
-        line = lines[i].rstrip()
-        next_line = lines[i+1].rstrip() if i + 1 < len(lines) else ""
+        line = lines[i]
+        stripped = line.strip()
         
-        # Check for Chapter Header (======)
-        if len(next_line) > 2 and set(next_line) == {'='}:
+        # Track code blocks
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            current_buffer.append(line)
+            i += 1
+            continue
+            
+        if in_code_block:
+            current_buffer.append(line)
+            i += 1
+            continue
+            
+        # Check for Chapter Header (starts with "# " or "## ")
+        is_chapter = False
+        prefix_len = 0
+        if stripped.startswith("# ") and not stripped.startswith("##"):
+            is_chapter = True
+            prefix_len = 2
+        elif stripped.startswith("## "):
+            is_chapter = True
+            prefix_len = 3
+            
+        if is_chapter:
             # Flush previous section
             if current_section_file and current_buffer:
                 with open(current_section_file, 'w', encoding='utf-8') as f:
@@ -64,7 +86,7 @@ def main():
             # Start New Chapter
             chapter_num += 1
             section_num = 0
-            title = line.strip()
+            title = stripped[prefix_len:].strip()
             slug = clean_filename(title)
             
             dirname = f"{chapter_num:02d}_{slug}"
@@ -74,8 +96,7 @@ def main():
             # Update Index
             index_content.append(f"\n## {title}\n")
             
-            # Reset current file (Text between Chapter Header and First Section goes here?)
-            # Let's create an intro file for the chapter just in case
+            # Reset current file
             current_section_file = os.path.join(current_chapter_dir, "00_intro.md")
             current_buffer = [f"# {title}\n\n"]
             
@@ -85,11 +106,11 @@ def main():
                 "sections": [("Introduction", f"chapters/{dirname}/00_intro.md")]
             })
             
-            i += 2 # Skip title and underline
+            i += 1
             continue
 
-        # Check for Section Header (------)
-        elif len(next_line) > 2 and set(next_line) == {'-'}:
+        # Check for Section Header (starts with "### ")
+        elif stripped.startswith("### "):
             # Flush previous section
             if current_section_file and current_buffer:
                 with open(current_section_file, 'w', encoding='utf-8') as f:
@@ -98,7 +119,7 @@ def main():
 
             # Start New Section
             section_num += 1
-            title = line.strip()
+            title = stripped[4:].strip()
             slug = clean_filename(title)
             
             filename = f"{section_num:02d}_{slug}.md"
@@ -116,20 +137,11 @@ def main():
             # Start buffer with the header (H1 to prevent redundant sidebar nesting)
             current_buffer = [f"# {title}\n\n"]
             
-            i += 2 # Skip title and underline
+            i += 1
             continue
             
         # Normal Text
         else:
-            # If we are in the "Master Index" connecting text mode (between ==== and ----)
-            # You mentioned you wanted connecting text in the Master Index.
-            # But we also need to put it somewhere in the files if people browse individually.
-            # For now, I'll put it in the '00_intro.md' of the chapter AND the buffer.
-            
-            # Actually, to keep it simple: Everything goes into the current active .md file.
-            # If you want text in the Index, you'd have to duplicate it. 
-            # For this script, I will generate the files purely.
-            
             current_buffer.append(lines[i])
             i += 1
 

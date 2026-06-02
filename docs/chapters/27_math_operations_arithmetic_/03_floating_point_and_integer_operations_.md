@@ -13,7 +13,7 @@ These operations are available for both floating point and integer values.
 - `*!`  widening multiplication. see [Quantized Integers](#quantized-integers)
 - `/`    see [Integer Division](#integer-division) below.
 
-### binop vs accum-op
+#### binop vs accum-op
 
 Most of the operations above binary operations, aka `binop-type`, aka their
 type signature is generally `#'(T T => T)`.

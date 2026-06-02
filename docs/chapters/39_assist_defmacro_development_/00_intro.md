@@ -4,7 +4,7 @@
 Crisp has some constructs that are useful to developers leveraging `defmacro` and needing
 to navigate the Crisp-specific terrain.
 
-### `is-thread-level?`
+#### `is-thread-level?`
 
 `(is-thread-level? function-identifier) => T/nil`
 
@@ -23,7 +23,7 @@ Usage Example
       `(,func ,vec)))
 ```
 
-### `get-return-type`
+#### `get-return-type`
 
 `(get-return-type function-identifier) => <Type>`
 
@@ -43,7 +43,7 @@ Example
     ...
 ```
 
-### `get-signature`
+#### `get-signature`
 
 `(get-signature function-identifier)` => <Signature>`
 
@@ -52,7 +52,7 @@ Example
 ```
 
 
-### `can-call?`
+#### `can-call?`
 
 `(can-call? function-identifier &rest argument-types) => T/nil`
 
@@ -66,7 +66,7 @@ Example:
 (can-call? #'* 'int 'point) => nil
 ```
 
-### `get-struct-members`
+#### `get-struct-members`
 
 `(get-struct-members 'point) => '(x y)`
 
@@ -82,20 +82,20 @@ Example (Reminder: this is all compile-time evaluated code from a macro, not run
   ...)
 ```
 
-### `get-struct-types`
+#### `get-struct-types`
 
 `(get-struct-types 'point) => '(float float)`
 
 Another low-level introspection macro. For the named struct it returns a list of type expressions.
 
-### `get-c-t-length`
+#### `get-c-t-length`
 
 `(get-c-t-length <vector-or-tensor-type>) => length or nil`
 
 `get-c-t-length` is passed a vector type and will return its length if it is known at compile time.
 Otherwise it returns nil.  Can be used for various purposes, including making unrolling decisions.
 
-### `get-current-context`
+#### `get-current-context`
 
 `(get-curret-context) => :dispatch / :grid / :thread`
 
@@ -103,18 +103,18 @@ Returns the context at the place where the macro is called. Useful if you need t
 that alter behavior based on context in order to provide a predictable experience for the caller.
 
 
-### `is-logging?`
+#### `is-logging?`
 
 `(is-logging?) => T or nil`
 
 Returns true if the file is being compiled with the `--logging-output` flag 
 
-### `is-runtime-checking?`
+#### `is-runtime-checking?`
 `(is-runtime-checking?) => T or nil`
 
 Returns true if the file is being compiled with the `--runtime-checks` flag
 
-### `is-set?`
+#### `is-set?`
 `(is-set? someVar) => T or nil`
 
 Used to check `&optional` and `&key` values before use.
@@ -136,13 +136,13 @@ always be True.
 ```
 
 
-### `(declare (grid-level))`
+#### `(declare (grid-level))`
 
 This was mentioned earlier, under  [Grid Level Operations](#grid-level-operations)
 A macro can add this declaration to a `progn` when doing grid level ops, and then the compiler
 will ensure the proper call context restrictions are observed.
 
-### `(declare (warp-convergent))` and `(declare (workgroup-convergent))`
+#### `(declare (warp-convergent))` and `(declare (workgroup-convergent))`
 
 
 The `(declare (XXXX-convergent))` tag is a safety contract between your new macro and the Crisp compiler's static analyzer.

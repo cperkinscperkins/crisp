@@ -1,7 +1,7 @@
 # Other `declare` directives
 
 
-### `use`
+#### `use`
 `(declare (use +image-mask+))`
 <!-- 
 NOTE: should we constrain `use` to ONLY be in def-kernel or def-const-vec ?
@@ -15,16 +15,16 @@ NOTE: should we constrain `use` to ONLY be in def-kernel or def-const-vec ?
 `def-const-vec`.  It simply declares that some context depends on a constant memory storage item.
 See [def-const-vec](#def-const-vec)
 
-### kernel-name
+#### kernel-name
 `(declare (kernel-name "some_name_${T}"))`
 Used in `let-kernel` to name a continuation kernel.  See [Continuation Kernels](#continuation-kernels)
 
-### single-task
+#### single-task
 `(declare (single-task))`
 
 Communicates back to the hoisting code that this kernel should be run on only one thread. Used in `def-kernel`
 
-### entrypoint
+#### entrypoint
 `(declare (entrypoint))`
 
 For library writers. See the [entrypoint](#entrypoint-1) section

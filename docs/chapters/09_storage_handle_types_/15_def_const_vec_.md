@@ -18,15 +18,15 @@ infer it in nearly all cases.
 
 If you want the vector to be responsive to some other calculations, have the host initialize it and pass it to the kernel as a regular argument instead.
 
-### Declare Use In Kernels
+#### Declare Use In Kernels
 If anything wants to read from that vec during the execution of some kernel,
 that kernel needs to add a `(use <const-vec-name>)` to its `declare` directive. 
 Then it, or functions it calls, can simply refer to the const-vec, like one would a global variable.  
 
-### Works with SoA
+#### Works with SoA
 Returning a `soa-vector` from `def-const-vec` is fully supported. 
 
-### make-vector / make-soa-vector
+#### make-vector / make-soa-vector
 ```
 (make-vector vectorType size)
 (make-soa-vector soaVectorType size)
@@ -36,7 +36,7 @@ and `make-soa-vector`.  Both take the appropriate vector type, which allows you 
 element type, layout, etc and a size. 
 
 
-### Constant Vec Using Other Constant Vec
+#### Constant Vec Using Other Constant Vec
 
 When preparing masks, sometimes the construction of one mask depends on another. So long
 as all this is predeterminable at compile time, CRISP can support it.
@@ -45,7 +45,7 @@ The `(declare (use +xxx+))` declaration can be put inside a `def-const-vec` to a
 refer to an earlier `def-const-vec` .  The requirement is that the named const vec in the `use`
 clause MUST have been defined earlier in the translation unit. 
 
-### Type Function
+#### Type Function
 CRISP also has two type functions for `:constant` vectors returned by `const-vec`
 `(const-vec <element-type> <align> &optional length)` 
 and
@@ -89,7 +89,7 @@ and
 
 ```
 
-### reinterpet for other Storage Handle types
+#### reinterpet for other Storage Handle types
 
 `def-constant-vec` sets up vectors or soa vectors only. If you need some other Storage Handle type
 (like `matrix`) then the appropriate `make-XXXX` function to reinterpreset it.

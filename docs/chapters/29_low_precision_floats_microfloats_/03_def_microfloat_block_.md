@@ -40,7 +40,7 @@ For each invocation of `def-microfloat-block` Crisp will define the type identif
  Additionally,  `quantize-to-XXXX` and `dequantize-from-XXXX` functions
  are defined. These functions operate on vectors of floats and blocks. Read more below
 
-### Illegal Combinations and Target-Specific Behavior
+#### Illegal Combinations and Target-Specific Behavior
 
 The entire purpose of Crisp's microfloat types is to leverage the extreme performance of specialized hardware. 
 This means the compiler's behavior is strict and depends heavily on your chosen output target.

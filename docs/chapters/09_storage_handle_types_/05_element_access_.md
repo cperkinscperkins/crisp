@@ -37,7 +37,7 @@ define your own subtype and overload `~` for that type.
   (set! (~ vec 0) (* 2 elem))) ;; stores "8" into the first position of the vec.
 ```
 
-### `~ref~`
+#### `~ref~`
  `~ref~` can also be used to get and set elements in a Storage Handle and these element
 access functions cannot be overloaded.   `~ref~` is intended to be used from overloads of `~`
 

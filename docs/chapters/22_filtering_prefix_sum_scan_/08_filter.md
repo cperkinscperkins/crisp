@@ -23,7 +23,7 @@ of the struct `element-type` will be passed to the predicate function. Note that
 the predicate function `#(T => bool`) must match the type of the struct property and both be
 determinable at compile time. (ie the exact property being referenced can't be a runtime variable).
 
-### possible implementation of filter
+#### possible implementation of filter
 ```
 ;; -- filter --
 (defmacro filter (input-vec predicateF result-vec)

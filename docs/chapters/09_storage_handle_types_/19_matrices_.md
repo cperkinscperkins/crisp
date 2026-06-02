@@ -8,7 +8,7 @@ Matrices are simply 2D tensor views. The type alias `matrix` is defined to make 
 
 Additionally, there are special functions specifically for matrices.
 
-### col
+#### col
 
 `(col x:ulong A:matrix) => 1D tensor`
 
@@ -16,7 +16,7 @@ Given an index `x` and a 2D `tensor` matrix `A`   this returns a 1D `tensor` of 
 
 Note that the `tensor` (aka `vector`) that is returned will have `:align :strided`, regardless of the original `:align` of the matrix. 
 
-### row
+#### row
 
 `(row y:ulong A:matrix) => 1D tensor` 
 
@@ -24,14 +24,14 @@ Given an index `y` and a 2D `tensor` matrix `A`   this returns a 1D `tensor` of 
 
 Note that the `tensor` (aka `vector`) that is returned will have `:align :strided`, regardless of the original `:align` of the matrix. 
 
-### num-cols / num-rows
+#### num-cols / num-rows
 
 `(num-cols A:matrix) => ulong`
 `(num-rows A:matrix) => ulong`
 
 These utility functions return the number of columns or rows of the matrix.
 
-### get-layout
+#### get-layout
 ```
 (get-layout M:matrix) => :row-major or :col-major or :other-layout
 ```
@@ -39,7 +39,7 @@ These utility functions return the number of columns or rows of the matrix.
 `get-layout` analyses the strides of some 2D matrix and returns a value from the
 `matrix-layout` enumeration. This can be `:row-major`, `:col-major` or `:other-layout`
 
-### transpose
+#### transpose
 
 ```
 (transpose M) ; returns a new tensor, leaving M alone.
@@ -53,7 +53,7 @@ Note that the while data is not moved it does mean that a "row major" matrix wil
 
 The matrix returned by `transpose` will always be `:align :strided` , regardless of the original matrix argument `:align`.
 
-#### transpose! notes
+##### transpose! notes
 
 `transpose!` mutates the matrix in place. This can only work for matrices that are `:align :strided`. 
 Attempting to call `transpose!` on a matrix with any other `:align` is a compiliation error.
@@ -63,7 +63,7 @@ It does NOT change the transposition of the matrix by the caller.
 
 > Implementation Note: consider dropping transpose!
 
-#### understanding transposition
+##### understanding transposition
 Here is a quick example with a 2x3 matrix:
 ```
         Col 0   Col 1   Col 2
@@ -106,7 +106,7 @@ Possible Implemenation
 
 ```
 
-### load-tile-coords / store-tile-coords
+#### load-tile-coords / store-tile-coords
 
 ```
 (load-tile-coords source-tensor dest-tile (... tensor-row-y tensor-col-x) &key (identity 0) transpose)
@@ -141,7 +141,7 @@ Remember dest-tile should be `:local` memory.
 
 
 
-### convert-layout
+#### convert-layout
 
 ```
 (convert-layout source-M dest-M choice) ; conversion is loaded into dest-M, leaving source-M alone

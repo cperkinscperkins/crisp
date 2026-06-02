@@ -15,7 +15,7 @@ higher order function arguments that must be thread level (only) operations.
 
 
 
-### `(declare (grid-level))`
+#### `(declare (grid-level))`
 
 `grid-level` is a declaration that tells the compiler (and other users) that a particular `progn` is a grid level
 context. If you are writing a `defmacro` that is doing grid level coordination, then be sure to include
@@ -30,7 +30,7 @@ This declaration isn't just busywork. With it in place, the compiler will check 
 that it isn't incorrectly nested or invoked by thread level functions. Otherwise it will almost certainly 
 result in incorrect calculations and/or slow performance.
 
-### atomic ops
+#### atomic ops
 
 Atomic operations (see below) performed on `:global` memory are, by fiat, grid level operations. If your
 `defmacro` uses any atomic operation on `:global` memory, be sure to `(declare (grid-level))`.  

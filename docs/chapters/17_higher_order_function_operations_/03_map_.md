@@ -1,7 +1,7 @@
 # map ✅
 
 
-### map-stride
+#### map-stride
 `map-stride` uses Grid Stride to visit every element of some source vector or tensor and pass it
 as an argument to a provided function, and then store it at the same position in some destination vector or tensor.
 

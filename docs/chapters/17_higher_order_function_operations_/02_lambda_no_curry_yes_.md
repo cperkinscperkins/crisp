@@ -6,7 +6,7 @@ not supported. This is because they enable lexical closures (capturing variables
  difficult to map efficiently to GPU hardware.  
 The Common Lisp `labels` macro is similarly not supported for this same reason.
 
-### `curry`
+#### `curry`
 
 ```
 (curry #'someFunction <uniform-arg0> ...)
@@ -32,7 +32,7 @@ for transpilation, create a new uniquely named inline C function that takes each
 and use that instead of original 
 -->
 
-### `compose`
+#### `compose`
 
 ```
 (compose #'secondFunction #'firstFunction) => #'combinedFunction
@@ -63,7 +63,7 @@ so we use `compose` to combine the lookup with the check for even number.
 
 ```
 
-### `ident`
+#### `ident`
 
 ```
 (ident x) => f where f(anything) => x

@@ -6,7 +6,7 @@
 `workgroup-stride` is the primary workhorse for computations within a single workgroup. It is designed to walk the coordinates of a `:local` or `:private` tensor (a "tile") using the full parallel resources of the workgroup. 
 
 
-### The "One Coordinate" Binding
+#### The "One Coordinate" Binding
 The `<bindings>` always represent the local coordinates within the `<tile-tensor>`. If you are striding a $16 \times 16$ tile, the bindings will range from $(0,0)$ to $(15,15)$. The macro ensures that:
 - Coalesced Access: The contiguous dimension of the tile is automatically mapped to the fastest hardware dimension (the warp lane) to prevent bank conflicts.
 - Cooperative Execution: If the tile is larger than the physical workgroup size, the macro handles the serial-parallel tiling required to visit every element.
@@ -24,16 +24,16 @@ Example: Simple cooperative increment
     (store-tile my-tile big-matrix)))
 ```
 
-### Hardware Context Helpers
+#### Hardware Context Helpers
 
 Instead of "modes" or "tags" that change how the stride works, Crisp provides helper macros that can be used inside the body of a `workgroup-stride` to access hardware-level information. This allows you to write warp-aware logic without losing your place in the tensor's coordinate system.
 
-### HelperDescription
+#### HelperDescription
 - `(warp-id)` Returns the index of the current warp within the workgroup.
 - `(warp-lane)` Returns the index of the current thread within its warp (e.g., 0–31).
 - `(warp-count)` Returns the total number of warps in the current workgroup. 
 
-### Example: Warp-Aware Logic
+#### Example: Warp-Aware Logic
 This pattern is useful for algorithms where only one "representative" thread per warp should perform a specific task, such as updating a shared counter or coordinating a sub-group shuffle.
 
 ```
@@ -46,7 +46,7 @@ This pattern is useful for algorithms where only one "representative" thread per
     (atomic-inc! (some-shared-counter) 1)))
 ```
 
-### Implementation Notes
+#### Implementation Notes
 
 - Implicit Synchronization: To maintain maximum performance, `workgroup-stride` does not inject a `(local-barrier)` at the end of its block. If your logic requires all threads to finish a pass before moving to the next, call `(local-barrier)` explicitly.
 - Arity Consistency: The number of `<bindings>` must match the arity of the `<tile-tensor>`.

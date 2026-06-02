@@ -80,7 +80,7 @@ generally far simpler to use one of the other versions and let Crisp set up the 
 
 
 
-### Overloading Element Access
+#### Overloading Element Access
 
 It is uwise to overload `~` for all tensors. Use `def-derived-type` when overloading.
 
@@ -103,7 +103,7 @@ It is uwise to overload `~` for all tensors. Use `def-derived-type` when overloa
 ```
 
 
-### Mutable Strides ?
+#### Mutable Strides ?
 
 The strides are mutable. Normally this is done (safely and correctly) by functions like `transpose` but 
 despite the horrible problems that might occur if done incorrect, we are making it available to you.
@@ -117,7 +117,7 @@ despite the horrible problems that might occur if done incorrect, we are making 
 
 NOTE: removing 'identity-tensor' for now.
 
-### identity-tensor
+#### identity-tensor
 
 This is a specialization of the tensor, but is not a true tensor in that does NOT require
 any vector data.  It is immutable. It is a Kronecker delta tensor. Every component is 0, except those

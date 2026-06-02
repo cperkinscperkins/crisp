@@ -91,7 +91,7 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
     ...)
 ```
 
-### Lazy Monomorphic Generation
+#### Lazy Monomorphic Generation
 
 Use of `&optional` and `&key` leads to function generation for
 each option.  In other words, an optional declaration like so:

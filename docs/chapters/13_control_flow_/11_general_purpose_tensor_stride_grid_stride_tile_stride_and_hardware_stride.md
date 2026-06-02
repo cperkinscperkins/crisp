@@ -13,7 +13,7 @@ any arity and has helper macros to move between the problem space vector , the i
 
 
 
-### Simple Safe tensor-stride
+#### Simple Safe tensor-stride
 ```
 (tensor-stride <tensor> (<bindings>) ...) 
 
@@ -30,7 +30,7 @@ otherwise an extra calculation at runtime might be required. Note that even thou
 a compile-time requirement for all tensors, incomplete types at function boundaries might make that indeterminable.  
   
 
-### Strict tensor-stride
+#### Strict tensor-stride
 ```
 (tensor-stride <tensor> <layout-tag> (<bindings>) ...)
 
@@ -66,7 +66,7 @@ is asserted into the code.
 
 
 
-### Mathematical grid-stride
+#### Mathematical grid-stride
 ```
 (grid-stride (<size-list>) (<bindings>) ...)
 
@@ -78,7 +78,7 @@ problem space by the number of enqueued threads and strides the problem. It trea
 It is how you tell Crisp to "Forget about physical memory for a second. Just generate a virtual 2D grid of 8 million rows and 4 million columns, and march the GPU across it."
 
 
-### tile-stride
+#### tile-stride
 ```
 ;; "safe" variants
 (tile-stride <tensor> (<size-list>) (<bindings>) ...)
@@ -116,7 +116,7 @@ Note that `tile-stride` should nearly always be used with the `:strategy :tiled`
 is how you communicate your tiling expections out to the metadata or hoisting code that runs host side. 
 
 
-### hardware-stride - stride by workgroup or warp.
+#### hardware-stride - stride by workgroup or warp.
 
 ```
 (hardware-stride <tensor>  <hw-tag> (<bindings>) ...)
@@ -135,7 +135,7 @@ Just like `tile-stride`, `hardware-stride` acts as an **outer loop**. Its body e
 
 There are two choices for `<hw-tag>`: `:workgroup-idx` and `:warp-idx`.
 
-#### `:workgroup-idx`
+##### `:workgroup-idx`
 
 With `:workgroup-idx`, the tensor is chunked by the workgroup dimensions. The arity of the tensor and the bindings MUST match the arity of the workgroup enqueue.
 
@@ -150,7 +150,7 @@ With `:workgroup-idx`, the tensor is chunked by the workgroup dimensions. The ar
 
 ```
 
-#### `:warp-idx`
+##### `:warp-idx`
 
 With `:warp-idx`, the tensor is chunked into 1D segments equal to the hardware warp width. Note that if using `:warp-idx`, it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(get-warp-size)`. Otherwise, operations like warp-level reductions could end up deadlocking.
 
@@ -170,14 +170,14 @@ from within a `:warp-idx` hardware-stride.
 
 > Implementation Note: Unlike `tensor-stride`, the chunking variants (`tile-stride` and `hardware-stride`) do not evaluate their bodies per-element. They stride the problem space in block-sized steps. For `hardware-stride`, those steps are driven dynamically by `(get-local-size)` or `(get-warp-size)`. Any element-level computation must be done in an inner loop (like `workgroup-stride`) inside the body.
 
-### Helper Macros
+#### Helper Macros
 
 The helper macros map the tensor coordinates to the other spaces.  These helper macros are
 available when using the `tile-stride` and `hardware-stride` stride macros.
 
 <!-- 
 TILE-COORDS REMOVED
-#### `tile-coords`
+##### `tile-coords`
 `tile-coords` always has the same arity as the binding and returns that same number of argumetns.
 These coordinates are within the tile `<size-list>`/`<tile-tensor>`
 
@@ -186,13 +186,13 @@ These coordinates are within the tile `<size-list>`/`<tile-tensor>`
 ```
 -->
 
-#### `tile-indices`
+##### `tile-indices`
 `tile-indices` also matches arity. It returns the index coordinates of the tile
 
 
 <!-- 
 TENSOR-COORDS REMOVED
-#### `tensor-coords` 
+##### `tensor-coords` 
 `tensor-coords` macro takes two arguments. A list of the tile indices followed by a list of the tile coordinates.
 It returns mapping coordinates into the problem space tensor.
 
@@ -201,7 +201,7 @@ It returns mapping coordinates into the problem space tensor.
 ```
 -->
 
-#### `load-tile` / `store-tile`
+##### `load-tile` / `store-tile`
 There are two other helper functions that are present when doing "tileed" striding.  
 They have their own section of the docs below.
 
@@ -215,7 +215,7 @@ NOTE: compiler will use this to DETECT possible deadlocks
        we insert (declare :ragged-edge) or something 
 TODO: figure this out. (declare (convergent)) and friends.
 
-#### `stride-subview`
+##### `stride-subview`
 In the scope of `thread-stride` there is helper function `stride-subview` which returns another `tensor`.
  This `tensor` has the size and dimensions of the `chunkExpr` but is mapped to the current location in the problem space.
 

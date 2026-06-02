@@ -5,7 +5,7 @@
 
 `def-derived-type` defines a NEW type derived from a stated type. The purpose for this is to allow custom overload of functions and properties. Additionally, with `set-derived` the compiler can be instructed to create a type hierarchy between two types.
 
-### def-derived-type
+#### def-derived-type
 
 ```lisp
 (def-enumeration derived-subst :no :equal :descendant :ancestor)
@@ -33,7 +33,7 @@ It's very important to remember that no matter what the substitution behavior is
 
 `def-derived-type` is one of the `def-` constructs that CANNOT be wrapped by `with-template-type`.
 
-### Example
+#### Example
 
 ```
 ;; def-struct makes a new type 'point'
@@ -76,17 +76,17 @@ It's very important to remember that no matter what the substitution behavior is
 Crisp employs "multiple dispatch" for overloaded functions, determined at compile time. It does not support runtime dynamic dispatch of any sort.
 
 
-### Limitation: single pass semantics required
+#### Limitation: single pass semantics required
 
 - The "original" type that the new type is deriving from MUST exist already. This is a requirement even when compiling multipass.  This prevents "type loops" or "type recursion", which are disallowed.
 - enumerations can not be used as an "original" type.
 
 
-### make-XXXX
+#### make-XXXX
 
 The `make-` function is automatically generated for structural types (structs, vectors, records). It is NOT generated for scalar derived types (like those derived from `int` or `float`); use `as-<derived>` for those instead. `make-<derived-type-name>` accepts the same arguments as the original type (`make-<original-type>`).
 
-### as-XXXX
+#### as-XXXX
 
 When a derived type is declared, then two type casting functions are automatically created. `as-<original>` which can be used to cast a value of the derived type as if it is the original, and `as-<derived>` which can be used to cast an original as the derived.
 
@@ -99,7 +99,7 @@ When a derived type is declared, then two type casting functions are automatical
 
 ```
 
-### is-XXXX?
+#### is-XXXX?
 
 When a derived type is defined, a matching type constraint function is also automatically defined. `is-<derived>?` evaluates to true if the type in question matches the new derived type.
 
@@ -117,7 +117,7 @@ Note that this does NOT accept substitutions, regardless of `:subst`. Use `is-su
 ```
 
 
-### Derived Types and Arithmetic Operations
+#### Derived Types and Arithmetic Operations
 
 `def-derived-type` can be used with numeric types. There are several use cases for this (like a custom float that is "meters" and is not interchangeable with other floats or perhaps not with "yards").
 
@@ -178,7 +178,7 @@ When mixing `:ancestor` (Dominant) and `:descendant` (Recessive) types that shar
 ```
 
 
-### set-derived
+#### set-derived
 
 `(set-derived ancestor-type descendant-type)`
 
@@ -191,7 +191,7 @@ The syntax requires the **Ancestor** type first, followed by the **Descendant** 
 
 This declaration automatically generates the `as-<ancestor>` and `as-<descendant>` casting functions, allowing explicit conversion between the two. Implicitly, the Descendant can usually be passed where the Ancestor is expected (equivalent to the `:descendant` substitution rule in `def-derived-type`).
 
-#### Requirements & Validation
+##### Requirements & Validation
 
 Since `set-derived` is inherently unsafe (mapping memory of one type to another), the compiler enforces strict rules:
 
@@ -218,7 +218,7 @@ As mentioned, the two structs must have compatible shape WHEN FLATTENED . This i
 Shape compatibility is evaluated on the flattened struct layouts: nested structs are recursively expanded to their scalar members. For each data member in the ancestor, the corresponding member in the descendant must have both the same type and the same byte offset . Struct-level trailing padding is not part of the comparison.
 
 
-### Branded Types
+#### Branded Types
 
 Using `def-derived-type` and `:ancestor` it is possible to create two types (for example `meters` and `yards`) that are both essentially `float` and can interoperate with `float`s but cannot interoperate with one another. You can't accidentally add or multiply `meters` and `yards` 
 because the type system disallows it. 
@@ -227,7 +227,7 @@ because the type system disallows it.
 
 Branded types support the `:subst` key just like `def-derived-type`.  This mean that how, exactly, these types can and cannot interoperate with each other and with other types is yours to decide.
 
-#### brand
+##### brand
 ```
 (brand <new-name> <type-expr> &key subst (enforce :diff))
 ```
@@ -267,7 +267,7 @@ In the example above, we see that `index-t` is declared as a derived type inside
 `someStruct` then proceeds to use that type for the declaration of two of its properties (`length` and `cur-idx`).  `find-location` declares its return type to be an "index-t of S" with the `(index- S)` form.  It binds `len` to `(length~ S)` which means `len` is also of type "index-t of S".
 
 
-### What's with all this derived and branded types? Who is this for?
+#### What's with all this derived and branded types? Who is this for?
 
 If you come to Crisp from a CUDA, C++, or OpenCL background then much of this derived type stuff 
 probably seems foreign and unusual to you. Crisp types are organized in a DAG, not a tree. The 
@@ -291,7 +291,7 @@ They CAN be extended by nesting them in a def-record. Will update.
 
 
 
-### Extending Views
+#### Extending Views
 
 If you want to extend a type like `vector` with your own type that has extra data members, you can use `def-struct` in conjunction with `set-derived` for this.
 

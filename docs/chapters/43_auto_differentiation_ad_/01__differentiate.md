@@ -5,7 +5,7 @@ The `--differentiate` flag enables the Crisp Automatic Differentiation (AD) engi
 
 
 
-### Requirements for Differentiable Kernels
+#### Requirements for Differentiable Kernels
 
 To be compatible with `--differentiate`, a kernel must meet the following criteria:
 
@@ -23,13 +23,13 @@ To be compatible with `--differentiate`, a kernel must meet the following criter
   for how each is paired with its adjoint.
 
 
-### The Generated Gradient Signature
+#### The Generated Gradient Signature
 
 The backward kernel's signature mirrors the forward kernel's, with each
 differentiable parameter paired to a corresponding adjoint. The shape of that
 pairing depends on the parameter's type.
 
-#### Scalar primals
+##### Scalar primals
 
 For a forward kernel with scalar inputs and outputs:
 
@@ -47,7 +47,7 @@ For a forward kernel with scalar inputs and outputs:
 - Outgoing adjoints (A_grad, B_grad): The computed input gradients,
   populated via the chain rule.
 
-#### Records at the kernel boundary
+##### Records at the kernel boundary
 
 A record parameter is destructured into one `&out` grad-cell per leaf field.
 Nested records recurse field-by-field. Given:
@@ -63,7 +63,7 @@ the generated backward exposes one grad-cell per primitive leaf:
 (def-kernel foo_grad (P C C_grad &out P.x_grad P.y_grad) ...)
 ```
 
-#### Structs at the kernel boundary (Shadow Structs)
+##### Structs at the kernel boundary (Shadow Structs)
 
 Unlike records, structs are *not* destructured — they cross the boundary as a
 single value. To carry their gradient, the compiler auto-mints a paired
@@ -89,20 +89,20 @@ where `P_adj` is `(cell Point_ADJ :address-space :global)`. The backward
 walk writes per-field adjoints into the shadow's fields, then a final
 `set!` lands the assembled shadow.
 
-#### Tensors and cells at the kernel boundary
+##### Tensors and cells at the kernel boundary
 
 Tensor and cell primals are paired by a same-shape grad-handle whose element
 type is the promoted adjoint type. Accumulation into indexed slots uses
 atomic-add by default (or `set!` under `one-thread-per-element`).
 
 
-### Memory Safety and Accumulation
+#### Memory Safety and Accumulation
 
 Because multiple threads may contribute to the gradient of a single input element (a common occurrence in "scatter" operations), the generated gradient kernel defaults to using Atomic Operations for all writes to `&out` gradient handles. This ensures mathematical correctness even in complex, non-injective mappings.
 
 However, if the kernel strategy is declared as `one-thread-per-element`, then the generated gradient kernel will use `set!` instead of atomic operations.
 
-### Sub-Function Differentiation
+#### Sub-Function Differentiation
 
 `def-function`s called from a differentiable kernel are themselves
 differentiated. Each receives a `_GRAD` companion whose signature uses a
@@ -124,11 +124,11 @@ multi-value return path.
 
 
 
-### Implementation Note for the User
+#### Implementation Note for the User
 
 The `--differentiate` flag significantly increases the complexity of the generated SPIR-V, as it effectively doubles the logic and may increase register pressure to store intermediate "primal" values. Use the `check-registers` and `check-divergence` flags in conjunction with `--differentiate` to ensure your adjoint kernels remain performant on your target hardware.
 
-### Output File Naming
+#### Output File Naming
 
 When using the `--differentiate` flag, the compiler will append `_grad` to the output filename. For example, if compiling `my-kernel.crisp` with `--differentiate` and the `--ir-target=spv` flag, the output file will be named `my-kernel_grad.spv`.
 

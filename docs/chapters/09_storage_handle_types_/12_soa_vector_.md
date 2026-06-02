@@ -28,7 +28,7 @@ struct Points {
 
 
 
-### Alignment & Layout
+#### Alignment & Layout
 Crisp supports three alignment schemes for `soa-vector`: `:compact`, `:compact-offset` and `:strided`.
 
 `:compact` means the `soa-vector` is a primary allocation. The base pointer is 16-byte aligned. The internal arrays are perfectly contiguous and concatenated back-to-back. The compiler will only insert padding between the arrays if required to satisfy the natural alignment of the next element type.
@@ -37,7 +37,7 @@ Crisp supports three alignment schemes for `soa-vector`: `:compact`, `:compact-o
 
 `:strided` means the `soa-vector` is a view or a slice. The internal arrays are no longer guaranteed to be perfectly contiguous, and accesses will rely on dynamic strides.
 
-### Base Properties
+#### Base Properties
 
 A `soa-vector` has these properties:
 
@@ -48,7 +48,7 @@ A `soa-vector` has these properties:
 | parent       | storage      | address of"parent storage |
 | offset       | ulong        | offset into parent. |
 
-### Struct Properties
+#### Struct Properties
 
 Additionally,  `soa-vector` also inherits the properties of their struct element type. 
 
@@ -63,19 +63,19 @@ Example
     ...)
 ```
 
-#### `XXXX~` with index.
+##### `XXXX~` with index.
 
 In the example above, `y` is gotten via `(y~ sv 9)` which means it is the value of the y vector at index 9.
 
 Owning to memory coalesence, when the index is a thread id from parallel threads,  this will be very high-performance access. 
 
-#### `XXXX~` without index
+##### `XXXX~` without index
 
 In contrast, `(x~ sv)` returns the ENTIRE VECTOR of X as a standard vector Storage Handle. The returned vector inherits the alignment of the `soa-vector`. If `sv` is `:compact`, `x-vec` will be `(vector long :compact :length 20)`, allowing for ultra-fast vectorized loads. If `sv` is `:strided`, the resulting vector will also be `:strided`. 
 
 Its primary purpose is to pass a single, contiguous stream of data to another high-performance primitive, like `reduce-vec`
 
-### Element Access
+#### Element Access
 
 The struct properties (see above) with index arguments are the primary way of accessing `soa-vector` data.
 If you want a particular struct as singular construct, it can be gotten with `get-struct`.  Note that this requires
@@ -84,12 +84,12 @@ creation of a new structure to hold the value.
 
 `soa-vector` does NOT support the `~` or `~ref~` element access functions like a regular `vector`.
 
-### Helper Functions
+#### Helper Functions
 
 Like `vector`, `soa-vector`  supports `element-type` and `bytes` helpers.
 `(bytes my-soa-vec)` returns the total memory footprint, which is the sum of the sizes of all its tightly-packed component arrays, plus any inter-array alignment padding required by the C ABI. Remember, the `soa-vector` is a view into some storage. Use `(byte-size~ (parent~ someSoaVec))` to get the full storage bytes.
 
-### Member Data Rules
+#### Member Data Rules
 
 `soa-vector` are ONLY defined over structs (see `def-struct` above). And any candidate struct type can only consist of either
  - Scalar types (`int`, `float`, etc)
@@ -98,13 +98,13 @@ Like `vector`, `soa-vector`  supports `element-type` and `bytes` helpers.
 Unlike regular structs, they cannot include other structs or views.
 This rule is in place to prevent overly complex nested SoA layouts and to ensure a simple, predictable memory model that maps efficiently to the hardware.
 
-### Defining 
+#### Defining 
 
 ```
 (soa-vector element-type &key address-space align length)
 ```
 
-### Creating
+#### Creating
 
 `soa-vector` have parallel creation routines to `vector` and abide by the same requirements.
 
@@ -112,7 +112,7 @@ This rule is in place to prevent overly complex nested SoA layouts and to ensure
 
 
 
-### Converting between SoA and AoS vectors.
+#### Converting between SoA and AoS vectors.
 
 If you put yourself in a situation where you need to convert an AoS `vector` to an SoA `soa-vector`, 
 or vice versa, then it might be time to reflect on the decisions in your life that have
@@ -156,7 +156,7 @@ Possible Implementation
 
 
 
-### C++ / Python interop
+#### C++ / Python interop
 
 The hoisting code that the compiler generates includes helper functions that give the same property-to-vector and property-index-to-element 
 access that Crisp enjoys, making it easy to initialize or inspect data and interoperate with Crisp kernels.

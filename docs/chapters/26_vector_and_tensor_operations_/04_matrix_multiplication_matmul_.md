@@ -6,7 +6,7 @@ Each element in the resulting matrix is the dot product of a row from the first 
 It's the fundamental operation for transforming data in linear algebra, used for tasks like 
 rotating and scaling vectors in 3D graphics or applying weights in a neural network.
 
-### matmul
+#### matmul
 
 `(matmul A B)`
 
@@ -20,7 +20,7 @@ But conversely, multiplying a `3x4` by a `2x3` matrix is NOT allowed because
 the inner dimension (`4` and `2`) are not equal.
 
 
-### OPTIMIZING DEMONSTRATION
+#### OPTIMIZING DEMONSTRATION
 
 Below are possible implementations of dot product and `matmul`
 

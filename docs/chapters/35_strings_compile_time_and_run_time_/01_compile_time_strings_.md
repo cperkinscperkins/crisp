@@ -6,7 +6,7 @@ Most strings in Crisp are compile time. They follow the Common Lisp parsing rule
 
 The are mostly output into the hoisting example code.
 
-### `string-concat`
+#### `string-concat`
 
 `(string-concat <Expr1> <Expr2> ... <ExprN>) => string`
 

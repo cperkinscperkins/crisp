@@ -7,7 +7,7 @@ The sister to `exclusive-scan-workgroup`, its output at any index is the sum of 
 Output: #(0 1 1 2 3 3)
 ```
 
-### Possible Implementation
+#### Possible Implementation
 
 This is a possible implementation of `exclusive-scan-workgroup` realized via a Belloch Scan:
 

@@ -37,15 +37,15 @@ markdown_extensions:
 
 exclude_docs: |
   chapters/
+  benchmarks.md
+  call_graph.md
+  crisp-curios.md
+  defmacro-utils.md
+  reference.md
+  tests.md
+  criticsms.md
+  elevator_pitches.md
 
 nav:
   - "Welcome": "index.md"
   - "Language Specification": "ideal_001.md"
-  - "The Blueprint Philosophy": "crisp-curios.md"
-  - "Crisp Codebase Reference": "reference.md"
-  - "Crisp Testing Guide": "tests.md"
-  - "Call Graph": "call_graph.md"
-  - "Defmacro Utilities": "defmacro-utils.md"
-  - "Benchmarks": "benchmarks.md"
-  - "Criticisms": "criticsms.md"
-  - "Elevator Pitches": "elevator_pitches.md"

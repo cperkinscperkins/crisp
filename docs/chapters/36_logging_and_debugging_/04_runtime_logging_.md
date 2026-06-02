@@ -1,7 +1,7 @@
 # Runtime Logging ⚠️
 
 
-### `r-t-workgroup-output-if`
+#### `r-t-workgroup-output-if`
 
 `(r-t-workgroup-output-if <testExpression>  <expr1> ... <exprN>)`
 
@@ -11,7 +11,7 @@ then the the logging occurs in just one of them. Afterwards, kernel execution co
 
 If the compiler flag is not elected, this entire form is compiled away. 
 
-### `r-t-output`
+#### `r-t-output`
 
 ```
 (r-t-output <expr1> ... <exprN>)
@@ -28,7 +28,7 @@ are simply skipped by the compiler.
 In contrast, the variant `r-t-output-0` uses the `when-thread-is 0` guard and so the 
 check and output is only performed in one thread.
 
-#### WARNING - FIREHOSE
+##### WARNING - FIREHOSE
 If `r-t-output` appears loose in your kernel, it could result in thousands of threads simultaneously
 trying to dump strings into a debug buffer. Use the debugging subdivisions to control it (see [Debugging Implementation](#debugging-implementation)), or consider using `r-t-workgroup-output-if` instead, or 
 surroud `r-t-output` in one of the thread guards.

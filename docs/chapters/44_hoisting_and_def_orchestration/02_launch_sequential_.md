@@ -8,7 +8,7 @@
 generated will enqueue them all and prepare a device-side event based synchronization.
 The CPU is free to do other things while the sequence of kernels run, and it does not need to do participate during the sequence.
 
-### launch specification
+#### launch specification
 
 A "launch specification" is simply a kernel _variable_ and the correct number of arguments. eg. `(VADD A B C)` or
 `(VADD _ _ _)` or `(VADD _ B _)` etc

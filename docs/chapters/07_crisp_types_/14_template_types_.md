@@ -50,7 +50,7 @@ Note that automatic numeric type promotion does not occur during template argume
 All arguments passed to a templated function must match the expected type exactly, 
 or an explicit conversion function (like `to-float`) must be used.
 
-### Syntactic Sugar: `(<T> ...`
+#### Syntactic Sugar: `(<T> ...`
 
 `(with-template-type (T U)`  can get a little long to type and swallow. For that reason,
 Crisp has a bit of syntactic suger that can make them slighly more palatable:
@@ -64,7 +64,7 @@ Borrowing from C++, the type vars can appear between `<  >`  and that expression
 can stand-in for the wordier `with-template-type (T)` .  
 
 
-### XXXX type function
+#### XXXX type function
 
 `with-template-type` AUTOMATICALLY defines a new type expression: XXXXX  for whatever it is wrapping.
 That type expression can be used to specialize the template and return that specific type.
@@ -89,7 +89,7 @@ Example:
 (move-discrete int float :global) ; that specfic type. 
 ```
 
-#### Incomplete Types
+##### Incomplete Types
 
 Passing `nil` as a type argument when specializing with `XXXX` produces an incomplete type. 
 This can help make interoperation between different functions and structures more flexible.
@@ -114,7 +114,7 @@ all the needed type information is present (or it'll error :-) )
 ```
 
 
-### gen-XXXX
+#### gen-XXXX
 
 `with-template-type` ALSO AUTOMATICALLY defines an expression to get or construct a specialized form
 of whatever it is wrapping.  This is `gen-XXXX` 
@@ -155,7 +155,7 @@ Note that `gen-XXXX` CANNOT instantiate an incomplete type. Passing `nil` as typ
               bit without having to have ALL the info.  A complete type will still need to be provided once
               someone USES the function. -->
 
-#### kernels
+##### kernels
 
 Crisp can template kernels as well. But any kernel that is templated MUST have 
 specializations generated with `gen-XXXX` .  Furthermore, kernel functions must have 
@@ -173,7 +173,7 @@ which is a string name that the compiler should give the kernel.
 (gen-happy_stance int  "happy_stance_i")
 ```
 
-#### kernels from `def-grid-function`
+##### kernels from `def-grid-function`
 
 Very often, especially when writing library code, you will want to
 write some access pattern as a grid function for someone to use in their
@@ -199,7 +199,7 @@ a kernel will be produced if that third string argument is present.
 ```
 
 
-### &optional &key
+#### &optional &key
 
 The `with-template-type` argument list supports `&optional` and `&key` 
 
@@ -211,7 +211,7 @@ The `with-template-type` argument list supports `&optional` and `&key`
   ))
 ```
 
-### type constraints
+#### type constraints
 
 Sometimes we want to declare that a type adheres to some rule or condition. These are called "type constraints"
 and Crisp supports them in conjuction with `with-template-type` and `declare`. We've already had some examples
@@ -236,7 +236,7 @@ Additionally `def-enumeration` and `def-struct` automatically generate a `is-XXX
 
 Lastly, a custom type constraint function can be defined with `def-constraint` (see below).
 
-#### `type-is` vs. `value-is`
+##### `type-is` vs. `value-is`
 
 The with-template-type form can be used to create generics that are parameterized by types (e.g., T which could be `int` or `float`) or by compile-time values (e.g., A which could be `:strided` or `:compact`). Crisp provides two corresponding constraint checks:
 

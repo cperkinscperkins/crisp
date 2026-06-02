@@ -12,7 +12,7 @@ The flip side benefit of this is that expressions like this:
 ```
 are possible to express AND and are performant. There is no actual "function call" to `op-fma`. 
 
-### Runtime Function Variables forbidden
+#### Runtime Function Variables forbidden
 
 While it is possible to assign a variable to a #'function, the restrictions on compile time resolveable 
 are still in place. 

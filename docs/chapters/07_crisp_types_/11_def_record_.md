@@ -23,7 +23,7 @@ Though there is no equivalent of `soa-vector` for records.
 
 
 
-### Notes
+#### Notes
 
 - Importantly, types defined by `def-record` cannot be wrapped in Storage Handles.
 - Both records and structs can be passed directly to kernels on the kernel boundary. 

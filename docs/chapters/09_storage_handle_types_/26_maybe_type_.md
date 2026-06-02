@@ -8,7 +8,7 @@ Crisp provides a "maybe" type which gives developers a simple way to define and 
 The maybe type automatically interoperates with the electable kernel logging mechanism, 
 helping both correctness and debugability.
 
-### maybe and result
+#### maybe and result
 
 `maybe` is a type expression that can wrap other types.  
 `maybe` means that if it has no error, the function will return a value of that type.
@@ -45,7 +45,7 @@ result or error.
   
 ```
 
-### let-maybe
+#### let-maybe
 
 `let-maybe` is a binding environment that makes working with `maybe` types much easier.  
 ```
@@ -81,7 +81,7 @@ When using `let-maybe`, while you are on the "happy path" of the bindings and th
 
 `let-maybe` has only one `:Err` escape for all of its bindings. If you need more, consider using `or-else` around an individual assignment. See below.
 
-#### compare to `let`
+##### compare to `let`
 
 Below we use `let` instead of `let-maybe`.  Note that this will NOT compile. This is because, unlike `let-maybe`, 
 the regular `let` doesn't guard and unwrap the maybe values.
@@ -104,7 +104,7 @@ guard and unwrap a single `maybe` type.
 
 
 
-### a note about thread divergence
+#### a note about thread divergence
 
 In the examples above (`div-safe, math1, math-2`) there are divergences being introduced into the flow of the kernel execution.
 
@@ -127,12 +127,12 @@ and `let-maybe` result in the minimal amount of stall and divergence.
 
 
 
-#### multiple return values
+##### multiple return values
 
 `maybe` and `result` support multiple return values. For example:  `(maybe int myVecType)`  `(result :OK someInt someVec)`
 
 
-### Guard: or-else
+#### Guard: or-else
 
 `or-else` is a macro that takes a maybe and returns either 
 its success value(s) or some other value(s) of the same type.

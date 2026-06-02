@@ -37,7 +37,7 @@ and is used by many of the other reductions. Lastly `reduce-to-warp` is a thread
 that is special case and very fast. It is used by `reduce-to-workgroup`. 
 
 
-### optional scratch vector arguments.
+#### optional scratch vector arguments.
 
 Some of the reduce functions accept `&optional` arguments for local and global scratch vectors.  
 These vectors are consistently sized relative the warp, workgroup and global thread count. 
@@ -45,7 +45,7 @@ If not provided Crisp will generate the scratch memory for you.
 
 
 
-### reduce-to-warp
+#### reduce-to-warp
 
 `(reduce-to-warp someFunction <someVar> identity &optional (active-threads (get-warp-size)) )`
 
@@ -99,7 +99,7 @@ Possible Implementation:
 
 
 
-### reduce-to-workgroup
+#### reduce-to-workgroup
 
 `(reduce-to-workgroup someFunction <someVar> identity &key return-vec local-scratch-vec message )`
 
@@ -110,7 +110,7 @@ In addition to `someFunction` , `<someVar>` and `identity` it also accepts two `
 
 Like `reduce-to-warp` this is NOT a grid level operation and it can be used in a wide variety of contexts and situations.
 
-#### return-vec
+##### return-vec
 The `:return-vec` is a vector that will store the return results (if desired).  This is a vector of the same
 element type as `<someVar>`. Its address space MUST be `:global` and it's size is the number of workgroups 
 which can be calculated as `M` where `M = global_work_size / local_work_size`.   
@@ -118,12 +118,12 @@ If the `:return-vec` is not provided, the result is not preserved in memory. But
 finishes, `<someVar>` will be the result of the reduction in its same workgroup. So it is usable if your
 next operations can be performed within the workgroup.
 
-#### local-scratch-vec
+##### local-scratch-vec
 The `:local-scratch-vec` key.  If not provided, Crisp will generate it for you.
 If you wish to provide it, it should be a `vector` that is writeable local memory. 
 Its size should be the number of warps in a single workgroup (ie `sz = local_work_size / (get-warp-size)` ). `(get-warp-size)` is usualy 32. 
 
-#### message
+##### message
 The `:message` will be applied to the creation of the `:local-scratch-vec` if Crisp is generating it on your
 behalf.  This can help inform the hoisting code for what the extra scratch memory is needed.
 
@@ -183,7 +183,7 @@ Possible Implementation
 
 ```
 
-### reduce-to-1-second-stage
+#### reduce-to-1-second-stage
 
 `(reduce-to-1-second-stage someFunction <someVar> identity &out final-result &optional localScratchVec globalScratchVec)`
 
@@ -195,7 +195,7 @@ Also this routing has a restriction in that the number of workgroups MUST NOT BE
 violated, this routine will runtime assert. However, remember that runtime asserts are only observable when 
 the debug logging option has been elected when compiling. 
 
-#### optional scratch vectors
+##### optional scratch vectors
 This routine accepts two optional arguments.  `localScratchVec` and `globalScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
@@ -261,7 +261,7 @@ Possible Implementation
                     
 ```
 
-### reduce-to-1-atomic
+#### reduce-to-1-atomic
 
 `(reduce-to-1-atomic someFunction <someVar> identity &out return-vec &optional localScratchVec)`
 
@@ -279,7 +279,7 @@ that have `atomic-XXXX!` counterparts.
 
 It is a compilation error to use it with any other operation. 
 
-#### optional scratch vector
+##### optional scratch vector
 This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
@@ -314,7 +314,7 @@ Possible Implementation
       (funcall atomic-op (~ ,return-vec 0) ,someVar)))) 
 ```
 
-### reduce-to-1-cas
+#### reduce-to-1-cas
 
 `(reduce-to-1-cas someFunction <someVar> identity &out return-vec  &optional localScratchVec)`
 
@@ -326,7 +326,7 @@ Unlike `reduce-to-1-atomic` , which only works with a few operations, `reduce-to
 It does this via atomic compare and swap (via `atomic-binop!`) which, while flexible, might not always be the most performant solution.
 
 
-#### optional scratch vector
+##### optional scratch vector
 This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
@@ -360,7 +360,7 @@ Possible Implementation
       (atomic-binop! (~ ,return-vec 0) ,someFunction ,someVar))))
 ```
 
-### reduce-to-1-cont
+#### reduce-to-1-cont
 `(reduce-to-1-cont someFunction <someVar> identity continuation-kernel-name &optional globalScratchVec localScratchVec)`
 
 `reduce-to-1-cont` is quite different than the other reduction macros.  It performs the first part of a reduction,
@@ -378,7 +378,7 @@ Also note that the `reduce-to-1-cont` macro requires that both `someFunction` an
 The compiler will emit and error if it cannot identify them.
 
 
-#### optional scratch vectors
+##### optional scratch vectors
 This routine accepts two optional arguments.  `localScratchVec` and `globalScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.

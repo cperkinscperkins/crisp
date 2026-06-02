@@ -52,7 +52,7 @@ So, yes, it can appear _IN_ a declare, but not as a top level directive.
  return-type-of | `(return-type-of #'addInts)` | Yes | No | T
  -->
 
-### `type`
+#### `type`
 `(declare (type a b c double))`
 `type` can be used to declare the type of parameters or variables. Note that it is
 variadic and if multiple expressions are of the same type they can simply be listed with the
@@ -60,10 +60,10 @@ type itself being in the last position.
 
 There are other ways of declaring variable types (arrows form, colon join). 
 
-### `return-type`
+#### `return-type`
 `(declare (return-type int double))`
 
-### arrow form
+#### arrow form
 
 ```
 #'(int int => long)

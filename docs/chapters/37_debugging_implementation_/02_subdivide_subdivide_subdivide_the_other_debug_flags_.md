@@ -5,7 +5,7 @@ Three debug flags govern subdivision by scope, target, and call site. Two more f
 let you select which workgroups or warps are participating in the logging, and the
 logging mode.  That's a lot of terms, but the whole system is pretty straightforward.
 
-### --logging-scope
+#### --logging-scope
 
 `--logging-scope=spread|dedicated`
 
@@ -15,7 +15,7 @@ But if the scope is "spread", then the buffer is evenly split by the number of w
 
 Default is `spread`.
 
-### --logging-target
+#### --logging-target
 
 `--logging-target=workgroup|warp`
 
@@ -27,7 +27,7 @@ of the buffer.
 
 Default is `workgroup`
 
-### --logging-by-call-site
+#### --logging-by-call-site
 
 `--logging-by-call-site`
 
@@ -37,7 +37,7 @@ or call `r-t-assert` etc ) up and down the call chain of the kernel are identifi
 Then the debug output buffer is subdivided by call sites.  Thus each one get a little reserved
 output area for itself.
 
-### --logging-mode
+#### --logging-mode
 
 `--logging-mode=first-n|last-n`
 
@@ -48,7 +48,7 @@ IMPORTANT NOTE: `last-n` mode requires the debug log target be warp (`--logging-
 
 Defaults to `first-n`
 
-### --logging-wg-index
+#### --logging-wg-index
 
 `--logging-wg-index=0-N`
 
@@ -57,7 +57,7 @@ This flag is only relevant if the scope is set to dedicated (`--logging-scope=de
 When using dedicated scope Crisp needs to know which workgroup. This flag can be given
 a group number (from 0 up to the number of workgroups).
 
-### --logging-warp-index
+#### --logging-warp-index
 
 `--logging-warp-index=0-N`
 

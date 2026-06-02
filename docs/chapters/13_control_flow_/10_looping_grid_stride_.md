@@ -14,7 +14,7 @@ A grid-stride loop is a common pattern for processing large datasets that are bi
 The Crisp stride primitives are designed to encourage coalesced memory access patterns by default, helping the
 programmer achieve maximum performance.
 
-### IMPORTANT - NO NESTING
+#### IMPORTANT - NO NESTING
 
 Both `loop-vector-stride` and  `tensor-stride` operations are "grid level" operations. That is discussed below. Essentially,
 grid level operations cannot nest inside one another. The compiler will error if you attempt to do so.
@@ -25,7 +25,7 @@ cannot be nested.
 
 But a grid-level stride CAN call `workgroup-stride`, which has a "workgroup level" context.  
 
-### `loop-vector-stride` 
+#### `loop-vector-stride` 
 
  `loop-vector-stride` iterates over a vector  using the Grid Stride strategy. 
 This macro is simple, clear and less error prone than trying to roll your own.
@@ -49,13 +49,13 @@ The only way to make `vector_add` faster is to use interleaved memory and kernel
     (set! (~ C i) ( + (~ A i) (~ B i)))))
 ```
 
-### loop-soa-stride
+#### loop-soa-stride
 `(loop-soa-stride soaVec (i) ...)`
 
 `loop-soa-stride` iterates over a `soa-vector` using the Grid Stride strategy. 
 
 
-### strided strategy
+#### strided strategy
 
 As was discussed in [Hoisting and Enqueueing a Kernel](#hoisting-and-enqueing-a-kernel) it is good practice
 to `declare` your kernels global work size expectations and the strategy it hopes to employ.
@@ -63,7 +63,7 @@ to `declare` your kernels global work size expectations and the strategy it hope
 The `:strided` strategy is almost always the correct choice when doing grid strides of various flavors.
 
 
-### grid stride example with explanation.
+#### grid stride example with explanation.
 ```
 ;; -- vector_add --
 (def-kernel vector_add (A B &out C)

@@ -15,7 +15,7 @@ a Grid Stride will also work (see below) and that will be more performant for la
 sized vectors. And most performant of all would be to leverage Data Interleaving (see below), 
 though that requires considerably more effort to orchestrate host side.  
 
-### in-each-thread 
+#### in-each-thread 
 
 `in-each-thread` is a simple macro for binding thread index values over a body of statements. 
 It is useful in lots of different kernels following different strategies. 
@@ -57,7 +57,7 @@ There are three variants for 1D, 2D and 3D .
 ```
 
 
-### in-each-thread-in-group
+#### in-each-thread-in-group
 
 `in-each-thread-in-group` is a simple macro for binding thread index values over a body of statements. 
 It is useful when you want every thread in a workgroup to follow a sequence of steps. 
@@ -69,7 +69,7 @@ There are three variants for 1D, 2D and 3D .
 (in-each-thread-in-group (x y z) ...)   ; 3D  
 ```
 
-### in-each-group
+#### in-each-group
 
 `in-each-group` is another binding, but it binds to the WORKGROUP index. 
 
@@ -80,7 +80,7 @@ There are three variants for 1D, 2D and 3D .
 ```
 
 
-### Size Matters
+#### Size Matters
 
 In the first example above, we used 1024 as the vector size and the matching thread count. That's convenient
 for an example because that number is a multiple of 32 and 64, the most common warp sizes. 

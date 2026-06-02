@@ -156,7 +156,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
     probably need a (TBD ...) and (hoist-comment ...) macro.   Templates?  Gen?  
 
 
-### To Do (SHORT)
+#### To Do (SHORT)
 - [x] FFT
 - [x] Radix Sort
 - [x] Debugging Story
@@ -200,7 +200,7 @@ FUNCALL vs DIRECT USE. -- Let's try for direct use?  funcall was always confusin
       There is a REAL need here. Data interleaving has a lot of reqs.  So setting up a sample might 
       be fire.
 
-### SHORTEST
+#### SHORTEST
 [x] Entrypoint
 [x] Strings (too much handwaving)
 [x] mapping and composition

@@ -27,7 +27,7 @@ See the sub-section on "type constraints" above.
 
 Crisp has some functions that can help you define your own type constraints:
 
-### type-has-prop?
+#### type-has-prop?
 
 `(type-has-prop? someType propName)`
 
@@ -36,7 +36,7 @@ with `(<propName>~ obj)`
 e.g.  `(type-has-prop? T 'length)` 
 
 
-### has-overload?
+#### has-overload?
 
 `(has-overload? someF someSignature)`
 
@@ -44,7 +44,7 @@ evaluates to T/nil if a particular function has an overload of the provided sign
 
 e.g. `(has-overload? #'+ #(float float => float))`
 
-### is-substitutable-for?
+#### is-substitutable-for?
 
 `(is-substitutable-for? substT baseT)`
 

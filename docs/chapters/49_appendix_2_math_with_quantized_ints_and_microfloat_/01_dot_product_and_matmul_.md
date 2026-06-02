@@ -92,7 +92,7 @@ These dot product and matmul implementations work for ALL types.
 -->
 
 
-### max-pool
+#### max-pool
 
 The `max-pool` algorithm requires `max` which is not supported by `microfloat-block` so
 this algorithm only works with regular floats and quantized ints.
@@ -136,7 +136,7 @@ It works by sliding a "window" (usually 2x2) across the input matrix and picking
 ```
 
 
-### Average Pool
+#### Average Pool
 
 `average-pool` is a downsampling operation, just like `max-pool`. It's a core component of most convolutional neural networks (CNNs).
 
@@ -187,7 +187,7 @@ not a performent version for microfloat blocks.
 ```
 
 
-### ReLU
+#### ReLU
 
 ReLU stands for Rectified Linear Unit. It's the most popular activation function in modern neural networks. Its job is to introduce non-linearity into the network, which is what allows it to learn complex patterns (otherwise, the whole network would just be one giant, simple matmul).
 

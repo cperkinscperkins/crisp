@@ -19,7 +19,7 @@ introduce [def-const-vec](#def-const-vec) and [Side Channels](#side-channel-stor
 
 
 
-### vector literals `#(val0 val1 val2 ... valN)`
+#### vector literals `#(val0 val1 val2 ... valN)`
 
 A `vector` can be literally declared using the Lisp `#(...)` syntax.
 
@@ -36,7 +36,7 @@ The address space for these is `:private`. If you need it, the type function `(l
 makes it easy to exactly declare the type for a vector literal.
 
 
-### reinterpret storage  . `make-XXXX` 
+#### reinterpret storage  . `make-XXXX` 
 
 If you have a Storage Handle type, it can be reinterpreted to another type
 using `make-` with the four Storage Handle types.

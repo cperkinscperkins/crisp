@@ -1,7 +1,7 @@
 # target-has / device-has ✅
 
 
-### `(target-has <prop> &optional might:bool)`
+#### `(target-has <prop> &optional might:bool)`
 `(target-has :fp64 T)`
 
 `target-has` is a compile time ONLY macro that accepts a single keyword symbol for some
@@ -10,7 +10,7 @@ If the compilation target definitively does NOT support it, it is nil.  But if t
 target is flexible (like SPIR-V) where it might or might not be supported,  then if the third
 `might` argument is provided it evalutes to that.  In that case, were `might` not provided, it would be a compilation error.
 
-### `(device-has :fp64)`
+#### `(device-has :fp64)`
 
 `device-has` acts like `target-has` at compile time. If the target definitively supports
 the capability (or not) then the expression evalutes similarly.  But in the event the

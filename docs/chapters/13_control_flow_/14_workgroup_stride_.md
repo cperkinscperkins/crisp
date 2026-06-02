@@ -33,7 +33,7 @@ in the workgroup.
 `:warp-idx` - every thread in a warp will get the same binding, striding by the 
   number of warps in a workgroup.
 
-### coordinate conversion
+#### coordinate conversion
 
 These functions operate analagously to their `thread-stride` counterparts.
 
@@ -46,7 +46,7 @@ These functions operate analagously to their `thread-stride` counterparts.
 -->
                      
 
-### `ceil-pow2`
+#### `ceil-pow2`
 
 For certain operations, like warp reductions, it is imperative that certain activities
 fit completely in a warp and are not "split" across warp divide. 

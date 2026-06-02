@@ -20,7 +20,7 @@ Therefore, there are several storage handle type functions available in CRISP,
 
 
 
-### Simplest - Element Type Only
+#### Simplest - Element Type Only
 
 For tensor, the arity is also required (at minimum).
 
@@ -41,7 +41,7 @@ with a `float` element type. It does not specify any particular alignment, addre
 Note that for the `cell` type, this is the minimum information needed to perform element access (`~`).
 
 
-### Using Keys
+#### Using Keys
 For the most flexibility, keys can be used.
 ```
 ;; for cell
@@ -63,12 +63,12 @@ Example: `(tensor float 4)`  This specifies that we have a hypercube of floats, 
 
 
 
-### Element Type
+#### Element Type
 The element type of a Storage Hnadle must be an element of a fixed size known at compile time.
 It cannot be the type of a function. It cannot be a `def-record`.  Nor can it be a `storage` entity.
 
 
-### Usage
+#### Usage
 
 ```
 ;; -- count --

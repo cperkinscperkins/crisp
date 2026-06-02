@@ -1,20 +1,20 @@
 # Common Debug Flag Configurations ✅
 
 
-### Default (Low Overhead):
+#### Default (Low Overhead):
 - --logging-scope=spread
 - --logging-target=workgroup
 
 Result: The buffer is split evenly, giving every workgroup a small "first-N" log slot.
 
-### Focus on ONE Workgroup:
+#### Focus on ONE Workgroup:
 - --logging-scope=dedicated
 - --logging-target=workgroup
 - --logging-wg-index=42
 
 Result: The entire buffer is given to workgroup 42 for a large "first-N" log.
 
-### Focus on ONE Warp:
+#### Focus on ONE Warp:
 - --logging-scope=dedicated
 - --logging-target=warp
 - --logging-wg-index=42
@@ -22,7 +22,7 @@ Result: The entire buffer is given to workgroup 42 for a large "first-N" log.
 
 Result: The entire buffer is given to warp 0 of workgroup 42 for a "first-N" log.
 
-### "Last-N" (The Champagne Case):
+#### "Last-N" (The Champagne Case):
 - --logging-scope=dedicated
 - --logging-target=warp
 - --logging-wg-index="last"
@@ -31,7 +31,7 @@ Result: The entire buffer is given to warp 0 of workgroup 42 for a "first-N" log
 
 Result: The entire buffer is given to warp 0 of the "last standing" workgroup, operating in "Last-N" (rolling) mode. This is safe because target=warp.
 
-### Call Sites
+#### Call Sites
 - --logging-scope=dedicated
 - --logging-target=workgroup (or warp)
 - --logging-wg-index=42

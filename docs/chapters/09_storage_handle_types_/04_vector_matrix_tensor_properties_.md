@@ -25,7 +25,7 @@ But since these types are just views into some `storage`, their other properties
 
 These property functions for the mutable properties can be overloaded.  They can also be retrieved with `~XXXX~` (which is not overloadable).
 
-### Settable Properties
+#### Settable Properties
 
 None of the `storage` properties can be set. Also, excepting `byte-size`, all the `storage` properties are compile time properties. 
 The `byte-size` property on a `storage` entity is sometimes a compile time property, but usually it's a runtime property. Regardless, it cannot be changed, .
@@ -48,7 +48,7 @@ Use `def-setter` to overload the property setting function.  `~XXXX~` can also b
 Note that it is an error to set the `length` or `offset` of any Storage Handle such that it's `(length + offset) * (sizeof elementType)` is greater
 than the `bytes` of the parent `storage`. But the checking and enforcement for these errors is NOT on by default.
 
-### Pass Through
+#### Pass Through
 
 The `storage` property accessor  `address-space~` can be used directly on any Storage Handle type. 
 There is no reason to do `(address-space~ (parent~ some-vector))`.  Simply doing `(address-space~ some-vector)` is sufficient.

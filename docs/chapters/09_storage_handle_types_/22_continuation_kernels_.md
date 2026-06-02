@@ -22,7 +22,7 @@ offer a unique advantage in specific scenarios: compile-time capture.  This supe
 that BOTH kernel stages can use some same common worker function without having to "pass" that across the
 host-device barrier. 
 
-### `let-kernel`
+#### `let-kernel`
 
 `let-kernel` is a binding special form similar to `labels` in Common Lisp. It defines a new kernel
 function.  You can invoke that kernel in the "last place" of some other kernel.  No operations should
@@ -42,7 +42,7 @@ If using `let-kernel` it is a good practice to `declare` the desired local and g
 hoisting code will be optimal.
 
 
-### Variable Capture
+#### Variable Capture
 It is important to note that `let-kernel` does not create a lexical closure. Any variables from the 
 surrounding scope that are used inside the `let-kernel` body must have their values known at compile time. 
 This allows the compiler to "bake in" or inline these values (such as a constant identity value or a known `#'someFunction`) directly into the new kernel's definition.
@@ -51,7 +51,7 @@ If a value is only known at runtime (for example, a variable passed as an argume
 it cannot be captured. Instead, it must be passed as an explicit argument to the continuation kernel itself.
 
 
-#### `kernel-name` 
+##### `kernel-name` 
 
 `(declare (kernel-name "some_name"))` 
 
@@ -62,7 +62,7 @@ If this declaration is missing, the kernel will take the name of the binding its
 
 Regardless of the method, remember that kernel names have to obey C identifier naming rules.
 
-#### `launch-kernel`
+##### `launch-kernel`
 
 `(launch-kenrnel (continue-later A C ) :copyback (A C))`
 
@@ -94,7 +94,7 @@ example
 and realized. Additionally, it can appear in a `def-orchestration` context (see below).
 
 
-### Continuation Kernel Example
+#### Continuation Kernel Example
 
 ```
 ;; -- two_stage_operation --

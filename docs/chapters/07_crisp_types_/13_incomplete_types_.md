@@ -23,7 +23,7 @@ pants
 
 Incomplete types allow for polymorphism in internal functions. You can write a function that accepts any kind of `pants`, regardless of (compile time) color.
 
-### Rules for Incomplete Types:
+#### Rules for Incomplete Types:
 1. **Allowed in `def-function` and `def-grid-function`**: You may declare parameters with incomplete types in standard functions.
 2. **Forbidden in `def-kernel` and `def-kernel-exact`**: Kernel parameters (the boundary between host and device) MUST have fully specified complete types. The host must know the exact layout and semantics of the data it is passing. Incomplete types cannot be used there.  Note that  `gen-XXXXX`, which can be used to generate a kernel from a grid function, when encountering an incomplete type will use its default value (if specified) or emit a compile error (if no default was specified)
 3. **Compile Time Properties Only**: Runtime member fields are not required in the type declaration anyway, so the question of "complete" vs "incomplete" does not apply to them.

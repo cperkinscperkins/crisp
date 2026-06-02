@@ -63,7 +63,7 @@ not support the `:transformF` key.
 
 > Implementation Note: first order functions are automatically templated and monomorphically specialized in Crisp
 
-### local-barrier
+#### local-barrier
 
 Both `load-tile` and `store-tile` invoke `(local-barrier)` at the completion of their
 operation. This prevents read-after-write and write-after-read race conditions. 
@@ -71,7 +71,7 @@ But be aware, that this also means these functions should NOT appear in conditio
 ( `when`, `if`, `cond`, `unless`) or you will incure a deadlock. The Crisp compiler should
 detect this and emit an error.
 
-### Asynchronous Variants
+#### Asynchronous Variants
 Crisp also provides asynchronous variants of these tile load and store helpers.
 THe `request-XXXX` variants return a `request-token` which can be awaited on with `(await-request <token>)`
 
@@ -92,19 +92,19 @@ THe `request-XXXX` variants return a `request-token` which can be awaited on wit
 
 
 
-### Choosing the Right tile Size
+#### Choosing the Right tile Size
 
 When utilizing `load-tile` and `store-tile`, the shape and size of your `<tile-tile>` directly dictate how the GPU's memory controller fetches data. Choosing the wrong size will result in uncoalesced memory reads and severe performance degradation.
 
 Follow these three guidelines when defining your tile sizes:
 
-#### Capacity: Match the Workgroup Size
+##### Capacity: Match the Workgroup Size
 Because `load-tile` is a cooperative workgroup operation, the total number of elements in your tile should ideally be a perfect multiple of your `local_work_size`. 
 - If your workgroup size is 64 threads, a tile of 64 elements means exactly 1 read per thread. 
 - A tile of 128 elements means exactly 2 reads per thread. 
 - If you pick an arbitrary total like 50 elements for a 64-thread workgroup, 14 threads sit completely idle while the memory controller waits for the active threads to finish. 
 
-#### Warp : Stretch the Contiguous Dimension
+##### Warp : Stretch the Contiguous Dimension
 GPU memory is physically 1-dimensional. Cache lines are pulled in 64-byte or 128-byte linear blocks. Therefore, your tile should not be shaped like a square if you can avoid it. It should be stretched as wide as possible along the tensor's `:contiguous-term`.
 
 For a `:row-major` (or `:contiguous-last`) matrix, the contiguous term is the X-axis (the columns). 
@@ -112,7 +112,7 @@ For a `:row-major` (or `:contiguous-last`) matrix, the contiguous term is the X-
 - GOOD (The Stretched Tile): A tile of `(Y=2, X=16)`. 16 contiguous elements (64 bytes of floats) fit perfectly into a single cache line. 
 - PERFECT:*A tile where the contiguous dimension is exactly the Warp Size (e.g., `X=32`). All 32 threads in the warp hit adjacent memory addresses simultaneously, resulting in a single, perfectly coalesced memory transaction.
 
-#### Algorithmic Concerns: Why Square Tiles Exist
+##### Algorithmic Concerns: Why Square Tiles Exist
 If stretched tiles are so fast to load, why do algorithms like Matrix Multiplication (MatMul) famously use square tiles (like `16x16` or `32x32`)?
 
 Because in MatMul, the bottleneck isn't just loading the data; it is reusing the data. A `16x16` tile loaded into `:local` memory allows the workgroup to perform 256 math operations without returning to global memory. A stretched `2x128` tile might load faster, but it provides far less mathematical reuse for the algorithm.

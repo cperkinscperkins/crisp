@@ -7,7 +7,7 @@ The `reduce-vec-XXXX` variants are different in that they are respondent to a `v
 All the vector reductions are "grid level" operations, meaning they cannot be nested in other grid level ops.
 
 
-### reduce-vec-first-stage
+#### reduce-vec-first-stage
 `(reduce-vec-first-stage someFunction vec identity &out intermediateVec &optional localScratchVec)`
 
 This variant reduces `vec` down to a `intermediateVec` vec which will hold
@@ -37,14 +37,14 @@ Possible Implementation
 
 
 
-### reduce-vec-second-stage
+#### reduce-vec-second-stage
 
 `(reduce-vec-second-stage  someFunction intermediateVec identity &out final-result &optional localScratchVec globalScratchVec)`
 
 This variant has a different requirement than  `reduce-to-1-second-stage`: it is launched 
 with just ONE workgroup, which must have the same number of threads as `intermediateVec` length.
 
-#### optional scratch vectors
+##### optional scratch vectors
 This routine accepts two optional arguments.  `localScratchVec` and `globalScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
@@ -95,7 +95,7 @@ This is what an implementation of `reduce-vec-second-stage` might look like
         (set-result! final-result val)))))
 ```
 
-### reduce-vec-warp
+#### reduce-vec-warp
 
 `(reduce-vec-warp someFunction vec identity) => result`
 
@@ -120,7 +120,7 @@ Possible Implementation
 ```
 
 
-### reduce-vec-atomic
+#### reduce-vec-atomic
 
 `(reduce-vec-atomic  someFunction vec identity &out return-vec &optional localScratchVec)`
 
@@ -132,7 +132,7 @@ that have `atomic-XXXX!` counterparts.
 - `#'min`
 - `#'max`
 
-#### optional scratch vector
+##### optional scratch vector
 This routine accepts an optional scratch vector argument  `localScratchVec`.
 
 If the `localScratchVec` optional argument is not provided, Crisp will generate it for you.
@@ -168,7 +168,7 @@ Possible Implementation
 ```
 
 
-### reduce-vec-cas
+#### reduce-vec-cas
 
 `(reduce-vec-cas  someFunction vec identity return-vec &optional localScratchVec)`
 
@@ -199,7 +199,7 @@ Possible Implementation
 
 ```
 
-### reduce-vec-cont
+#### reduce-vec-cont
 
 `(reduce-vec-cont  someFunction vec identity continuation-kernel-name &optional localScratchVec globalScratchVec)`
 
@@ -227,12 +227,12 @@ Possible Implementation
 ```
 
 
-### binop-type
+#### binop-type
 
 `binop-type` is a type constructor that takes a type `T` and returns the function type `#(T T => T)`.
 
 
-#### Commutativity
+##### Commutativity
 Note that unlike `reduce` in some other languages that are meant for CPUs as opposed to GPUs, the `reduce-` variants in Crisp do not guarantee any sort of order for execution. 
 This means that non-commutative operations like subtraction and division will not work.
 But they still work fine with commutative operations like addition, multiply, minimum and maximum. 

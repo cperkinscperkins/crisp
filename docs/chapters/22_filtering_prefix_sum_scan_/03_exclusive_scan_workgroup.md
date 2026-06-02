@@ -14,7 +14,7 @@ It works in two passes, first "sweeping up" the values with an increasing step s
 This "sweep up" "sweep down" will be more important once we want to start perform these scans on the really big vectors, vectors
 that are bigger than just one workgroup.  
 
-### Finding Matches Example
+#### Finding Matches Example
 
 Let's assume there a mere 6 threads in a workgroup. Our algorithm finds some match or miss and
 records in a vector, each match or miss stored at the local id of whatever thread did the check.

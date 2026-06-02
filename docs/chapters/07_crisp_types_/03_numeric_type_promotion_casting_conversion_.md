@@ -40,12 +40,12 @@ All other conversions require an explicit cast.
   (some-signed-int-op (to-int u)))
 ```
 
-### Convert: `to-` , Cast `as-`
+#### Convert: `to-` , Cast `as-`
 
 If you need to move between numeric types, Crisp gives you two affordances: `to-XXXX` and `as-XXXX` where `XXXX` is 
 the target type name (eg. `to-float`  `as-int`)
 
-#### Value Conversion 
+##### Value Conversion 
 `to-` converts the type "correctly" (or as correct as can be done) and will move bits to do so.  It is the equivalent
 to a "static cast" in C++.  Converting across categories, or to smaller sizes, may lead to loss of information and/or 
 accuracy.
@@ -62,7 +62,7 @@ or `round`.  See the section on integer division for a comparison.
   (some-int-op (ceil f)))
 ```
 
-#### Bit Reinterpretation
+##### Bit Reinterpretation
 `as-` just tells the compiler to pass the value through with no action taken. No bits moved. It is inherently unsafe.
 It is the equivalent of "reinterpret cast" in C++.
 
@@ -73,7 +73,7 @@ It is the equivalent of "reinterpret cast" in C++.
   (some-int-op (as-int f))) ;; <-- DANGER
 ```
 
-#### `(as T someVal)`
+##### `(as T someVal)`
 
 Rather than `as-XXXX`, you can also use the `as` type cast. It takes a value and a desired type arg.
 Example: `(as uint someInt)` 

@@ -14,7 +14,7 @@ Like `substring` but for bits.
 `op-bitfield-insert` takes a `base` integer and replaces a chunk of its bits with
 the first `bits` from the `insert` value, starting at `offset`. 
 
-### Example: update RGB565
+#### Example: update RGB565
 
 This example is a bit contrived, but it shows how `op-bitfield-insert` 
 could be used.

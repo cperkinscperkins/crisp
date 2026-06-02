@@ -1,26 +1,18 @@
-# Crisp Language Specification 🚧
+# Crisp 🚧
 
-Welcome to the Crisp compiler and language specification documentation. Crisp is a Lisp dialect designed specifically for writing safe, high-performance, and correct GPU kernels.
+A Lisp for High-Performance GPU Kernel Development
 
----
+### Current Status: Design Phase
+Crisp is currently in the early implementation phase. As the implementation moves forward, it informs and refines the design. This documentation site contains the living design document for the language and its tooling ecosystem. 
 
-## Navigation Guide
+### The Vision 💡
+Crisp is a Lisp dialect designed specifically for writing safe, performant, and correct GPU kernels. The focus is on creating a language that:
 
-Get started by exploring the key sections of our documentation:
+* **Prioritizes Performance**: The language exposes core GPU idioms like shuffles, reductions, grid strides, and memory layouts as first-class citizens.
+* **Clarity and Debugging**: Kernels are guaranteed to terminate, supports a `maybe` type to make error handling explicit and robust, and features optional debug logging that can be elected by recompiling.
+* **Simplifies the Workflow**: A "Kernel-First" approach where the compiler can generate the necessary C++ or Python "hoisting" code to manage and launch the kernels, letting the developer focus on the algorithm.
 
-*   **[Language Specification](ideal_001.md)**: The full, single-page living specification for the Crisp language. It outlines the design goals, syntax, types, storage handles, control flow constructs, and compilation targets.
-*   **[The Blueprint Philosophy](crisp-curios.md)**: A concise list of features and constraints that make Crisp unique and set it apart from other languages and traditional compilers.
-*   **[Crisp Codebase Reference](reference.md)**: A complete, automatically generated reference detailing all functions, macros, and symbols inside the compiler implementation.
-*   **[Crisp Testing Guide](tests.md)**: A guide detailing the test-driven development (TDD) harness, specifications, and the "spine" test directives.
-*   **[Benchmarks](benchmarks.md)**: Performance benchmarks comparing Crisp to alternative GPU acceleration frameworks.
-*   **[Criticisms](criticsms.md)**: Open feedback, critiques, and resolved design issues.
-*   **[Elevator Pitches](elevator_pitches.md)**: Quick conceptual summaries of what Crisp aims to achieve.
+### The Specification
+The complete, in-progress design document details the syntax, memory models, compiler APIs, and hardware acceleration mappings. Each feature is tagged with an emoji indicating its implementation status (✅ Completed, ⚠️ Partially Implemented, 📝 Planned).
 
----
-
-## Current Project Status
-
-Crisp is currently in active development. As the compiler implementation moves forward, it continuously refines and informs the specification documented here. Each section of the [Language Specification](ideal_001.md) features status tags:
-- `✅` **Completed**: Fully implemented, codegen validated, and covered by E2E test specs.
-- `⚠️` **Partially Implemented**: Under development, partially working, or has known constraints.
-- `📝` **Planned / Inactive**: Outlined in design but coding has not yet begun.
+👉 **[View the Language Specification](ideal_001.md)**
