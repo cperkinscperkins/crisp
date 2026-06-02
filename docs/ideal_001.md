@@ -1773,7 +1773,7 @@ as a cursor to a section of the `storage`.
 - `tensor` : arity must be known at compile time. `tensor` can be any arity.  All tensors support "strides" which is how far to the next element in any of the `N` dimensions of the `tensor`
 
 
-#### Alignment
+### Alignment
 
 Crisp supports three different alignment schemes for Storage Handles:  `:compact`, `:compact-offset`, and `:strided`
 
@@ -1796,7 +1796,7 @@ referencing.
  Similarly, `stride` is only mutable in a `:strided` aligned storage handle, and the compiler will emi
  an error if you attempt to mutate it otherwise.
 
- ### Contiguity  (aka row-major vs col-major )
+ ### Contiguity  (aka row-major vs col-major)
 
  Except `cell`, all Storage Handles have compile-time known "contiguity".  This tells the compiler
  in which dimension the data is contiguous. 
@@ -1804,7 +1804,7 @@ referencing.
  all types, and by virtue of there being a default it means this is optional. Many users will
  never need it, or need to know about it.
 
- ```
+```
  (tensor float 6 :address-space :global :align :compact :contiguous-term :last)
 
 ;; usable with any tensor of any arity
