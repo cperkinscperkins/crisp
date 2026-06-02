@@ -277,6 +277,130 @@ def print_comparison_table(all_results, compile_times=None):
     print()
 
 
+# ----------------------------------------------------------------------
+# Occupancy auto-tune (sibling of bench-intel-driver.py's logic).
+#
+# Resolution order (most specific wins):
+#   1. --crisp-tree-occupancy=X on the CLI         (explicit override)
+#   2. --tune flag                                 (sweep fresh, cache, use)
+#   3. cache entry for the device we just probed   (use, don't sweep)
+#   4. :occupancy declaration in sum-reduce.crisp  (existing default)
+#   5. 1.0
+#
+# Cache: benchmarks/reduction/.tune-cache.json, keyed by device name.
+# Same file the Intel driver uses — different device names live as
+# different top-level keys, so they don't collide.
+# Sweep impl: Crisp (CUDA reference picks up the same value).
+# Picker: fastest single occupancy.
+# ----------------------------------------------------------------------
+
+TUNE_OCCUPANCIES = [0.10, 0.15, 0.25, 0.50, 0.75, 1.00]
+TUNE_N           = 1_000_000
+TUNE_WARMUP      = 100
+TUNE_ITERS       = 200
+
+TUNE_CACHE_PATH = SCRIPT_DIR / ".tune-cache.json"
+
+
+def load_tune_cache():
+    if not TUNE_CACHE_PATH.exists():
+        return {}
+    try:
+        return json.loads(TUNE_CACHE_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_tune_cache(cache):
+    TUNE_CACHE_PATH.write_text(json.dumps(cache, indent=2) + "\n")
+
+
+def probe_device_name(binary):
+    """Run a tiny harness invocation to read 'Device: ...' off stderr."""
+    try:
+        r = subprocess.run([binary, "10000", "5", "10", "0.5"],
+                           capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+    for line in r.stderr.splitlines():
+        if line.startswith("Device:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def tune_occupancy(crisp_binary):
+    """Sweep occupancies, return (best_occ, sample_dict)."""
+    print(f"\n=== Tuning occupancy on local hardware "
+          f"(N={TUNE_N}, {TUNE_ITERS} iters per probe) ===")
+    results = []
+    for occ in TUNE_OCCUPANCIES:
+        print(f"  probe occupancy={occ:>4.2f} ...", end="", flush=True)
+        try:
+            r = subprocess.run(
+                [crisp_binary, str(TUNE_N), str(TUNE_WARMUP), str(TUNE_ITERS), str(occ)],
+                capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            print(" TIMEOUT")
+            continue
+        if r.returncode != 0:
+            print(f" FAIL (exit {r.returncode})")
+            continue
+        try:
+            data = json.loads(r.stdout)
+            us = data["kernel_median_us"]
+            print(f" {us:>7.2f} us")
+            results.append((occ, us))
+        except (json.JSONDecodeError, KeyError):
+            print(" FAIL (bad output)")
+
+    if not results:
+        return None, None
+
+    # Pick the fastest.  TUNE_ITERS=200 keeps per-probe medians stable
+    # enough; revisit if we see picker oscillation across runs on the
+    # same hardware.
+    best_occ, best_us = min(results, key=lambda x: x[1])
+    print(f"  → best occupancy: {best_occ} ({best_us:.2f} us)")
+    return best_occ, dict(results)
+
+
+def resolve_occupancy(args, binaries):
+    """Returns (occupancy, source_label)."""
+    if args.crisp_tree_occupancy is not None:
+        return args.crisp_tree_occupancy, "--crisp-tree-occupancy CLI override"
+
+    crisp_binary = binaries.get("crisp")
+    cache = load_tune_cache()
+    device = probe_device_name(crisp_binary) if crisp_binary else ""
+
+    if args.tune:
+        if not crisp_binary:
+            print("--tune requested but Crisp binary unavailable; "
+                  "falling back to .crisp source")
+        else:
+            best_occ, sample = tune_occupancy(crisp_binary)
+            if best_occ is not None and device:
+                cache[device] = {
+                    "occupancy": best_occ,
+                    "tuned_on":  time.strftime("%Y-%m-%d"),
+                    "sample":    {f"{o}": u for o, u in sample.items()},
+                }
+                save_tune_cache(cache)
+                return best_occ, f"--tune sweep on {device}"
+            if best_occ is not None:
+                return best_occ, "--tune sweep (device unknown, not cached)"
+
+    if device and device in cache:
+        return cache[device]["occupancy"], f"tune cache for {device}"
+
+    if device and not args.tune:
+        print(f"\n(no tune-cache entry for '{device}' — "
+              f"consider running with --tune)")
+
+    occ = extract_occupancy_from_crisp(SCRIPT_DIR / "crisp" / "sum-reduce.crisp")
+    return occ, "parsed from sum-reduce.crisp"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sum reduction benchmark")
     parser.add_argument("--sizes", default="1K,100K,1M",
@@ -286,8 +410,13 @@ def main():
     parser.add_argument("--impl", default="all",
                         help="Implementations to run: all, cuda, cub, crisp")
     parser.add_argument("--crisp-tree-occupancy", type=float, default=None,
-                        help="Occupancy ratio (0.0..1.0) for crisp grid sizing. "
-                             "Default: read :occupancy from the .crisp file (falls back to 1.0).")
+                        help="Override occupancy ratio (0.0..1.0).  Wins over "
+                             "--tune and the cache.  Default: resolve via "
+                             "--tune cache, then the .crisp source's :occupancy.")
+    parser.add_argument("--tune", action="store_true",
+                        help="Sweep occupancy on the local GPU, cache the best "
+                             "value per device, and use it.  Overrides the "
+                             ":occupancy declaration in the .crisp source.")
     args = parser.parse_args()
 
     sizes = []
@@ -336,21 +465,12 @@ def main():
     print("\n=== Benchmark phase ===")
     all_results = []
 
-    # Resolve occupancy (shared between crisp and cuda):
-    #   CLI flag overrides; otherwise read from the .crisp file.
-    # This keeps a single source of truth (the .crisp file's :occupancy
-    # declaration) while still allowing ad-hoc sweeps from the command line.
-    # The cuda reference uses the SAME occupancy as crisp so the
-    # comparison is "same algorithm, same launch policy, different language".
-    if args.crisp_tree_occupancy is not None:
-        shared_occupancy = args.crisp_tree_occupancy
-        print(f"\nOccupancy: {shared_occupancy} (from --crisp-tree-occupancy CLI flag, "
-              f"applied to both crisp and cuda)")
-    else:
-        shared_occupancy = extract_occupancy_from_crisp(
-            SCRIPT_DIR / "crisp" / "sum-reduce.crisp")
-        print(f"\nOccupancy: {shared_occupancy} (parsed from sum-reduce.crisp, "
-              f"applied to both crisp and cuda)")
+    # Resolve occupancy (shared between crisp and cuda): see
+    # resolve_occupancy() for the full order.  Same value applies to both
+    # impls so the comparison stays apples-to-apples — we're tuning for
+    # the WORKLOAD on this hardware, not for one language.
+    shared_occupancy, source = resolve_occupancy(args, binaries)
+    print(f"\nOccupancy: {shared_occupancy} ({source}, applied to crisp and cuda)")
 
     for N in sizes:
         for impl_name, binary in binaries.items():

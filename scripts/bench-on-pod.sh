@@ -62,7 +62,9 @@ set -e
 SBCL_INSTALL_VERSION="2.5.5"
 if command -v sbcl &>/dev/null; then
     SBCL_VER=$(sbcl --version | grep -oP '\d+\.\d+' | head -1)
-    if [ "$(echo "$SBCL_VER >= 2.4" | bc 2>/dev/null)" = "1" ]; then
+    # Use sort -V instead of bc — bc isn't on the RunPod base image and was
+    # silently failing, causing SBCL to be reinstalled every run.
+    if [ "$(printf '%s\n%s\n' "2.4" "$SBCL_VER" | sort -V | head -1)" = "2.4" ]; then
         echo "SBCL OK: $(sbcl --version)"
     else
         echo "SBCL too old, upgrading..."

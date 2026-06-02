@@ -76,7 +76,10 @@ SBCL_INSTALL_VERSION="2.5.5"
 NEED_SBCL=true
 if command -v sbcl &>/dev/null; then
     SBCL_VER=$(sbcl --version | grep -oP '\d+\.\d+' | head -1)
-    if [ "$(echo "$SBCL_VER >= $SBCL_MIN_VERSION" | bc 2>/dev/null)" = "1" ]; then
+    # Use sort -V (GNU coreutils — present on Ubuntu by default) instead
+    # of bc, which isn't pre-installed on the RunPod base image and was
+    # silently failing here, causing SBCL to be reinstalled every run.
+    if [ "$(printf '%s\n%s\n' "$SBCL_MIN_VERSION" "$SBCL_VER" | sort -V | head -1)" = "$SBCL_MIN_VERSION" ]; then
         echo "SBCL already installed: $(sbcl --version)"
         NEED_SBCL=false
     else

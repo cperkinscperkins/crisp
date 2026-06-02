@@ -42,14 +42,18 @@ export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
 # --- Parse arguments ---
-ALGO="${1:?Usage: $0 <algo> [sizes] [iters] [impl] [occupancy]}"
+ALGO="${1:?Usage: $0 <algo> [sizes] [iters] [impl] [occupancy] [tune]}"
 SIZES="${2:-1K,100K,1M}"
 ITERS="${3:-100}"
 # Optional 4th arg: comma-separated impl list or 'all'.
 # Use 'sycl' to skip the (currently broken) Crisp L0 path.
 IMPL="${4:-all}"
-# Optional 5th arg: occupancy override (0.0..1.0).  Empty -> read from .crisp.
+# Optional 5th arg: occupancy override (0.0..1.0).  Empty -> resolve via
+# tune cache + .crisp source (see bench-intel-driver.py resolve_occupancy).
 OCCUPANCY="${5:-}"
+# Optional 6th arg: pass "tune" to force a fresh occupancy sweep on the
+# local hardware and cache the result.  Empty / anything else = no.
+TUNE="${6:-}"
 
 # Locate the repo root from this script's directory.  Use cygpath where
 # available to convert to Windows-form paths — with MSYS_NO_PATHCONV=1 set
@@ -109,7 +113,7 @@ docker run --rm \
     -e CRISP_CACHE_DIR=/root/.cache/common-lisp \
     -w /workspace \
     "${IMAGE_TAG}" \
-    bash scripts/bench-intel-entrypoint.sh "${ALGO}" "${SIZES}" "${ITERS}" "${IMPL}" "${OCCUPANCY}"
+    bash scripts/bench-intel-entrypoint.sh "${ALGO}" "${SIZES}" "${ITERS}" "${IMPL}" "${OCCUPANCY}" "${TUNE}"
 
 echo ""
 echo "=== Intel benchmark run complete ==="

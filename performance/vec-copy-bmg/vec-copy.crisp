@@ -1,0 +1,16 @@
+;; vec-copy: copy every element of input into output.
+;;
+;; Pure stride-macro microbench — the smallest kernel that exercises
+;; loop-vector-stride end-to-end.  Bandwidth-bound, so a regression in
+;; the stride macro's emitted IR (extra loads, broken invariant.load
+;; metadata, suboptimal phi/icmp shape) shows up directly as throughput.
+;;
+;; Lives at performance/vec-copy-bmg/ — used by performance/check.py for
+;; regression detection vs baseline.json.  Not a benchmark vs SYCL/CUDA.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel vec_copy (input &out output)
+  (declare #'(vec-t &out vec-t => nil))
+  (loop-vector-stride output (i)
+    (set! (~ output i) (~ input i))))

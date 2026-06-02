@@ -1,0 +1,42 @@
+{
+  "reduction-bmg": {
+    "kernel_median_us": {
+      "best": 22.88,
+      "tolerance": 0.1,
+      "set_on": "2026-06-01",
+      "sha": "3aaccae"
+    },
+    "throughput_gb_s": {
+      "best": 174.825,
+      "tolerance": 0.1,
+      "set_on": "2026-06-01",
+      "sha": "3aaccae"
+    },
+    "device_compile_s": {
+      "best": 0.196,
+      "tolerance": 0.25,
+      "set_on": "2026-06-01",
+      "sha": "8f2d1a8"
+    }
+  },
+  "vec-copy-bmg": {
+    "kernel_median_us": {
+      "best": 15.08,
+      "tolerance": 0.1,
+      "set_on": "2026-06-01",
+      "sha": "3aaccae"
+    },
+    "throughput_gb_s": {
+      "best": 530.504,
+      "tolerance": 0.1,
+      "set_on": "2026-06-01",
+      "sha": "3aaccae"
+    },
+    "device_compile_s": {
+      "best": 0.178,
+      "tolerance": 0.25,
+      "set_on": "2026-06-01",
+      "sha": "8f2d1a8"
+    }
+  }
+}

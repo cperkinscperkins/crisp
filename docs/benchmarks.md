@@ -1,5 +1,85 @@
 # Reduction benchmark — running commentary
 
+## 2026-06-01 — Intel Arc B580 (BMG) — full -O3 restored, sycl-reduce replaces oneDPL
+
+Two changes since the 2026-05-30 entry:
+
+1. **Real fix for the SPV InstCombine bug.**  Root cause turned out to
+   have nothing to do with SROA/poison/aggregate allocas (all the
+   2026-05-31 hypotheses were chasing the wrong signal).  The actual
+   bug: Crisp marks non-kernel functions `spir_func` (LLVM CC=75) but
+   emits CALL instructions with the default C calling convention
+   (CC=0).  LLVM 21 treats this caller/callee CC mismatch as immediate
+   UB; InstCombine inserts `store i1 true, ptr poison` and the rest
+   of -O3 collapses the body to `entry: unreachable`.  Fix: propagate
+   the callee's CC onto every call instruction (the `LLVMSetInstruction-
+   CallConv` binding + `%propagate-callee-cc-to-call` helper).  The
+   InstCombine-free workaround pipeline is gone; we run full
+   `default<O3>` on SPV again, and the aggregate-direct codegen path
+   that tried to dodge the symptom was removed (it was incorrect under
+   the actual semantics).  Spec suite: 732/732.
+
+2. **oneDPL replaced by sycl-reduce.**  `oneapi::dpl::reduce` was the
+   wrong abstraction tier for this comparison — it's a std::algorithm-
+   style wrapper, not a cooperative-primitive analog of CUB.  Dropped
+   it from the default Intel set.  New impl `sycl-reduce` uses
+   `sycl::reduce_over_group` for the workgroup-level cooperative
+   reduce, composed with the same grid-stride accumulate + one-atomic-
+   per-workgroup pattern as the hand-written `sycl` impl.  This sits
+   at the right CUB-equivalent level: same algorithm shape as hand-
+   written, but the in-kernel cooperative reduce is delegated to the
+   library primitive.
+
+Also: split the SYCL compile timing into device-only
+(`icpx -fsycl-device-only -fsycl-targets=spir64`) + end-to-end so the
+table shows the same shape as the NVIDIA side.
+
+**Three-way at occupancy=0.5, 100 iters:**
+
+|       N | crisp (us) | crisp GB/s | sycl (us) | sycl GB/s | sycl-reduce (us) | sycl-reduce GB/s |
+|--------:|-----------:|-----------:|----------:|----------:|-----------------:|-----------------:|
+|  100000 |      10.30 |      38.85 |      7.07 |     56.56 |             7.07 |            56.56 |
+| 1000000 |      16.64 |     240.38 |     12.48 |    320.51 |            12.38 |           323.21 |
+
+**Compile times:**
+
+|        impl | device (s) | end-to-end (s) |
+|------------:|-----------:|---------------:|
+|       crisp |       2.37 |           4.54 |
+|        sycl |       2.65 |           5.15 |
+| sycl-reduce |       2.22 |           4.34 |
+
+**Headline:** at N=1M, Crisp hits 240.38 GB/s vs SYCL's 320.51 GB/s →
+**crisp/sycl = 75%**.  That's *down* from the InstCombine-free
+pipeline's 88% (272.78 GB/s) on 2026-05-30.  IR-level inspection shows
+the optimized vec_copy/sum_reduce look beautiful (tight phi-loop,
+`readonly captures(none)` inferred on input, etc.) — full -O3 is
+doing *something* the trimmed pipeline didn't that's hurting BMG
+specifically.  Variance was high (one 1M run tied SYCL at 12.79us);
+some of the gap may be noise.  Open thread.
+
+**sycl vs sycl-reduce is a wash** (12.48 vs 12.38 us, within noise) —
+exactly what we'd expect on this bandwidth-bound kernel.  The SLM tree-
+reduce in the hand-written impl already *is* the optimal pattern for
+BMG; `reduce_over_group` lowers to the same thing.  Same conclusion
+CUB-vs-hand-written-CUDA reaches on NVIDIA for bandwidth-bound work.
+The interesting comparisons will come on compute-bound kernels.
+
+**sycl-reduce compiles slightly faster than hand-written sycl**
+(2.22s vs 2.65s device-only) — the library primitive saves the SLM
+tree boilerplate from the source.  Crisp's device compile (2.37s) is
+in the same ballpark; the wide ratio we report on NVIDIA (crisp
+0.18s vs nvcc 0.56s) is partly because nvcc is genuinely slower
+than icpx at small device-only compiles.
+
+**Open thread:** full -O3 vs trimmed pipeline perf delta on BMG.
+Hypothesis: some -O3 pass (vectorize? slpvectorize? instcombine's own
+canonicalization of address arithmetic?) is producing IR that BMG's
+IGC then has to undo.  Bisecting `default<O3>` minus specific passes
+would isolate it, but lower priority than the next endeavor.
+
+---
+
 ## 2026-05-30 — Intel Arc B580 (BMG) — three-way + InstCombine-free pipeline
 
 Crisp SPV path now works end-to-end on BMG via WSL2 Docker.  The fix

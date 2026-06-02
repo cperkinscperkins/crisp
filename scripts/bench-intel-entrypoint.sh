@@ -43,9 +43,15 @@ echo '=== Running benchmark driver ==='
 # IMPL is optional 4th arg — passes through to the driver's --impl flag.
 # Useful while the Crisp L0 path is hung; e.g. IMPL=sycl runs only SYCL.
 IMPL="${4:-all}"
-# OCCUPANCY is optional 5th arg — empty means read from the .crisp source.
+# OCCUPANCY is optional 5th arg — empty means resolve via tune cache / .crisp.
 OCCUPANCY_FLAG=""
 if [ -n "${5:-}" ]; then
     OCCUPANCY_FLAG="--occupancy=$5"
 fi
-python3 scripts/bench-intel-driver.py "${ALGO}" --sizes="${SIZES}" --iters="${ITERS}" --impl="${IMPL}" ${OCCUPANCY_FLAG}
+# TUNE is optional 6th arg — pass "tune" to force a fresh occupancy sweep
+# on the local hardware and cache the result per-device.
+TUNE_FLAG=""
+if [ "${6:-}" = "tune" ]; then
+    TUNE_FLAG="--tune"
+fi
+python3 scripts/bench-intel-driver.py "${ALGO}" --sizes="${SIZES}" --iters="${ITERS}" --impl="${IMPL}" ${OCCUPANCY_FLAG} ${TUNE_FLAG}

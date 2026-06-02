@@ -643,6 +643,19 @@ Async Ops \ Named Barriers \ Rings
 ===================================
 - 
 
+
+FFI / C API / "tree shaking" / recompile
+========================================
+
+Precision: IEEE vs Fast
+=======================
+- [ ] `(with-precision (<KEY>) ...)`
+- [ ]  `(declaim (precision <KEY>))`
+- [ ] `--math-precision`
+- [ ] `--force-math-precision`
+- [ ] `--denormal-handling [ieee | flush]`
+
+
 Technical Debt
 ==============
 - [ ] MkDocs
@@ -660,9 +673,11 @@ Technical Debt
       available for the hardware, and use that (if less than the size of the tensor).
 - [ ] double check the :derive-from / :strided with tensors of any arity. 
 - [x] also new kernel in sum-reduce-tree.crisp crashes compiler when --ir-target=spv. Works ptx though.
-- [ ] run-on-pod.sh / check-on-pod.sh always reinstall SBCL. 
-- [ ] --device-only flag for SYCL to get kernel only timing?
-- [ ] update docs with &out "input" vs "output" requirement (in flux)
+- [x] run-on-pod.sh / bench-on-pod.sh always reinstall SBCL. 
+- [x] --device-only flag for SYCL to get kernel only timing?
+- [x] update docs with &out "input" read-only vs "output" requirement (in flux)
+- [x] drop oneDPL and use SYCL built-in reductions instead for benchmark
+- [ ] occupancy.
 
 PERFORMANCE TESTING
 ===================
@@ -701,7 +716,7 @@ The change is in src/codegen.lisp wherever we emit load instructions for tensor 
 
 Done 2026-05-29. Inference rule: when the kernel's declared signature has `&out`, every tensor param before `&out` (positional / `&optional` / `&key`) is read-only and its `(~ T i)` loads get `!invariant.load !{}` → PTX `ld.global.nc.b32`. Lookup is via `*kernel-declared-signatures*` (the pre-flatten signature retains `&out`). Limitations: direct refs only — let-bound aliases lose the marking (no miscompile, just slower); kernels with no `&out` get nothing. Reduction-bench perf delta was in the noise — this kernel has no data reuse, so the texture-cache path is a wash. Expected to matter on GEMM B-tile broadcast / stencils.
 
-- [ ] compile-time known scratch/local mem opt.
+- [x] compile-time known scratch/local mem opt.
 
 These initial "first generation" algorithms might not be expressible on CUTLASS/SYCL-TLA
 

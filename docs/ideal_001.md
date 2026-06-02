@@ -498,6 +498,19 @@ Note that these advanced signature constructs are order sensitive. The order is 
 Any other type for an `&out` parameter is a compilation error.
 
 
+`&out` and differentiation
+--------------------------
+
+Crisp's auto-differentiation feature (`--differentiate` flag), can only differentiate kernels
+that use clear "input" and "output" parameters.  Use of `&out` is required, and the non-out paramters
+must be read-only.
+
+`&out` and performance
+----------------------
+For any kernel, when `&out` is used then the "other" parameters not designated as output are
+considiered as read-only input candidates. You can read and write to those parameters, if you wish, BUT if you forego write operations to them and honor a read-only contract, then the optimizer will be better able to work its magic and improve your kernel performance. In other words, for maximum performance use `&out` to designate your kernel output parameters and only write to those, never to any others.
+
+
 Argument Passing and Side Channels
 ==================================
 

@@ -64,6 +64,9 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cuInit(0));
     CUdevice device;
     CUDA_CHECK(cuDeviceGet(&device, 0));
+    char devName[256];
+    CUDA_CHECK(cuDeviceGetName(devName, sizeof(devName), device));
+    fprintf(stderr, "Device: %s\n", devName);
     CUcontext context;
     CUDA_CHECK(cuCtxCreate(&context, 0, device));
 
