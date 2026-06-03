@@ -459,6 +459,264 @@
                 (incf total (* count elem-bytes))))))))
     total))
 
+(defun %cuda-emit-cell-arg (stream param param-name param-type param-dir is-local aliases arg-index)
+  (declare (ignore param aliases))
+  (let* ((base-type      (cell-base-type param-type))
+         (is-array-cell  (%array-type-p base-type))
+         (base-type-str  (if is-array-cell
+                             (crisp-type-to-cpp-type (%array-element-type base-type))
+                             (crisp-type-to-cpp-type base-type)))
+         (elem-count     (if is-array-cell (%array-size base-type) 1))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (size-var       (format nil "~a_size" param-name-cpp))
+         (ptr-var        (format nil "~a_ptr"  param-name-cpp))
+         (arg-names      '())
+         (alloc          nil))
+    (if is-local
+        ;; LOCAL MEMORY — pass 0 as ptr, bytesize, and offset
+        (progn
+          (format stream "~%    // LOCAL cell: ~a~%" param-name)
+          (format stream "    uint64_t ~a_local_ptr = 0;  // shared offset~%" param-name-cpp)
+          (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var elem-count base-type-str)
+          (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+          (push (format nil "~a_local_ptr" param-name-cpp) arg-names)
+          (push (format nil "~a_bytes" size-var) arg-names)
+          (push (format nil "~a_offset" param-name-cpp) arg-names))
+
+        ;; GLOBAL MEMORY — cuMemAlloc + cuMemcpyHtoD
+        (progn
+          (format stream "~%    // Cell: ~a (~a)~%" param-name base-type-str)
+          (format stream "    size_t ~a = ~a;~%" size-var elem-count)
+          (format stream "    CUdeviceptr ~a;~%" ptr-var)
+          (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~a * sizeof(~a)));~%"
+                  ptr-var size-var base-type-str)
+          ;; Host-side init buffer
+          (format stream "    {~%")
+          (format stream "        ~a* h = new ~a[~a];~%" base-type-str base-type-str size-var)
+          (if is-array-cell
+              (format stream "        for (size_t _i = 0; _i < ~a; _i++) h[_i] = (~a)_i;~%"
+                      size-var base-type-str)
+              (format stream "        memset(h, 0, ~a * sizeof(~a));~%" size-var base-type-str))
+          (format stream "        CUDA_CHECK(cuMemcpyHtoD(~a, h, ~a * sizeof(~a)));~%"
+                  ptr-var size-var base-type-str)
+          (format stream "        delete[] h;~%")
+          (format stream "    }~%")
+          (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
+          (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+          (push (format nil "~a" ptr-var) arg-names)
+          (push (format nil "~a_bytes" size-var) arg-names)
+          (push (format nil "~a_offset" param-name-cpp) arg-names)
+          (setf alloc (list :name      param-name
+                            :ptr       ptr-var
+                            :size-var  (format nil "~a" size-var)
+                            :elem-type base-type-str
+                            :direction param-dir))))
+    (values (+ arg-index 3) (nreverse arg-names) alloc)))
+
+(defun %cuda-emit-local-scratch-tensor-arg (stream param param-name param-type arg-index)
+  (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
+         (size-expr   (getf param :size-expr))
+         (elem-type   (second param-type))
+         (elem-str    (crisp-type-to-cpp-type elem-type))
+         (elem-bytes  (if (or (string-equal elem-str "double")
+                              (string-equal elem-str "int64_t")
+                              (string-equal elem-str "uint64_t")) 8 4))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (arg-names   '())
+         (current-idx arg-index))
+    (unless (integerp size-expr)
+      (error "Local scratch tensor ~a has non-integer :size-expr ~a." param-name size-expr))
+    (multiple-value-bind (extents strides)
+        (%tensor-compact-extents-strides rank size-expr)
+      (let* ((length   (expt size-expr rank))
+             (bytesize (* length elem-bytes)))
+        (format stream "~%    // LOCAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes)~%"
+                param-name rank elem-str length bytesize)
+        ;; Arg: ptr (shared offset = 0)
+        (format stream "    uint64_t ~a_ptr = 0;  // shared mem offset~%" param-name-cpp)
+        (push (format nil "~a_ptr" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; byte-size
+        (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
+        (push (format nil "~a_byte_size" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; offsets
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+          (push (format nil "~a_off~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; strides
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+          (push (format nil "~a_str~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; extents
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+          (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; length
+        (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
+        (push (format nil "~a_length" param-name-cpp) arg-names)
+        (incf current-idx)
+        (values current-idx (nreverse arg-names))))))
+
+(defun %cuda-emit-global-scratch-tensor-arg (stream param param-name param-type arg-index)
+  (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
+         (size-expr   (getf param :size-expr))
+         (elem-type   (second param-type))
+         (elem-str    (crisp-type-to-cpp-type elem-type))
+         (elem-bytes  (if (or (string-equal elem-str "double")
+                              (string-equal elem-str "int64_t")
+                              (string-equal elem-str "uint64_t")) 8 4))
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (ptr-var     (format nil "~a_ptr" param-name-cpp))
+         (arg-names   '())
+         (current-idx arg-index))
+    (unless (integerp size-expr)
+      (error "Global scratch tensor ~a has non-integer :size-expr ~a." param-name size-expr))
+    (multiple-value-bind (extents strides)
+        (%tensor-compact-extents-strides rank size-expr)
+      (let* ((length   (expt size-expr rank))
+             (bytesize (* length elem-bytes)))
+        (format stream "~%    // GLOBAL scratch tensor: ~a (rank=~d, ~a, ~d elems)~%"
+                param-name rank elem-str length)
+        (format stream "    CUdeviceptr ~a;~%" ptr-var)
+        (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~dULL * sizeof(~a)));~%"
+                ptr-var length elem-str)
+        (format stream "    CUDA_CHECK(cuMemsetD8(~a, 0, ~dULL * sizeof(~a)));~%"
+                ptr-var length elem-str)
+        ;; ptr
+        (push (format nil "~a" ptr-var) arg-names)
+        (incf current-idx)
+        ;; byte-size
+        (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
+        (push (format nil "~a_byte_size" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; offsets
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+          (push (format nil "~a_off~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; strides
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+          (push (format nil "~a_str~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; extents
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+          (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; length
+        (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
+        (push (format nil "~a_length" param-name-cpp) arg-names)
+        (incf current-idx)
+        (values current-idx (nreverse arg-names))))))
+
+(defun %cuda-emit-tensor-arg (stream param param-name param-type param-dir arg-index)
+  (let* ((rank        (or (getf param :rank)
+                          (let ((n3 (third param-type))) (if (integerp n3) n3 1))))
+         (elem-type   (second param-type))
+         (elem-str    (crisp-type-to-cpp-type elem-type))
+         (dim-extent  4)
+         (param-name-cpp (substitute #\_ #\- param-name))
+         (ptr-var     (format nil "~a_ptr" param-name-cpp))
+         (arg-names   '())
+         (current-idx arg-index)
+         (alloc       nil))
+    (multiple-value-bind (extents strides)
+        (%tensor-compact-extents-strides rank dim-extent)
+      (let* ((total-elems (* (first strides) (first extents)))
+             (elem-bytes  (if (or (string-equal elem-str "double")
+                                  (string-equal elem-str "int64_t")
+                                  (string-equal elem-str "uint64_t")) 8 4))
+             (byte-size   (* total-elems elem-bytes)))
+        (format stream "~%    // Tensor: ~a (rank=~d, ~a, ~d elements)~%"
+                param-name rank elem-str total-elems)
+        (format stream "    CUdeviceptr ~a;~%" ptr-var)
+        (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~d * sizeof(~a)));~%"
+                ptr-var total-elems elem-str)
+        ;; Init: iota
+        (format stream "    {~%")
+        (format stream "        ~a* h = new ~a[~d];~%" elem-str elem-str total-elems)
+        (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = (~a)_i;~%"
+                total-elems elem-str)
+        (format stream "        CUDA_CHECK(cuMemcpyHtoD(~a, h, ~d * sizeof(~a)));~%"
+                ptr-var total-elems elem-str)
+        (format stream "        delete[] h;~%")
+        (format stream "    }~%")
+        ;; ptr
+        (push (format nil "~a" ptr-var) arg-names)
+        (incf current-idx)
+        ;; byte-size
+        (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp byte-size)
+        (push (format nil "~a_byte_size" param-name-cpp) arg-names)
+        (incf current-idx)
+        ;; offsets (all zero)
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+          (push (format nil "~a_off~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; strides
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+          (push (format nil "~a_str~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; extents
+        (loop for k from 0 below rank do
+          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+          (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
+          (incf current-idx))
+        ;; length
+        (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp total-elems)
+        (push (format nil "~a_length" param-name-cpp) arg-names)
+        (incf current-idx)
+        (setf alloc (list :name      param-name
+                          :ptr       ptr-var
+                          :count     total-elems
+                          :elem-type elem-str
+                          :direction param-dir))
+        (values current-idx (nreverse arg-names) alloc)))))
+
+(defun %cuda-emit-struct-arg (stream param-name param-type aliases arg-index)
+  (let* ((base-type      (%struct-base-type param-type))
+         (resolved-base  (resolve-type-alias base-type aliases))
+         (struct-def     (%find-struct-def resolved-base))
+         (struct-members (cddr struct-def))
+         (param-name-cpp (format-cpp-identifier param-name))
+         (var-name       (format nil "~a_val" param-name-cpp))
+         (struct-type-str (format-cpp-identifier resolved-base)))
+    (format stream "~%    // Struct: ~a (~a)~%" param-name struct-type-str)
+    (format stream "    ~a ~a;~%" struct-type-str var-name)
+    (%struct-emit-fields stream var-name struct-members aliases)
+    (values (+ arg-index 1) (list var-name))))
+
+(defun %cuda-emit-record-arg (stream param-name param-type records aliases arg-index)
+  (let* ((base-type       (record-base-type param-type))
+         (record-def     (find-record-def param-type records))
+         (record-members (cddr record-def))
+         (param-name-cpp (format-cpp-identifier param-name))
+         (var-name       (format nil "~a_val" param-name-cpp))
+         (struct-type-str (format-cpp-identifier base-type)))
+    (format stream "~%    // Record: ~a (~a, exploded)~%" param-name struct-type-str)
+    (format stream "    ~a ~a;~%" struct-type-str var-name)
+    (multiple-value-bind (new-idx new-names)
+        (%record-field-args stream record-members var-name arg-index records aliases)
+      (values new-idx new-names))))
+
+(defun %cuda-emit-scalar-arg (stream param-name param-type arg-index)
+  (let* ((type-str (crisp-type-to-cpp-type param-type))
+         (param-name-cpp (substitute #\_ #\- param-name)))
+    (multiple-value-bind (dvec-base dvec-width) (%dvec-parse param-type)
+      (if dvec-base
+          (let ((init-str (format nil "{~{~a~^, ~}}"
+                                  (loop for i from 0 below dvec-width
+                                        collect (+ arg-index 42 i)))))
+            (format stream "    ~a ~a_arg = ~a;~%" type-str param-name-cpp init-str))
+          (format stream "    ~a ~a_arg = ~d;~%" type-str param-name-cpp (+ arg-index 42))))
+    (values (+ arg-index 1) (list (format nil "~a_arg" param-name-cpp)))))
+
 (defun emit-kernel-args (stream declared-sig aliases records)
   "Emit host-side variable declarations and fill the kernelParams[] array.
    Returns a list of allocation plists for readback."
@@ -476,291 +734,49 @@
              (is-local    (member param-as '(:local "LOCAL" local) :test #'string-equal)))
 
         (cond
-
-         ;; ---- cell parameters (3 kernel args: ptr, byte-size, offset) ----
          ((cell-type-p param-type)
-          (let* ((base-type      (cell-base-type param-type))
-                 (is-array-cell  (%array-type-p base-type))
-                 (base-type-str  (if is-array-cell
-                                     (crisp-type-to-cpp-type (%array-element-type base-type))
-                                     (crisp-type-to-cpp-type base-type)))
-                 (elem-count     (if is-array-cell (%array-size base-type) 1))
-                 (param-name-cpp (substitute #\_ #\- param-name))
-                 (size-var       (format nil "~a_size" param-name-cpp))
-                 (ptr-var        (format nil "~a_ptr"  param-name-cpp)))
+          (multiple-value-bind (new-idx names alloc)
+              (%cuda-emit-cell-arg stream param param-name param-type param-dir is-local aliases arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))
+            (when alloc (push alloc allocations))))
 
-            (if is-local
-                ;; LOCAL MEMORY — pass 0 as ptr, bytesize, and offset
-                (progn
-                 (format stream "~%    // LOCAL cell: ~a~%" param-name)
-                 (format stream "    uint64_t ~a_local_ptr = 0;  // shared offset~%" param-name-cpp)
-                 (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var elem-count base-type-str)
-                 (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
-                 (push (format nil "~a_local_ptr" param-name-cpp) arg-names)
-                 (push (format nil "~a_bytes" size-var) arg-names)
-                 (push (format nil "~a_offset" param-name-cpp) arg-names))
-
-                ;; GLOBAL MEMORY — cuMemAlloc + cuMemcpyHtoD
-                (progn
-                 (format stream "~%    // Cell: ~a (~a)~%" param-name base-type-str)
-                 (format stream "    size_t ~a = ~a;~%" size-var elem-count)
-                 (format stream "    CUdeviceptr ~a;~%" ptr-var)
-                 (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~a * sizeof(~a)));~%"
-                         ptr-var size-var base-type-str)
-                 ;; Host-side init buffer
-                 (format stream "    {~%")
-                 (format stream "        ~a* h = new ~a[~a];~%" base-type-str base-type-str size-var)
-                 (if is-array-cell
-                     (format stream "        for (size_t _i = 0; _i < ~a; _i++) h[_i] = (~a)_i;~%"
-                             size-var base-type-str)
-                     (format stream "        memset(h, 0, ~a * sizeof(~a));~%" size-var base-type-str))
-                 (format stream "        CUDA_CHECK(cuMemcpyHtoD(~a, h, ~a * sizeof(~a)));~%"
-                         ptr-var size-var base-type-str)
-                 (format stream "        delete[] h;~%")
-                 (format stream "    }~%")
-                 (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
-                 (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
-                 (push (format nil "~a" ptr-var) arg-names)
-                 (push (format nil "~a_bytes" size-var) arg-names)
-                 (push (format nil "~a_offset" param-name-cpp) arg-names)
-                 (push (list :name      param-name
-                             :ptr       ptr-var
-                             :size-var  (format nil "~a" size-var)
-                             :elem-type base-type-str
-                             :direction param-dir)
-                       allocations)))
-            (incf arg-index 3)))
-
-         ;; ---- LOCAL scratch tensor ----
          ((and (tensor-type-p param-type) is-local)
-          (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
-                 (size-expr   (getf param :size-expr))
-                 (elem-type   (second param-type))
-                 (elem-str    (crisp-type-to-cpp-type elem-type))
-                 (elem-bytes  (if (or (string-equal elem-str "double")
-                                      (string-equal elem-str "int64_t")
-                                      (string-equal elem-str "uint64_t")) 8 4))
-                 (param-name-cpp (substitute #\_ #\- param-name)))
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-local-scratch-tensor-arg stream param param-name param-type arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))))
 
-            (unless (integerp size-expr)
-              (error "Local scratch tensor ~a has non-integer :size-expr ~a." param-name size-expr))
-
-            (multiple-value-bind (extents strides)
-                (%tensor-compact-extents-strides rank size-expr)
-              (let* ((length   (expt size-expr rank))
-                     (bytesize (* length elem-bytes)))
-
-                (format stream "~%    // LOCAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes)~%"
-                        param-name rank elem-str length bytesize)
-
-                ;; Arg: ptr (shared offset = 0)
-                (format stream "    uint64_t ~a_ptr = 0;  // shared mem offset~%" param-name-cpp)
-                (push (format nil "~a_ptr" param-name-cpp) arg-names)
-                (incf arg-index)
-
-                ;; byte-size
-                (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
-                (push (format nil "~a_byte_size" param-name-cpp) arg-names)
-                (incf arg-index)
-
-                ;; offsets
-                (loop for k from 0 below rank do
-                  (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
-                  (push (format nil "~a_off~d" param-name-cpp k) arg-names)
-                  (incf arg-index))
-
-                ;; strides
-                (loop for k from 0 below rank do
-                  (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
-                  (push (format nil "~a_str~d" param-name-cpp k) arg-names)
-                  (incf arg-index))
-
-                ;; extents
-                (loop for k from 0 below rank do
-                  (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
-                  (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
-                  (incf arg-index))
-
-                ;; length
-                (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
-                (push (format nil "~a_length" param-name-cpp) arg-names)
-                (incf arg-index)))))
-
-         ;; ---- GLOBAL scratch tensor ----
          ((and (tensor-type-p param-type) (not is-local) (getf param :size-expr))
-          (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
-                 (size-expr   (getf param :size-expr))
-                 (elem-type   (second param-type))
-                 (elem-str    (crisp-type-to-cpp-type elem-type))
-                 (elem-bytes  (if (or (string-equal elem-str "double")
-                                      (string-equal elem-str "int64_t")
-                                      (string-equal elem-str "uint64_t")) 8 4))
-                 (param-name-cpp (substitute #\_ #\- param-name))
-                 (ptr-var     (format nil "~a_ptr" param-name-cpp)))
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-global-scratch-tensor-arg stream param param-name param-type arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))))
 
-            (unless (integerp size-expr)
-              (error "Global scratch tensor ~a has non-integer :size-expr ~a." param-name size-expr))
-
-            (multiple-value-bind (extents strides)
-                (%tensor-compact-extents-strides rank size-expr)
-              (let* ((length   (expt size-expr rank))
-                     (bytesize (* length elem-bytes)))
-
-                (format stream "~%    // GLOBAL scratch tensor: ~a (rank=~d, ~a, ~d elems)~%"
-                        param-name rank elem-str length)
-                (format stream "    CUdeviceptr ~a;~%" ptr-var)
-                (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~dULL * sizeof(~a)));~%"
-                        ptr-var length elem-str)
-                (format stream "    CUDA_CHECK(cuMemsetD8(~a, 0, ~dULL * sizeof(~a)));~%"
-                        ptr-var length elem-str)
-
-                ;; ptr
-                (push (format nil "~a" ptr-var) arg-names)
-                (incf arg-index)
-
-                ;; byte-size
-                (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
-                (push (format nil "~a_byte_size" param-name-cpp) arg-names)
-                (incf arg-index)
-
-                ;; offsets
-                (loop for k from 0 below rank do
-                  (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
-                  (push (format nil "~a_off~d" param-name-cpp k) arg-names)
-                  (incf arg-index))
-
-                ;; strides
-                (loop for k from 0 below rank do
-                  (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
-                  (push (format nil "~a_str~d" param-name-cpp k) arg-names)
-                  (incf arg-index))
-
-                ;; extents
-                (loop for k from 0 below rank do
-                  (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
-                  (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
-                  (incf arg-index))
-
-                ;; length
-                (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
-                (push (format nil "~a_length" param-name-cpp) arg-names)
-                (incf arg-index)))))
-
-         ;; ---- GLOBAL tensor/vector/matrix (user-declared, USM) ----
          ((tensor-type-p param-type)
-          (let* ((rank        (or (getf param :rank)
-                                  (let ((n3 (third param-type))) (if (integerp n3) n3 1))))
-                 (elem-type   (second param-type))
-                 (elem-str    (crisp-type-to-cpp-type elem-type))
-                 (dim-extent  4)
-                 (param-name-cpp (substitute #\_ #\- param-name))
-                 (ptr-var     (format nil "~a_ptr" param-name-cpp)))
+          (multiple-value-bind (new-idx names alloc)
+              (%cuda-emit-tensor-arg stream param param-name param-type param-dir arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))
+            (when alloc (push alloc allocations))))
 
-            (multiple-value-bind (extents strides)
-                (%tensor-compact-extents-strides rank dim-extent)
-              (let* ((total-elems (* (first strides) (first extents)))
-                     (elem-bytes  (if (or (string-equal elem-str "double")
-                                          (string-equal elem-str "int64_t")
-                                          (string-equal elem-str "uint64_t")) 8 4))
-                     (byte-size   (* total-elems elem-bytes)))
-
-                (format stream "~%    // Tensor: ~a (rank=~d, ~a, ~d elements)~%"
-                        param-name rank elem-str total-elems)
-                (format stream "    CUdeviceptr ~a;~%" ptr-var)
-                (format stream "    CUDA_CHECK(cuMemAlloc(&~a, ~d * sizeof(~a)));~%"
-                        ptr-var total-elems elem-str)
-                ;; Init: iota
-                (format stream "    {~%")
-                (format stream "        ~a* h = new ~a[~d];~%" elem-str elem-str total-elems)
-                (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = (~a)_i;~%"
-                        total-elems elem-str)
-                (format stream "        CUDA_CHECK(cuMemcpyHtoD(~a, h, ~d * sizeof(~a)));~%"
-                        ptr-var total-elems elem-str)
-                (format stream "        delete[] h;~%")
-                (format stream "    }~%")
-
-                ;; ptr
-                (push (format nil "~a" ptr-var) arg-names)
-                (incf arg-index)
-
-                ;; byte-size
-                (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp byte-size)
-                (push (format nil "~a_byte_size" param-name-cpp) arg-names)
-                (incf arg-index)
-
-                ;; offsets (all zero)
-                (loop for k from 0 below rank do
-                  (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
-                  (push (format nil "~a_off~d" param-name-cpp k) arg-names)
-                  (incf arg-index))
-
-                ;; strides
-                (loop for k from 0 below rank do
-                  (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
-                  (push (format nil "~a_str~d" param-name-cpp k) arg-names)
-                  (incf arg-index))
-
-                ;; extents
-                (loop for k from 0 below rank do
-                  (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
-                  (push (format nil "~a_ext~d" param-name-cpp k) arg-names)
-                  (incf arg-index))
-
-                ;; length
-                (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp total-elems)
-                (push (format nil "~a_length" param-name-cpp) arg-names)
-                (incf arg-index)
-
-                (push (list :name      param-name
-                            :ptr       ptr-var
-                            :count     total-elems
-                            :elem-type elem-str
-                            :direction param-dir)
-                      allocations)))))
-
-         ;; ---- def-struct parameters (1 arg: aggregate by value) ----
          ((struct-type-p param-type)
-          (let* ((base-type      (%struct-base-type param-type))
-                 (resolved-base  (resolve-type-alias base-type aliases))
-                 (struct-def     (%find-struct-def resolved-base))
-                 (struct-members (cddr struct-def))
-                 (param-name-cpp (format-cpp-identifier param-name))
-                 (var-name       (format nil "~a_val" param-name-cpp))
-                 (struct-type-str (format-cpp-identifier resolved-base)))
-            (format stream "~%    // Struct: ~a (~a)~%" param-name struct-type-str)
-            (format stream "    ~a ~a;~%" struct-type-str var-name)
-            (%struct-emit-fields stream var-name struct-members aliases)
-            (push var-name arg-names)
-            (incf arg-index)))
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-struct-arg stream param-name param-type aliases arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))))
 
-         ;; ---- def-record parameters (exploded to scalar args) ----
          ((record-type-p param-type records)
-          (let* ((base-type       (record-base-type param-type))
-                 (record-def     (find-record-def param-type records))
-                 (record-members (cddr record-def))
-                 (param-name-cpp (format-cpp-identifier param-name))
-                 (var-name       (format nil "~a_val" param-name-cpp))
-                 (struct-type-str (format-cpp-identifier base-type)))
-            (format stream "~%    // Record: ~a (~a, exploded)~%" param-name struct-type-str)
-            (format stream "    ~a ~a;~%" struct-type-str var-name)
-            (multiple-value-bind (new-idx new-names)
-                (%record-field-args stream record-members var-name arg-index records aliases)
-              (setf arg-index new-idx)
-              (dolist (n new-names) (push n arg-names)))))
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-record-arg stream param-name param-type records aliases arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names))))
 
-         ;; ---- scalar parameters ----
          ((symbolp param-type)
-          (let* ((type-str (crisp-type-to-cpp-type param-type))
-                 (param-name-cpp (substitute #\_ #\- param-name)))
-            (multiple-value-bind (dvec-base dvec-width) (%dvec-parse param-type)
-              (if dvec-base
-                  (let ((init-str (format nil "{~{~a~^, ~}}"
-                                          (loop for i from 0 below dvec-width
-                                                collect (+ arg-index 42 i)))))
-                    (format stream "    ~a ~a_arg = ~a;~%" type-str param-name-cpp init-str))
-                  (format stream "    ~a ~a_arg = ~d;~%" type-str param-name-cpp (+ arg-index 42))))
-            (push (format nil "~a_arg" param-name-cpp) arg-names)
-            (incf arg-index))))))
+          (multiple-value-bind (new-idx names)
+              (%cuda-emit-scalar-arg stream param-name param-type arg-index)
+            (setf arg-index new-idx)
+            (setf arg-names (append (reverse names) arg-names)))))))
 
     ;; Build kernelParams[] array
     (let ((ordered-names (nreverse arg-names)))

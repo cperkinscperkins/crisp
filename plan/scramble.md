@@ -679,7 +679,7 @@ Technical Debt
 - [x] --device-only flag for SYCL to get kernel only timing?
 - [x] update docs with &out "input" read-only vs "output" requirement (in flux)
 - [x] drop oneDPL and use SYCL built-in reductions instead for benchmark
-- [ ] occupancy.
+- [x] occupancy.
 
 PERFORMANCE TESTING
 ===================

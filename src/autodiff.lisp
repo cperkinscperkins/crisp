@@ -126,188 +126,198 @@
 
 
 
+(defun %handle-math-and-trig-backward (v expr emit-fn local-adj-fn adjoint-map)
+  "Handles mathematical operations (+, -, *, /) and trigonometric functions (sin, cos)."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (cond
+      ((eq (car expr) '+)
+       (let ((a (cadr expr)) (b (caddr expr)))
+         (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
+         (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))
+         t))
+      ((eq (car expr) '-)
+       (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+         (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+         (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))
+         t))
+      ((eq (car expr) '*)
+       (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+         (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+         (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))
+         t))
+      ((eq (car expr) '/)
+       (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+         (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
+         (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))
+         t))
+      ((eq (car expr) 'sin)
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+           (let* ((a-adj (local-adj a))
+                  (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
+             (setf (gethash cos-a adjoint-map) cos-a)
+             (emit `(set! ,cos-a (cos ,a)))
+             (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj)))))
+           t)))
+      ((eq (car expr) 'cos)
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+           (let* ((a-adj (local-adj a))
+                  (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
+             (setf (gethash sin-a adjoint-map) sin-a)
+             (emit `(set! ,sin-a (sin ,a)))
+             (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj)))))
+           t)))
+      (t nil))))
+
+(defun %handle-tilde-backward (v expr emit-fn local-adj-fn tensor-inputs-ht scratch-tile-syms)
+  "Handles the tilde (~) indexing operation."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (let* ((src     (cadr expr))
+           (indices (cddr expr))
+           (v-adj   (local-adj v)))
+      (when (symbolp src)
+        (cond
+          ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
+           (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
+                                   (symbol-package src))))
+             (emit `(atomic-add! (~ ,grad-sym ,@indices) ,v-adj))))
+          ((and (null indices) tensor-inputs-ht (gethash src tensor-inputs-ht))
+           (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
+                                   (symbol-package src))))
+             (emit `(atomic-add! (~ ,grad-sym) ,v-adj))))
+          ((and indices scratch-tile-syms
+                (gethash src scratch-tile-syms))
+           (let ((src-adj (intern (format nil "~A_ADJ" (symbol-name src))
+                                  (symbol-package src))))
+             (emit `(set! (~ ,src-adj ,@indices)
+                          (+ (~ ,src-adj ,@indices) ,v-adj)))))
+          (t
+           (emit `(set! ,(local-adj src) (+ ,(local-adj src) ,v-adj))))))
+      t)))
+
+(defun %handle-sub-fn-call-backward (v expr emit-fn local-adj-fn hof-handler-fn)
+  "Handles differentiable sub-function calls."
+  (flet ((local-adj (x) (funcall local-adj-fn x)))
+    (let* ((fn   (car expr))
+           (args (cdr expr))
+           (info (gethash fn *differentiable-functions*)))
+      (if (getf info :hof)
+          (if hof-handler-fn
+              (funcall hof-handler-fn fn args v)
+              (error "HOF handler required for sub-function ~A but not provided" fn))
+          (%emit-sub-fn-backward fn args
+                                 (getf info :bkwd-name)
+                                 (list (local-adj v))
+                                 (getf info :n-float-params)
+                                 (symbol-package v)
+                                 emit-fn local-adj-fn
+                                 (if (symbolp v) (symbol-name v) "BW"))))
+    t))
+
+(defun %is-accessor-p (expr)
+  (and (consp expr)
+       (symbolp (car expr))
+       (= (length (cdr expr)) 1)
+       (let ((fname (symbol-name (car expr))))
+         (and (> (length fname) 1)
+              (cl:char= (cl:char fname (1- (length fname))) #\~)))))
+
+(defun %handle-accessor-backward (v expr emit-fn local-adj-fn adjoint-map)
+  "Handles record and struct accessors."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (cond
+      ((and *record-param-field-adjs*
+            (symbolp (cadr expr))
+            (gethash (cadr expr) *record-param-field-adjs*))
+       (let* ((accessor (symbol-name (car expr)))
+              (field-name-str (%strip-accessor-tildes accessor))
+              (record-sym (cadr expr))
+              (field-alist (gethash record-sym *record-param-field-adjs*))
+              (field-entry (assoc field-name-str field-alist :test #'string-equal))
+              (field-adj-sym (cdr field-entry))
+              (v-adj (local-adj v)))
+         (when field-adj-sym
+           (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
+           (emit `(set! ,field-adj-sym (+ ,field-adj-sym ,v-adj))))
+         t))
+      ((and *struct-kernel-param-shadows*
+            (symbolp (cadr expr))
+            (gethash (cadr expr) *struct-kernel-param-shadows*))
+       (let* ((accessor (symbol-name (car expr)))
+              (field-name-str (%strip-accessor-tildes accessor))
+              (struct-sym (cadr expr))
+              (entry (gethash struct-sym *struct-kernel-param-shadows*))
+              (field-alist (if (and (consp entry) (symbolp (car entry)))
+                               (cdr entry)
+                               entry))
+              (field-entry (assoc field-name-str field-alist :test #'string-equal))
+              (field-info (cdr field-entry))
+              (v-adj (local-adj v)))
+         (cond
+           ((%nested-field-info-p field-info) nil)
+           ((symbolp field-info)
+            (setf (gethash field-info adjoint-map) field-info)
+            (emit `(set! ,field-info (+ ,field-info ,v-adj))))
+           (t nil))
+         t))
+      (t
+       (let* ((a (cadr expr)) (v-adj (local-adj v)))
+         (when (symbolp a)
+           (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+         t)))))
+
+(defun %handle-constructor-backward (v expr emit-fn local-adj-fn adjoint-map)
+  "Handles %CONSTRUCT-STRUCT backward rule."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x)))
+    (let* ((ctor-args (cddr expr))
+           (field-alist (gethash v *record-param-field-adjs*)))
+      (loop for (field-name-str . field-adj-sym) in field-alist
+            for ctor-arg in ctor-args
+            when (and (symbolp ctor-arg) field-adj-sym)
+            do (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
+               (emit `(set! ,(local-adj ctor-arg)
+                            (+ ,(local-adj ctor-arg) ,field-adj-sym)))))
+    t))
+
 (defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
                                       &key hof-handler-fn (error-on-unknown t)
                                            tensor-inputs-ht
                                            scratch-tile-syms)
-  "Generates backward-pass adjoint updates for a single ANF binding (v := expr).
-   Overlay change (049/11 fix): field-name extraction in the accessor rules
-   strips both leading and trailing tildes so the raw `~X~` form routes
-   correctly.
-
-   Bug 032 fix: indexed `~` reads on a local-scratch tile (src is a member of
-   SCRATCH-TILE-SYMS, the hash table of locally make-scratch-*-bound syms)
-   emit an indexed `(set! (~ src_ADJ indices) ...)` into the auto-allocated
-   tile_ADJ tensor instead of falling through to the scalar `(local-adj src)`
-   path -- which would shadow the tensor binding in the wrap-let.
-
-   SCRATCH-TILE-SYMS is built by GENERATE-BACKWARD-WALK from flat-anf and
-   threaded through; absence (NIL or empty) keeps the original scalar path."
-  (flet ((local-adj (x) (funcall local-adj-fn x))
-         (emit (x) (funcall emit-fn x)))
-    (cond
-      ((and (consp expr) (eq (car expr) '+))
-        (let ((a (cadr expr)) (b (caddr expr)))
-          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,(local-adj v)))))
-          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,(local-adj v)))))))
-      ((and (consp expr) (eq (car expr) '-))
-        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
-          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* -1.0 ,v-adj)))))))
-      ((and (consp expr) (eq (car expr) '*))
-        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
-          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))))
-      ((and (consp expr) (eq (car expr) '/))
-        (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-          (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 1.0 ,b) ,v-adj)))))
-          (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (* -1.0 (/ ,a (* ,b ,b))) ,v-adj)))))))
-      ((and (consp expr) (eq (car expr) 'sin))
-        (let* ((a (cadr expr)) (v-adj (local-adj v)))
-          (when (symbolp a)
-            (let* ((a-adj (local-adj a))
-                   (cos-a (intern (format nil "~a_COS" (symbol-name a)) (symbol-package a))))
-              (setf (gethash cos-a adjoint-map) cos-a)
-              (emit `(set! ,cos-a (cos ,a)))
-              (emit `(set! ,a-adj (+ ,a-adj (* ,cos-a ,v-adj))))))))
-      ((and (consp expr) (eq (car expr) 'cos))
-        (let* ((a (cadr expr)) (v-adj (local-adj v)))
-          (when (symbolp a)
-            (let* ((a-adj (local-adj a))
-                   (sin-a (intern (format nil "~a_SIN" (symbol-name a)) (symbol-package a))))
-              (setf (gethash sin-a adjoint-map) sin-a)
-              (emit `(set! ,sin-a (sin ,a)))
-              (emit `(set! ,a-adj (+ ,a-adj (* (* ,sin-a -1.0) ,v-adj))))))))
-      ((and (consp expr) (eq (car expr) '~))
-        (let* ((src     (cadr expr))
-               (indices (cddr expr))
-               (v-adj   (local-adj v)))
-          (when (symbolp src)
-            (cond
-              ((and indices tensor-inputs-ht (gethash src tensor-inputs-ht))
-               (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
-                                       (symbol-package src))))
-                 (emit `(atomic-add! (~ ,grad-sym ,@indices) ,v-adj))))
-              ((and (null indices) tensor-inputs-ht (gethash src tensor-inputs-ht))
-               (let ((grad-sym (intern (format nil "~A_GRAD" (symbol-name src))
-                                       (symbol-package src))))
-                 (emit `(atomic-add! (~ ,grad-sym) ,v-adj))))
-              ;; --- Bug 032 fix: local-scratch tile read. ---
-              ;; SRC has indices, is not a tensor kernel-input, AND is a
-              ;; known make-scratch-* local — its _ADJ has been auto-
-              ;; allocated by scratch-adj-bindings.  Indexed add into the
-              ;; tile_ADJ tensor (NOT a scalar add) and intern src_ADJ
-              ;; directly (NOT via local-adj) so the wrap-let does not give
-              ;; it a stale scalar-0.0 init that would shadow the real
-              ;; tensor binding.
-              ;;
-              ;; The scratch-tile-syms gate matters: indexed reads on ANF
-              ;; temps holding e.g. (EXTENTS~ T) arrays would otherwise
-              ;; route here and emit nonsense `(set! (~ %anf-t-N_ADJ 0) ...)`
-              ;; — those adjs are scalar, not tensors.
-              ((and indices scratch-tile-syms
-                    (gethash src scratch-tile-syms))
-               (let ((src-adj (intern (format nil "~A_ADJ" (symbol-name src))
-                                      (symbol-package src))))
-                 (emit `(set! (~ ,src-adj ,@indices)
-                              (+ (~ ,src-adj ,@indices) ,v-adj)))))
-              (t
-               (emit `(set! ,(local-adj src) (+ ,(local-adj src) ,v-adj))))))))
-      ;; Differentiable sub-function call
-      ((and (consp expr)
-            (symbolp (car expr))
-            (gethash (car expr) *differentiable-functions*))
-        (let* ((fn   (car expr))
-               (args (cdr expr))
-               (info (gethash fn *differentiable-functions*)))
-          (if (getf info :hof)
-              (if hof-handler-fn
-                  (funcall hof-handler-fn fn args v)
-                  (error "HOF handler required for sub-function ~A but not provided" fn))
-              (%emit-sub-fn-backward fn args
-                                     (getf info :bkwd-name)
-                                     (list (local-adj v))
-                                     (getf info :n-float-params)
-                                     (symbol-package v)
-                                     emit-fn local-adj-fn
-                                     (if (symbolp v) (symbol-name v) "BW")))))
-      ;; Record-aware accessor.  Field-name extraction trims both tildes
-      ;; (049/11 fix) so X~ and ~X~ both yield the field name "X".
-      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
-            (let ((fname (symbol-name (car expr))))
-              (and (> (length fname) 1)
-                   (cl:char= (cl:char fname (1- (length fname))) #\~)))
-            *record-param-field-adjs*
-            (symbolp (cadr expr))
-            (gethash (cadr expr) *record-param-field-adjs*))
-        (let* ((accessor (symbol-name (car expr)))
-               (field-name-str (%strip-accessor-tildes accessor))
-               (record-sym (cadr expr))
-               (field-alist (gethash record-sym *record-param-field-adjs*))
-               (field-entry (assoc field-name-str field-alist :test #'string-equal))
-               (field-adj-sym (cdr field-entry))
-               (v-adj (local-adj v)))
-          (when field-adj-sym
-            (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
-            (emit `(set! ,field-adj-sym (+ ,field-adj-sym ,v-adj))))))
-      ;; Struct-kernel-param accessor.  Same tilde-strip fix applies.
-      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
-            (let ((fname (symbol-name (car expr))))
-              (and (> (length fname) 1)
-                   (cl:char= (cl:char fname (1- (length fname))) #\~)))
-            *struct-kernel-param-shadows*
-            (symbolp (cadr expr))
-            (gethash (cadr expr) *struct-kernel-param-shadows*))
-        (let* ((accessor (symbol-name (car expr)))
-               (field-name-str (%strip-accessor-tildes accessor))
-               (struct-sym (cadr expr))
-               (entry (gethash struct-sym *struct-kernel-param-shadows*))
-               (field-alist (if (and (consp entry) (symbolp (car entry)))
-                                (cdr entry)
-                                entry))
-               (field-entry (assoc field-name-str field-alist :test #'string-equal))
-               (field-info (cdr field-entry))
-               (v-adj (local-adj v)))
-          (cond
-            ((%nested-field-info-p field-info) nil)
-            ((symbolp field-info)
-             (setf (gethash field-info adjoint-map) field-info)
-             (emit `(set! ,field-info (+ ,field-info ,v-adj))))
-            (t nil))))
-      ;; Record constructor backward rule.
-      ((and (consp expr) (symbolp (car expr))
-            (string-equal (symbol-name (car expr)) "%CONSTRUCT-STRUCT")
-            *record-param-field-adjs*
-            (gethash v *record-param-field-adjs*))
-        (let* ((ctor-args (cddr expr))
-               (field-alist (gethash v *record-param-field-adjs*)))
-          (loop for (field-name-str . field-adj-sym) in field-alist
-                for ctor-arg in ctor-args
-                when (and (symbolp ctor-arg) field-adj-sym)
-                do (setf (gethash field-adj-sym adjoint-map) field-adj-sym)
-                   (emit `(set! ,(local-adj ctor-arg)
-                                (+ ,(local-adj ctor-arg) ,field-adj-sym))))))
-      ;; Existing accessor rule (identity flow to record/struct symbol)
-      ((and (consp expr) (symbolp (car expr)) (= (length (cdr expr)) 1)
-            (let ((fname (symbol-name (car expr))))
-              (and (> (length fname) 1)
-                   (cl:char= (cl:char fname (1- (length fname))) #\~))))
-        (let* ((a (cadr expr)) (v-adj (local-adj v)))
-          (when (symbolp a)
-            (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))))
-      ((and (consp expr) (symbolp (car expr))
-            (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
-       nil)
-      ((and (consp expr) (symbolp (car expr))
-            (string= (symbol-name (car expr)) "IF"))
-       nil)
-      ((and (consp expr) (symbolp (car expr))
-            (%backward-skip-fn-p (car expr)))
-       nil)
-      ((and (consp expr) (symbolp (car expr)))
-       (when error-on-unknown
-         (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
-      (t nil))))
+  "Generates backward-pass adjoint updates for a single ANF binding (v := expr)."
+  (cond
+    ((and (consp expr) (member (car expr) '(+ - * / sin cos) :test #'eq))
+     (%handle-math-and-trig-backward v expr emit-fn local-adj-fn adjoint-map))
+    ((and (consp expr) (eq (car expr) '~))
+     (%handle-tilde-backward v expr emit-fn local-adj-fn tensor-inputs-ht scratch-tile-syms))
+    ((and (consp expr)
+          (symbolp (car expr))
+          (gethash (car expr) *differentiable-functions*))
+     (%handle-sub-fn-call-backward v expr emit-fn local-adj-fn hof-handler-fn))
+    ((%is-accessor-p expr)
+     (%handle-accessor-backward v expr emit-fn local-adj-fn adjoint-map))
+    ((and (consp expr) (symbolp (car expr))
+          (string-equal (symbol-name (car expr)) "%CONSTRUCT-STRUCT")
+          *record-param-field-adjs*
+          (gethash v *record-param-field-adjs*))
+     (%handle-constructor-backward v expr emit-fn local-adj-fn adjoint-map))
+    ((and (consp expr) (symbolp (car expr))
+          (member (symbol-name (car expr)) '("<" ">" "<=" ">=" "=" "/=") :test #'string=))
+     nil)
+    ((and (consp expr) (symbolp (car expr))
+          (string= (symbol-name (car expr)) "IF"))
+     nil)
+    ((and (consp expr) (symbolp (car expr))
+          (%backward-skip-fn-p (car expr)))
+     nil)
+    ((and (consp expr) (symbolp (car expr)))
+     (when error-on-unknown
+       (error "Function ~A is not differentiable. Wrap the kernel in 'forward-only' if differentiation is not needed, or ensure all called functions are differentiable." (car expr))))
+    (t nil)))
 
 
 
@@ -430,7 +440,6 @@
      (intern (format nil "~A_ADJ" (symbol-name sym))
              (or kernel-pkg (symbol-package sym))))))
 
-
 (defun %tlc-extract-transpose-key (key-args)
   "Returns the value of :transpose in KEY-ARGS, or NIL if absent."
   (loop for (k v) on key-args by #'cddr
@@ -438,7 +447,75 @@
         finally (cl:return nil)))
 
 
+(defun %gfw-process-set! (form emit-fn local-adj-fn inputs outputs scratch-tile-syms intermediate-zero kernel-pkg)
+  (let ((place (cadr form))
+        (val   (caddr form)))
+    (when (and (consp place) (eq (car place) '~) (symbolp val))
+      (let ((target  (cadr place))
+            (indices (cddr place)))
+        (cond
+          ((member target outputs)
+           (let ((tgt-grad (intern (format nil "~A_GRAD" (symbol-name target))
+                                   (symbol-package target))))
+             (funcall emit-fn `(set! ,(funcall local-adj-fn val)
+                                     (+ ,(funcall local-adj-fn val) (~ ,tgt-grad ,@indices))))))
+          ((member target inputs)
+           (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
+                  target target))
+          ((and scratch-tile-syms (gethash target scratch-tile-syms))
+           (let ((tgt-adj (%tlc-bwd-adj-name target inputs outputs local-adj-fn kernel-pkg)))
+             (funcall emit-fn `(set! ,(funcall local-adj-fn val)
+                                     (+ ,(funcall local-adj-fn val) (~ ,tgt-adj ,@indices))))
+             (funcall emit-fn `(set! (~ ,tgt-adj ,@indices) ,intermediate-zero))))
+          (t nil))))))
 
+
+(defun %gfw-process-let (form emit-fn process-form-fn bindings augmented-bindings body)
+  (declare (ignore form))
+  (let ((local-forms nil))
+    (flet ((local-emit (f) (push f local-forms)))
+      (dolist (b (reverse body))
+        (funcall process-form-fn b #'local-emit))
+      (dolist (b (reverse bindings))
+        (when (and (consp b) (= (length b) 2) (symbolp (car b)))
+          (funcall process-form-fn b #'local-emit))))
+    (funcall emit-fn `(let ,augmented-bindings ,@(nreverse local-forms)))))
+
+
+(defun %gfw-process-dotimes (form emit-fn process-form-fn binding body local-vars adjoint-map intermediate-zero)
+  (declare (ignore form))
+  (let ((local-forms nil))
+    (flet ((local-emit (f) (push f local-forms)))
+      (dolist (b (reverse body))
+        (funcall process-form-fn b #'local-emit)))
+    (let ((zero-resets
+           (loop for v in local-vars
+                 for adv = (gethash v adjoint-map)
+                 when adv
+                 collect `(set! ,adv ,intermediate-zero))))
+      (funcall emit-fn `(dotimes ,binding ,@zero-resets ,@(nreverse local-forms))))))
+
+
+(defun %gfw-process-if (form emit-fn process-form-fn cond-form then-form else-form)
+  (declare (ignore form))
+  (let ((then-local nil)
+        (else-local nil))
+    (when then-form
+      (funcall process-form-fn then-form (lambda (f) (push f then-local))))
+    (when (and else-form (not (null else-form)))
+      (funcall process-form-fn else-form (lambda (f) (push f else-local))))
+    (let ((then-body (cond
+                       ((null then-local) nil)
+                       ((= (length then-local) 1) (first then-local))
+                       (t `(progn ,@(nreverse then-local)))))
+          (else-body (cond
+                       ((null else-local) nil)
+                       ((= (length else-local) 1) (first else-local))
+                       (t `(progn ,@(nreverse else-local))))))
+      (funcall emit-fn
+               (if else-body
+                   `(if ,cond-form ,(or then-body 'nil) ,else-body)
+                   `(if ,cond-form ,(or then-body 'nil)))))))
 
 
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
@@ -620,106 +697,28 @@
 
                          ((and (consp form) (symbolp (car form))
                                (string-equal (symbol-name (car form)) "SET!"))
-                          (let ((place (cadr form))
-                                (val   (caddr form)))
-                            (when (and (consp place) (eq (car place) '~) (symbolp val))
-                              (let ((target  (cadr place))
-                                    (indices (cddr place)))
-                                (cond
-                                  ((member target outputs)
-                                   (let ((tgt-grad (intern (format nil "~A_GRAD" (symbol-name target))
-                                                           (symbol-package target))))
-                                     (funcall emit-fn `(set! ,(local-adj val)
-                                                             (+ ,(local-adj val) (~ ,tgt-grad ,@indices))))))
-                                  ((member target inputs)
-                                   (error "Cannot differentiate: kernel mutates input parameter ~A via (set! (~~ ~A) ...). Only output parameters may be written."
-                                          target target))
-                                  ;; --- Bug 032 fix: local-scratch target. ---
-                                  ;; The forward overwrote tile[indices] with val.
-                                  ;; The backward consumes the upstream
-                                  ;; tile_ADJ[indices] into val_adj, then zeroes
-                                  ;; tile_ADJ[indices] so subsequent chain-rule
-                                  ;; contributions (from the backward of the RHS
-                                  ;; expression's index reads) populate it fresh.
-                                  ;; Without this, any in-place tile mutation
-                                  ;; between load-tile-coords and store-tile-coords
-                                  ;; silently loses its derivative.
-                                  ;;
-                                  ;; Gated on scratch-tile-syms membership; other
-                                  ;; non-input/output set! targets fall through
-                                  ;; (old behavior) to avoid emitting nonsense
-                                  ;; indexed adjs for unrelated symbols.
-                                  ((and scratch-tile-syms
-                                        (gethash target scratch-tile-syms))
-                                   (let ((tgt-adj (%tlc-bwd-adj-name
-                                                   target inputs outputs
-                                                   #'local-adj kernel-pkg)))
-                                     (funcall emit-fn
-                                              `(set! ,(local-adj val)
-                                                     (+ ,(local-adj val)
-                                                        (~ ,tgt-adj ,@indices))))
-                                     (funcall emit-fn
-                                              `(set! (~ ,tgt-adj ,@indices)
-                                                     ,intermediate-zero))))
-                                  (t nil))))))
+                          (%gfw-process-set! form emit-fn #'local-adj inputs outputs scratch-tile-syms intermediate-zero kernel-pkg))
 
                          ((and (consp form) (symbolp (car form))
                                (string-equal (symbol-name (car form)) "LET"))
                           (let* ((bindings (cadr form))
-                                 ;; Phase 1c: auto-allocate <var>_ADJ paired scratch.
                                  (augmented-bindings (%augment-scratch-adj-bindings bindings kernel-pkg))
-                                 (body (cddr form))
-                                 (local-forms nil))
-                            (flet ((local-emit (f) (push f local-forms)))
-                              (dolist (b (reverse body))
-                                (process-form b #'local-emit))
-                              (dolist (b (reverse bindings))
-                                (when (and (consp b) (= (length b) 2) (symbolp (car b)))
-                                  (process-form b #'local-emit))))
-                            (funcall emit-fn `(let ,augmented-bindings ,@(nreverse local-forms)))))
+                                 (body (cddr form)))
+                            (%gfw-process-let form emit-fn #'process-form bindings augmented-bindings body)))
 
                          ((and (consp form) (symbolp (car form))
                                (string-equal (symbol-name (car form)) "DOTIMES"))
                           (let* ((binding (cadr form))
                                  (body (cddr form))
-                                 (local-vars (%collect-locally-bound-vars body))
-                                 (local-forms nil))
-                            (flet ((local-emit (f) (push f local-forms)))
-                              (dolist (b (reverse body))
-                                (process-form b #'local-emit)))
-                            (let ((zero-resets
-                                   (loop for v in local-vars
-                                         for adv = (gethash v adjoint-map)
-                                         when adv
-                                         collect `(set! ,adv ,intermediate-zero))))
-                              (funcall emit-fn
-                                       `(dotimes ,binding
-                                          ,@zero-resets
-                                          ,@(nreverse local-forms))))))
+                                 (local-vars (%collect-locally-bound-vars body)))
+                            (%gfw-process-dotimes form emit-fn #'process-form binding body local-vars adjoint-map intermediate-zero)))
 
                          ((and (consp form) (symbolp (car form))
                                (string-equal (symbol-name (car form)) "IF"))
                           (let* ((cond-form (cadr form))
                                  (then-form (caddr form))
-                                 (else-form (cadddr form))
-                                 (then-local nil)
-                                 (else-local nil))
-                            (when then-form
-                              (process-form then-form (lambda (f) (push f then-local))))
-                            (when (and else-form (not (null else-form)))
-                              (process-form else-form (lambda (f) (push f else-local))))
-                            (let ((then-body (cond
-                                               ((null then-local) nil)
-                                               ((= (length then-local) 1) (first then-local))
-                                               (t `(progn ,@(nreverse then-local)))))
-                                  (else-body (cond
-                                               ((null else-local) nil)
-                                               ((= (length else-local) 1) (first else-local))
-                                               (t `(progn ,@(nreverse else-local))))))
-                              (funcall emit-fn
-                                       (if else-body
-                                           `(if ,cond-form ,(or then-body 'nil) ,else-body)
-                                           `(if ,cond-form ,(or then-body 'nil)))))))
+                                 (else-form (cadddr form)))
+                            (%gfw-process-if form emit-fn #'process-form cond-form then-form else-form)))
 
                          ;; Bug 032 fix part 2: WHEN and UNLESS were not handled
                          ;; by the AD walker, so any forms inside them (including
@@ -1210,20 +1209,165 @@ to compute-base-type for derived types."
                              "LOCAL-BARRIER" "MEM-FENCE")
              when (prefix-or-mangled-p prefix) return t)))))
 
+(defun %collect-record-param-info (env pkg)
+  "Record/struct params + their field info, in declaration order."
+  (loop for pd in env
+        for resolved = (%resolve-to-base-type-for-structs-or-records (parameter-def-type pd))
+        when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                  (not (%crisp-handle-param-type-p (parameter-def-type pd)))
+                  (or (%crisp-record-type-p resolved)
+                      (%crisp-struct-type-p resolved)))
+        collect
+        (let* ((rsym (parameter-def-name pd))
+               (fields (%get-record-runtime-fields resolved)))
+          (list rsym resolved
+                (loop for field-info in fields
+                      for field-name = (first field-info)
+                      collect (cons field-name
+                                    (intern (format nil "~a_~a_ADJ"
+                                                    (symbol-name rsym)
+                                                    (symbol-name field-name))
+                                            pkg)))))))
 
+(defun %collect-all-diff-param-syms-for-return (env record-param-info)
+  "Full ordered list of 'differentiable param syms' used for emitting the multi-value return."
+  (let ((result nil))
+    (loop for pd in env
+          do (let ((sym (parameter-def-name pd)))
+               (when (not (string-equal (symbol-name sym) "&OUT"))
+                 (let ((rec-entry (assoc sym record-param-info :test #'eq)))
+                   (cond
+                     (rec-entry
+                      (setf result (append result (mapcar #'cdr (third rec-entry)))))
+                     ((%crisp-float-type-p (parameter-def-type pd))
+                      (setf result (append result (list sym))))
+                     ((> (%count-differentiable-contributions (parameter-def-type pd)) 0)
+                      (setf result (append result (list sym)))))))))
+    result))
+
+(defun %build-record-param-field-adjs-ht (record-param-info)
+  "Build the hash table record-param-field-adjs-ht."
+  (when record-param-info
+    (let ((ht (make-hash-table :test 'eq)))
+      (dolist (info record-param-info)
+        (let ((field-alist
+               (loop for (fname . fadj) in (third info)
+                     collect (cons (symbol-name fname) fadj))))
+          (setf (gethash (first info) ht) field-alist)))
+      ht)))
+
+(defun %collect-tensor-param-info (env pkg)
+  "Handle params (tensors + cells) + their grad-out info, in declaration order."
+  (loop for pd in env
+        for ptype = (parameter-def-type pd)
+        when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                  (%crisp-handle-param-type-p ptype))
+        collect
+        (let* ((psym (parameter-def-name pd))
+               (grad-sym (intern (format nil "~A_GRAD" (symbol-name psym)) pkg))
+               (grad-type (cond
+                            ((%crisp-integer-tensor-type-p ptype)
+                             (%integer-tensor-elem-to-float ptype))
+                            ((%crisp-tensor-param-type-p ptype)
+                             (%ensure-tensor-read-write ptype))
+                            (t ptype))))
+          (list psym ptype grad-sym grad-type))))
+
+(defun %register-hof-differentiable-function (name env float-param-syms fn-param-entries n-return body-forms)
+  "Register the HOF details for autodiff compilation."
+  (let* ((fn-param-idx (car (car fn-param-entries)))
+         (fn-param-sym (parameter-def-name (cdr (car fn-param-entries))))
+         (clean-body  (loop for f in body-forms
+                            unless (and (atom f) (not (symbolp f)))
+                            collect f)))
+    (log:info "AUTODIFF: ~a is HOF — storing for inline backward" name)
+    (setf (gethash name *differentiable-hof-store*)
+          (list :param-syms       (loop for pd in env collect (parameter-def-name pd))
+                :fn-param-idx     fn-param-idx
+                :fn-param-sym     fn-param-sym
+                :float-param-syms float-param-syms
+                :body-forms       clean-body))
+    (setf (gethash name *differentiable-functions*)
+          (list :hof t
+                :n-float-params (length float-param-syms)
+                :n-return n-return))
+    nil))
+
+(defun %generate-backward-companion-ast-body (name params env declarations body-forms pkg n-float-params n-return
+                                               return-types-non-void record-param-info record-param-field-adjs-ht
+                                               all-diff-param-syms-for-return)
+  "Generate backward companion def-function AST body."
+  (declare (ignore declarations))
+  (let* ((bkwd-name  (intern (format nil "~A_GRAD" (symbol-name name)) pkg))
+         (t-grad-syms (loop for i from 0 below n-return
+                            collect (intern (format nil "T_GRAD~A" i) pkg)))
+         (orig-param-types (mapcar #'parameter-def-type env))
+         (t-grad-types (mapcar (lambda (t-spec) (%promote-to-float-adjoint t-spec))
+                               return-types-non-void))
+         (tensor-param-info (%collect-tensor-param-info env pkg))
+         (tensor-grad-out-syms (mapcar #'third tensor-param-info))
+         (tensor-grad-out-types (mapcar #'fourth tensor-param-info))
+         (out-marker (intern "&OUT" :crisp-language))
+         (bkwd-params (append params t-grad-syms
+                              (when tensor-param-info (cons out-marker tensor-grad-out-syms))))
+         (bkwd-fn-spec
+          `(function (,@orig-param-types ,@t-grad-types
+                      ,@(when tensor-param-info (cons out-marker tensor-grad-out-types))
+                      => ,@(make-list n-float-params :initial-element 'float)))))
+
+    (setf (gethash name *differentiable-functions*)
+          (list :bkwd-name bkwd-name
+                :n-float-params n-float-params
+                :n-return n-return
+                :tensor-param-indices
+                (loop for pd in env
+                      for i from 0
+                      when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
+                                (%crisp-handle-param-type-p (parameter-def-type pd)))
+                      collect i)))
+
+    (log:info "AUTODIFF: Generating _GRAD companion ~a for ~a (n-fp=~a n-ret=~a n-tensor=~a)"
+              bkwd-name name n-float-params n-return (length tensor-param-info))
+
+    (handler-case
+      (let* ((anf-body   (mapcar #'anf-transform body-forms))
+             (raw-flat   (flatten-anf-body anf-body))
+             (flat-anf
+              (let ((last-f (car (last raw-flat))))
+                (if (or (symbolp last-f)
+                        (and (consp last-f) (eq (first last-f) 'return)))
+                    raw-flat
+                    (let ((ret-sym (intern "%RET-0" pkg)))
+                      (append (butlast raw-flat)
+                              (list (list ret-sym last-f)
+                                    ret-sym))))))
+             (return-vars (%extract-return-vars flat-anf))
+             (tensor-inputs-ht
+              (when tensor-param-info
+                (let ((ht (make-hash-table :test 'eq)))
+                  (dolist (entry tensor-param-info)
+                    (setf (gethash (first entry) ht) (second entry)))
+                  ht)))
+             (bkwd-body
+              (let ((*record-param-field-adjs* record-param-field-adjs-ht))
+                (%check-fn-body-for-mutations body-forms
+                                              (mapcar #'parameter-def-name env)
+                                              name)
+                (%generate-backward-function-walk
+                 flat-anf all-diff-param-syms-for-return t-grad-syms return-vars
+                 tensor-inputs-ht))))
+        `(def-function ,bkwd-name ,bkwd-params
+           (declare #'(,@(second bkwd-fn-spec)))
+           ,bkwd-body))
+
+      (error (e)
+        (log:info "AUTODIFF: ~a — cannot generate _GRAD: ~a. Unregistering; will error if called from a differentiable kernel." name e)
+        (remhash name *differentiable-functions*)
+        nil))))
 
 (defun %generate-backward-function-ast (name params declarations body-forms)
   "Generates the backward companion (def-function NAME_GRAD ...) for a
-differentiable user function.
-
-101 part 1: counts record/struct params as contributing their runtime-field
-count toward n-float-params.  For record/struct params, builds a per-field
-synthetic adjoint map and binds *record-param-field-adjs* during the
-backward walk.  Handle (tensor + cell) params flow grad via &out grad-handles.
-
-Also skips trivial-accessor bodies — def-derived-type's auto-generated
-accessors are missing the (crisp-system-generated) marker but should be
-treated equivalently."
+differentiable user function."
   (log:debug "%%GBFA called for ~a is-system=~a" name (member '(crisp-system-generated) declarations :test #'equal))
   (when (%trivial-accessor-body-p body-forms)
     (log:info "AUTODIFF: ~a is a trivial field-extraction accessor — skipping _GRAD generation." name)
@@ -1237,68 +1381,9 @@ treated equivalently."
                               (%crisp-float-type-p (parameter-def-type pd)))
                     collect pd))
              (float-param-syms (mapcar #'parameter-def-name float-param-entries))
-             ;; Record/struct params + their field info, in declaration order.
-             ;; Each entry: (param-sym resolved-type
-             ;;              ((field-name . field-adj-sym) ...))
-             ;;
-             ;; Resolves derived-from-{record,struct} types so coordinate (derived
-             ;; from point) is treated the same as point.  Both records and
-             ;; structs use this same path — the IR-level difference (records
-             ;; SROA, structs don't) doesn't matter for sub-function AD because
-             ;; the chain rule operates on source-level ANF.
-             ;;
-             ;; HANDLES (tensors + cells) are EXCLUDED here — they're internally
-             ;; stored as records in *crisp-structs* (the storage handle layout),
-             ;; so %crisp-record-type-p would erroneously include them.  Handles
-             ;; go through their own tensor-param-info path with &out grad-handle
-             ;; handling.
-             (record-param-info
-              (loop for pd in env
-                    for resolved = (%resolve-to-base-type-for-structs-or-records (parameter-def-type pd))
-                    when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                              (not (%crisp-handle-param-type-p (parameter-def-type pd)))
-                              (or (%crisp-record-type-p resolved)
-                                  (%crisp-struct-type-p resolved)))
-                    collect
-                    (let* ((rsym (parameter-def-name pd))
-                           (fields (%get-record-runtime-fields resolved)))
-                      (list rsym resolved
-                            (loop for field-info in fields
-                                  for field-name = (first field-info)
-                                  collect (cons field-name
-                                                (intern (format nil "~a_~a_ADJ"
-                                                                (symbol-name rsym)
-                                                                (symbol-name field-name))
-                                                        pkg)))))))
-             (record-field-adj-syms
-              (loop for info in record-param-info
-                    append (mapcar #'cdr (third info))))
-             ;; Full ordered list of "differentiable param syms" used for
-             ;; emitting the multi-value return. Per-field adjs are listed
-             ;; in the order they appear in the parameter list.
-             (all-diff-param-syms-for-return
-              (let ((result nil))
-                (loop for pd in env
-                      do (let ((sym (parameter-def-name pd)))
-                           (when (not (string-equal (symbol-name sym) "&OUT"))
-                             (let ((rec-entry (assoc sym record-param-info :test #'eq)))
-                               (cond
-                                 (rec-entry
-                                  (setf result (append result (mapcar #'cdr (third rec-entry)))))
-                                 ((%crisp-float-type-p (parameter-def-type pd))
-                                  (setf result (append result (list sym))))
-                                 ((> (%count-differentiable-contributions (parameter-def-type pd)) 0)
-                                  (setf result (append result (list sym)))))))))
-                result))
-             (record-param-field-adjs-ht
-              (when record-param-info
-                (let ((ht (make-hash-table :test 'eq)))
-                  (dolist (info record-param-info)
-                    (let ((field-alist
-                           (loop for (fname . fadj) in (third info)
-                                 collect (cons (symbol-name fname) fadj))))
-                      (setf (gethash (first info) ht) field-alist)))
-                  ht)))
+             (record-param-info (%collect-record-param-info env pkg))
+             (all-diff-param-syms-for-return (%collect-all-diff-param-syms-for-return env record-param-info))
+             (record-param-field-adjs-ht (%build-record-param-field-adjs-ht record-param-info))
              (n-float-params
               (loop for pd in env
                     when (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
@@ -1311,123 +1396,16 @@ treated equivalently."
                               (%crisp-function-type-p (parameter-def-type pd)))
                     collect (cons i pd)))
              (is-hof (consp fn-param-entries)))
-        (declare (ignorable record-field-adj-syms))
 
         (when (and (zerop n-float-params)
                    (not (%has-tensor-diff-param-p env)))
           (log:info "AUTODIFF: ~a has no differentiable params — skipping _GRAD generation." name)
           (return-from %generate-backward-function-ast nil))
 
-        (when is-hof
-          (let* ((fn-param-idx (car (car fn-param-entries)))
-                 (fn-param-sym (parameter-def-name (cdr (car fn-param-entries))))
-                 (clean-body  (loop for f in body-forms
-                                    unless (and (atom f) (not (symbolp f)))
-                                    collect f)))
-            (log:info "AUTODIFF: ~a is HOF — storing for inline backward" name)
-            (setf (gethash name *differentiable-hof-store*)
-                  (list :param-syms       (loop for pd in env collect (parameter-def-name pd))
-                        :fn-param-idx     fn-param-idx
-                        :fn-param-sym     fn-param-sym
-                        :float-param-syms float-param-syms
-                        :body-forms       clean-body))
-            (setf (gethash name *differentiable-functions*)
-                  (list :hof t
-                        :n-float-params (length float-param-syms)
-                        :n-return n-return))
-            (return-from %generate-backward-function-ast nil)))
-
-        (let* ((bkwd-name  (intern (format nil "~A_GRAD" (symbol-name name)) pkg))
-               (t-grad-syms (loop for i from 0 below n-return
-                                  collect (intern (format nil "T_GRAD~A" i) pkg)))
-               (orig-param-types (mapcar #'parameter-def-type env))
-               ;; 101: promote return types for t_grad params.  Integer returns
-               ;; (e.g. int, long) get float-typed t_grad seeds at the call site.
-               (t-grad-types (mapcar (lambda (t-spec) (%promote-to-float-adjoint t-spec))
-                                     return-types-non-void))
-               ;; Handle params (tensors + cells) + their grad-out info,
-               ;; in declaration order.
-               ;; Each entry: (PARAM-SYM PARAM-TYPE GRAD-OUT-SYM GRAD-OUT-TYPE).
-               (tensor-param-info
-                (loop for pd in env
-                      for ptype = (parameter-def-type pd)
-                      when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                                (%crisp-handle-param-type-p ptype))
-                      collect
-                      (let* ((psym (parameter-def-name pd))
-                             (grad-sym (intern (format nil "~A_GRAD" (symbol-name psym)) pkg))
-                             (grad-type (cond
-                                          ((%crisp-integer-tensor-type-p ptype)
-                                           (%integer-tensor-elem-to-float ptype))
-                                          ((%crisp-tensor-param-type-p ptype)
-                                           (%ensure-tensor-read-write ptype))
-                                          (t ptype))))
-                        (list psym ptype grad-sym grad-type))))
-               (tensor-grad-out-syms (mapcar #'third tensor-param-info))
-               (tensor-grad-out-types (mapcar #'fourth tensor-param-info))
-               ;; The `&out` marker must be in the same package the user
-               ;; sees (crisp-language).
-               (out-marker (intern "&OUT" :crisp-language))
-               (bkwd-params (append params t-grad-syms
-                                    (when tensor-param-info (cons out-marker tensor-grad-out-syms))))
-               (bkwd-fn-spec
-                `(function (,@orig-param-types ,@t-grad-types
-                            ,@(when tensor-param-info (cons out-marker tensor-grad-out-types))
-                            => ,@(make-list n-float-params :initial-element 'float)))))
-
-          (setf (gethash name *differentiable-functions*)
-                (list :bkwd-name bkwd-name
-                      :n-float-params n-float-params
-                      :n-return n-return
-                      ;; Indices (within params) of handle args (tensors+cells).
-                      ;; Used by %emit-sub-fn-backward at the call site to pass
-                      ;; the corresponding kernel-level grad-handle symbols as
-                      ;; the &out args.
-                      :tensor-param-indices
-                      (loop for pd in env
-                            for i from 0
-                            when (and (not (string-equal (symbol-name (parameter-def-name pd)) "&OUT"))
-                                      (%crisp-handle-param-type-p (parameter-def-type pd)))
-                            collect i)))
-
-          (log:info "AUTODIFF: Generating _GRAD companion ~a for ~a (n-fp=~a n-ret=~a n-tensor=~a)"
-                    bkwd-name name n-float-params n-return (length tensor-param-info))
-
-          (handler-case
-            (let* ((anf-body   (mapcar #'anf-transform body-forms))
-                   (raw-flat   (flatten-anf-body anf-body))
-                   (flat-anf
-                    (let ((last-f (car (last raw-flat))))
-                      (if (or (symbolp last-f)
-                              (and (consp last-f) (eq (first last-f) 'return)))
-                          raw-flat
-                          (let ((ret-sym (intern "%RET-0" pkg)))
-                            (append (butlast raw-flat)
-                                    (list (list ret-sym last-f)
-                                          ret-sym))))))
-                   (return-vars (%extract-return-vars flat-anf))
-                   (tensor-inputs-ht
-                    (when tensor-param-info
-                      (let ((ht (make-hash-table :test 'eq)))
-                        (dolist (entry tensor-param-info)
-                          (setf (gethash (first entry) ht) (second entry)))
-                        ht)))
-                   (bkwd-body
-                    (let ((*record-param-field-adjs* record-param-field-adjs-ht))
-                      (%check-fn-body-for-mutations body-forms
-                                                    (mapcar #'parameter-def-name env)
-                                                    name)
-                      (%generate-backward-function-walk
-                       flat-anf all-diff-param-syms-for-return t-grad-syms return-vars
-                       tensor-inputs-ht))))
-              `(def-function ,bkwd-name ,bkwd-params
-                 (declare #'(,@(second bkwd-fn-spec)))
-                 ,bkwd-body))
-
-            (error (e)
-              (log:info "AUTODIFF: ~a — cannot generate _GRAD: ~a. Unregistering; will error if called from a differentiable kernel." name e)
-              (remhash name *differentiable-functions*)
-              nil)))))))
+        (if is-hof
+            (%register-hof-differentiable-function name env float-param-syms fn-param-entries n-return body-forms)
+            (%generate-backward-companion-ast-body name params env declarations body-forms pkg n-float-params n-return
+                                                   return-types-non-void record-param-info record-param-field-adjs-ht all-diff-param-syms-for-return))))))
 
 
 

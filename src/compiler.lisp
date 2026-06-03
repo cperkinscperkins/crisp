@@ -61,6 +61,15 @@
            (namestring bundled-path)
            tool-base)))))
 
+(defun %extract-spir-kernel-info (ir-text kernel-pos)
+  "Extracts (values func-name define-pos brace-pos) for a kernel-pos in LLVM IR text."
+  (let* ((define-pos (search "define" ir-text :start2 (max 0 (- kernel-pos 100)) :end2 kernel-pos :from-end t))
+         (at-pos (position #\@ ir-text :start (or define-pos kernel-pos)))
+         (paren-pos (position #\( ir-text :start at-pos))
+         (func-name (subseq ir-text (1+ at-pos) paren-pos))
+         (brace-pos (position #\{ ir-text :start paren-pos)))
+    (values func-name define-pos brace-pos)))
+
 (defun find-spir-kernels (ir-text)
   "Find all SPIR kernel functions in LLVM IR text.
    Returns list of (function-name start-pos end-pos-of-signature)."
@@ -71,16 +80,12 @@
        (unless kernel-pos
          (cl:return kernels))
 
-       (let* ((define-pos (search "define" ir-text :start2 (max 0 (- kernel-pos 100)) :end2 kernel-pos :from-end t))
-              (at-pos (position #\@ ir-text :start (or define-pos kernel-pos)))
-              (paren-pos (position #\( ir-text :start at-pos))
-              (func-name (subseq ir-text (1+ at-pos) paren-pos))
-              (brace-pos (position #\{ ir-text :start paren-pos)))
-
+       (multiple-value-bind (func-name define-pos brace-pos)
+           (%extract-spir-kernel-info ir-text kernel-pos)
          (when (and func-name brace-pos)
-               (push (list func-name define-pos brace-pos) kernels))
+               (push (list func-name define-pos brace-pos) kernels)))
 
-         (setf pos (1+ kernel-pos)))))))
+       (setf pos (1+ kernel-pos))))))
 
 
 
