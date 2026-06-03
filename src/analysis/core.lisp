@@ -510,6 +510,7 @@
 
             (let* ((existing (gethash fn-name *implicit-arg-map*))
                    (match (find canonical-spec existing :key #'cdr :test #'equal)))
+              (declare (ignore match))
               (cond
                (t
                  (let ((new-entry (cons unique-name canonical-spec)))
@@ -1520,11 +1521,12 @@ in single-pass mode."
                 (*compiler-session* (make-compiler-session :module module :builder builder :di-builder di-builder :di-compile-unit di-compile-unit :location-map location-map))
                 (form-with-location (append crisp-form (list :source-location ''(0))))
                 (expanded-form (macroexpand-1 form-with-location))
-                (_ (format *error-output* "~&DEBUG CONTEXT is: ~s type: ~s~%" *compiler-context* (type-of *compiler-context*)))
-                (_ (format *error-output* "~&DEBUG EXPANSION: ~s~%" expanded-form))
-                (semantic-fn (let ((val (eval expanded-form)))
-                               (format *error-output* "~&DEBUG EVAL RESULT: ~s~%" val)
-                               val)))
+                (semantic-fn (progn
+                                (format *error-output* "~&DEBUG CONTEXT is: ~s type: ~s~%" *compiler-context* (type-of *compiler-context*))
+                                (format *error-output* "~&DEBUG EXPANSION: ~s~%" expanded-form)
+                                (let ((val (eval expanded-form)))
+                                  (format *error-output* "~&DEBUG EVAL RESULT: ~s~%" val)
+                                  val))))
            (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))
          (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
       ;; Cleanup.

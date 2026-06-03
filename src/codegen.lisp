@@ -192,6 +192,7 @@
    
    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
    as text during IR printing for SPIR-V."
+  (declare (ignore module))
   (when (semantic-function-is-entry-point semantic-function)
         (log:info "Marking function ~a as Kernel for backend ~a"
                   (semantic-function-name semantic-function) *target-backend*)
@@ -218,6 +219,7 @@
 
 (defun %check-existing-function (existing fn-name di-builder di-compile-unit func crisp-return-type param-nodes location-map fn-loc module fn-type)
   "Helper: Handles redefinition or forward declaration of existing functions."
+  (declare (ignore func))
   (cond
    ;; Case 1: Redefinition (Function has a body already). We must Replace it.
    ((> (llvm-count-basic-blocks existing) 0)
@@ -726,7 +728,7 @@
      1. Reconstruct the deterministic unique name (same counter + ordering as Pass 1).
      2. Look up the tensor alloca in var-env.
      3. Load and return the tensor value."
-  (declare (ignore value))
+  (declare (ignore module value))
   (let* ((context *compiler-context*)
          (binding-name (or (compiler-context-current-binding-name context) '__storage))
          (fn-name (and context (compiler-context-current-compiling-function context)))
@@ -1114,8 +1116,7 @@
               (arg-val (extract-primary-value builder raw-arg-val arg-type))
               (from-type-spec (get-single-value-type arg-node))
               (to-type-spec (,type-accessor node))
-              (to-llvm-type (let ((err nil)) ; Allow to-type to be unresolvable for pure semantic casts
-                              (ignore-errors (crisp-type-to-llvm-type to-type-spec module)))))
+              (to-llvm-type (ignore-errors (crisp-type-to-llvm-type to-type-spec module))))
          (declare (ignorable from-type-spec to-type-spec to-llvm-type))
          (values (progn ,@body) nil)))))
 
@@ -1976,22 +1977,22 @@
 (defun %mv-bump-ptr (builder base-ptr offset-bytes addr-space)
   "GEP base-ptr by offset-bytes (an i64 LLVM value).
    Returns the new ptr in the same address space."
+  (declare (ignore addr-space))
   (cffi:with-foreign-object (indices :pointer 1)
     (setf (cffi:mem-aref indices :pointer 0) offset-bytes)
     (let* ((ptr-i8 (llvm-build-in-bounds-gep2
                        builder (llvm-int8-type) base-ptr indices 1 "mv_bumped_i8"))
                (ptr-as (llvm-get-pointer-address-space (llvm-type-of ptr-i8))))
-      (declare (ignore addr-space ptr-as))
+      (declare (ignore ptr-as))
       ptr-i8)))
 
 (defun %mv-build-storage (builder module addr-space src-parent new-ptr new-bytesize)
   "Build a new STORAGE_{addr} struct value from ptr and bytesize."
-  (declare (ignore module))
+  (declare (ignore src-parent))
   (let* ((storage-type (crisp-type-to-llvm-type `(storage ,addr-space) module))
              (s0 (llvm-build-insert-value builder (llvm-get-undef storage-type)
                                           new-ptr 0 "mv_storage_ptr"))
              (s1 (llvm-build-insert-value builder s0 new-bytesize 1 "mv_storage_bs")))
-    (declare (ignore src-parent))
     s1))
 
 

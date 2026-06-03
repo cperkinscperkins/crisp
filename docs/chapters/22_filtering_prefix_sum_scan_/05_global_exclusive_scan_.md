@@ -1,4 +1,4 @@
-# global-exclusive-scan ⚠️
+# global-exclusive-scan 📝
 
 
 Unfortunately, doing an exclusive scan on a really big vector is not a simple isolated operation. 

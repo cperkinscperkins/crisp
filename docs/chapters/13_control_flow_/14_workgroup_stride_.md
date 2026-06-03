@@ -46,7 +46,7 @@ These functions operate analagously to their `thread-stride` counterparts.
 -->
                      
 
-#### `ceil-pow2`
+#### `ceil-pow2` 📝
 
 For certain operations, like warp reductions, it is imperative that certain activities
 fit completely in a warp and are not "split" across warp divide. 

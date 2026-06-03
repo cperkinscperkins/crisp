@@ -1,4 +1,4 @@
-# Logging and Debugging ✅
+# Logging and Debugging 📝
 
 
 > Overengineer much?

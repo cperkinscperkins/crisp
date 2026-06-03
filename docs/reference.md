@@ -1,8 +1,8 @@
 # Crisp Codebase Reference
 
-Generated on 2026-06-01T05:57:12.841276Z
+Generated on 2026-06-03T07:02:23.006278Z
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\analysis\control.lisp`
 
 ### DEFUN `ENSURE-BRANCH-COMPATIBILITY`
 - **Args**: `(THEN-NODE ELSE-NODE LOCATION)`
@@ -551,7 +551,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\core.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\analysis\core.lisp`
 
 ### DEFVAR `*ANALYSIS-ACCESS-MODE*`
 
@@ -1005,7 +1005,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\ops.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\analysis\ops.lisp`
 
 ### DEFMACRO `DEF-BINARY-OP-ANALYZER`
 - **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
@@ -1159,7 +1159,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\structs.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\analysis\structs.lisp`
 
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
 - **Args**: `(TYPE)`
@@ -1249,6 +1249,27 @@ Generated on 2026-06-01T05:57:12.841276Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Tensor path dispatches on resolved :align:  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)
+
+
+---
+### DEFUN `%ANALYZE-SET!-SIMPLE-VARIABLE`
+- **Args**: `(TARGET-FORM VALUE-NODE ENV LOCATION)`
+
+  > Helper to analyze simple variable assignment (set! target-form value-node).
+
+
+---
+### DEFUN `%ANALYZE-SET!-STRUCT-ACCESSOR`
+- **Args**: `(OP ARG-NODES VALUE-NODE ENV CONTEXT LOCATION TARGET-FORM)`
+
+  > Helper to handle struct accessor logic for set!
+
+
+---
+### DEFUN `%ANALYZE-SET!-CALL-ACCESSOR`
+- **Args**: `(TARGET-FORM VALUE-NODE ENV CONTEXT LOCATION)`
+
+  > Helper to analyze set! when target is a function call or struct accessor.
 
 
 ---
@@ -1468,7 +1489,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\anf-transform.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\anf-transform.lisp`
 
 ### DEFVAR `*ANF-COUNTER*`
 
@@ -1495,6 +1516,34 @@ Generated on 2026-06-01T05:57:12.841276Z
 
   > Returns (VALUES normalized-place bindings)  >    Normalizes a place for mutation (e.g. the left side of a set!).  >    An atomic place stays unchanged, while accessors have their parent argument hoisted.
 
+
+---
+### DEFUN `%ANF-NORMALIZE-SET!`
+- **Args**: `(EXPR IS-NESTED?)`
+
+---
+### DEFUN `%ANF-NORMALIZE-IF`
+- **Args**: `(OP EXPR IS-NESTED?)`
+
+---
+### DEFUN `%ANF-NORMALIZE-IF+`
+- **Args**: `(OP EXPR IS-NESTED?)`
+
+---
+### DEFUN `%ANF-NORMALIZE-COND`
+- **Args**: `(EXPR IS-NESTED?)`
+
+---
+### DEFUN `%ANF-NORMALIZE-LET`
+- **Args**: `(EXPR IS-NESTED?)`
+
+---
+### DEFUN `%ANF-NORMALIZE-DOTIMES`
+- **Args**: `(OP EXPR IS-NESTED?)`
+
+---
+### DEFUN `%ANF-NORMALIZE-ATOMIC`
+- **Args**: `(OP EXPR IS-NESTED?)`
 
 ---
 ### DEFUN `ANF-NORMALIZE`
@@ -1539,7 +1588,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\autodiff.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\autodiff.lisp`
 
 ### DEFUN `%EMIT-SUB-FN-BACKWARD`
 - **Args**: `(FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN
@@ -1577,11 +1626,50 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
+### DEFUN `%HANDLE-MATH-AND-TRIG-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)`
+
+  > Handles mathematical operations (+, -, *, /) and trigonometric functions (sin, cos).
+
+
+---
+### DEFUN `%HANDLE-TILDE-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)`
+
+  > Handles the tilde (~) indexing operation.
+
+
+---
+### DEFUN `%HANDLE-SUB-FN-CALL-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN HOF-HANDLER-FN)`
+
+  > Handles differentiable sub-function calls.
+
+
+---
+### DEFUN `%IS-ACCESSOR-P`
+- **Args**: `(EXPR)`
+
+---
+### DEFUN `%HANDLE-ACCESSOR-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)`
+
+  > Handles record and struct accessors.
+
+
+---
+### DEFUN `%HANDLE-CONSTRUCTOR-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)`
+
+  > Handles %CONSTRUCT-STRUCT backward rule.
+
+
+---
 ### DEFUN `%HANDLE-SINGLE-VALUE-BACKWARD`
 - **Args**: `(V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN
               (ERROR-ON-UNKNOWN T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)`
 
-  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).  >    Overlay change (049/11 fix): field-name extraction in the accessor rules  >    strips both leading and trailing tildes so the raw `~X~` form routes  >    correctly.  >   >    Bug 032 fix: indexed `~` reads on a local-scratch tile (src is a member of  >    SCRATCH-TILE-SYMS, the hash table of locally make-scratch-*-bound syms)  >    emit an indexed `(set! (~ src_ADJ indices) ...)` into the auto-allocated  >    tile_ADJ tensor instead of falling through to the scalar `(local-adj src)`  >    path -- which would shadow the tensor binding in the wrap-let.  >   >    SCRATCH-TILE-SYMS is built by GENERATE-BACKWARD-WALK from flat-anf and  >    threaded through; absence (NIL or empty) keeps the original scalar path.
+  > Generates backward-pass adjoint updates for a single ANF binding (v := expr).
 
 
 ---
@@ -1611,6 +1699,24 @@ Generated on 2026-06-01T05:57:12.841276Z
 
   > Returns the value of :transpose in KEY-ARGS, or NIL if absent.
 
+
+---
+### DEFUN `%GFW-PROCESS-SET!`
+- **Args**: `(FORM EMIT-FN LOCAL-ADJ-FN INPUTS OUTPUTS SCRATCH-TILE-SYMS
+              INTERMEDIATE-ZERO KERNEL-PKG)`
+
+---
+### DEFUN `%GFW-PROCESS-LET`
+- **Args**: `(FORM EMIT-FN PROCESS-FORM-FN BINDINGS AUGMENTED-BINDINGS BODY)`
+
+---
+### DEFUN `%GFW-PROCESS-DOTIMES`
+- **Args**: `(FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP
+              INTERMEDIATE-ZERO)`
+
+---
+### DEFUN `%GFW-PROCESS-IF`
+- **Args**: `(FORM EMIT-FN PROCESS-FORM-FN COND-FORM THEN-FORM ELSE-FORM)`
 
 ---
 ### DEFUN `GENERATE-BACKWARD-WALK`
@@ -1683,10 +1789,54 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
+### DEFUN `%COLLECT-RECORD-PARAM-INFO`
+- **Args**: `(ENV PKG)`
+
+  > Record/struct params + their field info, in declaration order.
+
+
+---
+### DEFUN `%COLLECT-ALL-DIFF-PARAM-SYMS-FOR-RETURN`
+- **Args**: `(ENV RECORD-PARAM-INFO)`
+
+  > Full ordered list of 'differentiable param syms' used for emitting the multi-value return.
+
+
+---
+### DEFUN `%BUILD-RECORD-PARAM-FIELD-ADJS-HT`
+- **Args**: `(RECORD-PARAM-INFO)`
+
+  > Build the hash table record-param-field-adjs-ht.
+
+
+---
+### DEFUN `%COLLECT-TENSOR-PARAM-INFO`
+- **Args**: `(ENV PKG)`
+
+  > Handle params (tensors + cells) + their grad-out info, in declaration order.
+
+
+---
+### DEFUN `%REGISTER-HOF-DIFFERENTIABLE-FUNCTION`
+- **Args**: `(NAME ENV FLOAT-PARAM-SYMS FN-PARAM-ENTRIES N-RETURN BODY-FORMS)`
+
+  > Register the HOF details for autodiff compilation.
+
+
+---
+### DEFUN `%GENERATE-BACKWARD-COMPANION-AST-BODY`
+- **Args**: `(NAME PARAMS ENV DECLARATIONS BODY-FORMS PKG N-FLOAT-PARAMS
+              N-RETURN RETURN-TYPES-NON-VOID RECORD-PARAM-INFO
+              RECORD-PARAM-FIELD-ADJS-HT ALL-DIFF-PARAM-SYMS-FOR-RETURN)`
+
+  > Generate backward companion def-function AST body.
+
+
+---
 ### DEFUN `%GENERATE-BACKWARD-FUNCTION-AST`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY-FORMS)`
 
-  > Generates the backward companion (def-function NAME_GRAD ...) for a  > differentiable user function.  >   > 101 part 1: counts record/struct params as contributing their runtime-field  > count toward n-float-params.  For record/struct params, builds a per-field  > synthetic adjoint map and binds *record-param-field-adjs* during the  > backward walk.  Handle (tensor + cell) params flow grad via &out grad-handles.  >   > Also skips trivial-accessor bodies — def-derived-type's auto-generated  > accessors are missing the (crisp-system-generated) marker but should be  > treated equivalently.
+  > Generates the backward companion (def-function NAME_GRAD ...) for a  > differentiable user function.
 
 
 ---
@@ -1968,7 +2118,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\codegen.lisp`
 
 ### DEFUN `GET-OR-CREATE-DI-TYPE`
 - **Args**: `(CRISP-TYPE DI-BUILDER DI-TYPE-CACHE)`
@@ -2488,7 +2638,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
 
@@ -2559,7 +2709,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\compiler.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\compiler.lisp`
 
 ### DEFVAR `*GRID-FUNCTIONS*`
 
@@ -2578,6 +2728,13 @@ Generated on 2026-06-01T05:57:12.841276Z
 - **Args**: `(TOOL-BASE)`
 
   > Resolves the path to a tool executable.   >    Prefers bundled version in bin/, falls back to system PATH.  >    Robustness:   >    - Checks versioned suffixes (e.g. llc-21) if base name not in path.  >    - Falls back to bundled tool if system tool is missing even if CRISP_USE_SYSTEM_TOOLS is set.
+
+
+---
+### DEFUN `%EXTRACT-SPIR-KERNEL-INFO`
+- **Args**: `(IR-TEXT KERNEL-POS)`
+
+  > Extracts (values func-name define-pos brace-pos) for a kernel-pos in LLVM IR text.
 
 
 ---
@@ -2694,7 +2851,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\enums.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\enums.lisp`
 
 ### DEFMACRO `DEF-ENUMERATION`
 - **Args**: `(NAME &REST SPECS)`
@@ -2714,7 +2871,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\environment.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\environment.lisp`
 
 ### DEFUN `PARSE-FUNCTION-DECLARATIONS`
 - **Args**: `(PARAMS DECLARATIONS)`
@@ -2866,9 +3023,9 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\errors.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\errors.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-cuda\main.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-cuda\main.lisp`
 
 ### DEFUN `MAIN`
 
@@ -3038,6 +3195,35 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
+### DEFUN `%CUDA-EMIT-CELL-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR IS-LOCAL ALIASES
+              ARG-INDEX)`
+
+---
+### DEFUN `%CUDA-EMIT-LOCAL-SCRATCH-TENSOR-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+---
+### DEFUN `%CUDA-EMIT-GLOBAL-SCRATCH-TENSOR-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+---
+### DEFUN `%CUDA-EMIT-TENSOR-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR ARG-INDEX)`
+
+---
+### DEFUN `%CUDA-EMIT-STRUCT-ARG`
+- **Args**: `(STREAM PARAM-NAME PARAM-TYPE ALIASES ARG-INDEX)`
+
+---
+### DEFUN `%CUDA-EMIT-RECORD-ARG`
+- **Args**: `(STREAM PARAM-NAME PARAM-TYPE RECORDS ALIASES ARG-INDEX)`
+
+---
+### DEFUN `%CUDA-EMIT-SCALAR-ARG`
+- **Args**: `(STREAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+---
 ### DEFUN `EMIT-KERNEL-ARGS`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS)`
 
@@ -3094,9 +3280,9 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-cuda\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-cuda\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\main.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\main.lisp`
 
 ### DEFUN `MAIN`
 
@@ -3251,10 +3437,34 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
+### DEFUN `%L0-DIM-TO-GC`
+- **Args**: `(DIM LOCAL-VAL)`
+
+  > Convert a dimension value (integer or symbol) to C++ expression for group count.
+
+
+---
+### DEFUN `%L0-EMIT-OCCUPANCY-AND-STRATEGY`
+- **Args**: `(STREAM IS-STRIDED IS-INTERLEAVED OCCUPANCY DERIVE-FROM-IS-TENSOR
+              DERIVE-FROM)`
+
+  > Emit strategy descriptions and max-occupancy calculation.
+
+
+---
+### DEFUN `%L0-EMIT-GROUP-COUNT`
+- **Args**: `(STREAM IS-STRIDED IS-INTERLEAVED IS-TILED IS-ONE-THREAD-PER
+              DISPATCH-DECL SET-TO DERIVE-FROM DERIVE-FROM-IS-TENSOR TILE-SHAPE
+              LOCAL-X LOCAL-Y)`
+
+  > Emit group count logic for ze_group_count_t groupCount.
+
+
+---
 ### DEFUN `%L0-EMIT-DISPATCH`
 - **Args**: `(STREAM GLOBAL-DECL LOCAL-DECL NUM-GROUPS-DECL)`
 
-  > Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.  >    Supports:  >      :strategy :strided        — max occupancy (zeDeviceGetComputeProperties +  >                                  optional zeKernelGetProperties)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :tiled          — grid sized via derive-from + tile-shape  >      :strategy :interleaved    — not yet implemented (default dispatch)  >      :set-to scalar/list       — fixed grid  >    :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
+  > Emit zeKernelSetGroupSize and ze_group_count_t based on dispatch declarations.  >    Supports:  >      :strategy :strided        — max occupancy (zeDeviceGetComputeProperties +  >                                  optional zeKernelGetProperties)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :tiled          — grid sized via derive-from + tile-shape  >      :strategy :interleaved    — not yet implemented (default dispatch)  >    :set-to scalar/list       — fixed grid  >    :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).
 
 
 ---
@@ -3315,6 +3525,41 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
+### DEFUN `%L0-EMIT-CELL-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR IS-LOCAL ALIASES
+              CONTEXT-VAR DEVICE-VAR ARG-INDEX)`
+
+---
+### DEFUN `%L0-EMIT-LOCAL-SCRATCH-TENSOR-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+---
+### DEFUN `%L0-EMIT-GLOBAL-SCRATCH-TENSOR-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE CONTEXT-VAR DEVICE-VAR
+              ARG-INDEX)`
+
+---
+### DEFUN `%L0-EMIT-TENSOR-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR CONTEXT-VAR
+              DEVICE-VAR ARG-INDEX)`
+
+---
+### DEFUN `%L0-EMIT-STRUCT-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ALIASES ARG-INDEX)`
+
+---
+### DEFUN `%L0-EMIT-RECORD-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE RECORDS ALIASES ARG-INDEX)`
+
+---
+### DEFUN `%L0-EMIT-ARRAY-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+---
+### DEFUN `%L0-EMIT-SCALAR-ARG`
+- **Args**: `(STREAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+---
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS CONTEXT-VAR DEVICE-VAR)`
 
@@ -3322,9 +3567,9 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist-l0\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\codegen-base.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\codegen-base.lisp`
 
 ### DEFUN `CRISP-TYPE-TO-CPP-TYPE`
 - **Args**: `(CRISP-TYPE)`
@@ -3393,7 +3638,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\common.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\common.lisp`
 
 ### DEFUN `PARSE-METACRISP-FILE`
 - **Args**: `(FILEPATH)`
@@ -3430,9 +3675,9 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\hoist\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\llvm-bindings.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\llvm-bindings.lisp`
 
 ### DEFCONSTANT `+LLVM-VOID-TYPE-KIND+`
 
@@ -3547,7 +3792,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\macros.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\macros.lisp`
 
 ### DEFMACRO `LET`
 - **Args**: `(BINDINGS &BODY BODY)`
@@ -3707,6 +3952,69 @@ Generated on 2026-06-01T05:57:12.841276Z
 - **Args**: `(PARAMS TYPES)`
 
   > Returns a closure (sym -> static-type-or-nil) built from the kernel's  >    PARAMS and their declared TYPES.  Used by the AD pre-pass to resolve  >    tensor-stride CT without an env.
+
+
+---
+### DEFUN `%EXPAND-TENSOR-STRIDE-OP`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Expand TENSOR-STRIDE form.
+
+
+---
+### DEFUN `%EXPAND-GRID-STRIDE-OP`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Expand GRID-STRIDE form.
+
+
+---
+### DEFUN `%EXPAND-LOOP-VECTOR-STRIDE-OP`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Expand LOOP-VECTOR-STRIDE form.
+
+
+---
+### DEFUN `%EXPAND-TILE-STRIDE-OP`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Expand TILE-STRIDE form.
+
+
+---
+### DEFUN `%EXPAND-HARDWARE-STRIDE-OP`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Expand HARDWARE-STRIDE form.
+
+
+---
+### DEFUN `%EXPAND-WORKGROUP-STRIDE-OP`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Expand WORKGROUP-STRIDE form.
+
+
+---
+### DEFUN `%EXPAND-LET-STRIDE-OP`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Expand LET form, hoisting tile-coords binding values out of let-bindings.
+
+
+---
+### DEFUN `%EXPAND-REQUEST-LOAD-TILE-COORDS-OP`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Normalize request-load-tile-coords -> load-tile-coords (sync).
+
+
+---
+### DEFUN `%EXPAND-REQUEST-STORE-TILE-COORDS-OP`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Normalize request-store-tile-coords -> store-tile-coords.
 
 
 ---
@@ -3893,7 +4201,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\main.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\main.lisp`
 
 ### DEFUN `PRINT-COMPILER-ERROR`
 - **Args**: `(C FILENAME)`
@@ -3944,7 +4252,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\mangling.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\mangling.lisp`
 
 ### DEFVAR `*TEMPLATE-ARITY-LOOKUP-FN*`
 
@@ -4012,7 +4320,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\metadata-val.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\metadata-val.lisp`
 
 ### DEFMACRO `DEFINE-FORWARD-ONLY-VALIDATOR`
 - **Args**: `(NAME ARGS &BODY BODY)`
@@ -4661,7 +4969,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\metadata.lisp`
 
 ### DEFVAR `*EMIT-METADATA*`
 
@@ -4794,9 +5102,9 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\package.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\parameters.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\parameters.lisp`
 
 ### DEFSTRUCT `PARAMETER-DEF`
 
@@ -4804,9 +5112,9 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\reader.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\reader.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\semantic.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\semantic.lisp`
 
 ### DEFSTRUCT `CRISP-TYPE`
 
@@ -5030,7 +5338,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\session.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\session.lisp`
 
 ### DEFSTRUCT `COMPILER-SESSION`
 
@@ -5056,7 +5364,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\structs.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\structs.lisp`
 
 ### DEFUN `%STRUCT-NATIVE-ALIGNMENT`
 - **Args**: `(STRUCT-NAME)`
@@ -5154,7 +5462,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\templates.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\templates.lisp`
 
 ### DEFSTRUCT `TEMPLATE-DATA`
 
@@ -5312,7 +5620,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\type-checker.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\type-checker.lisp`
 
 ### DEFUN `GET-PROMOTED-TYPE`
 - **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
@@ -5342,7 +5650,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\brand.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\brand.lisp`
 
 ### DEFVAR `*BRAND-INSTANCE-CACHE*`
 
@@ -5445,12 +5753,12 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\definitions.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\definitions.lisp`
 
 ### DEFSTRUCT `ENUMERATION-DEF`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\hierarchy.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\hierarchy.lisp`
 
 ### DEFSTRUCT `TYPE-NODE`
 
@@ -5540,6 +5848,27 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
+### DEFUN `%VALIDATE-DERIVED-TYPE-REGISTRATION`
+- **Args**: `(NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)`
+
+  > Checks if new-type-name is already registered identically (returns :already-registered),  >    otherwise performs collisions & presence checks, raising an error if anything is invalid.
+
+
+---
+### DEFUN `%UPDATE-DERIVED-TYPE-RELATIONSHIPS`
+- **Args**: `(NEW-NODE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)`
+
+  > Updates ancestor/descendant relationships in *type-derivation-graph* based on subst-mode.
+
+
+---
+### DEFUN `%REGISTER-DERIVED-IN-CRISP-TYPES`
+- **Args**: `(NEW-TYPE-NAME BASE-TYPE)`
+
+  > Registers the derived type in *crisp-types* so type checking and casting work.  >    Derived types have identical memory layout to their base type.
+
+
+---
 ### DEFUN `REGISTER-DERIVED-TYPE`
 - **Args**: `(NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)`
 
@@ -5568,7 +5897,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\registry.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\registry.lisp`
 
 ### DEFVAR `*GENERIC-FUNCTIONS*`
 
@@ -5730,7 +6059,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\validation.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\types\validation.lisp`
 
 ### DEFUN `EXCLUDED-TEMPLATE-BASE-TYPE-P`
 - **Args**: `(BASE-TYPE)`
@@ -5751,6 +6080,22 @@ Generated on 2026-06-01T05:57:12.841276Z
 
   > Raises an intelligent error when a bare address-space/access/align value  >    is found in a storage handle type spec, suggesting the correct key-value form.
 
+
+---
+### DEFUN `%EXPAND-VECTOR-TYPE-SPECIFIER`
+- **Args**: `(ELEMENT-TYPE REST-ARGS SPEC)`
+
+---
+### DEFUN `%EXPAND-MATRIX-TYPE-SPECIFIER`
+- **Args**: `(ELEMENT-TYPE REST-ARGS SPEC)`
+
+---
+### DEFUN `%EXPAND-TENSOR-TYPE-SPECIFIER`
+- **Args**: `(BASE ELEMENT-TYPE REST-ARGS SPEC)`
+
+---
+### DEFUN `%EXPAND-CELL-TYPE-SPECIFIER`
+- **Args**: `(BASE ELEMENT-TYPE REST-ARGS SPEC)`
 
 ---
 ### DEFUN `EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER`
@@ -5898,7 +6243,7 @@ Generated on 2026-06-01T05:57:12.841276Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\utils.lisp`
+## File: `C:\Users\cperk\Documents\crisp\src\utils.lisp`
 
 ### DEFMACRO `LET-D`
 - **Args**: `(BINDINGS &BODY BODY)`

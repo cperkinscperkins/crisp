@@ -104,7 +104,7 @@
         (format stream ";~%")
         (format stream "        return os;~%")
         (format stream "    }~%")
-        (format stream "};~%~%" type-str)))))
+        (format stream "};~%~%")))))
 
 (defun %collect-dvec-types (declared-sig aliases)
   "Collect all distinct device vector type symbols used in DECLARED-SIG and ALIASES.

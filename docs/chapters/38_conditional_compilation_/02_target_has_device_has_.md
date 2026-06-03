@@ -1,4 +1,4 @@
-# target-has / device-has ✅
+# target-has / device-has 📝
 
 
 #### `(target-has <prop> &optional might:bool)`

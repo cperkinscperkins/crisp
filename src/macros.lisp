@@ -727,6 +727,136 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 
 
 
+(defun %expand-tensor-stride-op (form type-resolver-fn location)
+  "Expand TENSOR-STRIDE form."
+  (let* ((walked (cons (car form)
+                       (mapcar (lambda (sub)
+                                 (%expand-stride-macros-in-form sub type-resolver-fn location))
+                               (cdr form))))
+         (ct (%tensor-stride-resolve-ct walked type-resolver-fn location)))
+    (%expand-tensor-stride-form walked ct location)))
+
+(defun %expand-grid-stride-op (form type-resolver-fn location)
+  "Expand GRID-STRIDE form."
+  (let ((walked (cons (car form)
+                      (mapcar (lambda (sub)
+                                (%expand-stride-macros-in-form sub type-resolver-fn location))
+                              (cdr form)))))
+    (%expand-grid-stride-form walked location)))
+
+(defun %expand-loop-vector-stride-op (form type-resolver-fn location)
+  "Expand LOOP-VECTOR-STRIDE form."
+  (let ((walked (cons (car form)
+                      (mapcar (lambda (sub)
+                                (%expand-stride-macros-in-form sub type-resolver-fn location))
+                              (cdr form)))))
+    (%expand-loop-vector-stride-form walked location)))
+
+(defun %expand-tile-stride-op (form type-resolver-fn location)
+  "Expand TILE-STRIDE form."
+  (let* ((walked (cons (car form)
+                       (mapcar (lambda (sub)
+                                 (%expand-stride-macros-in-form sub type-resolver-fn location))
+                               (cdr form))))
+         (cl-pkg (find-package :crisp-language))
+         (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
+         (strict-p (keywordp (third walked)))
+         (tile-pos (if strict-p 3 2))
+         (bindings (nth (1+ tile-pos) walked))
+         (synth-for-ct (if strict-p
+                           (list ts-sym (second walked) (third walked) bindings)
+                           (list ts-sym (second walked) bindings)))
+         (ct (%tensor-stride-resolve-ct synth-for-ct type-resolver-fn location)))
+    (%expand-tile-stride-form walked ct location)))
+
+(defun %expand-hardware-stride-op (form type-resolver-fn location)
+  "Expand HARDWARE-STRIDE form."
+  (let* ((walked (cons (car form)
+                       (mapcar (lambda (sub)
+                                 (%expand-stride-macros-in-form sub type-resolver-fn location))
+                               (cdr form))))
+         (cl-pkg (find-package :crisp-language))
+         (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
+         ;; Detect strict variant: 3rd is layout-tag, 4th is hw-tag.
+         (third (third walked))
+         (strict-p (and (keywordp third)
+                        (member third '(:row-major :col-major :contiguous-last :contiguous-first))))
+         (hw-pos (if strict-p 3 2))
+         (bindings (nth (1+ hw-pos) walked))
+         (synth-for-ct (if strict-p
+                           (list ts-sym (second walked) (third walked) bindings)
+                           (list ts-sym (second walked) bindings)))
+         (ct (%tensor-stride-resolve-ct synth-for-ct type-resolver-fn location)))
+    (%expand-hardware-stride-form walked ct location)))
+
+(defun %expand-workgroup-stride-op (form type-resolver-fn location)
+  "Expand WORKGROUP-STRIDE form."
+  (let ((walked (cons (car form)
+                      (mapcar (lambda (sub)
+                                (%expand-stride-macros-in-form sub type-resolver-fn location))
+                              (cdr form)))))
+    (%expand-workgroup-stride-form walked location)))
+
+(defun %expand-let-stride-op (form type-resolver-fn location)
+  "Expand LET form, hoisting tile-coords binding values out of let-bindings."
+  (let* ((bindings (cadr form))
+         (body (cddr form))
+         (rewritten-bindings
+          (mapcar (lambda (b)
+                    (if (and (consp b) (= (length b) 2) (symbolp (car b)))
+                        ;; Recurse only into the VALUE position so the
+                        ;; binding-name isn't accidentally rewritten.
+                        (list (car b)
+                              (%expand-stride-macros-in-form
+                               (cadr b) type-resolver-fn location))
+                        (%expand-stride-macros-in-form b type-resolver-fn location)))
+                  bindings))
+         (rewritten-body
+          (mapcar (lambda (b) (%expand-stride-macros-in-form b type-resolver-fn location))
+                  body))
+         (hoisted-calls nil)
+         (kept-bindings nil))
+    (dolist (b rewritten-bindings)
+      (let* ((val (and (consp b) (= (length b) 2) (cadr b)))
+             (op (and (consp val) (symbolp (car val)) (car val)))
+             (op-name (and op (symbol-name op))))
+        (cond
+          ((and op-name
+                (or (string-equal op-name "LOAD-TILE-COORDS")
+                    (string-equal op-name "STORE-TILE-COORDS")))
+           (push val hoisted-calls))
+          (t
+           (push b kept-bindings)))))
+    (setf hoisted-calls (nreverse hoisted-calls)
+          kept-bindings (nreverse kept-bindings))
+    (cond
+      (hoisted-calls
+       (let* ((cl-pkg (find-package :crisp-language))
+              (progn-sym (intern "PROGN" cl-pkg))
+              (let-sym (intern "LET" cl-pkg)))
+         (if (null kept-bindings)
+             `(,progn-sym ,@hoisted-calls ,@rewritten-body)
+             `(,progn-sym ,@hoisted-calls
+                          (,let-sym ,kept-bindings ,@rewritten-body)))))
+      (t
+       (cons (car form) (cons rewritten-bindings rewritten-body))))))
+
+(defun %expand-request-load-tile-coords-op (form type-resolver-fn location)
+  "Normalize request-load-tile-coords -> load-tile-coords (sync)."
+  (let ((sync-sym (intern "LOAD-TILE-COORDS" (find-package :crisp-language))))
+    (cons sync-sym
+          (mapcar (lambda (sub)
+                    (%expand-stride-macros-in-form sub type-resolver-fn location))
+                  (cdr form)))))
+
+(defun %expand-request-store-tile-coords-op (form type-resolver-fn location)
+  "Normalize request-store-tile-coords -> store-tile-coords."
+  (let ((sync-sym (intern "STORE-TILE-COORDS" (find-package :crisp-language))))
+    (cons sync-sym
+          (mapcar (lambda (sub)
+                    (%expand-stride-macros-in-form sub type-resolver-fn location))
+                  (cdr form)))))
+
 (defun %expand-stride-macros-in-form (form type-resolver-fn location)
   "Recursively walks FORM and rewrites tensor-stride / grid-stride /
    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride
@@ -741,146 +871,23 @@ processes float inputs — integer tensor inputs contribute zero gradient."
      (let ((op-name (symbol-name (car form))))
        (cond
          ((string-equal op-name "TENSOR-STRIDE")
-          (let* ((walked (cons (car form)
-                               (mapcar (lambda (sub)
-                                         (%expand-stride-macros-in-form sub type-resolver-fn location))
-                                       (cdr form))))
-                 (ct (%tensor-stride-resolve-ct walked type-resolver-fn location)))
-            (%expand-tensor-stride-form walked ct location)))
+          (%expand-tensor-stride-op form type-resolver-fn location))
          ((string-equal op-name "GRID-STRIDE")
-          (let ((walked (cons (car form)
-                              (mapcar (lambda (sub)
-                                        (%expand-stride-macros-in-form sub type-resolver-fn location))
-                                      (cdr form)))))
-            (%expand-grid-stride-form walked location)))
+          (%expand-grid-stride-op form type-resolver-fn location))
          ((string-equal op-name "LOOP-VECTOR-STRIDE")
-          (let ((walked (cons (car form)
-                              (mapcar (lambda (sub)
-                                        (%expand-stride-macros-in-form sub type-resolver-fn location))
-                                      (cdr form)))))
-            (%expand-loop-vector-stride-form walked location)))
+          (%expand-loop-vector-stride-op form type-resolver-fn location))
          ((string-equal op-name "TILE-STRIDE")
-          (let* ((walked (cons (car form)
-                               (mapcar (lambda (sub)
-                                         (%expand-stride-macros-in-form sub type-resolver-fn location))
-                                       (cdr form))))
-                 (cl-pkg (find-package :crisp-language))
-                 (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
-                 (strict-p (keywordp (third walked)))
-                 (tile-pos (if strict-p 3 2))
-                 (bindings (nth (1+ tile-pos) walked))
-                 (synth-for-ct (if strict-p
-                                   (list ts-sym (second walked) (third walked) bindings)
-                                   (list ts-sym (second walked) bindings)))
-                 (ct (%tensor-stride-resolve-ct synth-for-ct type-resolver-fn location)))
-            (%expand-tile-stride-form walked ct location)))
+          (%expand-tile-stride-op form type-resolver-fn location))
          ((string-equal op-name "HARDWARE-STRIDE")
-          (let* ((walked (cons (car form)
-                               (mapcar (lambda (sub)
-                                         (%expand-stride-macros-in-form sub type-resolver-fn location))
-                                       (cdr form))))
-                 (cl-pkg (find-package :crisp-language))
-                 (ts-sym (intern "TENSOR-STRIDE" cl-pkg))
-                 ;; Detect strict variant: 3rd is layout-tag, 4th is hw-tag.
-                 (third (third walked))
-                 (strict-p (and (keywordp third)
-                                (member third '(:row-major :col-major :contiguous-last :contiguous-first))))
-                 (hw-pos (if strict-p 3 2))
-                 (bindings (nth (1+ hw-pos) walked))
-                 (synth-for-ct (if strict-p
-                                   (list ts-sym (second walked) (third walked) bindings)
-                                   (list ts-sym (second walked) bindings)))
-                 (ct (%tensor-stride-resolve-ct synth-for-ct type-resolver-fn location)))
-            (%expand-hardware-stride-form walked ct location)))
+          (%expand-hardware-stride-op form type-resolver-fn location))
          ((string-equal op-name "WORKGROUP-STRIDE")
-          (let ((walked (cons (car form)
-                              (mapcar (lambda (sub)
-                                        (%expand-stride-macros-in-form sub type-resolver-fn location))
-                                      (cdr form)))))
-            (%expand-workgroup-stride-form walked location)))
-         ;; --- Endeavor 113 Phase 4 AD pre-rewrite: hoist tile-coords
-         ;; binding values out of let-bindings. ---
-         ;;
-         ;; The user-facing async API is
-         ;;   (let ((tok (request-load-tile-coords ...)))
-         ;;     (await-request tok)
-         ;;     body)
-         ;; The siblings below rewrite the inner forms — request-X to its
-         ;; sync counterpart, await-request to nil — but the result is
-         ;;   (let ((tok (load-tile-coords ...))) nil body)
-         ;; with the tile-coords call in BINDING-VALUE position.  The AD
-         ;; walker routes that through handle-single-value-backward, which
-         ;; doesn't know what to do with LOAD/STORE-TILE-COORDS and errors.
-         ;;
-         ;; Hoist any binding whose recursive rewrite produced a
-         ;; LOAD/STORE-TILE-COORDS call into a sibling PROGN before the
-         ;; let — that puts the call in statement position, where
-         ;; process-form's LOAD-TILE-COORDS / STORE-TILE-COORDS clauses
-         ;; pick it up and emit the right backward primitive.
+          (%expand-workgroup-stride-op form type-resolver-fn location))
          ((string-equal op-name "LET")
-          (let* ((bindings (cadr form))
-                 (body (cddr form))
-                 (rewritten-bindings
-                  (mapcar (lambda (b)
-                            (if (and (consp b) (= (length b) 2) (symbolp (car b)))
-                                ;; Recurse only into the VALUE position so the
-                                ;; binding-name isn't accidentally rewritten.
-                                (list (car b)
-                                      (%expand-stride-macros-in-form
-                                       (cadr b) type-resolver-fn location))
-                                (%expand-stride-macros-in-form b type-resolver-fn location)))
-                          bindings))
-                 (rewritten-body
-                  (mapcar (lambda (b) (%expand-stride-macros-in-form b type-resolver-fn location))
-                          body))
-                 (hoisted-calls nil)
-                 (kept-bindings nil))
-            (dolist (b rewritten-bindings)
-              (let* ((val (and (consp b) (= (length b) 2) (cadr b)))
-                     (op (and (consp val) (symbolp (car val)) (car val)))
-                     (op-name (and op (symbol-name op))))
-                (cond
-                 ((and op-name
-                       (or (string-equal op-name "LOAD-TILE-COORDS")
-                           (string-equal op-name "STORE-TILE-COORDS")))
-                  (push val hoisted-calls))
-                 (t
-                  (push b kept-bindings)))))
-            (setf hoisted-calls (nreverse hoisted-calls)
-                  kept-bindings (nreverse kept-bindings))
-            (cond
-             (hoisted-calls
-              (let* ((cl-pkg (find-package :crisp-language))
-                     (progn-sym (intern "PROGN" cl-pkg))
-                     (let-sym (intern "LET" cl-pkg)))
-                (if (null kept-bindings)
-                    `(,progn-sym ,@hoisted-calls ,@rewritten-body)
-                    `(,progn-sym ,@hoisted-calls
-                                 (,let-sym ,kept-bindings ,@rewritten-body)))))
-             (t
-              (cons (car form) (cons rewritten-bindings rewritten-body))))))
-         ;; --- Endeavor 113 AD pre-rewrite. ---
-         ;; request-load-tile-coords -> load-tile-coords (sync).  AD has
-         ;; no use for async; the backward scatter pattern is naturally
-         ;; barrier-bound.  Recurse into args so any nested stride
-         ;; macros in the origin list are still expanded.
+          (%expand-let-stride-op form type-resolver-fn location))
          ((string-equal op-name "REQUEST-LOAD-TILE-COORDS")
-          (let ((sync-sym (intern "LOAD-TILE-COORDS" (find-package :crisp-language))))
-            (cons sync-sym
-                  (mapcar (lambda (sub)
-                            (%expand-stride-macros-in-form sub type-resolver-fn location))
-                          (cdr form)))))
-         ;; request-store-tile-coords -> store-tile-coords (Phase 3).
+          (%expand-request-load-tile-coords-op form type-resolver-fn location))
          ((string-equal op-name "REQUEST-STORE-TILE-COORDS")
-          (let ((sync-sym (intern "STORE-TILE-COORDS" (find-package :crisp-language))))
-            (cons sync-sym
-                  (mapcar (lambda (sub)
-                            (%expand-stride-macros-in-form sub type-resolver-fn location))
-                          (cdr form)))))
-         ;; await-request -> nil.  process-form's null/atom catchall
-         ;; emits nothing for the backward pass, which is exactly what
-         ;; we want (the load-tile-coords-bwd inside it has its own
-         ;; barriers).
+          (%expand-request-store-tile-coords-op form type-resolver-fn location))
          ((string-equal op-name "AWAIT-REQUEST")
           nil)
          (t
@@ -1575,6 +1582,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
            (result `(,constructor-name
                       :parent (,storage-constructor :address (as (c-pointer :address-space ,as) ,ptr) :byte-size ,byte-size)
                       :offset ,offset)))
+      (declare (ignore ignored))
       (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
       result)))
 

@@ -16,7 +16,7 @@ These all use `die` underneath, so some amount of thread id and line numbers, et
 
 
 
-#### `r-t-workgroup-assert`
+#### `r-t-workgroup-assert` 📝
 
 `(r-t-workgroup-assert <testExpression>  <expr1> ... <exprN>)`
 
@@ -29,7 +29,7 @@ Note that `<testExpression>` reduced across ALL the threads in a workgroup. If i
 then the assert behavior is tripped.  So `r-t-workgroup-assert` is protected from "firehose" problems.
 
 
-#### `r-t-assert`
+#### `r-t-assert` ✅
 ```
 (r-t-assert <testExpression>  <expr1> ... <exprN>)
 (r-t-assert-0 <testExpression>  <expr1> ... <exprN>)

@@ -665,9 +665,9 @@ Technical Debt
 - - [x] retire realized_001.md
 - - [x] remove outdated "TOC" section from ideal_001.md
 - - [x] audit emojis - some are right, but not all...  (✅ Completed, ⚠️ Partially Implemented, 📝 Planned).
-- [ ] refactor overly long functions
-- [ ] refactor build - Warning unused var.
-- [ ] refactor build - reverse dependency order for most .lisp. ( warning undefined function)
+- [x] refactor overly long functions
+- [x] refactor build - Warning unused var.
+- [x] refactor build - reverse dependency order for most .lisp. ( warning undefined function)
 - other refactoring?
 - [ ] review previous "technical debt"
 - [x] 089 :derive-from support looks incomplete. It should support TENSORS and result
@@ -679,7 +679,7 @@ Technical Debt
 - [x] --device-only flag for SYCL to get kernel only timing?
 - [x] update docs with &out "input" read-only vs "output" requirement (in flux)
 - [x] drop oneDPL and use SYCL built-in reductions instead for benchmark
-- [ ] occupancy.
+- [x] occupancy.
 
 PERFORMANCE TESTING
 ===================

@@ -9,15 +9,6 @@
 ;;; ----------------------------------------------------------------------------
 ;;; Template Infrastructure
 ;;; ----------------------------------------------------------------------------
-
-(defstruct template-data
-  "Stores the definition of a template function."
-  (name nil :type symbol)
-  (parameters nil :type list) ; Type parameters, e.g., (T U)
-  (constraints nil :type list) ; Constraints from declare, e.g., ((type-is T ...))
-  (body nil :type list) ; The full (def-function ...) form
-  (signature nil :type list)) ; The declared signature, if any
-
 (defvar *partial-template-instantiations* (make-hash-table :test 'eq)
   "Maps template name symbols to lists of partial instantiation plists.
    Each plist has keys:
@@ -678,6 +669,7 @@ parameters have already been inferred from earlier arguments."
 (defun %should-instantiate-template (key status is-compiling)
   "Helper: Determines if a template should be instantiated based on cache status.
    Returns T if instantiation should proceed, NIL otherwise."
+  (declare (ignore key))
   (not (or (eq status :compiled)
            (and (eq status :analyzed) (not is-compiling)))))
 

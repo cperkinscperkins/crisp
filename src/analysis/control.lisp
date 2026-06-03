@@ -738,7 +738,7 @@
 
 (defun analyze-function-literal (expr env context location)
   "Analyzes (function x) or #'(...)"
-  (declare (ignore env))
+  (declare (ignore env context))
   (let ((fn-name (second expr)))
     ;; Check if the function exists (simplistic check for now)
     (unless (or (fboundp fn-name) (gethash fn-name *function-table*))
@@ -820,7 +820,7 @@
          :source-location location)))))
 
 (defun analyze-quote (expr env context location)
-  (declare (ignore env))
+  (declare (ignore env context))
   (let ((val (second expr)))
     (cond
      ((keywordp val) (make-semantic-literal :value-type 'keyword :value val :source-location location))
@@ -893,6 +893,7 @@
 
 (defun analyze-is-set-expression (expr env context location)
   "Analyzes (is-set? var). Returns 1 (true) if var is bound in env, 0 (false) otherwise."
+  (declare (ignore context))
   (let ((var (second expr)))
     (unless (symbolp var)
       (error "is-set? expects a symbol, got ~s" var))

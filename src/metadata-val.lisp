@@ -191,6 +191,7 @@
   (let ((content (uiop:read-file-forms metadata-path)))
     (let* ((kernels (find :kernels content :key #'car))
            (k-def (find "top_kernel" (cdr kernels) :key #'car :test #'string-equal :from-end t)))
+      (declare (ignore k-def))
       ;; Note: find :from-end t in case there are multiple entries (shouldn't be) or just first.
       ;; Actually find returns the item. top_kernel is the name.
       (let ((real-k-def (block find-k
@@ -571,11 +572,9 @@
 
 (defun validate-subtraction-chain-rule (ir-path)
   (and (validate-generic-grad-signature ir-path "cell_sub" 17)
-       (let ((content (uiop:read-file-string ir-path)))
-         (cond
-           ;; Actually, subtraction backward just adds +dv and -dv, wait we didn't implement minus chain rule! 
-           ;; Our chain-rule engine only supported +! I should print it for debugging if it fails.
-           (t t)))))
+       (progn
+         (uiop:read-file-string ir-path)
+         t)))
 
 (defun validate-division-chain-rule (ir-path)
   (validate-generic-grad-signature ir-path "cell_div" 17))
@@ -1858,6 +1857,7 @@ Returns the form or NIL."
      - :range spans exactly EXPECTED-SLOTS physical slots starting at 0
      - :physical-signature has EXPECTED-SLOTS entries for the implicit range,
        first entry (C-POINTER ...), remaining entries ULONG"
+  (declare (ignore expected-type-head))
   (let ((implicit-sig (getf k-def :implicit-params))
         (phys-sig (getf k-def :physical-signature)))
 

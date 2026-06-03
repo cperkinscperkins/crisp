@@ -1,4 +1,4 @@
-# Quantized Integers and Complex Numbers ✅
+# Quantized Integers and Complex Numbers 📝
 
 
 Crisp has in-language support for quantized integers a popular optimization among

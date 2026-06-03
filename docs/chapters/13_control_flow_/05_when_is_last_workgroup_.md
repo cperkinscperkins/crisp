@@ -1,4 +1,4 @@
-# when-is-last-workgroup ✅
+# when-is-last-workgroup 📝
 
 `when-is-last-workgroup` captures the "last block standing" pattern. It provides a mechanism to elect a single workgroup to perform a final action after all other workgroups have completed their primary tasks up to that point. It does not cause other workgroups to wait. You can think of the other workgroups as party guests that continue on home, leaving the last one to whatever work is in the block.
 

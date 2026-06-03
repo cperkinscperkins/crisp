@@ -1,4 +1,4 @@
-# when-thread-in-group-is / when-group-is ✅
+# when-thread-in-group-is / when-group-is 📝
 
 
 `when-thread-in-group-is` is much like `when-thread-is` except that instead of using the global thread id,

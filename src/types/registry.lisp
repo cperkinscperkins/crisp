@@ -59,15 +59,6 @@ This supports overloading templates by arity or other factors.")
         "Maps (brand-name . struct-type) to brand-definition records.
    Populated when def-struct / def-record with brand declarations are processed.")
 
-;; NEW struct to hold brand metadata (this is a CL struct, not a Crisp def-struct)
-(defstruct brand-definition
-  "Stores the definition of a branded type declared inside a struct/record."
-  (brand-name nil :type symbol) ; e.g., TOKEN-T
-  (base-type nil :type symbol) ; e.g., ULONG
-  (subst-mode nil :type symbol) ; :no, :equal, :descendant, :ancestor
-  (enforce-mode :diff :type symbol) ; :always or :diff
-  (owner-struct nil :type symbol)) ; e.g., SERVER
-
 ;;; =========================================================
 ;;; --differentiate flag support (branded types prerequisite)
 ;;; =========================================================

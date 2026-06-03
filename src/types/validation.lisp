@@ -71,6 +71,187 @@
 
 
 
+(defun %expand-vector-type-specifier (element-type rest-args spec)
+  (let* ((addr      nil)   ;; no default: must be supplied
+         (aln       nil)   ;; no default: must be supplied
+         (ct        :last) ;; the only auto-default
+         (remaining rest-args))
+    (when (and remaining (not (keywordp (first remaining))))
+      (error "Invalid type option ~s in vector spec ~s. Vector takes no arity argument; use (tensor ~s N) for N > 2."
+             (first remaining) spec element-type))
+    (loop while remaining do
+      (let ((item (pop remaining)))
+        (cond
+          ((string-equal (string item) "ADDRESS-SPACE")
+           (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+           (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+          ((string-equal (string item) "ACCESS")
+           ;; :access has been removed; skip the value but signal a warning
+           (unless remaining (error "Missing value for :ACCESS in ~s" spec))
+           (pop remaining)
+           (log:warn "EXPAND-STORAGE-HANDLE: :access is no longer supported in ~s; ignoring." spec))
+          ((string-equal (string item) "ALIGN")
+           (unless remaining (error "Missing value for :ALIGN in ~s" spec))
+           (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
+             (unless (member v '(:compact :compact-offset :strided))
+               (error "Invalid :align value ~s in ~s. Expected :compact, :compact-offset, or :strided." v spec))
+             (setf aln v)))
+          ((string-equal (string item) "CONTIGUOUS-TERM")
+           (unless remaining (error "Missing value for :CONTIGUOUS-TERM in ~s" spec))
+           (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
+             (cond
+               ((member v '(:last :first)) (setf ct v))
+               ((member v '(:row-major :col-major))
+                (error "Invalid :contiguous-term value ~s in ~s. :row-major and :col-major are only valid for 2D matrix types." v spec))
+               (t (error "Invalid :contiguous-term value ~s in ~s. Expected :last or :first." v spec)))))
+          ((string-equal (string item) "DIRECTION")
+           (when remaining (pop remaining)))
+          (t (%bare-storage-handle-value-error item spec)))))
+    (list (find-symbol "TENSOR" :crisp.compiler)
+          element-type 1 addr aln ct)))
+
+(defun %expand-matrix-type-specifier (element-type rest-args spec)
+  (let* ((addr      nil)   ;; no default
+         (aln       nil)   ;; no default
+         (ct        :last) ;; auto-default
+         (remaining rest-args))
+    (when (and remaining (not (keywordp (first remaining))))
+      (error "Invalid type option ~s in matrix spec ~s. Matrix takes no arity argument; use (tensor ~s N) for arbitrary arity."
+             (first remaining) spec element-type))
+    (loop while remaining do
+      (let ((item (pop remaining)))
+        (cond
+          ((string-equal (string item) "ADDRESS-SPACE")
+           (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+           (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+          ((string-equal (string item) "ACCESS")
+           (unless remaining (error "Missing value for :ACCESS in ~s" spec))
+           (pop remaining)
+           (log:warn "EXPAND-STORAGE-HANDLE: :access is no longer supported in ~s; ignoring." spec))
+          ((string-equal (string item) "ALIGN")
+           (unless remaining (error "Missing value for :ALIGN in ~s" spec))
+           (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
+             (unless (member v '(:compact :compact-offset :strided))
+               (error "Invalid :align value ~s in ~s. Expected :compact, :compact-offset, or :strided." v spec))
+             (setf aln v)))
+          ((string-equal (string item) "CONTIGUOUS-TERM")
+           (unless remaining (error "Missing value for :CONTIGUOUS-TERM in ~s" spec))
+           (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
+             (cond
+               ((member v '(:last :first)) (setf ct v))
+               ((eq v :row-major) (setf ct :last))
+               ((eq v :col-major) (setf ct :first))
+               (t (error "Invalid :contiguous-term value ~s in ~s. Expected :last, :first, :row-major, or :col-major." v spec)))))
+          ((string-equal (string item) "DIRECTION")
+           (when remaining (pop remaining)))
+          (t (%bare-storage-handle-value-error item spec)))))
+    (list (find-symbol "TENSOR" :crisp.compiler)
+          element-type 2 addr aln ct)))
+
+(defun %expand-tensor-type-specifier (base element-type rest-args spec)
+  (let* ((n-arg        (and rest-args
+                            (not (keywordp (first rest-args)))
+                            (first rest-args)))
+         (rest-after-n (if n-arg (rest rest-args) rest-args))
+         (addr         nil)   ;; no default: must be supplied
+         (aln          nil)   ;; no default: must be supplied
+         (ct           :last) ;; auto-default
+         (remaining    rest-after-n))
+    (unless n-arg
+      (error 'crisp-incomplete-type-error :type-spec spec))
+    (loop while remaining do
+      (let ((item (pop remaining)))
+        (cond
+          ;; nil placeholder for unspecified slot in canonical
+          ;; positional form — preserve as nil (incomplete).
+          ((null item) nil)
+          ;; bare address-space values (canonical form idempotency)
+          ((member (string item)
+                   '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
+                   :test #'string-equal)
+           (setf addr (intern (string-upcase (string item)) :keyword)))
+          ;; bare access values — ignore silently (canonical idempotency for old forms)
+          ((member (string item)
+                   '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
+                     "READABLE" "WRITEABLE")
+                   :test #'string-equal)
+           (log:debug "EXPAND-STORAGE-HANDLE: ignoring bare access value ~s in ~s" item spec))
+          ;; bare align values (canonical form idempotency)
+          ((member (string item) '("COMPACT" "COMPACT-OFFSET" "STRIDED")
+                   :test #'string-equal)
+           (setf aln (intern (string-upcase (string item)) :keyword)))
+          ;; bare contiguous-term values (canonical form idempotency)
+          ((member (string item) '("LAST" "FIRST")
+                   :test #'string-equal)
+           (setf ct (intern (string-upcase (string item)) :keyword)))
+          ((string-equal (string item) "ADDRESS-SPACE")
+           (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+           (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+          ((string-equal (string item) "ACCESS")
+           (unless remaining (error "Missing value for :ACCESS in ~s" spec))
+           (pop remaining)
+           (log:warn "EXPAND-STORAGE-HANDLE: :access is no longer supported in ~s; ignoring." spec))
+          ((string-equal (string item) "ALIGN")
+           (unless remaining (error "Missing value for :ALIGN in ~s" spec))
+           (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
+             (unless (member v '(:compact :compact-offset :strided))
+               (error "Invalid :align value ~s in ~s. Expected :compact, :compact-offset, or :strided." v spec))
+             (setf aln v)))
+          ((string-equal (string item) "CONTIGUOUS-TERM")
+           (unless remaining (error "Missing value for :CONTIGUOUS-TERM in ~s" spec))
+           (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
+             (cond
+               ((member v '(:last :first)) (setf ct v))
+               ((eq v :row-major)
+                (let ((n (if (integerp n-arg) n-arg
+                             (ignore-errors (parse-integer (string n-arg))))))
+                  (unless (eql n 2)
+                    (error "Invalid :contiguous-term value ~s in ~s. :row-major and :col-major are only valid for 2D matrix types." v spec)))
+                (setf ct :last))
+               ((eq v :col-major)
+                (let ((n (if (integerp n-arg) n-arg
+                             (ignore-errors (parse-integer (string n-arg))))))
+                  (unless (eql n 2)
+                    (error "Invalid :contiguous-term value ~s in ~s. :row-major and :col-major are only valid for 2D matrix types." v spec)))
+                (setf ct :first))
+               (t (error "Invalid :contiguous-term value ~s in ~s. Expected :last, :first, :row-major (2D only), or :col-major (2D only)." v spec)))))
+          ((string-equal (string item) "DIRECTION")
+           (when remaining (pop remaining)))
+          (t (error "Invalid type option: ~s in tensor spec ~s" item spec)))))
+    (list base element-type n-arg addr aln ct)))
+
+(defun %expand-cell-type-specifier (base element-type rest-args spec)
+  (if (null rest-args)
+      (list base element-type nil)  ;; addr nil → incomplete
+      (let ((addr      nil)         ;; no default
+            (remaining rest-args))
+        (loop while remaining do
+          (let ((item (pop remaining)))
+            (cond
+              ;; nil placeholder for unspecified slot in canonical
+              ;; positional form — preserve as nil (incomplete).
+              ((null item) nil)
+              ((member (string item)
+                       '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
+                       :test #'string-equal)
+               (setf addr (intern (string-upcase (string item)) :keyword)))
+              ((member (string item)
+                       '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
+                         "READABLE" "WRITEABLE")
+                       :test #'string-equal)
+               (log:debug "EXPAND-STORAGE-HANDLE: ignoring bare access value ~s in ~s" item spec))
+              ((string-equal (string item) "ADDRESS-SPACE")
+               (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
+               (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
+              ((string-equal (string item) "ACCESS")
+               (unless remaining (error "Missing value for :ACCESS in ~s" spec))
+               (pop remaining)
+               (log:warn "EXPAND-STORAGE-HANDLE: :access is no longer supported in ~s; ignoring." spec))
+              ((string-equal (string item) "DIRECTION")
+               (when remaining (pop remaining)))
+              (t (error "Invalid type option: ~s in spec ~s" item spec)))))
+        (list base element-type addr))))
+
 (defun expand-storage-handle-type-specifier (spec)
   "Expands storage handle type specs into canonical positional forms.
    Cell   → (cell  elem addr)              [3-tuple].
@@ -96,191 +277,14 @@
                     (rest-args    (rest args)))
 
                (cond
-
-                ;; ── VECTOR ──────────────────────────────────────────
-                ((string-equal (symbol-name base) "VECTOR")
-                 (let* ((addr      nil)   ;; no default: must be supplied
-                        (aln       nil)   ;; no default: must be supplied
-                        (ct        :last) ;; the only auto-default
-                        (remaining rest-args))
-                   (when (and remaining (not (keywordp (first remaining))))
-                     (error "Invalid type option ~s in vector spec ~s. Vector takes no arity argument; use (tensor ~s N) for N > 2."
-                            (first remaining) spec element-type))
-                   (loop while remaining do
-                     (let ((item (pop remaining)))
-                       (cond
-                         ((string-equal (string item) "ADDRESS-SPACE")
-                          (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                          (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
-                         ((string-equal (string item) "ACCESS")
-                          ;; :access has been removed; skip the value but signal a warning
-                          (unless remaining (error "Missing value for :ACCESS in ~s" spec))
-                          (pop remaining)
-                          (log:warn "EXPAND-STORAGE-HANDLE: :access is no longer supported in ~s; ignoring." spec))
-                         ((string-equal (string item) "ALIGN")
-                          (unless remaining (error "Missing value for :ALIGN in ~s" spec))
-                          (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
-                            (unless (member v '(:compact :compact-offset :strided))
-                              (error "Invalid :align value ~s in ~s. Expected :compact, :compact-offset, or :strided." v spec))
-                            (setf aln v)))
-                         ((string-equal (string item) "CONTIGUOUS-TERM")
-                          (unless remaining (error "Missing value for :CONTIGUOUS-TERM in ~s" spec))
-                          (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
-                            (cond
-                              ((member v '(:last :first)) (setf ct v))
-                              ((member v '(:row-major :col-major))
-                               (error "Invalid :contiguous-term value ~s in ~s. :row-major and :col-major are only valid for 2D matrix types." v spec))
-                              (t (error "Invalid :contiguous-term value ~s in ~s. Expected :last or :first." v spec)))))
-                         ((string-equal (string item) "DIRECTION")
-                          (when remaining (pop remaining)))
-                         (t (%bare-storage-handle-value-error item spec)))))
-                   (list (find-symbol "TENSOR" :crisp.compiler)
-                         element-type 1 addr aln ct)))
-
-                ;; ── MATRIX ──────────────────────────────────────────
-                ((string-equal (symbol-name base) "MATRIX")
-                 (let* ((addr      nil)   ;; no default
-                        (aln       nil)   ;; no default
-                        (ct        :last) ;; auto-default
-                        (remaining rest-args))
-                   (when (and remaining (not (keywordp (first remaining))))
-                     (error "Invalid type option ~s in matrix spec ~s. Matrix takes no arity argument; use (tensor ~s N) for arbitrary arity."
-                            (first remaining) spec element-type))
-                   (loop while remaining do
-                     (let ((item (pop remaining)))
-                       (cond
-                         ((string-equal (string item) "ADDRESS-SPACE")
-                          (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                          (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
-                         ((string-equal (string item) "ACCESS")
-                          (unless remaining (error "Missing value for :ACCESS in ~s" spec))
-                          (pop remaining)
-                          (log:warn "EXPAND-STORAGE-HANDLE: :access is no longer supported in ~s; ignoring." spec))
-                         ((string-equal (string item) "ALIGN")
-                          (unless remaining (error "Missing value for :ALIGN in ~s" spec))
-                          (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
-                            (unless (member v '(:compact :compact-offset :strided))
-                              (error "Invalid :align value ~s in ~s. Expected :compact, :compact-offset, or :strided." v spec))
-                            (setf aln v)))
-                         ((string-equal (string item) "CONTIGUOUS-TERM")
-                          (unless remaining (error "Missing value for :CONTIGUOUS-TERM in ~s" spec))
-                          (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
-                            (cond
-                              ((member v '(:last :first)) (setf ct v))
-                              ((eq v :row-major) (setf ct :last))
-                              ((eq v :col-major) (setf ct :first))
-                              (t (error "Invalid :contiguous-term value ~s in ~s. Expected :last, :first, :row-major, or :col-major." v spec)))))
-                         ((string-equal (string item) "DIRECTION")
-                          (when remaining (pop remaining)))
-                         (t (%bare-storage-handle-value-error item spec)))))
-                   (list (find-symbol "TENSOR" :crisp.compiler)
-                         element-type 2 addr aln ct)))
-
-                ;; ── TENSOR ──────────────────────────────────────────
-                ((string-equal (symbol-name base) "TENSOR")
-                 (let* ((n-arg        (and rest-args
-                                           (not (keywordp (first rest-args)))
-                                           (first rest-args)))
-                        (rest-after-n (if n-arg (rest rest-args) rest-args))
-                        (addr         nil)   ;; no default: must be supplied
-                        (aln          nil)   ;; no default: must be supplied
-                        (ct           :last) ;; auto-default
-                        (remaining    rest-after-n))
-                   (unless n-arg
-                     (error 'crisp-incomplete-type-error :type-spec spec))
-                   (loop while remaining do
-                     (let ((item (pop remaining)))
-                       (cond
-                         ;; nil placeholder for unspecified slot in canonical
-                         ;; positional form — preserve as nil (incomplete).
-                         ((null item) nil)
-                         ;; bare address-space values (canonical form idempotency)
-                         ((member (string item)
-                                  '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
-                                  :test #'string-equal)
-                          (setf addr (intern (string-upcase (string item)) :keyword)))
-                         ;; bare access values — ignore silently (canonical idempotency for old forms)
-                         ((member (string item)
-                                  '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
-                                    "READABLE" "WRITEABLE")
-                                  :test #'string-equal)
-                          (log:debug "EXPAND-STORAGE-HANDLE: ignoring bare access value ~s in ~s" item spec))
-                         ;; bare align values (canonical form idempotency)
-                         ((member (string item) '("COMPACT" "COMPACT-OFFSET" "STRIDED")
-                                  :test #'string-equal)
-                          (setf aln (intern (string-upcase (string item)) :keyword)))
-                         ;; bare contiguous-term values (canonical form idempotency)
-                         ((member (string item) '("LAST" "FIRST")
-                                  :test #'string-equal)
-                          (setf ct (intern (string-upcase (string item)) :keyword)))
-                         ((string-equal (string item) "ADDRESS-SPACE")
-                          (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                          (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
-                         ((string-equal (string item) "ACCESS")
-                          (unless remaining (error "Missing value for :ACCESS in ~s" spec))
-                          (pop remaining)
-                          (log:warn "EXPAND-STORAGE-HANDLE: :access is no longer supported in ~s; ignoring." spec))
-                         ((string-equal (string item) "ALIGN")
-                          (unless remaining (error "Missing value for :ALIGN in ~s" spec))
-                          (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
-                            (unless (member v '(:compact :compact-offset :strided))
-                              (error "Invalid :align value ~s in ~s. Expected :compact, :compact-offset, or :strided." v spec))
-                            (setf aln v)))
-                         ((string-equal (string item) "CONTIGUOUS-TERM")
-                          (unless remaining (error "Missing value for :CONTIGUOUS-TERM in ~s" spec))
-                          (let ((v (intern (string-upcase (string (pop remaining))) :keyword)))
-                            (cond
-                              ((member v '(:last :first)) (setf ct v))
-                              ((eq v :row-major)
-                               (let ((n (if (integerp n-arg) n-arg
-                                            (ignore-errors (parse-integer (string n-arg))))))
-                                 (unless (eql n 2)
-                                   (error "Invalid :contiguous-term value ~s in ~s. :row-major and :col-major are only valid for 2D matrix types." v spec)))
-                               (setf ct :last))
-                              ((eq v :col-major)
-                               (let ((n (if (integerp n-arg) n-arg
-                                            (ignore-errors (parse-integer (string n-arg))))))
-                                 (unless (eql n 2)
-                                   (error "Invalid :contiguous-term value ~s in ~s. :row-major and :col-major are only valid for 2D matrix types." v spec)))
-                               (setf ct :first))
-                              (t (error "Invalid :contiguous-term value ~s in ~s. Expected :last, :first, :row-major (2D only), or :col-major (2D only)." v spec)))))
-                         ((string-equal (string item) "DIRECTION")
-                          (when remaining (pop remaining)))
-                         (t (error "Invalid type option: ~s in tensor spec ~s" item spec)))))
-                   (list base element-type n-arg addr aln ct)))
-
-                ;; ── CELL ────────────────────────────────────────────
-                (t
-                 (if (null rest-args)
-                     (list base element-type nil)  ;; addr nil → incomplete
-                     (let ((addr      nil)         ;; no default
-                           (remaining rest-args))
-                       (loop while remaining do
-                         (let ((item (pop remaining)))
-                           (cond
-                             ;; nil placeholder for unspecified slot in canonical
-                             ;; positional form — preserve as nil (incomplete).
-                             ((null item) nil)
-                             ((member (string item)
-                                      '("GLOBAL" "LOCAL" "PRIVATE" "CONSTANT" "GENERIC")
-                                      :test #'string-equal)
-                              (setf addr (intern (string-upcase (string item)) :keyword)))
-                             ((member (string item)
-                                      '("READ-WRITE" "READ-ONLY" "WRITE-ONLY"
-                                        "READABLE" "WRITEABLE")
-                                      :test #'string-equal)
-                              (log:debug "EXPAND-STORAGE-HANDLE: ignoring bare access value ~s in ~s" item spec))
-                             ((string-equal (string item) "ADDRESS-SPACE")
-                              (unless remaining (error "Missing value for :ADDRESS-SPACE in ~s" spec))
-                              (setf addr (intern (string-upcase (string (pop remaining))) :keyword)))
-                             ((string-equal (string item) "ACCESS")
-                              (unless remaining (error "Missing value for :ACCESS in ~s" spec))
-                              (pop remaining)
-                              (log:warn "EXPAND-STORAGE-HANDLE: :access is no longer supported in ~s; ignoring." spec))
-                             ((string-equal (string item) "DIRECTION")
-                              (when remaining (pop remaining)))
-                             (t (error "Invalid type option: ~s in spec ~s" item spec)))))
-                       (list base element-type addr)))))))
+                 ((string-equal (symbol-name base) "VECTOR")
+                  (%expand-vector-type-specifier element-type rest-args spec))
+                 ((string-equal (symbol-name base) "MATRIX")
+                  (%expand-matrix-type-specifier element-type rest-args spec))
+                 ((string-equal (symbol-name base) "TENSOR")
+                  (%expand-tensor-type-specifier base element-type rest-args spec))
+                 (t
+                  (%expand-cell-type-specifier base element-type rest-args spec)))))
            spec)))))
 
 ;; Helper: Parse Template Param Spec
@@ -542,6 +546,7 @@ Extended to also accept raw (function ...) forms from the Crisp reader
    FIX3: Use (and *compiler-session* (compiler-session-module *compiler-session*))
    instead of (boundp '*current-module*) — the latter always returns NIL because
    *current-module* is a define-symbol-macro, not a defvar special variable."
+  (declare (ignore mangled-name))
   (let ((templates (or (gethash base-type *template-registry*)
                           (let ((found nil))
                             (maphash (lambda (k v)
@@ -778,6 +783,7 @@ Extended to also accept raw (function ...) forms from the Crisp reader
                                   (intern (symbol-name type-spec)
                                              (find-package :crisp-language))))
                  (base-type (get-type-base actual-type)))
+         (declare (ignore node-alt))
          (resolve-type-to-llvm base-type)))
 
       ;; Built-in Scalar

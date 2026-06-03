@@ -1,3 +1,3 @@
-# Vector and Tensor Operations ⚠️
+# Vector and Tensor Operations 📝
 
 

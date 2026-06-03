@@ -40,7 +40,7 @@ Also note that both gather (reading `big-source-vec`) and scatter (writing `big-
             (set! (~ big-dest-vec loc) val)))))))
 ```
 
-#### `find-indices`
+#### `find-indices` 📝
 
 ```
 (find-indices big-vector predicateF &out result-vec count-vec)

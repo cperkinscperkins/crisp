@@ -1,16 +1,16 @@
-# Output Targeting Options ✅
+# Output Targeting Options 📝
 
 
 #### `--output-dir=<DIRECTORY_PATH>`
 
 Where the output of the crisp compiler should go. If not provided it is assumed to be the current working directory.
 
-#### `--output-base=<NAME>`
+#### `--output-base=<NAME>` 📝
 
 This base name will be used for all outputs, with the file extension uniquely identifying them.
 If not provided the base name is the name of the last .crisp file passed to the compiler (minus any extension).
 
-#### `--transpile-to=<ID>`
+#### `--transpile-to=<ID>` 📝
 
 The compiler will transpile the .crisp file to some other Kernel language. At the moment `oclc` is the only supported
 transpilation target.
@@ -19,7 +19,7 @@ transpilation target.
 |----------|-----------|--------------------|
 | `oclc`   | `c`       | OpenCL C           | 
 
-#### `--ir-target=<ID>`
+#### `--ir-target=<ID>` ✅
 
 This flag can be used repeatedly, each occurrence with a different ID. The compiler will compile the .crisp files 
 to an IR (Intermediate Representation) file. One file per occurrence of the `--ir-target` flag.
@@ -33,7 +33,7 @@ to an IR (Intermediate Representation) file. One file per occurrence of the `--i
 
 Unless the `--merge` or `--join` flags are used, one target file (e.g. `spv`) is output per `def-orchestration`.  Loose kernels outside of any orchestration have a default one generated for them.
 
-#### `--binary-gpu-target=<ID>`
+#### `--binary-gpu-target=<ID>` 📝
 
 This flag can be used repeatedly, each occurrence with a different ID. The compiler will compile the .crisp files to a different binary file for each binary target. The binary file name will be `<output-base-name>_<ID>.<extension>`
 
@@ -46,12 +46,12 @@ This flag can be used repeatedly, each occurrence with a different ID. The compi
 
 Unless the `--merge` or `--join` flags are used, one target file (e.g. `cubin`) is output per `def-orchestration`.  Loose kernels outside of any orchestration have a default one generated for them.
 
-#### `--fat-binary`
+#### `--fat-binary` 📝
 
 This flag requires that the `--binary-gpu-target` flag also be used, or it is ignored.
 Whe present the binaries that Crisp produces will be  fat binaries and will also contain the matching IR code (PTX or SPIR-V).
 
-#### `--hoist=<ID>` 
+#### `--hoist=<ID>`  ⚠️
 
 This flag can be used repeatedly, each occurrence with a different ID. The compiler will generate a hoisting example code files for each occurence.
 The hoist options are paired against their matching IR and Binary targets automatically. You'll get a warning from the compiler if it detects
@@ -74,7 +74,7 @@ There are other flags that interoperate with the hoisting, such as `--hoist-unif
 
 One hoisting file is output per orchestration.
 
-#### `--metadata`
+#### `--metadata` ✅
 
 If this flag is present, the compiler will output a metadata file. This file has a lot of the necessary 
 hoisting information about the kernels and their arguments and 
@@ -102,7 +102,7 @@ reduce-vector.metacrisp
 ```
 
 
-#### `--differentiate`
+#### `--differentiate` ✅
 
 This flag is discussed in the [Auto Differentiation (AD)](#auto-differentiation-ad) section above.
 When used the kernels are assumed to be "forward" kernels and the compiler will generate "backward" kernels for them with "backward" signatures.  The compiler will emit an error if the kernel is not differentiable.

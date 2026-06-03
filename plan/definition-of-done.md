@@ -18,7 +18,10 @@ For any new feature, or refactoring, be sure to go through this checklist.
 - [ ] Update status emojis in crisp/docs/ideal_001.md.  Including any new errors.
 - [ ] Does crisp/docs/defmacro-utils.md need updating?
 - [ ] Documentation changes to crisp/docs/ideal_001.md ?
+- - [ ] EMOJI for IMPLEMENTED
 - [ ] Regenerate "chapters" with scripts/split-docs.lisp
 - [ ] Regenerate reference.md with scripts/generate-reference.lisp
 - [ ] Regenerate call tree scripts/call-graph.lisp
 - [ ] Regenerate table of globals.  scripts/map-globals.lisp
+- [ ] push branch, run-on-pod.sh for CUDA.  bench-on-pod.sh
+- [ ] run and record benchmarks

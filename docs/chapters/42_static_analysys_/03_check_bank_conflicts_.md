@@ -1,4 +1,4 @@
-# check-bank-conflicts ⚠️
+# check-bank-conflicts 📝
 
 
 ```

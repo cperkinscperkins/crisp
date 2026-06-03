@@ -131,7 +131,6 @@
                          (let ((mangled (mangle-template-struct-name (first type-spec) (rest type-spec))))
                            mangled))
                         (t type-spec)))
-         (ignored (ignore-errors (resolve-type-to-llvm lookup-spec)))
          (type-rec (or (gethash lookup-spec *crisp-types*)
                        (when (and record-base (symbolp lookup-spec))
                          (let ((alt (intern (symbol-name lookup-spec) (find-package :crisp-language))))
@@ -148,6 +147,7 @@
                        (t lookup-spec)))
          (expanded
           (progn
+            (ignore-errors (resolve-type-to-llvm lookup-spec))
             (log:debug "GET-EXPANDED-TYPES: type-spec=~s lookup=~s found-type=~a found-struct=~a category=~a"
                        type-spec actual-key
                        (if type-rec "YES" "NO")

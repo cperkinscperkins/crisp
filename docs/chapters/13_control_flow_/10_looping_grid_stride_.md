@@ -25,7 +25,7 @@ cannot be nested.
 
 But a grid-level stride CAN call `workgroup-stride`, which has a "workgroup level" context.  
 
-#### `loop-vector-stride` 
+#### `loop-vector-stride` ✅
 
  `loop-vector-stride` iterates over a vector  using the Grid Stride strategy. 
 This macro is simple, clear and less error prone than trying to roll your own.
@@ -49,13 +49,13 @@ The only way to make `vector_add` faster is to use interleaved memory and kernel
     (set! (~ C i) ( + (~ A i) (~ B i)))))
 ```
 
-#### loop-soa-stride
+#### loop-soa-stride 📝
 `(loop-soa-stride soaVec (i) ...)`
 
 `loop-soa-stride` iterates over a `soa-vector` using the Grid Stride strategy. 
 
 
-#### strided strategy
+#### strided strategy ✅
 
 As was discussed in [Hoisting and Enqueueing a Kernel](#hoisting-and-enqueing-a-kernel) it is good practice
 to `declare` your kernels global work size expectations and the strategy it hopes to employ.

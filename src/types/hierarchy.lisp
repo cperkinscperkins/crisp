@@ -9,17 +9,6 @@
 ;;; =========================================================
 ;;; Type Derivation Hierarchy (DAG)
 ;;; =========================================================
-
-(defstruct type-node
-  "Represents a type in the derivation hierarchy (DAG).
-   Used for both 'real' types (scalars, structs) and derived types."
-  (type-name nil :type symbol) ; e.g., 'meters', 'point', 'int'
-  (original-type nil :type symbol) ; Immediate parent in derivation (nil for real types)
-  (base-type nil :type symbol) ; Root 'real' type (memoized for fast lookup)
-  (subst-mode nil :type symbol) ; :descendant, :ancestor, :equal, :no (nil for real types)
-  (ancestors nil :type list) ; Immediate more-general types
-  (descendants nil :type list)) ; Immediate more-specific types
-
 (defvar *type-derivation-graph* (make-hash-table)
         "Maps type-name (symbol) -> type-node for all types (real and derived).")
 
@@ -278,6 +267,120 @@
            ;; For now, assume it's a base type
            original-type-name)))
 
+(defun %validate-derived-type-registration (new-type-name original-type-name subst-mode)
+  "Checks if new-type-name is already registered identically (returns :already-registered),
+   otherwise performs collisions & presence checks, raising an error if anything is invalid."
+  (let ((existing-node (gethash new-type-name *type-derivation-graph*)))
+    (when existing-node
+      ;; If it exists, check if it's identical
+      (if (and (eq (type-node-type-name existing-node) new-type-name)
+               (eq (type-node-original-type existing-node) original-type-name)
+               (eq (type-node-subst-mode existing-node) subst-mode))
+          (progn
+            (log:info "Type ~a already registered with identical definition. Skipping re-registration." new-type-name)
+            (return-from %validate-derived-type-registration :already-registered))
+          ;; Different definition -> Error!
+          (error "Cannot define derived type ~a: type already exists with DIFFERENT definition (Original: ~a, New: ~a)."
+                 new-type-name (type-node-original-type existing-node) original-type-name))))
+
+  ;; Validate new type name does not collide with existing NON-DERIVED types
+  (when (or (gethash new-type-name *crisp-types*)
+            (gethash new-type-name *crisp-structs*)
+            (gethash new-type-name *crisp-enums*)
+            (and (boundp '*crisp-type-aliases*)
+                 (gethash new-type-name *crisp-type-aliases*)))
+    (error "Cannot define derived type ~a: name collides with existing type/struct/enum." new-type-name))
+
+  ;; Validate original type exists (in derivation graph, types, structs, or aliases)
+  (unless (or (gethash original-type-name *type-derivation-graph*)
+              (gethash original-type-name *crisp-types*)
+              (gethash original-type-name *crisp-structs*)
+              (and (boundp '*crisp-type-aliases*)
+                   (gethash original-type-name *crisp-type-aliases*)))
+    (error "Cannot derive type ~a from ~a: original type does not exist (single-pass semantics violation)"
+           new-type-name original-type-name))
+
+  ;; Validate subst-mode
+  (unless (member subst-mode '(:no :equal :descendant :ancestor))
+    (error "Invalid subst-mode ~a for derived type ~a. Must be :no, :equal, :descendant, or :ancestor"
+           subst-mode new-type-name))
+  t)
+
+(defun %update-derived-type-relationships (new-node new-type-name original-type-name subst-mode)
+  "Updates ancestor/descendant relationships in *type-derivation-graph* based on subst-mode."
+  (cond
+    ;; Case 1: :descendant - new type is more specific than original
+    ((eq subst-mode :descendant)
+     (setf (type-node-ancestors new-node) (list original-type-name))
+     ;; Update original's descendants
+     (let ((orig-node (gethash original-type-name *type-derivation-graph*)))
+       (push new-type-name (type-node-descendants orig-node)))
+     (log:debug "~a is descendant of ~a (can substitute for original)"
+                new-type-name original-type-name))
+
+    ;; Case 2: :ancestor - new type is more general than original
+    ((eq subst-mode :ancestor)
+     ;; New type has no ancestors from this relationship (it's more general)
+     (setf (type-node-ancestors new-node) nil)
+     ;; Update original's ancestors
+     (let ((orig-node (gethash original-type-name *type-derivation-graph*)))
+       (push new-type-name (type-node-ancestors orig-node)))
+     (log:debug "~a is ancestor of ~a (original can substitute for new)"
+                new-type-name original-type-name))
+
+    ;; Case 3: :equal - bidirectional substitution
+    ((eq subst-mode :equal)
+     (setf (type-node-ancestors new-node) (list original-type-name))
+     (setf (type-node-descendants new-node) (list original-type-name))
+     ;; Update original's descendants AND ANCESTORS
+     (let ((orig-node (gethash original-type-name *type-derivation-graph*)))
+       (push new-type-name (type-node-descendants orig-node))
+       (push new-type-name (type-node-ancestors orig-node)))
+     (log:debug "~a is equal to ~a (bidirectional substitution)"
+                new-type-name original-type-name))
+
+    ;; Case 4: :no - no substitution relationship
+    ((eq subst-mode :no)
+     ;; No relationships added
+     (log:debug "~a has no substitution relationship with ~a"
+                new-type-name original-type-name))
+
+    (t
+     (error "Unexpected subst-mode ~a" subst-mode))))
+
+(defun %register-derived-in-crisp-types (new-type-name base-type)
+  "Registers the derived type in *crisp-types* so type checking and casting work.
+   Derived types have identical memory layout to their base type."
+  (let ((base-crisp-type (or (gethash base-type *crisp-types*)
+                             (gethash base-type *crisp-structs*))))
+    (cond
+      ;; Base is a built-in type (int, float, etc.)
+      ((crisp-type-p base-crisp-type)
+       (setf (gethash new-type-name *crisp-types*)
+         (make-crisp-type :name new-type-name
+                          :llvm-type-fn (crisp-type-llvm-type-fn base-crisp-type)
+                          :size (crisp-type-size base-crisp-type)
+                          :category (crisp-type-category base-crisp-type)))
+       (log:debug "Registered ~a in *crisp-types* (base type category: ~a)"
+                  new-type-name (crisp-type-category base-crisp-type)))
+
+      ;; Base is a struct
+      ((crisp-struct-definition-p base-crisp-type)
+       ;; For structs, we need to create a crisp-type entry
+       ;; The LLVM type function should return the struct's LLVM type
+       (setf (gethash new-type-name *crisp-types*)
+         (make-crisp-type :name new-type-name
+                          :llvm-type-fn (lambda (module)
+                                          (crisp-type-to-llvm-type base-type module))
+                          :size 0 ; Structs don't have a fixed bit size
+                          :category :struct))
+       (log:debug "Registered ~a in *crisp-types* (struct derived from ~a)"
+                  new-type-name base-type))
+
+      (t
+       (log:warn "Could not register ~a in *crisp-types*: base type ~a not found"
+                 new-type-name base-type)))))
+
 (defun register-derived-type (new-type-name original-type-name subst-mode)
   "Registers a new derived type in the type derivation graph.
 
@@ -303,41 +406,10 @@
       (log:debug "Resolved alias ~a to ~a" original-type-name resolved-original)
       (setf original-type-name resolved-original)))
 
-  ;; Check for existing definition in derivation graph (Idempotency Check)
-  (let ((existing-node (gethash new-type-name *type-derivation-graph*)))
-    (when existing-node
-      ;; If it exists, check if it's identical
-      (if (and (eq (type-node-type-name existing-node) new-type-name)
-                  (eq (type-node-original-type existing-node) original-type-name)
-                  (eq (type-node-subst-mode existing-node) subst-mode))
-             (progn
-               (log:info "Type ~a already registered with identical definition. Skipping re-registration." new-type-name)
-               (return-from register-derived-type new-type-name))
-             ;; Different definition -> Error!
-             (error "Cannot define derived type ~a: type already exists with DIFFERENT definition (Original: ~a, New: ~a)."
-               new-type-name (type-node-original-type existing-node) original-type-name))))
-
-  ;; Validate new type name does not collide with existing NON-DERIVED types
-  (when (or (gethash new-type-name *crisp-types*)
-               (gethash new-type-name *crisp-structs*)
-               (gethash new-type-name *crisp-enums*)
-               (and (boundp '*crisp-type-aliases*)
-                    (gethash new-type-name *crisp-type-aliases*)))
-    (error "Cannot define derived type ~a: name collides with existing type/struct/enum." new-type-name))
-
-  ;; Validate original type exists (in derivation graph, types, structs, or aliases)
-  (unless (or (gethash original-type-name *type-derivation-graph*)
-                 (gethash original-type-name *crisp-types*)
-                 (gethash original-type-name *crisp-structs*)
-                 (and (boundp '*crisp-type-aliases*)
-                      (gethash original-type-name *crisp-type-aliases*)))
-    (error "Cannot derive type ~a from ~a: original type does not exist (single-pass semantics violation)"
-      new-type-name original-type-name))
-
-  ;; Validate subst-mode
-  (unless (member subst-mode '(:no :equal :descendant :ancestor))
-    (error "Invalid subst-mode ~a for derived type ~a. Must be :no, :equal, :descendant, or :ancestor"
-      subst-mode new-type-name))
+  ;; Validate registration or handle idempotency
+  (when (eq (%validate-derived-type-registration new-type-name original-type-name subst-mode)
+            :already-registered)
+    (return-from register-derived-type new-type-name))
 
   ;; Compute base type
   (let ((base-type (compute-base-type original-type-name)))
@@ -357,89 +429,20 @@
 
     ;; Create new type node
     (let ((new-node (make-type-node :type-name new-type-name
-                                       :original-type original-type-name
-                                       :base-type base-type
-                                       :subst-mode subst-mode
-                                       :ancestors nil
-                                       :descendants nil)))
+                                    :original-type original-type-name
+                                    :base-type base-type
+                                    :subst-mode subst-mode
+                                    :ancestors nil
+                                    :descendants nil)))
 
       ;; Update relationships based on subst-mode
-      (cond
-        ;; Case 1: :descendant - new type is more specific than original
-        ((eq subst-mode :descendant)
-         (setf (type-node-ancestors new-node) (list original-type-name))
-         ;; Update original's descendants
-         (let ((orig-node (gethash original-type-name *type-derivation-graph*)))
-           (push new-type-name (type-node-descendants orig-node)))
-         (log:debug "~a is descendant of ~a (can substitute for original)"
-                    new-type-name original-type-name))
-
-        ;; Case 2: :ancestor - new type is more general than original
-        ((eq subst-mode :ancestor)
-         ;; New type has no ancestors from this relationship (it's more general)
-         (setf (type-node-ancestors new-node) nil)
-         ;; Update original's ancestors
-         (let ((orig-node (gethash original-type-name *type-derivation-graph*)))
-           (push new-type-name (type-node-ancestors orig-node)))
-         (log:debug "~a is ancestor of ~a (original can substitute for new)"
-                    new-type-name original-type-name))
-
-        ;; Case 3: :equal - bidirectional substitution
-        ;; For :equal, we create bidirectional substitution by adding to BOTH
-        ;; ancestors and descendants. Cycle detection in has-ancestor-path? handles this.
-        ((eq subst-mode :equal)
-         (setf (type-node-ancestors new-node) (list original-type-name))
-         (setf (type-node-descendants new-node) (list original-type-name))
-         ;; Update original's descendants AND ANCESTORS
-         (let ((orig-node (gethash original-type-name *type-derivation-graph*)))
-           (push new-type-name (type-node-descendants orig-node))
-           (push new-type-name (type-node-ancestors orig-node)))
-         (log:debug "~a is equal to ~a (bidirectional substitution)"
-                    new-type-name original-type-name))
-
-        ;; Case 4: :no - no substitution relationship
-        ((eq subst-mode :no)
-         ;; No relationships added
-         (log:debug "~a has no substitution relationship with ~a"
-                    new-type-name original-type-name))
-
-        (t
-         (error "Unexpected subst-mode ~a" subst-mode)))
+      (%update-derived-type-relationships new-node new-type-name original-type-name subst-mode)
 
       ;; Register the new node
       (setf (gethash new-type-name *type-derivation-graph*) new-node)
 
-      ;; Also register in *crisp-types* so type checking and casting work correctly
-      ;; Derived types have identical memory layout to their base type
-      (let ((base-crisp-type (or (gethash base-type *crisp-types*)
-                                    (gethash base-type *crisp-structs*))))
-        (cond
-          ;; Base is a built-in type (int, float, etc.)
-          ((crisp-type-p base-crisp-type)
-           (setf (gethash new-type-name *crisp-types*)
-             (make-crisp-type :name new-type-name
-                              :llvm-type-fn (crisp-type-llvm-type-fn base-crisp-type)
-                              :size (crisp-type-size base-crisp-type)
-                              :category (crisp-type-category base-crisp-type)))
-           (log:debug "Registered ~a in *crisp-types* (base type category: ~a)"
-                      new-type-name (crisp-type-category base-crisp-type)))
-
-          ;; Base is a struct
-          ((crisp-struct-definition-p base-crisp-type)
-           ;; For structs, we need to create a crisp-type entry
-           ;; The LLVM type function should return the struct's LLVM type
-           (setf (gethash new-type-name *crisp-types*)
-             (make-crisp-type :name new-type-name
-                              :llvm-type-fn (lambda (module)
-                                              (crisp-type-to-llvm-type base-type module))
-                              :size 0 ; Structs don't have a fixed bit size
-                              :category :struct))
-           (log:debug "Registered ~a in *crisp-types* (struct derived from ~a)"
-                      new-type-name base-type))
-
-          (t
-           (log:warn "Could not register ~a in *crisp-types*: base type ~a not found"
-                     new-type-name base-type))))
+      ;; Register in *crisp-types*
+      (%register-derived-in-crisp-types new-type-name base-type)
 
       (log:info "Registered derived type ~a (base: ~a, subst: ~a)"
                 new-type-name base-type subst-mode)

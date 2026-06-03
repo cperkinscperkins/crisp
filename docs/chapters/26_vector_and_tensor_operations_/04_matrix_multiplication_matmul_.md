@@ -1,4 +1,4 @@
-# matrix multiplication (matmul) ⚠️
+# matrix multiplication (matmul) 📝
 
 
 Matrix multiplication (`matmul`) is an operation that takes two matrices and produces a new matrix.
@@ -6,7 +6,7 @@ Each element in the resulting matrix is the dot product of a row from the first 
 It's the fundamental operation for transforming data in linear algebra, used for tasks like 
 rotating and scaling vectors in 3D graphics or applying weights in a neural network.
 
-#### matmul
+#### matmul 📝
 
 `(matmul A B)`
 

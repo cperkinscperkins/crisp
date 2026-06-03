@@ -1,4 +1,4 @@
-# check-divergence ⚠️
+# check-divergence 📝
 
 
 ```

@@ -1,4 +1,4 @@
-# Hardware Bit Packing / Unpacking ✅
+# Hardware Bit Packing / Unpacking 📝
 
 
 Modern GPU hardware has built-in intrinsic functions which can quickly pack and unpack values out

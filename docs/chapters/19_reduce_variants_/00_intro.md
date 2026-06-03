@@ -1,4 +1,4 @@
-# Reduce Variants ⚠️
+# Reduce Variants 📝
 
 
 Crisp provide several choices and building blocks for reductions. There are "shop local" variants that perform
@@ -45,7 +45,7 @@ If not provided Crisp will generate the scratch memory for you.
 
 
 
-#### reduce-to-warp
+#### reduce-to-warp 📝
 
 `(reduce-to-warp someFunction <someVar> identity &optional (active-threads (get-warp-size)) )`
 
@@ -99,7 +99,7 @@ Possible Implementation:
 
 
 
-#### reduce-to-workgroup
+#### reduce-to-workgroup 📝
 
 `(reduce-to-workgroup someFunction <someVar> identity &key return-vec local-scratch-vec message )`
 
@@ -183,7 +183,7 @@ Possible Implementation
 
 ```
 
-#### reduce-to-1-second-stage
+#### reduce-to-1-second-stage 📝
 
 `(reduce-to-1-second-stage someFunction <someVar> identity &out final-result &optional localScratchVec globalScratchVec)`
 
@@ -261,7 +261,7 @@ Possible Implementation
                     
 ```
 
-#### reduce-to-1-atomic
+#### reduce-to-1-atomic 📝
 
 `(reduce-to-1-atomic someFunction <someVar> identity &out return-vec &optional localScratchVec)`
 
@@ -314,7 +314,7 @@ Possible Implementation
       (funcall atomic-op (~ ,return-vec 0) ,someVar)))) 
 ```
 
-#### reduce-to-1-cas
+#### reduce-to-1-cas 📝
 
 `(reduce-to-1-cas someFunction <someVar> identity &out return-vec  &optional localScratchVec)`
 
@@ -360,7 +360,7 @@ Possible Implementation
       (atomic-binop! (~ ,return-vec 0) ,someFunction ,someVar))))
 ```
 
-#### reduce-to-1-cont
+#### reduce-to-1-cont 📝
 `(reduce-to-1-cont someFunction <someVar> identity continuation-kernel-name &optional globalScratchVec localScratchVec)`
 
 `reduce-to-1-cont` is quite different than the other reduction macros.  It performs the first part of a reduction,

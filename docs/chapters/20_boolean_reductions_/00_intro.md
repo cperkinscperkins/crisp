@@ -1,3 +1,3 @@
-# Boolean Reductions ⚠️
+# Boolean Reductions 📝
 
 

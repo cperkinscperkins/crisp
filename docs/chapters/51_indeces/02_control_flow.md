@@ -1,0 +1,60 @@
+# control flow
+
+- single-task       [DP]
+- when-thread-is                   [3D]
+- abs-when-thread-is               [3D]
+- when-thread-in-group-is          [3D]
+- when-group-is                    [3D]
+- when-global-linear-id-is
+- when-local-linear-is-id
+- when-is-last-workgroup           [3D]
+- global-size       [DP] [KO]      [3D]
+- local-size        [DP] [KO]      [3D]
+- check-thread-bounds              [3D]
+- check-wg-bounds                  [3D]
+- with-global-linear-id            [3D] ; I keep using this. rename?
+- in-each-thread                   [3D]
+- in-each-thread-in-group          [3D]
+- in-each-group                    [3D]
+
+- loop-vector-stride
+- tensor-stride
+- grid-stride
+- tile-stride
+- hardware-stride
+- - problem-space-coords
+- - tile-coords
+- - problem-space-view
+- load-tile
+- store-tile
+- workgroup-stride
+- - wg-problem-space-coords
+- - wg-tile-coords
+
+- grid-level         [DP]
+- workgroup-level    [DP]
+- uniform            [DP]
+- constexpr          [DP]
+- to-uniform         [DP]
+- dotimes / dotimes+ / dotimes*
+- dec-times / dec-times+ / dec-times*
+- dec-times-by-half / dec-times-by-half+ / dec-times-by-half*
+- dec-times-by-factor / dec-times-by-factor+ / dec-times-by-factor*
+- do-times-by-doubling
+- do-times-by-multiply
+- do-power-step
+- dec-power-step
+- in-warp
+- shuffle
+- shuffle-up
+- shuffle-down
+- shuffle-xor
+- warp-ballot
+- warp-any?
+- warp-all?
+- if / if+ / if*
+- when / when+ / when*
+- unless / unless+ / unless*
+- cond / cond+ / when*
+- select-if
+

@@ -1,4 +1,4 @@
-# Quantized Integers ✅
+# Quantized Integers 📝
 
 
 A quantized integer (`qint`) is just like a normal integer that's being used

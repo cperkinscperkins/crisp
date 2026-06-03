@@ -26,3 +26,24 @@
 
 (defvar *compiler-context* nil
         "The active analysis context context. Bound dynamically during compilation passes.")
+
+(declaim (special *brand-instance-types*
+                  *crisp-enums*
+                  *crisp-structs*
+                  *crisp-template-aliases*
+                  *crisp-type-aliases*
+                  *crisp-types*
+                  *differentiate-p*
+                  *kernel-declared-signatures*
+                  *parameterized-brand-names*
+                  *partial-template-instantiations*
+                  *pending-struct-definitions*
+                  *record-param-field-adjs*
+                  *runtime-checks-enabled*
+                  *scanning-function-name*
+                  *scratch-cell-counter*
+                  *struct-kernel-param-shadows*
+                  *struct-mutating-functions*
+                  *target-backend*
+                  *type-derivation-graph*))
+

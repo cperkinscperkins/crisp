@@ -15,7 +15,7 @@ higher order function arguments that must be thread level (only) operations.
 
 
 
-#### `(declare (grid-level))`
+#### `(declare (grid-level))` ✅
 
 `grid-level` is a declaration that tells the compiler (and other users) that a particular `progn` is a grid level
 context. If you are writing a `defmacro` that is doing grid level coordination, then be sure to include

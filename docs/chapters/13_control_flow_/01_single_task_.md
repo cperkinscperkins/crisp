@@ -1,4 +1,4 @@
-# Single Task ✅
+# Single Task 📝
 
 
 A single task kernel is a kernel that runs on exactly one thread. While it is simple to understand be warned that it is not

@@ -39,17 +39,7 @@
   body
   source-location)
 
-(defstruct crisp-struct-definition
-  "Stores the definition of a user-defined struct."
-  (name nil :type symbol)
-  (members nil :type list) ; List of (name type-symbol) pairs - Original definition
-  (padded-members nil :type list) ; List including _PAD fields 
-  (field-indices nil :type hash-table) ; Map of name -> padded-index
-  (llvm-type nil) ; Cached LLVM type reference
-  (total-size 0 :type integer) ; Total size in bytes (padded)
-  (constructor nil) ; Helper function name
-  (canonical-type nil) ; For template instantiations, the fully resolved type name
-  )
+
 
 ;; Sema Structs
 ;; ------------
