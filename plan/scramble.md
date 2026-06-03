@@ -654,6 +654,7 @@ Precision: IEEE vs Fast
 - [ ] `--math-precision`
 - [ ] `--force-math-precision`
 - [ ] `--denormal-handling [ieee | flush]`
+- [ ] CHange to precision: ieee | fast | ieee-ftz
 
 
 Technical Debt
@@ -663,6 +664,7 @@ Technical Debt
 - - [x] MkDocs produces TOC on side, with Implemtened.
 - - [x] retire realized_001.md
 - - [x] remove outdated "TOC" section from ideal_001.md
+- - [x] audit emojis - some are right, but not all...  (✅ Completed, ⚠️ Partially Implemented, 📝 Planned).
 - [ ] refactor overly long functions
 - [ ] refactor build - Warning unused var.
 - [ ] refactor build - reverse dependency order for most .lisp. ( warning undefined function)
