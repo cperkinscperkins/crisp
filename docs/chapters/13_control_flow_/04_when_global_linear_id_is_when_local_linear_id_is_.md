@@ -1,4 +1,4 @@
-# when-global-linear-id-is / when-local-linear-id-is ✅
+# when-global-linear-id-is / when-local-linear-id-is 📝
 
 
 Unlike the previous `when-XXXX-is` , these two calculate the relevant linear id, and so there are no

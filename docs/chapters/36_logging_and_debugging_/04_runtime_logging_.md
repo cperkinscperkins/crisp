@@ -1,7 +1,7 @@
-# Runtime Logging ⚠️
+# Runtime Logging 📝
 
 
-#### `r-t-workgroup-output-if`
+#### `r-t-workgroup-output-if` 📝
 
 `(r-t-workgroup-output-if <testExpression>  <expr1> ... <exprN>)`
 
@@ -11,7 +11,7 @@ then the the logging occurs in just one of them. Afterwards, kernel execution co
 
 If the compiler flag is not elected, this entire form is compiled away. 
 
-#### `r-t-output`
+#### `r-t-output` 📝
 
 ```
 (r-t-output <expr1> ... <exprN>)

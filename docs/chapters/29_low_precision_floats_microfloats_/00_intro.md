@@ -1,4 +1,4 @@
-# Low Precision Floats ("microfloats") ✅
+# Low Precision Floats ("microfloats") 📝
 
 
 Similar to Quantized Integers, Crisp supports "microfloats".  These are

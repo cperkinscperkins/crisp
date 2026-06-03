@@ -1,4 +1,4 @@
-# Load Tile / Store Tile 📝
+# Load Tile / Store Tile ✅
 
 
 `load-tile` and `store-tile` work with tensors of any arity, not only 2D matrices.
@@ -63,7 +63,7 @@ not support the `:transformF` key.
 
 > Implementation Note: first order functions are automatically templated and monomorphically specialized in Crisp
 
-#### local-barrier
+#### local-barrier ✅
 
 Both `load-tile` and `store-tile` invoke `(local-barrier)` at the completion of their
 operation. This prevents read-after-write and write-after-read race conditions. 
@@ -71,7 +71,7 @@ But be aware, that this also means these functions should NOT appear in conditio
 ( `when`, `if`, `cond`, `unless`) or you will incure a deadlock. The Crisp compiler should
 detect this and emit an error.
 
-#### Asynchronous Variants
+#### Asynchronous Variants ⚠️
 Crisp also provides asynchronous variants of these tile load and store helpers.
 THe `request-XXXX` variants return a `request-token` which can be awaited on with `(await-request <token>)`
 

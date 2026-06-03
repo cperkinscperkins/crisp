@@ -41,7 +41,7 @@ Alternately, we could achieve the same result by using the `constexpr` declarati
 ```
 
 
-#### detecting uniform execution
+#### detecting uniform execution 📝
 In this example, if the compiler detects that `someN` is not uniform across the warps it will
 emit an error. 
 ```
@@ -63,7 +63,7 @@ So the "roll our own" approach makes for a (needlessly) stronger guarantee.
       ...))
 ```
 
-#### forcing uniform loop execution
+#### forcing uniform loop execution 📝
 
 If you want to FORCE a loop to be uniform across the entire workgroup, Crisp makes it easy to do that 
 using the `to-uniform` declaration.
@@ -79,12 +79,12 @@ using the `to-uniform` declaration.
 
 
 
-#### (uniform <varName>)
+#### (uniform <varName>) 📝
 `(declare (uniform someVar))`
 
 The compiler will check that `someVar` is uniform across the workgroup and if it is not, emit an error.
 
-#### (to-uniform <varName>)
+#### (to-uniform <varName>) 📝
 `(declare (to-uniform someVar))`
 This is a convenience declaration to help programmers set up values that are uniform in a workgroup.
 
@@ -97,18 +97,18 @@ Furthermore
 the same `let` clause. 
 - `to-uniform` cannot be used in other `declare` contexts.
 
-#### (constexpr <varName>)
+#### (constexpr <varName>) 📝
 `(declare (constexpr someVar))`
 
 The compiler will check that `someVar` is compile-time calculable, and emit an error if it is not.
 
 
 
-#### dotimes+ 
+#### dotimes+  📝
  `dotimes+` is the `+` variant. It will throw a compiler error if it
 is used without a compile-time calculable `N` value. 
 
-#### dotimes*
+#### dotimes* 📝
 `dotimes*` is the `*` variant. It will throw a compiler error if it determines
 that the `N` value is not uniform across the warp. 
 

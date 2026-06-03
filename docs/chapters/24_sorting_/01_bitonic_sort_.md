@@ -1,4 +1,4 @@
-# Bitonic Sort ⚠️
+# Bitonic Sort 📝
 
 
 Crisp provides a "toolkit" for bitonic sort.  If the sort can be performed by a single workgroup, then there are functions for that.
@@ -68,7 +68,7 @@ while j <= data_size:
 ``` 
 
 
-#### `bitonic-sort-workgroup`
+#### `bitonic-sort-workgroup` 📝
 
 ```
 (bitonic-sort-workgroup data-in data-out &key keyF)
@@ -211,7 +211,7 @@ A possible implementation might be
     (bitonic-sort-workgroup! data)))
 ```
 
-#### `bitonic_merge_pass`
+#### `bitonic_merge_pass` 📝
 
 ```
 (bitonic-merge-pass data j k &keyF)
@@ -279,7 +279,7 @@ Possible Implementation
     (bitonic-merge-pass data j k)))
 ```
 
-#### Don't Make Me Think `gen-bitonic-sort-vector`
+#### Don't Make Me Think `gen-bitonic-sort-vector` 📝
 
 ```
 (gen-bitonic-sort-vector elementT alignment) ;;  &key keyF

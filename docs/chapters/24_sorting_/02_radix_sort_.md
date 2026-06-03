@@ -1,4 +1,4 @@
-# Radix Sort ⚠️
+# Radix Sort 📝
 
 
 Like Bitonic Sort, Radix Sort is done with multiple kernels, but its structure is a loop 
@@ -42,7 +42,7 @@ This new output buffer then becomes the input buffer for the next pass of the ho
 #### Radix Sort in Crisp
 
 
-##### `histogram-pass`
+##### `histogram-pass` 📝
 ```
  (histogram-pass input-vec bit-offset &out global-histogram  &optional local-histogram)
 ```
@@ -114,7 +114,7 @@ Possible Implementation
             (atomic-add! (~ global-histogram local-id) count-for-this-bin)))) )))
 ```
 
-#### scan histogram pass
+#### scan histogram pass 📝
 
 ```
 (scan-histogram global-histogram &out bucket-offsets)
@@ -160,7 +160,7 @@ And its output is a prefix-sum vector.
 ```
 
 
-#### scatter pass
+#### scatter pass 📝
 
 ```
 (scatter-pass input-vec bucket-offset bit-offset &out output-vec)

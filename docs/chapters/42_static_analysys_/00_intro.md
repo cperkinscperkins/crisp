@@ -1,4 +1,4 @@
-# Static Analysys ⚠️
+# Static Analysys 📝
 
 
 > The minute you finally understand how a GPU works is the minute you are wrong.

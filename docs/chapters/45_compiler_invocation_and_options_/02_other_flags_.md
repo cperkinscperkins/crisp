@@ -1,13 +1,13 @@
-# Other Flags ✅
+# Other Flags ⚠️
 
 
-#### `--runtime-checks`
+#### `--runtime-checks` ✅
 This flag enables various runtime checks that Crips is able to generate. Bounds checks, etc. 
 The exact checks are documented in thei relevant sections. <!-- NOTE: gather them up --> 
 In the initial implementation, this flag is useless without also enabling `--logging-output` and the
 compiler will emit an error if that flag is not also elected. 
 
-#### `--logging-output`
+#### `--logging-output` 📝
 This enables the debugging output side channel as well as enabling the runtime checks ( `r-t-check` ). When this 
 option is used, the kernel may run significantly slower. Note that the code that actually hoists
 the kernels built with this flag has to be updated as well so that the debug output side channel vector
@@ -15,20 +15,20 @@ is created and added as an argument. It is up to the calling application to deci
 do with the debug output once it is retrieved. The hoisting code typically models writing it to a file.
 
 
-#### `--debug` or `-g`
+#### `--debug` or `-g` ✅
 When outputting LLVM-IR, include DWARF symbols
 
-#### `--hoist-unified-memory`
+#### `--hoist-unified-memory` 📝
 If this flag is present then the memory that is prepared in the hoisting code will be
 CUDA Unified Memory, LevelZero Unified Shared Memory, or OpenCL Shared Virtual Memory, as appropriate to the hoisting 
 target.  Otherwise, the memory operations will use regular memory. 
 
-#### `--hoist-dynamic=<KERNELNAME>`
+#### `--hoist-dynamic=<KERNELNAME>` 📝
 This flag can be used repeatedly, each occurrence with a different KERNELNAME.  For each kernel named, the hoisting 
 code will demonstrate how to compile that same kernel by invoking the in-memory compilation API on the string that is that
 kernel. 
 
-#### `--re-output-crisp=<DIRECTORY>`
+#### `--re-output-crisp=<DIRECTORY>` 📝
 This flag is passed a directory. The .crisp files that are being compiled will be copied into that directory. But they will 
 be modified in three ways: 
  - any types that were inferred by the compiler will now be explicitly declared in the updated .crisp file.
@@ -36,13 +36,13 @@ be modified in three ways:
  - any static analysis "opt-in"s will be removed. 
 
 
-#### `--no-inference`
+#### `--no-inference` 📝
 Type inference is turned off. The compiler will output an error for missing types.
 
-#### `--no-static-analysis`
+#### `--no-static-analysis` 📝
 Any opt-in static analysis (see above) will be skipped. 
 
-#### `--single-pass`
+#### `--single-pass` ✅
 By default, the Crisp compiler performs "multi-pass" compilation, which means that the compiler first reads the .crisp files, gets an understanding
 of everything that will need to be compiled how how they depend upon each other, and then it takes a second pass and actually compiles everything. 
 When the `--single-pass` flag is present the compiler compiles items as it encounters them. But this requires that your .crisp file is in reverse
@@ -52,7 +52,7 @@ When the `--single-pass` flag is present the compiler compiles items as it encou
  If this is an inconvenient way of working for you, don't let it crimp your style. Don't bother with the `--single-pass` flag
   or use the `--re-output-crisp` flag to have your .crisp files converted to single pass order. 
 
-#### `--skip-c-t-checks`  
+#### `--skip-c-t-checks`  📝 
 
 The compile-time checks are skipped. This is very dangerous but does make the act of compilation much faster. 
 It is meant to be used when doing runtime compilation of Crisp kernels, probably from some sort of code template that you know is sound.
@@ -62,7 +62,7 @@ regularly performs, including error checks that the documentation elsewhere says
 When this flag is on, the compiler only performs the minimal checks required to
 move forward. This is inherently unsafe. 
 
-#### `--tree-shaking`
+#### `--tree-shaking` 📝
 
 The `--tree-shaking` flag causes the compiler to carefully evaluate which functions and subfunctions are ACTUALLY 
 called by the kernels and only incorporate those into the final binaries.  This can make the compilation pass

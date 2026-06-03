@@ -1,4 +1,4 @@
-# Quantized Integer Types ✅
+# Quantized Integer Types 📝
 
 
 These are the Crisp `qint` base types pre-defined for you.   
@@ -14,7 +14,7 @@ Note that there are no mathematical operations defined for any of them.
 But once you define your own qint type there will be
 operations defined for your type. You'll typically need to define your OWN qint type like so:
 
-#### def-qint
+#### def-qint 📝
 
 ```
 (def-qint q-fahrenheit :base qb8 :accum qb32)
@@ -48,7 +48,7 @@ Once `def-qint` is used it defines TWO new types: `XXXX-base` and `XXXX-accum` f
 
 -->
 
-#### to-XXXX
+#### to-XXXX 📝
 
 For your `qint` type, a matching function `to-XXXX` is defined. It takes the floating point value in question along with scale and zerop (also floating point) and returns a scaled value in the base type `B`.
 
@@ -60,7 +60,7 @@ Example:
 ```
 where `temp` would be a 1-byte `qb8` but aliased as `q-celcius` 
 
-#### to-float
+#### to-float 📝
 
 To convert either the base type `B` or the accumulator type `A` back to a 
 floating point number, the `zero-point` and `scale`  must both be provided. 
@@ -76,7 +76,7 @@ is the result of multiplying the base type.  If it was widened simply to handle 
 (to-float-accum A zero-point scale-squared) => F  
 ```
 
-#### additon and subtraction
+#### additon and subtraction 📝
 
 Addition and Subtraction are available for both the base type `B` and `A` but not across them.
 
@@ -92,7 +92,7 @@ Implementation note: addition and subtraction are NOT defined for any of the qin
 But there are compiler-only primitives that map to the hardware instrucions (`iadd`) and these 
 are used when we overload `+` and `-` for any `def-qint` instance.
 
-#### `*!` widened multiplication
+#### `*!` widened multiplication 📝
 
 Multiplication of two base types returns an accumulator type. There is no other option for 
 multiplication. 
@@ -118,7 +118,7 @@ multiplication.
   Simple. Neat.
  -->
 
-#### max / min
+#### max / min 📝
 
 `max` and `min` are available for both base and accumulator types.
 (Spoiler Alert: `max` and `min` are NOT available for `microfloat-block` in next section)

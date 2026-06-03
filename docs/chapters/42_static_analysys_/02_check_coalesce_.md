@@ -1,4 +1,4 @@
-# check-coalesce ⚠️
+# check-coalesce 📝
 
 
 ```

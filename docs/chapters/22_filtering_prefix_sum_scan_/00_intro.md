@@ -1,4 +1,4 @@
-# Filtering / Prefix-Sum Scan ⚠️
+# Filtering / Prefix-Sum Scan 📝
 
 
 A common activity on the GPU is to "find all matches".  Crisp has several macros and functions that

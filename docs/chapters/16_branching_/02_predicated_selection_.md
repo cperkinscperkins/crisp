@@ -1,4 +1,4 @@
-# Predicated Selection ✅
+# Predicated Selection 📝
 
 
 Because the cost of branch divergence is so high, it is often just preferable to evaluate BOTH the consequent and alternative and

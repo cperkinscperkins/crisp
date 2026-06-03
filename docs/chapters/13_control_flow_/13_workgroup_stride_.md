@@ -24,11 +24,11 @@ Example: Simple cooperative increment
     (store-tile my-tile big-matrix)))
 ```
 
-#### Hardware Context Helpers
+#### Hardware Context Helpers ✅
 
 Instead of "modes" or "tags" that change how the stride works, Crisp provides helper macros that can be used inside the body of a `workgroup-stride` to access hardware-level information. This allows you to write warp-aware logic without losing your place in the tensor's coordinate system.
 
-#### HelperDescription
+#### Helper Description 
 - `(warp-id)` Returns the index of the current warp within the workgroup.
 - `(warp-lane)` Returns the index of the current thread within its warp (e.g., 0–31).
 - `(warp-count)` Returns the total number of warps in the current workgroup. 

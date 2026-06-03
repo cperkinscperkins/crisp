@@ -35,7 +35,7 @@ A simple way to make the type clear is use a type literal suffix on the first el
   ...)
 ```
 
-#### Dereferencing 
+#### Dereferencing 📝
 The subelements can be dereferences with the `x~`, `y~`, `z~` and `w~` functions, 
 and those can be used for `set!` as well.
 
@@ -45,7 +45,7 @@ and those can be used for `set!` as well.
     (set! (w~ my-svec) six)) ;; last element is now '6' instead of '8'
 ```
 
-#### Swizzles
+#### Swizzles 📝
 Furthermore, Crisp supports "swizzles" (like `xyyy~`)
 
 ```

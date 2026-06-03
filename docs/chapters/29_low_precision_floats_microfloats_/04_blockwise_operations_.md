@@ -1,4 +1,4 @@
-# blockwise operations ✅
+# blockwise operations 📝
 
 
 The arithmetic operations on microfloats are "blockwise". This is highly optimized.
@@ -6,7 +6,7 @@ The arithmetic operations on microfloats are "blockwise". This is highly optimiz
 The abbreviation `A` is used for the accumulator type, and `MFB` stands for the entire
 microfloat block.  
 
-#### widening multiplication
+#### widening multiplication 📝
 
 ```
 (*! MFB_1D MFB_1D) => A     ;  vector dot-product
@@ -15,7 +15,7 @@ microfloat block.
 Two microfloat blocks can be multiplied by each other, and the result is a single
 float of the accumulator type.
 
-#### addition / subtraction
+#### addition / subtraction 📝
 ```
 (+ A A ) => A   
 (- A A ) => A
@@ -35,7 +35,7 @@ but if you want to ensure this use the `mfb-mult-add` macro:
 This will ensure that the correct `@llvm.fma._` LLVM intrinsic is output into the IR, which wil then
 be correctly compiled for your target.
 
-#### max / min
+#### max / min 📝
 `max` and `min` are NOT defined for the main MFB block type.  But they are defined
 for both the base and accumulator types.
 ```

@@ -2,7 +2,7 @@
 
 Crisp provides a number of built-in atomic operations that perform their work on shared memory locations. Each function is guaranteed to be a single, indivisible transaction.  Each one updates some variable in place and returns the value at the location BEFORE the modification occured.
 
-#### atomic-add!
+#### atomic-add! ✅
 Adds a value to a memory location, updating it. This routine returns the value BEFORE this modification. This "fetch-and-add" behavior is the classic parallel reduction primitive.
 
 Syntax: `(atomic-add! location delta)`
@@ -19,35 +19,35 @@ Syntax: `(atomic-sub! location delta)`
 Example: `(let ((old (atomic-sub! (~ total-vec 0) 1))) ...)`
 This example decrements a shared counter. `old` will be set to whatever was there BEFORE the modification.
 
-#### atomic-inc!
+#### atomic-inc! ✅
 Atomically increments a memory location by 1.  Returns the value there previously.
 
 Syntax: `(atomic-inc! location)`
 
 Example: `(let ((old (atomic-inc! (~ counter-vec 0)))) ...)`
 
-#### atomic-dec!
+#### atomic-dec! ✅
 Atomically decrements a memory location by 1. Returns the value there previously.
 
 Syntax: `(atomic-dec! location)`
 
 Example: `(let ((old (atomic-dec! (~ tasks-vec 0)))) ...)`
 
-#### atomic-min!
+#### atomic-min! ✅
 Compares a value at a memory location with a new value and stores the minimum of the two. Returns the value there previously.
 
 Syntax: `(atomic-min! location new-value)`
 
 Example: `(let ((old (atomic-min! (~ min-across-threads-vec 0) local-min))) ...)`
 
-#### atomic-max!
+#### atomic-max! ✅
 Compares a value at a memory location with a new value and stores the maximum of the two. Returns the value there previously.
 
 Syntax: `(atomic-max! location new-value)`
 
 Example: `(let ((old (atomic-max! (~ max-across-threads-vec 0) local-max))) ...)`
 
-#### atomic-xchg!  |   atomic-set!
+#### atomic-xchg!  |   atomic-set! ✅
 Atomically exchanges the value at a memory location with a new value and returns the old value.  It does this UNCONDITIONALLY. 
 
 Syntax: `(atomic-xchg! location new-value)`
@@ -56,7 +56,7 @@ Example: `(let ((old-value (atomic-xchg! (~ thread-lock-vec 0) 1))) ...)`
 
 `atomic-set!` is just an alias for `atomic-xchg!` .  
 
-#### atomic-binop!
+#### atomic-binop! ✅
 Syntax: `(atomic-binop! location binop-f arg)`
 
 Uses an atomic CAS (Compare and Swap) under the hood. `atomic-binop!` 
@@ -83,7 +83,7 @@ Example:
         (return-from-loop)))))
 ```
 
-#### atomic-op!
+#### atomic-op! ✅
 Syntax: `(atomic-op! location op-f)`
 
 Uses an atomic CAS (Compare and Swap) under the hood. 

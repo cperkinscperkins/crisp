@@ -1,4 +1,4 @@
-# reduce vector ⚠️
+# reduce vector 📝
 
 
 The previous reductions are general purpose tools that let you create algorithms that reduce over warps, workgroups, or all the threads.  
@@ -7,7 +7,7 @@ The `reduce-vec-XXXX` variants are different in that they are respondent to a `v
 All the vector reductions are "grid level" operations, meaning they cannot be nested in other grid level ops.
 
 
-#### reduce-vec-first-stage
+#### reduce-vec-first-stage 📝
 `(reduce-vec-first-stage someFunction vec identity &out intermediateVec &optional localScratchVec)`
 
 This variant reduces `vec` down to a `intermediateVec` vec which will hold
@@ -37,7 +37,7 @@ Possible Implementation
 
 
 
-#### reduce-vec-second-stage
+#### reduce-vec-second-stage 📝
 
 `(reduce-vec-second-stage  someFunction intermediateVec identity &out final-result &optional localScratchVec globalScratchVec)`
 
@@ -95,7 +95,7 @@ This is what an implementation of `reduce-vec-second-stage` might look like
         (set-result! final-result val)))))
 ```
 
-#### reduce-vec-warp
+#### reduce-vec-warp 📝
 
 `(reduce-vec-warp someFunction vec identity) => result`
 
@@ -120,7 +120,7 @@ Possible Implementation
 ```
 
 
-#### reduce-vec-atomic
+#### reduce-vec-atomic 📝
 
 `(reduce-vec-atomic  someFunction vec identity &out return-vec &optional localScratchVec)`
 
@@ -168,7 +168,7 @@ Possible Implementation
 ```
 
 
-#### reduce-vec-cas
+#### reduce-vec-cas 📝
 
 `(reduce-vec-cas  someFunction vec identity return-vec &optional localScratchVec)`
 
@@ -199,7 +199,7 @@ Possible Implementation
 
 ```
 
-#### reduce-vec-cont
+#### reduce-vec-cont 📝
 
 `(reduce-vec-cont  someFunction vec identity continuation-kernel-name &optional localScratchVec globalScratchVec)`
 
@@ -227,7 +227,7 @@ Possible Implementation
 ```
 
 
-#### binop-type
+#### binop-type 📝
 
 `binop-type` is a type constructor that takes a type `T` and returns the function type `#(T T => T)`.
 

@@ -21,7 +21,7 @@ the actual number of threads that will be spawned, should be a multiple of that.
 Crisp has a number of `declare` directives that allow the host and the kernel to agree on what, or how, these values will be set. They tell the story of who expects what. These all go in the kernel's top level `declare` block.
 
 
-#### global-size / local-size
+#### global-size / local-size ✅
 ```
 (global-size &key set-to VALS derive-from EXPR strategy:SYM tile-shape:(<extents>) dims:ulong msg:string)
 (local-size &key set-to VALS derive-from EXPR strategy:SYM  tile-shape:(<extents>) dims:ulong msg:string)
@@ -38,11 +38,11 @@ A single directive CANNOT use both the `:set-to` and `:derive-from` keys.
 These directives are optional but hightly encouraged as they serve to both document intent to future readers
 of your kernel code, but also so the hoisting code is configuring things correctly for your kernel.
 
-##### :msg
+##### :msg 📝
 The `:msg` key takes a string that will be output into the comment at the place where the hoisting code is setting the particular value. 
 
 
-##### :dims
+##### :dims 📝
 The `:dims` key just takes the number `1` , `2` or `3` to express the required arity.  If using `:set-to` or `:derive-from` then
 `:dims` is not usually needed.  But there will be times when a kernel doesn't have particular size requirements but DOES
 have arity expectations.  Communicate them with `:dims`
@@ -57,7 +57,7 @@ If the `:dims` declaration does not match the arity of `:set-to` or `:derived-fr
 ```
 
 
-##### :set-to
+##### :set-to ✅
 The `:set-to` key instructs the hoisting code to use a specific value, (or values if multi-dimensional).
 
 ```
@@ -83,7 +83,7 @@ The `:set-to` key instructs the hoisting code to use a specific value, (or value
                           ...);
 ```
 
-##### :derive-from
+##### :derive-from ✅
 The `:derive-from` key instructs the hoisting code that the kernel expects the size value to be in response to the named kernel parameter.  If the expression names a vector, then in response to its length. How "in response to" should be
 intepreted is specified by the `:strategy` key (see below).  
 It can take a single symbol (for a vector, implying its length) or a list of symbols (for scalar parameters representing dimensions).
@@ -109,7 +109,7 @@ It can take a single symbol (for a vector, implying its length) or a list of sym
                           ...);
 ```
 
-##### :strategy
+##### :strategy ✅
 
 The `:strategy` key is most useful when used in conjunction with `:derive-from` (above). 
 
@@ -144,7 +144,7 @@ This declaration should always be used when using the `tile-stride` macro.  See 
 If the `:strategy` is not provided, then the default assumption is `:one-thread-per`. 
 
 
-##### `:occupancy`
+##### `:occupancy` ✅
 
 The `:occupancy` key is a manual derating factor for the `:strided` strategy.
 Accepts a number from `0.0` to `1.0` (default `1.0`).
@@ -181,12 +181,12 @@ Remember, these declarations influence any hoisting code that Crisp outputs (`--
 ```
 
 
-##### :tile-shape
+##### :tile-shape ⚠️
 
 `:tile-shape`  When  using the `:tiled` strategy you can provide the extents of the tile so the host can 
 calculate accordingly.  
 
-#### num-groups
+#### num-groups 📝
 ```
 (declare (num-groups :max :local-size :msg "number of groups can't be bigger than a local work size"))
 ;OR
@@ -207,7 +207,7 @@ can be used to inject a comment into the hoisting code.
 
 
 
-#### check-thread-bounds
+#### check-thread-bounds 📝
 By itself, the `global-size` expressions above doesn't result in any change to the 
 the way the kernel compiles or runs. It is mostly for communicating intent to the host which 
 will be hoisting the kernel. But it DOES interoperate with the `check-thread-bounds` predicate.
@@ -233,7 +233,7 @@ has been "rounded up" to a multiple of the workgroup size by the host.
 
 ```
 
-#### check-wg-bounds
+#### check-wg-bounds 📝
 Like `check-thread-bounds` but influenced by the `local_work_size` enqueue value and meant to be used on workgroup indeces.
 
 #### declaring local-size / global-size in sub functions.
@@ -243,7 +243,7 @@ If there are competing declarations in the kernel and different sub functions th
 be used. 
 
 
-#### check-async-hazards
+#### check-async-hazards 📝
 
 If present, the scope is checked to see if there is illegal access of memory between an async `(request-)` and the matching `(await-request )`
 A compile error is emitted if forbidden access is detected.

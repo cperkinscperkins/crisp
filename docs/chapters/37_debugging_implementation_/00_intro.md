@@ -1,4 +1,4 @@
-# Debugging Implementation ✅
+# Debugging Implementation 📝
 
 
 The perennial challenge of using debug logging on a GPU is that there is just TOO MUCH of it. 

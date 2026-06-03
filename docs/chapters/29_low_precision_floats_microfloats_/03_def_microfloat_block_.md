@@ -1,4 +1,4 @@
-# def-microfloat-block ✅
+# def-microfloat-block 📝
 
 
 The types above can then be used in `def-microfloat-block`.  Note that blocks can have 1D or 2D arity.

@@ -1,4 +1,4 @@
-# Integer Only Operations ✅
+# Integer Only Operations 📝
 
 
 - `ash`   ;; arithmetic shift `(ash I count)`

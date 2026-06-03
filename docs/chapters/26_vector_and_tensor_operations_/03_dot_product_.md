@@ -1,4 +1,4 @@
-# dot product ⚠️
+# dot product 📝
 
 
 The "dot product" is an operation that takes two vectors of the same length
@@ -11,7 +11,7 @@ $$A \cdot B = \sum_{i=1}^{n} A_i B_i = A_1B_1 + A_2B_2 + \cdots + A_nB_n$$
 I can be thought of as a measure of how much one vector "points in the direction" of another. 
 If two vectors are perpendicular, their dot product is zero. If they point in the same direction, their dot product is maximized.
 
-#### dot-prod-grid / dot-prod-seq
+#### dot-prod-grid / dot-prod-seq 📝
 
 ```
 (dot-prod-grid A B &out RESULT)
