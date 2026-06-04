@@ -25,8 +25,6 @@
       (uiop:quit 1))))
 
 
-
-
 ;;; -----------------------------------------------------------------------
 ;;; Struct support for L0 hoist
 ;;; src/hoist-l0/main.lisp
@@ -42,7 +40,7 @@
 ;;; -----------------------------------------------------------------------
 
 (defvar *hoist-current-structs* nil
-  "Dynamic variable: list of (def-struct NAME ...) forms from the current
+        "Dynamic variable: list of (def-struct NAME ...) forms from the current
    metacrisp :structs section.  Bound by generate-l0-launcher.")
 
 
@@ -54,12 +52,12 @@
    The metacrisp is parsed with standard READ (cl-user package), so symbols
    from the parsed data will not eq symbols from overlay source code."
   (find name *hoist-current-structs*
-        :test (lambda (n f)
-                (and (consp f)
-                     (symbolp (first f))
-                     (string-equal (symbol-name (first f)) "DEF-STRUCT")
-                     (symbolp (second f))
-                     (string-equal (symbol-name n) (symbol-name (second f)))))))
+    :test (lambda (n f)
+            (and (consp f)
+                 (symbolp (first f))
+                 (string-equal (symbol-name (first f)) "DEF-STRUCT")
+                 (symbolp (second f))
+                 (string-equal (symbol-name n) (symbol-name (second f)))))))
 
 (defun struct-type-p-l0 (type)
   "Returns T if TYPE names a def-struct in *hoist-current-structs*.
@@ -97,72 +95,72 @@
    Scalar fields use a type-appropriate constant (1 / 1.0f / 1.0).
    Nested structs are recursed into."
   (dolist (member members)
-    (let* ((field-name     (first member))
+    (let* ((field-name (first member))
            (field-type-raw (second member))
            (field-name-cpp (format-cpp-identifier field-name))
-           (field-path     (format nil "~a.~a" var-path field-name-cpp))
-           (field-type     (resolve-type-alias field-type-raw aliases)))
+           (field-path (format nil "~a.~a" var-path field-name-cpp))
+           (field-type (resolve-type-alias field-type-raw aliases)))
       (cond
        ;; Array field — iota initialization: field[i] = (T)i
        ((%array-type-p field-type)
-        (let* ((elem-type (%array-element-type field-type))
-               (arr-size  (%array-size field-type))
-               (elem-str  (crisp-type-to-cpp-type elem-type)))
-          (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
-                  arr-size field-path elem-str)))
+         (let* ((elem-type (%array-element-type field-type))
+                (arr-size (%array-size field-type))
+                (elem-str (crisp-type-to-cpp-type elem-type)))
+           (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
+             arr-size field-path elem-str)))
        ;; Nested struct — recurse
        ((struct-type-p-l0 field-type)
-        (let* ((nested-def     (%find-struct-def-l0 field-type))
-               (nested-members (cddr nested-def)))
-          (%struct-emit-fields stream field-path nested-members aliases)))
+         (let* ((nested-def (%find-struct-def-l0 field-type))
+                (nested-members (cddr nested-def)))
+           (%struct-emit-fields stream field-path nested-members aliases)))
        ;; Scalar field — type-appropriate constant
        (t
-        (let* ((cpp-type (crisp-type-to-cpp-type field-type))
-               (init-val (cond ((string= cpp-type "float")  "1.0f")
-                               ((string= cpp-type "double") "1.0")
-                               (t "1"))))
-          (format stream "    ~a = ~a;~%" field-path init-val)))))))
+         (let* ((cpp-type (crisp-type-to-cpp-type field-type))
+                (init-val (cond ((string= cpp-type "float") "1.0f")
+                                ((string= cpp-type "double") "1.0")
+                                (t "1"))))
+           (format stream "    ~a = ~a;~%" field-path init-val)))))))
 
 
 (defun generate-l0-launcher (metacrisp-path)
   "Generate Level Zero C++ launcher code from metacrisp file.
    Extended to extract and pass dispatch declarations to generate-cpp-main."
-  (let* ((data     (parse-metacrisp-file metacrisp-path))
-         (kernels  (metacrisp-kernels data))
-         (aliases  (metacrisp-aliases data))
+  (let* ((data (parse-metacrisp-file metacrisp-path))
+         (kernels (metacrisp-kernels data))
+         (aliases (metacrisp-aliases data))
          (base-name (pathname-name metacrisp-path)))
 
     (format t "Processing ~a~%" metacrisp-path)
     (format t "  Kernels: ~a~%" (length kernels))
 
     (when (null kernels)
-      (format t "WARNING: No kernels found in ~a. Nothing to hoist.~%" metacrisp-path))
+          (format t "WARNING: No kernels found in ~a. Nothing to hoist.~%" metacrisp-path))
 
     (let ((*hoist-current-structs* (metacrisp-structs data)))
       (dolist (kernel kernels)
-        (let* ((kernel-name    (getf kernel :name))
-               (declared-sig  (getf kernel :declared-signature))
-               (implicit-sig  (getf kernel :implicit-params))
+        (let* ((kernel-name (getf kernel :name))
+               (declared-sig (getf kernel :declared-signature))
+               (implicit-sig (getf kernel :implicit-params))
                ;; Extract dispatch info from parsed metacrisp plist
                (dispatch-info (let ((gs (getf kernel :global-size))
                                     (ls (getf kernel :local-size))
                                     (ng (getf kernel :num-groups)))
-                                 (when (or gs ls ng)
-                                   (append (when gs (list :global-size gs))
-                                           (when ls (list :local-size  ls))
-                                           (when ng (list :num-groups  ng))))))
+                                (when (or gs ls ng)
+                                      (append (when gs (list :global-size gs))
+                                        (when ls (list :local-size ls))
+                                        (when ng (list :num-groups ng))))))
                (comparable-range-start
-                 (lambda (param)
-                   (let ((r (getf param :range)))
-                     (if (listp r) (first r) -1))))
-               (full-sig      (sort (append declared-sig implicit-sig) #'<
-                                    :key comparable-range-start))
+                (lambda (param)
+                  (let ((r (getf param :range)))
+                    (if (listp r) (first r) -1))))
+               (full-sig (sort (append declared-sig implicit-sig) #'<
+                           :key comparable-range-start))
                (output-targets (getf kernel :output-targets)))
 
           (let* ((spv-path-entry (or (assoc :spirv output-targets)
                                      (assoc :spv output-targets)))
-                 (spv-path  (when spv-path-entry (second spv-path-entry)))
-                 (suffix    (format nil "_~a" kernel-name))
+                 (spv-path (when spv-path-entry (second spv-path-entry)))
+                 (suffix (format nil "_~a" kernel-name))
                  (name-part (if (uiop:string-suffix-p base-name suffix)
                                 base-name
                                 (format nil "~a~a" base-name suffix)))
@@ -173,7 +171,7 @@
 
             (if (null spv-path)
                 (format t "WARNING: No SPIR-V target found for kernel ~a. Skipping host generation.~%"
-                        kernel-name)
+                  kernel-name)
                 (progn
                  (format t "  Generating: ~a~%" output-name)
                  (let ((dvec-types (%collect-dvec-types declared-sig aliases)))
@@ -210,8 +208,6 @@
   (format stream "#include <cstdint>~%~%"))
 
 
-
-
 (defun generate-cpp-structs (stream structs)
   "Generate C++ struct definitions from metadata.
    For (array T N) member types: emits 'T name[N]' for the field declaration
@@ -219,62 +215,62 @@
    operator<< prints values space-separated (no field names, no braces)
    so HOIST-EXPECT substring checks work correctly."
   (when structs
-    (format stream "// Struct Definitions~%")
-    (dolist (struct-def structs)
-      (let* ((struct-name     (second struct-def))
-             (struct-name-str (substitute #\_ #\- (string-downcase (symbol-name struct-name))))
-             (members         (cddr struct-def)))
+        (format stream "// Struct Definitions~%")
+        (dolist (struct-def structs)
+          (let* ((struct-name (second struct-def))
+                 (struct-name-str (substitute #\_ #\- (string-downcase (symbol-name struct-name))))
+                 (members (cddr struct-def)))
 
-        ;; Skip internal tensor/storage records — not needed in host C++ code.
-        ;; They are def-record entries that exist only for the compiler's ABI bookkeeping.
-        (unless (or (search "TENSOR_" (symbol-name struct-name) :test #'char-equal)
-                    (search "STORAGE_" (symbol-name struct-name) :test #'char-equal))
+            ;; Skip internal tensor/storage records — not needed in host C++ code.
+            ;; They are def-record entries that exist only for the compiler's ABI bookkeeping.
+            (unless (or (search "TENSOR_" (symbol-name struct-name) :test #'char-equal)
+                        (search "STORAGE_" (symbol-name struct-name) :test #'char-equal))
 
-          ;; Struct body: native scalar layout — no alignas needed, C++ natural alignment matches.
-          (format stream "struct ~a {~%" struct-name-str)
-          (dolist (member members)
-            (let* ((member-name     (first member))
-                   (member-type     (second member))
-                   (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
-              (if (%array-type-p member-type)
-                  ;; Array field: T name[N]
-                  (let* ((elem-type (%array-element-type member-type))
-                         (arr-size  (%array-size member-type))
-                         (elem-str  (crisp-type-to-cpp-type elem-type)))
-                    (format stream "    ~a ~a[~a];~%" elem-str member-name-str arr-size))
-                  ;; Scalar/nested-struct field (type may be a list like (STORAGE GLOBAL))
-                  (let ((member-type-str
-                          (if (symbolp member-type)
-                              (substitute #\_ #\- (string-downcase (symbol-name member-type)))
-                              ;; Nested record/struct: use the first element's name
-                              (substitute #\_ #\- (string-downcase (symbol-name (first member-type)))))))
-                    (format stream "    ~a ~a;~%" member-type-str member-name-str)))))
+              ;; Struct body: native scalar layout — no alignas needed, C++ natural alignment matches.
+              (format stream "struct ~a {~%" struct-name-str)
+              (dolist (member members)
+                (let* ((member-name (first member))
+                       (member-type (second member))
+                       (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
+                  (if (%array-type-p member-type)
+                      ;; Array field: T name[N]
+                      (let* ((elem-type (%array-element-type member-type))
+                             (arr-size (%array-size member-type))
+                             (elem-str (crisp-type-to-cpp-type elem-type)))
+                        (format stream "    ~a ~a[~a];~%" elem-str member-name-str arr-size))
+                      ;; Scalar/nested-struct field (type may be a list like (STORAGE GLOBAL))
+                      (let ((member-type-str
+                             (if (symbolp member-type)
+                                 (substitute #\_ #\- (string-downcase (symbol-name member-type)))
+                                 ;; Nested record/struct: use the first element's name
+                                 (substitute #\_ #\- (string-downcase (symbol-name (first member-type)))))))
+                        (format stream "    ~a ~a;~%" member-type-str member-name-str)))))
 
-          ;; operator<<
-          (format stream "    friend std::ostream& operator<<(std::ostream& os, const ~a& obj) {~%" struct-name-str)
-          (let ((first-member t))
-            (dolist (member members)
-              (let* ((member-name     (first member))
-                     (member-type     (second member))
-                     (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
-                (if (%array-type-p member-type)
-                    ;; Array field: loop over elements, space-separated
-                    (let ((arr-size (%array-size member-type)))
-                      (unless first-member
-                        (format stream "        os << \" \";~%"))
-                      (format stream "        for (int _i = 0; _i < ~a; _i++) {~%" arr-size)
-                      (format stream "            if (_i > 0) os << \" \";~%")
-                      (format stream "            os << obj.~a[_i];~%" member-name-str)
-                      (format stream "        }~%"))
-                    ;; Scalar/nested-struct field
-                    (progn
-                      (unless first-member
-                        (format stream "        os << \" \";~%"))
-                      (format stream "        os << obj.~a;~%" member-name-str)))
-                (setf first-member nil))))
-          (format stream "        return os;~%")
-          (format stream "    }~%")
-          (format stream "};~%~%"))))))
+              ;; operator<<
+              (format stream "    friend std::ostream& operator<<(std::ostream& os, const ~a& obj) {~%" struct-name-str)
+              (let ((first-member t))
+                (dolist (member members)
+                  (let* ((member-name (first member))
+                         (member-type (second member))
+                         (member-name-str (substitute #\_ #\- (string-downcase (symbol-name member-name)))))
+                    (if (%array-type-p member-type)
+                        ;; Array field: loop over elements, space-separated
+                        (let ((arr-size (%array-size member-type)))
+                          (unless first-member
+                            (format stream "        os << \" \";~%"))
+                          (format stream "        for (int _i = 0; _i < ~a; _i++) {~%" arr-size)
+                          (format stream "            if (_i > 0) os << \" \";~%")
+                          (format stream "            os << obj.~a[_i];~%" member-name-str)
+                          (format stream "        }~%"))
+                        ;; Scalar/nested-struct field
+                        (progn
+                         (unless first-member
+                           (format stream "        os << \" \";~%"))
+                         (format stream "        os << obj.~a;~%" member-name-str)))
+                    (setf first-member nil))))
+              (format stream "        return os;~%")
+              (format stream "    }~%")
+              (format stream "};~%~%"))))))
 
 (defun generate-cpp-typedefs (stream aliases)
   "Generate C++ typedef declarations from type aliases"
@@ -305,9 +301,6 @@
   (format stream "    file.read(reinterpret_cast<char*>(buffer.data()), size);~%")
   (format stream "    return buffer;~%")
   (format stream "}~%~%"))
-
-
-
 
 
 ;;; src/hoist-l0/main.lisp
@@ -421,13 +414,9 @@
   (format stream "    std::cout << \"Module loaded successfully\" << std::endl;~%~%"))
 
 
-
-
 (defun %dispatch-sym-to-cpp-var (sym)
   "Convert a dispatch param symbol (e.g. 'WIDTH or 'width) to C++ variable name 'width_arg'."
   (format nil "~a_arg" (substitute #\_ #\- (string-downcase (symbol-name sym)))))
-
-
 
 
 ;; ======================================================================
@@ -457,10 +446,10 @@
      (sym1 sym2 ...)    -> (sym1 sym2 ...)
      nil                -> nil"
   (cond
-    ((null raw) nil)
-    ((symbolp raw) (list raw))
-    ((consp raw) raw)
-    (t nil)))
+   ((null raw) nil)
+   ((symbolp raw) (list raw))
+   ((consp raw) raw)
+   (t nil)))
 
 (defun %l0-derive-from-is-tensor-p (raw)
   "Returns T if :derive-from was supplied as a bare symbol (tensor name)."
@@ -469,110 +458,110 @@
 (defun %l0-dim-to-gc (dim local-val)
   "Convert a dimension value (integer or symbol) to C++ expression for group count."
   (cond
-    ((null dim) "1")
-    ((integerp dim)
+   ((null dim) "1")
+   ((integerp dim)
      (if (> local-val 1)
          (format nil "(~a + ~a) / ~a" dim (1- local-val) local-val)
          (format nil "~a" dim)))
-    ((symbolp dim)
+   ((symbolp dim)
      (let ((cpp-var (%dispatch-sym-to-cpp-var dim)))
        (if (> local-val 1)
            (format nil "((uint32_t)~a + ~a) / ~a" cpp-var (1- local-val) local-val)
            (format nil "(uint32_t)~a" cpp-var))))
-    (t "1")))
+   (t "1")))
 
 (defun %l0-emit-occupancy-and-strategy (stream is-strided is-interleaved occupancy derive-from-is-tensor derive-from)
   "Emit strategy descriptions and max-occupancy calculation."
   (when is-strided
-    (let ((ratio (cond ((null occupancy) 1.0)
-                       ((numberp occupancy) (float occupancy))
-                       (t 1.0))))
-      (format stream "    // Strategy: :strided — max occupancy~%")
-      (format stream "    ze_device_compute_properties_t _computeProps = { ZE_STRUCTURE_TYPE_DEVICE_COMPUTE_PROPERTIES };~%")
-      (format stream "    zeDeviceGetComputeProperties(device, &_computeProps);~%")
-      (format stream "    uint32_t _hw_threads = _computeProps.numSubslices * _computeProps.numEUsPerSubslice * _computeProps.numThreadsPerEU;~%")
-      (format stream "    // Refine with kernel resource footprint (privateMemSize, spillMemSize)~%")
-      (format stream "    ze_kernel_properties_t _kernelProps = { ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES };~%")
-      (format stream "    zeKernelGetProperties(kernel, &_kernelProps);~%")
-      (format stream "    // Derate occupancy by 2x if kernel spilled to private memory~%")
-      (format stream "    if (_kernelProps.spillMemSize > 0) { _hw_threads /= 2; }~%")
-      (unless (= ratio 1.0)
-        (format stream "    // :occupancy ~a — user-requested derate from max~%" occupancy)
-        (format stream "    _hw_threads = (uint32_t)(_hw_threads * ~f);~%" ratio)
-        (format stream "    if (_hw_threads < 1) _hw_threads = 1;~%"))
-      (when derive-from-is-tensor
-        (format stream "    // :derive-from tensor '~a' (length=~a) used for check-thread-bounds; grid uses occupancy~%"
-                (first derive-from) (%l0-tensor-length-cpp-var (first derive-from))))
-      (format stream "~%")))
+        (let ((ratio (cond ((null occupancy) 1.0)
+                           ((numberp occupancy) (float occupancy))
+                           (t 1.0))))
+          (format stream "    // Strategy: :strided — max occupancy~%")
+          (format stream "    ze_device_compute_properties_t _computeProps = { ZE_STRUCTURE_TYPE_DEVICE_COMPUTE_PROPERTIES };~%")
+          (format stream "    zeDeviceGetComputeProperties(device, &_computeProps);~%")
+          (format stream "    uint32_t _hw_threads = _computeProps.numSubslices * _computeProps.numEUsPerSubslice * _computeProps.numThreadsPerEU;~%")
+          (format stream "    // Refine with kernel resource footprint (privateMemSize, spillMemSize)~%")
+          (format stream "    ze_kernel_properties_t _kernelProps = { ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES };~%")
+          (format stream "    zeKernelGetProperties(kernel, &_kernelProps);~%")
+          (format stream "    // Derate occupancy by 2x if kernel spilled to private memory~%")
+          (format stream "    if (_kernelProps.spillMemSize > 0) { _hw_threads /= 2; }~%")
+          (unless (= ratio 1.0)
+            (format stream "    // :occupancy ~a — user-requested derate from max~%" occupancy)
+            (format stream "    _hw_threads = (uint32_t)(_hw_threads * ~f);~%" ratio)
+            (format stream "    if (_hw_threads < 1) _hw_threads = 1;~%"))
+          (when derive-from-is-tensor
+                (format stream "    // :derive-from tensor '~a' (length=~a) used for check-thread-bounds; grid uses occupancy~%"
+                  (first derive-from) (%l0-tensor-length-cpp-var (first derive-from))))
+          (format stream "~%")))
 
   (when is-interleaved
-    (format stream "    // Strategy: :interleaved not yet implemented — using default dispatch~%")))
+        (format stream "    // Strategy: :interleaved not yet implemented — using default dispatch~%")))
 
 (defun %l0-emit-group-count (stream is-strided is-interleaved is-tiled is-one-thread-per dispatch-decl set-to derive-from derive-from-is-tensor tile-shape local-x local-y)
   "Emit group count logic for ze_group_count_t groupCount."
   (cond
-    ;; :strided — occupancy-based grid
-    (is-strided
+   ;; :strided — occupancy-based grid
+   (is-strided
      ;; Divide _hw_threads by workgroup size to get group count
      (let ((wg-total (* local-x (max 1 local-y))))
        (if (> wg-total 1)
            (format stream "    ze_group_count_t groupCount = { _hw_threads / ~d, 1, 1 };~%" wg-total)
            (format stream "    ze_group_count_t groupCount = { _hw_threads, 1, 1 };~%"))))
 
-    (is-interleaved
+   (is-interleaved
      (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%"))
 
-    ((null dispatch-decl)
+   ((null dispatch-decl)
      (format stream "    ze_group_count_t groupCount = { 1, 1, 1 };~%"))
 
-    ;; :tiled with tensor :derive-from
-    ((and is-tiled derive-from-is-tensor)
+   ;; :tiled with tensor :derive-from
+   ((and is-tiled derive-from-is-tensor)
      (let ((tx (or (first tile-shape) 1))
            (tensor-var (%l0-tensor-length-cpp-var (first derive-from))))
        (format stream "    uint32_t _gx = ((uint32_t)~a + ~d) / ~d;~%"
-               tensor-var (1- tx) tx)
+         tensor-var (1- tx) tx)
        (format stream "    ze_group_count_t groupCount = { _gx, 1, 1 };~%")))
 
-    ;; :tiled with scalar derive-from list
-    (is-tiled
+   ;; :tiled with scalar derive-from list
+   (is-tiled
      (let* ((d0 (first derive-from))
             (d1 (second derive-from))
             (d2 (third derive-from))
             (tx (or (first tile-shape) 1))
             (ty (or (second tile-shape) 1)))
        (when d0
-         (format stream "    uint32_t _gx = ((uint32_t)~a + ~a) / ~a;~%"
-                 (%dispatch-sym-to-cpp-var d0) (1- tx) tx))
+             (format stream "    uint32_t _gx = ((uint32_t)~a + ~a) / ~a;~%"
+               (%dispatch-sym-to-cpp-var d0) (1- tx) tx))
        (when d1
-         (format stream "    uint32_t _gy = ((uint32_t)~a + ~a) / ~a;~%"
-                 (%dispatch-sym-to-cpp-var d1) (1- ty) ty))
+             (format stream "    uint32_t _gy = ((uint32_t)~a + ~a) / ~a;~%"
+               (%dispatch-sym-to-cpp-var d1) (1- ty) ty))
        (when d2
-         (format stream "    uint32_t _gz = ((uint32_t)~a + 0) / 1;~%"
-                 (%dispatch-sym-to-cpp-var d2)))
+             (format stream "    uint32_t _gz = ((uint32_t)~a + 0) / 1;~%"
+               (%dispatch-sym-to-cpp-var d2)))
        (format stream "    ze_group_count_t groupCount = { ~a, ~a, ~a };~%"
-               (if d0 "_gx" "1")
-               (if d1 "_gy" "1")
-               (if d2 "_gz" "1"))))
+         (if d0 "_gx" "1")
+         (if d1 "_gy" "1")
+         (if d2 "_gz" "1"))))
 
-    ;; :one-thread-per with tensor :derive-from
-    ((and is-one-thread-per derive-from-is-tensor)
+   ;; :one-thread-per with tensor :derive-from
+   ((and is-one-thread-per derive-from-is-tensor)
      (let ((tensor-var (%l0-tensor-length-cpp-var (first derive-from))))
        (if (> local-x 1)
            (format stream "    ze_group_count_t groupCount = { ((uint32_t)~a + ~d) / ~d, 1, 1 };~%"
-                   tensor-var (1- local-x) local-x)
+             tensor-var (1- local-x) local-x)
            (format stream "    ze_group_count_t groupCount = { (uint32_t)~a, 1, 1 };~%"
-                   tensor-var))))
+             tensor-var))))
 
-    ((integerp set-to)
+   ((integerp set-to)
      (let ((g0 (%l0-dim-to-gc set-to local-x)))
        (format stream "    ze_group_count_t groupCount = { ~a, 1, 1 };~%" g0)))
 
-    ;; :set-to list OR :derive-from (scalar list)
-    (t
+   ;; :set-to list OR :derive-from (scalar list)
+   (t
      (let* ((dims (cond
-                    ((consp set-to) set-to)
-                    (derive-from derive-from)
-                    (t nil)))
+                   ((consp set-to) set-to)
+                   (derive-from derive-from)
+                   (t nil)))
             (d0 (first dims))
             (d1 (second dims))
             (d2 (third dims))
@@ -595,30 +584,30 @@
   (let* ((ls-rest (when local-decl (cdr local-decl)))
          (ls-set-to (when ls-rest (getf ls-rest :set-to)))
          (local-x (cond
-                    ((integerp ls-set-to) ls-set-to)
-                    ((and (listp ls-set-to) (first ls-set-to)) (first ls-set-to))
-                    (t 1)))
+                   ((integerp ls-set-to) ls-set-to)
+                   ((and (listp ls-set-to) (first ls-set-to)) (first ls-set-to))
+                   (t 1)))
          (local-y (cond
-                    ((and (listp ls-set-to) (second ls-set-to)) (second ls-set-to))
-                    (t 1)))
+                   ((and (listp ls-set-to) (second ls-set-to)) (second ls-set-to))
+                   (t 1)))
 
          (dispatch-decl (or global-decl num-groups-decl))
          (disp-rest (when dispatch-decl (cdr dispatch-decl)))
          (strategy (when disp-rest (getf disp-rest :strategy)))
          (strat-name (when strategy (symbol-name strategy)))
 
-         (is-strided     (and strat-name (string-equal strat-name "STRIDED")))
-         (is-tiled       (and strat-name (string-equal strat-name "TILED")))
+         (is-strided (and strat-name (string-equal strat-name "STRIDED")))
+         (is-tiled (and strat-name (string-equal strat-name "TILED")))
          (is-interleaved (and strat-name (string-equal strat-name "INTERLEAVED")))
          (is-one-thread-per (and strat-name (string-equal strat-name "ONE-THREAD-PER")))
 
-         (set-to     (when disp-rest (getf disp-rest :set-to)))
+         (set-to (when disp-rest (getf disp-rest :set-to)))
          (raw-derive-from (when disp-rest (getf disp-rest :derive-from)))
          (derive-from-is-tensor (%l0-derive-from-is-tensor-p raw-derive-from))
          (derive-from (%l0-normalize-derive-from raw-derive-from))
          (tile-shape (when disp-rest (getf disp-rest :tile-shape)))
          ;; :occupancy <ratio> — manual derating for :strided (default 1.0)
-         (occupancy  (when disp-rest (getf disp-rest :occupancy))))
+         (occupancy (when disp-rest (getf disp-rest :occupancy))))
 
     (%l0-emit-occupancy-and-strategy stream is-strided is-interleaved occupancy derive-from-is-tensor derive-from)
 
@@ -682,7 +671,7 @@
     ;; Launch kernel — strategy-aware dispatch
     (format stream "    // Launch kernel~%")
     (let ((global-decl (when dispatch-info (getf dispatch-info :global-size)))
-          (local-decl  (when dispatch-info (getf dispatch-info :local-size)))
+          (local-decl (when dispatch-info (getf dispatch-info :local-size)))
           (num-groups-decl (when dispatch-info (getf dispatch-info :num-groups))))
       (%l0-emit-dispatch stream global-decl local-decl num-groups-decl))
 
@@ -723,7 +712,6 @@
           (format stream "~%"))))
 
 
-
 ;; Record type helpers
 
 (defun record-base-type (type)
@@ -735,14 +723,13 @@
    TYPE may be a plain symbol or a parameterized list form."
   (let ((base (record-base-type type)))
     (find base records
-          :key #'second
-          :test (lambda (a b) (string-equal (symbol-name a) (symbol-name b))))))
+      :key #'second
+      :test (lambda (a b) (string-equal (symbol-name a) (symbol-name b))))))
 
 (defun record-type-p (type records)
   "Returns true if TYPE refers to a def-record in RECORDS."
   (and (not (cell-type-p type))
        (not (null (find-record-def type records)))))
-
 
 
 (defun %record-field-args (stream members var-path arg-index records aliases)
@@ -754,46 +741,43 @@
    Returns the updated arg-index after consuming all fields."
   (let ((idx arg-index))
     (dolist (member members)
-      (let* ((field-sym       (first member))
-             (field-type-raw  (second member))
-             (field-type      (resolve-type-alias field-type-raw aliases))
-             (field-name-cpp  (format-cpp-identifier field-sym))
-             (field-path      (format nil "~a.~a" var-path field-name-cpp)))
+      (let* ((field-sym (first member))
+             (field-type-raw (second member))
+             (field-type (resolve-type-alias field-type-raw aliases))
+             (field-name-cpp (format-cpp-identifier field-sym))
+             (field-path (format nil "~a.~a" var-path field-name-cpp)))
         (cond
          ;; Array member — SROA: iota-init, then N individual zeKernelSetArgumentValue calls
          ((%array-type-p field-type)
-          (let* ((elem-type (%array-element-type field-type))
-                 (arr-size  (%array-size field-type))
-                 (elem-str  (crisp-type-to-cpp-type elem-type)))
-            (format stream "    // Iota-init array member ~a (~a elements, SROA'd to ~a scalar args)~%"
-                    field-path arr-size arr-size)
-            (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
-                    arr-size field-path elem-str)
-            (loop for i from 0 below arr-size do
-              (format stream "    // Arg ~d: ~a[~d]~%" idx field-path i)
-              (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a[~d]);~%"
-                      idx elem-str field-path i)
-              (incf idx))))
+           (let* ((elem-type (%array-element-type field-type))
+                  (arr-size (%array-size field-type))
+                  (elem-str (crisp-type-to-cpp-type elem-type)))
+             (format stream "    // Iota-init array member ~a (~a elements, SROA'd to ~a scalar args)~%"
+               field-path arr-size arr-size)
+             (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
+               arr-size field-path elem-str)
+             (loop for i from 0 below arr-size do
+                     (format stream "    // Arg ~d: ~a[~d]~%" idx field-path i)
+                     (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a[~d]);~%"
+                       idx elem-str field-path i)
+                     (incf idx))))
          ;; Nested record — recurse into its members
          ((record-type-p field-type records)
-          (let* ((nested-def     (find-record-def field-type records))
-                 (nested-members (cddr nested-def)))
-            (setf idx (%record-field-args stream nested-members field-path idx records aliases))))
+           (let* ((nested-def (find-record-def field-type records))
+                  (nested-members (cddr nested-def)))
+             (setf idx (%record-field-args stream nested-members field-path idx records aliases))))
          ;; Scalar leaf — type-appropriate init, individual arg
          (t
-          (let* ((cpp-type (crisp-type-to-cpp-type field-type))
-                 (init-val (cond ((string= cpp-type "float")  "1.0f")
-                                 ((string= cpp-type "double") "1.0")
-                                 (t "1"))))
-            (format stream "    ~a = ~a;~%" field-path init-val)
-            (format stream "    // Arg ~d: ~a~%" idx field-path)
-            (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a);~%"
-                    idx cpp-type field-path)
-            (incf idx))))))
+           (let* ((cpp-type (crisp-type-to-cpp-type field-type))
+                  (init-val (cond ((string= cpp-type "float") "1.0f")
+                                  ((string= cpp-type "double") "1.0")
+                                  (t "1"))))
+             (format stream "    ~a = ~a;~%" field-path init-val)
+             (format stream "    // Arg ~d: ~a~%" idx field-path)
+             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a);~%"
+               idx cpp-type field-path)
+             (incf idx))))))
     idx))
-
-
-
 
 
 ;;; -----------------------------------------------------------------------
@@ -836,318 +820,318 @@
   (let* ((extents (make-list n :initial-element dim-extent))
          (strides (make-list n :initial-element 1)))
     (loop for k from (- n 2) downto 0 do
-      (setf (nth k strides) (* (nth (1+ k) strides) dim-extent)))
+            (setf (nth k strides) (* (nth (1+ k) strides) dim-extent)))
     (values extents strides)))
 
 (defun %l0-emit-cell-arg (stream param param-name param-type param-dir is-local aliases context-var device-var arg-index)
   (declare (ignore aliases))
-  (let* ((base-type      (cell-base-type param-type))
-         (is-array-cell  (%array-type-p base-type))
-         (base-type-str  (if is-array-cell
-                             (crisp-type-to-cpp-type (%array-element-type base-type))
-                             (crisp-type-to-cpp-type base-type)))
-         (elem-count     (if is-array-cell (%array-size base-type) 1))
+  (let* ((base-type (cell-base-type param-type))
+         (is-array-cell (%array-type-p base-type))
+         (base-type-str (if is-array-cell
+                            (crisp-type-to-cpp-type (%array-element-type base-type))
+                            (crisp-type-to-cpp-type base-type)))
+         (elem-count (if is-array-cell (%array-size base-type) 1))
          (param-name-cpp (substitute #\_ #\- param-name))
-         (size-var       (format nil "~a_size" param-name-cpp))
-         (ptr-var        (format nil "~a_ptr"  param-name-cpp))
-         (alloc          nil))
+         (size-var (format nil "~a_size" param-name-cpp))
+         (ptr-var (format nil "~a_ptr" param-name-cpp))
+         (alloc nil))
     (if is-local
         ;; --- LOCAL MEMORY ---
         (progn
-          (format stream "~%    // Configure LOCAL memory for ~a~%" param-name)
-          (format stream "    size_t ~a = ~a;  // ~a~%"
-                  size-var elem-count
-                  (if is-array-cell "Array cell: N elements" "Cell is a single scalar"))
-          (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
-          (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
-          (format stream "    // Arg ~d: Local Pointer (Size=~a)~%" arg-index size-var)
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, ~a_bytes, nullptr);~%"
-                  arg-index size-var)
-          (format stream "    // Arg ~d: Size (bytes)~%" (+ arg-index 1))
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_bytes);~%"
-                  (+ arg-index 1) size-var)
-          (format stream "    // Arg ~d: Offset (bytes)~%" (+ arg-index 2))
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_offset);~%~%"
-                  (+ arg-index 2) param-name-cpp))
+         (format stream "~%    // Configure LOCAL memory for ~a~%" param-name)
+         (format stream "    size_t ~a = ~a;  // ~a~%"
+           size-var elem-count
+           (if is-array-cell "Array cell: N elements" "Cell is a single scalar"))
+         (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
+         (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+         (format stream "    // Arg ~d: Local Pointer (Size=~a)~%" arg-index size-var)
+         (format stream "    zeKernelSetArgumentValue(kernel, ~d, ~a_bytes, nullptr);~%"
+           arg-index size-var)
+         (format stream "    // Arg ~d: Size (bytes)~%" (+ arg-index 1))
+         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_bytes);~%"
+           (+ arg-index 1) size-var)
+         (format stream "    // Arg ~d: Offset (bytes)~%" (+ arg-index 2))
+         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_offset);~%~%"
+           (+ arg-index 2) param-name-cpp))
 
         ;; --- GLOBAL MEMORY (USM) ---
         (progn
-          (format stream "~%    // Allocate USM memory for ~a~%" param-name)
-          (format stream "    size_t ~a = ~a;  // ~a~%"
-                  size-var elem-count
-                  (if is-array-cell "Array cell: N elements" "Cell is a single scalar"))
-          (format stream "    ~a* ~a = nullptr;~%" base-type-str ptr-var)
-          (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
-                  context-var)
-          (format stream "        ~a * sizeof(~a), 1, ~a, (void**)&~a);~%"
-                  size-var base-type-str device-var ptr-var)
-          (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
-          (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
-                  param-name)
-          (format stream "        return 1;~%")
-          (format stream "    }~%")
-          (format stream "    // Initialize data~%")
-          (if is-array-cell
-              (format stream "    for (size_t _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
-                      size-var ptr-var base-type-str)
-              (format stream "    memset(~a, 0, ~a * sizeof(~a));~%" ptr-var size-var base-type-str))
-          (format stream "    // Arg ~d: Base Pointer~%" arg-index)
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
-                  arg-index ptr-var)
-          (format stream "    // Arg ~d: Size (bytes)~%" (+ arg-index 1))
-          (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_bytes);~%"
-                  (+ arg-index 1) size-var)
-          (format stream "    // Arg ~d: Offset (bytes)~%" (+ arg-index 2))
-          (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_offset);~%~%"
-                  (+ arg-index 2) param-name-cpp)
-          (setf alloc (list :name     param-name
-                            :ptr      ptr-var
-                            :size-var size-var
-                            :direction param-dir
-                            :access   (getf param :access)))))
+         (format stream "~%    // Allocate USM memory for ~a~%" param-name)
+         (format stream "    size_t ~a = ~a;  // ~a~%"
+           size-var elem-count
+           (if is-array-cell "Array cell: N elements" "Cell is a single scalar"))
+         (format stream "    ~a* ~a = nullptr;~%" base-type-str ptr-var)
+         (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
+           context-var)
+         (format stream "        ~a * sizeof(~a), 1, ~a, (void**)&~a);~%"
+           size-var base-type-str device-var ptr-var)
+         (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
+         (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
+           param-name)
+         (format stream "        return 1;~%")
+         (format stream "    }~%")
+         (format stream "    // Initialize data~%")
+         (if is-array-cell
+             (format stream "    for (size_t _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
+               size-var ptr-var base-type-str)
+             (format stream "    memset(~a, 0, ~a * sizeof(~a));~%" ptr-var size-var base-type-str))
+         (format stream "    // Arg ~d: Base Pointer~%" arg-index)
+         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
+           arg-index ptr-var)
+         (format stream "    // Arg ~d: Size (bytes)~%" (+ arg-index 1))
+         (format stream "    uint64_t ~a_bytes = ~a * sizeof(~a);~%" size-var size-var base-type-str)
+         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_bytes);~%"
+           (+ arg-index 1) size-var)
+         (format stream "    // Arg ~d: Offset (bytes)~%" (+ arg-index 2))
+         (format stream "    uint64_t ~a_offset = 0;~%" param-name-cpp)
+         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_offset);~%~%"
+           (+ arg-index 2) param-name-cpp)
+         (setf alloc (list :name param-name
+                           :ptr ptr-var
+                           :size-var size-var
+                           :direction param-dir
+                           :access (getf param :access)))))
     (values (+ arg-index 3) alloc)))
 
 (defun %l0-emit-local-scratch-tensor-arg (stream param param-name param-type arg-index)
-  (let* ((rank        (let ((n3 (third param-type)))
-                        (if (integerp n3) n3 1)))
-         (size-expr   (getf param :size-expr))
-         (elem-type   (second param-type))
-         (elem-str    (crisp-type-to-cpp-type elem-type))
-         (elem-bytes  (if (or (string-equal elem-str "double")
-                              (string-equal elem-str "int64_t")
-                              (string-equal elem-str "uint64_t")) 8 4))
+  (let* ((rank (let ((n3 (third param-type)))
+                 (if (integerp n3) n3 1)))
+         (size-expr (getf param :size-expr))
+         (elem-type (second param-type))
+         (elem-str (crisp-type-to-cpp-type elem-type))
+         (elem-bytes (if (or (string-equal elem-str "double")
+                             (string-equal elem-str "int64_t")
+                             (string-equal elem-str "uint64_t")) 8 4))
          (param-name-cpp (substitute #\_ #\- param-name)))
     (unless (integerp size-expr)
       (error "Local scratch tensor ~a has non-integer :size-expr ~a. ~
               Only literal integer sizes are supported in the L0 hoist launcher."
-             param-name size-expr))
+        param-name size-expr))
     (multiple-value-bind (extents strides)
         (%tensor-compact-extents-strides rank size-expr)
-      (let* ((length    (* (expt size-expr rank)))
-             (bytesize  (* length elem-bytes))
+      (let* ((length (* (expt size-expr rank)))
+             (bytesize (* length elem-bytes))
              (current-idx arg-index))
         (format stream "~%    // LOCAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes)~%"
-                param-name rank elem-str length bytesize)
+          param-name rank elem-str length bytesize)
         ;; Arg N: local memory allocation — nullptr + bytesize
         (format stream "    // Arg ~d: local ptr (~d bytes of workgroup-local memory)~%"
-                current-idx bytesize)
+          current-idx bytesize)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, ~dULL, nullptr);~%"
-                current-idx bytesize)
+          current-idx bytesize)
         (incf current-idx)
         ;; Arg N+1: byte-size
         (format stream "    // Arg ~d: byte-size = ~d~%" current-idx bytesize)
         (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_byte_size);~%"
-                current-idx param-name-cpp)
+          current-idx param-name-cpp)
         (incf current-idx)
         ;; Args N+2 .. N+1+rank: offsets (all zero)
         (loop for k from 0 below rank do
-          (format stream "    // Arg ~d: offset[~d] = 0~%" current-idx k)
-          (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%"
+                (format stream "    // Arg ~d: offset[~d] = 0~%" current-idx k)
+                (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%"
                   current-idx param-name-cpp k)
-          (incf current-idx))
+                (incf current-idx))
         ;; Args N+2+rank .. N+1+2*rank: strides (compact element strides)
         (loop for k from 0 below rank do
-          (format stream "    // Arg ~d: stride[~d] = ~d (elements, compact)~%"
+                (format stream "    // Arg ~d: stride[~d] = ~d (elements, compact)~%"
                   current-idx k (nth k strides))
-          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%"
+                (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%"
                   current-idx param-name-cpp k)
-          (incf current-idx))
+                (incf current-idx))
         ;; Args N+2+2*rank .. N+1+3*rank: extents
         (loop for k from 0 below rank do
-          (format stream "    // Arg ~d: extent[~d] = ~d~%" current-idx k (nth k extents))
-          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%"
+                (format stream "    // Arg ~d: extent[~d] = ~d~%" current-idx k (nth k extents))
+                (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%"
                   current-idx param-name-cpp k)
-          (incf current-idx))
+                (incf current-idx))
         ;; Last arg: length
         (format stream "    // Arg ~d: length = ~d~%" current-idx length)
         (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_length);~%~%"
-                current-idx param-name-cpp)
+          current-idx param-name-cpp)
         (incf current-idx)
         current-idx))))
 
 (defun %l0-emit-global-scratch-tensor-arg (stream param param-name param-type context-var device-var arg-index)
-  (let* ((rank        (let ((n3 (third param-type)))
-                        (if (integerp n3) n3 1)))
-         (size-expr   (getf param :size-expr))
-         (elem-type   (second param-type))
-         (elem-str    (crisp-type-to-cpp-type elem-type))
-         (elem-bytes  (if (or (string-equal elem-str "double")
-                              (string-equal elem-str "int64_t")
-                              (string-equal elem-str "uint64_t")) 8 4))
+  (let* ((rank (let ((n3 (third param-type)))
+                 (if (integerp n3) n3 1)))
+         (size-expr (getf param :size-expr))
+         (elem-type (second param-type))
+         (elem-str (crisp-type-to-cpp-type elem-type))
+         (elem-bytes (if (or (string-equal elem-str "double")
+                             (string-equal elem-str "int64_t")
+                             (string-equal elem-str "uint64_t")) 8 4))
          (param-name-cpp (substitute #\_ #\- param-name))
-         (ptr-var     (format nil "~a_ptr" param-name-cpp)))
+         (ptr-var (format nil "~a_ptr" param-name-cpp)))
     (unless (integerp size-expr)
       (error "Global scratch tensor ~a has non-integer :size-expr ~a. ~
               Only literal integer sizes are supported in the L0 hoist launcher."
-             param-name size-expr))
+        param-name size-expr))
     (multiple-value-bind (extents strides)
         (%tensor-compact-extents-strides rank size-expr)
-      (let* ((length    (expt size-expr rank))
-             (bytesize  (* length elem-bytes))
+      (let* ((length (expt size-expr rank))
+             (bytesize (* length elem-bytes))
              (current-idx arg-index))
         (format stream "~%    // GLOBAL scratch tensor: ~a (rank=~d, ~a, ~d elems, ~d bytes)~%"
-                param-name rank elem-str length bytesize)
+          param-name rank elem-str length bytesize)
         ;; Allocate USM shared memory, zero-initialized
         (format stream "    ~a* ~a = nullptr;~%" elem-str ptr-var)
         (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
-                context-var)
+          context-var)
         (format stream "        ~dULL * sizeof(~a), 1, ~a, (void**)&~a);~%"
-                length elem-str device-var ptr-var)
+          length elem-str device-var ptr-var)
         (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
         (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
-                param-name)
+          param-name)
         (format stream "        return 1;~%")
         (format stream "    }~%")
         (format stream "    memset(~a, 0, ~dULL * sizeof(~a));  // scratch: zero-init~%"
-                ptr-var length elem-str)
+          ptr-var length elem-str)
         ;; Arg 0: global USM pointer
         (format stream "    // Arg ~d: global scratch ptr~%" current-idx)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
-                current-idx ptr-var)
+          current-idx ptr-var)
         (incf current-idx)
         ;; Arg 1: byte-size
         (format stream "    // Arg ~d: byte-size = ~d~%" current-idx bytesize)
         (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp bytesize)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_byte_size);~%"
-                current-idx param-name-cpp)
+          current-idx param-name-cpp)
         (incf current-idx)
         ;; Offsets (all zero)
         (loop for k from 0 below rank do
-          (format stream "    // Arg ~d: offset[~d] = 0~%" current-idx k)
-          (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%"
+                (format stream "    // Arg ~d: offset[~d] = 0~%" current-idx k)
+                (format stream "    uint64_t ~a_off~d = 0ULL;~%" param-name-cpp k)
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%"
                   current-idx param-name-cpp k)
-          (incf current-idx))
+                (incf current-idx))
         ;; Strides (compact element strides)
         (loop for k from 0 below rank do
-          (format stream "    // Arg ~d: stride[~d] = ~d (elements, compact)~%"
+                (format stream "    // Arg ~d: stride[~d] = ~d (elements, compact)~%"
                   current-idx k (nth k strides))
-          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%"
+                (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%"
                   current-idx param-name-cpp k)
-          (incf current-idx))
+                (incf current-idx))
         ;; Extents
         (loop for k from 0 below rank do
-          (format stream "    // Arg ~d: extent[~d] = ~d~%" current-idx k (nth k extents))
-          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%"
+                (format stream "    // Arg ~d: extent[~d] = ~d~%" current-idx k (nth k extents))
+                (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%"
                   current-idx param-name-cpp k)
-          (incf current-idx))
+                (incf current-idx))
         ;; Length
         (format stream "    // Arg ~d: length = ~d~%" current-idx length)
         (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp length)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_length);~%~%"
-                current-idx param-name-cpp)
+          current-idx param-name-cpp)
         (incf current-idx)
         current-idx))))
 
 (defun %l0-emit-tensor-arg (stream param param-name param-type param-dir context-var device-var arg-index)
-  (let* ((rank        (or (getf param :rank)
-                          (let ((n3 (third param-type)))
-                            (if (integerp n3) n3 1))))
-         (elem-type   (second param-type))
-         (align       (getf param :align))
-         (elem-str    (crisp-type-to-cpp-type elem-type))
-         (dim-extent  4)  ; test harness: 4 elements per dimension
+  (let* ((rank (or (getf param :rank)
+                   (let ((n3 (third param-type)))
+                     (if (integerp n3) n3 1))))
+         (elem-type (second param-type))
+         (align (getf param :align))
+         (elem-str (crisp-type-to-cpp-type elem-type))
+         (dim-extent 4) ; test harness: 4 elements per dimension
          (param-name-cpp (substitute #\_ #\- param-name))
-         (ptr-var     (format nil "~a_ptr" param-name-cpp)))
+         (ptr-var (format nil "~a_ptr" param-name-cpp)))
     (multiple-value-bind (extents strides)
         (%tensor-compact-extents-strides rank dim-extent)
       (let* ((total-elems (* (first strides) (first extents)))
-             (offsets     (make-list rank :initial-element 0))
-             (elem-bytes  (if (or (string-equal elem-str "double")
-                                  (string-equal elem-str "int64_t")
-                                  (string-equal elem-str "uint64_t")) 8 4))
-             (byte-size   (* total-elems elem-bytes))
-             (layout-str  (if (member align '(:strided strided)
-                                      :test (lambda (a b) (string-equal (string a) (string b))))
-                              "compact (strided param, harness uses compact)"
-                              "compact"))
+             (offsets (make-list rank :initial-element 0))
+             (elem-bytes (if (or (string-equal elem-str "double")
+                                 (string-equal elem-str "int64_t")
+                                 (string-equal elem-str "uint64_t")) 8 4))
+             (byte-size (* total-elems elem-bytes))
+             (layout-str (if (member align '(:strided strided)
+                                     :test (lambda (a b) (string-equal (string a) (string b))))
+                             "compact (strided param, harness uses compact)"
+                             "compact"))
              (current-idx arg-index))
         (format stream "~%    // Tensor argument: ~a (rank=~d, ~a, ~d elements, ~a)~%"
-                param-name rank elem-str total-elems layout-str)
+          param-name rank elem-str total-elems layout-str)
         (format stream "    ~a* ~a = nullptr;~%" elem-str ptr-var)
         (format stream "    result = zeMemAllocShared(~a, &deviceDesc, &hostDesc,~%"
-                context-var)
+          context-var)
         (format stream "        ~d * sizeof(~a), 1, ~a, (void**)&~a);~%"
-                total-elems elem-str device-var ptr-var)
+          total-elems elem-str device-var ptr-var)
         (format stream "    if (result != ZE_RESULT_SUCCESS) {~%")
         (format stream "        std::cerr << \"ERROR: zeMemAllocShared failed for ~a\" << std::endl;~%"
-                param-name)
+          param-name)
         (format stream "        return 1;~%")
         (format stream "    }~%")
         (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)_i;~%"
-                total-elems ptr-var elem-str)
+          total-elems ptr-var elem-str)
         (format stream "    // Arg ~d: ~a PTR~%" current-idx param-name)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%"
-                current-idx ptr-var)
+          current-idx ptr-var)
         (incf current-idx)
         (format stream "    // Arg ~d: ~a BYTE_SIZE = ~d~%" current-idx param-name byte-size)
         (format stream "    uint64_t ~a_byte_size = ~dULL;~%" param-name-cpp byte-size)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_byte_size);~%"
-                current-idx param-name-cpp)
+          current-idx param-name-cpp)
         (incf current-idx)
         (loop for k from 0 below rank do
-          (format stream "    // Arg ~d: ~a OFFSET_~d = ~d~%" current-idx param-name k (nth k offsets))
-          (format stream "    uint64_t ~a_off~d = ~dULL;~%" param-name-cpp k (nth k offsets))
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%"
+                (format stream "    // Arg ~d: ~a OFFSET_~d = ~d~%" current-idx param-name k (nth k offsets))
+                (format stream "    uint64_t ~a_off~d = ~dULL;~%" param-name-cpp k (nth k offsets))
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off~d);~%"
                   current-idx param-name-cpp k)
-          (incf current-idx))
+                (incf current-idx))
         (loop for k from 0 below rank do
-          (format stream "    // Arg ~d: ~a STRIDE_~d = ~d~%" current-idx param-name k (nth k strides))
-          (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%"
+                (format stream "    // Arg ~d: ~a STRIDE_~d = ~d~%" current-idx param-name k (nth k strides))
+                (format stream "    uint64_t ~a_str~d = ~dULL;~%" param-name-cpp k (nth k strides))
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str~d);~%"
                   current-idx param-name-cpp k)
-          (incf current-idx))
+                (incf current-idx))
         (loop for k from 0 below rank do
-          (format stream "    // Arg ~d: ~a EXTENT_~d = ~d~%" current-idx param-name k (nth k extents))
-          (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
-          (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%"
+                (format stream "    // Arg ~d: ~a EXTENT_~d = ~d~%" current-idx param-name k (nth k extents))
+                (format stream "    uint64_t ~a_ext~d = ~dULL;~%" param-name-cpp k (nth k extents))
+                (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext~d);~%"
                   current-idx param-name-cpp k)
-          (incf current-idx))
+                (incf current-idx))
         (format stream "    // Arg ~d: ~a LENGTH = ~d~%" current-idx param-name total-elems)
         (format stream "    uint64_t ~a_length = ~dULL;~%" param-name-cpp total-elems)
         (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_length);~%~%"
-                current-idx param-name-cpp)
+          current-idx param-name-cpp)
         (incf current-idx)
         (values current-idx
-                (list :name      param-name
-                      :ptr       ptr-var
-                      :size-var  (format nil "~d" total-elems)
-                      :direction param-dir
-                      :access    (getf param :access)))))))
+          (list :name param-name
+                :ptr ptr-var
+                :size-var (format nil "~d" total-elems)
+                :direction param-dir
+                :access (getf param :access)))))))
 
 (defun %l0-emit-struct-arg (stream param param-name param-type aliases arg-index)
   (declare (ignore param))
-  (let* ((base-type      (%struct-base-type param-type))
-         (resolved-base  (resolve-type-alias base-type aliases))
-         (struct-def     (%find-struct-def-l0 resolved-base))
+  (let* ((base-type (%struct-base-type param-type))
+         (resolved-base (resolve-type-alias base-type aliases))
+         (struct-def (%find-struct-def-l0 resolved-base))
          (struct-members (cddr struct-def))
          (param-name-cpp (format-cpp-identifier param-name))
-         (var-name       (format nil "~a_val" param-name-cpp))
+         (var-name (format nil "~a_val" param-name-cpp))
          (struct-type-str (format-cpp-identifier resolved-base)))
     (format stream "~%    // Struct argument: ~a (~a)~%" param-name struct-type-str)
     (format stream "    ~a ~a;~%" struct-type-str var-name)
     (%struct-emit-fields stream var-name struct-members aliases)
     (format stream "    // Arg ~d: ~a~%" arg-index param-name)
     (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a);~%~%"
-            arg-index struct-type-str var-name)
+      arg-index struct-type-str var-name)
     (incf arg-index)))
 
 (defun %l0-emit-record-arg (stream param param-name param-type records aliases arg-index)
   (declare (ignore param))
-  (let* ((base-type    (record-base-type param-type))
-         (record-def   (find-record-def param-type records))
+  (let* ((base-type (record-base-type param-type))
+         (record-def (find-record-def param-type records))
          (record-members (cddr record-def))
          (param-name-cpp (format-cpp-identifier param-name))
-         (var-name       (format nil "~a_val" param-name-cpp))
+         (var-name (format nil "~a_val" param-name-cpp))
          (struct-type-str (format-cpp-identifier base-type)))
     (format stream "~%    // Record argument: ~a (~a)~%" param-name struct-type-str)
     (format stream "    ~a ~a;~%" struct-type-str var-name)
@@ -1157,19 +1141,19 @@
 
 (defun %l0-emit-array-arg (stream param param-name param-type arg-index)
   (declare (ignore param))
-  (let* ((elem-type      (%array-element-type param-type))
-         (arr-size       (%array-size param-type))
-         (elem-type-str  (crisp-type-to-cpp-type elem-type))
+  (let* ((elem-type (%array-element-type param-type))
+         (arr-size (%array-size param-type))
+         (elem-type-str (crisp-type-to-cpp-type elem-type))
          (param-name-cpp (format-cpp-identifier param-name))
-         (arr-var        (format nil "~a_arg" param-name-cpp)))
+         (arr-var (format nil "~a_arg" param-name-cpp)))
     (format stream "~%    // Array argument: ~a (~a ~a[~a])~%"
-            param-name elem-type-str param-name-cpp arr-size)
+      param-name elem-type-str param-name-cpp arr-size)
     (format stream "    ~a ~a[~a];~%" elem-type-str arr-var arr-size)
     (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
-            arr-size arr-var elem-type-str)
+      arr-size arr-var elem-type-str)
     (format stream "    // Arg ~d: ~a~%" arg-index param-name)
     (format stream "    zeKernelSetArgumentValue(kernel, ~d, ~a * sizeof(~a), ~a);~%~%"
-            arg-index arr-size elem-type-str arr-var)
+      arg-index arr-size elem-type-str arr-var)
     (incf arg-index)))
 
 (defun %l0-emit-scalar-arg (stream param-name param-type arg-index)
@@ -1177,16 +1161,16 @@
     (multiple-value-bind (dvec-base dvec-width) (%dvec-parse param-type)
       (if dvec-base
           (let ((init-str (format nil "{~{~a~^, ~}}"
-                                  (loop for i from 0 below dvec-width
-                                        collect (+ arg-index 42 i)))))
+                            (loop for i from 0 below dvec-width
+                                  collect (+ arg-index 42 i)))))
             (format stream "    ~a ~a_arg = ~a;~%" type-str param-name init-str)
             (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a_arg);~%~%"
-                    arg-index type-str param-name))
+              arg-index type-str param-name))
           (progn
-            (format stream "    ~a ~a_arg = ~d;  // TODO: Set actual value~%"
-                    type-str param-name (+ arg-index 42))
-            (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a_arg);~%~%"
-                    arg-index type-str param-name)))))
+           (format stream "    ~a ~a_arg = ~d;  // TODO: Set actual value~%"
+             type-str param-name (+ arg-index 42))
+           (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a_arg);~%~%"
+             arg-index type-str param-name)))))
   (incf arg-index))
 
 (defun generate-kernel-arguments-with-usm (stream declared-sig aliases records context-var device-var)
@@ -1203,46 +1187,46 @@
   (format stream "    ze_device_mem_alloc_desc_t deviceDesc = { ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC };~%")
   (format stream "    ze_host_mem_alloc_desc_t hostDesc = { ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC };~%~%")
 
-  (let ((arg-index  0)
+  (let ((arg-index 0)
         (allocations '()))
 
     (dolist (param declared-sig)
-      (let* ((param-name  (getf param :name))
-             (raw-type    (getf param :type))
-             (param-type  (resolve-type-alias raw-type aliases))
-             (param-dir   (getf param :direction))
-             (param-as    (getf param :address-space))
-             (is-local    (member param-as '(:local "LOCAL" local) :test #'string-equal)))
+      (let* ((param-name (getf param :name))
+             (raw-type (getf param :type))
+             (param-type (resolve-type-alias raw-type aliases))
+             (param-dir (getf param :direction))
+             (param-as (getf param :address-space))
+             (is-local (member param-as '(:local "LOCAL" local) :test #'string-equal)))
 
         (cond
          ((cell-type-p param-type)
-          (multiple-value-bind (new-idx alloc)
-              (%l0-emit-cell-arg stream param param-name param-type param-dir is-local aliases context-var device-var arg-index)
-            (setf arg-index new-idx)
-            (when alloc (push alloc allocations))))
+           (multiple-value-bind (new-idx alloc)
+               (%l0-emit-cell-arg stream param param-name param-type param-dir is-local aliases context-var device-var arg-index)
+             (setf arg-index new-idx)
+             (when alloc (push alloc allocations))))
 
          ((and (tensor-type-p param-type) is-local)
-          (setf arg-index (%l0-emit-local-scratch-tensor-arg stream param param-name param-type arg-index)))
+           (setf arg-index (%l0-emit-local-scratch-tensor-arg stream param param-name param-type arg-index)))
 
          ((and (tensor-type-p param-type) (not is-local) (getf param :size-expr))
-          (setf arg-index (%l0-emit-global-scratch-tensor-arg stream param param-name param-type context-var device-var arg-index)))
+           (setf arg-index (%l0-emit-global-scratch-tensor-arg stream param param-name param-type context-var device-var arg-index)))
 
          ((tensor-type-p param-type)
-          (multiple-value-bind (new-idx alloc)
-              (%l0-emit-tensor-arg stream param param-name param-type param-dir context-var device-var arg-index)
-            (setf arg-index new-idx)
-            (when alloc (push alloc allocations))))
+           (multiple-value-bind (new-idx alloc)
+               (%l0-emit-tensor-arg stream param param-name param-type param-dir context-var device-var arg-index)
+             (setf arg-index new-idx)
+             (when alloc (push alloc allocations))))
 
          ((struct-type-p-l0 param-type)
-          (setf arg-index (%l0-emit-struct-arg stream param param-name param-type aliases arg-index)))
+           (setf arg-index (%l0-emit-struct-arg stream param param-name param-type aliases arg-index)))
 
          ((record-type-p param-type records)
-          (setf arg-index (%l0-emit-record-arg stream param param-name param-type records aliases arg-index)))
+           (setf arg-index (%l0-emit-record-arg stream param param-name param-type records aliases arg-index)))
 
          ((%array-type-p param-type)
-          (setf arg-index (%l0-emit-array-arg stream param param-name param-type arg-index)))
+           (setf arg-index (%l0-emit-array-arg stream param param-name param-type arg-index)))
 
          ((symbolp param-type)
-          (setf arg-index (%l0-emit-scalar-arg stream param-name param-type arg-index))))))
+           (setf arg-index (%l0-emit-scalar-arg stream param-name param-type arg-index))))))
 
     (nreverse allocations)))
