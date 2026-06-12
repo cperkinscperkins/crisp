@@ -475,9 +475,9 @@ TECHNICAL DEBT AND OVERSIGHTS
 - [ ] ;; FAIL-WITH[--differentiate]: "message!"  <-- message isn't getting checked for "normal" tests.
 - [ ] 02-kernel-illegal-voidp and friends. no CHECK-FAIL header.   Other negative tests same
 - [ ] Visual Code to use "lisp" syntax highlighting with .crisp files?
-- [ ] script to generate Table of Contents for docs?  It's woefully out of date.
+- [x] script to generate Table of Contents for docs?  It's woefully out of date.
 - [x] do the docs on "declare" include "forward-only" ? (YES)
-- [ ] refactor. warnings when compiling, running tests. (string-downcase (symbol-name ...)) if over let, etc.
+- [x] refactor. warnings when compiling, running tests. (string-downcase (symbol-name ...)) if over let, etc.
 - [ ] LLVM-IR can only bitcast same size. So (as-ulong 12345) is a problem. (to-ulong 12345) works.
       Should revisit docs and decide how to handle this.
 - [x] literals overlooked double and char (d / c) 
@@ -624,11 +624,16 @@ Grid Stride
 - [x] hardware-stride
 - [x] A|D of all above
 - [x] load-tile / store-tile
+- - [ ] update docs: synchronous load-tile / store-tile FASTER than async for very small tiles.
 - - [x] async variations of same
+- - [ ] probably have to revisit async API. Sorry. No transform or identity (see strategy below)
 - [ ] convert-layout (in Crisp)
 - [ ] :strategy :tiled and :tile-shape declarations. 
 - - [ ] metadata
 - - [ ] hoisting
+- - [ ] when hoisting we need to make sure the total tensor size is an even multiple of the tile. "oversubscribe" it and ideally fill with an identity value, which maybe we should have the :strategy ddeclare.
+- - [ ] with --runtime-checks we should validate that tensor IS an even multiple of tile.
+- - [ ] update documentation with this "oversubscribe and assert" behavior.
 - [x] workgroup-stride
 
 Looping Constructs
@@ -647,14 +652,14 @@ Async Ops \ Named Barriers \ Rings
 FFI / C API / "tree shaking" / recompile
 ========================================
 
-Precision: IEEE vs Fast
-=======================
+Precision: ieee vs fast vs ieee-ftz
+===================================
 - [ ] `(with-precision (<KEY>) ...)`
 - [ ]  `(declaim (precision <KEY>))`
 - [ ] `--math-precision`
 - [ ] `--force-math-precision`
-- [ ] `--denormal-handling [ieee | flush]`
-- [ ] CHange to precision: ieee | fast | ieee-ftz
+- [/] `--denormal-handling [ieee | flush]`
+- [x] CHange to precision: ieee | fast | ieee-ftz
 
 
 Technical Debt
@@ -680,6 +685,8 @@ Technical Debt
 - [x] update docs with &out "input" read-only vs "output" requirement (in flux)
 - [x] drop oneDPL and use SYCL built-in reductions instead for benchmark
 - [x] occupancy.
+- [/] rename --binary-gpu-target flag and expand docs 
+- [ ] consider renaming `local-barrier` to `workgroup-sync` ?
 
 PERFORMANCE TESTING
 ===================

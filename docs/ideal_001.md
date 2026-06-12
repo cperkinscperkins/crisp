@@ -4286,9 +4286,6 @@ will try to size the global work size near the number of threads actually availa
 
 But note that while maximum occupancy results in ideal performance for many workloads, it is not ideal for all workloads. In particular, if atomics are used, then a maximum occupancy stride might result in less work performed per atomic and more net atomic operations performed. Lower occupancy might be better for performance. See [:occupancy](#occupancy) below.
 
-- `:interleaved` This strategy tells the hoisting code that we are expecting this kernels launching to be interleaved
-with a progressive chunked memory transfer. It's a good practice to document expectations further with the `:msg` key.
-See [`launch-interleaved`](#launch-interleaved) for more information.
 
 - `:exact` This strategy tells the hoisting code to set the global work size to be exactly the size, no more no less. This
 strategy could also be used with the `:set-to` key.
@@ -6586,11 +6583,11 @@ Possible Implementation
                                        (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup))) 
    (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
    (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-   `(let-kernel ((continuation-k  (l-s-v g-s-v result-vec)
+   `(let-kernel ((continuation-k  (l-s-v g-s-v result-cell)
                   (declare (kernel-name ,continuation-kernel-name)
                            (type l-s-v (scratch-vec-type (type-of ,someVar)))
                            (type g-s-v (scratch-vec-type (type-of ,someVar) :global))
-                           (type result-vec (single-result (type-of ,someVar)))
+                           (type result-cell (cell (type-of ,someVar)))
                            (local-size :derive-from g-s-v :msg (string-concat ,continuation-kernel-name "requires a local_work_size at least as big as the global-scratch-vector")))
                       (let ((num-items (length~ g-s-v))
                             (local-id (get-local-id))
@@ -6606,7 +6603,7 @@ Possible Implementation
                         ;; The final result is now in 'val' of all wg threads.
                         ;; To avoid contention, only thread 0 writes the final result to the output vector.
                         (when (= local-id 0)
-                          (set! (~ result-vec 0) val))) ))
+                          (set! (~ result-cell) val))) ))
 
       (declare (grid-level))
       ; after reduce-to-workgroup the globalScratchVec will one value per group.
@@ -6614,7 +6611,7 @@ Possible Implementation
       
        ;; this isn't a real invocation. It just demonstrates to the hoisting code 
        ;; HOW this function expects the "continuation" kernel to be called.
-      (launch-kernel (continuation-k ,globalScratchVec ,localScratchVec (make-hoist-vector (type-of ,someVar) 1)))))  
+      (launch-kernel (continuation-k ,globalScratchVec ,localScratchVec (allocate-cell (type-of ,someVar)))))  
       
 ```
 
@@ -7173,11 +7170,11 @@ What could be simpler?
     (let ((upsweep-kernel (gen-global-exclusive-scan-upsweep T A "${M}_upsweep_${T}"))
           (downsweep-kernel (gen-global-exclusive-scan-downsweep T A "${M}_downsweep_${T}"))
           (ex-scan-wg-kernel (gen-ex_scan_wg_kernel T A "${M}_ex_scan_kernel_${T}"))
-          (IN (make-hoist-vector upsweep-kernel::input-vec))
-          (OUT (make-hoist-vector upsweep-kernel::output-vec))
-          (BLOCK-SUMS-1 (make-hoist-vector upsweep-kernel::block-sums))
-          (SCRATCH (make-hoist-vector upsweep-kernel::output-vec))
-          (BLOCK-SUMS-2 (make-hoist-vector ex-scan-wg-kernel::in-vec)))
+          (IN (allocate-tensor upsweep-kernel::input-vec))
+          (OUT (allocate-tensor upsweep-kernel::output-vec))
+          (BLOCK-SUMS-1 (allocate-tensor upsweep-kernel::block-sums))
+          (SCRATCH (allocate-tensor upsweep-kernel::output-vec))
+          (BLOCK-SUMS-2 (allocate-tensor ex-scan-wg-kernel::in-vec)))
       ;; we will sometimes pass a vector as BOTH input and output to modify it in place.
       (launch-sequential
         (upsweep-kernel IN OUT BLOCK-SUMS-1)
@@ -8140,8 +8137,8 @@ kernels and the hoisting example code will walk through everything.
     ;; and finally end up with the sorted output-vec.
 
     (let ((histogram_pass_kernel (gen-histogram_pass T A "histogram_pass_kernel"))
-          (buffer-A (make-hoist-vector histogram_pass_kernel::input-vec))
-          (buffer-B (make-hoist-vector histogram_pass_kernel::input-vec :empty T)))
+          (buffer-A (allocate-tensor histogram_pass_kernel::input-vec))
+          (buffer-B (allocate-tensor histogram_pass_kernel::input-vec)))
 
       (let ((num-passes (/ (* (sizeof T) 8) 8)) ;; why is this not just sizeof T?
             (N (* num-passes 8)))
@@ -8667,8 +8664,8 @@ Note that while all platforms support 32 bit, the other sizes aren't always avai
 
 #### precision 📝
 
-In addition to choice of variable type, Crisp has a precision control that supports two
-different options: `fast` and `ieee`.
+In addition to choice of variable type, Crisp has a precision control that supports three
+different options: `fast` ,  `ieee` and `ieee-ftz`.
 
 With the `ieee` the compiler will choose instructions that guarantee IEEE 754 compliance.
 For operations like division or square root, this might mean selecting a slightly slower
@@ -8676,6 +8673,9 @@ but fully precise instruction sequence. This is conditional on the GPU hardware 
 IEEE 754 conforming instructions.
 This might also entail disabling automatic FMAD generation, and ensuring that denormalized
 numbers are handled correctly (not flushed to zero).
+
+With `ieee-ftz` the behavior is the same as `ieee` except that denormalized numbers are
+flushed to zero. This is a common optimization in HPC applications. 
 
 With the `fast` precision option, the compiler will prioritize speed, selecting faster
 but potentially approximate instructcions (like `rsqrt.approx`). It might use specific
@@ -8692,9 +8692,9 @@ from the least specific to the most specific, they are:
 
 | What                           |  Value           | Descripotion         |
 |--------------------------------|------------------|----------------------|
-| `--math-precision`             | `fast` or `ieee` | compilation flag     |
-| `(declaim (precision <KEY>))`  | `fast` or `ieee` | per-file declamation |
-| `(with-precision (<KEY>) ...)` | `fast` or `ieee` | in-function macro    |
+| `--math-precision`             | `fast` or `ieee` or `ieee-ftz` | compilation flag     |
+| `(declaim (precision <KEY>))`  | `fast` or `ieee` or `ieee-ftz` | per-file declamation |
+| `(with-precision (<KEY>) ...)` | `fast` or `ieee` or `ieee-ftz` | in-function macro    |
 
 If there are competing values for precision, the compiler will favor the MOST specific.
 
@@ -10957,6 +10957,33 @@ and warn or error if compatibility or use issues are detected.
 
 ### `def-orchestration` 📝
 
+`def-orchestration` has the basic syntax of a function. It has an argument list (often empty), a let block where variables can be bound to kernels or memory, and then it invokes those kernels with a `launch-XXXX` form and a "launch directive" (which looks like a regular function call `(<kernel-var> <mem-var0> ...)` ).
+
+The arg list for `def-orchestration` supports `&key` arguments ONLY. Every argument to a `def-orchestration` MUST be a keyed argument. Positional args are not supported, neither are `&optional` or `&out` or `&rest`.   These arguments are provided when invoking `gen-XXXX` on the orchestration and must be compile-time known. 
+
+
+`def-orchestration` CAN be templated.
+
+If a `def-orchestration` is not templated and has no arguments, then it will be considered a "immediately realizable" orchestration, and then outputting hoisting code, the Crisp compiler will output a hoisting file for it (ie a .cpp, .cu or .py file). One file per orchestration.  Similarly, if there are multiple kernels referenced by the orchestration then the IR output (.spv or .ptx) will contain all of them. One .spv/.ptx/.ll file per orchestration.
+
+However, if a `def-orchestration` is templated, or has arguments it will NOT be considered a "immediately realizable" orchestration and nothing will be generated for it, itself. In this case you must use place a  `gen-XXXX` form on the orchestration at the top level of a .crisp file to specialize it. Each invocation of `gen-XXXX` will result in outputting a single IR file (.spv/.ptx/.ll) and a single hoisting example file (.cpp/.cu/.py).  For example:
+
+```
+(with-template-type (T)
+  (def-orchestration fancy-kernel-dance (&key node-count)
+      (let ((K (gen-dance_kernel T))
+             (topo (workstation-topology node-count))
+            ...))))
+
+;; gen- the orchestration
+(gen-fancy-kernel-dance float :node-count 16)
+;; and another!
+(gen-fancy-kernel-dance long :node-count 1)
+```
+
+Using topologies is "advanced" and entirely optional. It is covered in `topology.md`     
+
+
 Let's dive into some simple examples.
 
 #### "default" orchestration ✅
@@ -10966,11 +10993,11 @@ Let's dive into some simple examples.
 ;; (vector_add A B &out C)
 
 ;; -- just-vector_add --
-(def-orchestration just-vector_add
+(def-orchestration just-vector_add ()
   (let ((K (gen-vector_add))
-        (A (make-hoist-vector K::A))
-        (B (make-hoist-vector K::B))
-        (C (make-hoist-vector K::C)))
+        (A (allocate-tensor K::A))
+        (B (allocate-tensor K::B))
+        (C (allocate-tensor K::C)))
   (launch-sequential (K A B C))
   (copy-back C)))
 ```
@@ -10991,20 +11018,40 @@ templated, this is also used to generate its type. Don't forget that in this cas
 kernel name string will be required and it must obey the C language naming rules.
  `(gen-templated_kernel float "name_of_kernel")`
 
-##### make-hoist-vector and kernel_var_name::param-name 📝
+##### allocate-tensor and kernel_var_name::param-name 📝
 
-`(make-hoist-vector <VectorType> &optional size)`
+`(allocate-tensor <VectorType> &key :shared <bool> :topology <topo> :location <loc> :distribution <dist>)`
 
-For every vector argument to pass to a kernel, use `make-hoist-vector` and Crisp will generate
+For every vector argument to pass to a kernel, use `allocate-tensor` and Crisp will generate
 the code to set that up when outputting the hoisting code. The `<VectorType>` should be a complete
 vector type, BUT there shortcut that let's you just grab the type directly from the kernel definition:
 
 `kernel_var_name::param-name` Using the name of the kernel _variable_ that is in scope of the
 `def-orchestration`, NOT the name of the kernel itself (ie `K` in the above, not `vector_add`) 
 
-##### copy-back 📝
+`:shared <bool>` : whether to allocate the tensor in shared memory. Defaults to false. For simple kernels with simple deployments and not aggressive memory requirements, using shared memory is vastly simpler. But it can be a performance liability if those things aren't true.
 
-`(copy-back <hoist-vector-var>)`
+`:topology <topo>` : Only required for doing Out of Core operations or using multiple nodes.  See topology.md for mor information. 
+
+`:location <loc>` : Not required unless doing Out of Core operations or using multiple nodes, see topology.md for more informaation.  Specifies where to allocate the tensor, either `:device` or `:host` or a topology specifier.
+
+`:distribution <dist>` : Only required when using multiple nodes (PGAS), see topology.md for more information. 
+
+##### allocate-cell 📝
+```
+(allocate-cell <VectorType>  &key :shared <bool> :topology <topo> :location <loc> :distribution <dist>)
+(allocate-cell <Type>  &key :shared <bool> :topology <topo> :location <loc> :distribution <dist>)
+```
+
+`allocate-cell` will allocate a single cell. It can take a complete vector type, or a `vector-var-name::param-name` type shortcut , or just a type like `float` or `int`.
+
+The `:shared`, `:location`, and `:distribution` keywords are the same as in `allocate-tensor` above.
+
+
+##### copy-back 📝
+```
+(copy-back <hoist-vector-var>)
+```
 
 For any data you expect to be modified on the GPU, if you want it copied back 
 to the host use `copy-back`. Crisp will generate code for that in the hoisting example.
@@ -11020,13 +11067,13 @@ to the host use `copy-back`. Crisp will generate code for that in the hoisting e
 ;; (vector_sum DATA-IN &out RESULT)
 
 ;; -- add-and-sum-doubles --
-(def-orchestration add-and-sum-doubles
+(def-orchestration add-and-sum-doubles ()
   (let ((VADD (gen-vector_add double "v_add_double"))
         (VSUM (gen-vector_sum double "v_sum_double"))
-        (A (make-hoist-vector VADD::A))
-        (B (make-hoist-vector VADD::B))
-        (C (make-hoist-vector VADD::C))
-        (RESULT (make-hoist-vector VSUM::RESULT 1)))
+        (A (allocate-tensor VADD::A))
+        (B (allocate-tensor VADD::B))
+        (C (allocate-tensor VADD::C))
+        (RESULT (allocate-cell VSUM::RESULT)))
   (launch-sequential
      (VADD A B C)
      (VSUM C RESULT))
@@ -11048,7 +11095,7 @@ evaluate to the name of the type `XXXX`.
 (with-template-type (T)
 
   ;; -- add-and-sum-any --
-  (def-orchestration add-and-sum-any
+  (def-orchestration add-and-sum-any ()
     (let ((VADD (gen-vector_add double "v_add_${T}"))
           (VSUM (gen-vector_sum double "v_sum_${T}"))
        ...))))
@@ -11090,12 +11137,14 @@ Presently, the following forms are the ONLY ones allowed within the body of a `d
 - `launch-sequential`
 - `launch-kernel`
 - `launch-parallel`
-- `launch-interleaved`
 - the `dotimes` and related `dec-` / `do-` macros
 - `_`  
 - `let`
 - `kernel_var_name::param-name` identifier 
-- `make-hoist-vector`
+- `allocate-tensor`
+- `allocate-cell`
+- `allocate-massive-tensor` (see topology.md)
+- `tile-from` (topology.md)
 
 ### launch-sequential 📝
 
@@ -11114,18 +11163,18 @@ A "launch specification" is simply a kernel _variable_ and the correct number of
 ### launch-kernel 📝
 
 ```
-(launch-kernel launch-specification &key copyback)
+(launch-kernel launch-specification &key :pipeline-stages <int>)
 ```
-Launches exactly one kernel invocation, a `:copyback` key can specify the variables that should be copied back.
+Launches exactly one kernel invocation. Multiple invocations mean serial enqueues.
 
-These can be useful if you need host-side processing in-between kernel calls, however this is quite suboptimal and should be considered an anti-pattern.
+Multiple `launch-kernel` invocations are NOT the same as `launch-sequential`, because `launch-kernel` invocations return to the host after each kernel operation completes, but  `launch-sequential` does not.
 
-If you need to launch multiple kernels, the other `launch-XXXX` with an explicit `(copyback ...)` call at the end will be superior.
+The `:pipeline-stages` keyword is advanced. See "Out of Core Orchestration" in `topology.md` 
 
 ```
-(launch-kernel (VADD A B C) :copyback (C))
-;; host does something here with C? Possible, but bad idea.
-(launch-kernel (VSUM C RES) :copyback (RES))
+(launch-kernel (VADD A B C))
+(launch-kernel (VSUM C RES))
+(copy-back RES)
 ```
 
 ### launch-parallel 📝
@@ -11140,52 +11189,6 @@ another. Crisp will add code to divide the available thread space up between the
 Note the parallel kernels can't safely write to the same vectors (whether marked with `&out` or not). Crisp will 
 error if it detects parallel re-use of `&out` vectors, but even if you sneak around the compiler it still won't
 work correctly.
-
-### launch-interleaved 📝
-
-`launch-interleaved` is for 1D interleaved operations on vectors. 
-
-```
-(launch-interleaved &rest launch-specification)
-```
-
-When the compiler encounters `launch-interleaved`, the hoisting code that is generated will enqueue
-the kernels and data such that the memory copy and the kernel execution overlap. This helps hide latency
-and is often the secret to maximizing performance and throughput.  
-
-In the `def-orchestration` use `make-interleaved-vector` to define a vector subview onto larger data.  The subview vector will be updated for each enqueue to progress through the data.
-
-`make-interleaved-vector` will allocate a larger data vector, but create a smaller view into that data.
-
-If the original kernel vector type declaration declares `:compact-offset` as its alignment, then the subview merely has its offsets adjusted. But if the declaration is `:compact` then the underlying pointer
-will be adjusted before each enqueue.  If you plan to adjust the hoisting code, it would probably
-be best to use  `:compact-offset` as that's more flexible.
-
-Example:
-```
-
-;; -- vector_add_chunked --
-(def-kernel vector_add_chunked (A B &out C)
-   ;; assume input-vec-t and output-vec-t already defined.
-  (declare #(input-vec-t input-vec-t &out output-vec-t)
-           (global-size :derive-from A :strategy :strided))
-    (map-stride #'+ A B C))
-
-;; -- add-interleaved --
-(def-orchestration add-interleaved
-  (let ((VADD_CHUNKED (gen-vector_add_chunked))
-        (A-view (make-interleaved-vector VADD_CHUNKED::A))
-        (B-view (make-interleaved-vector VADD_CHUNKED::B))
-        (C-view (make-interleaved-vector VADD_CHUNKED::C)))
-  (launch-interleaved  
-    (VADD_CHUNKED len offset A-view B-view C-view))))
-```
-In the example above, Crisp will generate hoisting code that interleaves the memory copy  `A`, `B`, and `C` 
-and the kernel execution.  It will demonstrate how to allocate some memory, pin it, 
-and interatively copy it to the GPU device while executing the kernel concurrently.
-
-Neat!
-
 
 
 
@@ -11228,16 +11231,34 @@ to an IR (Intermediate Representation) file. One file per occurrence of the `--i
 
 Unless the `--merge` or `--join` flags are used, one target file (e.g. `spv`) is output per `def-orchestration`.  Loose kernels outside of any orchestration have a default one generated for them.
 
+#### `--ir-target-arch=<ID>` 📝
+
+This flag tells the Crisp compiler which architecture the IR should target. It is optional, but
+matches the use of `--ir-target` flag. (ie, if `--ir-target=ptx` then `--ir-target-arch` should 
+be an NVidia architecture.).
+
+
+
+| ID       | Description                    |
+|----------|--------------------------------|
+| `sm_75`  | NVIDIA Turing (RTX 2000 Series / T4) |
+| `sm_80`  | NVIDIA Ampere (A100)           |
+| `sm_86`  | NVIDIA Ampere (RTX 3000 Series)  |
+| `sm_89`  | NVIDIA Ada Lovelace (RTX 4000 Series / L40) |
+| `sm_90`  | NVIDIA Hopper (H100 / H200)      |
+| `sm_100` | NVIDIA Blackwell Datacenter (B100 / B200 / GB200) |
+| `sm_120` | NVIDIA Blackwell Consumer (RTX 5000 Series / PRO 6000) |
+| `gen12`  | Intel Gen12                    |
+| `dg2`    | Intel DG2 / Alchemist          |
+| `pvc`    | Intel Ponte Vecchio            |
+| `xe2`    | Intel BattleMage / Lunar Lake  |
+
+
 #### `--binary-gpu-target=<ID>` 📝
 
 This flag can be used repeatedly, each occurrence with a different ID. The compiler will compile the .crisp files to a different binary file for each binary target. The binary file name will be `<output-base-name>_<ID>.<extension>`
 
-`ID` can be one of
-
-| ID      | Extension |  Description       |
-|---------|-----------|--------------------|
-| `sm_90` | `cubin`   | NVidia             |
-| `pvc`   | `bin`     | Intel PonteVechio  |
+`ID` can be one of the `--ir-target-arch` flags
 
 Unless the `--merge` or `--join` flags are used, one target file (e.g. `cubin`) is output per `def-orchestration`.  Loose kernels outside of any orchestration have a default one generated for them.
 
@@ -11265,7 +11286,7 @@ The hoist file name will be `<output-base-name>_<orchestration>_<ID>.<extension>
 | `PyLevelZero`   | `py`      | Python LevelZero   |
 | `PyCUDA`        | `py`      | PyCUDA             |
 
-There are other flags that interoperate with the hoisting, such as `--hoist-unified-memory` and `--hoist-dynamic`
+There are other flags that interoperate with the hoisting, such as `--hoist-dynamic`
 
 One hoisting file is output per orchestration.
 
@@ -11325,10 +11346,6 @@ do with the debug output once it is retrieved. The hoisting code typically model
 #### `--debug` or `-g` ✅
 When outputting LLVM-IR, include DWARF symbols
 
-#### `--hoist-unified-memory` 📝
-If this flag is present then the memory that is prepared in the hoisting code will be
-CUDA Unified Memory, LevelZero Unified Shared Memory, or OpenCL Shared Virtual Memory, as appropriate to the hoisting 
-target.  Otherwise, the memory operations will use regular memory. 
 
 #### `--hoist-dynamic=<KERNELNAME>` 📝
 This flag can be used repeatedly, each occurrence with a different KERNELNAME.  For each kernel named, the hoisting 
@@ -11410,18 +11427,7 @@ in-file precision election. See the section on [Math Precision](#precision) abov
 Also, there is a `--force-math-precision` flag that can override, but its use is discouraged.
 It is intended for testing and validation and shouldn't be used generally.
 
-#### Math Flags: `--denormal-handling` 📝
-Subnormal numbers (floats very very close to 0) sometimes have a 10x or 100x speed penalty for proper handling with floats when abiding by the IEEE standard.
 
-If you need IEEE precision but don't want the trouble of subnormals, use the `--denormal-handling` flag.  This flag effects any block of Crisp code that is being compiled with IEEE precision. It has no effect on blocks of code marked as `fast`, regardless of its value. 
-
-If unset, the default is `ieee`. 
-
-When set to `flush` then subnormals are "flushed to 0"
-
-`--denormal-handling [ieee | flush]`
-Default: Linked to the precision mode (i.e., precision: `fast` implies `flush`, precision: `ieee` implies `ieee`).
-Override: A user can run `--math-precision ieee --denormal-handling flush`.
 
 
 ### Fast Compilation ✅
@@ -11496,8 +11502,7 @@ The hoisting code that Crisp outputs demonstrates the following:
   be it IR or binary
 - commented out code that demonstrates how to perform profiling
 - then for each kernel in the output
-- - allocating and preparing all the side channel memory. Using 
-    Unified Memory if requested by the `--hoist-unified-memory` flag.
+- - allocating and preparing all the side channel memory. 
 - - allocating and preparing the explicit memory in the kernel arguments.
 - - setting the kernel arguments
 - - enqueuing the kernel
@@ -12268,11 +12273,10 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - def-orchestration
 - launch-sequential
 - launch-parallel
-- launch-interleaved
 - launch-kernel
 - +wg-size+  ; constant in def-orchestration (only)
-- make-hoist-vector 
-- swap-refs (kludgy?)
+- `allocate-cell`
+- `allocate-tensor`
 
 
 ### lisp
