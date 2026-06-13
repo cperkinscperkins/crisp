@@ -18,4 +18,4 @@
            (local-size  :set-to 32))
   (hardware-stride V :warp-idx (warp-orig)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (set! (~ V warp-orig) (tile-indices warp-orig)))))
+      (set! (~ V (* warp-orig (to-ulong 32))) warp-orig))))

@@ -1589,10 +1589,8 @@
                         collect (gensym (format nil "LS~A" i))))
          (size-expr-fn (lambda (k) (list get-local-size-sym k)))
          ;; Phase 1b rewrite (before helper rewrite).
-         (body-with-load-store-rewritten
-          (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg))
-         (rewritten-body (%tile-helpers-rewrite body-with-load-store-rewritten n
-                                                 (lambda (k) (nth k ts-syms)))))
+         (rewritten-body
+          (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg)))
     (%expand-workgroup-strided-outer-loop-with-ts-syms
      tensor-form n bindings rewritten-body ts-syms size-expr-fn location)))
 
@@ -1635,17 +1633,13 @@
          (iters-sym     (gensym "ITERS"))
          (k-sym         (gensym "K"))
          (var-name      (first bindings))
-         (rewritten-body (%tile-helpers-rewrite body-forms 1
-                                                (lambda (k)
-                                                  (declare (ignore k))
-                                                  ws-sym)))
-         (inner-body (if (= (length rewritten-body) 1)
-                         (first rewritten-body)
-                         (cons progn-sym rewritten-body)))
+         (inner-body (if (= (length body-forms) 1)
+                         (first body-forms)
+                         (cons progn-sym body-forms)))
          (var-let (list let-sym
                         (list (list var-name
-                                    (list plus-sym start-sym
-                                          (list mul-sym k-sym stride-sym))))
+                                    (list plus-sym mywarp-sym
+                                          (list mul-sym k-sym numwarps-sym))))
                         inner-body))
          (dotimes-form (list dotimes-sym
                              (list k-sym iters-sym)
@@ -1668,163 +1662,6 @@
                           (list declare-sym (list grid-level-sym))
                           iters-let)))
     outer-let))
-
-(defun %tile-helper-name-p (sym)
-  "Returns :indices if SYM is the tile-indices helper macro name, else NIL.
-   tile-coords and tensor-coords were removed in endeavor 111 Phase 0."
-  (when (symbolp sym)
-    (when (string-equal (symbol-name sym) "TILE-INDICES")
-      :indices)))
-
-(defun %tile-helper-build-coords (arg-forms tile-size-fn cl-pkg)
-  "Builds (mod arg_k TILE_k) forms for tile-coords."
-  (let ((mod-sym (intern "MOD" cl-pkg)))
-    (loop for arg in arg-forms
-          for k from 0
-          collect (list mod-sym arg (funcall tile-size-fn k)))))
-
-(defun %tile-helper-build-indices (arg-forms tile-size-fn cl-pkg)
-  "Builds (/ arg_k TILE_k) forms for tile-indices."
-  (let ((div-sym (intern "/" cl-pkg)))
-    (loop for arg in arg-forms
-          for k from 0
-          collect (list div-sym arg (funcall tile-size-fn k)))))
-
-(defun %tile-helper-build-tensor-coords (idx-forms t-forms tile-size-fn cl-pkg)
-  "Builds (+ (* idx_k TILE_k) t_k) forms for tensor-coords."
-  (let ((plus-sym (intern "+" cl-pkg))
-        (mul-sym  (intern "*" cl-pkg)))
-    (unless (= (length idx-forms) (length t-forms))
-      (error 'crisp-compiler-error
-             :message (format nil "tensor-coords: index list (~A) and coord list (~A) must have same arity"
-                              (length idx-forms) (length t-forms))
-             :source-location nil))
-    (loop for idx in idx-forms
-          for tc  in t-forms
-          for k from 0
-          collect (list plus-sym (list mul-sym idx (funcall tile-size-fn k)) tc))))
-
-
-
-(defun %tile-helper-call-expansion (helper-kind helper-args tile-size-fn n-tile cl-pkg)
-  "Returns a list of N expansion forms for a tile-indices helper call.
-   Only :indices is supported under outer-loop tile-stride semantics."
-  (case helper-kind
-    (:indices
-     (unless (= (length helper-args) n-tile)
-       (error 'crisp-compiler-error
-              :message (format nil "tile-indices: expected ~A argument(s) to match tile arity, got ~A"
-                               n-tile (length helper-args))
-              :source-location nil))
-     (%tile-helper-build-indices helper-args tile-size-fn cl-pkg))
-    (t
-     (error 'crisp-compiler-error
-            :message (format nil "Unknown tile-stride helper kind: ~S" helper-kind)
-            :source-location nil))))
-
-(defun %tile-helpers-rewrite (body-forms n-tile tile-size-fn)
-  "Walks BODY-FORMS and rewrites tile-coords / tile-indices / tensor-coords
-   calls.  Multi-value uses in let-bindings (flat MVB form) become multiple
-   single-value bindings; standalone single-value uses are replaced inline.
-   N-TILE is the stride/tile arity; TILE-SIZE-FN takes dim index k and
-   returns a Crisp form for that dim's tile size."
-  (let ((cl-pkg (find-package :crisp-language)))
-    (labels ((walk-form (form)
-               (cond
-                 ((atom form) form)
-                 ((not (consp form)) form)
-                 ((and (symbolp (car form))
-                       (let ((n (symbol-name (car form))))
-                         (or (string-equal n "LET")
-                             (string-equal n "LET*"))))
-                  (walk-let form))
-                 (t
-                  ;; Detect helper call OR walk subforms.  Done as a single
-                  ;; default clause to avoid a `cond` test-only quirk in the
-                  ;; crisp.compiler `cond` macro (simplified vs cl:cond).
-                  (let ((kind (%tile-helper-name-p (car form))))
-                    (if kind
-                        ;; Standalone helper expression: must be single-value.
-                        (let ((expanded (%tile-helper-call-expansion
-                                         kind (cdr form) tile-size-fn n-tile cl-pkg)))
-                          (if (= (length expanded) 1)
-                              (walk-form (first expanded))
-                              (error 'crisp-compiler-error
-                                     :message (format nil "~A used in single-value context but stride is multi-dim — use in a multi-value let binding"
-                                                      (symbol-name (car form)))
-                                     :source-location nil)))
-                        (mapcar #'walk-form form))))))
-             (walk-let (form)
-               (let* ((binding-forms (second form))
-                      (body-forms-let (cddr form))
-                      (new-bindings (mapcan #'rewrite-binding binding-forms))
-                      (new-body (mapcar #'walk-form body-forms-let)))
-                 `(,(first form) ,new-bindings ,@new-body)))
-             (rewrite-binding (binding)
-               ;; binding shapes (from analyze-let-expression):
-               ;;   flat MVB:           (var1 var2 ... varN init)   ; len > 2, first is symbol
-               ;;   group MVB:          ((var1 ... varN) init)      ; first is a list
-               ;;   single:             (var init)                  ; len 2, first is symbol
-               (cond
-                 ;; Flat MVB
-                 ((and (> (length binding) 2)
-                       (symbolp (first binding)))
-                  (let* ((vars (butlast binding))
-                         (init (car (last binding)))
-                         (helper-kind (and (consp init) (%tile-helper-name-p (car init)))))
-                    (if helper-kind
-                        (let ((expanded (%tile-helper-call-expansion
-                                         helper-kind (cdr init) tile-size-fn n-tile cl-pkg)))
-                          (unless (= (length vars) (length expanded))
-                            (error 'crisp-compiler-error
-                                   :message (format nil "~A: ~A binding(s) vs ~A return value(s)"
-                                                    (symbol-name (car init))
-                                                    (length vars) (length expanded))
-                                   :source-location nil))
-                          (loop for v in vars
-                                for e in expanded
-                                collect (list v (walk-form e))))
-                        ;; Not a helper init — walk it and keep as flat MVB
-                        (list (append vars (list (walk-form init)))))))
-                 ;; Group MVB
-                 ((and (= (length binding) 2)
-                       (listp (first binding)))
-                  (let* ((vars (first binding))
-                         (init (second binding))
-                         (helper-kind (and (consp init) (%tile-helper-name-p (car init)))))
-                    (if helper-kind
-                        (let ((expanded (%tile-helper-call-expansion
-                                         helper-kind (cdr init) tile-size-fn n-tile cl-pkg)))
-                          (unless (= (length vars) (length expanded))
-                            (error 'crisp-compiler-error
-                                   :message (format nil "~A: ~A binding(s) vs ~A return value(s)"
-                                                    (symbol-name (car init))
-                                                    (length vars) (length expanded))
-                                   :source-location nil))
-                          (loop for v in vars
-                                for e in expanded
-                                collect (list v (walk-form e))))
-                        (list (list vars (walk-form init))))))
-                 ;; Single binding
-                 ((= (length binding) 2)
-                  (let* ((var (first binding))
-                         (init (second binding))
-                         (helper-kind (and (consp init) (%tile-helper-name-p (car init)))))
-                    (if helper-kind
-                        (let ((expanded (%tile-helper-call-expansion
-                                         helper-kind (cdr init) tile-size-fn n-tile cl-pkg)))
-                          (unless (= (length expanded) 1)
-                            (error 'crisp-compiler-error
-                                   :message (format nil "~A returns ~A values but bound to a single variable"
-                                                    (symbol-name (car init)) (length expanded))
-                                   :source-location nil))
-                          (list (list var (walk-form (first expanded)))))
-                        (list (list var (walk-form init))))))
-                 (t (list binding)))))
-      (mapcar #'walk-form body-forms))))
-
-
-
 
 (defun %expand-tile-stride-form (expr ct location)
   "Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
@@ -1860,10 +1697,8 @@
            ;; Phase 1b: rewrite bare load-tile / store-tile in body BEFORE
            ;; helper rewrite (and before any expansion).  Tile-stride bindings
            ;; are the chunk origin coords, which become the -coords origin list.
-           (body-with-load-store-rewritten
-            (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg))
-           (rewritten-body (%tile-helpers-rewrite body-with-load-store-rewritten n
-                                                  (lambda (k) (nth k ts-syms)))))
+           (rewritten-body
+            (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg)))
       (%expand-workgroup-strided-outer-loop-with-ts-syms
        tensor-form n bindings rewritten-body ts-syms tile-size-expr-fn location))))
 
@@ -2840,3 +2675,4 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-request-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-request-expression))))
+

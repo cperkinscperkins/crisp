@@ -15,5 +15,4 @@
   (declare #'(&out mat-t => nil))
   (tile-stride M (2 2) (row-orig col-orig)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (let ((idx-y idx-x (tile-indices row-orig col-orig)))
-        (set! (~ M row-orig col-orig) idx-x)))))
+      (set! (~ M (* row-orig (to-ulong 2)) (* col-orig (to-ulong 2))) col-orig))))

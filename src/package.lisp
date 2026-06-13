@@ -577,6 +577,7 @@
    ;; Compiler/Codegen
    #:emit-llvm
    #:compile-function #:store-chunk #:load-tile #:store-tile
+   #:load-tile-at #:store-tile-at #:make-async-barrier #:await
    #:~ #:set! #:length~ #:~ref~
 
    ;; Ops

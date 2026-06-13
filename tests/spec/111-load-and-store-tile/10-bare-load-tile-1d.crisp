@@ -19,4 +19,4 @@
       (load-tile V tile)
       ;; Copy out to make the load host-observable.
       (workgroup-stride tile (lx)
-        (set! (~ OUT (+ orig lx)) (~ tile lx))))))
+        (set! (~ OUT (+ (* orig (to-ulong 4)) lx)) (~ tile lx))))))

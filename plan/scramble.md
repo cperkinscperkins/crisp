@@ -640,8 +640,9 @@ Grid Stride
 NEXT
 ====
 - [ ] rename load-tile-coords => load-tile-at
-- [ ] lose request-load-tile and variants. 
+- [ ] lose request-load-tile and all request-xxxx variants. 
 - - [ ] Instead make-barrier and :barrier key
+- - [ ] lose (await-request <req>) .  Now just (await <barrier>)
 - [ ] load-tile/store-tile API from topology.md.   
 - [ ] lose "helper" load-tile / store-tile
 - [ ] rename load-barrier => sync-workgroup

@@ -16,5 +16,5 @@
   (let ((tile (make-scratch-vector ulong 4)))
     (tile-stride OUT (4) (orig)
       (workgroup-stride tile (lx)
-        (set! (~ tile lx) (+ orig lx)))
+        (set! (~ tile lx) (+ (* orig (to-ulong 4)) lx)))
       (store-tile tile OUT))))
