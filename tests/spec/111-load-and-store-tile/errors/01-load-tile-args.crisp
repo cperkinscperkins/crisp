@@ -1,10 +1,7 @@
 ;; TEST-EXPECT: FAIL
-;; CHECK-FAIL: "tile-stride"
+;; CHECK-FAIL: "load-tile: origin must be a non-empty list of grid coords"
 
-;; Bare load-tile cannot be used outside a tile-stride or
-;; hardware-stride :workgroup-idx body — there's no surrounding context
-;; to extract origin coords from.  The error message should direct the
-;; user to use load-tile-coords with explicit coords instead.
+;; load-tile now needs grid coords as explicit arg.
 
 (def-type vec-t  (vector ulong :address-space :global :align :compact))
 (def-type tile-t (vector ulong :address-space :local  :align :compact))

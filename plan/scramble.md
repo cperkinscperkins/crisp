@@ -649,7 +649,9 @@ NEXT
 - [ ] sync-warp
 - [ ] make-arrival-sync
 - [ ] update ideal_001.md
+- [ ] revisit request-load-local in ideal_001.md.  Do we need a new variant? Or delete?
 - [ ] matrix-mult-stride ?  if we do this do we need mma-accumulate-via-tile / load-fragment etc.
+- [ ] we need position-tile-grid and position-tile-ad to adjust a tile view "into" a space.
 
 --runtime-checks
 ================

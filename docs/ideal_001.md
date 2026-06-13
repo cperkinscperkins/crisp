@@ -2754,6 +2754,10 @@ be hoisted, plus a pointer to a unsigned long array.
       ...))
 ```
 
+<!-- 
+OUTDATED AND REMOVED
+SEE topology.md for latest API.
+
 
 ### Async Memory Operations 📝
 
@@ -2803,7 +2807,7 @@ the hardware choices that actually support this are limited. Your kernel may fai
 ```
 There are async variants for the tile scratch helpers as well.
 
-
+-->
 
 
 ### Tensors & Matrices ✅
