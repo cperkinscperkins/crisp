@@ -626,7 +626,7 @@ Grid Stride
 - [x] load-tile / store-tile
 - - [ ] update docs: synchronous load-tile / store-tile FASTER than async for very small tiles.
 - - [x] async variations of same
-- - [ ] probably have to revisit async API. Sorry. No transform or identity (see strategy below)
+- - [x] probably have to revisit async API. Sorry. No transform or identity (see strategy below)
 - [ ] convert-layout (in Crisp)
 - [ ] :strategy :tiled and :tile-shape declarations. 
 - - [ ] metadata
@@ -636,6 +636,27 @@ Grid Stride
 - - [ ] update documentation with this "oversubscribe and assert" behavior.
 - [x] workgroup-stride
 
+
+NEXT
+====
+- [ ] rename load-tile-coords => load-tile-at
+- [ ] lose request-load-tile and variants. 
+- - [ ] Instead make-barrier and :barrier key
+- [ ] load-tile/store-tile API from topology.md.   
+- [ ] lose "helper" load-tile / store-tile
+- [ ] rename load-barrier => sync-workgroup
+- [ ] sync-warp
+- [ ] make-arrival-sync
+- [ ] update ideal_001.md
+- [ ] matrix-mult-stride ?  if we do this do we need mma-accumulate-via-tile / load-fragment etc.
+
+--runtime-checks
+================
+- [ ] --debug-logging ? 
+- [ ] Audit routines implemented so far. Which should have --runtime-checks support?
+- [ ] test
+
+
 Looping Constructs
 ==================
 - [ ] dotimes 
@@ -643,14 +664,6 @@ Looping Constructs
 - [ ] dec-times / dec-times+ / dec-times*
 - [ ] do-times-by-doubling
 - [ ] &c.
-
-Async Ops \ Named Barriers \ Rings
-===================================
-- 
-
-
-FFI / C API / "tree shaking" / recompile
-========================================
 
 Precision: ieee vs fast vs ieee-ftz
 ===================================
@@ -660,6 +673,28 @@ Precision: ieee vs fast vs ieee-ftz
 - [ ] `--force-math-precision`
 - [/] `--denormal-handling [ieee | flush]`
 - [x] CHange to precision: ieee | fast | ieee-ftz
+
+Reductions
+==========
+- [ ] revisit Phase 1 vs Phase 2.
+- [ ] need to compose correctly
+- [ ] out of core.  ( def-orchestration ? )
+
+Async Ops \ Named Barriers \ Rings
+===================================
+- [ ] def-topology
+- [ ] def-orchestration
+- [ ] primitives
+- [ ] TESTING?  
+- [ ] rings
+- [ ] warp specializations
+- [ ] out of core orchestration 
+
+
+FFI / C API / "tree shaking" / recompile
+========================================
+
+
 
 
 Technical Debt
@@ -734,7 +769,7 @@ Other Platforms: OpenCL. Huawei.  Triton? Mojo?
 
 PGAS / SHMem, UALink, and Asyc Operations
 =========================================
-- [ ] Update Design Doc
+- [x] Update Design Doc
 - - PGAS has three levels: Complete Compile Time Topology, Compile Time Shape and Runtime Extent, Runtime Topology
 - - :address-space :pgas   is new address space.
 - - may have to subclass Storage Handles so type system can do enforcement. Not sure.
@@ -742,11 +777,11 @@ PGAS / SHMem, UALink, and Asyc Operations
      can detect local vs. "remote" PE ops and lower accordingly. 
 - - For Mix Topology, we need to insert (if PE-is-local <store> <put>) and possible barrierrs.
 - - for runtime only, the user will need to mostly use <put> operations, barriers, etc.
-- [ ] Async
+- [x] Async
  - - right now our async operations focus on local=>global and global=>local  "requests"
  - - with tokens and (await someToken &optinal otherTokens...)
  - - But we might need to expand that to PGAS/SHMem.  Maybe rename?
- - [ ] pipelining macros for advanced async
+ - [x] pipelining macros for advanced async
  - - the N-fold symmetry of PGAS can benefit from pipelining 2, 3, 4+ async operations
      provide some defmacro for this and show users how to set up their own. Makes the whole
      shebang MUCH simpler (and safer).

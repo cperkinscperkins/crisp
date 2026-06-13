@@ -826,5 +826,16 @@ For users who want to roll their own async operations and don't want topological
 IMPORTANT NOTES
 ----------------
 
-Both global semaphores and CUTensorMap need "side channel" support. That will have to be added.  Effects metadata, hoisting, everything
+Both global semaphores and CUTensorMap need "side channel" support. That will have to be added.  Effects metadata, hoisting, everything.
+
+
+More Distributions.
+For 1.0, Crisp is targeting :distribution values of :block and :replicated.  Ultimately, in some 2.0 version, we may want to expand to include:
+- :block
+- :block-cyclic
+- :halo
+- :sparse
+- :irregular
+
+Most of these should be realizable in Crisp 1.0 with macros. But for maximum performance, with a capital "P", the compiler will likely need to be involved.
 
