@@ -235,10 +235,6 @@ Once a `def-orchestration` is expanded to use a topology then the topologically 
 Topologically Aware Async
 -------------------------
 
-Here is the fully documented section, keeping your original code block and comments completely intact while providing precise, hardware-aware definitions for each primitive.
-
-## Topologically Aware Async
-
 ```
 (let ((barrier (make-async-barrier)))
 
@@ -648,14 +644,14 @@ We use rings to set up a load/execute pipeline.
       
       ;; Split the execution! 
       ;; The compiler will physically map these to different warps in the Workgroup.
-      (with-warp-specialization (:producer-warps 1 :consumer-warps 3)
+      (with-warp-specialization (:producer 1 :consumer 3)
         
         ;; ==========================================
         ;; THE PRODUCER BLOCK (Memory only)
         ;; ==========================================
         (:producer
           (let ((ring-idx 0))
-            (do-times (grid-k K-tiles)
+            (do-times (grid-k K)
               
               ;; 1. Wait for the Consumer to say this SLM slot is empty/safe.
               (await (ring-get empty-barrier-ring ring-idx))
@@ -824,16 +820,7 @@ For users who want to roll their own async operations and don't want topological
 (pgas-wait-until flag condition value) -> Lowers to shmem_wait_until.
 ```
 
-### Semaphores
-```
-;; Defining a semaphore in Global Memory (cross-workgroup or host-visible)
-(def-type sys-semaphore (semaphore :address-space :global :scope :system))
 
-;; Raw Primitives
-(semaphore-acquire sema expected-value)
-(semaphore-release sema new-value)
-(semaphore-spin-wait sema condition value)
-```
 
 
 IMPORTANT NOTES
