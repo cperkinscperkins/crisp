@@ -7,8 +7,8 @@
 ;; (per chapter doc): local_work_size MUST be a multiple of
 ;; (get-warp-size); here local-size 32 matches the conventional warp size.
 ;;
-;; Leader thread writes the warp-index — tile-indices(warp-orig) with the
-;; warp width as divisor — into V[warp-orig].
+;; Leader thread writes the warp-index — tile-indices(warp-grid-x) with the
+;; warp width as divisor — into V[warp-grid-x].
 
 (def-type vec-t (vector ulong :address-space :global :align :compact))
 
@@ -16,6 +16,6 @@
   (declare #'(&out vec-t => nil)
            (global-size :set-to 128)
            (local-size  :set-to 32))
-  (hardware-stride V :warp-idx (warp-orig)
+  (hardware-stride V :warp-idx (warp-grid-x)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (set! (~ V (* warp-orig (to-ulong 32))) warp-orig))))
+      (set! (~ V (* warp-grid-x (to-ulong 32))) warp-grid-x))))

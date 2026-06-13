@@ -2767,10 +2767,10 @@ to fetch data in the background while the Execution Units (EUs) continue process
 These operations are non-blocking. They return a `request-token`. You MUST eventually wait on this
 token using `await-request` before accessing the destination memory.
 
-#### `request-load-local`
-`(request-load-local global-vec local-vec &key identity) => request-token`
+#### `load-local` with `:barrier`
+`(load-local global-vec local-vec &key identity barrier)`
 
-Initiates a copy from global memory to local memory. Returns a token representing the inflight operation.
+Initiates an asynchronous copy from global memory to local memory.
 
 IMPORTANT: accessing `global-vec` or `local-vec` before the request completes will result in BAD THINGS.  
 In C++ lingo this is called "Undefined Behavior". In other languages it is referred to as "C++-like behavior".

@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "AD rules for load-tile-coords / store-tile-coords land in sub-step 1c"
+
+;; Sub-step 1b: canonical workflow exactly as documented in chapter 14/12.
+;; Bare load-tile and store-tile both used inside tile-stride.  Body walker
+;; rewrites both with the tile-stride binding sym (grid-x) as origin.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel bare_roundtrip (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (tile-stride V (4) (grid-x)
+      (load-tile V tile (grid-x))
+      (workgroup-stride tile (lx)
+        (set! (~ tile lx) (+ (~ tile lx) (to-ulong 100))))
+      (store-tile tile OUT (grid-x)))))

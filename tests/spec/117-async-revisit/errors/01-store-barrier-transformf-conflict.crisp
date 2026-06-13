@@ -1,0 +1,21 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "Cannot use :barrier and :transformF at the same time."
+
+;; Test that the compiler correctly rejects store-tile-at when both
+;; :barrier and :transformF are supplied.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(defun my-transform (val)
+  (declare (ulong => ulong))
+  (+ val 1))
+
+(def-kernel store_barrier_transform_fail (OUT &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4))
+        (barrier (make-async-barrier)))
+    (store-tile-at tile OUT (0) :barrier barrier :transformF #'my-transform)
+    (await barrier)))

@@ -1,0 +1,40 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+
+;; Verifies that load-tile and load-tile-at work with both sync and async
+;; (with barrier) usage, and correctly differentiate between grid indices
+;; and absolute coordinates.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel test_async_revisit_load_store (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 16)
+           (local-size  :set-to 4))
+  (let ((tile1 (make-scratch-vector ulong 4))
+        (tile2 (make-scratch-vector ulong 4))
+        (barrier1 (make-async-barrier))
+        (barrier2 (make-async-barrier))
+        (wg-id (get-workgroup-id 0)))
+    
+    ;; 1. load-tile (grid coords) async
+    ;; Use wg-id as grid coord
+    (load-tile V tile1 (wg-id) :barrier barrier1)
+    
+    ;; 2. load-tile-at (absolute coords) async
+    ;; wg-id * 4 gives the absolute coord
+    (load-tile-at V tile2 ( (* wg-id (to-ulong 4)) ) :barrier barrier2)
+    
+    ;; Wait for loads
+    (await barrier1)
+    (await barrier2)
+    
+    ;; 3. store-tile (grid coords) sync
+    ;; Store to the same grid coord
+    (store-tile tile1 OUT (wg-id))
+    
+    ;; 4. store-tile-at (absolute coords) sync
+    ;; Store to the same absolute coord (sequential write within the same workgroup)
+    (store-tile-at tile2 OUT ( (* wg-id (to-ulong 4)) )))
+)

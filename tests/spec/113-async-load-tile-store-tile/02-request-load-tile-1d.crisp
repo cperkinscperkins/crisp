@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; SKIP-WITH[--differentiate]: "AD pre-rewrite normalises request-load-tile to load-tile-coords; covered in phase 4"
+
+;; Phase 2 sugar: bare request-load-tile inside tile-stride.  The bare form
+;; (load-tile V tile (grid-x) :barrier barrier) gets rewritten to
+;; (request-load-tile-coords V tile (grid-x)) by the tile-stride body walker,
+;; mirroring the sync (load-tile V tile (grid-x)) -> (load-tile-coords V tile (grid-x))
+;; rewrite from 111/10.
+;;
+;; Fallback semantics in 113: the request collapses to sync load-tile-coords
+;; + barrier; await-request is a no-op.  Real async lowering lives in 114.
+
+(def-type vec-t  (vector ulong :address-space :global :align :compact))
+(def-type tile-t (vector ulong :address-space :local  :align :compact))
+
+(def-kernel bare_request_load_tile_1d (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector ulong 4)))
+    (tile-stride V (4) (grid-x)
+      (let ((barrier (make-async-barrier)))
+        (load-tile V tile (grid-x) :barrier barrier)
+        (await barrier)
+        (workgroup-stride tile (lx)
+          (set! (~ OUT (+ (* grid-x (to-ulong 4)) lx)) (~ tile lx)))))))

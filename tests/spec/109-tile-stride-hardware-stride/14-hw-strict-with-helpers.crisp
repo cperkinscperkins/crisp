@@ -9,7 +9,7 @@
 ;; exist; only the workgroup-level tile-indices identity remains.
 ;;
 ;; Leader thread writes an encoding that identifies which workgroup chunk:
-;; (* idx-x 10) + col-orig — distinguishes both the chunk's column index
+;; (* grid-y 10) + col-grid-x — distinguishes both the chunk's column index
 ;; and the chunk's column-origin coord within the problem space.
 
 (def-type mat-t (matrix ulong :address-space :global :align :compact))
@@ -18,7 +18,7 @@
   (declare #'(&out mat-t => nil)
            (global-size :set-to '(4 4))
            (local-size  :set-to '(2 2)))
-  (hardware-stride M :row-major :workgroup-idx (row-orig col-orig)
+  (hardware-stride M :row-major :workgroup-idx (row-grid-y col-grid-x)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (set! (~ M (* row-orig (to-ulong 2)) (* col-orig (to-ulong 2)))
-            (+ (* col-orig (to-ulong 10)) (* col-orig (to-ulong 2)))))))
+      (set! (~ M (* row-grid-y (to-ulong 2)) (* col-grid-x (to-ulong 2)))
+            (+ (* col-grid-x (to-ulong 10)) (* col-grid-x (to-ulong 2)))))))

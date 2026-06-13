@@ -11,7 +11,7 @@
 ;; here only because this is a compile-only test.  An on-metal warp-idx
 ;; test should size local appropriately.
 ;;
-;; Leader thread writes the warp-index — tile-indices(warp-orig) — into V[warp-orig].
+;; Leader thread writes the warp-index — tile-indices(warp-grid-x) — into V[warp-grid-x].
 
 (def-type vec-t (vector ulong :address-space :global :align :compact))
 
@@ -19,6 +19,6 @@
   (declare #'(&out vec-t => nil)
            (global-size :set-to '(2 2))
            (local-size  :set-to '(2 2)))
-  (hardware-stride V :warp-idx (warp-orig)
+  (hardware-stride V :warp-idx (warp-grid-x)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (set! (~ V (* warp-orig (to-ulong 32))) warp-orig))))
+      (set! (~ V (* warp-grid-x (to-ulong 32))) warp-grid-x))))

@@ -24,15 +24,23 @@
               (push x res))))
     (reverse res)))
 
+(defun %check-barrier-transformf (key-args)
+  (let ((has-barrier (getf key-args :barrier))
+        (has-transformf (or (getf key-args :transformf) (getf key-args :transformF))))
+    (when (and has-barrier has-transformf)
+      (error "Cannot use :barrier and :transformF at the same time."))))
+
 (defmacro crisp-language:load-tile-at (src tile grid-list &rest key-args)
   "Macro wrapper to strip :barrier argument for compilation analysis,
    falling back to the organic load-tile-coords primitive."
+  (%check-barrier-transformf key-args)
   (let ((stripped (%strip-barrier key-args)))
     `(crisp-language::load-tile-coords ,src ,tile ,grid-list ,@stripped)))
 
 (defmacro crisp-language:store-tile-at (tile dest grid-list &rest key-args)
   "Macro wrapper to strip :barrier argument for compilation analysis,
    falling back to the organic store-tile-coords primitive."
+  (%check-barrier-transformf key-args)
   (let ((stripped (%strip-barrier key-args)))
     `(crisp-language::store-tile-coords ,tile ,dest ,grid-list ,@stripped)))
 

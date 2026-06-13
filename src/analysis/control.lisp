@@ -1587,12 +1587,9 @@
          (get-local-size-sym (intern "GET-LOCAL-WORK-SIZE" cl-pkg))
          (ts-syms (loop for i from 0 below n
                         collect (gensym (format nil "LS~A" i))))
-         (size-expr-fn (lambda (k) (list get-local-size-sym k)))
-         ;; Phase 1b rewrite (before helper rewrite).
-         (rewritten-body
-          (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg)))
+         (size-expr-fn (lambda (k) (list get-local-size-sym k))))
     (%expand-workgroup-strided-outer-loop-with-ts-syms
-     tensor-form n bindings rewritten-body ts-syms size-expr-fn location)))
+     tensor-form n bindings body-forms ts-syms size-expr-fn location)))
 
 
 
@@ -1693,14 +1690,9 @@
               (:tile-tensor
                (let ((tile-form tile-spec))
                  (lambda (k)
-                   (list aref-sym (list extents-tilde-sym tile-form) k))))))
-           ;; Phase 1b: rewrite bare load-tile / store-tile in body BEFORE
-           ;; helper rewrite (and before any expansion).  Tile-stride bindings
-           ;; are the chunk origin coords, which become the -coords origin list.
-           (rewritten-body
-            (%rewrite-bare-load-store-tile-in-body body-forms bindings cl-pkg)))
+                   (list aref-sym (list extents-tilde-sym tile-form) k)))))))
       (%expand-workgroup-strided-outer-loop-with-ts-syms
-       tensor-form n bindings rewritten-body ts-syms tile-size-expr-fn location))))
+       tensor-form n bindings body-forms ts-syms tile-size-expr-fn location))))
 
 ;; src/analysis/control.lisp
 (defun analyze-tile-stride-expression (expr env context location)
@@ -1812,114 +1804,7 @@
 
 
 
-(defun %rewrite-bare-tile-in-form (form origin-binding-syms cl-pkg)
-  "Rewrites bare (load-tile ...) / (store-tile ...) inside FORM into their
-   -coords equivalents using ORIGIN-BINDING-SYMS as the origin list.  Does
-   NOT recurse into nested tile-stride / hardware-stride / workgroup-stride
-   forms — those manage their own body rewrites.
-   Endeavor 113 Phase 2: also handles bare (request-load-tile ...)."
-  (cond
-    ((atom form) form)
-    ((not (and (consp form) (symbolp (car form))))
-     (mapcar (lambda (sub) (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
-             form))
-    (t
-     (let ((op-name (symbol-name (car form))))
-       (cond
-         ((string-equal op-name "LOAD-TILE")
-          (when (< (length form) 3)
-            (error 'crisp-compiler-error
-                   :message "load-tile: expected (load-tile SRC TILE [&key ...])"
-                   :source-location nil))
-          (let ((ltc-sym (intern "LOAD-TILE-COORDS" cl-pkg))
-                (src     (second form))
-                (tile    (third form))
-                (key-args (nthcdr 3 form)))
-            (append (list ltc-sym src tile origin-binding-syms) key-args)))
-         ((string-equal op-name "STORE-TILE")
-          (when (< (length form) 3)
-            (error 'crisp-compiler-error
-                   :message "store-tile: expected (store-tile TILE DEST [&key ...])"
-                   :source-location nil))
-          (let ((stc-sym (intern "STORE-TILE-COORDS" cl-pkg))
-                (tile    (second form))
-                (dest    (third form))
-                (key-args (nthcdr 3 form)))
-            (append (list stc-sym tile dest origin-binding-syms) key-args)))
-         ;; --- Endeavor 113 Phase 2: bare request-load-tile sugar. ---
-         ((string-equal op-name "REQUEST-LOAD-TILE")
-          (when (< (length form) 3)
-            (error 'crisp-compiler-error
-                   :message "request-load-tile: expected (request-load-tile SRC TILE [&key ...])"
-                   :source-location nil))
-          (let ((rltc-sym (intern "REQUEST-LOAD-TILE-COORDS" cl-pkg))
-                (src      (second form))
-                (tile     (third form))
-                (key-args (nthcdr 3 form)))
-            (append (list rltc-sym src tile origin-binding-syms) key-args)))
-         ;; --- Endeavor 113 Phase 3: bare request-store-tile sugar. ---
-         ((string-equal op-name "REQUEST-STORE-TILE")
-          (when (< (length form) 3)
-            (error 'crisp-compiler-error
-                   :message "request-store-tile: expected (request-store-tile TILE DEST [&key ...])"
-                   :source-location nil))
-          (let ((rstc-sym (intern "REQUEST-STORE-TILE-COORDS" cl-pkg))
-                (tile     (second form))
-                (dest     (third form))
-                (key-args (nthcdr 3 form)))
-            (append (list rstc-sym tile dest origin-binding-syms) key-args)))
-         ((or (string-equal op-name "TILE-STRIDE")
-              (string-equal op-name "HARDWARE-STRIDE")
-              (string-equal op-name "WORKGROUP-STRIDE"))
-          form)
-         (t
-          (cons (car form)
-                (mapcar (lambda (sub)
-                          (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
-                        (cdr form)))))))))
 
-
-(defun %rewrite-bare-load-store-tile-in-body (body-forms origin-binding-syms cl-pkg)
-  "Walks BODY-FORMS top-down and rewrites bare load-tile / store-tile to
-   their -coords equivalents.  Used by tile-stride and hardware-stride
-   :workgroup-idx body expansion."
-  (mapcar (lambda (f) (%rewrite-bare-tile-in-form f origin-binding-syms cl-pkg))
-          body-forms))
-
-
-
-
-(defun %detect-bare-load-store-tile-in-form (form path)
-  "Recursively walks FORM and signals a compile error if a bare (load-tile ...)
-   or (store-tile ...) call appears.  PATH is the context name used in the
-   error message (e.g. \"hardware-stride :warp-idx\").
-   Endeavor 113 Phase 2: also detects bare (request-load-tile ...)."
-  (cond
-    ((atom form) nil)
-    ((not (and (consp form) (symbolp (car form))))
-     (dolist (sub form) (%detect-bare-load-store-tile-in-form sub path)))
-    (t
-     (let ((op-name (symbol-name (car form))))
-       (cond
-         ((or (string-equal op-name "LOAD-TILE")
-              (string-equal op-name "STORE-TILE")
-              (string-equal op-name "REQUEST-LOAD-TILE")
-              (string-equal op-name "REQUEST-STORE-TILE"))
-          (error 'crisp-compiler-error
-                 :message (format nil
-                                  "~A: bare ~A is not allowed inside ~A — it is a workgroup-cooperative primitive whose internal local-barrier would deadlock in a warp-grouped chunking context.  Use ~A-coords with explicit origin coords if you need to copy data here, or restructure the kernel."
-                                  (string-downcase op-name)
-                                  (string-downcase op-name)
-                                  path
-                                  (string-downcase op-name))
-                 :source-location nil))
-         ((or (string-equal op-name "TILE-STRIDE")
-              (string-equal op-name "HARDWARE-STRIDE")
-              (string-equal op-name "WORKGROUP-STRIDE"))
-          nil)
-         (t
-          (dolist (sub (cdr form))
-            (%detect-bare-load-store-tile-in-form sub path))))))))
 
 
 
@@ -2288,22 +2173,7 @@
 
 
 
-(defun analyze-load-tile-expression (expr env context location)
-  "Bare (load-tile SRC TILE &key ...) outside a stride context — compile
-   error pointing the user to load-tile-coords."
-  (declare (ignore expr env context))
-  (error 'crisp-compiler-error
-         :message "load-tile is only valid inside a tile-stride or hardware-stride :workgroup-idx body, where its origin coords are inferred from the surrounding stride bindings.  Use (load-tile-coords SRC TILE (ORIGIN...) ...) for explicit coordinate forms."
-         :source-location location))
 
-
-(defun analyze-store-tile-expression (expr env context location)
-  "Bare (store-tile TILE DEST &key ...) outside a stride context — compile
-   error pointing the user to store-tile-coords."
-  (declare (ignore expr env context))
-  (error 'crisp-compiler-error
-         :message "store-tile is only valid inside a tile-stride or hardware-stride :workgroup-idx body, where its origin coords are inferred from the surrounding stride bindings.  Use (store-tile-coords TILE DEST (ORIGIN...) ...) for explicit coordinate forms."
-         :source-location location))
 
 
 (defun %expand-load-tile-coords-bwd-form (expr location)

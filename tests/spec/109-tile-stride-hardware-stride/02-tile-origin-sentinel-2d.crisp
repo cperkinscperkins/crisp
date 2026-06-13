@@ -4,12 +4,12 @@
 ;; Basic 2D tile-stride: tile shape (2 2) against a 4x4 default-extent
 ;; matrix → 4 tiles, no ragged edges.  Body runs once per workgroup
 ;; per tile-origin; leader thread sentinel-writes the y-origin into
-;; M[row-orig][col-orig] to prove the body reached each origin.
+;; M[row-grid-x][col-grid-x] to prove the body reached each origin.
 
 (def-type mat-t (matrix ulong :address-space :global :align :compact))
 
 (def-kernel mat_tile_origin_sentinel_2d (&out M)
   (declare #'(&out mat-t => nil))
-  (tile-stride M (2 2) (row-orig col-orig)
+  (tile-stride M (2 2) (row-grid-y col-grid-x)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (set! (~ M row-orig col-orig) row-orig))))
+      (set! (~ M row-grid-y col-grid-x) row-grid-y))))

@@ -3,16 +3,16 @@
 
 ;; tile-indices helper under outer-loop semantics: returns which cell of
 ;; the tile-grid this iteration is processing.  For a 4x4 matrix with
-;; tile (2 2), the tile-stride bindings (row-orig col-orig) take values
+;; tile (2 2), the tile-stride bindings (row-grid-y col-grid-x) take values
 ;; from the problem-space origin set { (0,0), (0,2), (2,0), (2,2) }.
 ;; tile-indices then yields { (0,0), (0,1), (1,0), (1,1) }.
 ;;
-;; Leader thread writes the column tile-index into M[row-orig][col-orig].
+;; Leader thread writes the column tile-index into M[row-grid-y][col-grid-x].
 
 (def-type mat-t (matrix ulong :address-space :global :align :compact))
 
 (def-kernel mat_tile_indices_sentinel (&out M)
   (declare #'(&out mat-t => nil))
-  (tile-stride M (2 2) (row-orig col-orig)
+  (tile-stride M (2 2) (row-grid-y col-grid-x)
     (when (= (get-local-linear-id) (to-ulong 0))
-      (set! (~ M (* row-orig (to-ulong 2)) (* col-orig (to-ulong 2))) col-orig))))
+      (set! (~ M (* row-grid-y (to-ulong 2)) (* col-grid-x (to-ulong 2))) col-grid-x))))
