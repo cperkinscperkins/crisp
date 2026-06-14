@@ -351,7 +351,10 @@
    #:when #:unless #:cond #:if+ #:when+ #:unless+ #:else
    #:c-t-assert #:c-t-output #:compiler-no-op
    #:!= #:is-set?
-   #:die #:r-t-assert #:r-t-assert-0))
+   #:die #:r-t-assert #:r-t-assert-0
+   
+   ;; Async operations
+   #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -413,6 +416,9 @@
                 #:is-contiguity?
                 #:|=>|
                 #:c-t-assert #:c-t-output
+                
+                ;; Async operations
+                #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile
 
                 ;; All Crisp types
                 #:char #:short #:int #:long

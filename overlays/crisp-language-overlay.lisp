@@ -1,1 +1,1 @@
-(in-package :crisp.language)
+(in-package :crisp-language)
