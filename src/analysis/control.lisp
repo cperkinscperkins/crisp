@@ -408,12 +408,31 @@
 
 
 (defun analyze-load-tile-coords-expression (expr env context location)
-  "Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose).
-   Rejects placement inside a thread-divergent conditional, then delegates
+  "Analyzer for (load-tile-coords SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
+   Rejects placement inside a thread-divergent conditional. If :barrier is provided
+   and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
    codegen via %expand-load-tile-coords-form."
   (%tlc-check-not-divergent "load-tile-coords" location)
-  (analyze-expression (%expand-load-tile-coords-form expr location)
-                      env context location))
+  (let* ((key-args (nthcdr 4 expr))
+         (barrier-form (%extract-key-arg key-args :barrier nil)))
+    (if (and barrier-form (eq *target-backend* :ptx))
+        (let* ((src-form    (second expr))
+               (tile-form   (third expr))
+               (origin-list (fourth expr))
+               (src-node    (analyze-expression src-form env context (append location '(1))))
+               (tile-node   (analyze-expression tile-form env context (append location '(2))))
+               (origin-nodes (loop for o in origin-list for i from 0
+                                   collect (analyze-expression
+                                            o env context
+                                            (append location (list 3 i))))))
+          (make-semantic-nvvm-cp-async-tile-copy
+           :src-node     src-node
+           :tile-node    tile-node
+           :origin-nodes origin-nodes
+           :type         'ulong
+           :source-location location))
+        (analyze-expression (%expand-load-tile-coords-form expr location)
+                            env context location))))
 
 
 (defun analyze-store-tile-coords-expression (expr env context location)
@@ -423,6 +442,20 @@
   (%tlc-check-not-divergent "store-tile-coords" location)
   (analyze-expression (%expand-store-tile-coords-form expr location)
                       env context location))
+
+(defun analyze-await-expression (expr env context location)
+  "Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere."
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+           :message (format nil "await: expected (await BARRIER), got ~S" expr)
+           :source-location location))
+  (case *target-backend*
+    (:ptx
+     (make-semantic-nvvm-cp-async-wait
+      :type 'ulong
+      :source-location location))
+    (t
+     (analyze-expression nil env context location))))
 
 (defun analyze-if-expression-impl (expr env context location &key enforce-constant)
   (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
@@ -2343,85 +2376,6 @@
   
 
 
-(defun %expand-request-load-tile-coords-form (expr location)
-  "Phase 1a: degrade-to-sync.  Expand to (PROGN <sync-load-tile-coords> 0)
-   so the result has a ulong-typed phantom token for the surrounding let."
-  (let* ((cl-pkg     (find-package :crisp-language))
-         (progn-sym  (intern "PROGN" cl-pkg))
-         (to-ulong   (intern "TO-ULONG" cl-pkg))
-         (sync-sym   (intern "LOAD-TILE-COORDS" cl-pkg))
-         (sync-expr  (cons sync-sym (rest expr)))
-         (sync-form  (%expand-load-tile-coords-form sync-expr location)))
-    (list progn-sym sync-form (list to-ulong 0))))
-
-;; Phase 3: symmetric fallback for the store side.
-
-(defun %expand-request-store-tile-coords-form (expr location)
-  "Phase 3 fallback: degrade-to-sync.  Expand to
-   (PROGN <sync-store-tile-coords> 0) — same phantom-token shape as the
-   load side.  Real async store (where hardware supports it) lands in
-   114 Phase E."
-  (let* ((cl-pkg     (find-package :crisp-language))
-         (progn-sym  (intern "PROGN" cl-pkg))
-         (to-ulong   (intern "TO-ULONG" cl-pkg))
-         (sync-sym   (intern "STORE-TILE-COORDS" cl-pkg))
-         (sync-expr  (cons sync-sym (rest expr)))
-         (sync-form  (%expand-store-tile-coords-form sync-expr location)))
-    (list progn-sym sync-form (list to-ulong 0))))
-
-
-(defun analyze-request-load-tile-coords-expression (expr env context location)
-  "114 Phase B: emit semantic-nvvm-cp-async-tile-copy on :ptx target;
-   fall back to sync expansion elsewhere (including :spirv, which is
-   blocked — see 114 Phase A notes)."
-  (%tlc-check-not-divergent "request-load-tile-coords" location)
-  (case *target-backend*
-    (:ptx
-     (let* ((src-form    (second expr))
-            (tile-form   (third expr))
-            (origin-list (fourth expr))
-            (src-node    (analyze-expression src-form env context (append location '(1))))
-            (tile-node   (analyze-expression tile-form env context (append location '(2))))
-            (origin-nodes (loop for o in origin-list for i from 0
-                                collect (analyze-expression
-                                         o env context
-                                         (append location (list 3 i))))))
-       (make-semantic-nvvm-cp-async-tile-copy
-        :src-node     src-node
-        :tile-node    tile-node
-        :origin-nodes origin-nodes
-        :type         'ulong
-        :source-location location)))
-    (t
-     (analyze-expression (%expand-request-load-tile-coords-form expr location)
-                         env context location))))
-
-(defun analyze-request-store-tile-coords-expression (expr env context location)
-  "Phase 3 analyzer for request-store-tile-coords.  Same divergence guard
-   as the sync form, then delegates to the fallback expansion."
-  (%tlc-check-not-divergent "request-store-tile-coords" location)
-  (analyze-expression (%expand-request-store-tile-coords-form expr location)
-                      env context location))
-
-
-
-(defun analyze-await-request-expression (expr env context location)
-  "114 Phase B: emit semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere."
-  (unless (= (length expr) 2)
-    (error 'crisp-compiler-error
-           :message (format nil "await-request: expected (await-request TOKEN), got ~S" expr)
-           :source-location location))
-  (case *target-backend*
-    (:ptx
-     (make-semantic-nvvm-cp-async-wait
-      :type 'ulong
-      :source-location location))
-    (t
-     (analyze-expression
-      (list (intern "TO-ULONG" (find-package :crisp-language)) 0)
-      env context location))))
-
-
 (defun register-control-analyzers ()
   "Registers all control flow expression analyzers, including loop-vector-stride,
    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,
@@ -2528,21 +2482,9 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%store-tile-coords-bwd-expression)))
-  ;; --- Endeavor 113 Phase 1a: async tile load + await. ---
-  (let ((sym-cl (intern "REQUEST-LOAD-TILE-COORDS" (find-package :crisp-language)))
-        (sym-cc (intern "REQUEST-LOAD-TILE-COORDS" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-request-load-tile-coords-expression)
+  (let ((sym-cl (intern "AWAIT" (find-package :crisp-language)))
+        (sym-cc (intern "AWAIT" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-request-load-tile-coords-expression)))
-  ;; --- Endeavor 113 Phase 3: async tile store. ---
-  (let ((sym-cl (intern "REQUEST-STORE-TILE-COORDS" (find-package :crisp-language)))
-        (sym-cc (intern "REQUEST-STORE-TILE-COORDS" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-request-store-tile-coords-expression)
-    (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-request-store-tile-coords-expression)))
-  (let ((sym-cl (intern "AWAIT-REQUEST" (find-package :crisp-language)))
-        (sym-cc (intern "AWAIT-REQUEST" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-request-expression)
-    (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-request-expression))))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-expression))))
 

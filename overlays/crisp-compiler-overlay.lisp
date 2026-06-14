@@ -56,31 +56,21 @@
           (dolist (sub (cdr form))
             (%detect-bare-load-store-tile-in-form sub path))))))))
 
-(defun strip-barrier (key-args)
-  (let ((res nil) (skip nil))
-    (loop for x on key-args do
-      (if skip
-          (setf skip nil)
-          (if (eq x :barrier)
-              (setf skip t)
-              (push x res))))
-    (reverse res)))
+
 
 (defun analyze-load-tile-at-expression (expr env context location)
   (let ((key-args (nthcdr 4 expr)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
       (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
-    (let ((stripped-expr (append (subseq expr 0 4) (strip-barrier key-args))))
-      (analyze-expression (cons (intern "LOAD-TILE-COORDS" (find-package :crisp-language)) (cdr stripped-expr))
-                          env context location))))
+    (analyze-expression (cons (intern "LOAD-TILE-COORDS" (find-package :crisp-language)) (cdr expr))
+                        env context location)))
 
 (defun analyze-store-tile-at-expression (expr env context location)
   (let ((key-args (nthcdr 4 expr)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
       (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
-    (let ((stripped-expr (append (subseq expr 0 4) (strip-barrier key-args))))
-      (analyze-expression (cons (intern "STORE-TILE-COORDS" (find-package :crisp-language)) (cdr stripped-expr))
-                          env context location))))
+    (analyze-expression (cons (intern "STORE-TILE-COORDS" (find-package :crisp-language)) (cdr expr))
+                        env context location)))
 
 (defun analyze-load-tile-expression (expr env context location)
   (let* ((src (second expr))
@@ -124,9 +114,7 @@
   (declare (ignore expr))
   (analyze-expression 0 env context location))
 
-(defun analyze-await-expression (expr env context location)
-  (declare (ignore expr))
-  (analyze-expression nil env context location))
+
 
 (let ((sym-cl (intern "LOAD-TILE-AT" (find-package :crisp-language)))
       (sym-cc (intern "LOAD-TILE-AT" (find-package :crisp.compiler))))
@@ -140,7 +128,3 @@
       (sym-cc (intern "MAKE-ASYNC-BARRIER" (find-package :crisp.compiler))))
   (setf (gethash sym-cl *expression-analyzers*) #'analyze-make-async-barrier-expression)
   (setf (gethash sym-cc *expression-analyzers*) #'analyze-make-async-barrier-expression))
-(let ((sym-cl (intern "AWAIT" (find-package :crisp-language)))
-      (sym-cc (intern "AWAIT" (find-package :crisp.compiler))))
-  (setf (gethash sym-cl *expression-analyzers*) #'analyze-await-expression)
-  (setf (gethash sym-cc *expression-analyzers*) #'analyze-await-expression))

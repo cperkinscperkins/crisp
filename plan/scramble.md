@@ -645,6 +645,7 @@ NEXT
 - - [ ] lose (await-request <req>) .  Now just (await <barrier>)
 - [ ] load-tile/store-tile API from topology.md.   
 - [ ] lose "helper" load-tile / store-tile
+- [ ] (await barrier) maps to cp.async.wait_all , not individual barriers. 
 - [ ] rename load-barrier => sync-workgroup
 - [ ] sync-warp
 - [ ] make-arrival-sync
