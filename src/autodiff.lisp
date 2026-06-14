@@ -391,11 +391,46 @@
     (nreverse vars)))
 
 
+
+(defun %is-tensor-alias (sym)
+  (and (symbolp sym)
+       (let ((res (resolve-type-alias sym)))
+         (and (consp res)
+              (member (symbol-name (first res)) '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal)))))
+
+(defun %has-explicit-n (args)
+  (and (integerp (second args))
+       (not (%is-tensor-alias (first args)))))
+
+(defun %promote-scratch-init-for-ad (init)
+  "Promotes the type in a make-scratch-* form to its float adjoint equivalent.
+   E.g., (make-scratch-vector ulong 4) -> (make-scratch-vector double 4)."
+  (let* ((op (car init))
+         (args (cdr init))
+         (canonical (%scratch-tensor-canonical-spec op args))
+         (elem-type (second canonical))
+         (promoted-elem (if (%crisp-integer-scalar-type-p elem-type)
+                            (%integer-scalar-to-float-scalar elem-type)
+                            elem-type)))
+    (cond
+     ((or (string-equal (symbol-name op) "MAKE-SCRATCH-VECTOR")
+          (string-equal (symbol-name op) "MAKE-SCRATCH-MATRIX"))
+      (let ((size-expr (%extract-scratch-size-expr op args)))
+        `(,op ,promoted-elem ,size-expr ,@(cddr args))))
+     ((string-equal (symbol-name op) "MAKE-SCRATCH-TENSOR")
+      (let ((size-expr (%extract-scratch-size-expr op args))
+            (n (third canonical)))
+        `(,op ,promoted-elem ,n ,size-expr ,@(if (%has-explicit-n args) (cdddr args) (cddr args)))))
+     ((string-equal (symbol-name op) "MAKE-SCRATCH-CELL")
+      `(,op ,(%promote-to-float-adjoint canonical)))
+     (t init))))
+
+
 (defun %augment-scratch-adj-bindings (bindings kernel-pkg)
   "For each binding (var (make-scratch-X ...)), inject a paired
    (var_ADJ (make-scratch-X ...)) binding right after.  For other bindings,
-   pass through unchanged.  Phase 1c initial: assumes same-element-type
-   adjoint (no ulong→double promotion yet)."
+   pass through unchanged.  Promotes element type (e.g., ulong -> double)
+   so gradients use correct FP precision."
   (loop for b in bindings
           if (and (consp b) (= (length b) 2) (symbolp (car b))
                   (consp (cadr b)) (symbolp (caadr b))
@@ -407,9 +442,11 @@
                        (let* ((var (car b))
                               (var-adj (intern (format nil "~A_ADJ" (symbol-name var))
                                                (or kernel-pkg (symbol-package var))))
-                              (init (cadr b)))
-                         (list var-adj init)))
+                              (init (cadr b))
+                              (promoted-init (%promote-scratch-init-for-ad init)))
+                         (list var-adj promoted-init)))
           else collect b))
+
 
 
 (defun %tlc-bwd-adj-name (sym inputs outputs local-adj-fn kernel-pkg)
@@ -829,7 +866,7 @@
                             collect (let* ((var (car form))
                                            (var-adj (intern (format nil "~A_ADJ" (symbol-name var))
                                                             (or kernel-pkg (symbol-package var)))))
-                                      (list var-adj (cadr form)))))
+                                      (list var-adj (%promote-scratch-init-for-ad (cadr form))))))
                      (result `(let ,(append scratch-adj-bindings local-bindings)
                                 ,@(nreverse backward-forms))))
                 result))))))))

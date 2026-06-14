@@ -7,12 +7,12 @@
 (def-type vec-t  (vector ulong :address-space :global :align :compact))
 (def-type tile-t (vector ulong :address-space :local  :align :compact))
 
-(defun my-transform (val)
-  (declare (ulong => ulong))
-  (+ val 1))
+(def-function my-transform (val)
+  (declare #'(ulong => ulong))
+  (+ val (to-ulong 1)))
 
-(def-kernel store_barrier_transform_fail (OUT &out OUT)
-  (declare #'(vec-t &out vec-t => nil)
+(def-kernel store_barrier_transform_fail (&out OUT)
+  (declare #'(&out vec-t => nil)
            (global-size :set-to 4)
            (local-size  :set-to 4))
   (let ((tile (make-scratch-vector ulong 4))
