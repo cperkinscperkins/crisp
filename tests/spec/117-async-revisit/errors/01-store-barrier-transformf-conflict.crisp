@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: FAIL
-;; CHECK-FAIL: "Cannot use :barrier and :transformF at the same time."
+;; CHECK-FAIL: "Cannot use :barrier and :transformF together"
 
 ;; Test that the compiler correctly rejects store-tile-at when both
 ;; :barrier and :transformF are supplied.

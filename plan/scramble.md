@@ -639,13 +639,14 @@ Grid Stride
 
 NEXT
 ====
-- [ ] rename load-tile-coords => load-tile-at
-- [ ] lose request-load-tile and all request-xxxx variants. 
-- - [ ] Instead make-barrier and :barrier key
-- - [ ] lose (await-request <req>) .  Now just (await <barrier>)
-- [ ] load-tile/store-tile API from topology.md.   
-- [ ] lose "helper" load-tile / store-tile
-- [ ] (await barrier) maps to cp.async.wait_all , not individual barriers. 
+- [x] rename load-tile-coords => load-tile-at
+- [x] lose request-load-tile and all request-xxxx variants. 
+- - [x] Instead make-barrier and :barrier key
+- - [x] lose (await-request <req>) .  Now just (await <barrier>)
+- [x] load-tile/store-tile API from topology.md.   
+- [x] lose "helper" load-tile / store-tile
+- [ ] (await barrier) maps to cp.async.wait_all , not individual barriers.
+- [ ] strategy :tiled so we can get hoist testing. 
 - [ ] rename load-barrier => sync-workgroup
 - [ ] sync-warp
 - [ ] make-arrival-sync
